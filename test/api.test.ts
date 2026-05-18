@@ -221,14 +221,4 @@ describe('sessions, idempotent set logging, history, volume', () => {
   });
 });
 
-describe('mcp route (milestone a stub)', () => {
-  it('401 without the static token, 501 with it', async () => {
-    const noauth = await SELF.fetch(`${BASE}/mcp`, { method: 'POST' });
-    expect(noauth.status).toBe(401);
-    const ok = await SELF.fetch(`${BASE}/mcp`, {
-      method: 'POST',
-      headers: { Authorization: 'Bearer test-mcp-token' },
-    });
-    expect(ok.status).toBe(501);
-  });
-});
+// /mcp behavior is covered comprehensively in test/mcp.test.ts.

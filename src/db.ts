@@ -51,6 +51,23 @@ export async function upsertUser(
   return user;
 }
 
+/**
+ * Resolve the single owner user for MCP calls. The MCP principal is "Claude
+ * acting as the owner", not an end-user login — so it maps to the one user
+ * row. If none exists yet (iOS app not built), bootstrap it so Claude can
+ * start building a plan in chat before milestone (d).
+ */
+export async function ensureOwnerUser(
+  db: D1Database,
+  ownerAppleSub: string | undefined,
+): Promise<User> {
+  const existing = await db
+    .prepare('SELECT * FROM users ORDER BY created_at LIMIT 1')
+    .first<User>();
+  if (existing) return existing;
+  return upsertUser(db, ownerAppleSub ?? 'mcp-owner', null, 'Owner');
+}
+
 // ---- plan tree -----------------------------------------------------------
 
 export async function getActivePlan(
@@ -405,6 +422,51 @@ export async function getState(
     sets: sets.results,
     server_time: now(),
   };
+}
+
+export async function getInProgressSession(
+  db: D1Database,
+  userId: string,
+): Promise<SessionRow | null> {
+  return db
+    .prepare(
+      "SELECT * FROM sessions WHERE user_id = ?1 AND status = 'in_progress' ORDER BY updated_at DESC LIMIT 1",
+    )
+    .bind(userId)
+    .first<SessionRow>();
+}
+
+export async function getSetsForSession(db: D1Database, sessionId: string) {
+  const r = await db
+    .prepare(
+      'SELECT * FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL ORDER BY logged_at',
+    )
+    .bind(sessionId)
+    .all<SetLogRow>();
+  return r.results;
+}
+
+export async function getRecentSessions(
+  db: D1Database,
+  userId: string,
+  n: number,
+): Promise<SessionRow[]> {
+  const r = await db
+    .prepare('SELECT * FROM sessions WHERE user_id = ?1 ORDER BY date DESC LIMIT ?2')
+    .bind(userId, n)
+    .all<SessionRow>();
+  return r.results;
+}
+
+export async function getSessionByDate(
+  db: D1Database,
+  userId: string,
+  date: string,
+): Promise<SessionRow | null> {
+  return db
+    .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at LIMIT 1')
+    .bind(userId, date)
+    .first<SessionRow>();
 }
 
 const epley = (w: number, r: number) => Math.round(w * (1 + r / 30) * 10) / 10;

@@ -4,15 +4,27 @@
 // goes through src/db.ts, identical to REST.
 import type { Env } from '../types';
 import {
+  addDayTemplate,
+  addTemplateExercise,
+  adjustToday,
   ensureOwnerUser,
+  getActivePlan,
   getHistory,
   getInProgressSession,
+  getOrCreateSession,
   getPlanTree,
   getRecentSessions,
   getSessionByDate,
   getSetsForSession,
   getVolume,
+  logSet,
+  logWorkoutComplete,
   resolveExercise,
+  swapExercise,
+  updateExercise,
+  updatePlanTree,
+  writeAudit,
+  writeNote,
 } from '../db';
 
 const SERVER_INFO = { name: 'lift-coach', version: '0.1.0' };
@@ -54,6 +66,9 @@ interface Tool {
   description: string;
   inputSchema: Json;
   handler: (args: Json, env: Env, userId: string) => Promise<unknown>;
+  /** Write tools are audited; `note` (if it returns text) is persisted. */
+  write?: boolean;
+  note?: (args: Json, result: any) => string | null;
 }
 
 const obj = (props: Json, required: string[] = []): Json => ({
@@ -156,6 +171,286 @@ const TOOLS: Record<string, Tool> = {
       return getVolume(env.DB, userId, String(a.muscle_group), from, Date.now());
     },
   },
+
+  // ---- write tools -------------------------------------------------------
+
+  log_set: {
+    description:
+      'Log one working/warmup set. Auto-creates the day\'s session and infers set_index. Logs to today unless session_date is given.',
+    inputSchema: obj(
+      {
+        exercise: { type: 'string', description: 'name, alias, or id' },
+        weight: { type: 'number' },
+        reps: { type: 'integer' },
+        rpe: { type: 'number' },
+        is_warmup: { type: 'boolean' },
+        set_index: { type: 'integer' },
+        session_date: { type: 'string', description: 'YYYY-MM-DD (default today)' },
+        notes: { type: 'string' },
+      },
+      ['exercise', 'weight', 'reps'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const plan = await getActivePlan(env.DB, userId);
+      if (!plan) return { error: 'no_active_plan' };
+      const date = typeof a.session_date === 'string' ? a.session_date : todayLocal();
+      const session = await getOrCreateSession(env.DB, userId, plan.id, date, null);
+      const ex = await resolveExercise(env.DB, String(a.exercise));
+      if (!ex) return { error: 'unknown_exercise', query: a.exercise };
+      const exId = (ex as { id: string }).id;
+      const existing = await getSetsForSession(env.DB, session.id);
+      const setIndex =
+        typeof a.set_index === 'number'
+          ? a.set_index
+          : existing.filter((s) => s.exercise_id === exId && !s.is_warmup).length + 1;
+      const { set, deduped } = await logSet(env.DB, userId, {
+        id: crypto.randomUUID(),
+        session_id: session.id,
+        exercise_id: exId,
+        set_index: setIndex,
+        weight: Number(a.weight),
+        reps: Number(a.reps),
+        rpe: a.rpe == null ? null : Number(a.rpe),
+        is_warmup: a.is_warmup === true,
+        notes: typeof a.notes === 'string' ? a.notes : null,
+        source: 'mcp',
+      });
+      return { set, deduped, session_id: session.id };
+    },
+  },
+  log_workout_complete: {
+    description: 'Mark a session complete, optionally with perceived fatigue (1-10) and notes.',
+    inputSchema: obj(
+      {
+        session_date: { type: 'string', description: 'YYYY-MM-DD (default today)' },
+        perceived_fatigue: { type: 'integer', minimum: 1, maximum: 10 },
+        notes: { type: 'string' },
+      },
+      [],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const date = typeof a.session_date === 'string' ? a.session_date : todayLocal();
+      const s = await logWorkoutComplete(
+        env.DB,
+        userId,
+        date,
+        a.perceived_fatigue == null ? null : Number(a.perceived_fatigue),
+        typeof a.notes === 'string' ? a.notes : null,
+      );
+      return s ?? { error: 'no_active_plan' };
+    },
+  },
+  add_note: {
+    description:
+      'Record a coaching note (your reasoning). scope: plan|session|exercise|general; ref_id optional.',
+    inputSchema: obj(
+      {
+        scope: { type: 'string', enum: ['plan', 'session', 'exercise', 'general'] },
+        ref_id: { type: 'string' },
+        body: { type: 'string' },
+      },
+      ['scope', 'body'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      await writeNote(
+        env.DB,
+        userId,
+        String(a.scope),
+        typeof a.ref_id === 'string' ? a.ref_id : null,
+        'claude',
+        String(a.body),
+      );
+      return { ok: true };
+    },
+  },
+  update_plan: {
+    description:
+      'Replace the plan tree (days + exercises) transactionally. Pass expected_version for optimistic concurrency; a mismatch returns a conflict — refetch get_current_plan and reapply.',
+    inputSchema: obj(
+      {
+        name: { type: 'string' },
+        meta: { type: 'object' },
+        expected_version: { type: 'integer' },
+        days: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              day_label: { type: 'string' },
+              name: { type: 'string' },
+              order_index: { type: 'integer' },
+              notes: { type: 'string' },
+              exercises: { type: 'array', items: { type: 'object' } },
+            },
+            required: ['name'],
+          },
+        },
+      },
+      ['days'],
+    ),
+    write: true,
+    handler: (a, env, userId) =>
+      updatePlanTree(env.DB, userId, a as unknown as Parameters<typeof updatePlanTree>[2]),
+    note: (_a, r) =>
+      r?.conflict
+        ? null
+        : `Rebuilt plan: ${r.plan.days.length} day(s), v${r.plan.version}.`,
+  },
+  update_exercise: {
+    description:
+      'Patch one plan slot. Identify it by template_exercise_id, or by day (label/name) + exercise.',
+    inputSchema: obj(
+      {
+        template_exercise_id: { type: 'string' },
+        day: { type: 'string' },
+        exercise: { type: 'string' },
+        patch: { type: 'object' },
+      },
+      ['patch'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const r = await updateExercise(
+        env.DB,
+        userId,
+        {
+          template_exercise_id:
+            typeof a.template_exercise_id === 'string' ? a.template_exercise_id : undefined,
+          day: typeof a.day === 'string' ? a.day : undefined,
+          exercise: typeof a.exercise === 'string' ? a.exercise : undefined,
+        },
+        (a.patch as Json) ?? {},
+      );
+      return r ?? { error: 'slot_not_found' };
+    },
+    note: (_a, r) => (r?.error ? null : `Updated slot ${r.id}.`),
+  },
+  swap_exercise: {
+    description: 'Replace an exercise in a day with another (e.g. RDL → good mornings on Wednesday).',
+    inputSchema: obj(
+      {
+        day: { type: 'string', description: 'day label or name' },
+        from_exercise: { type: 'string' },
+        to_exercise: { type: 'string' },
+        carry_targets: { type: 'boolean' },
+      },
+      ['day', 'from_exercise', 'to_exercise'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const r = await swapExercise(env.DB, userId, {
+        day: String(a.day),
+        from_exercise: String(a.from_exercise),
+        to_exercise: String(a.to_exercise),
+        carry_targets: a.carry_targets === true,
+      });
+      return r ?? { error: 'slot_not_found' };
+    },
+    note: (a, r) =>
+      r?.error ? null : `Swapped ${a.from_exercise} → ${a.to_exercise} on ${a.day}.`,
+  },
+  add_exercise: {
+    description: 'Add an exercise to a day in the active plan.',
+    inputSchema: obj(
+      {
+        day: { type: 'string', description: 'day label or name' },
+        exercise: { type: 'string' },
+        target_sets: { type: 'integer' },
+        target_reps: { type: 'integer' },
+        target_reps_max: { type: 'integer' },
+        target_rpe: { type: 'number' },
+        rest_seconds: { type: 'integer' },
+        target_weight: { type: 'number' },
+        progression: { type: 'object' },
+        order_index: { type: 'integer' },
+      },
+      ['day', 'exercise', 'target_sets', 'target_reps'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const plan = await getActivePlan(env.DB, userId);
+      if (!plan) return { error: 'no_active_plan' };
+      const day = await env.DB.prepare(
+        "SELECT d.id FROM day_templates d JOIN plans p ON p.id=d.plan_id WHERE p.user_id=?1 AND p.status='active' AND (d.day_label=?2 OR d.name=?2) LIMIT 1",
+      )
+        .bind(userId, String(a.day))
+        .first<{ id: string }>();
+      if (!day) return { error: 'day_not_found', day: a.day };
+      const ex = await resolveExercise(env.DB, String(a.exercise));
+      if (!ex) return { error: 'unknown_exercise', query: a.exercise };
+      return addTemplateExercise(env.DB, plan.id, {
+        day_template_id: day.id,
+        exercise_id: (ex as { id: string }).id,
+        order_index: typeof a.order_index === 'number' ? a.order_index : 99,
+        target_sets: Number(a.target_sets),
+        target_reps: Number(a.target_reps),
+        target_reps_max: a.target_reps_max == null ? null : Number(a.target_reps_max),
+        target_rpe: a.target_rpe == null ? null : Number(a.target_rpe),
+        rest_seconds: typeof a.rest_seconds === 'number' ? a.rest_seconds : 120,
+        target_weight: a.target_weight == null ? null : Number(a.target_weight),
+        progression: a.progression == null ? null : JSON.stringify(a.progression),
+        cues: null,
+      });
+    },
+    note: (a, r) => (r?.error ? null : `Added ${a.exercise} to ${a.day}.`),
+  },
+  add_day: {
+    description: 'Add a training day to the active plan (e.g. a deadlift day). Creates a plan if none exists.',
+    inputSchema: obj(
+      {
+        name: { type: 'string' },
+        day_label: { type: 'string' },
+        order_index: { type: 'integer' },
+      },
+      ['name'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      let plan = await getActivePlan(env.DB, userId);
+      if (!plan) {
+        const r = await updatePlanTree(env.DB, userId, { name: 'My Plan', days: [] });
+        plan = (await getActivePlan(env.DB, userId))!;
+        void r;
+      }
+      return addDayTemplate(
+        env.DB,
+        plan.id,
+        String(a.name),
+        typeof a.day_label === 'string' ? a.day_label : null,
+        typeof a.order_index === 'number' ? a.order_index : 99,
+      );
+    },
+    note: (a) => `Added day "${a.name}".`,
+  },
+  adjust_today: {
+    description:
+      "\"I'm beat — adjust.\" Scales target sets (reduce_volume/deload) or weight (reduce_intensity) for a day (day_label) or the whole plan, and records why.",
+    inputSchema: obj(
+      {
+        intent: { type: 'string', enum: ['deload', 'reduce_volume', 'reduce_intensity'] },
+        magnitude: { type: 'string', enum: ['light', 'moderate', 'heavy'] },
+        day_label: { type: 'string' },
+        reason: { type: 'string', description: 'why — stored as a coaching note' },
+      },
+      ['intent'],
+    ),
+    write: true,
+    handler: (a, env, userId) =>
+      adjustToday(
+        env.DB,
+        userId,
+        a.intent as 'deload' | 'reduce_volume' | 'reduce_intensity',
+        (a.magnitude as 'light' | 'moderate' | 'heavy') ?? 'moderate',
+        typeof a.day_label === 'string' ? a.day_label : undefined,
+      ),
+    note: (a, r) =>
+      `${a.intent}(${a.magnitude ?? 'moderate'})${a.day_label ? ` ${a.day_label}` : ''}: ` +
+      `${r?.changes?.length ?? 0} change(s).` +
+      (typeof a.reason === 'string' ? ` Reason: ${a.reason}` : ''),
+  },
 };
 
 // ---- resource + prompt ---------------------------------------------------
@@ -227,7 +522,13 @@ async function dispatch(req: RpcRequest, env: Env, userId: string) {
       const tool = TOOLS[name];
       if (!tool) return err(req.id, -32602, `unknown tool: ${name}`);
       try {
-        const result = await tool.handler((req.params?.arguments as Json) ?? {}, env, userId);
+        const args = (req.params?.arguments as Json) ?? {};
+        const result = await tool.handler(args, env, userId);
+        if (tool.write) {
+          await writeAudit(env.DB, userId, name, args, JSON.stringify(result));
+          const noteBody = tool.note?.(args, result);
+          if (noteBody) await writeNote(env.DB, userId, 'plan', null, 'claude', noteBody);
+        }
         return ok(req.id, {
           content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
         });

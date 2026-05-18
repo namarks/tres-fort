@@ -109,19 +109,29 @@ describe('mcp auth + protocol', () => {
 });
 
 describe('mcp tools list', () => {
-  it('lists all six read tools with input schemas', async () => {
+  it('lists read + write tools with input schemas', async () => {
     const { body } = await rpc('tools/list');
-    const names = body.result.tools.map((t: any) => t.name).sort();
+    const names = body.result.tools.map((t: any) => t.name);
     expect(names).toEqual(
-      [
+      expect.arrayContaining([
         'get_current_plan',
         'get_current_session',
         'get_history',
         'get_session_log',
         'get_today_workout',
         'get_volume_trend',
-      ].sort(),
+        'log_set',
+        'log_workout_complete',
+        'add_note',
+        'update_plan',
+        'update_exercise',
+        'swap_exercise',
+        'add_exercise',
+        'add_day',
+        'adjust_today',
+      ]),
     );
+    expect(names).toHaveLength(15);
     for (const t of body.result.tools) expect(t.inputSchema.type).toBe('object');
   });
 });

@@ -469,6 +469,330 @@ export async function getSessionByDate(
     .first<SessionRow>();
 }
 
+// ---- notes + audit -------------------------------------------------------
+
+export async function writeNote(
+  db: D1Database,
+  userId: string,
+  scope: string,
+  refId: string | null,
+  author: 'claude' | 'nick',
+  body: string,
+): Promise<void> {
+  await db
+    .prepare(
+      'INSERT INTO notes (id,user_id,scope,ref_id,author,body,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)',
+    )
+    .bind(uuid(), userId, scope, refId, author, body, now())
+    .run();
+}
+
+export async function writeAudit(
+  db: D1Database,
+  userId: string,
+  tool: string,
+  args: unknown,
+  result: string,
+): Promise<void> {
+  await db
+    .prepare(
+      'INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)',
+    )
+    .bind(uuid(), userId, 'mcp', tool, JSON.stringify(args).slice(0, 4000), result.slice(0, 500), now())
+    .run();
+}
+
+// ---- plan-tree mutations (MCP write tools) -------------------------------
+
+interface ExerciseInput {
+  exercise: string;
+  order_index?: number;
+  target_sets: number;
+  target_reps: number;
+  target_reps_max?: number | null;
+  target_rpe?: number | null;
+  rest_seconds?: number;
+  target_weight?: number | null;
+  progression?: unknown;
+  cues?: string | null;
+}
+
+async function resolveOrThrow(db: D1Database, name: string): Promise<string> {
+  const ex = await resolveExercise(db, name);
+  if (!ex) throw new Error(`unknown_exercise:${name}`);
+  return (ex as { id: string }).id;
+}
+
+/**
+ * Transactional full-plan upsert with optimistic concurrency. If
+ * expectedVersion is given and stale, returns a conflict (Claude refetches
+ * and reapplies — DESIGN.md §7). Replaces the day/exercise tree atomically.
+ */
+export async function updatePlanTree(
+  db: D1Database,
+  userId: string,
+  input: {
+    name?: string;
+    meta?: unknown;
+    expected_version?: number | null;
+    days: {
+      day_label?: string | null;
+      name: string;
+      order_index?: number;
+      notes?: string | null;
+      exercises?: ExerciseInput[];
+    }[];
+  },
+): Promise<
+  | { conflict: true; current_version: number }
+  | { conflict: false; plan: PlanTree }
+> {
+  let plan = await getActivePlan(db, userId);
+  if (!plan) plan = await createPlan(db, userId, input.name ?? 'My Plan', input.meta ?? null);
+  if (
+    input.expected_version != null &&
+    input.expected_version !== plan.version
+  ) {
+    return { conflict: true, current_version: plan.version };
+  }
+
+  // Resolve every exercise name up front (outside the batch).
+  const resolved = new Map<string, string>();
+  for (const d of input.days) {
+    for (const e of d.exercises ?? []) {
+      if (!resolved.has(e.exercise)) {
+        resolved.set(e.exercise, await resolveOrThrow(db, e.exercise));
+      }
+    }
+  }
+
+  const ts = now();
+  const stmts: D1PreparedStatement[] = [
+    db
+      .prepare(
+        'DELETE FROM template_exercises WHERE day_template_id IN (SELECT id FROM day_templates WHERE plan_id = ?1)',
+      )
+      .bind(plan.id),
+    db.prepare('DELETE FROM day_templates WHERE plan_id = ?1').bind(plan.id),
+  ];
+  input.days.forEach((d, di) => {
+    const dayId = uuid();
+    stmts.push(
+      db
+        .prepare(
+          'INSERT INTO day_templates (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)',
+        )
+        .bind(dayId, plan!.id, d.name, d.day_label ?? null, d.order_index ?? di, d.notes ?? null, ts, ts),
+    );
+    (d.exercises ?? []).forEach((e, ei) => {
+      stmts.push(
+        db
+          .prepare(
+            `INSERT INTO template_exercises
+             (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,progression,cues,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)`,
+          )
+          .bind(
+            uuid(), dayId, resolved.get(e.exercise)!, e.order_index ?? ei, e.target_sets,
+            e.target_reps, e.target_reps_max ?? null, e.target_rpe ?? null, e.rest_seconds ?? 120,
+            e.target_weight ?? null, e.progression == null ? null : JSON.stringify(e.progression),
+            e.cues ?? null, ts, ts,
+          ),
+      );
+    });
+  });
+  stmts.push(
+    db
+      .prepare(
+        'UPDATE plans SET name = ?2, meta = ?3, version = version + 1, updated_at = ?4 WHERE id = ?1',
+      )
+      .bind(
+        plan.id,
+        input.name ?? plan.name,
+        input.meta === undefined ? plan.meta : JSON.stringify(input.meta),
+        ts,
+      ),
+  );
+  await db.batch(stmts);
+  return { conflict: false, plan: (await getPlanTree(db, userId))! };
+}
+
+/** Find a template_exercise slot by id, or by (day + exercise name/id). */
+async function findSlot(
+  db: D1Database,
+  userId: string,
+  ref: { template_exercise_id?: string; day?: string; exercise?: string },
+): Promise<TemplateExerciseRow | null> {
+  if (ref.template_exercise_id) {
+    return db
+      .prepare(
+        `SELECT te.* FROM template_exercises te
+         JOIN day_templates d ON d.id = te.day_template_id
+         JOIN plans p ON p.id = d.plan_id
+         WHERE te.id = ?1 AND p.user_id = ?2`,
+      )
+      .bind(ref.template_exercise_id, userId)
+      .first<TemplateExerciseRow>();
+  }
+  if (!ref.day || !ref.exercise) return null;
+  const exId = await resolveOrThrow(db, ref.exercise);
+  return db
+    .prepare(
+      `SELECT te.* FROM template_exercises te
+       JOIN day_templates d ON d.id = te.day_template_id
+       JOIN plans p ON p.id = d.plan_id
+       WHERE p.user_id = ?1 AND te.exercise_id = ?2 AND p.status = 'active'
+         AND (d.day_label = ?3 OR d.name = ?3)`,
+    )
+    .bind(userId, exId, ref.day)
+    .first<TemplateExerciseRow>();
+}
+
+export async function updateExercise(
+  db: D1Database,
+  userId: string,
+  ref: { template_exercise_id?: string; day?: string; exercise?: string },
+  patch: Partial<
+    Pick<
+      TemplateExerciseRow,
+      | 'target_sets'
+      | 'target_reps'
+      | 'target_reps_max'
+      | 'target_rpe'
+      | 'rest_seconds'
+      | 'target_weight'
+      | 'cues'
+    >
+  > & { progression?: unknown },
+): Promise<TemplateExerciseRow | null> {
+  const slot = await findSlot(db, userId, ref);
+  if (!slot) return null;
+  const m: TemplateExerciseRow = {
+    ...slot,
+    target_sets: patch.target_sets ?? slot.target_sets,
+    target_reps: patch.target_reps ?? slot.target_reps,
+    target_reps_max:
+      patch.target_reps_max === undefined ? slot.target_reps_max : patch.target_reps_max,
+    target_rpe: patch.target_rpe === undefined ? slot.target_rpe : patch.target_rpe,
+    rest_seconds: patch.rest_seconds ?? slot.rest_seconds,
+    target_weight:
+      patch.target_weight === undefined ? slot.target_weight : patch.target_weight,
+    cues: patch.cues === undefined ? slot.cues : patch.cues,
+    progression:
+      patch.progression === undefined
+        ? slot.progression
+        : patch.progression == null
+          ? null
+          : JSON.stringify(patch.progression),
+    updated_at: now(),
+  };
+  await db
+    .prepare(
+      `UPDATE template_exercises SET target_sets=?2,target_reps=?3,target_reps_max=?4,
+       target_rpe=?5,rest_seconds=?6,target_weight=?7,cues=?8,progression=?9,updated_at=?10
+       WHERE id=?1`,
+    )
+    .bind(
+      slot.id, m.target_sets, m.target_reps, m.target_reps_max, m.target_rpe,
+      m.rest_seconds, m.target_weight, m.cues, m.progression, m.updated_at,
+    )
+    .run();
+  await bumpPlanVersionByDay(db, slot.day_template_id);
+  return m;
+}
+
+export async function swapExercise(
+  db: D1Database,
+  userId: string,
+  ref: { day: string; from_exercise: string; to_exercise: string; carry_targets?: boolean },
+): Promise<TemplateExerciseRow | null> {
+  const slot = await findSlot(db, userId, { day: ref.day, exercise: ref.from_exercise });
+  if (!slot) return null;
+  const toId = await resolveOrThrow(db, ref.to_exercise);
+  await db
+    .prepare('UPDATE template_exercises SET exercise_id=?2, updated_at=?3 WHERE id=?1')
+    .bind(slot.id, toId, now())
+    .run();
+  await bumpPlanVersionByDay(db, slot.day_template_id);
+  return { ...slot, exercise_id: toId, updated_at: now() };
+}
+
+async function bumpPlanVersionByDay(db: D1Database, dayTemplateId: string): Promise<void> {
+  const row = await db
+    .prepare('SELECT plan_id FROM day_templates WHERE id = ?1')
+    .bind(dayTemplateId)
+    .first<{ plan_id: string }>();
+  if (row) await bumpPlanVersion(db, row.plan_id);
+}
+
+export async function logWorkoutComplete(
+  db: D1Database,
+  userId: string,
+  date: string,
+  perceivedFatigue: number | null,
+  notes: string | null,
+): Promise<SessionRow | null> {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return null;
+  const session = await getOrCreateSession(db, userId, plan.id, date, null);
+  return patchSession(db, userId, session.id, {
+    status: 'completed',
+    perceived_fatigue: perceivedFatigue ?? undefined,
+    notes: notes ?? undefined,
+  });
+}
+
+/** "I'm beat — adjust." Scales target day(s) and records the reasoning. */
+export async function adjustToday(
+  db: D1Database,
+  userId: string,
+  intent: 'deload' | 'reduce_volume' | 'reduce_intensity',
+  magnitude: 'light' | 'moderate' | 'heavy' = 'moderate',
+  dayLabel?: string,
+): Promise<{ plan: PlanTree | null; changes: string[] }> {
+  const tree = await getPlanTree(db, userId);
+  if (!tree) return { plan: null, changes: [] };
+  const setF = { light: 0.8, moderate: 0.65, heavy: 0.5 }[magnitude];
+  const wtF = { light: 0.95, moderate: 0.9, heavy: 0.85 }[magnitude];
+  const days = dayLabel
+    ? tree.days.filter((d) => d.day_label === dayLabel || d.name === dayLabel)
+    : tree.days;
+  const changes: string[] = [];
+  const stmts: D1PreparedStatement[] = [];
+  const ts = now();
+  for (const d of days) {
+    for (const te of d.exercises) {
+      if (intent === 'reduce_intensity') {
+        if (te.target_weight == null) continue;
+        const w = Math.round((te.target_weight * wtF) / 5) * 5;
+        stmts.push(
+          db
+            .prepare('UPDATE template_exercises SET target_weight=?2, updated_at=?3 WHERE id=?1')
+            .bind(te.id, w, ts),
+        );
+        changes.push(`${d.day_label ?? d.name}/${te.exercise_id}: weight ${te.target_weight}→${w}`);
+      } else {
+        const s = Math.max(1, Math.round(te.target_sets * setF));
+        stmts.push(
+          db
+            .prepare('UPDATE template_exercises SET target_sets=?2, updated_at=?3 WHERE id=?1')
+            .bind(te.id, s, ts),
+        );
+        changes.push(`${d.day_label ?? d.name}/${te.exercise_id}: sets ${te.target_sets}→${s}`);
+      }
+    }
+  }
+  if (stmts.length) {
+    stmts.push(
+      db
+        .prepare('UPDATE plans SET version = version + 1, updated_at = ?2 WHERE id = ?1')
+        .bind(tree.id, ts),
+    );
+    await db.batch(stmts);
+  }
+  return { plan: await getPlanTree(db, userId), changes };
+}
+
 const epley = (w: number, r: number) => Math.round(w * (1 + r / 30) * 10) / 10;
 
 export async function getHistory(

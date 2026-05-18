@@ -9,7 +9,7 @@
     {
       "binding": "DB",
       "database_name": "lift-coach-db",
-      "database_id": "REPLACE_AFTER_wrangler_d1_create",
+      "database_id": "5f382dd3-ffa0-4c0b-82ab-26571224ed6f",
       "migrations_dir": "migrations"
     }
   ],

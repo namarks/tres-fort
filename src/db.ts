@@ -1,0 +1,467 @@
+// Service layer: all D1 access goes through here so REST (now) and MCP
+// (milestone b) share identical behavior. Timestamps are epoch-ms integers.
+import type {
+  DayTemplateRow,
+  PlanRow,
+  PlanTree,
+  SessionRow,
+  SetLogRow,
+  TemplateExerciseRow,
+  User,
+} from './types';
+
+const now = () => Date.now();
+const uuid = () => crypto.randomUUID();
+
+// ---- users ---------------------------------------------------------------
+
+export async function upsertUser(
+  db: D1Database,
+  appleSub: string,
+  email: string | null,
+  displayName: string | null,
+): Promise<User> {
+  const existing = await db
+    .prepare('SELECT * FROM users WHERE apple_sub = ?1')
+    .bind(appleSub)
+    .first<User>();
+  if (existing) {
+    if (displayName && !existing.display_name) {
+      await db
+        .prepare('UPDATE users SET display_name = ?2 WHERE id = ?1')
+        .bind(existing.id, displayName)
+        .run();
+      existing.display_name = displayName;
+    }
+    return existing;
+  }
+  const user: User = {
+    id: uuid(),
+    apple_sub: appleSub,
+    email,
+    display_name: displayName,
+    created_at: now(),
+  };
+  await db
+    .prepare(
+      'INSERT INTO users (id, apple_sub, email, display_name, created_at) VALUES (?1,?2,?3,?4,?5)',
+    )
+    .bind(user.id, user.apple_sub, user.email, user.display_name, user.created_at)
+    .run();
+  return user;
+}
+
+// ---- plan tree -----------------------------------------------------------
+
+export async function getActivePlan(
+  db: D1Database,
+  userId: string,
+): Promise<PlanRow | null> {
+  return db
+    .prepare("SELECT * FROM plans WHERE user_id = ?1 AND status = 'active'")
+    .bind(userId)
+    .first<PlanRow>();
+}
+
+export async function getPlanTree(
+  db: D1Database,
+  userId: string,
+): Promise<PlanTree | null> {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return null;
+  const days = await db
+    .prepare('SELECT * FROM day_templates WHERE plan_id = ?1 ORDER BY order_index')
+    .bind(plan.id)
+    .all<DayTemplateRow>();
+  const dayIds = days.results.map((d) => d.id);
+  let exercises: TemplateExerciseRow[] = [];
+  if (dayIds.length) {
+    const placeholders = dayIds.map((_, i) => `?${i + 1}`).join(',');
+    const res = await db
+      .prepare(
+        `SELECT * FROM template_exercises WHERE day_template_id IN (${placeholders}) ORDER BY order_index`,
+      )
+      .bind(...dayIds)
+      .all<TemplateExerciseRow>();
+    exercises = res.results;
+  }
+  return {
+    ...plan,
+    days: days.results.map((d) => ({
+      ...d,
+      exercises: exercises.filter((e) => e.day_template_id === d.id),
+    })),
+  };
+}
+
+export async function createPlan(
+  db: D1Database,
+  userId: string,
+  name: string,
+  meta: unknown = null,
+): Promise<PlanRow> {
+  const ts = now();
+  const plan: PlanRow = {
+    id: uuid(),
+    user_id: userId,
+    name,
+    status: 'active',
+    version: 1,
+    meta: meta == null ? null : JSON.stringify(meta),
+    created_at: ts,
+    updated_at: ts,
+  };
+  // Archive any currently-active plan to honor the one-active-plan invariant.
+  await db
+    .prepare("UPDATE plans SET status = 'archived', updated_at = ?2 WHERE user_id = ?1 AND status = 'active'")
+    .bind(userId, ts)
+    .run();
+  await db
+    .prepare(
+      'INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)',
+    )
+    .bind(plan.id, plan.user_id, plan.name, plan.status, plan.version, plan.meta, plan.created_at, plan.updated_at)
+    .run();
+  return plan;
+}
+
+/** Bump the plan version + updated_at. Called by every plan-tree mutation. */
+export async function bumpPlanVersion(db: D1Database, planId: string): Promise<number> {
+  const row = await db
+    .prepare('UPDATE plans SET version = version + 1, updated_at = ?2 WHERE id = ?1 RETURNING version')
+    .bind(planId, now())
+    .first<{ version: number }>();
+  return row?.version ?? 0;
+}
+
+export async function addDayTemplate(
+  db: D1Database,
+  planId: string,
+  name: string,
+  dayLabel: string | null,
+  orderIndex: number,
+): Promise<DayTemplateRow> {
+  const ts = now();
+  const row: DayTemplateRow = {
+    id: uuid(),
+    plan_id: planId,
+    name,
+    day_label: dayLabel,
+    order_index: orderIndex,
+    notes: null,
+    created_at: ts,
+    updated_at: ts,
+  };
+  await db
+    .prepare(
+      'INSERT INTO day_templates (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)',
+    )
+    .bind(row.id, row.plan_id, row.name, row.day_label, row.order_index, row.notes, row.created_at, row.updated_at)
+    .run();
+  await bumpPlanVersion(db, planId);
+  return row;
+}
+
+export async function patchDayTemplate(
+  db: D1Database,
+  planId: string,
+  dayId: string,
+  patch: { name?: string; order_index?: number; notes?: string | null },
+): Promise<DayTemplateRow | null> {
+  const existing = await db
+    .prepare('SELECT * FROM day_templates WHERE id = ?1 AND plan_id = ?2')
+    .bind(dayId, planId)
+    .first<DayTemplateRow>();
+  if (!existing) return null;
+  const merged = {
+    name: patch.name ?? existing.name,
+    order_index: patch.order_index ?? existing.order_index,
+    notes: patch.notes === undefined ? existing.notes : patch.notes,
+  };
+  await db
+    .prepare('UPDATE day_templates SET name=?2, order_index=?3, notes=?4, updated_at=?5 WHERE id=?1')
+    .bind(dayId, merged.name, merged.order_index, merged.notes, now())
+    .run();
+  await bumpPlanVersion(db, planId);
+  return { ...existing, ...merged, updated_at: now() };
+}
+
+export async function addTemplateExercise(
+  db: D1Database,
+  planId: string,
+  input: Omit<TemplateExerciseRow, 'id' | 'created_at' | 'updated_at'>,
+): Promise<TemplateExerciseRow> {
+  const ts = now();
+  const row: TemplateExerciseRow = { ...input, id: uuid(), created_at: ts, updated_at: ts };
+  await db
+    .prepare(
+      `INSERT INTO template_exercises
+       (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,progression,cues,created_at,updated_at)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)`,
+    )
+    .bind(
+      row.id, row.day_template_id, row.exercise_id, row.order_index, row.target_sets,
+      row.target_reps, row.target_reps_max, row.target_rpe, row.rest_seconds,
+      row.target_weight, row.progression, row.cues, row.created_at, row.updated_at,
+    )
+    .run();
+  await bumpPlanVersion(db, planId);
+  return row;
+}
+
+// ---- exercise resolver ---------------------------------------------------
+
+/** Resolve an id, exact name, or alias to an exercise row. */
+export async function resolveExercise(db: D1Database, nameOrId: string) {
+  const q = nameOrId.trim().toLowerCase();
+  return db
+    .prepare(
+      'SELECT * FROM exercises WHERE id = ?1 OR lower(name) = ?2 OR lower(aliases) LIKE ?3 LIMIT 1',
+    )
+    .bind(nameOrId, q, `%"${q}"%`)
+    .first();
+}
+
+// ---- sessions + sets -----------------------------------------------------
+
+export async function getOrCreateSession(
+  db: D1Database,
+  userId: string,
+  planId: string,
+  date: string,
+  dayTemplateId: string | null,
+): Promise<SessionRow> {
+  const existing = await db
+    .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at LIMIT 1')
+    .bind(userId, date)
+    .first<SessionRow>();
+  if (existing) return existing;
+  const ts = now();
+  const s: SessionRow = {
+    id: uuid(),
+    user_id: userId,
+    plan_id: planId,
+    day_template_id: dayTemplateId,
+    date,
+    status: 'planned',
+    started_at: null,
+    completed_at: null,
+    perceived_fatigue: null,
+    notes: null,
+    created_at: ts,
+    updated_at: ts,
+  };
+  await db
+    .prepare(
+      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)',
+    )
+    .bind(s.id, s.user_id, s.plan_id, s.day_template_id, s.date, s.status, s.started_at, s.completed_at, s.perceived_fatigue, s.notes, s.created_at, s.updated_at)
+    .run();
+  return s;
+}
+
+export async function patchSession(
+  db: D1Database,
+  userId: string,
+  sessionId: string,
+  patch: { status?: string; perceived_fatigue?: number; notes?: string },
+): Promise<SessionRow | null> {
+  const s = await db
+    .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
+    .bind(sessionId, userId)
+    .first<SessionRow>();
+  if (!s) return null;
+  const status = patch.status ?? s.status;
+  const fatigue = patch.perceived_fatigue ?? s.perceived_fatigue;
+  const notes = patch.notes ?? s.notes;
+  const completedAt = status === 'completed' ? s.completed_at ?? now() : s.completed_at;
+  const startedAt = status === 'in_progress' ? s.started_at ?? now() : s.started_at;
+  await db
+    .prepare('UPDATE sessions SET status=?2, perceived_fatigue=?3, notes=?4, started_at=?5, completed_at=?6, updated_at=?7 WHERE id=?1')
+    .bind(sessionId, status, fatigue, notes, startedAt, completedAt, now())
+    .run();
+  return { ...s, status, perceived_fatigue: fatigue, notes, started_at: startedAt, completed_at: completedAt };
+}
+
+/** Idempotent on the client-generated `id` (offline-safe; retries are no-ops). */
+export async function logSet(
+  db: D1Database,
+  userId: string,
+  input: {
+    id: string;
+    session_id: string;
+    exercise_id: string;
+    template_exercise_id?: string | null;
+    set_index: number;
+    weight: number;
+    reps: number;
+    rpe?: number | null;
+    is_warmup?: boolean;
+    notes?: string | null;
+    logged_at?: number;
+    source: 'ios' | 'mcp';
+  },
+): Promise<{ set: SetLogRow; deduped: boolean }> {
+  // Guard: the session must belong to this user.
+  const sess = await db
+    .prepare('SELECT id FROM sessions WHERE id = ?1 AND user_id = ?2')
+    .bind(input.session_id, userId)
+    .first();
+  if (!sess) throw new Error('session_not_found');
+
+  const existing = await db
+    .prepare('SELECT * FROM set_logs WHERE id = ?1')
+    .bind(input.id)
+    .first<SetLogRow>();
+  if (existing) return { set: existing, deduped: true };
+
+  const row: SetLogRow = {
+    id: input.id,
+    session_id: input.session_id,
+    exercise_id: input.exercise_id,
+    template_exercise_id: input.template_exercise_id ?? null,
+    set_index: input.set_index,
+    weight: input.weight,
+    reps: input.reps,
+    rpe: input.rpe ?? null,
+    is_warmup: input.is_warmup ? 1 : 0,
+    notes: input.notes ?? null,
+    logged_at: input.logged_at ?? now(),
+    source: input.source,
+    deleted_at: null,
+  };
+  await db
+    .prepare(
+      `INSERT INTO set_logs
+       (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,deleted_at)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL)
+       ON CONFLICT(id) DO NOTHING`,
+    )
+    .bind(
+      row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
+      row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
+    )
+    .run();
+  // Logging a set implicitly starts the session.
+  await db
+    .prepare("UPDATE sessions SET status = CASE WHEN status='planned' THEN 'in_progress' ELSE status END, started_at = COALESCE(started_at, ?2), updated_at = ?2 WHERE id = ?1")
+    .bind(input.session_id, now())
+    .run();
+  return { set: row, deduped: false };
+}
+
+export async function patchSet(
+  db: D1Database,
+  userId: string,
+  setId: string,
+  patch: { weight?: number; reps?: number; rpe?: number | null; notes?: string | null; deleted?: boolean },
+): Promise<SetLogRow | null> {
+  const row = await db
+    .prepare(
+      `SELECT sl.* FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
+       WHERE sl.id = ?1 AND s.user_id = ?2`,
+    )
+    .bind(setId, userId)
+    .first<SetLogRow>();
+  if (!row) return null;
+  const weight = patch.weight ?? row.weight;
+  const reps = patch.reps ?? row.reps;
+  const rpe = patch.rpe === undefined ? row.rpe : patch.rpe;
+  const notes = patch.notes === undefined ? row.notes : patch.notes;
+  const deletedAt = patch.deleted ? row.deleted_at ?? now() : patch.deleted === false ? null : row.deleted_at;
+  await db
+    .prepare('UPDATE set_logs SET weight=?2, reps=?3, rpe=?4, notes=?5, deleted_at=?6 WHERE id=?1')
+    .bind(setId, weight, reps, rpe, notes, deletedAt)
+    .run();
+  return { ...row, weight, reps, rpe, notes, deleted_at: deletedAt };
+}
+
+// ---- read models ---------------------------------------------------------
+
+export async function getState(
+  db: D1Database,
+  userId: string,
+  sincePlanVersion: number,
+  setsSince: number,
+) {
+  const plan = await getActivePlan(db, userId);
+  const tree =
+    plan && plan.version > sincePlanVersion ? await getPlanTree(db, userId) : null;
+  const sessions = await db
+    .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND updated_at > ?2 ORDER BY date')
+    .bind(userId, setsSince)
+    .all<SessionRow>();
+  const sets = await db
+    .prepare(
+      `SELECT sl.* FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
+       WHERE s.user_id = ?1 AND sl.logged_at > ?2 ORDER BY sl.logged_at`,
+    )
+    .bind(userId, setsSince)
+    .all<SetLogRow>();
+  return {
+    plan: tree,
+    plan_version: plan?.version ?? 0,
+    sessions: sessions.results,
+    sets: sets.results,
+    server_time: now(),
+  };
+}
+
+const epley = (w: number, r: number) => Math.round(w * (1 + r / 30) * 10) / 10;
+
+export async function getHistory(
+  db: D1Database,
+  userId: string,
+  exerciseId: string,
+  from: number,
+  to: number,
+) {
+  const sets = await db
+    .prepare(
+      `SELECT sl.*, s.date as session_date FROM set_logs sl
+       JOIN sessions s ON s.id = sl.session_id
+       WHERE s.user_id = ?1 AND sl.exercise_id = ?2 AND sl.deleted_at IS NULL
+         AND sl.is_warmup = 0 AND sl.logged_at BETWEEN ?3 AND ?4
+       ORDER BY sl.logged_at`,
+    )
+    .bind(userId, exerciseId, from, to)
+    .all<SetLogRow & { session_date: string }>();
+  // Top working set per session + Epley est-1RM.
+  const bySession = new Map<string, { date: string; top: SetLogRow; est_1rm: number }>();
+  for (const s of sets.results) {
+    const e = epley(s.weight, s.reps);
+    const cur = bySession.get(s.session_date);
+    if (!cur || e > cur.est_1rm) {
+      bySession.set(s.session_date, { date: s.session_date, top: s, est_1rm: e });
+    }
+  }
+  return {
+    exercise_id: exerciseId,
+    sets: sets.results,
+    by_session: [...bySession.values()].sort((a, b) => a.date.localeCompare(b.date)),
+  };
+}
+
+export async function getVolume(
+  db: D1Database,
+  userId: string,
+  muscle: string,
+  from: number,
+  to: number,
+) {
+  const rows = await db
+    .prepare(
+      `SELECT strftime('%Y-%W', s.date) AS week,
+              COUNT(*) AS hard_sets,
+              SUM(sl.weight * sl.reps) AS tonnage
+       FROM set_logs sl
+       JOIN sessions s ON s.id = sl.session_id
+       JOIN exercises e ON e.id = sl.exercise_id
+       WHERE s.user_id = ?1 AND e.primary_muscle = ?2 AND sl.deleted_at IS NULL
+         AND sl.is_warmup = 0 AND sl.logged_at BETWEEN ?3 AND ?4
+       GROUP BY week ORDER BY week`,
+    )
+    .bind(userId, muscle, from, to)
+    .all<{ week: string; hard_sets: number; tonnage: number }>();
+  return { muscle_group: muscle, buckets: rows.results };
+}

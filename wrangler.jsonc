@@ -14,7 +14,7 @@
     }
   ],
   "vars": {
-    "APPLE_BUNDLE_ID": "com.example.liftcoach"
+    "APPLE_BUNDLE_ID": "com.nickmarks.liftcoach"
   }
   // Secrets (set via `wrangler secret put`, NOT committed):
   //   APP_JWT_SECRET    - HS256 signing key for app JWTs

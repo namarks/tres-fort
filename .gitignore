@@ -5,3 +5,10 @@ dist/
 *.log
 .DS_Store
 coverage/
+
+# iOS — project is generated from project.yml via XcodeGen
+ios/*.xcodeproj/
+ios/DerivedData/
+ios/build/
+*.xcuserstate
+.swiftpm/

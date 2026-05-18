@@ -1,0 +1,30 @@
+# XcodeGen spec. Regenerate the .xcodeproj with: cd ios && xcodegen generate
+name: LiftCoach
+options:
+  bundleIdPrefix: com.nickmarks
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    GENERATE_INFOPLIST_FILE: NO
+targets:
+  LiftCoach:
+    type: application
+    platform: iOS
+    sources:
+      - LiftCoach
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nickmarks.liftcoach
+        INFOPLIST_FILE: LiftCoach/Info.plist
+        CODE_SIGN_ENTITLEMENTS: LiftCoach/LiftCoach.entitlements
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1"
+        ENABLE_PREVIEWS: YES
+      # DEVELOPMENT_TEAM is intentionally unset — you pick your team in
+      # Xcode (Signing & Capabilities) on first device run; automatic
+      # signing then provisions the Sign in with Apple capability.

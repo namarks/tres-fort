@@ -52,6 +52,40 @@ export async function upsertUser(
 }
 
 /**
+ * Sign in with Apple owner resolution. Single-user invariant: there is
+ * exactly one user row. If this Apple sub is unseen and the only existing
+ * user is a bootstrap row (e.g. the MCP-created 'mcp-owner'), *claim* that
+ * row — rebinding it to the real Apple identity — so MCP-seeded data and
+ * iOS stay on one user_id. Otherwise create the first user.
+ */
+export async function claimOrCreateOwner(
+  db: D1Database,
+  appleSub: string,
+  email: string | null,
+  displayName: string | null,
+  ownerSubLocked: boolean,
+): Promise<User> {
+  const byApple = await db
+    .prepare('SELECT * FROM users WHERE apple_sub = ?1')
+    .bind(appleSub)
+    .first<User>();
+  if (byApple) return byApple;
+
+  if (!ownerSubLocked) {
+    const all = await db.prepare('SELECT * FROM users').all<User>();
+    if (all.results.length === 1) {
+      const row = all.results[0]!;
+      await db
+        .prepare('UPDATE users SET apple_sub = ?2, email = ?3, display_name = ?4 WHERE id = ?1')
+        .bind(row.id, appleSub, email ?? row.email, displayName ?? row.display_name)
+        .run();
+      return { ...row, apple_sub: appleSub, email: email ?? row.email, display_name: displayName ?? row.display_name };
+    }
+  }
+  return upsertUser(db, appleSub, email, displayName);
+}
+
+/**
  * Resolve the single owner user for MCP calls. The MCP principal is "Claude
  * acting as the owner", not an end-user login — so it maps to the one user
  * row. If none exists yet (iOS app not built), bootstrap it so Claude can

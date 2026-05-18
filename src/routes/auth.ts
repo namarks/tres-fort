@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import type { HonoEnv } from '../types';
 import { assertOwner, issueAppJwt, verifyAppleToken } from '../auth';
-import { upsertUser } from '../db';
+import { claimOrCreateOwner, upsertUser } from '../db';
 
 export const authRoutes = new Hono<HonoEnv>();
 
@@ -20,7 +20,13 @@ authRoutes.post('/apple', async (c) => {
   } catch {
     return c.json({ error: 'not_authorized' }, 403);
   }
-  const user = await upsertUser(c.env.DB, claims.sub, claims.email, body.fullName ?? null);
+  const user = await claimOrCreateOwner(
+    c.env.DB,
+    claims.sub,
+    claims.email,
+    body.fullName ?? null,
+    !!c.env.OWNER_APPLE_SUB,
+  );
   const jwt = await issueAppJwt(user.id, c.env.APP_JWT_SECRET);
   return c.json({ jwt, user });
 });

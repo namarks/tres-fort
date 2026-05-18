@@ -4,10 +4,22 @@
 // protected-resource metadata location so adding the OAuth path later is
 // non-breaking.
 import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import type { HonoEnv } from './types';
 import { handleMcp } from './mcp/server';
+import { validateBearer } from './oauth';
 
 export const mcpRoutes = new Hono<HonoEnv>();
+
+// claude.ai web posts cross-origin; expose the auth-discovery header.
+mcpRoutes.use(
+  '*',
+  cors({
+    origin: '*',
+    allowHeaders: ['Authorization', 'Content-Type', 'Mcp-Session-Id', 'MCP-Protocol-Version'],
+    exposeHeaders: ['WWW-Authenticate', 'Mcp-Session-Id'],
+  }),
+);
 
 function bearer(c: { req: { header: (k: string) => string | undefined } }) {
   const h = c.req.header('Authorization') ?? '';
@@ -28,7 +40,7 @@ mcpRoutes.get('*', (c) => c.json({ error: 'method_not_allowed' }, 405));
 
 mcpRoutes.post('*', async (c) => {
   const token = bearer(c);
-  if (!c.env.MCP_STATIC_TOKEN || token !== c.env.MCP_STATIC_TOKEN) {
+  if (!(await validateBearer(c.env, token))) {
     return unauthorized(c);
   }
   let body: unknown;

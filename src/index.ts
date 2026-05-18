@@ -3,11 +3,13 @@ import type { HonoEnv } from './types';
 import { authRoutes } from './routes/auth';
 import { apiRoutes } from './routes/api';
 import { mcpRoutes } from './mcp';
+import { oauthRoutes } from './oauth';
 
 const app = new Hono<HonoEnv>();
 
 app.get('/health', (c) => c.json({ ok: true, service: 'lift-coach' }));
 
+app.route('/', oauthRoutes); // /.well-known/* + /oauth/*
 app.route('/auth', authRoutes);
 app.route('/api', apiRoutes);
 app.route('/mcp', mcpRoutes);

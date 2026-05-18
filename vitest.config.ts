@@ -18,6 +18,7 @@ export default defineWorkersConfig(async () => {
               APP_JWT_SECRET: 'test-secret',
               MCP_STATIC_TOKEN: 'test-mcp-token',
               DEV_AUTH_SECRET: 'test-dev',
+              OWNER_AUTH_PASSPHRASE: 'test-pass',
               APPLE_BUNDLE_ID: 'com.example.liftcoach',
             },
           },

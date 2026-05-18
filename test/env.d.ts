@@ -5,6 +5,7 @@ declare module 'cloudflare:test' {
     APP_JWT_SECRET: string;
     MCP_STATIC_TOKEN: string;
     DEV_AUTH_SECRET: string;
+    OWNER_AUTH_PASSPHRASE: string;
     APPLE_BUNDLE_ID: string;
     OWNER_APPLE_SUB?: string;
   }

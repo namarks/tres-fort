@@ -7,6 +7,8 @@ export interface Env {
   OWNER_APPLE_SUB?: string;
   /** If set, enables POST /auth/dev for local + integration tests. */
   DEV_AUTH_SECRET?: string;
+  /** Consent gate for the OAuth /authorize step (claude.ai/desktop). */
+  OWNER_AUTH_PASSPHRASE?: string;
 }
 
 export type HonoEnv = {

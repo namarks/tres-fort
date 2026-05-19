@@ -7,6 +7,7 @@ import {
   createPlan,
   discardSession,
   getActivePlan,
+  getExercises,
   getHistory,
   getOrCreateSession,
   getPlanTree,
@@ -204,10 +205,11 @@ apiRoutes.patch('/sets/:id', async (c) => {
 
 // ---- read models ---------------------------------------------------------
 apiRoutes.get('/exercises', async (c) => {
-  const r = await c.env.DB.prepare(
-    'SELECT id, name, primary_muscle, modality, unit FROM exercises ORDER BY name',
-  ).all();
-  return c.json(r.results);
+  // Funnel through getExercises so the wire shape matches MCP's
+  // list_exercises — in particular, `laterality` rides along, which iOS
+  // needs to compute per-side rollups (Bulgarian split squat 45×8 →
+  // 16 reps / 720 lb instead of 8 / 360).
+  return c.json(await getExercises(c.env.DB));
 });
 
 apiRoutes.get('/history', async (c) => {

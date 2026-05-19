@@ -71,7 +71,10 @@ enum CalendarProjection {
         let f = DateFormatter()
         f.calendar = Calendar(identifier: .gregorian)
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = .current
+        // Share the `calendar` static's tz (not an independent `.current`
+        // capture) so a system-tz change between the two lazy inits can't
+        // parse in one zone and read `.weekday` in another (1-day skew).
+        f.timeZone = calendar.timeZone
         f.dateFormat = "yyyy-MM-dd"
         return f
     }()

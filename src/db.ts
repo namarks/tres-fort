@@ -1867,7 +1867,11 @@ export async function skipPlannedSession(
   db: D1Database,
   userId: string,
   date: string,
-): Promise<{ error: 'no_active_plan' } | { ok: true; session: SessionRow }> {
+): Promise<
+  | { error: 'no_active_plan' }
+  | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
+  | { ok: true; session: SessionRow }
+> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' };
   const existing = await db
@@ -1876,6 +1880,17 @@ export async function skipPlannedSession(
     .first<SessionRow>();
   const ts = now();
   if (existing) {
+    // A skip may only override a planned (or absent) session. If the date
+    // already has a started/finished workout, skipping it would hide logged
+    // sets and destroy visible history for a mis-dated skip. Reject and
+    // leave the row untouched — Claude must explicitly intend something
+    // else. The MCP wrapper still audits this rejection (audit-on-write).
+    if (existing.status === 'in_progress' || existing.status === 'completed') {
+      return {
+        error: 'session_already_started',
+        status: existing.status as 'in_progress' | 'completed',
+      };
+    }
     await db
       .prepare("UPDATE sessions SET status = 'skipped', updated_at = ?2 WHERE id = ?1")
       .bind(existing.id, ts)

@@ -94,6 +94,12 @@ export interface SetLogRow {
   deleted_at: number | null;
 }
 
+export interface EnrichedTemplateExercise extends TemplateExerciseRow {
+  exercise_name: string;
+  exercise_unit: string;
+  exercise_muscle: string;
+}
+
 export interface PlanTree extends PlanRow {
-  days: (DayTemplateRow & { exercises: TemplateExerciseRow[] })[];
+  days: (DayTemplateRow & { exercises: EnrichedTemplateExercise[] })[];
 }

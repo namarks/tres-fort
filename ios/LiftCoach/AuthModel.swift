@@ -12,7 +12,6 @@ final class AuthModel: ObservableObject {
 
     @Published var phase: Phase = .signedOut
     @Published var jwt: String?
-    @Published var stateSummary: String?
 
     private let api = APIClient()
 
@@ -20,7 +19,6 @@ final class AuthModel: ObservableObject {
         if let token = Keychain.load() {
             jwt = token
             phase = .signedIn
-            Task { await refreshState() }
         }
     }
 
@@ -38,8 +36,7 @@ final class AuthModel: ObservableObject {
                 return
             }
             let name = cred.fullName.flatMap { comps -> String? in
-                let f = PersonNameComponentsFormatter()
-                let s = f.string(from: comps)
+                let s = PersonNameComponentsFormatter().string(from: comps)
                 return s.isEmpty ? nil : s
             }
             Task { await exchange(identityToken: identityToken, fullName: name) }
@@ -53,29 +50,17 @@ final class AuthModel: ObservableObject {
             Keychain.save(res.jwt)
             jwt = res.jwt
             phase = .signedIn
-            await refreshState()
         } catch {
             phase = .error(error.localizedDescription)
         }
     }
 
-    func refreshState() async {
-        guard let jwt else { return }
-        do {
-            let s = try await api.getState(jwt: jwt)
-            let plan = s.plan.map { "\($0.name) (v\($0.version))" } ?? "no active plan"
-            stateSummary = "Plan: \(plan)\nSessions: \(s.sessions.count) · Sets: \(s.sets.count)"
-        } catch {
-            // A 401 means the JWT is stale → force re-auth.
-            if case let APIError.http(code, _) = error, code == 401 { signOut() }
-            stateSummary = "State error: \(error.localizedDescription)"
-        }
-    }
-
-    func signOut() {
+    /// Called by the data layer on a 401 (stale JWT) → force re-auth.
+    func invalidate() {
         Keychain.clear()
         jwt = nil
-        stateSummary = nil
         phase = .signedOut
     }
+
+    func signOut() { invalidate() }
 }

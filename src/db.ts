@@ -2,6 +2,7 @@
 // (milestone b) share identical behavior. Timestamps are epoch-ms integers.
 import type {
   DayTemplateRow,
+  EnrichedTemplateExercise,
   PlanRow,
   PlanTree,
   SessionRow,
@@ -125,15 +126,19 @@ export async function getPlanTree(
     .bind(plan.id)
     .all<DayTemplateRow>();
   const dayIds = days.results.map((d) => d.id);
-  let exercises: TemplateExerciseRow[] = [];
+  let exercises: EnrichedTemplateExercise[] = [];
   if (dayIds.length) {
     const placeholders = dayIds.map((_, i) => `?${i + 1}`).join(',');
     const res = await db
       .prepare(
-        `SELECT * FROM template_exercises WHERE day_template_id IN (${placeholders}) ORDER BY order_index`,
+        `SELECT te.*, e.name AS exercise_name, e.unit AS exercise_unit,
+                e.primary_muscle AS exercise_muscle
+         FROM template_exercises te
+         JOIN exercises e ON e.id = te.exercise_id
+         WHERE te.day_template_id IN (${placeholders}) ORDER BY te.order_index`,
       )
       .bind(...dayIds)
-      .all<TemplateExerciseRow>();
+      .all<EnrichedTemplateExercise>();
     exercises = res.results;
   }
   return {

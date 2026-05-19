@@ -430,8 +430,14 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
     expect(row.status).toBe('pending');
     expect(row.load).toBeGreaterThan(0);
 
+    // Deterministic: select the SPECIFIC pending audit row by its result
+    // prefix, not "latest by created_at" — two audit rows for one session
+    // can share a Date.now() ms, making a bare created_at order pick the
+    // wrong row (~flake). created_at DESC, rowid DESC is a stable
+    // tie-breaker (rowid is monotonic on insert; id is a TEXT PK so an
+    // implicit rowid exists).
     const audit = await env.DB.prepare(
-      "SELECT * FROM audit_log WHERE tool='export_session_load' AND args LIKE ?1 ORDER BY created_at DESC",
+      "SELECT * FROM audit_log WHERE tool='export_session_load' AND args LIKE ?1 AND result LIKE 'pending%' ORDER BY created_at DESC, rowid DESC LIMIT 1",
     )
       .bind(`%${sessionId}%`)
       .first<any>();
@@ -755,5 +761,262 @@ describe('BLOCKER-2: log_workout_complete must not be blocked by the export', ()
         fetcher: throwFetcher,
       }),
     ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2 (Codex bot, merged PR #5): once a row is terminal `ok`, the single-
+// flight claim never matches it, so a later exportSessionLoad fell into an
+// UNCONDITIONAL early-return that recomputed sRPE load locally but NEVER
+// propagated it to intervals.icu. Post-completion corrections (re-running
+// log_workout_complete after editing perceived_fatigue / sets / RPE) kept
+// the stale remote load. The fix recomputes-and-compares in the
+// prior?.status==='ok' branch: unchanged → no-op (no network); changed →
+// idempotent PUT to the known ref (no GET/POST ⇒ duplicate-free under
+// concurrency); PUT failure → row NOT downgraded from ok.
+//
+// Revert-detection (honest accounting): FOUR of the five tests genuinely
+// FAIL if the recompute-and-compare is reverted to the unconditional
+// `return { status:'ok', load: prior.load ?? computed.load }` early-return:
+//   1. 'UNCHANGED inputs re-export' — its paired SUBSEQUENT changed-input
+//      re-export asserts row.load updates (the no-op assertions alone do
+//      NOT distinguish; the paired tail does).
+//   2. 'CHANGED inputs re-export' — asserts the PUT + new row.load.
+//   3. 'two CONCURRENT changed-load re-exports' — asserts convergence.
+//   4. 'PUT FAILURE on a changed-load re-export' — asserts ok-not-
+//      downgraded with the new-vs-prior load distinction.
+// The fifth ('changed-load re-export under tryExportSessionLoad never
+// throws') is a sacred-path guard, NOT a revert-detector: it passes under
+// the old code too (the early-return also never throws). It is kept for
+// the decoupling/no-throw invariant, not claimed as load-bearing here.
+// ---------------------------------------------------------------------------
+describe('P2: post-completion load corrections propagate to intervals.icu', () => {
+  /** Change perceived_fatigue (scales sRPE load ⇒ computed.load changes). */
+  async function setFatigue(sessionId: string, fatigue: number) {
+    await env.DB.prepare(
+      'UPDATE sessions SET perceived_fatigue=?2, updated_at=?3 WHERE id=?1',
+    )
+      .bind(sessionId, fatigue, Date.now())
+      .run();
+  }
+
+  it('UNCHANGED inputs re-export: true no-op — no PUT/POST, row stays ok at the same load', async () => {
+    const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 8, date: '2026-05-21' });
+    const api = fakeIntervals();
+
+    const r1 = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
+    expect(r1.status).toBe('ok');
+    const loadX = r1.load!;
+    expect(loadX).toBeGreaterThan(0);
+    const postsAfterFirst = api.calls.filter((c) => c.method === 'POST').length;
+    expect(postsAfterFirst).toBe(1);
+
+    // Re-export with NOTHING changed.
+    const r2 = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
+    expect(r2.status).toBe('ok');
+    expect(r2.load).toBe(loadX);
+
+    // Crux: zero further network — no PUT, no extra POST, one remote event.
+    expect(api.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+    expect(api.calls.filter((c) => c.method === 'PUT')).toHaveLength(0);
+    expect(api.events).toHaveLength(1);
+
+    const row = await env.DB.prepare('SELECT * FROM session_load_exports WHERE session_id=?1')
+      .bind(sessionId)
+      .first<any>();
+    expect(row.status).toBe('ok');
+    expect(row.load).toBe(loadX);
+    expect(row.attempts).toBe(1); // only the first export pushed
+
+    // Paired revert-detector: a SUBSEQUENT changed-input re-export on the
+    // same now-ok row MUST update row.load. Under the pre-fix unconditional
+    // early-return this would NOT happen (row.load would stay loadX), so
+    // this test as a UNIT genuinely fails if the recompute-and-compare is
+    // reverted — the no-op assertions above alone do not distinguish.
+    await setFatigue(sessionId, 4);
+    const r3 = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
+    expect(r3.status).toBe('ok');
+    expect(r3.load).not.toBe(loadX);
+    const rowAfter = await env.DB.prepare('SELECT load, status FROM session_load_exports WHERE session_id=?1')
+      .bind(sessionId)
+      .first<{ load: number; status: string }>();
+    expect(rowAfter!.status).toBe('ok');
+    expect(rowAfter!.load).toBe(r3.load);
+    expect(rowAfter!.load).not.toBe(loadX); // FAILS under the reverted early-return
+  });
+
+  it('CHANGED inputs re-export: exactly one PUT to the SAME ref (no GET, no POST), row→new load, audit written', async () => {
+    const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 8, date: '2026-05-22' });
+    const api = fakeIntervals();
+
+    const r1 = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
+    expect(r1.status).toBe('ok');
+    const loadX = r1.load!;
+    const ref = String(api.events[0]!.id);
+
+    // User edits perceived_fatigue → recomputed load changes (Y ≠ X).
+    await setFatigue(sessionId, 4);
+
+    const callsBefore = api.calls.length;
+    const r2 = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
+    expect(r2.status).toBe('ok');
+    const loadY = r2.load!;
+    expect(loadY).not.toBe(loadX);
+
+    // Crux: the RE-EXPORT itself issued EXACTLY ONE call — a PUT to the
+    // same known ref. No GET (known ref ⇒ NO marker lookup) and no POST (no
+    // new event) DURING the re-export. (The initial export legitimately did
+    // one marker GET + one POST; those predate callsBefore.)
+    const reexportCalls = api.calls.slice(callsBefore);
+    expect(reexportCalls).toHaveLength(1);
+    expect(reexportCalls[0]!.method).toBe('PUT');
+    expect(reexportCalls[0]!.url).toContain(`/events/${ref}`);
+    expect(reexportCalls.filter((c) => c.method === 'GET')).toHaveLength(0);
+    expect(reexportCalls.filter((c) => c.method === 'POST')).toHaveLength(0);
+    expect(api.calls.filter((c) => c.method === 'POST')).toHaveLength(1); // only the initial export ever POSTed
+
+    // One remote event, now carrying the NEW load.
+    expect(api.events).toHaveLength(1);
+    expect(String(api.events[0]!.id)).toBe(ref);
+    expect(api.events[0]!.icu_training_load).toBe(loadY);
+
+    const row = await env.DB.prepare('SELECT * FROM session_load_exports WHERE session_id=?1')
+      .bind(sessionId)
+      .first<any>();
+    expect(row.status).toBe('ok');
+    expect(row.load).toBe(loadY);
+    expect(String(row.intervals_ref)).toBe(ref);
+
+    // Deterministic: target the specific reexport_load_changed row (the
+    // initial export also wrote an ok:ref=... row for this session; both
+    // can share a Date.now() ms). Filtering by the exact result + a
+    // rowid DESC tie-breaker removes the created_at-collision flake. Still
+    // revert-detecting: under the reverted early-return this row is never
+    // written, so .first() is null and audit!.result throws → test fails.
+    const audit = await env.DB.prepare(
+      "SELECT result FROM audit_log WHERE tool='export_session_load' AND args LIKE ?1 AND result LIKE 'ok:%:reexport_load_changed' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+    )
+      .bind(`%${sessionId}%`)
+      .first<{ result: string }>();
+    expect(audit!.result).toContain('reexport_load_changed');
+  });
+
+  it('two CONCURRENT changed-load re-exports of an ok session: at most one remote activity, row converges to new load', async () => {
+    const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 8, date: '2026-05-23' });
+    const api = fakeIntervals();
+
+    const r1 = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
+    expect(r1.status).toBe('ok');
+    const ref = String(api.events[0]!.id);
+
+    await setFatigue(sessionId, 5);
+
+    const callsBefore = api.calls.length;
+    // Fire two re-exports concurrently against the now-ok row.
+    const [a, b] = await Promise.all([
+      exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher }),
+      exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher }),
+    ]);
+    expect(a.status).toBe('ok');
+    expect(b.status).toBe('ok');
+
+    // Crux: still exactly ONE remote activity. Both racing re-exports see
+    // the terminal `ok` row, recompute the changed load, and issue an
+    // idempotent PUT to the SAME known ref — NO marker GET, NO POST during
+    // the re-exports, so concurrency cannot create a duplicate.
+    const reexportCalls = api.calls.slice(callsBefore);
+    expect(reexportCalls.filter((c) => c.method === 'GET')).toHaveLength(0);
+    expect(reexportCalls.filter((c) => c.method === 'POST')).toHaveLength(0);
+    expect(reexportCalls.every((c) => c.method === 'PUT')).toBe(true);
+    expect(api.events).toHaveLength(1);
+    expect(String(api.events[0]!.id)).toBe(ref);
+    expect(api.calls.filter((c) => c.method === 'POST')).toHaveLength(1); // only the initial export
+
+    const cnt = await env.DB.prepare('SELECT COUNT(*) c FROM session_load_exports WHERE session_id=?1')
+      .bind(sessionId)
+      .first<{ c: number }>();
+    expect(cnt!.c).toBe(1);
+    const row = await env.DB.prepare('SELECT status, load FROM session_load_exports WHERE session_id=?1')
+      .bind(sessionId)
+      .first<{ status: string; load: number }>();
+    expect(row!.status).toBe('ok');
+    // Both winners recompute the same load; the row converges to it and is
+    // no longer the original (pre-correction) value.
+    expect(a.load).toBe(b.load);
+    expect(row!.load).toBe(a.load);
+    expect(row!.load).not.toBe(r1.load);
+  });
+
+  it('PUT FAILURE on a changed-load re-export: ok row NOT downgraded, prior load kept, no throw', async () => {
+    const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 8, date: '2026-05-24' });
+
+    // First export succeeds via a healthy fake intervals.
+    const okApi = fakeIntervals();
+    const r1 = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: okApi.fetcher });
+    expect(r1.status).toBe('ok');
+    const loadX = r1.load!;
+    const ref = String(okApi.events[0]!.id);
+
+    await setFatigue(sessionId, 3);
+
+    // Re-export with a fetcher whose PUT (the known-ref update) 500s.
+    const putFailCalls: { method: string; url: string }[] = [];
+    const putFailFetcher: Fetcher = async (url, init) => {
+      const method = init?.method ?? 'GET';
+      putFailCalls.push({ method, url });
+      if (method === 'PUT') return { ok: false, status: 500, json: async () => ({}) };
+      // No GET/POST should occur on a known-ref update; be safe if they do.
+      return { ok: true, status: 200, json: async () => [] };
+    };
+
+    const r2 = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: putFailFetcher });
+
+    // Crux: response unaffected — still ok, reporting the LAST GOOD load
+    // (the stored remote value), NOT the un-pushed recomputed one.
+    expect(r2.status).toBe('ok');
+    expect(r2.load).toBe(loadX);
+    // Exactly one PUT attempt, no GET/POST.
+    expect(putFailCalls.filter((c) => c.method === 'PUT')).toHaveLength(1);
+    expect(putFailCalls.filter((c) => c.method === 'GET')).toHaveLength(0);
+    expect(putFailCalls.filter((c) => c.method === 'POST')).toHaveLength(0);
+
+    // Row stays terminal ok with the prior load + ref — NOT downgraded to
+    // pending (P2 ok-not-downgraded recovery guard preserved).
+    const row = await env.DB.prepare('SELECT status, load, intervals_ref FROM session_load_exports WHERE session_id=?1')
+      .bind(sessionId)
+      .first<{ status: string; load: number; intervals_ref: string }>();
+    expect(row!.status).toBe('ok');
+    expect(row!.load).toBe(loadX);
+    expect(String(row!.intervals_ref)).toBe(ref);
+
+    // Deterministic: target the specific reexport_update_failed row. The
+    // session has an earlier ok:ref=... row (initial export) that can
+    // collide on Date.now() ms; the exact-result filter + rowid DESC
+    // tie-breaker is collision-proof. Still revert-detecting: under the
+    // reverted early-return the PUT-failure path never runs, this row is
+    // never written, .first() is null and audit!.result throws → fails.
+    const audit = await env.DB.prepare(
+      "SELECT result FROM audit_log WHERE tool='export_session_load' AND args LIKE ?1 AND result LIKE 'ok:reexport_update_failed:%' ORDER BY created_at DESC, rowid DESC LIMIT 1",
+    )
+      .bind(`%${sessionId}%`)
+      .first<{ result: string }>();
+    expect(audit!.result).toContain('reexport_update_failed');
+  });
+
+  it('changed-load re-export under tryExportSessionLoad never throws into the sacred path', async () => {
+    const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 8, date: '2026-05-25' });
+    const api = fakeIntervals();
+    await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
+
+    await setFatigue(sessionId, 2);
+    await expect(
+      tryExportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher }),
+    ).resolves.toBeUndefined();
+
+    const row = await env.DB.prepare('SELECT status, load FROM session_load_exports WHERE session_id=?1')
+      .bind(sessionId)
+      .first<{ status: string; load: number }>();
+    expect(row!.status).toBe('ok');
+    expect(api.events).toHaveLength(1); // still one activity, updated in place
   });
 });

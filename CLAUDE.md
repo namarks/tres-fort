@@ -63,6 +63,23 @@ design and dictates how you mutate things:
 `GET /api/state?since=&sets_since=` is the single sync pull: full plan tree
 only when its version moved, sessions/sets as deltas.
 
+**Weekly schedule & calendar projection.** The recurring weekly pattern
+(weekday → `day_template_id`, `null` = rest) lives in `plans.meta.schedule`
+JSON — *not* a table (consistent with the "no weeks tables" design). It is
+part of the versioned document: `set_schedule` bumps `plans.version`, uses
+optimistic concurrency, and writes audit+note like any plan mutation; it
+rides `/api/state` inside the plan payload. One-off changes ("skip Thursday
+this week") are concrete `sessions` rows via `set_planned_session` /
+`skip_planned_session` — append-only, **no** version bump. The future
+calendar is *computed, not stored*: `projectCalendar` in `db.ts` is the
+authoritative projection (past = real sessions only; today+ = real session
+wins, else schedule lookup, else rest). **iOS re-implements the identical
+algorithm in `CalendarProjection.swift`** — the weekday rule (tz-free civil
+date) and the truth table must stay byte-for-byte in parity across both;
+`test/calendar.test.ts` is the contract. `update_plan` rebuilds day UUIDs
+and remaps the schedule by day name/label; days removed in the rebuild have
+their schedule entry cleared.
+
 **Single-user invariant.** Exactly one user row. MCP calls resolve the owner
 via `ensureOwnerUser` (bootstrap row if none); Sign in with Apple later
 *claims* that bootstrap row (`claimOrCreateOwner`) so MCP-seeded data and iOS

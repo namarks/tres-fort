@@ -167,12 +167,18 @@ private struct RunnerView: View {
                                 currentIndex: sync.exerciseIndex, sync: sync)
                         .padding(.bottom, 22)
 
+                    // Fixed-height single line so switching exercises with
+                    // longer names never reflows the layout below.
                     Text(ex.exercise_name.uppercased())
                         .font(Theme.display(52)).foregroundStyle(Theme.text)
-                        .lineLimit(2).minimumScaleFactor(0.6)
+                        .lineLimit(1).minimumScaleFactor(0.4)
+                        .frame(height: 56, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
                     HStack {
-                        meta("SET", "\(sync.currentSetNumber)", "OF \(ex.target_sets)")
+                        let complete = sync.isComplete(ex)
+                        meta("SET", "\(min(sync.currentSetNumber, ex.target_sets))",
+                             complete ? "OF \(ex.target_sets) ✓" : "OF \(ex.target_sets)")
                         Spacer()
                         meta("TARGET", ex.targetLabel, "")
                         Spacer()
@@ -257,10 +263,16 @@ private struct RunnerView: View {
                 ForEach(Array(steps.prefix(steps.count / 2)), id: \.0) { s in
                     stepBtn(s.0, s.2, s.1)
                 }
+                // Monospaced digits + fixed height: "15" and "20" must
+                // render at identical size (proportional fonts scale them
+                // differently under minimumScaleFactor).
                 Text(value)
-                    .font(Theme.display(58)).foregroundStyle(Theme.text)
-                    .lineLimit(1).minimumScaleFactor(0.4)
+                    .font(.system(size: 52, weight: .heavy))
+                    .monospacedDigit()
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(1).minimumScaleFactor(0.5)
                     .frame(maxWidth: .infinity)
+                    .frame(height: 56)
                 ForEach(Array(steps.suffix(steps.count - steps.count / 2)), id: \.0) { s in
                     stepBtn(s.0, s.2, s.1)
                 }

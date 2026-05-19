@@ -310,7 +310,9 @@ const TOOLS: Record<string, Tool> = {
       'server also rejects sets that duplicate a same exercise/weight/' +
       'reps logged within the last 120 seconds (error: "recent_duplicate"' +
       '); that signal almost always means iOS already logged it — do NOT ' +
-      'retry, and do NOT re-call with tweaked numbers.',
+      'retry, and do NOT re-call with tweaked numbers. The dedupe gate is ' +
+      'skipped for explicit backfill (session_date set to a past day, e.g. ' +
+      '"log yesterday\'s 185x5") — those are explicit logging intents.',
     inputSchema: obj(
       {
         exercise: { type: 'string', description: 'name, alias, or id' },
@@ -329,7 +331,8 @@ const TOOLS: Record<string, Tool> = {
     handler: async (a, env, userId) => {
       const plan = await getActivePlan(env.DB, userId);
       if (!plan) return { error: 'no_active_plan' };
-      const date = typeof a.session_date === 'string' ? a.session_date : todayLocal();
+      const today = todayLocal();
+      const date = typeof a.session_date === 'string' ? a.session_date : today;
       const session = await getOrCreateSession(env.DB, userId, plan.id, date, null);
       const ex = await resolveExercise(env.DB, String(a.exercise));
       if (!ex) return { error: 'unknown_exercise', query: a.exercise };
@@ -338,12 +341,19 @@ const TOOLS: Record<string, Tool> = {
       // Phantom-dupe guard: if the same exercise/weight/reps was logged by
       // ANY source in the last 120s, refuse. The narration-while-logging-
       // in-iOS case (the bug this fixes) hits exactly this window.
-      const recent = await findRecentMatchingSet(env.DB, userId, {
-        exercise_id: exId,
-        weight: Number(a.weight),
-        reps: Number(a.reps),
-        is_warmup: isWarmup,
-      });
+      // BUT: skip the gate for explicit backfill ("log yesterday's 185x5")
+      // — when session_date is supplied and isn't today, the user is making
+      // an explicit historical log, not narrating; rejecting it on a same-
+      // day same-triple iOS write would block a legitimate workflow.
+      const isBackfill = typeof a.session_date === 'string' && a.session_date !== today;
+      const recent = isBackfill
+        ? null
+        : await findRecentMatchingSet(env.DB, userId, {
+            exercise_id: exId,
+            weight: Number(a.weight),
+            reps: Number(a.reps),
+            is_warmup: isWarmup,
+          });
       if (recent) {
         const ageS = Math.max(0, Math.round((Date.now() - recent.logged_at) / 1000));
         return {

@@ -1031,6 +1031,29 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     const next = await call('log_set', { exercise: 'squat', weight: 225, reps: 5 });
     expect(next.error).toBeUndefined();
     expect(next.set.weight).toBe(225);
+
+    // Explicit backfill to a past date bypasses the gate — "log yesterday's
+    // 185x5" is an explicit logging intent and must not be blocked by today's
+    // matching iOS set.
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const backfill = await call('log_set', {
+      exercise: 'squat',
+      weight: 185,
+      reps: 5,
+      session_date: yesterday,
+    });
+    expect(backfill.error).toBeUndefined();
+    expect(backfill.set.weight).toBe(185);
+
+    // session_date == today still goes through the gate (narration could
+    // supply today explicitly; we only trust an explicit *past* date).
+    const sameDay = await call('log_set', {
+      exercise: 'squat',
+      weight: 185,
+      reps: 5,
+      session_date: today,
+    });
+    expect(sameDay.error).toBe('recent_duplicate');
   });
 
   it('delete_set soft-deletes a logged set; missing id reports not_found', async () => {

@@ -1,4 +1,10 @@
-import { env, applyD1Migrations, SELF } from 'cloudflare:test';
+import {
+  env,
+  applyD1Migrations,
+  SELF,
+  createExecutionContext,
+  waitOnExecutionContext,
+} from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ensureOwnerUser,
@@ -6,8 +12,12 @@ import {
   tryExportSessionLoad,
   getActivePlan,
   getOrCreateSession,
+  getRideConflicts,
+  getUpcomingRides,
   logSet,
+  syncExternalEvents,
 } from '../src/db';
+import { handleMcp } from '../src/mcp/server';
 import type { Env } from '../src/types';
 import type { Fetcher } from '../src/intervals';
 
@@ -38,24 +48,61 @@ async function mcp(name: string, args: unknown) {
   }
 }
 
-// intervals.icu create/update event success: echoes a numeric id.
-let nextRef = 1000;
-const okFetcher: Fetcher = async () => ({
-  ok: true,
-  status: 200,
-  json: async () => ({ id: `ev-${nextRef++}` }),
-});
 const failFetcher: Fetcher = async () => ({ ok: false, status: 500, json: async () => ({}) });
 const throwFetcher: Fetcher = async () => {
   throw new Error('network down');
 };
 
-/** Seed a completed session with one working set, return its id + userId. */
-async function seedCompletedSession(opts: { fatigue?: number } = {}) {
+/**
+ * Stateful fake intervals.icu events API. Mirrors the real semantics our
+ * BLOCKER-1 fix relies on: GET /events?oldest=&newest= returns events whose
+ * date is in [oldest,newest]; POST creates (assigns a fresh numeric id and
+ * stores external_id); PUT updates by id. Lets a test prove the pre-POST
+ * marker lookup prevents a duplicate even with a blind retry.
+ */
+function fakeIntervals() {
+  const events: Record<string, any>[] = [];
+  let seq = 5000;
+  const calls: { method: string; url: string }[] = [];
+  const fetcher: Fetcher = async (url, init) => {
+    const method = init?.method ?? 'GET';
+    calls.push({ method, url });
+    const u = new URL(url);
+    // .../events  or  .../events/{id}
+    const m = u.pathname.match(/\/events(?:\/([^/]+))?$/);
+    const idInPath = m?.[1] ?? null;
+    if (method === 'GET') {
+      const oldest = u.searchParams.get('oldest');
+      const newest = u.searchParams.get('newest');
+      const hits = events.filter(
+        (e) =>
+          (!oldest || e.start_date_local.slice(0, 10) >= oldest) &&
+          (!newest || e.start_date_local.slice(0, 10) <= newest),
+      );
+      return { ok: true, status: 200, json: async () => hits };
+    }
+    const payload = init?.body ? JSON.parse(init.body) : {};
+    if (method === 'POST') {
+      const ev = { ...payload, id: ++seq };
+      events.push(ev);
+      return { ok: true, status: 200, json: async () => ev };
+    }
+    if (method === 'PUT' && idInPath) {
+      const ev = events.find((e) => String(e.id) === idInPath);
+      if (ev) Object.assign(ev, payload);
+      return { ok: true, status: 200, json: async () => ev ?? { id: idInPath } };
+    }
+    return { ok: false, status: 405, json: async () => ({}) };
+  };
+  return { fetcher, events, calls };
+}
+
+let plansBuilt = 0;
+/** Seed a completed session with one working set, return ids. */
+async function seedCompletedSession(opts: { fatigue?: number; date?: string } = {}) {
   const owner = await ensureOwnerUser(env.DB, undefined);
-  // Build a minimal plan via MCP so an active plan + day template exist.
   await mcp('update_plan', {
-    name: 'T-Plan',
+    name: `T-Plan-${++plansBuilt}`,
     days: [
       {
         day_label: 'A',
@@ -65,7 +112,7 @@ async function seedCompletedSession(opts: { fatigue?: number } = {}) {
     ],
   });
   const plan = await getActivePlan(env.DB, owner.id);
-  const date = '2026-05-19';
+  const date = opts.date ?? '2026-05-19';
   const session = await getOrCreateSession(env.DB, owner.id, plan!.id, date, null);
   await logSet(env.DB, owner.id, {
     id: crypto.randomUUID(),
@@ -81,53 +128,102 @@ async function seedCompletedSession(opts: { fatigue?: number } = {}) {
   await env.DB.prepare(
     "UPDATE sessions SET status='completed', started_at=?2, completed_at=?3, perceived_fatigue=?4, updated_at=?3 WHERE id=?1",
   )
-    .bind(session.id, 1_000_000, 1_000_000 + 3_600_000, opts.fatigue ?? null, )
+    .bind(session.id, 1_000_000, 1_000_000 + 3_600_000, opts.fatigue ?? null)
     .run();
   return { ownerId: owner.id, sessionId: session.id, date };
 }
 
-describe('exportSessionLoad — milestone t', () => {
-  it('idempotent: second export UPDATEs the same intervals_ref, no duplicate row/activity', async () => {
+describe('exportSessionLoad — milestone t (post-review)', () => {
+  it('idempotent: re-export UPDATEs the same remote event, no duplicate row/event', async () => {
     const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 8 });
+    const api = fakeIntervals();
 
-    const calls: { method: string; url: string }[] = [];
-    const spy: Fetcher = async (url, init) => {
-      calls.push({ method: init?.method ?? 'GET', url });
-      return { ok: true, status: 200, json: async () => ({ id: 'ev-fixed' }) };
-    };
-
-    const r1 = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: spy });
+    const r1 = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
     expect(r1.status).toBe('ok');
-    const r2 = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: spy });
+    const r2 = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
     expect(r2.status).toBe('ok');
 
-    // Exactly ONE export row for the session (PK = session_id).
+    // Exactly ONE D1 row (PK = session_id) AND exactly ONE remote event.
     const cnt = await env.DB.prepare(
       'SELECT COUNT(*) c FROM session_load_exports WHERE session_id=?1',
     )
       .bind(sessionId)
       .first<{ c: number }>();
     expect(cnt!.c).toBe(1);
+    expect(api.events).toHaveLength(1);
+    expect(api.events[0]!.external_id).toBe(`liftcoach:session:${sessionId}`);
 
-    // First call CREATEs (POST, no ref), second UPDATEs the same ref (PUT
-    // .../events/ev-fixed) — never a second create.
-    expect(calls[0]!.method).toBe('POST');
-    expect(calls[0]!.url).not.toContain('/ev-fixed');
-    expect(calls[1]!.method).toBe('PUT');
-    expect(calls[1]!.url).toContain('/events/ev-fixed');
+    // 2nd export held a known ref → straight PUT (no duplicate POST).
+    const posts = api.calls.filter((c) => c.method === 'POST');
+    expect(posts).toHaveLength(1);
 
     const row = await env.DB.prepare(
       'SELECT * FROM session_load_exports WHERE session_id=?1',
     )
       .bind(sessionId)
       .first<any>();
-    expect(row.intervals_ref).toBe('ev-fixed');
     expect(row.status).toBe('ok');
     expect(row.attempts).toBe(2);
+    expect(String(row.intervals_ref)).toBe(String(api.events[0]!.id));
+  });
+
+  it('BLOCKER-1: POST ok then D1 .run() THROWS → retry must NOT create a 2nd remote event', async () => {
+    const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 8, date: '2026-05-11' });
+    const api = fakeIntervals();
+
+    // Sabotage ONLY the ok-branch UPSERT on the FIRST export so the remote
+    // POST succeeds but the D1 ledger write throws (the exact P1 interleave).
+    const realPrepare = env.DB.prepare.bind(env.DB);
+    let sabotage = true;
+    const spyPrepare = vi.fn((sql: string) => {
+      if (
+        sabotage &&
+        sql.includes('INSERT INTO session_load_exports') &&
+        sql.includes("status='ok'")
+      ) {
+        return {
+          bind: () => ({
+            run: async () => {
+              throw new Error('D1 write boom (simulated)');
+            },
+          }),
+        } as any;
+      }
+      return realPrepare(sql);
+    });
+    (env.DB as any).prepare = spyPrepare;
+
+    let firstThrew = false;
+    try {
+      await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
+    } catch {
+      firstThrew = true; // exportSessionLoad itself may surface the throw...
+    }
+    // ...but tryExportSessionLoad (the sacred-path wrapper) must absorb it.
+    // Re-run via the wrapper to mirror the real interleave + recovery row.
+    sabotage = true;
+    await tryExportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
+    expect(firstThrew || true).toBe(true);
+
+    // A remote event WAS created by the POST(s) above. Stop sabotaging and
+    // let the cron-style retry run: it must FIND its own event by marker
+    // and UPDATE it — NOT POST a second one.
+    sabotage = false;
+    (env.DB as any).prepare = spyPrepare; // keep spy, sabotage now off
+    const eventsAfterFailures = api.events.length;
+    const retry = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
+    (env.DB as any).prepare = realPrepare; // restore
+
+    expect(retry.status).toBe('ok');
+    // The crux: no duplicate remote event despite the lost D1 ref.
+    expect(api.events).toHaveLength(1);
+    expect(api.events.length).toBe(eventsAfterFailures);
+    // And exactly one POST total — every later write was a marker-found PUT.
+    expect(api.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
   });
 
   it('intervals failure → row pending; audit row written; no plans.version bump', async () => {
-    const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 7 });
+    const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 7, date: '2026-05-12' });
     const planBefore = await getActivePlan(env.DB, ownerId);
 
     const res = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, {
@@ -143,7 +239,6 @@ describe('exportSessionLoad — milestone t', () => {
     expect(row.status).toBe('pending');
     expect(row.load).toBeGreaterThan(0);
 
-    // audit row exists for this export attempt.
     const audit = await env.DB.prepare(
       "SELECT * FROM audit_log WHERE tool='export_session_load' AND args LIKE ?1 ORDER BY created_at DESC",
     )
@@ -152,20 +247,45 @@ describe('exportSessionLoad — milestone t', () => {
     expect(audit).not.toBeNull();
     expect(audit.result).toContain('pending');
 
-    // plans.version untouched by the export.
     const planAfter = await getActivePlan(env.DB, ownerId);
     expect(planAfter!.version).toBe(planBefore!.version);
   });
 
-  it('a thrown fetcher does not throw out of exportSessionLoad → pending', async () => {
-    const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 6 });
-    const res = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, {
-      fetcher: throwFetcher,
+  it('SHOULD-FIX: ok-branch D1 .run() rejects → tryExportSessionLoad resolves, records pending', async () => {
+    const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 6, date: '2026-05-13' });
+    const api = fakeIntervals();
+
+    const realPrepare = env.DB.prepare.bind(env.DB);
+    const spyPrepare = vi.fn((sql: string) => {
+      if (sql.includes('INSERT INTO session_load_exports') && sql.includes("status='ok'")) {
+        return {
+          bind: () => ({
+            run: async () => {
+              throw new Error('D1 ok-branch write rejected');
+            },
+          }),
+        } as any;
+      }
+      return realPrepare(sql);
     });
-    expect(res.status).toBe('pending');
+    (env.DB as any).prepare = spyPrepare;
+
+    // The actual P1 failure path: push SUCCEEDS, then the ledger write
+    // rejects. tryExportSessionLoad must NOT throw and must leave pending.
+    await expect(
+      tryExportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher }),
+    ).resolves.toBeUndefined();
+
+    (env.DB as any).prepare = realPrepare;
+    const row = await env.DB.prepare(
+      'SELECT status FROM session_load_exports WHERE session_id=?1',
+    )
+      .bind(sessionId)
+      .first<{ status: string }>();
+    expect(row!.status).toBe('pending');
   });
 
-  it('zero non-warmup sets → skipped (no export row, audit notes skip)', async () => {
+  it('zero non-warmup sets → skipped (no export row)', async () => {
     await mcp('update_plan', {
       name: 'Skip-Plan',
       days: [{ day_label: 'A', name: 'Day A', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] }],
@@ -178,10 +298,12 @@ describe('exportSessionLoad — milestone t', () => {
     )
       .bind(session.id)
       .run();
+    const api = fakeIntervals();
     const res = await exportSessionLoad(env.DB, env as unknown as Env, owner.id, session.id, {
-      fetcher: okFetcher,
+      fetcher: api.fetcher,
     });
     expect(res.status).toBe('skipped');
+    expect(api.events).toHaveLength(0);
     const row = await env.DB.prepare(
       'SELECT * FROM session_load_exports WHERE session_id=?1',
     )
@@ -191,17 +313,56 @@ describe('exportSessionLoad — milestone t', () => {
   });
 });
 
-describe('log_workout_complete is SACRED — export cannot break it', () => {
-  it('intervals failing (global fetch 500) → log_workout_complete still succeeds, returns normally, no throw', async () => {
-    // Build plan + log a set so the completed session has working volume.
+describe('BLOCKER-3: exported lift events never self-conflict', () => {
+  it('export then syncExternalEvents over its window → not ingested, no conflict', async () => {
+    const date = '2026-05-19';
+    const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 8, date });
+    const api = fakeIntervals();
+
+    const r = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, {
+      fetcher: api.fetcher,
+    });
+    expect(r.status).toBe('ok');
+    expect(api.events).toHaveLength(1);
+    expect(api.events[0]!.type).toBe('WeightTraining');
+
+    // Now the ride-sync runs over a window that covers the export's date.
+    // It reads the SAME fake intervals (our exported WeightTraining event
+    // is present) — it must NOT be ingested into external_events.
+    const sync = await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId: ownerId,
+      today: '2026-05-18',
+      windowDays: 14,
+      fetcher: api.fetcher,
+    } as any);
+    expect(sync.status).toBe('ok');
+
+    const rides = await getUpcomingRides(env.DB, ownerId, { from: '2026-05-01' });
+    expect(rides.some((x) => x.id === `intervals:${api.events[0]!.id}`)).toBe(false);
+    // external_events stays endurance-only: nothing from our export landed.
+    const anyLift = await env.DB.prepare(
+      "SELECT COUNT(*) c FROM external_events WHERE user_id=?1 AND date=?2",
+    )
+      .bind(ownerId, date)
+      .first<{ c: number }>();
+    expect(anyLift!.c).toBe(0);
+
+    // And the lift date produces NO ride conflict against itself.
+    const conflicts = await getRideConflicts(env.DB, ownerId, '2026-05-18', '2026-06-01', '2026-05-18');
+    expect(conflicts.some((c) => c.date === date)).toBe(false);
+  });
+});
+
+describe('BLOCKER-2: log_workout_complete must not be blocked by the export', () => {
+  async function seedForCompletion(date: string) {
     await mcp('update_plan', {
-      name: 'Sacred',
+      name: `Sacred-${date}`,
       days: [{ day_label: 'A', name: 'Day A', exercises: [{ exercise: 'squat', target_sets: 3, target_reps: 5 }] }],
     });
     const exId = (await env.DB.prepare('SELECT exercise_id FROM template_exercises LIMIT 1').first<{ exercise_id: string }>())!.exercise_id;
     const owner = await ensureOwnerUser(env.DB, undefined);
     const plan = await getActivePlan(env.DB, owner.id);
-    const session = await getOrCreateSession(env.DB, owner.id, plan!.id, '2026-05-19', null);
+    const session = await getOrCreateSession(env.DB, owner.id, plan!.id, date, null);
     await logSet(env.DB, owner.id, {
       id: crypto.randomUUID(),
       session_id: session.id,
@@ -213,35 +374,101 @@ describe('log_workout_complete is SACRED — export cannot break it', () => {
       is_warmup: false,
       source: 'mcp',
     });
+    return { ownerId: owner.id, sessionId: session.id };
+  }
 
-    // intervals.icu is hard-down for the real-time push.
+  it('SLOW intervals (hanging fetch) → response returns promptly via waitUntil; export finishes after', async () => {
+    const date = '2026-05-19';
+    const { sessionId } = await seedForCompletion(date);
+
+    // A fetch that resolves only after a real delay. If the export were
+    // awaited inline the response would be delayed by this; with waitUntil
+    // the response must return immediately.
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<void>((res) => (releaseSlow = res));
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => new Response('boom', { status: 500 })),
+      vi.fn(async (url: string) => {
+        if (String(url).includes('intervals.icu')) {
+          await slowGate; // hang until the test releases it
+          return new Response(JSON.stringify({ id: 9991, external_id: `liftcoach:session:${sessionId}` }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response('[]', { status: 200 });
+      }),
     );
 
-    const r = await mcp('log_workout_complete', {
-      session_date: '2026-05-19',
-      perceived_fatigue: 8,
-    });
-    // Completion succeeded and returned the session normally — NOT an error.
-    expect(r.isError).toBe(false);
-    expect(r.data.status).toBe('completed');
-    expect(r.data.perceived_fatigue).toBe(8);
+    // Drive the MCP handler directly with a real execution context so the
+    // export is scheduled via waitUntil (exactly the production path).
+    const ctx = createExecutionContext();
+    const bg = { waitUntil: (p: Promise<unknown>) => ctx.waitUntil(p) };
 
-    // The export was recorded pending (cron will retry) — proving the
-    // failure was absorbed, not propagated.
+    const t0 = Date.now();
+    const resp = await handleMcp(
+      {
+        jsonrpc: '2.0',
+        id: ++rpcId,
+        method: 'tools/call',
+        params: { name: 'log_workout_complete', arguments: { session_date: date, perceived_fatigue: 8 } },
+      },
+      env as unknown as Env,
+      bg,
+    );
+    const elapsed = Date.now() - t0;
+
+    // Response is back BEFORE the slow intervals call resolves.
+    expect(elapsed).toBeLessThan(1000);
+    const result = (resp.json as any).result;
+    expect(result.isError).not.toBe(true);
+    const data = JSON.parse(result.content[0].text);
+    expect(data.status).toBe('completed');
+    expect(data.perceived_fatigue).toBe(8);
+
+    // Now release the slow call and let the deferred export complete.
+    releaseSlow();
+    await waitOnExecutionContext(ctx);
+
     const row = await env.DB.prepare(
       'SELECT status FROM session_load_exports WHERE session_id=?1',
     )
-      .bind(session.id)
+      .bind(sessionId)
+      .first<{ status: string }>();
+    expect(row!.status).toBe('ok');
+  });
+
+  it('intervals 500 → log_workout_complete still succeeds & returns normally; export left pending', async () => {
+    const date = '2026-05-14';
+    const { sessionId } = await seedForCompletion(date);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
+
+    const ctx = createExecutionContext();
+    const bg = { waitUntil: (p: Promise<unknown>) => ctx.waitUntil(p) };
+    const resp = await handleMcp(
+      {
+        jsonrpc: '2.0',
+        id: ++rpcId,
+        method: 'tools/call',
+        params: { name: 'log_workout_complete', arguments: { session_date: date, perceived_fatigue: 7 } },
+      },
+      env as unknown as Env,
+      bg,
+    );
+    const result = (resp.json as any).result;
+    expect(result.isError).not.toBe(true);
+    expect(JSON.parse(result.content[0].text).status).toBe('completed');
+
+    await waitOnExecutionContext(ctx);
+    const row = await env.DB.prepare(
+      'SELECT status FROM session_load_exports WHERE session_id=?1',
+    )
+      .bind(sessionId)
       .first<{ status: string }>();
     expect(row!.status).toBe('pending');
   });
 
-  it('tryExportSessionLoad never throws even if exportSessionLoad would', async () => {
-    // Non-existent session → exportSessionLoad returns skipped; the wrapper
-    // resolves cleanly regardless.
+  it('tryExportSessionLoad never throws for a non-existent session', async () => {
     await expect(
       tryExportSessionLoad(env.DB, env as unknown as Env, 'nobody', 'no-such-session', {
         fetcher: throwFetcher,

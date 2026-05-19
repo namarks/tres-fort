@@ -144,3 +144,106 @@ enum CalendarProjection {
         return .projected(templateID: templateID)
     }
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// FROZEN CONFLICT RULE — must match the backend `detectConflicts`
+// byte-for-byte. Deliberately isolated + over-commented so the lead can
+// diff this single function against the server. The app is READ-ONLY for
+// rides: this only classifies, it never writes anything.
+//
+// Inputs (all already tombstone-filtered upstream — `deleted_at != null`
+// events are NEVER passed here):
+//   - a calendar date that carries a LIFT (a real cached session OR a
+//     projected lift from CalendarProjection). Rest/none days are not
+//     lift dates and produce `.none`.
+//   - the external events on a given date.
+//
+// Rule (evaluated for a LIFT date `L`):
+//   (a) SAME-DAY  → if ANY non-deleted external_event falls on `L` itself,
+//                    severity = .clash.
+//   (b) DAY-BEFORE-HARD → else if `L` is the calendar day immediately
+//                    BEFORE a date that has a non-deleted external_event
+//                    with training_load >= 150 OR
+//                    planned_duration_sec >= 9000, severity = .heavyNextDay.
+//   (else)        → .none.
+//
+// same-day takes precedence over day-before-hard (a date that is both gets
+// `.clash`). "The day before" is L + 1 calendar day, computed with the
+// same Gregorian/POSIX/device-tz Calendar used everywhere else (civil
+// date, NOT a UTC offset) — identical rule to CalendarProjection.
+// ────────────────────────────────────────────────────────────────────────
+
+enum RideConflict {
+
+    /// Conflict severity for a lift date. Ordered least→most severe; the
+    /// raw values are stable identifiers for cross-checking with the
+    /// backend ("none" / "heavy-next-day" / "clash").
+    enum Severity: String {
+        case none          = "none"
+        case heavyNextDay  = "heavy-next-day"
+        case clash         = "clash"
+    }
+
+    /// Thresholds for a "hard" next-day event — mirror the backend
+    /// constants exactly. TSS (training_load) and seconds.
+    static let hardLoadThreshold = 150            // training_load >= 150
+    static let hardDurationSecThreshold = 9000    // planned_duration_sec >= 9000 (2h30m)
+
+    /// Does a projection represent a LIFT on that date? A real session in
+    /// any non-rest status, or a projected lift, counts; rest/none do not.
+    static func dateHasLift(_ proj: DayProjection) -> Bool {
+        switch proj.kind {
+        case .completed, .inProgress, .planned, .projected, .skipped:
+            return true
+        case .rest, .none:
+            return false
+        }
+    }
+
+    /// True if a single (already non-deleted) event is a "hard" session
+    /// by the frozen thresholds.
+    static func isHard(_ e: ExternalEvent) -> Bool {
+        let load = e.training_load ?? 0
+        let dur = e.planned_duration_sec ?? 0
+        return load >= hardLoadThreshold || dur >= hardDurationSecThreshold
+    }
+
+    /// `YYYY-MM-DD` for the calendar day AFTER `ymd`, via the shared civil
+    /// calendar (same rule as CalendarProjection). nil if `ymd` is malformed.
+    static func nextDateString(after ymd: String) -> String? {
+        guard
+            let d = CalendarProjection.date(from: ymd),
+            let next = CalendarProjection.calendar.date(byAdding: .day, value: 1, to: d)
+        else { return nil }
+        return CalendarProjection.dateString(next)
+    }
+
+    /// Severity for a lift date.
+    ///
+    /// - Parameters:
+    ///   - liftDateString: the `YYYY-MM-DD` of the lift being evaluated.
+    ///   - hasLift: closure → is this date a lift date? (caller wires the
+    ///     CalendarProjection so this stays pure/diffable).
+    ///   - ridesOn: closure → non-deleted external events for a date.
+    static func severity(
+        forLiftDate liftDateString: String,
+        hasLift: (String) -> Bool,
+        ridesOn: (String) -> [ExternalEvent]
+    ) -> Severity {
+        // Conflicts only attach to LIFT dates. No lift → no conflict.
+        guard hasLift(liftDateString) else { return .none }
+
+        // (a) SAME-DAY — any non-deleted event on the lift date itself.
+        if !ridesOn(liftDateString).isEmpty {
+            return .clash
+        }
+
+        // (b) DAY-BEFORE-HARD — the lift is the day before a hard event.
+        if let next = nextDateString(after: liftDateString),
+           ridesOn(next).contains(where: isHard) {
+            return .heavyNextDay
+        }
+
+        return .none
+    }
+}

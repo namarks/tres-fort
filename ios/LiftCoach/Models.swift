@@ -124,10 +124,78 @@ struct ExerciseCatalog: Decodable, Identifiable {
     let unit: String
 }
 
+/// An externally-sourced training event (e.g. an intervals.icu planned
+/// ride) surfaced read-only in the lift calendar. FROZEN CONTRACT — wire
+/// shape mirrors the backend exactly; the app NEVER writes these.
+///
+/// Wire shape (a NEW array alongside `sessions`/`sets` in `/api/state`):
+///   { "id": "intervals:{event_id}", "source": "intervals",
+///     "external_id": "{event_id}", "date": "YYYY-MM-DD",
+///     "kind": "ride|run|swim|other", "title": "...",
+///     "description": "...", "planned_duration_sec": 5400,
+///     "training_load": 95, "intensity": 0.78,
+///     "synced_at": 1716000000000, "deleted_at": null }
+///
+/// `deleted_at` non-null ⇒ the event is tombstoned and must be hidden.
+/// All optional fields are tolerant: a thin/older payload still decodes.
+struct ExternalEvent: Decodable, Identifiable, Equatable {
+    let id: String
+    let source: String
+    let external_id: String
+    let date: String                 // YYYY-MM-DD (device-local civil date)
+    let kind: String                 // ride / run / swim / other
+    let title: String?
+    let description: String?
+    let planned_duration_sec: Int?
+    let training_load: Int?          // TSS
+    let intensity: Double?           // IF
+    let synced_at: Int?
+    let deleted_at: Int?             // non-null ⇒ hidden
+
+    /// A tombstoned event must never be shown or counted in conflicts.
+    var isDeleted: Bool { deleted_at != nil }
+
+    /// "1h 30m" / "45m" from `planned_duration_sec` (nil → nil).
+    var durationLabel: String? {
+        guard let s = planned_duration_sec, s > 0 else { return nil }
+        let h = s / 3600
+        let m = (s % 3600) / 60
+        if h > 0 { return m > 0 ? "\(h)h \(m)m" : "\(h)h" }
+        return "\(m)m"
+    }
+
+    /// Display title, falling back to a humanised kind when absent.
+    var displayTitle: String {
+        if let t = title, !t.isEmpty { return t }
+        return kind.capitalized
+    }
+}
+
 struct StateResponse: Decodable {
     let plan: PlanTree?
     let plan_version: Int
     let sessions: [SessionRow]
     let sets: [SetLog]
+    /// NEW (FROZEN CONTRACT): external training events (read-only ride
+    /// overlay). Absent or empty in older/thin payloads → `[]`, never a
+    /// decode failure.
+    let external_events: [ExternalEvent]
     let server_time: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case plan, plan_version, sessions, sets, external_events, server_time
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        plan = try c.decodeIfPresent(PlanTree.self, forKey: .plan)
+        plan_version = try c.decode(Int.self, forKey: .plan_version)
+        sessions = try c.decode([SessionRow].self, forKey: .sessions)
+        sets = try c.decode([SetLog].self, forKey: .sets)
+        // Absent key OR JSON null → no rides (defensive, never throws).
+        external_events =
+            (try? c.decodeIfPresent([ExternalEvent].self, forKey: .external_events))
+            .flatMap { $0 } ?? []
+        server_time = try c.decode(Int.self, forKey: .server_time)
+    }
 }

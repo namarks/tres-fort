@@ -38,6 +38,7 @@ struct DayAgendaView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     header(proj)
                     content(proj)
+                    ridesSection
                 }
                 .padding(22)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -197,6 +198,84 @@ struct DayAgendaView: View {
                 }
             }
         }
+    }
+
+    // MARK: read-only ride overlay
+    //
+    // External events (intervals.icu etc.) for this date. READ-ONLY: no
+    // buttons, no actions. When the day is also a lift conflict we show a
+    // single static line — adjustments happen in the Claude app, not here
+    // (mirrors the no-in-app-chat split).
+
+    @ViewBuilder private var ridesSection: some View {
+        let dayRides = sync.rides(on: dateString)   // already non-deleted
+        if !dayRides.isEmpty {
+            let conflict = sync.rideConflict(for: dateString)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "bicycle")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Theme.muted)
+                    Text("PLANNED RIDES")
+                        .font(Theme.mono(11, .bold)).tracking(2)
+                        .foregroundStyle(Theme.muted)
+                }
+
+                ForEach(dayRides) { ride in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(ride.displayTitle.uppercased())
+                            .font(Theme.display(20))
+                            .foregroundStyle(Theme.text)
+
+                        // Duration · TSS · IF — only the parts we have.
+                        let stats = rideStats(ride)
+                        if !stats.isEmpty {
+                            Text(stats)
+                                .font(Theme.mono(13, .bold))
+                                .foregroundStyle(Theme.accent)
+                        }
+
+                        if let d = ride.description, !d.isEmpty {
+                            Text(d)
+                                .font(Theme.mono(11))
+                                .foregroundStyle(Theme.dim)
+                        }
+                    }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+
+                // Static, read-only conflict line (NO action / button).
+                if conflict != .none {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(Theme.accent)
+                        Text("Conflicts with a planned ride — ask Claude to adjust")
+                            .font(Theme.mono(12, .bold))
+                            .foregroundStyle(Theme.accent)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(Theme.accent.opacity(0.12))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+            }
+        }
+    }
+
+    /// "1h 30m  ·  95 TSS  ·  0.78 IF" — omits any missing component.
+    private func rideStats(_ ride: ExternalEvent) -> String {
+        var parts: [String] = []
+        if let dur = ride.durationLabel { parts.append(dur) }
+        if let tss = ride.training_load { parts.append("\(tss) TSS") }
+        if let iff = ride.intensity {
+            parts.append(String(format: "%.2f IF", iff))
+        }
+        return parts.joined(separator: "  ·  ")
     }
 
     private func note(_ text: String) -> some View {

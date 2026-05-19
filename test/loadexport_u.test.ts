@@ -6,13 +6,12 @@ import {
   createExecutionContext,
   waitOnExecutionContext,
 } from 'cloudflare:test';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../src/index';
 import {
   ensureOwnerUser,
   exportSessionLoad,
   getActivePlan,
-  getOrCreateSession,
   logSet,
 } from '../src/db';
 import type { Env } from '../src/types';
@@ -24,8 +23,26 @@ const TOKEN = 'test-mcp-token';
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 });
-afterEach(() => {
+
+// HERMETICITY (root-cause fix — see the long note in loadexport_t.test.ts):
+// the shared singleWorker D1 + single-user invariant make
+// getOrCreateSession reuse the same session id across suites that share a
+// hardcoded date (this file and loadexport_t both use 2026-05-19).
+// session_load_exports is keyed by session_id and never truncated by
+// applyD1Migrations, so a row left by another suite makes the single-flight
+// claim correctly refuse → export defers, never `ok`. Purge before+after
+// every test so order can't matter; the guard/assertions are untouched.
+async function purgeExportLedger() {
+  await env.DB.prepare('DELETE FROM session_load_exports').run();
+}
+
+beforeEach(async () => {
+  await purgeExportLedger();
+});
+
+afterEach(async () => {
   vi.unstubAllGlobals();
+  await purgeExportLedger();
 });
 
 let rpcId = 0;
@@ -47,7 +64,18 @@ async function seedPendingExport(fatigue: number) {
   });
   const owner = await ensureOwnerUser(env.DB, undefined);
   const plan = await getActivePlan(env.DB, owner.id);
-  const session = await getOrCreateSession(env.DB, owner.id, plan!.id, '2026-05-19', null);
+  // Globally-unique session id (root-cause fix — see note above): never
+  // reuse a (owner,date)-keyed session, so this suite's
+  // session_load_exports PK can't collide with loadexport_t's.
+  const sessionId = crypto.randomUUID();
+  const seedTs = Date.now();
+  await env.DB
+    .prepare(
+      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,NULL,NULL,NULL,NULL,?6,?6)',
+    )
+    .bind(sessionId, owner.id, plan!.id, '2026-05-19', 'planned', seedTs)
+    .run();
+  const session = { id: sessionId };
   const exId = (await env.DB.prepare('SELECT exercise_id FROM template_exercises LIMIT 1').first<{ exercise_id: string }>())!.exercise_id;
   await logSet(env.DB, owner.id, {
     id: crypto.randomUUID(),

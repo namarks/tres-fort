@@ -5,13 +5,12 @@ import {
   createExecutionContext,
   waitOnExecutionContext,
 } from 'cloudflare:test';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ensureOwnerUser,
   exportSessionLoad,
   tryExportSessionLoad,
   getActivePlan,
-  getOrCreateSession,
   getRideConflicts,
   getUpcomingRides,
   logSet,
@@ -28,9 +27,81 @@ beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 });
 
-afterEach(() => {
-  vi.unstubAllGlobals();
+// HERMETICITY (root-cause fix): the vitest pool runs every suite in ONE
+// shared singleWorker D1, and the single-user invariant means
+// ensureOwnerUser + getOrCreateSession(owner,date) reuse the SAME session
+// id across tests/suites that share a hardcoded date. session_load_exports
+// is keyed by session_id and is NEVER truncated by applyD1Migrations, so a
+// row left by an earlier suite (catalog.test.ts presence shifts file
+// order) makes the single-flight claim correctly REFUSE → the export
+// defers and never reaches `ok`. Purging Option-C-owned ledger rows before
+// AND after every test makes the suite order-independent without weakening
+// the single-flight guard or any assertion. (The export feature is
+// behaving correctly — this is test isolation only.)
+async function purgeExportLedger() {
+  await env.DB.prepare('DELETE FROM session_load_exports').run();
+}
+
+beforeEach(async () => {
+  await purgeExportLedger();
 });
+
+afterEach(async () => {
+  vi.unstubAllGlobals();
+  await purgeExportLedger();
+});
+
+/**
+ * Per-test DB fault injector that NEVER mutates the shared singleton
+ * `env.DB`. The previous approach reassigned `env.DB.prepare = spy` and
+ * captured `realPrepare = env.DB.prepare.bind(env.DB)`; with the catalog
+ * suite shifting file order/timing and waitUntil-deferred exports running
+ * AFTER the test that "restored" the spy, one test's realPrepare could
+ * capture another test's still-installed spy and then reinstall it
+ * permanently — leaking a saboteur across the shared D1 so later exports
+ * ended pending/in_flight with attempts=0 and no audit (the integrated-
+ * tree flake). This wrapper is a local object passed explicitly as the
+ * `db` arg; it delegates to env.DB and throws only for `shouldThrow(sql)`.
+ * Nothing global is touched, so there is nothing to leak or restore.
+ */
+function faultingDb(shouldThrow: (sql: string) => boolean): D1Database {
+  return new Proxy(env.DB, {
+    get(target, prop, receiver) {
+      if (prop === 'prepare') {
+        return (sql: string) => {
+          const stmt = target.prepare(sql);
+          if (!shouldThrow(sql)) return stmt;
+          return new Proxy(stmt, {
+            get(s, p, r) {
+              if (p === 'bind') {
+                return (...args: unknown[]) => {
+                  const bound = (s.bind as (...a: unknown[]) => D1PreparedStatement)(...args);
+                  return new Proxy(bound, {
+                    get(b, bp, br) {
+                      if (bp === 'run') {
+                        return async () => {
+                          throw new Error(`injected D1 fault: ${sql.slice(0, 40)}`);
+                        };
+                      }
+                      return Reflect.get(b, bp, br);
+                    },
+                  });
+                };
+              }
+              if (p === 'run') {
+                return async () => {
+                  throw new Error(`injected D1 fault: ${sql.slice(0, 40)}`);
+                };
+              }
+              return Reflect.get(s, p, r);
+            },
+          });
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  }) as unknown as D1Database;
+}
 
 let rpcId = 0;
 async function mcp(name: string, args: unknown) {
@@ -98,6 +169,38 @@ function fakeIntervals() {
 }
 
 let plansBuilt = 0;
+
+/**
+ * Create a session with a GLOBALLY-UNIQUE id (root-cause fix). The single-
+ * user invariant forces one owner and getOrCreateSession keys by
+ * (owner,date), so any two tests sharing a hardcoded date reused the SAME
+ * session id → the SAME session_load_exports PK row in the shared
+ * singleWorker D1 (never truncated by applyD1Migrations). With
+ * catalog.test.ts present the file order shifts and a prior suite's
+ * terminal/in_flight ledger row made the single-flight claim correctly
+ * refuse → the export deferred and never reached `ok`. Inserting the
+ * session row directly with a fresh UUID removes ALL cross-test session
+ * (hence ledger) sharing regardless of date/owner/suite-order/interleave,
+ * without weakening the single-flight guard or any assertion. `date` is
+ * preserved verbatim for tests that assert on it.
+ */
+async function freshSession(
+  db: typeof env.DB,
+  ownerId: string,
+  planId: string,
+  date: string,
+): Promise<{ id: string }> {
+  const id = crypto.randomUUID();
+  const ts = Date.now();
+  await db
+    .prepare(
+      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,NULL,NULL,NULL,NULL,?6,?6)',
+    )
+    .bind(id, ownerId, planId, date, 'planned', ts)
+    .run();
+  return { id };
+}
+
 /** Seed a completed session with one working set, return ids. */
 async function seedCompletedSession(opts: { fatigue?: number; date?: string } = {}) {
   const owner = await ensureOwnerUser(env.DB, undefined);
@@ -113,7 +216,7 @@ async function seedCompletedSession(opts: { fatigue?: number; date?: string } = 
   });
   const plan = await getActivePlan(env.DB, owner.id);
   const date = opts.date ?? '2026-05-19';
-  const session = await getOrCreateSession(env.DB, owner.id, plan!.id, date, null);
+  const session = await freshSession(env.DB, owner.id, plan!.id, date);
   await logSet(env.DB, owner.id, {
     id: crypto.randomUUID(),
     session_id: session.id,
@@ -173,49 +276,44 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
     const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 8, date: '2026-05-11' });
     const api = fakeIntervals();
 
-    // Sabotage the ok-branch terminal write so the remote POST succeeds but
-    // the D1 ledger write throws (the exact P1 interleave).
-    const realPrepare = env.DB.prepare.bind(env.DB);
-    let sabotage = true;
-    const spyPrepare = vi.fn((sql: string) => {
-      if (
-        sabotage &&
+    // Sabotage ONLY the ok-branch terminal UPSERT (its VALUES tuple), not
+    // the recovery query (which also contains the substring status='ok'
+    // since the P2 CASE guard). faultingDb is a LOCAL wrapper — env.DB is
+    // never mutated, so no saboteur can leak across the shared D1.
+    const sabotagedDb = faultingDb(
+      (sql) =>
         sql.includes('INSERT INTO session_load_exports') &&
-        // Target ONLY the ok-branch terminal UPSERT (its VALUES tuple),
-        // not the recovery query (which also contains the substring
-        // status='ok' since the P2 CASE guard was added).
-        sql.includes("VALUES (?1,?2,?3,'ok'")
-      ) {
-        return {
-          bind: () => ({
-            run: async () => {
-              throw new Error('D1 write boom (simulated)');
-            },
-          }),
-        } as any;
-      }
-      return realPrepare(sql);
-    });
-    (env.DB as any).prepare = spyPrepare;
+        sql.includes("VALUES (?1,?2,?3,'ok'"),
+    );
 
     // Tautology fix (#2): assert exportSessionLoad GENUINELY propagates the
     // D1 ok-branch throw — it has no internal catch; the sacred wrapper
     // depends on this. A real rejection, not a constant.
     let firstThrew = false;
     try {
-      await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
+      await exportSessionLoad(sabotagedDb, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
     } catch {
       firstThrew = true;
     }
     expect(firstThrew).toBe(true);
 
     // The bare throw above left an orphaned in_flight row (a hard-crash
-    // sim). In production the export ALWAYS runs under the sacred wrapper,
-    // whose recovery must demote that stuck in_flight to a retryable state.
-    sabotage = true;
-    await tryExportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, {
+    // sim). Backdate its updated_at well into the past so it is GENUINELY
+    // stale by the real production window (avoids a same-millisecond
+    // boundary flake: the reclaim predicate is strict `updated_at <
+    // now-staleMs`, correct for prod's 15min but racy if the orphan's
+    // timestamp equals `now` in sub-ms test execution).
+    await env.DB.prepare(
+      'UPDATE session_load_exports SET updated_at = ?2 WHERE session_id = ?1',
+    )
+      .bind(sessionId, Date.now() - 60 * 60_000)
+      .run();
+
+    // In production the export ALWAYS runs under the sacred wrapper, whose
+    // recovery (default 15min stale window) must reclaim+demote that stuck
+    // in_flight to a retryable state.
+    await tryExportSessionLoad(sabotagedDb, env as unknown as Env, ownerId, sessionId, {
       fetcher: api.fetcher,
-      staleMs: 0,
     });
     const afterRecovery = await env.DB.prepare(
       'SELECT status FROM session_load_exports WHERE session_id=?1',
@@ -226,17 +324,19 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
     // in_flight row must fail this (no in_flight in the allowed set).
     expect(['pending', 'ok']).toContain(afterRecovery!.status);
 
-    // A remote event WAS created by the POST above. Stop sabotaging; the
-    // retry (staleMs:0 = cron's eventual orphan reclaim, time-compressed)
-    // must FIND its own event by the deterministic marker and UPDATE it
-    // (PUT) — NEVER a second POST — even though the D1 ref was lost.
-    sabotage = false;
+    // A remote event WAS created by the POST above. Re-backdate (the
+    // sabotaged retry refreshed updated_at) then run the real retry
+    // through env.DB: it must FIND its own event by the deterministic
+    // marker and UPDATE it (PUT) — NEVER a second POST.
+    await env.DB.prepare(
+      'UPDATE session_load_exports SET updated_at = ?2 WHERE session_id = ?1',
+    )
+      .bind(sessionId, Date.now() - 60 * 60_000)
+      .run();
     const eventsAfterFailures = api.events.length;
     const retry = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, {
       fetcher: api.fetcher,
-      staleMs: 0,
     });
-    (env.DB as any).prepare = realPrepare; // restore
 
     expect(retry.status).toBe('ok');
     // The crux: no duplicate remote event despite the lost D1 ref.
@@ -346,28 +446,20 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
     const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 6, date: '2026-05-13' });
     const api = fakeIntervals();
 
-    const realPrepare = env.DB.prepare.bind(env.DB);
-    const spyPrepare = vi.fn((sql: string) => {
-      if (sql.includes('INSERT INTO session_load_exports') && sql.includes("VALUES (?1,?2,?3,'ok'")) {
-        return {
-          bind: () => ({
-            run: async () => {
-              throw new Error('D1 ok-branch write rejected');
-            },
-          }),
-        } as any;
-      }
-      return realPrepare(sql);
-    });
-    (env.DB as any).prepare = spyPrepare;
+    // Local fault wrapper (no env.DB mutation): only the ok-branch UPSERT
+    // rejects; push SUCCEEDS, then the ledger write rejects.
+    const sabotagedDb = faultingDb(
+      (sql) =>
+        sql.includes('INSERT INTO session_load_exports') &&
+        sql.includes("VALUES (?1,?2,?3,'ok'"),
+    );
 
-    // The actual P1 failure path: push SUCCEEDS, then the ledger write
-    // rejects. tryExportSessionLoad must NOT throw and must leave pending.
+    // The actual P1 failure path: tryExportSessionLoad must NOT throw and
+    // must leave the row pending.
     await expect(
-      tryExportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher }),
+      tryExportSessionLoad(sabotagedDb, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher }),
     ).resolves.toBeUndefined();
 
-    (env.DB as any).prepare = realPrepare;
     const row = await env.DB.prepare(
       'SELECT status FROM session_load_exports WHERE session_id=?1',
     )
@@ -380,30 +472,17 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
     const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 8, date: '2026-05-15' });
     const api = fakeIntervals();
 
-    // Let the ok UPSERT commit (real prepare), but make the AUDIT insert
-    // that immediately follows it throw — the exact "threw AFTER the ok
-    // UPSERT" interleave the P2 status guard protects.
-    const realPrepare = env.DB.prepare.bind(env.DB);
-    const spyPrepare = vi.fn((sql: string) => {
-      if (sql.includes('INSERT INTO audit_log')) {
-        return {
-          bind: () => ({
-            run: async () => {
-              throw new Error('writeAudit boom (post-ok-UPSERT)');
-            },
-          }),
-        } as any;
-      }
-      return realPrepare(sql);
-    });
-    (env.DB as any).prepare = spyPrepare;
+    // Let the ok UPSERT commit (real env.DB through the wrapper), but make
+    // the AUDIT insert that immediately follows it throw — the exact
+    // "threw AFTER the ok UPSERT" interleave the P2 status guard protects.
+    // Local wrapper only; env.DB is never mutated.
+    const sabotagedDb = faultingDb((sql) => sql.includes('INSERT INTO audit_log'));
 
     // Sacred wrapper absorbs the post-ok throw; its recovery runs.
     await expect(
-      tryExportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher }),
+      tryExportSessionLoad(sabotagedDb, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher }),
     ).resolves.toBeUndefined();
 
-    (env.DB as any).prepare = realPrepare;
     const row = await env.DB.prepare(
       'SELECT status, intervals_ref FROM session_load_exports WHERE session_id=?1',
     )
@@ -424,7 +503,7 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
     });
     const owner = await ensureOwnerUser(env.DB, undefined);
     const plan = await getActivePlan(env.DB, owner.id);
-    const session = await getOrCreateSession(env.DB, owner.id, plan!.id, '2026-05-17', null);
+    const session = await freshSession(env.DB, owner.id, plan!.id, '2026-05-17');
     await env.DB.prepare(
       "UPDATE sessions SET status='completed', started_at=1, completed_at=3600001 WHERE id=?1",
     )
@@ -494,7 +573,7 @@ describe('BLOCKER-2: log_workout_complete must not be blocked by the export', ()
     const exId = (await env.DB.prepare('SELECT exercise_id FROM template_exercises LIMIT 1').first<{ exercise_id: string }>())!.exercise_id;
     const owner = await ensureOwnerUser(env.DB, undefined);
     const plan = await getActivePlan(env.DB, owner.id);
-    const session = await getOrCreateSession(env.DB, owner.id, plan!.id, date, null);
+    const session = await freshSession(env.DB, owner.id, plan!.id, date);
     await logSet(env.DB, owner.id, {
       id: crypto.randomUUID(),
       session_id: session.id,

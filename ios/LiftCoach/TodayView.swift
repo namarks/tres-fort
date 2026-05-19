@@ -78,9 +78,19 @@ struct TodayView: View {
                 Text("Ask Claude to build one, then pull to refresh.")
                     .font(Theme.mono(13)).foregroundStyle(Theme.muted)
             }
+        } else if sync.todayIsCompleted {
+            // Today's session is already COMPLETED. Show a done/recap
+            // state with NO start and NO override: one session per
+            // (user,date) means any "start" re-opens & double-logs the
+            // completed row (server getOrCreateSession is idempotent on
+            // (user,date)), so we never offer an action the data model
+            // can't safely honor.
+            WorkoutDoneView(sync: sync)
         } else if let day = sync.todayResolvedDay {
-            // Workout day — today resolved via CalendarProjection (the SAME
-            // projection the calendar uses), not a manual A/B default.
+            // Workout day (planned / in_progress / projected) — today
+            // resolved via CalendarProjection (the SAME projection the
+            // calendar uses), not a manual A/B default. in_progress
+            // resumes into the runner via the existing start path.
             TodayWorkoutView(
                 sync: sync, day: day,
                 onOverride: { showOverridePicker = true })
@@ -162,6 +172,95 @@ private struct RestDayView: View {
             // Demoted, non-primary override affordance.
             OverrideButton(onOverride: onOverride).padding(16)
         }
+    }
+}
+
+// MARK: - Workout complete (today's session is done)
+
+/// Shown when today's resolved session is COMPLETED. A clean recap with
+/// NO primary START WORKOUT CTA and NO "Train a different day" override —
+/// the single session-per-(user,date) invariant means any start would
+/// re-open and double-log the completed row. The next workout is surfaced
+/// so the screen still tells you what's next (same forward-scan the rest
+/// day uses); pull-to-refresh remains so a server change is reflected.
+private struct WorkoutDoneView: View {
+    @ObservedObject var sync: SyncModel
+
+    private var doneTemplateTitle: String {
+        sync.todayResolvedDay?.title.uppercased() ?? "WORKOUT"
+    }
+
+    /// Logged working+warmup sets for today's completed session.
+    private var todaySets: [SetLog] {
+        guard let sid = sync.sessionsByDate[sync.todayString]?.id else { return [] }
+        return sync.setsForSession(sid)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("TODAY")
+                        .font(Theme.mono(11, .bold)).tracking(2)
+                        .foregroundStyle(Theme.muted)
+                    HStack(spacing: 10) {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 26))
+                            .foregroundStyle(Theme.done)
+                        Text("WORKOUT COMPLETE")
+                            .font(Theme.display(34))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(2).minimumScaleFactor(0.6)
+                    }
+                    Text(doneTemplateTitle)
+                        .font(Theme.mono(13, .bold)).tracking(1)
+                        .foregroundStyle(Theme.accent)
+                    let n = todaySets.count
+                    if n > 0 {
+                        let reps = todaySets.reduce(0) { $0 + $1.reps }
+                        let vol = todaySets.reduce(0.0) { $0 + $1.weight * Double($1.reps) }
+                        Text("✓ \(n) SET\(n == 1 ? "" : "S") · \(reps) REPS · \(Int(vol)) LB")
+                            .font(Theme.mono(12, .bold)).tracking(1)
+                            .foregroundStyle(Theme.muted)
+                            .padding(.top, 2)
+                    } else {
+                        Text("✓ DONE — LOGGED TO YOUR COACH")
+                            .font(Theme.mono(12, .bold)).tracking(1)
+                            .foregroundStyle(Theme.muted)
+                            .padding(.top, 2)
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+
+                if let next = sync.nextWorkout() {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("NEXT WORKOUT")
+                            .font(Theme.mono(11, .bold)).tracking(2)
+                            .foregroundStyle(Theme.muted)
+                        Text((next.day?.title ?? "Workout scheduled").uppercased())
+                            .font(Theme.display(28))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(2).minimumScaleFactor(0.6)
+                        Text(sync.relativeLabel(for: next.dateString).uppercased())
+                            .font(Theme.mono(13, .bold)).tracking(1)
+                            .foregroundStyle(Theme.accent)
+                    }
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                }
+
+                if let err = sync.loadError {
+                    Text(err).font(Theme.mono(12)).foregroundStyle(Theme.danger)
+                }
+            }
+            .padding(16)
+        }
+        .refreshable { await sync.load() }
     }
 }
 

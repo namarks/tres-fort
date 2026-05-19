@@ -53,7 +53,10 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
     case .projected(let tid):
         return sync.dayTemplate(id: tid)?.day_label
     case .session:
-        return sync.dayTemplate(id: sync.sessionsByDate[ymd]?.day_template_id)?.day_label
+        // Same session→schedule inference Today uses (shared helper, no
+        // forked logic) so a completed/ad-hoc session with a null
+        // day_template_id on a scheduled day still shows its A/B.
+        return sync.sessionDisplayTemplate(forDateString: ymd)?.day_label
     case .rest, .none:
         return nil
     }

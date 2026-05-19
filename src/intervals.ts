@@ -9,7 +9,12 @@ import type { Env, PlannedEvent } from './types';
 /** Minimal fetch signature we depend on (URL or string + RequestInit). */
 export type Fetcher = (
   input: string,
-  init?: { method?: string; headers?: Record<string, string>; signal?: AbortSignal },
+  init?: {
+    method?: string;
+    headers?: Record<string, string>;
+    body?: string;
+    signal?: AbortSignal;
+  },
 ) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
 
 export interface FetchDeps {
@@ -138,4 +143,126 @@ export async function fetchPlannedEvents(
     });
   }
   return { ok: true, events };
+}
+
+// ---- WRITE path: one-way lifting-load export ---------------------------
+//
+// The ONLY place this backend WRITES to intervals.icu. Mirrors the read
+// path: injectable fetcher (tests never hit the network), dormant no-op
+// when unconfigured, and a discriminated result — any non-2xx / throw /
+// parse error collapses to a typed {ok:false} that the caller treats as
+// "leave it pending, retry later" (it must never throw into the caller).
+
+export interface StrengthActivity {
+  /** Device-local civil date YYYY-MM-DD — used VERBATIM, no tz math. */
+  date: string;
+  /** e.g. "Lift: Push A". */
+  name: string;
+  /** Computed sRPE load → intervals `icu_training_load`. */
+  loadTss: number;
+  /** Clamped session duration in seconds → intervals `moving_time`. */
+  durationSec: number;
+  /**
+   * Existing intervals.icu event id to UPDATE (idempotent re-export of the
+   * same session). When absent a new event is created.
+   */
+  ref?: string | null;
+}
+
+export type PushResult =
+  | { ok: true; ref: string }
+  | { ok: false; reason: 'disabled' | 'http' | 'timeout' | 'parse'; status?: number };
+
+/**
+ * Create-or-update a COMPLETED strength entry in intervals.icu carrying the
+ * computed training load.
+ *
+ * VERIFIED endpoint (against the intervals-icu MCP server's working client
+ * — ~/repos/mcp-servers/intervals-icu/.../client.py + event_management.py):
+ *   - create: POST  https://intervals.icu/api/v1/athlete/{id}/events
+ *   - update: PUT   https://intervals.icu/api/v1/athlete/{id}/events/{ref}
+ *   body: {
+ *     start_date_local: "YYYY-MM-DDT00:00:00",   // T00:00:00 suffix required
+ *     name, category: "WORKOUT", type: "WeightTraining",
+ *     moving_time: <sec>, icu_training_load: <load>
+ *   }
+ *   auth: HTTP Basic, username "API_KEY", password = the API key.
+ * The read path consumes exactly this shape (category=="WORKOUT" +
+ * icu_training_load), so create→read round-trips.
+ *
+ * NOTE / uncertainty (flagged, not silently guessed): the intervals-icu
+ * MCP only ever creates calendar EVENTS, never uploads a recorded activity
+ * file. There is no code-verified "manual completed activity" write API.
+ * A WORKOUT event with icu_training_load is the verified, round-trippable
+ * mechanism for injecting strength load into the intervals.icu calendar;
+ * it is isolated behind THIS one function so the artifact can be swapped
+ * without touching db.ts if a manual-activity endpoint is later confirmed.
+ */
+export async function pushStrengthActivity(
+  env: Env,
+  activity: StrengthActivity,
+  deps: Pick<FetchDeps, 'fetcher' | 'timeoutMs'> = {},
+): Promise<PushResult> {
+  const apiKey = env.INTERVALS_ICU_API_KEY;
+  const athleteId = env.INTERVALS_ICU_ATHLETE_ID;
+  // Dormant when unconfigured: clean no-op, never an error/throw.
+  if (!apiKey || !athleteId) return { ok: false, reason: 'disabled' };
+
+  const fetcher = deps.fetcher ?? (globalThis.fetch as unknown as Fetcher);
+  const base =
+    `https://intervals.icu/api/v1/athlete/${encodeURIComponent(athleteId)}/events`;
+  const isUpdate = activity.ref != null && activity.ref.length > 0;
+  const url = isUpdate ? `${base}/${encodeURIComponent(activity.ref!)}` : base;
+  const method = isUpdate ? 'PUT' : 'POST';
+  const authToken = btoa(`API_KEY:${apiKey}`);
+
+  const body = JSON.stringify({
+    // T00:00:00 suffix is required by the intervals.icu API; the date part
+    // is the device-local civil date VERBATIM (no timezone math).
+    start_date_local: `${activity.date}T00:00:00`,
+    name: activity.name,
+    category: 'WORKOUT',
+    type: 'WeightTraining',
+    moving_time: activity.durationSec,
+    icu_training_load: activity.loadTss,
+  });
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 10_000);
+  let res: { ok: boolean; status: number; json: () => Promise<unknown> };
+  try {
+    res = await fetcher(url, {
+      method,
+      headers: {
+        Authorization: `Basic ${authToken}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body,
+      signal: controller.signal,
+    });
+  } catch {
+    // AbortError (timeout) or any network error — caller leaves the export
+    // row 'pending' for the cron to retry. NEVER throws to the caller.
+    return { ok: false, reason: 'timeout' };
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!res.ok) return { ok: false, reason: 'http', status: res.status };
+
+  let parsed: unknown;
+  try {
+    parsed = await res.json();
+  } catch {
+    return { ok: false, reason: 'parse' };
+  }
+  // On update we already know the ref; the id echo is best-effort.
+  const echoed =
+    parsed && typeof parsed === 'object' && (parsed as { id?: unknown }).id != null
+      ? String((parsed as { id: unknown }).id)
+      : null;
+  const ref = echoed ?? (isUpdate ? activity.ref! : null);
+  if (!ref) return { ok: false, reason: 'parse' };
+  return { ok: true, ref };
 }

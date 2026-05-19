@@ -17,7 +17,12 @@ import type {
   WeeklySchedule,
 } from './types';
 import { WEEKDAYS, parsePlanMeta, serializePlanMeta } from './types';
-import { fetchPlannedEvents, type FetchDeps } from './intervals';
+import {
+  fetchPlannedEvents,
+  pushStrengthActivity,
+  type FetchDeps,
+  type Fetcher,
+} from './intervals';
 
 const now = () => Date.now();
 const uuid = () => crypto.randomUUID();
@@ -991,6 +996,238 @@ export function computeSessionLoad(
     durationMin,
     durationSec: Math.round(durationMin * 60),
   };
+}
+
+interface LoadExportRow {
+  session_id: string;
+  intervals_ref: string | null;
+  load: number | null;
+  status: string;
+  attempts: number;
+  updated_at: number;
+}
+
+export interface ExportDeps {
+  /** Injected in tests so the suite never hits the network. */
+  fetcher?: Fetcher;
+  timeoutMs?: number;
+}
+
+/**
+ * Best-effort, one-way push of a completed session's sRPE load into
+ * intervals.icu.
+ *
+ * GUARANTEES (architecture, non-negotiable):
+ *  - NEVER bumps plans.version; NEVER touches the plan tree / sessions /
+ *    set_logs. Only writes its own `session_load_exports` row + audit_log.
+ *  - Idempotent, keyed by session_id: re-running for the same session
+ *    UPSERTs the SAME row and (via the stored intervals_ref) UPDATEs the
+ *    SAME intervals.icu activity — never a duplicate.
+ *  - This function does not throw for an intervals failure (returns a
+ *    status). Callers in the sacred log_workout_complete path additionally
+ *    wrap it so even an unexpected throw cannot propagate.
+ *
+ * Returns the resolved status; 'skipped' means no non-warmup work (no-op).
+ */
+export async function exportSessionLoad(
+  db: D1Database,
+  env: Env,
+  userId: string,
+  sessionId: string,
+  deps: ExportDeps = {},
+): Promise<{ status: 'ok' | 'pending' | 'skipped' | 'disabled'; load?: number }> {
+  const session = await db
+    .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
+    .bind(sessionId, userId)
+    .first<SessionRow>();
+  if (!session) return { status: 'skipped' };
+
+  const sets = await getSetsForSession(db, sessionId);
+  const computed = computeSessionLoad(session, sets);
+
+  // No non-warmup work → skip export ENTIRELY (no row write, no push).
+  if (!computed) {
+    await writeAudit(db, userId, 'export_session_load', { session_id: sessionId }, 'skipped:no_working_sets');
+    return { status: 'skipped' };
+  }
+
+  // Day name for a friendly activity title.
+  let dayName = 'Lifting';
+  if (session.day_template_id) {
+    const dt = await db
+      .prepare('SELECT name, day_label FROM day_templates WHERE id = ?1')
+      .bind(session.day_template_id)
+      .first<{ name: string; day_label: string | null }>();
+    if (dt) dayName = dt.day_label || dt.name || dayName;
+  }
+  const name = `Lift: ${dayName}`;
+
+  // Read any prior export row (idempotency key = session_id).
+  const prior = await db
+    .prepare('SELECT * FROM session_load_exports WHERE session_id = ?1')
+    .bind(sessionId)
+    .first<LoadExportRow>();
+
+  const push = await pushStrengthActivity(
+    env,
+    {
+      date: session.date, // device-local civil date VERBATIM
+      name,
+      loadTss: computed.load,
+      durationSec: computed.durationSec,
+      ref: prior?.intervals_ref ?? null,
+    },
+    { fetcher: deps.fetcher, timeoutMs: deps.timeoutMs },
+  );
+
+  const ts = now();
+  const attempts = (prior?.attempts ?? 0) + 1;
+
+  if (push.ok) {
+    // UPSERT keyed by session_id — same intervals_ref, never a duplicate.
+    await db
+      .prepare(
+        `INSERT INTO session_load_exports
+           (session_id,intervals_ref,load,status,attempts,updated_at)
+         VALUES (?1,?2,?3,'ok',?4,?5)
+         ON CONFLICT(session_id) DO UPDATE SET
+           intervals_ref=excluded.intervals_ref,
+           load=excluded.load,
+           status='ok',
+           attempts=excluded.attempts,
+           updated_at=excluded.updated_at`,
+      )
+      .bind(sessionId, push.ref, computed.load, attempts, ts)
+      .run();
+    await writeAudit(
+      db,
+      userId,
+      'export_session_load',
+      { session_id: sessionId, load: computed.load },
+      `ok:ref=${push.ref}`,
+    );
+    return { status: 'ok', load: computed.load };
+  }
+
+  if (push.reason === 'disabled') {
+    // Feature dormant — record nothing pushable, do not mark pending.
+    await db
+      .prepare(
+        `INSERT INTO session_load_exports
+           (session_id,intervals_ref,load,status,attempts,updated_at)
+         VALUES (?1,?2,?3,'disabled',?4,?5)
+         ON CONFLICT(session_id) DO UPDATE SET
+           load=excluded.load,
+           status='disabled',
+           attempts=excluded.attempts,
+           updated_at=excluded.updated_at`,
+      )
+      .bind(sessionId, prior?.intervals_ref ?? null, computed.load, attempts, ts)
+      .run();
+    await writeAudit(db, userId, 'export_session_load', { session_id: sessionId }, 'disabled');
+    return { status: 'disabled' };
+  }
+
+  // Transient failure (http/timeout/parse) → leave PENDING for cron retry.
+  await db
+    .prepare(
+      `INSERT INTO session_load_exports
+         (session_id,intervals_ref,load,status,attempts,updated_at)
+       VALUES (?1,?2,?3,'pending',?4,?5)
+       ON CONFLICT(session_id) DO UPDATE SET
+         intervals_ref=COALESCE(session_load_exports.intervals_ref,excluded.intervals_ref),
+         load=excluded.load,
+         status='pending',
+         attempts=excluded.attempts,
+         updated_at=excluded.updated_at`,
+    )
+    .bind(sessionId, prior?.intervals_ref ?? null, computed.load, attempts, ts)
+    .run();
+  await writeAudit(
+    db,
+    userId,
+    'export_session_load',
+    { session_id: sessionId, load: computed.load },
+    `pending:${push.reason}${'status' in push && push.status ? `:${push.status}` : ''}`,
+  );
+  return { status: 'pending', load: computed.load };
+}
+
+/**
+ * BEST-EFFORT export hook for the sacred log_workout_complete path. Wraps
+ * exportSessionLoad so that ANY failure — including an unexpected throw —
+ * cannot fail, block, or propagate into workout completion / set logging.
+ * Resolves silently regardless; the cron retries anything left pending.
+ */
+export async function tryExportSessionLoad(
+  db: D1Database,
+  env: Env,
+  userId: string,
+  sessionId: string,
+  deps: ExportDeps = {},
+): Promise<void> {
+  try {
+    await exportSessionLoad(db, env, userId, sessionId, deps);
+  } catch (e) {
+    // The export must NEVER throw into the caller. Best-effort: record a
+    // pending row (so the cron retries) and swallow. Even this recovery is
+    // guarded so a DB hiccup here still cannot propagate.
+    try {
+      await db
+        .prepare(
+          `INSERT INTO session_load_exports (session_id,intervals_ref,load,status,attempts,updated_at)
+           VALUES (?1,NULL,NULL,'pending',
+             COALESCE((SELECT attempts FROM session_load_exports WHERE session_id=?1),0)+1,?2)
+           ON CONFLICT(session_id) DO UPDATE SET status='pending', updated_at=excluded.updated_at`,
+        )
+        .bind(sessionId, now())
+        .run();
+    } catch {
+      /* swallow — completion must succeed no matter what */
+    }
+    console.error('tryExportSessionLoad swallowed', e);
+  }
+}
+
+/**
+ * Cron retry: re-attempt every still-`pending` export. Idempotent — each
+ * retry routes back through exportSessionLoad's session_id-keyed upsert,
+ * so a retry UPDATEs the same intervals activity (never a duplicate) and
+ * bumps `attempts`. A failing retry stays 'pending'. Never throws.
+ */
+export async function retryPendingLoadExports(
+  db: D1Database,
+  env: Env,
+  deps: ExportDeps = {},
+): Promise<{ retried: number; ok: number; stillPending: number }> {
+  const out = { retried: 0, ok: 0, stillPending: 0 };
+  let rows: { session_id: string }[];
+  try {
+    const r = await db
+      .prepare("SELECT session_id FROM session_load_exports WHERE status = 'pending'")
+      .all<{ session_id: string }>();
+    rows = r.results;
+  } catch (e) {
+    console.error('retryPendingLoadExports list failed', e);
+    return out;
+  }
+  for (const { session_id } of rows) {
+    out.retried++;
+    try {
+      const owner = await db
+        .prepare('SELECT user_id FROM sessions WHERE id = ?1')
+        .bind(session_id)
+        .first<{ user_id: string }>();
+      if (!owner) continue;
+      const res = await exportSessionLoad(db, env, owner.user_id, session_id, deps);
+      if (res.status === 'ok') out.ok++;
+      else if (res.status === 'pending') out.stillPending++;
+    } catch (e) {
+      out.stillPending++;
+      console.error('retryPendingLoadExports item failed', e);
+    }
+  }
+  return out;
 }
 
 /** "I'm beat — adjust." Scales target day(s) and records the reasoning. */

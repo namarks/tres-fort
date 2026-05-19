@@ -22,6 +22,7 @@ import {
   getVolume,
   logSet,
   logWorkoutComplete,
+  tryExportSessionLoad,
   resolveExercise,
   setPlanSchedule,
   setPlannedSession,
@@ -295,7 +296,13 @@ const TOOLS: Record<string, Tool> = {
         a.perceived_fatigue == null ? null : Number(a.perceived_fatigue),
         typeof a.notes === 'string' ? a.notes : null,
       );
-      return s ?? { error: 'no_active_plan' };
+      if (!s) return { error: 'no_active_plan' };
+      // BEST-EFFORT one-way load export to intervals.icu. tryExport* is
+      // fully self-guarded (never throws, never blocks); awaiting it only
+      // sequences the DB write — completion already succeeded above and is
+      // returned regardless of the export outcome. The sacred path is safe.
+      await tryExportSessionLoad(env.DB, env, userId, s.id);
+      return s;
     },
   },
   add_note: {

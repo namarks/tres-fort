@@ -5,6 +5,9 @@ final class SyncModel: ObservableObject {
     @Published var plan: PlanTree?
     @Published var sets: [SetLog] = []
     @Published var sessions: [SessionRow] = []
+    /// Read-only ride overlay (intervals.icu etc). Already filtered to
+    /// non-deleted events — the rest of the app never sees tombstones.
+    @Published var rides: [ExternalEvent] = []
     @Published var catalog: [ExerciseCatalog] = []
     @Published var todaySession: SessionRow?
     @Published var selectedDayID: String?
@@ -57,6 +60,13 @@ final class SyncModel: ObservableObject {
             plan = state.plan
             sets = state.sets
             sessions = state.sessions
+            // Full reload every sync (getState uses events_since=0): the
+            // server returns the full current non-deleted external_events
+            // set, so this is a full replace, not a delta merge. No
+            // client-side watermark/tombstone-merge is needed; we still
+            // defensively drop any tombstoned events at the cache boundary
+            // so glyphs, agenda, and conflict detection never see them.
+            rides = state.external_events.filter { !$0.isDeleted }
             todaySession = state.sessions.first { $0.date == todayString }
             if selectedDayID == nil { selectedDayID = state.plan?.days.first?.id }
             if catalog.isEmpty {
@@ -336,6 +346,26 @@ final class SyncModel: ObservableObject {
             out[s.date] = s
         }
         return out
+    }
+
+    /// Non-deleted external events for a `YYYY-MM-DD` date (read-only).
+    func rides(on dateString: String) -> [ExternalEvent] {
+        rides.filter { !$0.isDeleted && $0.date == dateString }
+    }
+
+    /// True if this calendar date carries a lift (real session OR a
+    /// projected lift) — the precondition for any ride conflict.
+    func dateHasLift(_ dateString: String) -> Bool {
+        RideConflict.dateHasLift(projection(for: dateString))
+    }
+
+    /// Ride conflict severity for a date, mirroring the backend's
+    /// `detectConflicts` byte-for-byte (see RideConflict).
+    func rideConflict(for dateString: String) -> RideConflict.Severity {
+        RideConflict.severity(
+            forLiftDate: dateString,
+            hasLift: { [self] in dateHasLift($0) },
+            ridesOn: { [self] in rides(on: $0) })
     }
 
     /// Resolve one calendar day via the frozen projection algorithm.

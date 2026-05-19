@@ -2,14 +2,16 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   deleteDayTemplate,
+  detectConflicts,
   getProjectedCalendar,
+  getRideConflicts,
   projectCalendar,
   setPlanSchedule,
   setPlannedSession,
   skipPlannedSession,
   weekdayOf,
 } from '../src/db';
-import type { SessionRow, WeeklySchedule } from '../src/types';
+import type { ExternalEventRow, SessionRow, WeeklySchedule } from '../src/types';
 import { parsePlanMeta } from '../src/types';
 
 beforeAll(async () => {
@@ -344,5 +346,186 @@ describe('migration 0005 + schedule round-trip via real D1', () => {
     // 2026-05-22 is a Friday.
     const cal = await getProjectedCalendar(env.DB, userId, '2026-05-22', '2026-05-22', '2026-05-20');
     expect(cal[0]).toMatchObject({ status: 'rest', day_template_id: null });
+  });
+});
+
+describe('detectConflicts — truth table (iOS mirrors this byte-for-byte)', () => {
+  const evt = (
+    id: string,
+    date: string,
+    over: Partial<ExternalEventRow> = {},
+  ): Pick<ExternalEventRow, 'id' | 'date' | 'training_load' | 'planned_duration_sec'> => ({
+    id,
+    date,
+    training_load: over.training_load ?? null,
+    planned_duration_sec: over.planned_duration_sec ?? null,
+  });
+
+  it('same-day lift + ride → clash, lists every same-day event', () => {
+    const out = detectConflicts(
+      ['2026-05-20'],
+      [evt('intervals:a', '2026-05-20'), evt('intervals:b', '2026-05-20')],
+    );
+    expect(out).toEqual([
+      { date: '2026-05-20', conflicts: ['intervals:a', 'intervals:b'], severity: 'clash' },
+    ]);
+  });
+
+  it('day-before a >=150 TSS ride → heavy-next-day', () => {
+    const out = detectConflicts(
+      ['2026-05-19'],
+      [evt('intervals:big', '2026-05-20', { training_load: 150 })],
+    );
+    expect(out).toEqual([
+      { date: '2026-05-19', conflicts: ['intervals:big'], severity: 'heavy-next-day' },
+    ]);
+  });
+
+  it('day-before a >=9000s ride → heavy-next-day (duration threshold)', () => {
+    const out = detectConflicts(
+      ['2026-05-19'],
+      [evt('intervals:long', '2026-05-20', { planned_duration_sec: 9000 })],
+    );
+    expect(out).toEqual([
+      { date: '2026-05-19', conflicts: ['intervals:long'], severity: 'heavy-next-day' },
+    ]);
+  });
+
+  it('sub-threshold next-day ride is NOT flagged', () => {
+    const out = detectConflicts(
+      ['2026-05-19'],
+      [evt('intervals:easy', '2026-05-20', { training_load: 149, planned_duration_sec: 8999 })],
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('rest day + ride → no conflict (only lift dates are evaluated)', () => {
+    // The lift-date set excludes rest days; an event on a non-lift date and
+    // not adjacent-before any lift date yields nothing.
+    const out = detectConflicts([], [evt('intervals:a', '2026-05-20', { training_load: 300 })]);
+    expect(out).toEqual([]);
+  });
+
+  it('soft-deleted ride is ignored (caller passes only live events)', () => {
+    // detectConflicts trusts its input: a soft-deleted row simply is not in
+    // the events array, so it cannot produce a conflict.
+    const out = detectConflicts(['2026-05-20'], []);
+    expect(out).toEqual([]);
+  });
+
+  it('same-day takes priority over day-before for the same date', () => {
+    const out = detectConflicts(
+      ['2026-05-20'],
+      [
+        evt('intervals:today', '2026-05-20'),
+        evt('intervals:tomorrowBig', '2026-05-21', { training_load: 200 }),
+      ],
+    );
+    // Only the clash is emitted for 2026-05-20 (first match wins).
+    expect(out).toEqual([
+      { date: '2026-05-20', conflicts: ['intervals:today'], severity: 'clash' },
+    ]);
+  });
+
+  it('output is deduped and sorted by date ascending', () => {
+    const out = detectConflicts(
+      ['2026-05-22', '2026-05-20', '2026-05-20'],
+      [evt('intervals:x', '2026-05-20'), evt('intervals:y', '2026-05-22')],
+    );
+    expect(out.map((c) => c.date)).toEqual(['2026-05-20', '2026-05-22']);
+  });
+});
+
+describe('getRideConflicts — cancelled (skipped) sessions produce no conflict', () => {
+  // sessions has no soft-delete column; a cancelled day is status='skipped'.
+  // The liftDates filter (projected|planned|in_progress|completed) excludes
+  // 'skipped', so a same-day ride on a skipped session is NOT a conflict,
+  // while a completed session on the same date IS.
+  async function freshUserAndPlan(): Promise<{ userId: string; planId: string }> {
+    const userId = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,?3,?4,?5)',
+    )
+      .bind(userId, `sub-${userId}`, null, 'Rider', Date.now())
+      .run();
+    await env.DB.prepare(
+      "UPDATE plans SET status='archived' WHERE user_id=?1 AND status='active'",
+    )
+      .bind(userId)
+      .run();
+    const planId = crypto.randomUUID();
+    await env.DB.prepare(
+      "INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at) VALUES (?1,?2,'Conflict Plan','active',1,NULL,?3,?3)",
+    )
+      .bind(planId, userId, Date.now())
+      .run();
+    return { userId, planId };
+  }
+
+  const insertSession = (
+    userId: string,
+    planId: string,
+    date: string,
+    status: string,
+  ) =>
+    env.DB.prepare(
+      `INSERT INTO sessions
+         (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,
+          perceived_fatigue,notes,created_at,updated_at)
+       VALUES (?1,?2,?3,NULL,?4,?5,NULL,NULL,NULL,NULL,?6,?6)`,
+    )
+      .bind(`sess-${date}-${status}`, userId, planId, date, status, Date.now())
+      .run();
+
+  const insertRide = (userId: string, id: string, date: string) =>
+    env.DB.prepare(
+      `INSERT INTO external_events
+         (id,user_id,source,external_id,date,kind,title,description,
+          planned_duration_sec,training_load,intensity,raw,synced_at,deleted_at)
+       VALUES (?1,?2,'intervals',?3,?4,'ride','Ride',NULL,7200,120,0.7,'{}',?5,NULL)`,
+    )
+      .bind(id, userId, id.replace('intervals:', ''), date, Date.now())
+      .run();
+
+  it('skipped session + same-day ride → NO conflict; completed → clash', async () => {
+    const { userId, planId } = await freshUserAndPlan();
+    // 2026-06-10 skipped, 2026-06-12 completed; rides on both days.
+    await insertSession(userId, planId, '2026-06-10', 'skipped');
+    await insertSession(userId, planId, '2026-06-12', 'completed');
+    await insertRide(userId, 'intervals:r-skip', '2026-06-10');
+    await insertRide(userId, 'intervals:r-done', '2026-06-12');
+
+    const conflicts = await getRideConflicts(
+      env.DB,
+      userId,
+      '2026-06-09',
+      '2026-06-13',
+      '2026-06-09',
+    );
+    const dates = conflicts.map((c) => c.date);
+    expect(dates).not.toContain('2026-06-10'); // skipped → ignored
+    const done = conflicts.find((c) => c.date === '2026-06-12');
+    expect(done).toBeTruthy();
+    expect(done!.severity).toBe('clash');
+    expect(done!.conflicts).toContain('intervals:r-done');
+  });
+
+  it('soft-deleted ride is excluded from getRideConflicts', async () => {
+    const { userId, planId } = await freshUserAndPlan();
+    await insertSession(userId, planId, '2026-06-20', 'completed');
+    await insertRide(userId, 'intervals:r-del', '2026-06-20');
+    await env.DB.prepare(
+      "UPDATE external_events SET deleted_at=?1 WHERE id='intervals:r-del'",
+    )
+      .bind(Date.now())
+      .run();
+    const conflicts = await getRideConflicts(
+      env.DB,
+      userId,
+      '2026-06-19',
+      '2026-06-21',
+      '2026-06-19',
+    );
+    expect(conflicts.map((c) => c.date)).not.toContain('2026-06-20');
   });
 });

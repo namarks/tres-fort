@@ -141,6 +141,51 @@ describe('mcp write tools', () => {
     expect(reason?.body).toContain('reduce_volume');
   });
 
+  it('refresh_rides: audited, returns {synced,status}, NO version bump, NO note', async () => {
+    // Establish a plan so there is a version to watch.
+    const built = await call('update_plan', {
+      name: 'Ride Refresh',
+      days: [
+        { day_label: 'A', name: 'Day A', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+      ],
+    });
+    const vBefore = built.plan.version as number;
+
+    const auditBefore = (
+      await env.DB.prepare("SELECT COUNT(*) AS c FROM audit_log WHERE tool='refresh_rides'").first<{
+        c: number;
+      }>()
+    )!.c;
+    const notesBefore = (
+      await env.DB.prepare("SELECT COUNT(*) AS c FROM notes WHERE author='claude'").first<{
+        c: number;
+      }>()
+    )!.c;
+
+    // In the offline test runtime the real intervals.icu fetch cannot
+    // connect, so the sync returns the failed-fetch guard status WITHOUT
+    // touching the cache. The tool still returns {synced,status}.
+    const r = await call('refresh_rides', {});
+    expect(r).toHaveProperty('status');
+    expect(r).toHaveProperty('synced');
+    expect(['ok', 'fetch_failed', 'disabled']).toContain(r.status);
+
+    // Audited (action), but NO plan-version bump and NO claude notes row.
+    const auditAfter = (
+      await env.DB.prepare("SELECT COUNT(*) AS c FROM audit_log WHERE tool='refresh_rides'").first<{
+        c: number;
+      }>()
+    )!.c;
+    expect(auditAfter).toBe(auditBefore + 1);
+    const notesAfter = (
+      await env.DB.prepare("SELECT COUNT(*) AS c FROM notes WHERE author='claude'").first<{
+        c: number;
+      }>()
+    )!.c;
+    expect(notesAfter).toBe(notesBefore);
+    expect((await call('get_current_plan', {})).version).toBe(vBefore);
+  });
+
   it('reports unknown exercises instead of failing silently', async () => {
     const r = await call('update_plan', {
       name: 'bad',

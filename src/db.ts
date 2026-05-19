@@ -1,8 +1,11 @@
 // Service layer: all D1 access goes through here so REST (now) and MCP
 // (milestone b) share identical behavior. Timestamps are epoch-ms integers.
 import type {
+  DayConflict,
   DayTemplateRow,
   EnrichedTemplateExercise,
+  Env,
+  ExternalEventRow,
   PlanRow,
   PlanTree,
   ScheduleWeek,
@@ -14,6 +17,7 @@ import type {
   WeeklySchedule,
 } from './types';
 import { WEEKDAYS, parsePlanMeta, serializePlanMeta } from './types';
+import { fetchPlannedEvents, type FetchDeps } from './intervals';
 
 const now = () => Date.now();
 const uuid = () => crypto.randomUUID();
@@ -1401,4 +1405,267 @@ export async function getResolvedScheduleNames(
     out[wd] = id ? nameById.get(id) ?? null : null;
   }
   return out;
+}
+
+// ---- external events (cycling-awareness; own consistency class) ----------
+//
+// `external_events` is a SERVER-OWNED RECONCILED CACHE. It is not the
+// versioned plan tree and not the append-only client-UUID log. A sync
+// MUST NOT bump plans.version. Rows are soft-deleted, never hard-deleted.
+
+export type SyncStatus =
+  | 'disabled' // INTERVALS_ICU_API_KEY/ATHLETE_ID unset — dormant no-op
+  | 'ok' // 2xx + parse: cache reconciled
+  | 'fetch_failed'; // non-2xx/timeout/parse: cache left COMPLETELY untouched
+
+export interface SyncResult {
+  status: SyncStatus;
+  /** Count of non-deleted in-window rows after a successful sync (else 0). */
+  synced: number;
+  /** Diagnostic only (http status / reason) on a failed fetch. */
+  detail?: string;
+}
+
+export interface SyncDeps extends FetchDeps {
+  /** Override the user id (defaults to the single owner). */
+  userId?: string;
+  /** Allow injecting the env-resolved owner sub (tests). */
+  ownerSub?: string;
+}
+
+/**
+ * Pull intervals.icu planned events and reconcile the cache.
+ *
+ * THE critical correctness guard: on a failed/disabled fetch the cache is
+ * left COMPLETELY untouched (no upsert, NO soft-delete) — a transient
+ * intervals.icu outage must NEVER wipe the user's ride awareness. Only a
+ * genuinely-empty *successful* window soft-deletes the in-window rows.
+ *
+ * Reconcile (on {ok:true}):
+ *  - upsert each event by (source, external_id) — id = "intervals:{ext}";
+ *    reschedules just update `date` (+ other fields) on the same row.
+ *  - soft-delete (set deleted_at) any non-deleted row whose date is inside
+ *    the synced [today, today+window] window but is no longer present in
+ *    the fetched set (the source removed/cancelled it).
+ *  - rows OUTSIDE the window are never touched (we didn't ask about them).
+ *
+ * Never bumps plans.version. Never writes a notes row. (The MCP action
+ * wrapper writes the audit_log row — this layer stays pure data.)
+ */
+export async function syncExternalEvents(
+  db: D1Database,
+  env: Env,
+  deps: SyncDeps = {},
+): Promise<SyncResult> {
+  const userId =
+    deps.userId ?? (await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB)).id;
+  const today = deps.today ?? new Date().toISOString().slice(0, 10);
+  const windowDays = deps.windowDays ?? 90;
+
+  const fetched = await fetchPlannedEvents(env, { ...deps, today, windowDays });
+  if (!fetched.ok) {
+    // Disabled OR transient failure → DO NOT TOUCH the cache at all.
+    return {
+      status: fetched.reason === 'disabled' ? 'disabled' : 'fetch_failed',
+      synced: 0,
+      detail:
+        fetched.reason +
+        (fetched.reason === 'http' && 'status' in fetched ? `:${fetched.status}` : ''),
+    };
+  }
+
+  // Window upper bound, inclusive, as a YYYY-MM-DD string (string compare is
+  // valid for zero-padded ISO dates).
+  const newest = addDays(today, windowDays);
+  const ts = now();
+  const seen = new Set<string>();
+  const stmts: D1PreparedStatement[] = [];
+
+  for (const ev of fetched.events) {
+    const id = `intervals:${ev.external_id}`;
+    seen.add(id);
+    // Upsert by PK (id is deterministic from source+external_id). A reschedule
+    // (same external_id, new date) just updates `date` on the same row and
+    // clears any prior soft-delete (the event came back).
+    stmts.push(
+      db
+        .prepare(
+          `INSERT INTO external_events
+             (id,user_id,source,external_id,date,kind,title,description,
+              planned_duration_sec,training_load,intensity,raw,synced_at,deleted_at)
+           VALUES (?1,?2,'intervals',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL)
+           ON CONFLICT(id) DO UPDATE SET
+             date=excluded.date,
+             kind=excluded.kind,
+             title=excluded.title,
+             description=excluded.description,
+             planned_duration_sec=excluded.planned_duration_sec,
+             training_load=excluded.training_load,
+             intensity=excluded.intensity,
+             raw=excluded.raw,
+             synced_at=excluded.synced_at,
+             deleted_at=NULL`,
+        )
+        .bind(
+          id,
+          userId,
+          ev.external_id,
+          ev.date,
+          ev.kind,
+          ev.title,
+          ev.description,
+          ev.planned_duration_sec,
+          ev.training_load,
+          ev.intensity,
+          ev.raw,
+          ts,
+        ),
+    );
+  }
+
+  // Soft-delete in-window rows that were NOT seen this sync. Rows outside
+  // [today,newest] are intentionally left alone (we didn't query them).
+  // Done as a single statement excluding the seen ids.
+  const seenIds = [...seen];
+  const placeholders = seenIds.map((_, i) => `?${i + 4}`).join(',');
+  const notInSeen = seenIds.length ? `AND id NOT IN (${placeholders})` : '';
+  stmts.push(
+    db
+      .prepare(
+        `UPDATE external_events
+            SET deleted_at = ?3
+          WHERE user_id = ?1
+            AND deleted_at IS NULL
+            AND date >= ?2 AND date <= ?${seenIds.length ? seenIds.length + 4 : 4}
+            ${notInSeen}`,
+      )
+      .bind(userId, today, ts, ...seenIds, newest),
+  );
+
+  await db.batch(stmts);
+
+  const cnt = await db
+    .prepare(
+      `SELECT COUNT(*) AS c FROM external_events
+        WHERE user_id = ?1 AND deleted_at IS NULL
+          AND date >= ?2 AND date <= ?3`,
+    )
+    .bind(userId, today, newest)
+    .first<{ c: number }>();
+  return { status: 'ok', synced: cnt?.c ?? 0 };
+}
+
+/**
+ * Non-deleted upcoming external events for a user. `range` is an inclusive
+ * day count from `from` (default: today .. +90d).
+ */
+export async function getUpcomingRides(
+  db: D1Database,
+  userId: string,
+  opts: { from?: string; range?: number } = {},
+): Promise<ExternalEventRow[]> {
+  const from = opts.from ?? new Date().toISOString().slice(0, 10);
+  const to = addDays(from, opts.range ?? 90);
+  const r = await db
+    .prepare(
+      `SELECT * FROM external_events
+        WHERE user_id = ?1 AND deleted_at IS NULL
+          AND date >= ?2 AND date <= ?3
+        ORDER BY date`,
+    )
+    .bind(userId, from, to)
+    .all<ExternalEventRow>();
+  return r.results;
+}
+
+/**
+ * CONFLICT RULE — authoritative. iOS mirrors this BYTE-FOR-BYTE.
+ *
+ * Inputs: the set of dates that hold a lift (a real lift session OR a
+ * projected/scheduled lift day) and the non-deleted external_events.
+ * Soft-deleted events are excluded by the caller and ignored here.
+ *
+ * For each lift date D, in priority order (first match wins; a date emits at
+ * most one DayConflict):
+ *
+ *  (a) SAME-DAY  → severity "clash":
+ *      there exists a non-deleted external_event whose `date` == D.
+ *      `conflicts` = the ids of ALL such same-day events.
+ *
+ *  (b) DAY-BEFORE-HARD  → severity "heavy-next-day":
+ *      D itself has no same-day event, AND there exists a non-deleted
+ *      external_event E on the immediately following calendar day
+ *      (date == D + 1 civil day) that is "hard", where hard means
+ *      training_load >= 150 OR planned_duration_sec >= 9000.
+ *      `conflicts` = the ids of ALL such hard next-day events.
+ *      (Sub-threshold next-day events do NOT flag.)
+ *
+ * "Calendar day before/after" uses the YYYY-MM-DD civil date (the same
+ * tz-free rule as weekdayOf/addDays) — never a UTC offset. Output is
+ * sorted by date ascending and is fully deterministic.
+ */
+export function detectConflicts(
+  liftDates: Iterable<string>,
+  events: Pick<ExternalEventRow, 'id' | 'date' | 'training_load' | 'planned_duration_sec'>[],
+): DayConflict[] {
+  const byDate = new Map<string, typeof events>();
+  for (const e of events) {
+    const arr = byDate.get(e.date);
+    if (arr) arr.push(e);
+    else byDate.set(e.date, [e]);
+  }
+  const isHard = (e: { training_load: number | null; planned_duration_sec: number | null }) =>
+    (e.training_load ?? 0) >= 150 || (e.planned_duration_sec ?? 0) >= 9000;
+
+  const out: DayConflict[] = [];
+  // Dedupe + stable order: iterate sorted unique lift dates.
+  const dates = [...new Set(liftDates)].sort();
+  for (const d of dates) {
+    const sameDay = byDate.get(d);
+    if (sameDay && sameDay.length) {
+      out.push({ date: d, conflicts: sameDay.map((e) => e.id), severity: 'clash' });
+      continue;
+    }
+    const next = byDate.get(addDays(d, 1));
+    if (next) {
+      const hard = next.filter(isHard);
+      if (hard.length) {
+        out.push({ date: d, conflicts: hard.map((e) => e.id), severity: 'heavy-next-day' });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Data-layer convenience: collect lift dates from the projected calendar in
+ * a window and run detectConflicts against the live ride cache. Pure read.
+ */
+export async function getRideConflicts(
+  db: D1Database,
+  userId: string,
+  fromDate: string,
+  toDate: string,
+  today: string,
+): Promise<DayConflict[]> {
+  const cal = await getProjectedCalendar(db, userId, fromDate, toDate, today);
+  const liftDates = cal
+    .filter(
+      (c) =>
+        c.status === 'projected' ||
+        c.status === 'planned' ||
+        c.status === 'in_progress' ||
+        c.status === 'completed',
+    )
+    .map((c) => c.date);
+  const events = await db
+    .prepare(
+      `SELECT id, date, training_load, planned_duration_sec
+         FROM external_events
+        WHERE user_id = ?1 AND deleted_at IS NULL
+          AND date >= ?2 AND date <= ?3`,
+    )
+    .bind(userId, fromDate, addDays(toDate, 1))
+    .all<Pick<ExternalEventRow, 'id' | 'date' | 'training_load' | 'planned_duration_sec'>>();
+  return detectConflicts(liftDates, events.results);
 }

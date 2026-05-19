@@ -9,6 +9,14 @@ export interface Env {
   DEV_AUTH_SECRET?: string;
   /** Consent gate for the OAuth /authorize step (claude.ai/desktop). */
   OWNER_AUTH_PASSPHRASE?: string;
+  /**
+   * intervals.icu API key (a `wrangler secret put` secret — NEVER committed).
+   * The cycling-awareness feature is DORMANT (a clean no-op, no error) when
+   * this is unset.
+   */
+  INTERVALS_ICU_API_KEY?: string;
+  /** intervals.icu athlete id (non-sensitive — lives in wrangler.jsonc vars). */
+  INTERVALS_ICU_ATHLETE_ID?: string;
 }
 
 export type HonoEnv = {
@@ -104,6 +112,49 @@ export interface EnrichedTemplateExercise extends TemplateExerciseRow {
 
 export interface PlanTree extends PlanRow {
   days: (DayTemplateRow & { exercises: EnrichedTemplateExercise[] })[];
+}
+
+// ---- external events (frozen contract — see migrations/0006) -------------
+
+/**
+ * Server-owned reconciled cache of planned endurance events (intervals.icu).
+ * NOT versioned plan tree, NOT the append-only log. Soft-deleted only.
+ */
+export interface ExternalEventRow {
+  id: string; // "intervals:{external_id}"
+  user_id: string;
+  source: string; // 'intervals'
+  external_id: string;
+  date: string; // YYYY-MM-DD from start_date_local, verbatim
+  kind: string; // ride|run|swim|other
+  title: string | null;
+  description: string | null;
+  planned_duration_sec: number | null;
+  training_load: number | null;
+  intensity: number | null;
+  raw: string | null;
+  synced_at: number; // epoch-ms
+  deleted_at: number | null;
+}
+
+/** A normalized planned event as returned by the intervals.icu fetcher. */
+export interface PlannedEvent {
+  external_id: string;
+  date: string; // start_date_local YYYY-MM-DD verbatim
+  kind: string; // ride|run|swim|other
+  title: string | null;
+  description: string | null;
+  planned_duration_sec: number | null;
+  training_load: number | null;
+  intensity: number | null;
+  raw: string; // source JSON for this event
+}
+
+/** Per-date conflict between lift sessions/projections and external events. */
+export interface DayConflict {
+  date: string;
+  conflicts: string[]; // external_event ids
+  severity: 'clash' | 'heavy-next-day';
 }
 
 // ---- weekly schedule (frozen contract — see migrations/0005) -------------

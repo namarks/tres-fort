@@ -10,8 +10,11 @@
 --     log_workout_complete or set logging (that path is sacred).
 --
 -- Idempotency: PRIMARY KEY is session_id. Re-completing / re-exporting a
--- session UPSERTs the SAME row and (via the stored intervals_ref)
--- updates the SAME intervals.icu activity — it never creates a duplicate.
+-- session UPSERTs the SAME row. If the recomputed sRPE load CHANGED (e.g.
+-- the user edited perceived_fatigue / sets / RPE and re-ran completion),
+-- the export PUT-updates the SAME intervals.icu activity (via the stored
+-- intervals_ref) in place — never a duplicate. If the load is UNCHANGED
+-- the re-export is a true no-op (no intervals.icu call at all).
 --
 -- FROZEN CONTRACT:
 --   session_id    TEXT PK   -- sessions.id this export tracks

@@ -463,3 +463,96 @@ describe('mcp write tools', () => {
     });
   });
 });
+
+// FIX2 (MCP path) — the skip_planned_session TOOL's session_already_started
+// rejection (added in f7638ce) had no rejection-path coverage; mcp_write
+// only ever skipped a planned date. These exercise the guard end-to-end
+// through the MCP tool, including no-mutation + sets-intact, and confirm
+// the planned/empty path still works.
+describe('mcp skip_planned_session — rejects burying started/finished history', () => {
+  // The MCP tool resolves the single owner via ensureOwnerUser; update_plan
+  // bootstraps it. Resolve that owner + its active plan, then seed a
+  // session directly with the status under test.
+  async function ownerAndPlan(): Promise<{ userId: string; planId: string }> {
+    await call('update_plan', {
+      name: 'MCP Skip Guard',
+      days: [{ day_label: 'A', name: 'Day A', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] }],
+    });
+    const userId = (
+      await env.DB.prepare('SELECT id FROM users ORDER BY created_at LIMIT 1').first<{ id: string }>()
+    )!.id;
+    const planId = (
+      await env.DB.prepare("SELECT id FROM plans WHERE user_id=?1 AND status='active'")
+        .bind(userId)
+        .first<{ id: string }>()
+    )!.id;
+    return { userId, planId };
+  }
+  async function seedSession(
+    userId: string,
+    planId: string,
+    date: string,
+    status: string,
+  ): Promise<string> {
+    const sid = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,?7,NULL,NULL,?8,?8)',
+    )
+      .bind(sid, userId, planId, date, status, status === 'planned' ? null : 1, status === 'completed' ? 2 : null, Date.now())
+      .run();
+    return sid;
+  }
+
+  it('REJECTS via the tool when the date has a completed session; row + sets intact', async () => {
+    const { userId, planId } = await ownerAndPlan();
+    const sid = await seedSession(userId, planId, '2026-08-01', 'completed');
+    const setId = crypto.randomUUID();
+    await env.DB.prepare(
+      "INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,deleted_at) VALUES (?1,?2,'ex_bench',NULL,1,225,5,8,0,NULL,?3,'mcp',NULL)",
+    )
+      .bind(setId, sid, Date.now())
+      .run();
+
+    const r = await call('skip_planned_session', { date: '2026-08-01' });
+    expect(r).toEqual({ error: 'session_already_started', status: 'completed' });
+
+    const row = await env.DB.prepare('SELECT status FROM sessions WHERE id=?1')
+      .bind(sid)
+      .first<{ status: string }>();
+    expect(row!.status).toBe('completed'); // not buried
+    const set = await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?1')
+      .bind(setId)
+      .first<{ deleted_at: number | null }>();
+    expect(set!.deleted_at).toBeNull();
+  });
+
+  it('REJECTS via the tool when the date has an in_progress session; row untouched', async () => {
+    const { userId, planId } = await ownerAndPlan();
+    const sid = await seedSession(userId, planId, '2026-08-02', 'in_progress');
+    const r = await call('skip_planned_session', { date: '2026-08-02' });
+    expect(r).toEqual({ error: 'session_already_started', status: 'in_progress' });
+    const row = await env.DB.prepare('SELECT status FROM sessions WHERE id=?1')
+      .bind(sid)
+      .first<{ status: string }>();
+    expect(row!.status).toBe('in_progress');
+  });
+
+  it('still skips a planned/empty date via the tool (unchanged behavior)', async () => {
+    const { userId, planId } = await ownerAndPlan();
+    await seedSession(userId, planId, '2026-08-03', 'planned');
+    const r = await call('skip_planned_session', { date: '2026-08-03' });
+    expect(r.ok).toBe(true);
+    const row = await env.DB.prepare('SELECT status FROM sessions WHERE user_id=?1 AND date=?2')
+      .bind(userId, '2026-08-03')
+      .first<{ status: string }>();
+    expect(row!.status).toBe('skipped');
+
+    // empty date (no prior session) → create-as-skipped
+    const r2 = await call('skip_planned_session', { date: '2026-08-04' });
+    expect(r2.ok).toBe(true);
+    const row2 = await env.DB.prepare('SELECT status FROM sessions WHERE user_id=?1 AND date=?2')
+      .bind(userId, '2026-08-04')
+      .first<{ status: string }>();
+    expect(row2!.status).toBe('skipped');
+  });
+});

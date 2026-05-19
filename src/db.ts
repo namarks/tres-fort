@@ -339,6 +339,7 @@ export async function patchSession(
   | SessionRow
   | null
   | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
+  | { error: 'invalid_status'; status: string }
 > {
   const s = await db
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
@@ -351,6 +352,20 @@ export async function patchSession(
   // non-canonical status can never silently corrupt the row.
   const normalizedStatus =
     patch.status === undefined ? undefined : patch.status.trim().toLowerCase();
+  // Validate against the closed status set BEFORE the burial guard and
+  // BEFORE any write: an unknown status (e.g. "junk") is rejected, never
+  // persisted. A field-only patch (no `status` key) skips this entirely.
+  // This is app-layer validation (no DB CHECK / migration) and is what
+  // makes the "can never silently corrupt the row" guarantee true.
+  if (
+    normalizedStatus !== undefined &&
+    normalizedStatus !== 'planned' &&
+    normalizedStatus !== 'in_progress' &&
+    normalizedStatus !== 'completed' &&
+    normalizedStatus !== 'skipped'
+  ) {
+    return { error: 'invalid_status', status: normalizedStatus };
+  }
   // History-integrity guard (REST sibling of FIX2's skipPlannedSession
   // guard): a `skipped` patch must not bury a started/finished workout.
   // Setting an in_progress/completed session to 'skipped' would render it

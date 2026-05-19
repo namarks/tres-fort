@@ -181,6 +181,12 @@ describe('mcp tools read live D1', () => {
 
     const before = toolJson((await rpc('tools/call', { name: 'get_today_workout', arguments: {} })).body);
     expect(before.session?.id).toBe(session.id);
+    // get_today_workout now carries the weekly schedule too — agents can
+    // answer "what should I do today?" in a single call.
+    expect(before.schedule).toBeDefined();
+    expect(Object.keys(before.schedule).sort()).toEqual(
+      ['fri', 'mon', 'sat', 'sun', 'thu', 'tue', 'wed'],
+    );
 
     await SELF.fetch(`${BASE}/api/sessions/${session.id}/discard`, { method: 'POST', headers: H });
 

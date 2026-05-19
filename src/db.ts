@@ -896,7 +896,7 @@ export async function updatePlanTree(
 ): Promise<
   | { conflict: true; current_version: number }
   | { conflict: false; plan: PlanTree }
-  | { error: 'unknown_exercise'; query: string }
+  | { error: 'unknown_exercise'; queries: string[]; query: string }
 > {
   let plan = await getActivePlan(db, userId);
   if (!plan) plan = await createPlan(db, userId, input.name ?? 'My Plan', input.meta ?? null);
@@ -907,24 +907,37 @@ export async function updatePlanTree(
     return { conflict: true, current_version: plan.version };
   }
 
-  // Resolve every exercise name up front (outside the batch). Returns a
-  // STRUCTURED `{ error: 'unknown_exercise', query }` — same shape every
-  // other exercise-resolution failure in the API uses (`add_exercise`,
-  // `swap_exercise`, REST). Pre-fix: throws bubbled up as text-only
-  // 'error: unknown_exercise:...' errors that an agent's
-  // r.error==='unknown_exercise' check couldn't programmatically catch.
+  // Resolve every exercise name up front, collecting EVERY unresolved
+  // name into `queries` instead of aborting on the first miss — a 16-
+  // exercise plan with two typos previously took two round trips
+  // (fail-fix-retry-fail-fix-retry). Now the agent fixes them in one
+  // pass. `query` is kept (= first unknown) for back-compat with the
+  // structured shape introduced in PR #12. Use list_exercises to
+  // discover valid catalog names.
   const resolved = new Map<string, string>();
+  const unknown: string[] = [];
+  const seenUnknown = new Set<string>();
   for (const d of input.days) {
     for (const e of d.exercises ?? []) {
       if (typeof e.exercise !== 'string' || e.exercise.trim() === '') {
-        return { error: 'unknown_exercise', query: '<missing>' };
+        if (!seenUnknown.has('<missing>')) {
+          seenUnknown.add('<missing>');
+          unknown.push('<missing>');
+        }
+        continue;
       }
-      if (!resolved.has(e.exercise)) {
-        const ex = await resolveExercise(db, e.exercise);
-        if (!ex) return { error: 'unknown_exercise', query: e.exercise };
-        resolved.set(e.exercise, (ex as { id: string }).id);
+      if (resolved.has(e.exercise) || seenUnknown.has(e.exercise)) continue;
+      const ex = await resolveExercise(db, e.exercise);
+      if (!ex) {
+        seenUnknown.add(e.exercise);
+        unknown.push(e.exercise);
+        continue;
       }
+      resolved.set(e.exercise, (ex as { id: string }).id);
     }
+  }
+  if (unknown.length > 0) {
+    return { error: 'unknown_exercise', queries: unknown, query: unknown[0]! };
   }
 
   // Capture the OLD day identity (id → name/label) before the rebuild so we
@@ -2259,15 +2272,37 @@ export async function setPlannedSession(
     .first<SessionRow>();
   const ts = now();
   if (existing) {
+    // The SQL CASE already flips the row to a sensible status; the bug was
+    // that the response object spread `...existing` and kept the OLD status
+    // (e.g. an agent saw `status: 'discarded'` with a past `started_at`
+    // while the DB was actually 'planned' now). Compute the new shape
+    // explicitly and persist BOTH started_at and completed_at resets when
+    // we're reviving a discarded row, mirroring getOrCreateSession's
+    // discard→planned resurrection (consistent revival rule across the
+    // two places that revive a discarded session).
+    const newStatus =
+      existing.status === 'completed' || existing.status === 'in_progress'
+        ? existing.status
+        : 'planned';
+    const reviving = existing.status === 'discarded';
+    const newStartedAt = reviving ? null : existing.started_at;
+    const newCompletedAt = reviving ? null : existing.completed_at;
     await db
       .prepare(
-        "UPDATE sessions SET day_template_id = ?2, status = CASE WHEN status IN ('completed','in_progress') THEN status ELSE 'planned' END, updated_at = ?3 WHERE id = ?1",
+        'UPDATE sessions SET day_template_id = ?2, status = ?3, started_at = ?4, completed_at = ?5, updated_at = ?6 WHERE id = ?1',
       )
-      .bind(existing.id, d.id, ts)
+      .bind(existing.id, d.id, newStatus, newStartedAt, newCompletedAt, ts)
       .run();
     return {
       ok: true,
-      session: { ...existing, day_template_id: d.id, updated_at: ts },
+      session: {
+        ...existing,
+        day_template_id: d.id,
+        status: newStatus,
+        started_at: newStartedAt,
+        completed_at: newCompletedAt,
+        updated_at: ts,
+      },
     };
   }
   const s: SessionRow = {

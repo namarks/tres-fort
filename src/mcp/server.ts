@@ -137,7 +137,7 @@ const TOOLS: Record<string, Tool> = {
   },
   get_today_workout: {
     description:
-      "Get today's workout: the date, any existing session for today, the plan's day templates, and the most recent prior session for context.",
+      "Get today's workout: the date, any existing session for today, the plan's day templates, the recurring weekly schedule (so you can answer 'what should I do today?' from one call), and the most recent prior session for context.",
     inputSchema: obj({}),
     handler: async (_a, env, userId) => {
       const date = todayLocal();
@@ -145,11 +145,15 @@ const TOOLS: Record<string, Tool> = {
       const session = await getSessionByDate(env.DB, userId, date);
       const recent = await getRecentSessions(env.DB, userId, 2);
       const last = recent.find((s) => s.date !== date) ?? null;
+      // `schedule` lets an agent answer "what should I do today?" without
+      // a second call to get_current_plan — the natural one-shot answer.
+      const schedule = tree ? await getResolvedScheduleNames(env.DB, userId) : null;
       return {
         date,
         session,
         sets: session ? await getSetsForSession(env.DB, session.id) : [],
         plan_days: tree?.days ?? [],
+        schedule,
         last_session: last,
         last_session_sets: last ? await getSetsForSession(env.DB, last.id) : [],
       };
@@ -377,7 +381,7 @@ const TOOLS: Record<string, Tool> = {
   },
   update_plan: {
     description:
-      'Replace the plan tree (days + exercises) transactionally. Pass expected_version for optimistic concurrency; a mismatch returns a conflict — refetch get_current_plan and reapply. Days are matched by day_label/name across the rebuild, so the weekly schedule follows surviving days; schedule entries for removed days are cleared.',
+      'Replace the plan tree (days + exercises) transactionally. Exercise names must match the closed catalog — call list_exercises first to discover valid names (a single unknown name surfaces ALL unknowns at once in `queries: string[]`, not just the first). Pass expected_version for optimistic concurrency; a mismatch returns a conflict — refetch get_current_plan and reapply. Days are matched by day_label/name across the rebuild, so the weekly schedule follows surviving days; schedule entries for removed days are cleared.',
     inputSchema: obj(
       {
         name: { type: 'string' },
@@ -410,7 +414,7 @@ const TOOLS: Record<string, Tool> = {
   },
   update_exercise: {
     description:
-      'Patch one plan slot. Identify it by template_exercise_id, or by day (label/name) + exercise.',
+      'Patch one plan slot. Identify it by template_exercise_id, or by day (label/name) + exercise. Patchable keys: target_sets, target_reps, target_reps_max, target_rpe, rest_seconds, target_weight, cues, progression, order_index. Unknown keys are rejected with {error:"unknown_fields", fields:[...]} — no silent drop.',
     inputSchema: obj(
       {
         template_exercise_id: { type: 'string' },
@@ -438,7 +442,7 @@ const TOOLS: Record<string, Tool> = {
     note: (_a, r) => (r?.error ? null : `Updated slot ${r.id}.`),
   },
   swap_exercise: {
-    description: 'Replace an exercise in a day with another (e.g. RDL → good mornings on Wednesday).',
+    description: 'Replace an exercise in a day with another (e.g. RDL → good mornings on Wednesday). Both names must match the closed catalog — use list_exercises to discover valid names.',
     inputSchema: obj(
       {
         day: { type: 'string', description: 'day label or name' },
@@ -462,7 +466,7 @@ const TOOLS: Record<string, Tool> = {
       r?.error ? null : `Swapped ${a.from_exercise} → ${a.to_exercise} on ${a.day}.`,
   },
   add_exercise: {
-    description: 'Add an exercise to a day in the active plan.',
+    description: 'Add an exercise to a day in the active plan. `exercise` must match the closed catalog — use list_exercises to discover valid names. order_index defaults to max(existing)+1 (append dense), not the old 99 sentinel.',
     inputSchema: obj(
       {
         day: { type: 'string', description: 'day label or name' },

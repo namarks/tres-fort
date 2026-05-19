@@ -310,6 +310,60 @@ final class SyncModel: ObservableObject {
         RestLiveActivity.endNow()
     }
 
+    // MARK: calendar projection (read-only future calendar)
+
+    /// Plan day_template ids (for dangling-schedule detection).
+    var planTemplateIDs: Set<String> {
+        Set(plan?.days.map(\.id) ?? [])
+    }
+
+    /// Real cached sessions keyed by YYYY-MM-DD. If multiple sessions share
+    /// a date, prefer the most "advanced" one (completed > in_progress >
+    /// planned > skipped) so the calendar shows the strongest signal.
+    var sessionsByDate: [String: SessionRow] {
+        func rank(_ s: String) -> Int {
+            switch s {
+            case "completed":   return 4
+            case "in_progress": return 3
+            case "planned":     return 2
+            case "skipped":     return 1
+            default:            return 0
+            }
+        }
+        var out: [String: SessionRow] = [:]
+        for s in sessions {
+            if let cur = out[s.date], rank(cur.status) >= rank(s.status) { continue }
+            out[s.date] = s
+        }
+        return out
+    }
+
+    /// Resolve one calendar day via the frozen projection algorithm.
+    func projection(for dateString: String) -> DayProjection {
+        CalendarProjection.project(
+            dateString: dateString,
+            today: todayString,
+            sessionByDate: sessionsByDate,
+            schedule: plan?.schedule,
+            templateIDs: planTemplateIDs)
+    }
+
+    /// Plan day for a template id (agenda exercise targets).
+    func dayTemplate(id: String?) -> DayTemplate? {
+        guard let id else { return nil }
+        return plan?.days.first { $0.id == id }
+    }
+
+    /// Logged working + warmup sets for a session (agenda "completed").
+    func setsForSession(_ sessionID: String) -> [SetLog] {
+        sets.filter { $0.session_id == sessionID && $0.deleted_at == nil }
+            .sorted {
+                $0.exercise_id == $1.exercise_id
+                    ? $0.set_index < $1.set_index
+                    : $0.logged_at < $1.logged_at
+            }
+    }
+
     private func handle(_ error: Error) {
         if case let APIError.http(code, _) = error, code == 401 {
             auth.invalidate()

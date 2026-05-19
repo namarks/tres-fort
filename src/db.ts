@@ -315,13 +315,13 @@ export async function addTemplateExercise(
   await db
     .prepare(
       `INSERT INTO template_exercises
-       (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,progression,cues,created_at,updated_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)`,
+       (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,created_at,updated_at)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)`,
     )
     .bind(
       row.id, row.day_template_id, row.exercise_id, row.order_index, row.target_sets,
       row.target_reps, row.target_reps_max, row.target_rpe, row.rest_seconds,
-      row.target_weight, row.progression, row.cues, row.created_at, row.updated_at,
+      row.target_weight, row.target_duration_s, row.progression, row.cues, row.created_at, row.updated_at,
     )
     .run();
   await bumpPlanVersion(db, planId);
@@ -863,6 +863,9 @@ interface ExerciseInput {
   target_rpe?: number | null;
   rest_seconds?: number;
   target_weight?: number | null;
+  /** Planned hold seconds for timed slots (mirrors set_logs.duration_s).
+   *  NULL/omitted → conventional reps slot. */
+  target_duration_s?: number | null;
   progression?: unknown;
   cues?: string | null;
 }
@@ -1056,13 +1059,14 @@ export async function updatePlanTree(
         db
           .prepare(
             `INSERT INTO template_exercises
-             (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,progression,cues,created_at,updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)`,
+             (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)`,
           )
           .bind(
             teIdPerExerciseOccurrence[di]![ei]!, dayId, resolved.get(e.exercise)!, e.order_index ?? ei, e.target_sets,
             e.target_reps, e.target_reps_max ?? null, e.target_rpe ?? null, e.rest_seconds ?? 120,
-            e.target_weight ?? null, e.progression == null ? null : JSON.stringify(e.progression),
+            e.target_weight ?? null, e.target_duration_s ?? null,
+            e.progression == null ? null : JSON.stringify(e.progression),
             e.cues ?? null, ts, ts,
           ),
       );
@@ -1218,6 +1222,7 @@ const TEMPLATE_EXERCISE_PATCH_KEYS = new Set<string>([
   'target_rpe',
   'rest_seconds',
   'target_weight',
+  'target_duration_s',
   'cues',
   'progression',
   'order_index',
@@ -1236,6 +1241,7 @@ export async function updateExercise(
       | 'target_rpe'
       | 'rest_seconds'
       | 'target_weight'
+      | 'target_duration_s'
       | 'cues'
       | 'order_index'
     >
@@ -1258,6 +1264,8 @@ export async function updateExercise(
     rest_seconds: patch.rest_seconds ?? slot.rest_seconds,
     target_weight:
       patch.target_weight === undefined ? slot.target_weight : patch.target_weight,
+    target_duration_s:
+      patch.target_duration_s === undefined ? slot.target_duration_s : patch.target_duration_s,
     cues: patch.cues === undefined ? slot.cues : patch.cues,
     order_index: patch.order_index === undefined ? slot.order_index : patch.order_index,
     progression:
@@ -1271,12 +1279,12 @@ export async function updateExercise(
   await db
     .prepare(
       `UPDATE template_exercises SET target_sets=?2,target_reps=?3,target_reps_max=?4,
-       target_rpe=?5,rest_seconds=?6,target_weight=?7,cues=?8,progression=?9,order_index=?10,updated_at=?11
+       target_rpe=?5,rest_seconds=?6,target_weight=?7,target_duration_s=?8,cues=?9,progression=?10,order_index=?11,updated_at=?12
        WHERE id=?1`,
     )
     .bind(
       slot.id, m.target_sets, m.target_reps, m.target_reps_max, m.target_rpe,
-      m.rest_seconds, m.target_weight, m.cues, m.progression, m.order_index, m.updated_at,
+      m.rest_seconds, m.target_weight, m.target_duration_s, m.cues, m.progression, m.order_index, m.updated_at,
     )
     .run();
   await bumpPlanVersionByDay(db, slot.day_template_id);

@@ -899,3 +899,64 @@ describe('mcp delete_exercise — removes a slot; detaches historical sets', () 
     expect(r.error).toBe('slot_not_found');
   });
 });
+
+describe('mcp target_duration_s — timed slots specified natively (no rep-overload)', () => {
+  it('add_exercise persists target_duration_s and it round-trips via get_current_plan', async () => {
+    await call('update_plan', {
+      name: 'Timed via add',
+      days: [{ name: 'A', day_label: 'A', exercises: [
+        { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
+      ] }],
+    });
+    const added = await call('add_exercise', {
+      day: 'A',
+      exercise: 'Side Plank',
+      target_sets: 2,
+      target_reps: 1,
+      target_duration_s: 45,
+    });
+    expect(added.target_duration_s).toBe(45);
+
+    const tree = await call('get_current_plan', {});
+    const plank = tree.days[0].exercises.find(
+      (e: { exercise_id: string }) => e.exercise_id === 'ex_side_plank',
+    );
+    expect(plank).toBeDefined();
+    expect(plank.target_duration_s).toBe(45);
+  });
+
+  it('update_exercise patches target_duration_s; null clears it', async () => {
+    await call('update_plan', {
+      name: 'Timed via patch',
+      days: [{ name: 'A', day_label: 'A', exercises: [
+        { exercise: 'Plank', order_index: 0, target_sets: 1, target_reps: 1, target_duration_s: 30 },
+      ] }],
+    });
+    const r = await call('update_exercise', {
+      day: 'A', exercise: 'plank', patch: { target_duration_s: 60 },
+    });
+    expect(r.target_duration_s).toBe(60);
+
+    const cleared = await call('update_exercise', {
+      day: 'A', exercise: 'plank', patch: { target_duration_s: null },
+    });
+    expect(cleared.target_duration_s).toBeNull();
+  });
+
+  it('update_plan accepts target_duration_s on exercise items in the tree', async () => {
+    const r = await call('update_plan', {
+      name: 'Timed in tree',
+      days: [{ name: 'A', day_label: 'A', exercises: [
+        { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
+        { exercise: 'Plank',       order_index: 1, target_sets: 2, target_reps: 1, target_duration_s: 30 },
+        { exercise: 'Dead Hang',   order_index: 2, target_sets: 2, target_reps: 1, target_duration_s: 15 },
+      ] }],
+    });
+    expect(r.conflict).toBe(false);
+    const exs = r.plan.days[0].exercises;
+    expect(exs.find((e: { exercise_id: string }) => e.exercise_id === 'ex_plank').target_duration_s).toBe(30);
+    expect(exs.find((e: { exercise_id: string }) => e.exercise_id === 'ex_dead_hang').target_duration_s).toBe(15);
+    // Non-timed slot stays null.
+    expect(exs.find((e: { exercise_id: string }) => e.exercise_id === 'ex_bench').target_duration_s).toBeNull();
+  });
+});

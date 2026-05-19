@@ -43,3 +43,18 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.nmarkspdx.liftcoach.widgets
         INFOPLIST_FILE: LiftCoachWidgets/Info.plist
         TARGETED_DEVICE_FAMILY: "1"
+
+# Only the app gets a run scheme. The widget extension is built+embedded
+# via the dependency above — never run it directly (doing so triggers the
+# "Failed to show Widget / get descriptors" SpringBoard error).
+schemes:
+  LiftCoach:
+    build:
+      targets:
+        LiftCoach: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    archive:
+      config: Release

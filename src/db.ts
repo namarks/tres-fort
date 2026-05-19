@@ -274,6 +274,19 @@ export async function nextExerciseOrderIndex(
   return (row?.m ?? -1) + 1;
 }
 
+/** Sibling of `nextExerciseOrderIndex` for `day_templates` — append a new
+ *  day densely instead of the old 99 sentinel that `add_day` used. */
+export async function nextDayOrderIndex(
+  db: D1Database,
+  planId: string,
+): Promise<number> {
+  const row = await db
+    .prepare('SELECT COALESCE(MAX(order_index), -1) AS m FROM day_templates WHERE plan_id = ?1')
+    .bind(planId)
+    .first<{ m: number }>();
+  return (row?.m ?? -1) + 1;
+}
+
 export async function addTemplateExercise(
   db: D1Database,
   planId: string,
@@ -822,6 +835,7 @@ export async function updatePlanTree(
 ): Promise<
   | { conflict: true; current_version: number }
   | { conflict: false; plan: PlanTree }
+  | { error: 'unknown_exercise'; query: string }
 > {
   let plan = await getActivePlan(db, userId);
   if (!plan) plan = await createPlan(db, userId, input.name ?? 'My Plan', input.meta ?? null);
@@ -832,19 +846,22 @@ export async function updatePlanTree(
     return { conflict: true, current_version: plan.version };
   }
 
-  // Resolve every exercise name up front (outside the batch). `exercise`
-  // is REQUIRED per the input contract; null-guard the resolver so a
-  // malformed item gives a clean unknown_exercise rather than a cryptic
-  // `Cannot read properties of undefined (reading 'trim')` from inside the
-  // alias matcher (P0 in the agent-facing bug report).
+  // Resolve every exercise name up front (outside the batch). Returns a
+  // STRUCTURED `{ error: 'unknown_exercise', query }` — same shape every
+  // other exercise-resolution failure in the API uses (`add_exercise`,
+  // `swap_exercise`, REST). Pre-fix: throws bubbled up as text-only
+  // 'error: unknown_exercise:...' errors that an agent's
+  // r.error==='unknown_exercise' check couldn't programmatically catch.
   const resolved = new Map<string, string>();
   for (const d of input.days) {
     for (const e of d.exercises ?? []) {
       if (typeof e.exercise !== 'string' || e.exercise.trim() === '') {
-        throw new Error('unknown_exercise:<missing>');
+        return { error: 'unknown_exercise', query: '<missing>' };
       }
       if (!resolved.has(e.exercise)) {
-        resolved.set(e.exercise, await resolveOrThrow(db, e.exercise));
+        const ex = await resolveExercise(db, e.exercise);
+        if (!ex) return { error: 'unknown_exercise', query: e.exercise };
+        resolved.set(e.exercise, (ex as { id: string }).id);
       }
     }
   }
@@ -1150,10 +1167,13 @@ export async function updateExercise(
     >
   > & { progression?: unknown },
 ): Promise<TemplateExerciseRow | { error: 'unknown_fields'; fields: string[] } | null> {
-  const unknown = Object.keys(patch).filter((k) => !TEMPLATE_EXERCISE_PATCH_KEYS.has(k));
-  if (unknown.length > 0) return { error: 'unknown_fields', fields: unknown };
+  // Slot lookup first so a wrong ref returns the more actionable
+  // `slot_not_found` (via null) before unknown_fields. A double-mistake
+  // call gets the higher-priority diagnostic.
   const slot = await findSlot(db, userId, ref);
   if (!slot) return null;
+  const unknown = Object.keys(patch).filter((k) => !TEMPLATE_EXERCISE_PATCH_KEYS.has(k));
+  if (unknown.length > 0) return { error: 'unknown_fields', fields: unknown };
   const m: TemplateExerciseRow = {
     ...slot,
     target_sets: patch.target_sets ?? slot.target_sets,

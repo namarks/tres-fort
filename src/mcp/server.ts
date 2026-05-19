@@ -22,6 +22,7 @@ import {
   getVolume,
   logSet,
   logWorkoutComplete,
+  nextDayOrderIndex,
   nextExerciseOrderIndex,
   tryExportSessionLoad,
   resolveExercise,
@@ -381,7 +382,7 @@ const TOOLS: Record<string, Tool> = {
     handler: (a, env, userId) =>
       updatePlanTree(env.DB, userId, a as unknown as Parameters<typeof updatePlanTree>[2]),
     note: (_a, r) =>
-      r?.conflict
+      r?.conflict || r?.error
         ? null
         : `Rebuilt plan: ${r.plan.days.length} day(s), v${r.plan.version}.`,
   },
@@ -508,12 +509,18 @@ const TOOLS: Record<string, Tool> = {
         plan = (await getActivePlan(env.DB, userId))!;
         void r;
       }
+      // Append densely (max+1) rather than the old 99 sentinel — same
+      // fix the add_exercise path got. Honors an explicit order_index.
+      const orderIndex =
+        typeof a.order_index === 'number'
+          ? a.order_index
+          : await nextDayOrderIndex(env.DB, plan.id);
       return addDayTemplate(
         env.DB,
         plan.id,
         String(a.name),
         typeof a.day_label === 'string' ? a.day_label : null,
-        typeof a.order_index === 'number' ? a.order_index : 99,
+        orderIndex,
       );
     },
     note: (a) => `Added day "${a.name}".`,

@@ -647,13 +647,24 @@ describe('mcp update_plan — FK-safe rebuild remaps session + set_log reference
     expect(set!.template_exercise_id).toBe(newTeId);
   });
 
-  it('rejects an exercise item with missing/empty `exercise` (no .trim() crash)', async () => {
+  it('rejects an exercise item with missing/empty `exercise` (structured, no .trim() crash)', async () => {
     const r = await call('update_plan', {
       name: 'trim test',
       days: [{ name: 'A', day_label: 'A', exercises: [{ target_sets: 3, target_reps: 5 } as never] }],
     });
-    // Throws unknown_exercise:<missing> — surfaced as the tool's error text.
-    expect(JSON.stringify(r)).toMatch(/unknown_exercise/);
+    // Structured error: same shape every other exercise-resolution
+    // failure uses — agents can pattern-match r.error === 'unknown_exercise'.
+    expect(r.error).toBe('unknown_exercise');
+    expect(r.query).toBe('<missing>');
+  });
+
+  it('rejects an unrecognized exercise name with a structured unknown_exercise error', async () => {
+    const r = await call('update_plan', {
+      name: 'unknown name test',
+      days: [{ name: 'A', day_label: 'A', exercises: [{ exercise: 'Kettlebell Underhand Push', target_sets: 3, target_reps: 5 }] }],
+    });
+    expect(r.error).toBe('unknown_exercise');
+    expect(r.query).toBe('Kettlebell Underhand Push');
   });
 });
 
@@ -691,6 +702,19 @@ describe('mcp order_index — settable on add and update; rejects unknown patch 
       day: 'A', exercise: 'bench', patch: { order_index: 7 },
     });
     expect(r.order_index).toBe(7);
+  });
+
+  it('add_day appends densely (max+1), not the old 99 sentinel', async () => {
+    await call('update_plan', {
+      name: 'Day order',
+      days: [
+        { name: 'A', day_label: 'A', order_index: 0, exercises: [
+          { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
+        ] },
+      ],
+    });
+    const r = await call('add_day', { name: 'Day 2', day_label: 'B' });
+    expect(r.order_index).toBe(1);
   });
 
   it('update_exercise rejects unknown patch keys instead of silent 200', async () => {

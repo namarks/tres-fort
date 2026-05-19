@@ -769,9 +769,20 @@ describe('BLOCKER-2: log_workout_complete must not be blocked by the export', ()
 // idempotent PUT to the known ref (no GET/POST ⇒ duplicate-free under
 // concurrency); PUT failure → row NOT downgraded from ok.
 //
-// EACH of these tests genuinely FAILS if the recompute-and-compare is
-// reverted to the unconditional `return { status:'ok', load: prior.load ??
-// computed.load }` early-return.
+// Revert-detection (honest accounting): FOUR of the five tests genuinely
+// FAIL if the recompute-and-compare is reverted to the unconditional
+// `return { status:'ok', load: prior.load ?? computed.load }` early-return:
+//   1. 'UNCHANGED inputs re-export' — its paired SUBSEQUENT changed-input
+//      re-export asserts row.load updates (the no-op assertions alone do
+//      NOT distinguish; the paired tail does).
+//   2. 'CHANGED inputs re-export' — asserts the PUT + new row.load.
+//   3. 'two CONCURRENT changed-load re-exports' — asserts convergence.
+//   4. 'PUT FAILURE on a changed-load re-export' — asserts ok-not-
+//      downgraded with the new-vs-prior load distinction.
+// The fifth ('changed-load re-export under tryExportSessionLoad never
+// throws') is a sacred-path guard, NOT a revert-detector: it passes under
+// the old code too (the early-return also never throws). It is kept for
+// the decoupling/no-throw invariant, not claimed as load-bearing here.
 // ---------------------------------------------------------------------------
 describe('P2: post-completion load corrections propagate to intervals.icu', () => {
   /** Change perceived_fatigue (scales sRPE load ⇒ computed.load changes). */
@@ -810,6 +821,22 @@ describe('P2: post-completion load corrections propagate to intervals.icu', () =
     expect(row.status).toBe('ok');
     expect(row.load).toBe(loadX);
     expect(row.attempts).toBe(1); // only the first export pushed
+
+    // Paired revert-detector: a SUBSEQUENT changed-input re-export on the
+    // same now-ok row MUST update row.load. Under the pre-fix unconditional
+    // early-return this would NOT happen (row.load would stay loadX), so
+    // this test as a UNIT genuinely fails if the recompute-and-compare is
+    // reverted — the no-op assertions above alone do not distinguish.
+    await setFatigue(sessionId, 4);
+    const r3 = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
+    expect(r3.status).toBe('ok');
+    expect(r3.load).not.toBe(loadX);
+    const rowAfter = await env.DB.prepare('SELECT load, status FROM session_load_exports WHERE session_id=?1')
+      .bind(sessionId)
+      .first<{ load: number; status: string }>();
+    expect(rowAfter!.status).toBe('ok');
+    expect(rowAfter!.load).toBe(r3.load);
+    expect(rowAfter!.load).not.toBe(loadX); // FAILS under the reverted early-return
   });
 
   it('CHANGED inputs re-export: exactly one PUT to the SAME ref (no GET, no POST), row→new load, audit written', async () => {

@@ -461,6 +461,10 @@ export async function patchSet(
   const reps = patch.reps ?? row.reps;
   const rpe = patch.rpe === undefined ? row.rpe : patch.rpe;
   const notes = patch.notes === undefined ? row.notes : patch.notes;
+  // WARNING: this soft-delete is INVISIBLE to an incremental `sets_since`
+  // client — the getState sets query gates on the immutable `logged_at`,
+  // not deleted_at (see the WARNING on that query). Only safe while the
+  // iOS client full-reloads; needs a mutable updated_at cursor (follow-up).
   const deletedAt = patch.deleted ? row.deleted_at ?? now() : patch.deleted === false ? null : row.deleted_at;
   await db
     .prepare('UPDATE set_logs SET weight=?2, reps=?3, rpe=?4, notes=?5, deleted_at=?6 WHERE id=?1')
@@ -492,6 +496,12 @@ export async function getState(
     .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND updated_at > ?2 ORDER BY date')
     .bind(userId, setsSince)
     .all<SessionRow>();
+  // WARNING: `logged_at` is an IMMUTABLE incremental cursor — a set
+  // soft-deleted (deleted_at set) AFTER a client's watermark passed its
+  // logged_at is NEVER delivered incrementally (FIX3-class tombstone gap,
+  // like external_events). Only safe because the current iOS client
+  // full-reloads (sets_since=0). An incremental client needs a mutable
+  // set_logs `updated_at` cursor — tracked follow-up; see patchSet.
   const sets = await db
     .prepare(
       `SELECT sl.* FROM set_logs sl JOIN sessions s ON s.id = sl.session_id

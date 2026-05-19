@@ -7,7 +7,6 @@ private func fmt(_ w: Double) -> String {
 struct TodayView: View {
     @ObservedObject var auth: AuthModel
     @StateObject private var sync: SyncModel
-    @State private var logging: TemplateExercise?
 
     init(auth: AuthModel) {
         self.auth = auth
@@ -25,17 +24,30 @@ struct TodayView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    if let plan = sync.plan, plan.days.count > 1 {
-                        Picker("Day", selection: Binding(
-                            get: { sync.selectedDayID ?? plan.days.first?.id ?? "" },
-                            set: { sync.selectedDayID = $0 })) {
-                            ForEach(plan.days) { d in Text(d.day_label ?? d.name).tag(d.id) }
+                    if !sync.running, let plan = sync.plan, plan.days.count > 1 {
+                        Menu {
+                            ForEach(plan.days) { d in
+                                Button(d.title) { sync.selectedDayID = d.id }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text(sync.selectedDay?.day_label ?? "Day")
+                                Image(systemName: "chevron.down").font(.caption2)
+                            }.font(.subheadline.weight(.semibold))
                         }
+                    } else if sync.running {
+                        Text("Ex \(sync.exerciseIndex + 1)/\(sync.exercises.count)")
+                            .font(.subheadline.monospaced()).foregroundStyle(.secondary)
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Refresh") { Task { await sync.load() } }
+                        if sync.running {
+                            Button("End workout", role: .destructive) {
+                                Task { await sync.finishWorkout() }
+                            }
+                        }
                         Button("Sign out", role: .destructive) { auth.signOut() }
                     } label: { Image(systemName: "ellipsis.circle") }
                 }
@@ -44,31 +56,17 @@ struct TodayView: View {
         }
         .preferredColorScheme(.dark)
         .task { await sync.load() }
-        .sheet(item: $logging) { ex in
-            LogSheet(sync: sync, ex: ex).presentationDetents([.height(360)])
-        }
     }
 
     @ViewBuilder private var content: some View {
         if sync.isLoading && sync.plan == nil {
             ProgressView().tint(.white)
+        } else if sync.finished {
+            FinishedView(sync: sync)
+        } else if sync.running {
+            RunnerView(sync: sync)
         } else if let day = sync.selectedDay {
-            ScrollView {
-                VStack(spacing: 10) {
-                    ForEach(day.exercises) { ex in
-                        ExerciseRow(ex: ex,
-                                    last: sync.lastWorkingSet(ex.exercise_id),
-                                    done: sync.todaySets(ex.exercise_id))
-                            .onTapGesture { logging = ex }
-                    }
-                    if let err = sync.loadError {
-                        Text(err).font(.footnote).foregroundStyle(.red)
-                    }
-                }
-                .padding(16)
-                .padding(.bottom, sync.restEndDate != nil ? 90 : 0)
-            }
-            .refreshable { await sync.load() }
+            OverviewView(sync: sync, day: day)
         } else {
             VStack(spacing: 8) {
                 Text("No plan yet").foregroundStyle(.white).font(.headline)
@@ -79,117 +77,187 @@ struct TodayView: View {
     }
 }
 
-private struct ExerciseRow: View {
-    let ex: TemplateExercise
-    let last: SetLog?
-    let done: [SetLog]
+// MARK: - Overview (before start)
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text(ex.exercise_name.uppercased())
-                    .font(.system(size: 20, weight: .heavy)).foregroundStyle(.white)
-                Spacer()
-                Text(ex.targetLabel)
-                    .font(.system(.subheadline, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-            HStack(spacing: 8) {
-                if let last {
-                    chip("last \(fmt(last.weight))×\(last.reps)", .gray)
-                }
-                ForEach(done) { s in
-                    chip("\(fmt(s.weight))×\(s.reps)", .green)
-                }
-                if done.isEmpty && last == nil {
-                    chip("tap to log", .blue)
-                }
-            }
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(white: 0.09))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-    }
-
-    private func chip(_ t: String, _ c: Color) -> some View {
-        Text(t)
-            .font(.system(.caption, design: .monospaced)).foregroundStyle(c)
-            .padding(.horizontal, 9).padding(.vertical, 5)
-            .background(c.opacity(0.15)).clipShape(Capsule())
-    }
-}
-
-private struct LogSheet: View {
+private struct OverviewView: View {
     @ObservedObject var sync: SyncModel
-    let ex: TemplateExercise
-    @Environment(\.dismiss) private var dismiss
-    @State private var weight: Double = 0
-    @State private var reps: Int = 0
+    let day: DayTemplate
 
     var body: some View {
-        VStack(spacing: 22) {
-            Text(ex.exercise_name.uppercased())
-                .font(.system(size: 22, weight: .heavy)).foregroundStyle(.white)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 10) {
+                    HStack {
+                        Text(day.title.uppercased())
+                            .font(.system(size: 15, weight: .heavy)).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    ForEach(day.exercises) { ex in
+                        HStack {
+                            Text(ex.exercise_name.uppercased())
+                                .font(.system(size: 19, weight: .heavy)).foregroundStyle(.white)
+                            Spacer()
+                            Text(ex.targetLabel)
+                                .font(.system(.subheadline, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(white: 0.09))
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                    if let err = sync.loadError {
+                        Text(err).font(.footnote).foregroundStyle(.red)
+                    }
+                }
+                .padding(16)
+            }
+            .refreshable { await sync.load() }
 
-            stepper(title: "WEIGHT (\(ex.exercise_unit))",
-                    value: fmt(weight),
-                    dec5: { weight = max(0, weight - 5) },
-                    dec1: { weight = max(0, weight - 2.5) },
-                    inc1: { weight += 2.5 }, inc5: { weight += 5 })
-
-            stepper(title: "REPS",
-                    value: "\(reps)",
-                    dec5: { reps = max(0, reps - 1) },
-                    dec1: nil,
-                    inc1: nil, inc5: { reps += 1 })
-
-            Button {
-                Task { await sync.logSet(ex, weight: weight, reps: reps); dismiss() }
-            } label: {
-                Text("LOG  \(fmt(weight)) × \(reps)")
-                    .font(.system(size: 18, weight: .bold)).frame(maxWidth: .infinity)
+            Button { sync.startWorkout() } label: {
+                Label("START WORKOUT", systemImage: "play.fill")
+                    .font(.system(size: 18, weight: .heavy)).frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent).tint(.white).foregroundStyle(.black)
             .controlSize(.large)
+            .disabled(day.exercises.isEmpty)
+            .padding(16)
         }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black)
-        .onAppear {
-            let last = sync.lastWorkingSet(ex.exercise_id)
-            weight = last?.weight ?? ex.target_weight ?? 45
-            reps = last?.reps ?? ex.target_reps
+    }
+}
+
+// MARK: - Runner (one exercise at a time)
+
+private struct RunnerView: View {
+    @ObservedObject var sync: SyncModel
+
+    var body: some View {
+        if let ex = sync.currentExercise {
+            ScrollView {
+                VStack(spacing: 22) {
+                    Text("SET \(sync.currentSetNumber) OF \(ex.target_sets)")
+                        .font(.system(size: 14, weight: .heavy, design: .monospaced))
+                        .foregroundStyle(.secondary)
+
+                    Text(ex.exercise_name.uppercased())
+                        .font(.system(size: 30, weight: .heavy))
+                        .foregroundStyle(.white).multilineTextAlignment(.center)
+
+                    Text("target \(ex.targetLabel)"
+                         + (sync.lastWorkingSet(ex.exercise_id).map {
+                            "  ·  last \(fmt($0.weight))×\($0.reps)" } ?? ""))
+                        .font(.system(.subheadline, design: .monospaced))
+                        .foregroundStyle(.secondary)
+
+                    stepperRow(title: "WEIGHT (\(ex.exercise_unit))",
+                               value: fmt(sync.weight),
+                               buttons: [("−5", { sync.adjustWeight(-5) }),
+                                         ("−2.5", { sync.adjustWeight(-2.5) }),
+                                         ("+2.5", { sync.adjustWeight(2.5) }),
+                                         ("+5", { sync.adjustWeight(5) })])
+
+                    stepperRow(title: "REPS",
+                               value: "\(sync.reps)",
+                               buttons: [("−", { sync.adjustReps(-1) }),
+                                         ("+", { sync.adjustReps(1) })])
+
+                    Button { Task { await sync.logCurrentSet() } } label: {
+                        Text("LOG SET").font(.system(size: 20, weight: .heavy))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent).tint(.white).foregroundStyle(.black)
+                    .controlSize(.large)
+
+                    let done = sync.todaySets(ex.exercise_id)
+                    if !done.isEmpty {
+                        HStack(spacing: 8) {
+                            ForEach(done) { s in
+                                Text("\(fmt(s.weight))×\(s.reps)")
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.green)
+                                    .padding(.horizontal, 9).padding(.vertical, 5)
+                                    .background(Color.green.opacity(0.15))
+                                    .clipShape(Capsule())
+                            }
+                        }
+                    }
+
+                    HStack {
+                        Button { sync.previous() } label: {
+                            Label("Prev", systemImage: "chevron.left")
+                        }.disabled(sync.exerciseIndex == 0)
+                        Spacer()
+                        Button { sync.advance() } label: {
+                            Label("Skip", systemImage: "chevron.right")
+                                .labelStyle(.titleAndIcon)
+                        }
+                    }
+                    .font(.subheadline).tint(.secondary)
+                    .padding(.top, 4)
+                }
+                .padding(20)
+                .padding(.bottom, sync.restEndDate != nil ? 90 : 0)
+            }
         }
     }
 
     @ViewBuilder
-    private func stepper(title: String, value: String,
-                         dec5: @escaping () -> Void, dec1: (() -> Void)?,
-                         inc1: (() -> Void)?, inc5: @escaping () -> Void) -> some View {
-        VStack(spacing: 8) {
-            Text(title).font(.caption).foregroundStyle(.secondary)
-            HStack(spacing: 14) {
-                bigBtn("−−", dec5)
-                if let dec1 { bigBtn("−", dec1) }
+    private func stepperRow(title: String, value: String,
+                            buttons: [(String, () -> Void)]) -> some View {
+        VStack(spacing: 10) {
+            Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                ForEach(Array(buttons.prefix(buttons.count / 2)), id: \.0) { b in
+                    stepBtn(b.0, b.1)
+                }
                 Text(value)
-                    .font(.system(size: 38, weight: .heavy, design: .monospaced))
-                    .foregroundStyle(.white).frame(minWidth: 90)
-                if let inc1 { bigBtn("+", inc1) }
-                bigBtn("++", inc5)
+                    .font(.system(size: 40, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(.white)
+                    .lineLimit(1).minimumScaleFactor(0.5)
+                    .frame(minWidth: 130)
+                ForEach(Array(buttons.suffix(buttons.count - buttons.count / 2)), id: \.0) { b in
+                    stepBtn(b.0, b.1)
+                }
             }
         }
     }
 
-    private func bigBtn(_ t: String, _ a: @escaping () -> Void) -> some View {
+    private func stepBtn(_ t: String, _ a: @escaping () -> Void) -> some View {
         Button(action: a) {
-            Text(t).font(.system(size: 20, weight: .bold))
-                .frame(width: 52, height: 52)
+            Text(t).font(.system(size: 17, weight: .bold))
+                .frame(width: 54, height: 54)
                 .background(Color(white: 0.15)).foregroundStyle(.white)
                 .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
 }
+
+// MARK: - Finished
+
+private struct FinishedView: View {
+    @ObservedObject var sync: SyncModel
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 52)).foregroundStyle(.green)
+            Text("WORKOUT DONE")
+                .font(.system(size: 24, weight: .heavy)).foregroundStyle(.white)
+            Text("Logged to your coach. Ask Claude how it looked.")
+                .font(.footnote).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Button { Task { await sync.finishWorkout() } } label: {
+                Text("FINISH").font(.system(size: 18, weight: .heavy))
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent).tint(.white).foregroundStyle(.black)
+            .controlSize(.large)
+        }
+        .padding(32)
+    }
+}
+
+// MARK: - Rest bar
 
 private struct RestBar: View {
     @ObservedObject var sync: SyncModel

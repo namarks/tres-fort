@@ -37,6 +37,10 @@ struct APIClient {
 
     struct SetLogResult: Decodable { let set: SetLog; let deduped: Bool }
 
+    func completeSession(sessionId: String, jwt: String) async throws -> SessionRow {
+        try await patch("api/sessions/\(sessionId)", body: ["status": "completed"], jwt: jwt)
+    }
+
     // MARK: - transport
 
     private func get<T: Decodable>(_ path: String, jwt: String) async throws -> T {
@@ -54,6 +58,15 @@ struct APIClient {
         if let jwt { req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization") }
         req.httpBody = try JSONSerialization.data(
             withJSONObject: body.compactMapValues { $0 is NSNull ? nil : $0 })
+        return try await send(req)
+    }
+
+    private func patch<T: Decodable>(_ path: String, body: [String: Any], jwt: String) async throws -> T {
+        var req = URLRequest(url: URL(string: baseURL.absoluteString + "/" + path)!)
+        req.httpMethod = "PATCH"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
         return try await send(req)
     }
 

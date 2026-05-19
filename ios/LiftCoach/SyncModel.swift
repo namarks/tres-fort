@@ -13,6 +13,13 @@ final class SyncModel: ObservableObject {
     @Published var restEndDate: Date?
     @Published var restExercise: String = ""
 
+    // Guided workout runner.
+    @Published var running = false
+    @Published var finished = false
+    @Published var exerciseIndex = 0
+    @Published var weight: Double = 0
+    @Published var reps: Int = 0
+
     private let api = APIClient()
     private unowned let auth: AuthModel
 
@@ -81,6 +88,67 @@ final class SyncModel: ObservableObject {
         } catch {
             handle(error)
         }
+    }
+
+    // MARK: runner
+
+    var exercises: [TemplateExercise] { selectedDay?.exercises ?? [] }
+    var currentExercise: TemplateExercise? {
+        exercises.indices.contains(exerciseIndex) ? exercises[exerciseIndex] : nil
+    }
+    /// 1-based number of the set about to be performed for the current exercise.
+    var currentSetNumber: Int {
+        guard let ex = currentExercise else { return 1 }
+        return todaySets(ex.exercise_id).count + 1
+    }
+
+    func startWorkout() {
+        running = true
+        finished = false
+        exerciseIndex = 0
+        seedInputs()
+    }
+
+    /// Seed weight/reps from last time → plan target → empty-bar default.
+    private func seedInputs() {
+        guard let ex = currentExercise else { return }
+        let last = lastWorkingSet(ex.exercise_id)
+        weight = last?.weight ?? ex.target_weight ?? 45
+        reps = last?.reps ?? ex.target_reps
+    }
+
+    func adjustWeight(_ delta: Double) { weight = max(0, weight + delta) }
+    func adjustReps(_ delta: Int) { reps = max(0, reps + delta) }
+
+    func logCurrentSet() async {
+        guard let ex = currentExercise else { return }
+        await logSet(ex, weight: weight, reps: reps)   // also starts rest timer
+        if todaySets(ex.exercise_id).count >= ex.target_sets { advance() }
+    }
+
+    func advance() {
+        if exerciseIndex + 1 < exercises.count {
+            exerciseIndex += 1
+            seedInputs()
+        } else {
+            finished = true
+        }
+    }
+
+    func previous() {
+        guard exerciseIndex > 0 else { return }
+        exerciseIndex -= 1
+        seedInputs()
+    }
+
+    func finishWorkout() async {
+        if let jwt = auth.jwt, let sid = todaySession?.id {
+            todaySession = try? await api.completeSession(sessionId: sid, jwt: jwt)
+        }
+        running = false
+        finished = false
+        skipRest()
+        await load()
     }
 
     // MARK: rest timer

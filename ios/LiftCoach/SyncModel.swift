@@ -400,14 +400,17 @@ final class SyncModel: ObservableObject {
     /// not skipped / not a non-training terminal state). The ONLY place this
     /// rule is written on the iOS side.
     ///
-    /// COUPLED TWIN — keep in lockstep with the frozen, byte-for-byte
-    /// `DayProjection.kind` mapping in `CalendarProjection.swift` (its
-    /// `case .session(let s): … default: return .planned`). That file is
-    /// the frozen projection contract and MUST NOT be edited, so the two
-    /// sites cannot literally share one symbol; if a new backend status
-    /// (e.g. "cancelled"/"abandoned") is introduced, update BOTH this
-    /// predicate AND that `kind` switch. A skipped session is the only
-    /// non-workout session state today.
+    /// COUPLED TWIN — keep in lockstep with the `case "skipped": return
+    /// .skipped` arm in the frozen, byte-for-byte `DayProjection.kind`
+    /// status switch in `CalendarProjection.swift`. That `"skipped"` arm
+    /// is the ONLY non-workout session state; every other status (incl.
+    /// `default: return .planned` for unknowns) maps to a workout kind,
+    /// which already agrees with this predicate returning `true` for
+    /// anything but `"skipped"`. That file is the frozen projection
+    /// contract and MUST NOT be edited, so the two sites cannot literally
+    /// share one symbol; if a new NON-workout backend status (e.g.
+    /// "cancelled"/"abandoned") is introduced, update BOTH this predicate
+    /// AND that `"skipped"` arm of the `kind` switch.
     static func isWorkoutStatus(_ status: String) -> Bool {
         status != "skipped"
     }

@@ -190,10 +190,12 @@ private struct WorkoutDoneView: View {
         sync.todayResolvedDay?.title.uppercased() ?? "WORKOUT"
     }
 
-    /// Logged working+warmup sets for today's completed session.
+    /// Logged WORKING sets for today's completed session — warmups
+    /// excluded so the recap numbers match FinishedView (which uses
+    /// `is_warmup == 0`) and never disagree seconds apart.
     private var todaySets: [SetLog] {
         guard let sid = sync.sessionsByDate[sync.todayString]?.id else { return [] }
-        return sync.setsForSession(sid)
+        return sync.setsForSession(sid).filter { $0.is_warmup == 0 }
     }
 
     var body: some View {

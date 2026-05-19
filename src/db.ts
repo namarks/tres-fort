@@ -345,6 +345,12 @@ export async function patchSession(
     .bind(sessionId, userId)
     .first<SessionRow>();
   if (!s) return null;
+  // Normalize the incoming status ONCE (trim + lowercase) so casing /
+  // whitespace cannot bypass the skipped-guard ({"status":"  SKIPPED "})
+  // and so the value compared here is the value persisted below — a
+  // non-canonical status can never silently corrupt the row.
+  const normalizedStatus =
+    patch.status === undefined ? undefined : patch.status.trim().toLowerCase();
   // History-integrity guard (REST sibling of FIX2's skipPlannedSession
   // guard): a `skipped` patch must not bury a started/finished workout.
   // Setting an in_progress/completed session to 'skipped' would render it
@@ -353,7 +359,7 @@ export async function patchSession(
   // skipPlannedSession. Other status transitions and non-status patches
   // are unchanged.
   if (
-    patch.status === 'skipped' &&
+    normalizedStatus === 'skipped' &&
     (s.status === 'in_progress' || s.status === 'completed')
   ) {
     return {
@@ -361,7 +367,7 @@ export async function patchSession(
       status: s.status as 'in_progress' | 'completed',
     };
   }
-  const status = patch.status ?? s.status;
+  const status = normalizedStatus ?? s.status;
   const fatigue = patch.perceived_fatigue ?? s.perceived_fatigue;
   const notes = patch.notes ?? s.notes;
   const completedAt = status === 'completed' ? s.completed_at ?? now() : s.completed_at;

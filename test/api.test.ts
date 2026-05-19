@@ -225,7 +225,14 @@ describe('sessions, idempotent set logging, history, volume', () => {
 // reject a `skipped` patch on a started/finished session, exactly like the
 // MCP skipPlannedSession guard — otherwise iOS could bury logged history.
 describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished history', () => {
-  async function freshSession(H: Record<string, string>): Promise<string> {
+  // Order-independence: dev auth always resolves to the SAME single owner
+  // user, and getOrCreateSession is keyed (user_id, date) with NO plan
+  // scoping — so a shared date would return the PRIOR test's mutated row
+  // under any storage-isolation regime. Each test therefore uses its OWN
+  // unique date, and freshSession asserts the row it gets back is a
+  // genuinely fresh `planned` session (fails loudly on any cross-test
+  // bleed instead of silently testing the wrong state).
+  async function freshSession(H: Record<string, string>, date: string): Promise<string> {
     await SELF.fetch(`${BASE}/api/plan`, {
       method: 'POST',
       headers: H,
@@ -235,15 +242,16 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
       await SELF.fetch(`${BASE}/api/sessions`, {
         method: 'POST',
         headers: H,
-        body: JSON.stringify({ date: '2026-07-01' }),
+        body: JSON.stringify({ date }),
       })
-    ).json<{ id: string }>();
+    ).json<{ id: string; status: string }>();
+    expect(s.status).toBe('planned'); // isolation guard: must start fresh
     return s.id;
   }
 
   it('REJECTS skipped on a completed session (409); row + logged sets intact', async () => {
     const H = auth(await devJwt());
-    const id = await freshSession(H);
+    const id = await freshSession(H, '2026-07-01');
 
     // Log a set, then complete the session — this is the history to protect.
     const setId = crypto.randomUUID();
@@ -280,7 +288,7 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
 
   it('REJECTS skipped on an in_progress session (409); row untouched', async () => {
     const H = auth(await devJwt());
-    const id = await freshSession(H);
+    const id = await freshSession(H, '2026-07-02');
     const start = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
       method: 'PATCH',
       headers: H,
@@ -303,7 +311,7 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
 
   it('ALLOWS skipped on a planned session (unchanged behavior)', async () => {
     const H = auth(await devJwt());
-    const id = await freshSession(H); // freshly created => status 'planned'
+    const id = await freshSession(H, '2026-07-03'); // freshly created => 'planned'
     const r = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
       method: 'PATCH',
       headers: H,
@@ -315,7 +323,7 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
 
   it('non-skipped status patch and field-only patch on a completed session are unchanged', async () => {
     const H = auth(await devJwt());
-    const id = await freshSession(H);
+    const id = await freshSession(H, '2026-07-04');
 
     // planned -> completed (non-skipped transition): allowed as before.
     const toCompleted = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
@@ -339,6 +347,31 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
       perceived_fatigue: 7,
       notes: 'cooked',
     });
+  });
+
+  // P3: casing/whitespace must not bypass the guard. {"status":"  SKIPPED "}
+  // on a completed session is normalized to 'skipped' and STILL rejected.
+  it('REJECTS a non-canonically-cased skipped patch (e.g. "SKIPPED") on a completed session', async () => {
+    const H = auth(await devJwt());
+    const id = await freshSession(H, '2026-07-05');
+    const comp = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    expect(comp.status).toBe(200);
+
+    const rej = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: '  SKIPPED ' }),
+    });
+    expect(rej.status).toBe(409);
+    expect(await rej.json()).toEqual({ error: 'session_already_started', status: 'completed' });
+    const row = await env.DB.prepare('SELECT status FROM sessions WHERE id=?1')
+      .bind(id)
+      .first<{ status: string }>();
+    expect(row!.status).toBe('completed'); // not buried by the cased bypass
   });
 });
 

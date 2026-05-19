@@ -5,7 +5,7 @@ import Security
 /// credential — Keychain (not UserDefaults) is the right home for it.
 enum Keychain {
     private static let account = "app_jwt"
-    private static let service = "com.nickmarks.liftcoach"
+    private static let service = "com.nmarkspdx.liftcoach"
 
     static func save(_ token: String) {
         let data = Data(token.utf8)

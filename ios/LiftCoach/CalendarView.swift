@@ -8,27 +8,56 @@ import SwiftUI
 
 /// Per-state visual language. Each state is intentionally distinct in
 /// BOTH color and glyph so they read at a glance on the scoreboard theme.
+///
+/// PRESENTATION-ONLY mapping. The internal `CalendarProjection` distinction
+/// between `.planned` (a real future planned session) and `.projected` (a
+/// weekly-schedule projection) is preserved in code and its parity contract
+/// with the backend is untouched — they merely COLLAPSE to one user-facing
+/// "Workout" state here (one label, one glyph). `isWorkout` marks the
+/// states that should visually POP vs receding rest.
 private struct StateStyle {
     let color: Color
     let glyph: String       // SF Symbol
     let label: String
+    let isWorkout: Bool
 }
 
 private func style(for kind: DayProjection.Kind) -> StateStyle? {
     switch kind {
     case .completed:
-        return .init(color: Theme.done, glyph: "checkmark.seal.fill", label: "Completed")
+        return .init(color: Theme.done, glyph: "checkmark.seal.fill",
+                     label: "Completed", isWorkout: true)
     case .inProgress:
-        return .init(color: Theme.accent, glyph: "bolt.fill", label: "In progress")
-    case .planned:
-        return .init(color: Theme.accent, glyph: "calendar.badge.clock", label: "Planned")
-    case .projected:
-        return .init(color: Theme.muted, glyph: "circle.dashed", label: "Projected")
+        return .init(color: Theme.accent, glyph: "bolt.fill",
+                     label: "In progress", isWorkout: true)
+    case .planned, .projected:
+        // Collapsed: a real planned session and a schedule projection are
+        // ONE thing to the user — an upcoming workout.
+        return .init(color: Theme.accent, glyph: "dumbbell.fill",
+                     label: "Workout", isWorkout: true)
     case .skipped:
-        return .init(color: Theme.danger, glyph: "xmark.circle.fill", label: "Skipped")
+        return .init(color: Theme.danger, glyph: "xmark.circle.fill",
+                     label: "Skipped", isWorkout: false)
     case .rest:
-        return .init(color: Theme.dim, glyph: "moon.zzz.fill", label: "Rest")
+        return .init(color: Theme.dim, glyph: "moon.zzz.fill",
+                     label: "Rest", isWorkout: false)
     case .none:
+        return nil
+    }
+}
+
+/// The A/B (or other) day label for the workout that resolves on `ymd`,
+/// for the on-cell badge. nil when the day has no resolvable template.
+@MainActor private func dayLabel(_ sync: SyncModel, _ ymd: String) -> String? {
+    switch sync.projection(for: ymd) {
+    case .projected(let tid):
+        return sync.dayTemplate(id: tid)?.day_label
+    case .session:
+        // Same session→schedule inference Today uses (shared helper, no
+        // forked logic) so a completed/ad-hoc session with a null
+        // day_template_id on a scheduled day still shows its A/B.
+        return sync.sessionDisplayTemplate(forDateString: ymd)?.day_label
+    case .rest, .none:
         return nil
     }
 }
@@ -178,9 +207,11 @@ struct CalendarView: View {
         let ymd = CalendarProjection.dateString(date)
         let proj = sync.projection(for: ymd)
         let st = style(for: proj.kind)
+        let isWorkout = st?.isWorkout ?? false
         let isToday = ymd == sync.todayString
         let dayNum = cal.component(.day, from: date)
-        // Read-only ride overlay: distinct from the 6 lift states.
+        let label = isWorkout ? dayLabel(sync, ymd) : nil
+        // Read-only ride overlay: distinct from the lift states.
         let hasRide = !sync.rides(on: ymd).isEmpty
         let conflict = sync.rideConflict(for: ymd)   // .none on non-lift days
 
@@ -189,12 +220,34 @@ struct CalendarView: View {
         } label: {
             VStack(spacing: 4) {
                 Text("\(dayNum)")
-                    .font(Theme.mono(13, isToday ? .bold : .medium))
-                    .foregroundStyle(isToday ? Theme.accent : Theme.text)
+                    .font(Theme.mono(13, (isToday || isWorkout) ? .bold : .medium))
+                    .foregroundStyle(isToday ? Theme.accent
+                                     : (isWorkout ? Theme.text : Theme.muted))
                 if let st {
-                    Image(systemName: st.glyph)
-                        .font(.system(size: 13))
-                        .foregroundStyle(st.color)
+                    // Workout days POP: a filled accent marker carrying the
+                    // A/B (day_label). Rest/skipped recede to a small muted
+                    // glyph. Internal planned vs projected is irrelevant
+                    // here — both render as this single "Workout" marker.
+                    if isWorkout {
+                        Text(label?.uppercased() ?? "")
+                            .font(Theme.mono(11, .bold))
+                            .foregroundStyle(.black)
+                            .frame(minWidth: 22, minHeight: 18)
+                            .padding(.horizontal, 5)
+                            .background(
+                                Capsule().fill(st.color))
+                            .overlay {
+                                if label == nil {
+                                    Image(systemName: st.glyph)
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundStyle(.black)
+                                }
+                            }
+                    } else {
+                        Image(systemName: st.glyph)
+                            .font(.system(size: 12))
+                            .foregroundStyle(st.color)
+                    }
                 } else {
                     // keep cell height uniform when nothing to show
                     Image(systemName: "circle.fill")
@@ -202,7 +255,7 @@ struct CalendarView: View {
                         .foregroundStyle(.clear)
                 }
                 // Ride glyph sits BELOW the lift state so both read at a
-                // glance and the existing 6 states are never displaced.
+                // glance and the existing states are never displaced.
                 if hasRide {
                     Image(systemName: "bicycle")
                         .font(.system(size: 10, weight: .bold))
@@ -217,11 +270,16 @@ struct CalendarView: View {
             .frame(height: 56)
             .background(
                 RoundedRectangle(cornerRadius: 10)
-                    .fill(isToday ? Theme.surface2 : Theme.surface.opacity(0.6))
+                    .fill(isToday ? Theme.surface2
+                          : (isWorkout ? Theme.surface
+                             : Theme.surface.opacity(0.35)))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
-                    .stroke(isToday ? Theme.accent : Color.clear, lineWidth: 1.5)
+                    .stroke(isToday ? Theme.accent
+                            : (isWorkout ? (st?.color ?? Theme.accent).opacity(0.35)
+                               : Color.clear),
+                            lineWidth: isToday ? 1.5 : 1)
             )
             // Amber clash badge: a lift date that conflicts with a ride.
             // Corner triangle-ish dot, distinct from every lift glyph.
@@ -240,13 +298,19 @@ struct CalendarView: View {
     // MARK: legend
 
     private var legend: some View {
+        // Planned + projected collapse to ONE "Workout" entry: dedupe by
+        // label so the legend shows Completed / In progress / Workout /
+        // Skipped / Rest (no "Projected").
         let kinds: [DayProjection.Kind] =
             [.completed, .inProgress, .planned, .projected, .skipped, .rest]
+        var seen = Set<String>()
+        let entries = kinds.compactMap { style(for: $0) }
+            .filter { seen.insert($0.label).inserted }
         return LazyVGrid(
             columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
             spacing: 10
         ) {
-            ForEach(kinds.compactMap { k -> StateStyle? in style(for: k) }, id: \.label) { s in
+            ForEach(entries, id: \.label) { s in
                 HStack(spacing: 6) {
                     Image(systemName: s.glyph)
                         .font(.system(size: 11))

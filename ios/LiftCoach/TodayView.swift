@@ -11,6 +11,9 @@ struct TodayView: View {
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
 
+    /// Presents the demoted "Train a different day" override picker.
+    @State private var showOverridePicker = false
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -18,22 +21,20 @@ struct TodayView: View {
                 content
                 if sync.restEndDate != nil { RestOverlay(sync: sync) }
             }
-            .navigationTitle(sync.plan?.name ?? "lift-coach")
-            .navigationBarTitleDisplayMode(.inline)
+            // FIX 1: let the plan name degrade gracefully instead of hard-
+            // truncating mid-word. A principal title shows short names full
+            // size on one line, wraps medium names to 2 lines, and scales
+            // long names down to 65% — the meaningful name always shows.
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    if !sync.running, let plan = sync.plan, plan.days.count > 1 {
-                        Menu {
-                            ForEach(plan.days) { d in
-                                Button(d.title) { sync.selectedDayID = d.id }
-                            }
-                        } label: {
-                            HStack(spacing: 4) {
-                                Text(sync.selectedDay?.day_label ?? "Day")
-                                Image(systemName: "chevron.down").font(.caption2)
-                            }.font(Theme.mono(14, .bold)).foregroundStyle(Theme.text)
-                        }
-                    }
+                ToolbarItem(placement: .principal) {
+                    Text(sync.plan?.name ?? "lift-coach")
+                        .font(Theme.mono(15, .bold))
+                        .foregroundStyle(Theme.text)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.65)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 280)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -48,6 +49,18 @@ struct TodayView: View {
                 }
             }
             .toolbarColorScheme(.dark, for: .navigationBar)
+            .confirmationDialog(
+                "Train a different day",
+                isPresented: $showOverridePicker,
+                titleVisibility: .visible
+            ) {
+                ForEach(sync.plan?.days ?? []) { d in
+                    Button(d.title) { sync.startOverride(dayID: d.id) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Starts a one-off session. Your weekly schedule is unchanged — ask Claude to edit the schedule.")
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -59,14 +72,270 @@ struct TodayView: View {
             FinishedView(sync: sync)
         } else if sync.running {
             RunnerView(sync: sync)
-        } else if let day = sync.selectedDay {
-            OverviewView(sync: sync, day: day)
-        } else {
+        } else if sync.plan == nil {
             VStack(spacing: 8) {
                 Text("NO PLAN YET").font(Theme.display(28)).foregroundStyle(Theme.text)
                 Text("Ask Claude to build one, then pull to refresh.")
                     .font(Theme.mono(13)).foregroundStyle(Theme.muted)
             }
+        } else if sync.todayIsCompleted {
+            // Today's session is already COMPLETED. Show a done/recap
+            // state with NO start and NO override: one session per
+            // (user,date) means any "start" re-opens & double-logs the
+            // completed row (server getOrCreateSession is idempotent on
+            // (user,date)), so we never offer an action the data model
+            // can't safely honor.
+            WorkoutDoneView(sync: sync)
+        } else if let day = sync.todayResolvedDay {
+            // Workout day (planned / in_progress / projected) — today
+            // resolved via CalendarProjection (the SAME projection the
+            // calendar uses), not a manual A/B default. in_progress
+            // resumes into the runner via the existing start path.
+            TodayWorkoutView(
+                sync: sync, day: day,
+                onOverride: { showOverridePicker = true })
+        } else {
+            // Pure rest day (or skipped) — no primary START CTA.
+            RestDayView(
+                sync: sync,
+                onOverride: { showOverridePicker = true })
+        }
+    }
+}
+
+// MARK: - Rest day (schedule-driven)
+
+/// Shown when today's projection resolves to rest (or a skipped session).
+/// No primary START WORKOUT CTA; surfaces the next upcoming workout found
+/// by forward-scanning the SAME projection, plus the demoted override.
+private struct RestDayView: View {
+    @ObservedObject var sync: SyncModel
+    let onOverride: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("TODAY")
+                            .font(Theme.mono(11, .bold)).tracking(2)
+                            .foregroundStyle(Theme.muted)
+                        Text("— Rest day —")
+                            .font(Theme.display(40))
+                            .foregroundStyle(Theme.text)
+                        Text("Nothing scheduled. Recover.")
+                            .font(Theme.mono(13)).foregroundStyle(Theme.muted)
+                    }
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+
+                    if let next = sync.nextWorkout() {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("NEXT WORKOUT")
+                                .font(Theme.mono(11, .bold)).tracking(2)
+                                .foregroundStyle(Theme.muted)
+                            // `next.day` is nil when the resolved template
+                            // isn't cached — we still show the real next
+                            // date (never skip ahead), just without detail.
+                            Text((next.day?.title ?? "Workout scheduled").uppercased())
+                                .font(Theme.display(28))
+                                .foregroundStyle(Theme.text)
+                                .lineLimit(2).minimumScaleFactor(0.6)
+                            Text(sync.relativeLabel(for: next.dateString).uppercased())
+                                .font(Theme.mono(13, .bold)).tracking(1)
+                                .foregroundStyle(Theme.accent)
+                            if let day = next.day, !day.exercises.isEmpty {
+                                Text(day.exercises
+                                        .map(\.exercise_name)
+                                        .joined(separator: " · "))
+                                    .font(Theme.mono(11))
+                                    .foregroundStyle(Theme.dim)
+                                    .padding(.top, 2)
+                            }
+                        }
+                        .padding(20)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.surface)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                    }
+
+                    if let err = sync.loadError {
+                        Text(err).font(Theme.mono(12)).foregroundStyle(Theme.danger)
+                    }
+                }
+                .padding(16)
+            }
+            .refreshable { await sync.load() }
+
+            // Demoted, non-primary override affordance.
+            OverrideButton(onOverride: onOverride).padding(16)
+        }
+    }
+}
+
+// MARK: - Workout complete (today's session is done)
+
+/// Shown when today's resolved session is COMPLETED. A clean recap with
+/// NO primary START WORKOUT CTA and NO "Train a different day" override —
+/// the single session-per-(user,date) invariant means any start would
+/// re-open and double-log the completed row. The next workout is surfaced
+/// so the screen still tells you what's next (same forward-scan the rest
+/// day uses); pull-to-refresh remains so a server change is reflected.
+private struct WorkoutDoneView: View {
+    @ObservedObject var sync: SyncModel
+
+    private var doneTemplateTitle: String {
+        sync.todayResolvedDay?.title.uppercased() ?? "WORKOUT"
+    }
+
+    /// Logged WORKING sets for today's completed session — warmups
+    /// excluded so the recap numbers match FinishedView (which uses
+    /// `is_warmup == 0`) and never disagree seconds apart.
+    private var todaySets: [SetLog] {
+        guard let sid = sync.sessionsByDate[sync.todayString]?.id else { return [] }
+        return sync.setsForSession(sid).filter { $0.is_warmup == 0 }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("TODAY")
+                        .font(Theme.mono(11, .bold)).tracking(2)
+                        .foregroundStyle(Theme.muted)
+                    HStack(spacing: 10) {
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 26))
+                            .foregroundStyle(Theme.done)
+                        Text("WORKOUT COMPLETE")
+                            .font(Theme.display(34))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(2).minimumScaleFactor(0.6)
+                    }
+                    Text(doneTemplateTitle)
+                        .font(Theme.mono(13, .bold)).tracking(1)
+                        .foregroundStyle(Theme.accent)
+                    let n = todaySets.count
+                    if n > 0 {
+                        let reps = todaySets.reduce(0) { $0 + $1.reps }
+                        let vol = todaySets.reduce(0.0) { $0 + $1.weight * Double($1.reps) }
+                        Text("✓ \(n) SET\(n == 1 ? "" : "S") · \(reps) REPS · \(Int(vol)) LB")
+                            .font(Theme.mono(12, .bold)).tracking(1)
+                            .foregroundStyle(Theme.muted)
+                            .padding(.top, 2)
+                    } else {
+                        Text("✓ DONE — LOGGED TO YOUR COACH")
+                            .font(Theme.mono(12, .bold)).tracking(1)
+                            .foregroundStyle(Theme.muted)
+                            .padding(.top, 2)
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Theme.surface)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+
+                if let next = sync.nextWorkout() {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("NEXT WORKOUT")
+                            .font(Theme.mono(11, .bold)).tracking(2)
+                            .foregroundStyle(Theme.muted)
+                        Text((next.day?.title ?? "Workout scheduled").uppercased())
+                            .font(Theme.display(28))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(2).minimumScaleFactor(0.6)
+                        Text(sync.relativeLabel(for: next.dateString).uppercased())
+                            .font(Theme.mono(13, .bold)).tracking(1)
+                            .foregroundStyle(Theme.accent)
+                    }
+                    .padding(20)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Theme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                }
+
+                if let err = sync.loadError {
+                    Text(err).font(Theme.mono(12)).foregroundStyle(Theme.danger)
+                }
+            }
+            .padding(16)
+        }
+        .refreshable { await sync.load() }
+    }
+}
+
+// MARK: - Workout day (schedule-driven)
+
+/// Shown when today's projection resolves to a workout. Renders the
+/// resolved template's exercises + the primary START WORKOUT CTA. The
+/// runner executes whatever `sync.startToday` selected (the resolved
+/// template), not a manual A/B default.
+private struct TodayWorkoutView: View {
+    @ObservedObject var sync: SyncModel
+    let day: DayTemplate
+    let onOverride: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("TODAY · \(day.title.uppercased())")
+                        .font(Theme.mono(11, .bold)).tracking(2)
+                        .foregroundStyle(Theme.muted).padding(.bottom, 6)
+                    ForEach(day.exercises) { ex in
+                        HStack {
+                            Text(ex.exercise_name.uppercased())
+                                .font(Theme.display(22)).foregroundStyle(Theme.text)
+                            Spacer()
+                            Text(ex.targetLabel)
+                                .font(Theme.mono(14)).foregroundStyle(Theme.muted)
+                        }
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Theme.surface)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                    if let err = sync.loadError {
+                        Text(err).font(Theme.mono(12)).foregroundStyle(Theme.danger)
+                    }
+                    OverrideButton(onOverride: onOverride).padding(.top, 6)
+                }
+                .padding(16)
+            }
+            .refreshable { await sync.load() }
+
+            Button { sync.startToday() } label: {
+                Text("START WORKOUT")
+                    .font(Theme.display(26)).tracking(1.5)
+                    .frame(maxWidth: .infinity).padding(.vertical, 18)
+            }
+            .background(Theme.accent).foregroundStyle(.black)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
+            .disabled(day.exercises.isEmpty)
+            .padding(16)
+        }
+    }
+}
+
+/// Demoted, secondary affordance — never the primary CTA. Opens the
+/// day/template override picker.
+private struct OverrideButton: View {
+    let onOverride: () -> Void
+    var body: some View {
+        Button(action: onOverride) {
+            HStack(spacing: 6) {
+                Text("Train a different day")
+                    .font(Theme.mono(13, .bold))
+                Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold))
+            }
+            .foregroundStyle(Theme.muted)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(Theme.surface.opacity(0.6))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
         }
     }
 }
@@ -96,54 +365,6 @@ private struct ProgressBar: View {
                 }
                 .frame(height: 4)
             }
-        }
-    }
-}
-
-// MARK: - Overview
-
-private struct OverviewView: View {
-    @ObservedObject var sync: SyncModel
-    let day: DayTemplate
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text(day.title.uppercased())
-                        .font(Theme.mono(11, .bold)).tracking(2)
-                        .foregroundStyle(Theme.muted).padding(.bottom, 6)
-                    ForEach(day.exercises) { ex in
-                        HStack {
-                            Text(ex.exercise_name.uppercased())
-                                .font(Theme.display(22)).foregroundStyle(Theme.text)
-                            Spacer()
-                            Text(ex.targetLabel)
-                                .font(Theme.mono(14)).foregroundStyle(Theme.muted)
-                        }
-                        .padding(16)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Theme.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                    }
-                    if let err = sync.loadError {
-                        Text(err).font(Theme.mono(12)).foregroundStyle(Theme.danger)
-                    }
-                }
-                .padding(16)
-            }
-            .refreshable { await sync.load() }
-
-            Button { sync.startWorkout() } label: {
-                Text("START WORKOUT")
-                    .font(Theme.display(26)).tracking(1.5)
-                    .frame(maxWidth: .infinity).padding(.vertical, 18)
-            }
-            .background(Theme.accent).foregroundStyle(.black)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
-            .disabled(day.exercises.isEmpty)
-            .padding(16)
         }
     }
 }

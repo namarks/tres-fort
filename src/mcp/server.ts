@@ -7,8 +7,10 @@ import {
   addDayTemplate,
   addTemplateExercise,
   adjustToday,
+  deleteTemplateExercise,
   ensureOwnerUser,
   getActivePlan,
+  getExercises,
   getHistory,
   getInProgressSession,
   getOrCreateSession,
@@ -24,6 +26,7 @@ import {
   logWorkoutComplete,
   nextDayOrderIndex,
   nextExerciseOrderIndex,
+  patchDayTemplate,
   tryExportSessionLoad,
   resolveExercise,
   setPlanSchedule,
@@ -214,6 +217,25 @@ const TOOLS: Record<string, Tool> = {
       const from = rangeToFrom(typeof a.range === 'string' ? a.range : '12w');
       return getVolume(env.DB, userId, String(a.muscle_group), from, Date.now());
     },
+  },
+
+  list_exercises: {
+    description:
+      'List the exercise catalog so you can discover what is resolvable BEFORE calling add_exercise / update_plan (those reject unknown names with `unknown_exercise`). Optional filters: `query` (case-insensitive substring on name), `muscle` (primary_muscle exact, e.g. "quads"), `modality` (e.g. "barbell","dumbbell","bw","machine","timed"). Returns up to a few hundred rows in the seeded catalog; combine filters to narrow.',
+    inputSchema: obj(
+      {
+        query: { type: 'string' },
+        muscle: { type: 'string' },
+        modality: { type: 'string' },
+      },
+      [],
+    ),
+    handler: (a, env, _userId) =>
+      getExercises(env.DB, {
+        query: typeof a.query === 'string' ? a.query : undefined,
+        muscle: typeof a.muscle === 'string' ? a.muscle : undefined,
+        modality: typeof a.modality === 'string' ? a.modality : undefined,
+      }),
   },
 
   get_upcoming_rides: {
@@ -524,6 +546,66 @@ const TOOLS: Record<string, Tool> = {
       );
     },
     note: (a) => `Added day "${a.name}".`,
+  },
+  update_day: {
+    description:
+      "Patch a day template's metadata in the active plan: `name`, `day_label`, `order_index`, `notes`. Identify the day by `day_template_id` OR by `day` (label/name). Bumps the plan version. Unknown patch keys → `{error:'unknown_fields', fields}`. To change exercises within a day, use add_exercise / update_exercise / delete_exercise / swap_exercise.",
+    inputSchema: obj(
+      {
+        day_template_id: { type: 'string' },
+        day: { type: 'string', description: 'day label or name (used when day_template_id is omitted)' },
+        patch: { type: 'object' },
+      },
+      ['patch'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const plan = await getActivePlan(env.DB, userId);
+      if (!plan) return { error: 'no_active_plan' };
+      let dayId: string | null = null;
+      if (typeof a.day_template_id === 'string') {
+        dayId = a.day_template_id;
+      } else if (typeof a.day === 'string') {
+        const row = await env.DB
+          .prepare(
+            "SELECT id FROM day_templates WHERE plan_id = ?1 AND (day_label = ?2 OR name = ?2) LIMIT 1",
+          )
+          .bind(plan.id, a.day)
+          .first<{ id: string }>();
+        dayId = row?.id ?? null;
+      }
+      if (!dayId) return { error: 'day_not_found' };
+      const r = await patchDayTemplate(env.DB, plan.id, dayId, (a.patch as Json) ?? {});
+      return r ?? { error: 'day_not_found' };
+    },
+    note: (_a, r) =>
+      r?.error
+        ? null
+        : `Updated day "${(r as { name: string }).name}".`,
+  },
+  delete_exercise: {
+    description:
+      'Remove an exercise slot from a day in the active plan. Identify it by `template_exercise_id` OR by `day` (label/name) + `exercise`. NULLs any historical `set_logs.template_exercise_id` that pointed at this slot (sets are kept, queryable by exercise_id; the slot pointer is detached). Bumps the plan version. For substitution, use `swap_exercise` instead.',
+    inputSchema: obj(
+      {
+        template_exercise_id: { type: 'string' },
+        day: { type: 'string' },
+        exercise: { type: 'string' },
+      },
+      [],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const r = await deleteTemplateExercise(env.DB, userId, {
+        template_exercise_id:
+          typeof a.template_exercise_id === 'string' ? a.template_exercise_id : undefined,
+        day: typeof a.day === 'string' ? a.day : undefined,
+        exercise: typeof a.exercise === 'string' ? a.exercise : undefined,
+      });
+      return r ?? { error: 'slot_not_found' };
+    },
+    note: (_a, r) =>
+      r?.error ? null : `Deleted exercise slot ${r.id}.`,
   },
   adjust_today: {
     description:

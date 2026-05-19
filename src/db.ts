@@ -232,25 +232,43 @@ export async function addDayTemplate(
   return row;
 }
 
+/** Allowlist of patch keys accepted by `patchDayTemplate`. Unknown keys
+ *  surface as `{ error: 'unknown_fields', fields }` — same diagnosability
+ *  contract as updateExercise. */
+const DAY_TEMPLATE_PATCH_KEYS = new Set<string>([
+  'name',
+  'day_label',
+  'order_index',
+  'notes',
+]);
+
 export async function patchDayTemplate(
   db: D1Database,
   planId: string,
   dayId: string,
-  patch: { name?: string; order_index?: number; notes?: string | null },
-): Promise<DayTemplateRow | null> {
+  patch: {
+    name?: string;
+    day_label?: string | null;
+    order_index?: number;
+    notes?: string | null;
+  },
+): Promise<DayTemplateRow | { error: 'unknown_fields'; fields: string[] } | null> {
   const existing = await db
     .prepare('SELECT * FROM day_templates WHERE id = ?1 AND plan_id = ?2')
     .bind(dayId, planId)
     .first<DayTemplateRow>();
   if (!existing) return null;
+  const unknown = Object.keys(patch).filter((k) => !DAY_TEMPLATE_PATCH_KEYS.has(k));
+  if (unknown.length > 0) return { error: 'unknown_fields', fields: unknown };
   const merged = {
     name: patch.name ?? existing.name,
+    day_label: patch.day_label === undefined ? existing.day_label : patch.day_label,
     order_index: patch.order_index ?? existing.order_index,
     notes: patch.notes === undefined ? existing.notes : patch.notes,
   };
   await db
-    .prepare('UPDATE day_templates SET name=?2, order_index=?3, notes=?4, updated_at=?5 WHERE id=?1')
-    .bind(dayId, merged.name, merged.order_index, merged.notes, now())
+    .prepare('UPDATE day_templates SET name=?2, day_label=?3, order_index=?4, notes=?5, updated_at=?6 WHERE id=?1')
+    .bind(dayId, merged.name, merged.day_label, merged.order_index, merged.notes, now())
     .run();
   await bumpPlanVersion(db, planId);
   return { ...existing, ...merged, updated_at: now() };
@@ -311,6 +329,49 @@ export async function addTemplateExercise(
 }
 
 // ---- exercise resolver ---------------------------------------------------
+
+/**
+ * Discoverable exercise catalog read for agents — closes the agent-facing
+ * "exercise vocabulary is closed and undiscoverable" P1 in the bug report.
+ * Optional filters: case-insensitive substring `query` (matches `name`),
+ * exact `muscle` (matches `primary_muscle`), exact `modality`. Returns a
+ * compact projection ordered by name.
+ */
+export async function getExercises(
+  db: D1Database,
+  filters: { query?: string; muscle?: string; modality?: string } = {},
+): Promise<
+  { id: string; name: string; primary_muscle: string; modality: string; unit: string }[]
+> {
+  const where: string[] = [];
+  const binds: (string | number)[] = [];
+  if (filters.query && filters.query.trim() !== '') {
+    binds.push(`%${filters.query.trim().toLowerCase()}%`);
+    where.push(`lower(name) LIKE ?${binds.length}`);
+  }
+  if (filters.muscle && filters.muscle.trim() !== '') {
+    binds.push(filters.muscle.trim().toLowerCase());
+    where.push(`lower(primary_muscle) = ?${binds.length}`);
+  }
+  if (filters.modality && filters.modality.trim() !== '') {
+    binds.push(filters.modality.trim().toLowerCase());
+    where.push(`lower(modality) = ?${binds.length}`);
+  }
+  const sql =
+    'SELECT id, name, primary_muscle, modality, unit FROM exercises' +
+    (where.length ? ' WHERE ' + where.join(' AND ') : '') +
+    ' ORDER BY name';
+  const stmt = db.prepare(sql);
+  const bound = binds.length === 0 ? stmt : stmt.bind(...binds);
+  const r = await bound.all<{
+    id: string;
+    name: string;
+    primary_muscle: string;
+    modality: string;
+    unit: string;
+  }>();
+  return r.results;
+}
 
 /** Resolve an id, exact name, or alias to an exercise row. */
 export async function resolveExercise(db: D1Database, nameOrId: string) {
@@ -1207,6 +1268,32 @@ export async function updateExercise(
     .run();
   await bumpPlanVersionByDay(db, slot.day_template_id);
   return m;
+}
+
+/**
+ * Delete an exercise slot from a day. Resolves the slot by id or by
+ * `(day, exercise)` — same ref shape as updateExercise. NULLs any
+ * `set_logs.template_exercise_id` that pointed at this slot so historical
+ * sets are detached (not deleted — they stay queryable by exercise_id).
+ * Bumps the plan version (it's a plan-tree mutation). Returns the deleted
+ * row or null when no slot matches.
+ */
+export async function deleteTemplateExercise(
+  db: D1Database,
+  userId: string,
+  ref: { template_exercise_id?: string; day?: string; exercise?: string },
+): Promise<TemplateExerciseRow | null> {
+  const slot = await findSlot(db, userId, ref);
+  if (!slot) return null;
+  await db
+    .batch([
+      db
+        .prepare('UPDATE set_logs SET template_exercise_id = NULL WHERE template_exercise_id = ?1')
+        .bind(slot.id),
+      db.prepare('DELETE FROM template_exercises WHERE id = ?1').bind(slot.id),
+    ]);
+  await bumpPlanVersionByDay(db, slot.day_template_id);
+  return slot;
 }
 
 export async function swapExercise(

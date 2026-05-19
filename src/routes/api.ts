@@ -60,9 +60,16 @@ apiRoutes.post('/days', async (c) => {
 apiRoutes.patch('/days/:id', async (c) => {
   const plan = await getActivePlan(c.env.DB, c.get('userId'));
   if (!plan) return c.json({ error: 'no_active_plan' }, 400);
-  const b = await c.req.json<{ name?: string; order_index?: number; notes?: string | null }>();
+  const b = await c.req.json<{
+    name?: string;
+    day_label?: string | null;
+    order_index?: number;
+    notes?: string | null;
+  }>();
   const row = await patchDayTemplate(c.env.DB, plan.id, c.req.param('id'), b);
-  return row ? c.json(row) : c.json({ error: 'not_found' }, 404);
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  if ('error' in row) return c.json(row, 400);
+  return c.json(row);
 });
 
 apiRoutes.post('/days/:id/exercises', async (c) => {

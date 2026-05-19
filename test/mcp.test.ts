@@ -120,6 +120,7 @@ describe('mcp tools list', () => {
         'get_session_log',
         'get_today_workout',
         'get_volume_trend',
+        'list_exercises',
         'log_set',
         'log_workout_complete',
         'add_note',
@@ -134,9 +135,11 @@ describe('mcp tools list', () => {
         'skip_planned_session',
         'refresh_rides',
         'get_upcoming_rides',
+        'update_day',
+        'delete_exercise',
       ]),
     );
-    expect(names).toHaveLength(20);
+    expect(names).toHaveLength(23);
     for (const t of body.result.tools) expect(t.inputSchema.type).toBe('object');
   });
 });
@@ -205,6 +208,26 @@ describe('mcp tools read live D1', () => {
         .body,
     );
     expect(vol.buckets[0].tonnage).toBe(225 * 8);
+
+    // list_exercises: catalog discoverability for agents (closes the
+    // bug-report P1 "exercise vocabulary is closed and undiscoverable").
+    const allEx = toolJson(
+      (await rpc('tools/call', { name: 'list_exercises', arguments: {} })).body,
+    );
+    expect(Array.isArray(allEx)).toBe(true);
+    expect(allEx.length).toBeGreaterThan(20); // catalog is 131+ post-migration 0007
+    expect(allEx.find((e: { id: string }) => e.id === 'ex_bench')).toBeTruthy();
+
+    const benchish = toolJson(
+      (await rpc('tools/call', { name: 'list_exercises', arguments: { query: 'bench' } })).body,
+    );
+    expect(benchish.every((e: { name: string }) => /bench/i.test(e.name))).toBe(true);
+    expect(benchish.length).toBeLessThan(allEx.length);
+
+    const quads = toolJson(
+      (await rpc('tools/call', { name: 'list_exercises', arguments: { muscle: 'quads' } })).body,
+    );
+    expect(quads.every((e: { primary_muscle: string }) => e.primary_muscle === 'quads')).toBe(true);
 
     const unknown = toolJson(
       (await rpc('tools/call', { name: 'get_history', arguments: { exercise: 'xyzzy' } })).body,

@@ -963,9 +963,16 @@ export async function logWorkoutComplete(
     perceived_fatigue: perceivedFatigue ?? undefined,
     notes: notes ?? undefined,
   });
-  // status:'completed' never triggers the skipped-burial guard, so the
-  // rejection variant is unreachable here; narrow it out for callers.
-  if (r && 'error' in r) return null;
+  // logWorkoutComplete ALWAYS passes status:'completed', which is a valid
+  // status and never the skipped-burial case — so neither patchSession
+  // rejection arm ('invalid_status' / 'session_already_started') is
+  // reachable here. Fail LOUD rather than silently return null if that
+  // ever changes (e.g. the guard's scope is widened beyond 'skipped').
+  if (r && 'error' in r) {
+    throw new Error(
+      `unreachable: patchSession returned ${r.error} on the status:'completed' path — guard scope changed`,
+    );
+  }
   return r;
 }
 

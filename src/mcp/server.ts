@@ -25,6 +25,7 @@ import {
   setPlannedSession,
   skipPlannedSession,
   swapExercise,
+  syncExternalEvents,
   updateExercise,
   updatePlanTree,
   writeAudit,
@@ -529,6 +530,18 @@ const TOOLS: Record<string, Tool> = {
     write: true,
     handler: async (a, env, userId) => skipPlannedSession(env.DB, userId, String(a.date)),
     note: (a, r) => (r?.ok ? `Skipped ${a.date} (one-off rest, no plan change).` : null),
+  },
+  refresh_rides: {
+    description:
+      'Force an immediate refresh of the planned cycling/endurance calendar from intervals.icu (the cron also does this every 6h). Returns how many upcoming rides are cached and the sync status. Does NOT change the training plan or its version. No-op if the intervals.icu integration is not configured.',
+    inputSchema: obj({}),
+    // An action → audited. Reconciled cache only: NO plans.version bump and
+    // (no `note`) NO notes row.
+    write: true,
+    handler: async (_a, env, userId) => {
+      const r = await syncExternalEvents(env.DB, env, { userId });
+      return { synced: r.synced, status: r.status, ...(r.detail ? { detail: r.detail } : {}) };
+    },
   },
 };
 

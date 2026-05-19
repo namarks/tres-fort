@@ -132,9 +132,10 @@ describe('mcp tools list', () => {
         'set_schedule',
         'set_planned_session',
         'skip_planned_session',
+        'refresh_rides',
       ]),
     );
-    expect(names).toHaveLength(18);
+    expect(names).toHaveLength(19);
     for (const t of body.result.tools) expect(t.inputSchema.type).toBe('object');
   });
 });

@@ -13,12 +13,20 @@
       "migrations_dir": "migrations"
     }
   ],
+  // Cron: reconcile the intervals.icu planned-ride cache every 6 hours.
+  // Invokes the `scheduled` handler in src/index.ts (syncExternalEvents).
+  "triggers": { "crons": ["0 */6 * * *"] },
   "vars": {
-    "APPLE_BUNDLE_ID": "com.nmarkspdx.liftcoach"
+    "APPLE_BUNDLE_ID": "com.nmarkspdx.liftcoach",
+    // Non-sensitive: the intervals.icu athlete id (e.g. "i12345").
+    "INTERVALS_ICU_ATHLETE_ID": "i0"
   }
   // Secrets (set via `wrangler secret put`, NOT committed):
-  //   APP_JWT_SECRET    - HS256 signing key for app JWTs
-  //   MCP_STATIC_TOKEN  - static bearer accepted at /mcp (Claude Code / curl)
-  //   OWNER_APPLE_SUB   - allowlisted Apple `sub`; only this user may sign in
-  //   DEV_AUTH_SECRET   - if set, enables POST /auth/dev (local + tests only)
+  //   APP_JWT_SECRET        - HS256 signing key for app JWTs
+  //   MCP_STATIC_TOKEN      - static bearer accepted at /mcp (Claude Code / curl)
+  //   OWNER_APPLE_SUB       - allowlisted Apple `sub`; only this user may sign in
+  //   DEV_AUTH_SECRET       - if set, enables POST /auth/dev (local + tests only)
+  //   INTERVALS_ICU_API_KEY - intervals.icu API key; enables cycling
+  //                           awareness. `wrangler secret put` ONLY — never
+  //                           committed. Feature is a dormant no-op if unset.
 }

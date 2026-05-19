@@ -133,9 +133,10 @@ describe('mcp tools list', () => {
         'set_planned_session',
         'skip_planned_session',
         'refresh_rides',
+        'get_upcoming_rides',
       ]),
     );
-    expect(names).toHaveLength(19);
+    expect(names).toHaveLength(20);
     for (const t of body.result.tools) expect(t.inputSchema.type).toBe('object');
   });
 });
@@ -169,6 +170,69 @@ describe('mcp tools read live D1', () => {
       (await rpc('tools/call', { name: 'get_history', arguments: { exercise: 'xyzzy' } })).body,
     );
     expect(unknown.error).toBe('unknown_exercise');
+  });
+
+  it('get_upcoming_rides + brief expose rides and lift/ride conflicts', async () => {
+    await seed(); // plan "Upper/Lower", day "Upper A", a logged set today
+
+    const userId = (
+      await env.DB.prepare('SELECT id FROM users ORDER BY created_at LIMIT 1').first<{
+        id: string;
+      }>()
+    )!.id;
+
+    const today = new Date().toISOString().slice(0, 10);
+    // Ensure a real lift session exists on the REAL "today" (the seed uses
+    // a fixed 2026-05-18 date which the wall clock may not match), so the
+    // conflict detector sees a lift on `today`.
+    const plan = (
+      await env.DB.prepare(
+        "SELECT id FROM plans WHERE user_id=?1 AND status='active'",
+      )
+        .bind(userId)
+        .first<{ id: string }>()
+    )!.id;
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO sessions
+         (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,
+          perceived_fatigue,notes,created_at,updated_at)
+       VALUES (?1,?2,?3,NULL,?4,'completed',NULL,NULL,NULL,NULL,?5,?5)`,
+    )
+      .bind(`sess-today-${today}`, userId, plan, today, Date.now())
+      .run();
+
+    // Same-day ride → expect a 'clash'. Anchored to today (within window).
+    await env.DB.prepare(
+      `INSERT INTO external_events
+         (id,user_id,source,external_id,date,kind,title,description,
+          planned_duration_sec,training_load,intensity,raw,synced_at,deleted_at)
+       VALUES ('intervals:clash-1',?1,'intervals','clash-1',?2,'ride','Big ride',NULL,
+               10800,210,0.85,'{}',?3,NULL)`,
+    )
+      .bind(userId, today, Date.now())
+      .run();
+
+    const ur = toolJson(
+      (await rpc('tools/call', { name: 'get_upcoming_rides', arguments: { range: 30 } })).body,
+    );
+    expect(ur.rides.some((r: any) => r.id === 'intervals:clash-1')).toBe(true);
+    const clash = ur.conflicts.find((c: any) => c.date === today);
+    expect(clash).toBeTruthy();
+    expect(clash.severity).toBe('clash');
+    expect(clash.conflicts).toContain('intervals:clash-1');
+
+    // The auto-loaded brief carries the same conflict, zero extra calls.
+    const read = await rpc('resources/read', { uri: 'coach://state/current' });
+    const text = read.body.result.contents[0].text as string;
+    expect(text).toContain('ride_conflicts');
+    expect(text).toContain('intervals:clash-1');
+
+    // get_current_plan folds the conflicts into plan context too.
+    const cp = toolJson((await rpc('tools/call', { name: 'get_current_plan', arguments: {} })).body);
+    expect(Array.isArray(cp.ride_conflicts)).toBe(true);
+    expect(cp.ride_conflicts.some((c: any) => c.date === today && c.severity === 'clash')).toBe(
+      true,
+    );
   });
 
   it('exposes the state resource and the coach_brief prompt', async () => {

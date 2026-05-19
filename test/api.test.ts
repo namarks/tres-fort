@@ -277,6 +277,77 @@ describe('/api/state carries the weekly schedule, gated on version', () => {
   });
 });
 
+describe('/api/state external_events delta (own consistency class)', () => {
+  it('gates events on events_since and never bumps plans.version', async () => {
+    const jwt = await devJwt();
+    const H = auth(jwt);
+
+    // Own plan so plan_version is well-defined for this test.
+    await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Ride State' }),
+    });
+    const planVer = (
+      await (await SELF.fetch(`${BASE}/api/state?since=0`, { headers: H })).json<{
+        plan_version: number;
+      }>()
+    ).plan_version;
+
+    // Resolve the owner user id (dev auth → owner).
+    const userId = (
+      await env.DB.prepare("SELECT id FROM users ORDER BY created_at LIMIT 1").first<{
+        id: string;
+      }>()
+    )!.id;
+
+    // Seed the reconciled cache directly (server-owned class; no API write).
+    const t1 = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO external_events
+         (id,user_id,source,external_id,date,kind,title,description,
+          planned_duration_sec,training_load,intensity,raw,synced_at,deleted_at)
+       VALUES ('intervals:state-1',?1,'intervals','state-1','2026-06-01','ride','Z2',NULL,
+               7200,120,0.7,'{}',?2,NULL)`,
+    )
+      .bind(userId, t1)
+      .run();
+
+    // events_since=0 → the new event is in the delta.
+    const s1 = await (
+      await SELF.fetch(`${BASE}/api/state?since=0&events_since=0`, { headers: H })
+    ).json<{ external_events: { id: string }[]; plan_version: number }>();
+    expect(s1.external_events.some((e) => e.id === 'intervals:state-1')).toBe(true);
+
+    // events_since at/after the row's synced_at → excluded from the delta.
+    const s2 = await (
+      await SELF.fetch(`${BASE}/api/state?events_since=${t1}`, { headers: H })
+    ).json<{ external_events: { id: string }[]; plan_version: number }>();
+    expect(s2.external_events.some((e) => e.id === 'intervals:state-1')).toBe(false);
+
+    // A later sync (new synced_at) re-surfaces it and a soft-delete is in
+    // the delta too (client filters on deleted_at, like set_logs).
+    const t2 = t1 + 1000;
+    await env.DB.prepare(
+      "UPDATE external_events SET synced_at=?1, deleted_at=?1 WHERE id='intervals:state-1'",
+    )
+      .bind(t2)
+      .run();
+    const s3 = await (
+      await SELF.fetch(`${BASE}/api/state?events_since=${t1}`, { headers: H })
+    ).json<{ external_events: { id: string; deleted_at: number | null }[] }>();
+    const row = s3.external_events.find((e) => e.id === 'intervals:state-1');
+    expect(row).toBeTruthy();
+    expect(row!.deleted_at).not.toBeNull();
+
+    // plans.version is untouched by any of the cache activity above.
+    const after = await (
+      await SELF.fetch(`${BASE}/api/state?since=0`, { headers: H })
+    ).json<{ plan_version: number }>();
+    expect(after.plan_version).toBe(planVer);
+  });
+});
+
 describe('exercise catalog', () => {
   it('lists the seeded catalog incl timed exercises', async () => {
     const jwt = await devJwt();

@@ -28,7 +28,8 @@ apiRoutes.get('/state', async (c) => {
   const userId = c.get('userId');
   const since = Number(c.req.query('since') ?? 0);
   const setsSince = Number(c.req.query('sets_since') ?? 0);
-  return c.json(await getState(c.env.DB, userId, since, setsSince));
+  const eventsSince = Number(c.req.query('events_since') ?? 0);
+  return c.json(await getState(c.env.DB, userId, since, setsSince, eventsSince));
 });
 
 // ---- plan tree -----------------------------------------------------------

@@ -450,6 +450,7 @@ export async function getState(
   userId: string,
   sincePlanVersion: number,
   setsSince: number,
+  eventsSince = 0,
 ) {
   const plan = await getActivePlan(db, userId);
   const baseTree =
@@ -472,11 +473,23 @@ export async function getState(
     )
     .bind(userId, setsSince)
     .all<SetLogRow>();
+  // external_events ride a SEPARATE delta watermark (synced_at epoch-ms),
+  // exactly the sets pattern. This is a server-owned reconciled cache: it
+  // is NOT gated on plans.version and a ride sync NEVER bumps it. Soft-
+  // deleted rows are included in the delta (deleted_at set) so the client
+  // can drop them — clients filter on deleted_at, like set_logs.
+  const events = await db
+    .prepare(
+      'SELECT * FROM external_events WHERE user_id = ?1 AND synced_at > ?2 ORDER BY synced_at',
+    )
+    .bind(userId, eventsSince)
+    .all<ExternalEventRow>();
   return {
     plan: tree,
     plan_version: plan?.version ?? 0,
     sessions: sessions.results,
     sets: sets.results,
+    external_events: events.results,
     server_time: now(),
   };
 }

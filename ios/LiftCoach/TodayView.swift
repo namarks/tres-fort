@@ -271,12 +271,10 @@ private struct RunnerView: View {
                 ForEach(Array(steps.prefix(steps.count / 2)), id: \.0) { s in
                     stepBtn(s.0, s.2, s.1)
                 }
-                // Monospaced digits + fixed height: "15" and "20" must
-                // render at identical size (proportional fonts scale them
-                // differently under minimumScaleFactor).
+                // JetBrains Mono is fixed-width: every value is the same
+                // size in a fixed-height slot (no digit jitter).
                 Text(value)
-                    .font(.system(size: 52, weight: .heavy))
-                    .monospacedDigit()
+                    .font(Theme.number(52))
                     .foregroundStyle(Theme.text)
                     .lineLimit(1).minimumScaleFactor(0.5)
                     .frame(maxWidth: .infinity)
@@ -364,12 +362,12 @@ private struct TimedSetView: View {
                 TimelineView(.periodic(from: .now, by: 0.2)) { ctx in
                     let remaining = max(0, Int(ceil(end.timeIntervalSince(ctx.date))))
                     Text("\(remaining)s")
-                        .font(.system(size: 64, weight: .heavy)).monospacedDigit()
+                        .font(Theme.number(64))
                         .foregroundStyle(remaining <= 0 ? Theme.done : Theme.accent)
                 }
             } else {
                 Text("\(ex.target_reps)s")
-                    .font(.system(size: 64, weight: .heavy)).monospacedDigit()
+                    .font(Theme.number(64))
                     .foregroundStyle(Theme.text)
             }
 
@@ -433,9 +431,8 @@ private struct RestOverlay: View {
                     Text("REST").font(Theme.mono(11, .bold)).tracking(4)
                         .foregroundStyle(Theme.muted).padding(.bottom, 8)
                     Text(clock(remaining))
-                        .font(.system(size: 130, weight: .heavy))
+                        .font(Theme.display(140))
                         .foregroundStyle(remaining <= 0 ? Theme.done : Theme.accent)
-                        .monospacedDigit()
                         .shadow(color: (remaining <= 0 ? Theme.done : Theme.accent).opacity(0.4),
                                 radius: 30)
                         .opacity(remaining <= 0 ? (Int(ctx.date.timeIntervalSince1970 * 2) % 2 == 0 ? 1 : 0.4) : 1)
@@ -491,7 +488,7 @@ private struct FinishedView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                Text("DONE").font(.system(size: 76, weight: .heavy))
+                Text("DONE").font(Theme.display(88))
                     .foregroundStyle(Theme.done)
                 Text("LOGGED TO YOUR COACH").font(Theme.mono(11, .bold)).tracking(2)
                     .foregroundStyle(Theme.muted)

@@ -22,12 +22,23 @@ enum Theme {
             .ignoresSafeArea()
     }
 
-    /// Condensed-display stand-in: heavy weight + tight line height.
+    /// Bebas Neue — condensed all-caps display (titles, buttons, big timer).
     static func display(_ size: CGFloat) -> Font {
-        .system(size: size, weight: .heavy)
+        .custom("BebasNeue-Regular", size: size)
     }
+    /// JetBrains Mono — true monospace for labels + numerics (uniform digits).
     static func mono(_ size: CGFloat, _ w: Font.Weight = .medium) -> Font {
-        .system(size: size, weight: w, design: .monospaced)
+        let face: String
+        switch w {
+        case .bold, .heavy, .black, .semibold: face = "JetBrainsMono-Bold"
+        case .medium: face = "JetBrainsMono-Medium"
+        default: face = "JetBrainsMono-Regular"
+        }
+        return .custom(face, size: size)
+    }
+    /// Big tabular number (stepper values, countdowns).
+    static func number(_ size: CGFloat) -> Font {
+        .custom("JetBrainsMono-Bold", size: size)
     }
 }
 

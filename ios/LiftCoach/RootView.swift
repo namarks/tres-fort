@@ -14,7 +14,7 @@ struct RootView: View {
                     Color.black.ignoresSafeArea()
                     VStack(spacing: 28) {
                         Text("LIFT-COACH")
-                            .font(.system(size: 34, weight: .heavy)).tracking(2)
+                            .font(Theme.display(40)).tracking(2)
                             .foregroundStyle(.white)
                         if case let .working(msg) = model.phase {
                             ProgressView(msg).tint(.white).foregroundStyle(.white)

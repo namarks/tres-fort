@@ -528,9 +528,17 @@ final class SyncModel: ObservableObject {
                 return NextWorkout(dateString: ymd, day: dayTemplate(id: tid))
             case .session(let status):
                 if status == "planned" || status == "in_progress" {
+                    // Use the SHARED session→schedule resolver (the same one
+                    // Today/calendar use), not a bare day_template_id read:
+                    // a real planned/in_progress session with a null
+                    // day_template_id (server drops it for an existing
+                    // same-date row) still resolves its template via the
+                    // weekly schedule. `ymd` is strictly in the future here
+                    // (offset 1...maxDays), so schedule inference is valid.
+                    // Stays nil-graceful for genuinely unresolvable days.
                     return NextWorkout(
                         dateString: ymd,
-                        day: dayTemplate(id: sessionsByDate[ymd]?.day_template_id))
+                        day: sessionDisplayTemplate(forDateString: ymd))
                 }
                 // A COMPLETED future session (e.g. pre-logged via MCP) is
                 // intentionally NOT surfaced as the "next workout" — it's

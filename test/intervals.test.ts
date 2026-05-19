@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { fetchPlannedEvents, type Fetcher } from '../src/intervals';
 import {
   ensureOwnerUser,
+  getState,
   getUpcomingRides,
   syncExternalEvents,
 } from '../src/db';
@@ -253,5 +254,59 @@ describe('syncExternalEvents — reconciled cache, the failed-fetch guard', () =
     expect(r.status).toBe('ok');
     const rows = await getUpcomingRides(env.DB, owner.id, { from: TODAY });
     expect(rows.some((x) => x.id === 'intervals:owner-ride')).toBe(true);
+  });
+});
+
+// FIX 3 — a tombstone from the successful-sync reconcile must advance
+// synced_at to the deletion time. /api/state?events_since= filters
+// `synced_at > cursor`; if the tombstone keeps its old synced_at an
+// incremental client that already saw the live event never receives the
+// removal and keeps showing a deleted ride.
+describe('FIX 3: tombstone advances synced_at so incremental clients see removals', () => {
+  it('removed in-window event: deleted_at set AND synced_at advanced to the sync time', async () => {
+    const userId = await freshUser();
+    await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([ev({ id: 'a' }), ev({ id: 'b', start_date_local: '2026-05-25T06:00:00' })]),
+    } as any);
+
+    // Pin 'b' to a known OLD synced_at — the cursor an incremental client
+    // would hold after it saw the live event. Deterministic, clock-free.
+    const OLD = 1000;
+    await env.DB.prepare(
+      "UPDATE external_events SET synced_at = ?1 WHERE id = 'intervals:b'",
+    )
+      .bind(OLD)
+      .run();
+
+    // Successful sync that no longer contains 'b' → tombstone.
+    const r = await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([ev({ id: 'a' })]),
+    } as any);
+    expect(r.status).toBe('ok');
+
+    const dead = await env.DB.prepare(
+      "SELECT deleted_at, synced_at FROM external_events WHERE id='intervals:b'",
+    ).first<{ deleted_at: number | null; synced_at: number }>();
+    expect(dead!.deleted_at).not.toBeNull();
+    // The fix: synced_at moved off the old cursor to the deletion time.
+    expect(dead!.synced_at).toBe(dead!.deleted_at);
+    expect(dead!.synced_at).toBeGreaterThan(OLD);
+
+    // getState with the OLD cursor (before the deletion) must now return
+    // the tombstone so the client can drop it. Pre-fix this is excluded
+    // because synced_at stayed at OLD and the filter is `synced_at > OLD`.
+    const incr = await getState(env.DB, userId, 0, 0, OLD);
+    const bTomb = incr.external_events.find((e) => e.id === 'intervals:b');
+    expect(bTomb).toBeDefined();
+    expect(bTomb!.deleted_at).not.toBeNull();
+
+    // Full reload (events_since absent/0) still returns only non-deleted.
+    const full = await getState(env.DB, userId, 0, 0, 0);
+    expect(full.external_events.some((e) => e.id === 'intervals:b')).toBe(false);
+    expect(full.external_events.some((e) => e.id === 'intervals:a')).toBe(true);
   });
 });

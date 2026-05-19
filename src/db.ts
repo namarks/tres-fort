@@ -2180,8 +2180,12 @@ export async function syncExternalEvents(
   stmts.push(
     db
       .prepare(
+        // Advance synced_at to the deletion time alongside deleted_at:
+        // /api/state?events_since= filters `synced_at > cursor`, so a
+        // tombstone that kept its old synced_at would never reach an
+        // incremental client (it would keep showing the deleted ride).
         `UPDATE external_events
-            SET deleted_at = ?3
+            SET deleted_at = ?3, synced_at = ?3
           WHERE user_id = ?1
             AND deleted_at IS NULL
             AND date >= ?2 AND date <= ?${seenIds.length ? seenIds.length + 4 : 4}

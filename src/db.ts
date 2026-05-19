@@ -305,7 +305,35 @@ export async function getOrCreateSession(
     .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at LIMIT 1')
     .bind(userId, date)
     .first<SessionRow>();
-  if (existing) return existing;
+  if (existing && existing.status !== 'discarded') return existing;
+  if (existing) {
+    // The (user,date) row exists but was DISCARDED. "Discarded" means
+    // "this never happened" — so a fresh get/start for the same date must
+    // RESURRECT it to a clean planned state rather than hand back the
+    // tombstone (which would leave the day un-startable: the start path
+    // only promotes 'planned'→'in_progress'). We keep the same row id
+    // (the (user,date) idempotency key) but wipe it back to pristine. Its
+    // old set_logs stay soft-deleted (they belong to the thrown-away
+    // attempt); new work logs fresh rows.
+    const ts = now();
+    const revived: SessionRow = {
+      ...existing,
+      day_template_id: dayTemplateId,
+      status: 'planned',
+      started_at: null,
+      completed_at: null,
+      perceived_fatigue: null,
+      notes: null,
+      updated_at: ts,
+    };
+    await db
+      .prepare(
+        'UPDATE sessions SET day_template_id=?2, status=?3, started_at=?4, completed_at=?5, perceived_fatigue=?6, notes=?7, updated_at=?8 WHERE id=?1',
+      )
+      .bind(revived.id, revived.day_template_id, revived.status, null, null, null, null, ts)
+      .run();
+    return revived;
+  }
   const ts = now();
   const s: SessionRow = {
     id: uuid(),
@@ -406,6 +434,59 @@ export async function patchSession(
   return { ...s, status, perceived_fatigue: fatigue, notes, started_at: startedAt, completed_at: completedAt };
 }
 
+/**
+ * Discard a session — the sanctioned escape hatch for "I started/ended a
+ * workout I didn't really do." This is the ONE place allowed to override
+ * the history-integrity burial guard in patchSession/skipPlannedSession,
+ * and it earns that by being EXPLICIT and non-silent: it soft-deletes the
+ * session's set_logs (so logged work is intentionally thrown away, never
+ * hidden) and marks the session 'discarded'. A discarded session VANISHES
+ * from the calendar projection (see projectCalendar's discarded carve-out)
+ * and its now-soft-deleted sets drop out of history/volume/e1RM (those
+ * already filter deleted_at IS NULL) and out of ride-conflict lift dates
+ * (derived from the projection) — no extra exclusion needed anywhere.
+ *
+ * Idempotent: re-discarding an already-discarded session is a clean no-op
+ * (0 sets re-deleted, status already 'discarded'). Reversible-by-restart:
+ * getOrCreateSession resurrects a discarded (user,date) row to a pristine
+ * 'planned' state, so discarding never wedges a date.
+ *
+ * Returns null if no such session for this user (caller → 404).
+ */
+export async function discardSession(
+  db: D1Database,
+  userId: string,
+  sessionId: string,
+): Promise<SessionRow | null> {
+  const s = await db
+    .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
+    .bind(sessionId, userId)
+    .first<SessionRow>();
+  if (!s) return null;
+  const ts = now();
+  const live = await db
+    .prepare('SELECT COUNT(*) AS n FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL')
+    .bind(sessionId)
+    .first<{ n: number }>();
+  const discardedSets = live?.n ?? 0;
+  await db
+    .prepare('UPDATE set_logs SET deleted_at = ?2 WHERE session_id = ?1 AND deleted_at IS NULL')
+    .bind(sessionId, ts)
+    .run();
+  await db
+    .prepare("UPDATE sessions SET status = 'discarded', updated_at = ?2 WHERE id = ?1")
+    .bind(sessionId, ts)
+    .run();
+  await writeAudit(
+    db,
+    userId,
+    'discard_session',
+    { session_id: sessionId, date: s.date, prior_status: s.status, sets_discarded: discardedSets },
+    `discarded:${discardedSets}_sets`,
+  );
+  return { ...s, status: 'discarded', updated_at: ts };
+}
+
 /** Idempotent on the client-generated `id` (offline-safe; retries are no-ops). */
 export async function logSet(
   db: D1Database,
@@ -468,9 +549,14 @@ export async function logSet(
       row.duration_s,
     )
     .run();
-  // Logging a set implicitly starts the session.
+  // Logging a set implicitly starts the session. A 'discarded' row is
+  // also revived here (defense-in-depth: getOrCreateSession already
+  // resurrects on the get path, but logging work into a discarded session
+  // must never leave the new set stranded under an invisible/vanished
+  // row). started_at resets off the COALESCE for a revived discard so the
+  // sRPE duration reflects the new attempt, not the thrown-away one.
   await db
-    .prepare("UPDATE sessions SET status = CASE WHEN status='planned' THEN 'in_progress' ELSE status END, started_at = COALESCE(started_at, ?2), updated_at = ?2 WHERE id = ?1")
+    .prepare("UPDATE sessions SET status = CASE WHEN status IN ('planned','discarded') THEN 'in_progress' ELSE status END, started_at = CASE WHEN status='discarded' THEN ?2 ELSE COALESCE(started_at, ?2) END, updated_at = ?2 WHERE id = ?1")
     .bind(input.session_id, now())
     .run();
   return { set: row, deduped: false };
@@ -605,8 +691,13 @@ export async function getRecentSessions(
   userId: string,
   n: number,
 ): Promise<SessionRow[]> {
+  // Exclude 'discarded' — a thrown-away session is not "recent training"
+  // and must not surface as last_session in the coach brief / today
+  // context. (Visual calendar surfaces vanish it via the projection;
+  // set-based reads via deleted_at. This is the one session-list read
+  // that needs an explicit filter.)
   const r = await db
-    .prepare('SELECT * FROM sessions WHERE user_id = ?1 ORDER BY date DESC LIMIT ?2')
+    .prepare("SELECT * FROM sessions WHERE user_id = ?1 AND status != 'discarded' ORDER BY date DESC LIMIT ?2")
     .bind(userId, n)
     .all<SessionRow>();
   return r.results;
@@ -2038,6 +2129,15 @@ export function projectCalendar(
   if (span > 89) span = 89;
   const byDate = new Map<string, SessionRow>();
   for (const s of realSessions) {
+    // A 'discarded' session is treated as if it never existed: the user
+    // explicitly threw it away (its set_logs are soft-deleted by
+    // discardSession). Skipping it here makes the date fall through to the
+    // schedule projection (past → no cell; today/future → projected/rest)
+    // — i.e. it VANISHES rather than showing as a skip. This carve-out is
+    // mirrored byte-for-byte in CalendarProjection.swift (`project`): the
+    // frozen truth table now reads "a real session WINS *unless* it is
+    // 'discarded'". test/calendar.test.ts is the contract.
+    if (s.status === 'discarded') continue;
     if (!byDate.has(s.date)) byDate.set(s.date, s);
   }
   const cells: CalendarCell[] = [];
@@ -2087,11 +2187,14 @@ export async function getProjectedCalendar(
   // NOTE: the `sessions` table has NO soft-delete column (only set_logs and
   // external_events carry deleted_at — see migrations 0001/0006). A session
   // is never soft-deleted; a cancelled/rest day is modelled as a real row
-  // with status='skipped'. So there is intentionally no `deleted_at IS NULL`
-  // guard here (it would reference a non-existent column). Spurious lift
-  // dates from cancellations are prevented downstream: getRideConflicts'
-  // liftDates filter includes only projected|planned|in_progress|completed
-  // and EXCLUDES 'skipped', so a skipped session produces no conflict.
+  // with status='skipped', and a thrown-away session as status='discarded'.
+  // So there is intentionally no `deleted_at IS NULL` guard here (it would
+  // reference a non-existent column). Spurious lift dates are prevented
+  // downstream: getRideConflicts' liftDates filter includes only
+  // projected|planned|in_progress|completed and EXCLUDES 'skipped'; a
+  // 'discarded' session never even reaches that filter because
+  // projectCalendar drops it from byDate (vanishes), so it likewise
+  // produces no conflict.
   const sessions = await db
     .prepare(
       'SELECT * FROM sessions WHERE user_id = ?1 AND date >= ?2 AND date <= ?3 ORDER BY date',

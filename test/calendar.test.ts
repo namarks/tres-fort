@@ -119,6 +119,50 @@ describe('projectCalendar — truth table', () => {
     expect(wed.real).toBe(true);
   });
 
+  // ── 'discarded' carve-out — VANISHES (mirrored byte-for-byte in
+  // CalendarProjection.swift `project`). A discarded session is treated as
+  // if it never existed: the date falls through to past=omitted /
+  // today+=schedule. NOT shown as a skip.
+  it('a discarded session VANISHES — future date falls back to the schedule', () => {
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [sess('2026-05-20', 'discarded')], // Wed → would project d_pull
+      '2026-05-18',
+      '2026-05-20',
+      today,
+      LIVE,
+    );
+    const wed = cells.find((c) => c.date === '2026-05-20')!;
+    expect(wed).toMatchObject({ status: 'projected', day_template_id: 'd_pull', real: false });
+  });
+
+  it('a discarded session today falls back to the schedule (projected, not session)', () => {
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [sess('2026-05-18', 'discarded', 'd_push')], // today = Mon → d_push
+      '2026-05-18',
+      '2026-05-18',
+      today,
+      LIVE,
+    );
+    expect(cells[0]).toMatchObject({ status: 'projected', day_template_id: 'd_push', real: false });
+  });
+
+  it('a discarded session in the past produces no cell (as if absent)', () => {
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [sess('2026-05-15', 'discarded')], // before today
+      '2026-05-15',
+      '2026-05-15',
+      today,
+      LIVE,
+    );
+    expect(cells).toEqual([]);
+  });
+
   it('today with a real in_progress session uses the real status', () => {
     const cells = projectCalendar(
       { id: 'p' },

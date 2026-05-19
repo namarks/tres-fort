@@ -676,4 +676,143 @@ describe('exercise catalog', () => {
   });
 });
 
+describe('POST /api/sessions/:id/discard — the explicit escape hatch', () => {
+  // Each test uses its own unique date (dev auth = one owner;
+  // getOrCreateSession is keyed (user,date)) and asserts a fresh planned
+  // session, failing loudly on cross-test bleed.
+  async function freshSession(H: Record<string, string>, date: string): Promise<string> {
+    await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Discard Plan' }),
+    });
+    const s = await (
+      await SELF.fetch(`${BASE}/api/sessions`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ date }),
+      })
+    ).json<{ id: string; status: string }>();
+    expect(s.status).toBe('planned');
+    return s.id;
+  }
+
+  it('discard soft-deletes the sets and marks the session discarded (even when completed)', async () => {
+    const H = auth(await devJwt());
+    const id = await freshSession(H, '2026-08-01');
+    const setId = crypto.randomUUID();
+    await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ id: setId, exercise_id: 'ex_bench', set_index: 1, weight: 135, reps: 5 }),
+    });
+    await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'completed' }),
+    });
+
+    // PATCH→skipped is still rejected (burial guard intact)…
+    const rej = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'skipped' }),
+    });
+    expect(rej.status).toBe(409);
+
+    // …but the explicit discard endpoint IS allowed (sanctioned override).
+    const disc = await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, {
+      method: 'POST',
+      headers: H,
+    });
+    expect(disc.status).toBe(200);
+    expect((await disc.json<{ status: string }>()).status).toBe('discarded');
+
+    const row = await env.DB.prepare('SELECT status FROM sessions WHERE id=?1')
+      .bind(id)
+      .first<{ status: string }>();
+    expect(row!.status).toBe('discarded');
+    const set = await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?1')
+      .bind(setId)
+      .first<{ deleted_at: number | null }>();
+    expect(set!.deleted_at).not.toBeNull(); // explicitly thrown away, not hidden
+  });
+
+  it('after discard, /api/state carries the discarded row but its sets drop from the delta', async () => {
+    // Projection-vanish itself is unit-tested in calendar.test.ts (3
+    // cases). Here we assert the SYNC contract: the session delta still
+    // carries the row (status 'discarded' — clients filter/vanish it),
+    // while the soft-deleted set no longer appears in the sets delta.
+    const H = auth(await devJwt());
+    const date = '2026-08-05';
+    const id = await freshSession(H, date);
+    const setId = crypto.randomUUID();
+    await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ id: setId, exercise_id: 'ex_bench', set_index: 1, weight: 115, reps: 5 }),
+    });
+    await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, { method: 'POST', headers: H });
+
+    const state = await (
+      await SELF.fetch(`${BASE}/api/state?since=0&sets_since=0`, { headers: H })
+    ).json<{
+      sessions: { id: string; status: string }[];
+      sets: { id: string; deleted_at: number | null }[];
+    }>();
+    const row = state.sessions.find((s) => s.id === id);
+    expect(row?.status).toBe('discarded');
+    // A full reload (sets_since=0) carries the discarded set as a
+    // TOMBSTONE (deleted_at set) — not absent — so a syncing client drops
+    // it locally. This is the documented FIX3 set_logs sync contract.
+    const tomb = state.sets.find((s) => s.id === setId);
+    expect(tomb).toBeDefined();
+    expect(tomb!.deleted_at).not.toBeNull();
+  });
+
+  it('restart after discard resurrects a fresh planned session (same date, reusable)', async () => {
+    const H = auth(await devJwt());
+    const date = '2026-08-10';
+    const id = await freshSession(H, date);
+    await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ id: crypto.randomUUID(), exercise_id: 'ex_bench', set_index: 1, weight: 95, reps: 5 }),
+    });
+    await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, { method: 'POST', headers: H });
+
+    // Re-acquire the session for the same date → must be the SAME row id
+    // (idempotency key) but revived to a clean planned state.
+    const revived = await (
+      await SELF.fetch(`${BASE}/api/sessions`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ date }),
+      })
+    ).json<{ id: string; status: string; started_at: number | null }>();
+    expect(revived.id).toBe(id);
+    expect(revived.status).toBe('planned');
+    expect(revived.started_at).toBeNull();
+  });
+
+  it('idempotent: re-discarding an already-discarded session is a clean no-op', async () => {
+    const H = auth(await devJwt());
+    const id = await freshSession(H, '2026-08-15');
+    const a = await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, { method: 'POST', headers: H });
+    expect(a.status).toBe(200);
+    const b = await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, { method: 'POST', headers: H });
+    expect(b.status).toBe(200);
+    expect((await b.json<{ status: string }>()).status).toBe('discarded');
+  });
+
+  it('discarding an unknown session id → 404', async () => {
+    const H = auth(await devJwt());
+    const r = await SELF.fetch(`${BASE}/api/sessions/does-not-exist/discard`, {
+      method: 'POST',
+      headers: H,
+    });
+    expect(r.status).toBe(404);
+  });
+});
+
 // /mcp behavior is covered comprehensively in test/mcp.test.ts.

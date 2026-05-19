@@ -294,6 +294,26 @@ final class SyncModel: ObservableObject {
         await load()
     }
 
+    /// Discard today's session — "I didn't really do this." Throws the
+    /// logged sets away and marks the session discarded server-side; the
+    /// day VANISHES (reverts to its scheduled/rest projection) rather than
+    /// recording a workout. Same local-state teardown as finishWorkout so
+    /// the runner/Live Activity don't linger; `load()` then pulls the
+    /// vanished state. Restarting the day creates a fresh session.
+    func discardWorkout() async {
+        if let jwt = auth.jwt, let sid = todaySession?.id {
+            _ = try? await api.discardSession(sessionId: sid, jwt: jwt)
+        }
+        todaySession = nil
+        running = false
+        finished = false
+        workoutStart = nil
+        timedActive = false
+        timedEndDate = nil
+        skipRest()
+        await load()
+    }
+
     // MARK: rest timer
 
     /// Name of the next not-complete exercise (for the rest screen's UP NEXT).
@@ -433,12 +453,20 @@ final class SyncModel: ObservableObject {
     /// `default: return .planned` for unknowns) maps to a workout kind,
     /// which already agrees with this predicate returning `true` for
     /// anything but `"skipped"`. That file is the frozen projection
-    /// contract and MUST NOT be edited, so the two sites cannot literally
-    /// share one symbol; if a new NON-workout backend status (e.g.
-    /// "cancelled"/"abandoned") is introduced, update BOTH this predicate
-    /// AND that `"skipped"` arm of the `kind` switch.
+    /// contract, so the two sites cannot literally share one symbol; a new
+    /// NON-workout status must be reflected here.
+    ///
+    /// `"discarded"` is the second non-workout status (a thrown-away
+    /// session). Unlike `"skipped"`, it does NOT flow through the `kind`
+    /// switch: `CalendarProjection.project` drops a discarded session up
+    /// front (treats it as if absent — the byte-for-byte mirror of the
+    /// backend `projectCalendar` `discarded` carve-out), so a discarded
+    /// date never resolves to `.session(...)` at all. This predicate still
+    /// excludes it defensively for the paths that read a raw session
+    /// status directly (e.g. today's row arriving via the /api/state delta
+    /// before any restart/revival).
     static func isWorkoutStatus(_ status: String) -> Bool {
-        status != "skipped"
+        status != "skipped" && status != "discarded"
     }
 
     /// True when today's real session is already COMPLETED — Today renders

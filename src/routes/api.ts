@@ -5,6 +5,7 @@ import {
   addDayTemplate,
   addTemplateExercise,
   createPlan,
+  discardSession,
   getActivePlan,
   getHistory,
   getOrCreateSession,
@@ -134,6 +135,16 @@ apiRoutes.patch('/sessions/:id', async (c) => {
     if (s.error === 'invalid_status') return c.json(s, 400);
     return c.json(s, 409);
   }
+  return c.json(s);
+});
+
+// Discard a session — "I didn't really do this." Soft-deletes its sets
+// and marks it 'discarded' (vanishes from the projection; excluded from
+// history/volume/conflicts). Idempotent. Restarting the same date via
+// GET /today or POST /sessions resurrects a fresh planned session.
+apiRoutes.post('/sessions/:id/discard', async (c) => {
+  const s = await discardSession(c.env.DB, c.get('userId'), c.req.param('id'));
+  if (!s) return c.json({ error: 'not_found' }, 404);
   return c.json(s);
 });
 

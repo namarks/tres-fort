@@ -58,6 +58,13 @@ struct APIClient {
         try await patch("api/sessions/\(sessionId)", body: ["status": "completed"], jwt: jwt)
     }
 
+    /// Discard a session — "I didn't really do this." Soft-deletes its sets
+    /// and marks it discarded server-side (vanishes from the projection).
+    /// Restarting the same day resurrects a fresh planned session.
+    func discardSession(sessionId: String, jwt: String) async throws -> SessionRow {
+        try await post("api/sessions/\(sessionId)/discard", body: [:], jwt: jwt)
+    }
+
     struct EmptyResponse: Decodable {}
     func deleteSet(setId: String, jwt: String) async throws {
         let _: SetLog = try await patch("api/sets/\(setId)", body: ["deleted": true], jwt: jwt)

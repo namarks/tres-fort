@@ -26,6 +26,10 @@ struct APIClient {
         try await get("api/state?since=0&sets_since=0", jwt: jwt)
     }
 
+    func getExercises(jwt: String) async throws -> [ExerciseCatalog] {
+        try await get("api/exercises", jwt: jwt)
+    }
+
     func createSession(date: String, jwt: String) async throws -> SessionRow {
         try await post("api/sessions", body: ["date": date], jwt: jwt)
     }

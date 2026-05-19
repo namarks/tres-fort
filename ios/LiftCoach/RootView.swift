@@ -8,7 +8,7 @@ struct RootView: View {
         Group {
             switch model.phase {
             case .signedIn:
-                TodayView(auth: model)
+                MainTabView(auth: model)
             default:
                 ZStack {
                     Color.black.ignoresSafeArea()

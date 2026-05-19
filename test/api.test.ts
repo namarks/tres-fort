@@ -221,4 +221,15 @@ describe('sessions, idempotent set logging, history, volume', () => {
   });
 });
 
+describe('exercise catalog', () => {
+  it('lists the seeded catalog incl timed exercises', async () => {
+    const jwt = await devJwt();
+    const r = await SELF.fetch(`${BASE}/api/exercises`, { headers: auth(jwt) });
+    expect(r.status).toBe(200);
+    const list = await r.json<{ id: string; modality: string }[]>();
+    expect(list.find((e) => e.id === 'ex_bench')).toBeTruthy();
+    expect(list.find((e) => e.id === 'ex_plank')?.modality).toBe('timed');
+  });
+});
+
 // /mcp behavior is covered comprehensively in test/mcp.test.ts.

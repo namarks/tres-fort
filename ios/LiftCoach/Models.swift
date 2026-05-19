@@ -75,6 +75,15 @@ struct SetLog: Decodable, Identifiable {
     let is_warmup: Int
     let logged_at: Int
     let duration_s: Int?
+    let deleted_at: Int?
+}
+
+struct ExerciseCatalog: Decodable, Identifiable {
+    let id: String
+    let name: String
+    let primary_muscle: String
+    let modality: String
+    let unit: String
 }
 
 struct StateResponse: Decodable {

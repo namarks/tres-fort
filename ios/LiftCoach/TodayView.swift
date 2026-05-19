@@ -8,13 +8,8 @@ private func clock(_ s: Int) -> String {
 }
 
 struct TodayView: View {
+    @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
-    @StateObject private var sync: SyncModel
-
-    init(auth: AuthModel) {
-        self.auth = auth
-        _sync = StateObject(wrappedValue: SyncModel(auth: auth))
-    }
 
     var body: some View {
         NavigationStack {
@@ -55,7 +50,6 @@ struct TodayView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
         }
         .preferredColorScheme(.dark)
-        .task { await sync.load() }
     }
 
     @ViewBuilder private var content: some View {

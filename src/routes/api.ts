@@ -169,6 +169,13 @@ apiRoutes.patch('/sets/:id', async (c) => {
 });
 
 // ---- read models ---------------------------------------------------------
+apiRoutes.get('/exercises', async (c) => {
+  const r = await c.env.DB.prepare(
+    'SELECT id, name, primary_muscle, modality, unit FROM exercises ORDER BY name',
+  ).all();
+  return c.json(r.results);
+});
+
 apiRoutes.get('/history', async (c) => {
   const exerciseId = c.req.query('exercise_id');
   if (!exerciseId) return c.json({ error: 'missing_exercise_id' }, 400);

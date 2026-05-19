@@ -4,6 +4,8 @@ import SwiftUI
 final class SyncModel: ObservableObject {
     @Published var plan: PlanTree?
     @Published var sets: [SetLog] = []
+    @Published var sessions: [SessionRow] = []
+    @Published var catalog: [ExerciseCatalog] = []
     @Published var todaySession: SessionRow?
     @Published var selectedDayID: String?
     @Published var loadError: String?
@@ -54,24 +56,81 @@ final class SyncModel: ObservableObject {
             let state = try await api.getState(jwt: jwt)
             plan = state.plan
             sets = state.sets
+            sessions = state.sessions
             todaySession = state.sessions.first { $0.date == todayString }
             if selectedDayID == nil { selectedDayID = state.plan?.days.first?.id }
+            if catalog.isEmpty {
+                catalog = (try? await api.getExercises(jwt: jwt)) ?? []
+            }
             loadError = nil
         } catch {
             handle(error)
         }
     }
 
+    /// Live (non-deleted) working sets for an exercise.
+    private func live(_ exerciseID: String) -> [SetLog] {
+        sets.filter {
+            $0.exercise_id == exerciseID && $0.is_warmup == 0 && $0.deleted_at == nil
+        }
+    }
+
     func lastWorkingSet(_ exerciseID: String) -> SetLog? {
-        sets.filter { $0.exercise_id == exerciseID && $0.is_warmup == 0 }
-            .max { $0.logged_at < $1.logged_at }
+        live(exerciseID).max { $0.logged_at < $1.logged_at }
     }
 
     func todaySets(_ exerciseID: String) -> [SetLog] {
         guard let sid = todaySession?.id else { return [] }
-        return sets
-            .filter { $0.session_id == sid && $0.exercise_id == exerciseID && $0.is_warmup == 0 }
+        return live(exerciseID)
+            .filter { $0.session_id == sid }
             .sorted { $0.set_index < $1.set_index }
+    }
+
+    func exerciseName(_ id: String) -> String {
+        catalog.first { $0.id == id }?.name ?? id
+    }
+
+    // MARK: history aggregation
+
+    struct SessionStat: Identifiable {
+        let id: String          // session id
+        let date: String
+        let est1RM: Double
+        let topWeight: Double
+        let topReps: Int
+        let volume: Double
+        let setCount: Int
+        let avgDuration: Int
+    }
+
+    private func epley(_ w: Double, _ r: Int) -> Double { w * (1 + Double(r) / 30) }
+
+    /// Exercise ids that have any logged set, most-recent first.
+    var loggedExerciseIDs: [String] {
+        let live = sets.filter { $0.is_warmup == 0 && $0.deleted_at == nil }
+        let byId = Dictionary(grouping: live, by: \.exercise_id)
+        return byId.keys.sorted {
+            (byId[$0]?.map(\.logged_at).max() ?? 0) >
+            (byId[$1]?.map(\.logged_at).max() ?? 0)
+        }
+    }
+
+    func history(for exerciseID: String) -> [SessionStat] {
+        let dateBySession = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.date) })
+        let grouped = Dictionary(grouping: live(exerciseID), by: \.session_id)
+        return grouped.compactMap { sid, rows -> SessionStat? in
+            guard let date = dateBySession[sid], !rows.isEmpty else { return nil }
+            let top = rows.max { epley($0.weight, $0.reps) < epley($1.weight, $1.reps) }!
+            let durs = rows.compactMap(\.duration_s)
+            return SessionStat(
+                id: sid, date: date,
+                est1RM: epley(top.weight, top.reps).rounded(),
+                topWeight: top.weight, topReps: top.reps,
+                volume: rows.reduce(0) { $0 + $1.weight * Double($1.reps) },
+                setCount: rows.count,
+                avgDuration: durs.isEmpty ? 0 : durs.reduce(0, +) / durs.count)
+        }
+        .sorted { $0.date < $1.date }
     }
 
     func logSet(_ ex: TemplateExercise, weight: Double, reps: Int,

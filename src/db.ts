@@ -444,10 +444,13 @@ export async function patchSession(
  * from the calendar projection (see projectCalendar's discarded carve-out)
  * and its now-soft-deleted sets drop out of history/volume/e1RM (those
  * already filter deleted_at IS NULL) and out of ride-conflict lift dates
- * (derived from the projection) — no extra exclusion needed anywhere.
+ * (derived from the projection). The only session-row reads needing an
+ * explicit `status != 'discarded'` filter are getRecentSessions and
+ * getSessionByDate (the MCP coach reads) — both already carry it.
  *
- * Idempotent: re-discarding an already-discarded session is a clean no-op
- * (0 sets re-deleted, status already 'discarded'). Reversible-by-restart:
+ * Idempotent AND side-effect-free on repeat: an already-discarded session
+ * short-circuits before any write (no redundant audit row). Reversible-
+ * by-restart:
  * getOrCreateSession resurrects a discarded (user,date) row to a pristine
  * 'planned' state, so discarding never wedges a date.
  *
@@ -463,6 +466,10 @@ export async function discardSession(
     .bind(sessionId, userId)
     .first<SessionRow>();
   if (!s) return null;
+  // Already discarded → true no-op: skip the (no-op) UPDATEs AND the audit
+  // write, so a double-tap / retry can't inflate audit_log (which feeds
+  // Claude's coaching context).
+  if (s.status === 'discarded') return s;
   const ts = now();
   const live = await db
     .prepare('SELECT COUNT(*) AS n FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL')
@@ -708,8 +715,14 @@ export async function getSessionByDate(
   userId: string,
   date: string,
 ): Promise<SessionRow | null> {
+  // Excludes 'discarded': a thrown-away session must read as "no session
+  // on this date" for the MCP coach reads that call this (get_today_workout,
+  // get_session_log) — same vanish semantics the calendar projection
+  // applies. Revival/discard never route through here (getOrCreateSession
+  // has its own query; discardSession takes a session id), so filtering is
+  // safe.
   return db
-    .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at LIMIT 1')
+    .prepare("SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 AND status != 'discarded' ORDER BY created_at LIMIT 1")
     .bind(userId, date)
     .first<SessionRow>();
 }

@@ -738,7 +738,7 @@ describe('POST /api/sessions/:id/discard — the explicit escape hatch', () => {
     expect(set!.deleted_at).not.toBeNull(); // explicitly thrown away, not hidden
   });
 
-  it('after discard, /api/state carries the discarded row but its sets drop from the delta', async () => {
+  it('after discard, /api/state carries the discarded session and its set as a tombstone (deleted_at set)', async () => {
     // Projection-vanish itself is unit-tested in calendar.test.ts (3
     // cases). Here we assert the SYNC contract: the session delta still
     // carries the row (status 'discarded' — clients filter/vanish it),

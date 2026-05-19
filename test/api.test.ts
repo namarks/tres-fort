@@ -432,6 +432,37 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
       notes: 'ok',
     });
   });
+
+  // P1 regression: the PATCH body is NOT runtime-validated. A present-but-
+  // non-string `status` previously hit .trim() on a non-string → TypeError
+  // → HTTP 500. It must now be a clean 400 invalid_status with NOTHING
+  // persisted (row stays the freshly-created 'planned').
+  it('REJECTS a non-string status with 400 (NOT 500) and persists nothing', async () => {
+    const H = auth(await devJwt());
+    const cases: Array<{ date: string; status: unknown }> = [
+      { date: '2026-07-10', status: 123 },
+      { date: '2026-07-11', status: null },
+      { date: '2026-07-12', status: true },
+      { date: '2026-07-13', status: {} },
+      { date: '2026-07-14', status: [] },
+    ];
+    for (const { date, status } of cases) {
+      const id = await freshSession(H, date); // fresh => 'planned'
+      const r = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+        method: 'PATCH',
+        headers: H,
+        body: JSON.stringify({ status }),
+      });
+      expect(r.status, `status=${JSON.stringify(status)}`).toBe(400);
+      const body = await r.json<{ error: string }>();
+      expect(body.error, `status=${JSON.stringify(status)}`).toBe('invalid_status');
+      // Row untouched — still the freshly-created 'planned'.
+      const row = await env.DB.prepare('SELECT status FROM sessions WHERE id=?1')
+        .bind(id)
+        .first<{ status: string }>();
+      expect(row!.status, `status=${JSON.stringify(status)}`).toBe('planned');
+    }
+  });
 });
 
 describe('/api/state carries the weekly schedule, gated on version', () => {

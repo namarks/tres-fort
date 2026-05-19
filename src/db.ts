@@ -334,18 +334,30 @@ export async function patchSession(
   db: D1Database,
   userId: string,
   sessionId: string,
-  patch: { status?: string; perceived_fatigue?: number; notes?: string },
+  // `status` is `unknown`: the PATCH body is NOT runtime-validated, so a
+  // client can send a number/null/bool/object/array here. Typing it
+  // honestly forces the type-guard below.
+  patch: { status?: unknown; perceived_fatigue?: number; notes?: string },
 ): Promise<
   | SessionRow
   | null
   | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
-  | { error: 'invalid_status'; status: string }
+  | { error: 'invalid_status'; status: unknown }
 > {
   const s = await db
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
     .bind(sessionId, userId)
     .first<SessionRow>();
   if (!s) return null;
+  // Type-guard BEFORE normalizing: a present-but-non-string `status`
+  // (e.g. {"status":123|null|true|{}|[]}) must be treated exactly like an
+  // invalid status — return the invalid_status arm (→ HTTP 400), never
+  // call .trim() on a non-string (that was a 500-causing regression),
+  // never persist, never reach the burial guard. Key absent / undefined
+  // → field-only patch, unchanged. Only a string proceeds to normalize.
+  if (patch.status !== undefined && typeof patch.status !== 'string') {
+    return { error: 'invalid_status', status: patch.status };
+  }
   // Normalize the incoming status ONCE (trim + lowercase) so casing /
   // whitespace cannot bypass the skipped-guard ({"status":"  SKIPPED "})
   // and so the value compared here is the value persisted below — a

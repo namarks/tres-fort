@@ -6,6 +6,7 @@ import type {
   EnrichedTemplateExercise,
   Env,
   ExternalEventRow,
+  PlanMeta,
   PlanRow,
   PlanTree,
   ScheduleWeek,
@@ -726,10 +727,36 @@ export async function updatePlanTree(
   // at; weekdays whose day genuinely no longer exists (no matching new day)
   // are cleared. Same batch ⇒ shares the single version bump. Never lose
   // the schedule key.
-  const baseMeta =
-    input.meta === undefined
-      ? parsePlanMeta(plan.meta)
-      : parsePlanMeta(JSON.stringify(input.meta));
+  // baseMeta ALWAYS starts from the EXISTING persisted plan.meta so the
+  // user's recurring schedule survives a metadata-only update_plan. An
+  // incoming `meta` is MERGED over it (incoming keys win). The existing
+  // meta.schedule is PRESERVED unless the incoming meta explicitly carries
+  // its own `schedule` key — only then does that replace it (and it still
+  // rides the day-name/label remap below). Passing NO meta is unchanged.
+  const existingMeta = parsePlanMeta(plan.meta);
+  const incomingMetaRaw =
+    input.meta !== undefined &&
+    input.meta !== null &&
+    typeof input.meta === 'object' &&
+    !Array.isArray(input.meta)
+      ? (input.meta as Record<string, unknown>)
+      : undefined;
+  const incomingHasSchedule =
+    incomingMetaRaw !== undefined &&
+    Object.prototype.hasOwnProperty.call(incomingMetaRaw, 'schedule');
+  // Merge: existing meta is the base; incoming non-schedule keys overlay it.
+  // The schedule is decided explicitly below so a schedule-less incoming
+  // meta cannot erase the persisted one.
+  const mergedMeta: PlanMeta = parsePlanMeta(
+    JSON.stringify({
+      ...existingMeta,
+      ...(input.meta === undefined ? {} : input.meta ?? {}),
+      schedule: incomingHasSchedule
+        ? (incomingMetaRaw as Record<string, unknown>).schedule
+        : existingMeta.schedule,
+    }),
+  );
+  const baseMeta = mergedMeta;
   const remappedWeek = { ...baseMeta.schedule.week };
   for (const wd of WEEKDAYS) {
     const oldId = remappedWeek[wd];

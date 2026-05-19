@@ -329,4 +329,137 @@ describe('mcp write tools', () => {
     expect(week.mon).toBe(newIdByName['Push Day']);
     expect(week.thu).toBeNull();
   });
+
+  // FIX 1 — update_plan must not silently wipe the weekly schedule when an
+  // unrelated metadata-only edit is made. Without the fix, an incoming
+  // `meta` lacking a `schedule` key parsed to an EMPTY schedule and the
+  // plan write turned every weekday to rest while all day templates still
+  // existed. The fix merges incoming meta over the existing persisted meta
+  // and preserves the existing schedule unless meta explicitly carries one.
+  describe('FIX 1: update_plan meta merge preserves the weekly schedule', () => {
+    it('(a) meta without schedule preserves+remaps the existing schedule; (d) the other meta key persists', async () => {
+      const built = await call('update_plan', {
+        name: 'Meta Merge A',
+        days: [
+          { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+          { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
+        ],
+      });
+      const planId = built.plan.id as string;
+      const setSched = await call('set_schedule', { week: { mon: 'Push Day', thu: 'Pull Day' } });
+      expect(setSched.ok).toBe(true);
+
+      // Metadata-only-ish edit: pass `meta` with an unrelated key and NO
+      // schedule, rebuilding the SAME two days (kept by name).
+      const updated = await call('update_plan', {
+        expected_version: setSched.version,
+        name: 'Meta Merge A',
+        meta: { deload_scheme: 'week4-50%' },
+        days: [
+          { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+          { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
+        ],
+      });
+      expect(updated.conflict).toBe(false);
+
+      // Schedule survived AND was remapped onto the rebuilt day UUIDs by name.
+      const cp = await call('get_current_plan', {});
+      expect(cp.schedule.mon).toBe('Push Day');
+      expect(cp.schedule.thu).toBe('Pull Day');
+
+      const newDays = await env.DB.prepare(
+        'SELECT id, name FROM day_templates WHERE plan_id = ?1',
+      )
+        .bind(planId)
+        .all<{ id: string; name: string }>();
+      const newIdByName = Object.fromEntries(newDays.results.map((d) => [d.name, d.id]));
+      const meta = JSON.parse(
+        (await env.DB.prepare('SELECT meta FROM plans WHERE id = ?1').bind(planId).first<{ meta: string }>())!.meta,
+      );
+      // (a) raw schedule points at the NEW (rebuilt) day ids, not stale ones.
+      expect(meta.schedule.week.mon).toBe(newIdByName['Push Day']);
+      expect(meta.schedule.week.thu).toBe(newIdByName['Pull Day']);
+      // (d) the unrelated meta key was actually persisted.
+      expect(meta.deload_scheme).toBe('week4-50%');
+    });
+
+    it('(b) an explicit meta.schedule replaces the existing one (and still rides the day remap)', async () => {
+      const built = await call('update_plan', {
+        name: 'Meta Merge B',
+        days: [
+          { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+          { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
+        ],
+      });
+      const planId = built.plan.id as string;
+      const setSched = await call('set_schedule', { week: { mon: 'Push Day' } });
+      expect(setSched.ok).toBe(true);
+      const oldPushId = setSched.schedule.week.mon as string;
+
+      // Explicit incoming schedule pointing Fri at the (old) Push day id.
+      // It must REPLACE the mon entry and still be remapped to the rebuilt
+      // Push Day id by name across the UUID rebuild.
+      const updated = await call('update_plan', {
+        expected_version: setSched.version,
+        name: 'Meta Merge B',
+        meta: {
+          schedule: {
+            version: 9,
+            week: { mon: null, tue: null, wed: null, thu: null, fri: oldPushId, sat: null, sun: null },
+          },
+        },
+        days: [
+          { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+          { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
+        ],
+      });
+      expect(updated.conflict).toBe(false);
+
+      const newDays = await env.DB.prepare(
+        'SELECT id, name FROM day_templates WHERE plan_id = ?1',
+      )
+        .bind(planId)
+        .all<{ id: string; name: string }>();
+      const newIdByName = Object.fromEntries(newDays.results.map((d) => [d.name, d.id]));
+      const meta = JSON.parse(
+        (await env.DB.prepare('SELECT meta FROM plans WHERE id = ?1').bind(planId).first<{ meta: string }>())!.meta,
+      );
+      // The explicit schedule replaced: Mon now null, Fri = remapped Push id.
+      expect(meta.schedule.week.mon).toBeNull();
+      expect(meta.schedule.week.fri).toBe(newIdByName['Push Day']);
+      expect(meta.schedule.version).toBe(9);
+    });
+
+    it('(c) no meta at all leaves behavior unchanged (schedule survives by name)', async () => {
+      const built = await call('update_plan', {
+        name: 'Meta Merge C',
+        days: [
+          { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+        ],
+      });
+      const planId = built.plan.id as string;
+      const setSched = await call('set_schedule', { week: { mon: 'Push Day' } });
+      expect(setSched.ok).toBe(true);
+
+      const updated = await call('update_plan', {
+        expected_version: setSched.version,
+        name: 'Meta Merge C',
+        days: [
+          { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+        ],
+      });
+      expect(updated.conflict).toBe(false);
+
+      const newDays = await env.DB.prepare(
+        'SELECT id, name FROM day_templates WHERE plan_id = ?1',
+      )
+        .bind(planId)
+        .all<{ id: string; name: string }>();
+      const newIdByName = Object.fromEntries(newDays.results.map((d) => [d.name, d.id]));
+      const meta = JSON.parse(
+        (await env.DB.prepare('SELECT meta FROM plans WHERE id = ?1').bind(planId).first<{ meta: string }>())!.meta,
+      );
+      expect(meta.schedule.week.mon).toBe(newIdByName['Push Day']);
+    });
+  });
 });

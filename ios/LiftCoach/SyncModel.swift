@@ -60,8 +60,12 @@ final class SyncModel: ObservableObject {
             plan = state.plan
             sets = state.sets
             sessions = state.sessions
-            // Defensive: drop tombstoned events at the cache boundary so
-            // glyphs, agenda, and conflict detection never see them.
+            // Full reload every sync (getState uses events_since=0): the
+            // server returns the full current non-deleted external_events
+            // set, so this is a full replace, not a delta merge. No
+            // client-side watermark/tombstone-merge is needed; we still
+            // defensively drop any tombstoned events at the cache boundary
+            // so glyphs, agenda, and conflict detection never see them.
             rides = state.external_events.filter { !$0.isDeleted }
             todaySession = state.sessions.first { $0.date == todayString }
             if selectedDayID == nil { selectedDayID = state.plan?.days.first?.id }

@@ -189,13 +189,20 @@ enum RideConflict {
     static let hardLoadThreshold = 150            // training_load >= 150
     static let hardDurationSecThreshold = 9000    // planned_duration_sec >= 9000 (2h30m)
 
-    /// Does a projection represent a LIFT on that date? A real session in
-    /// any non-rest status, or a projected lift, counts; rest/none do not.
+    /// Does a projection represent a LIFT on that date?
+    ///
+    /// PARITY CONTRACT with the backend `getRideConflicts`/`detectConflicts`:
+    /// the lift-bearing set is EXACTLY {completed, inProgress, planned,
+    /// projected}. `.skipped` is INTENTIONALLY EXCLUDED — a skipped lift
+    /// was not performed, so it cannot conflict with a ride (lead's product
+    /// decision; backend lift states are projected|planned|in_progress|
+    /// completed). `.rest`/`.none` are not lifts. Keep this set byte-for-
+    /// byte aligned with the backend.
     static func dateHasLift(_ proj: DayProjection) -> Bool {
         switch proj.kind {
-        case .completed, .inProgress, .planned, .projected, .skipped:
+        case .completed, .inProgress, .planned, .projected:
             return true
-        case .rest, .none:
+        case .skipped, .rest, .none:
             return false
         }
     }

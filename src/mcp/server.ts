@@ -22,6 +22,7 @@ import {
   getVolume,
   logSet,
   logWorkoutComplete,
+  tryExportSessionLoad,
   resolveExercise,
   setPlanSchedule,
   setPlannedSession,
@@ -74,10 +75,26 @@ function rangeToFrom(range: string | undefined): number {
 
 // ---- tool registry -------------------------------------------------------
 
+/**
+ * Cloudflare execution context surface we depend on. `waitUntil` keeps a
+ * promise alive AFTER the response is returned without blocking it — used
+ * so the best-effort intervals.icu export never delays log_workout_complete
+ * (BLOCKER-2 fix). Optional everywhere: when absent (e.g. a direct unit
+ * call) the export still runs, just inline.
+ */
+export interface BgScheduler {
+  waitUntil(p: Promise<unknown>): void;
+}
+
 interface Tool {
   description: string;
   inputSchema: Json;
-  handler: (args: Json, env: Env, userId: string) => Promise<unknown>;
+  handler: (
+    args: Json,
+    env: Env,
+    userId: string,
+    bg?: BgScheduler,
+  ) => Promise<unknown>;
   /** Write tools are audited; `note` (if it returns text) is persisted. */
   write?: boolean;
   note?: (args: Json, result: any) => string | null;
@@ -286,7 +303,7 @@ const TOOLS: Record<string, Tool> = {
       [],
     ),
     write: true,
-    handler: async (a, env, userId) => {
+    handler: async (a, env, userId, bg) => {
       const date = typeof a.session_date === 'string' ? a.session_date : todayLocal();
       const s = await logWorkoutComplete(
         env.DB,
@@ -295,7 +312,19 @@ const TOOLS: Record<string, Tool> = {
         a.perceived_fatigue == null ? null : Number(a.perceived_fatigue),
         typeof a.notes === 'string' ? a.notes : null,
       );
-      return s ?? { error: 'no_active_plan' };
+      if (!s) return { error: 'no_active_plan' };
+      // BEST-EFFORT one-way load export to intervals.icu. tryExport* is
+      // fully self-guarded (never throws). BLOCKER-2 fix: when an execution
+      // context is available, run it via waitUntil so the response returns
+      // IMMEDIATELY and the (up to ~10s) intervals round-trip finishes
+      // afterwards without being killed. Only if no ctx is plumbed (e.g. a
+      // direct test/unit call) do we fall back to inline — still safe, just
+      // not deferred. Either way the sacred path cannot throw or be blocked
+      // by intervals.icu when a ctx is present.
+      const exportP = tryExportSessionLoad(env.DB, env, userId, s.id);
+      if (bg) bg.waitUntil(exportP);
+      else await exportP;
+      return s;
     },
   },
   add_note: {
@@ -652,7 +681,12 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
 
 // ---- JSON-RPC dispatch ---------------------------------------------------
 
-async function dispatch(req: RpcRequest, env: Env, userId: string) {
+async function dispatch(
+  req: RpcRequest,
+  env: Env,
+  userId: string,
+  bg?: BgScheduler,
+) {
   switch (req.method) {
     case 'initialize': {
       const requested = (req.params?.protocolVersion as string) ?? DEFAULT_PROTOCOL;
@@ -678,7 +712,7 @@ async function dispatch(req: RpcRequest, env: Env, userId: string) {
       if (!tool) return err(req.id, -32602, `unknown tool: ${name}`);
       try {
         const args = (req.params?.arguments as Json) ?? {};
-        const result = await tool.handler(args, env, userId);
+        const result = await tool.handler(args, env, userId, bg);
         if (tool.write) {
           await writeAudit(env.DB, userId, name, args, JSON.stringify(result));
           const noteBody = tool.note?.(args, result);
@@ -751,6 +785,7 @@ async function dispatch(req: RpcRequest, env: Env, userId: string) {
 export async function handleMcp(
   body: unknown,
   env: Env,
+  bg?: BgScheduler,
 ): Promise<{ status: number; json?: unknown }> {
   const req = body as RpcRequest;
   if (!req || req.jsonrpc !== '2.0' || typeof req.method !== 'string') {
@@ -761,5 +796,5 @@ export async function handleMcp(
   if (req.id === undefined || req.id === null) {
     if (req.method.startsWith('notifications/')) return { status: 202 };
   }
-  return { status: 200, json: await dispatch(req, env, userId) };
+  return { status: 200, json: await dispatch(req, env, userId, bg) };
 }

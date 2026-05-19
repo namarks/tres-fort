@@ -181,7 +181,10 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
       if (
         sabotage &&
         sql.includes('INSERT INTO session_load_exports') &&
-        sql.includes("status='ok'")
+        // Target ONLY the ok-branch terminal UPSERT (its VALUES tuple),
+        // not the recovery query (which also contains the substring
+        // status='ok' since the P2 CASE guard was added).
+        sql.includes("VALUES (?1,?2,?3,'ok'")
       ) {
         return {
           bind: () => ({
@@ -219,8 +222,9 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
     )
       .bind(sessionId)
       .first<{ status: string }>();
-    // Reclaim+sabotaged-retry left it retryable (not wedged in_flight).
-    expect(['pending', 'ok', 'in_flight']).toContain(afterRecovery!.status);
+    // Reclaim+sabotaged-retry left it retryable — a genuinely wedged
+    // in_flight row must fail this (no in_flight in the allowed set).
+    expect(['pending', 'ok']).toContain(afterRecovery!.status);
 
     // A remote event WAS created by the POST above. Stop sabotaging; the
     // retry (staleMs:0 = cron's eventual orphan reclaim, time-compressed)
@@ -344,7 +348,7 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
 
     const realPrepare = env.DB.prepare.bind(env.DB);
     const spyPrepare = vi.fn((sql: string) => {
-      if (sql.includes('INSERT INTO session_load_exports') && sql.includes("status='ok'")) {
+      if (sql.includes('INSERT INTO session_load_exports') && sql.includes("VALUES (?1,?2,?3,'ok'")) {
         return {
           bind: () => ({
             run: async () => {
@@ -370,6 +374,47 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
       .bind(sessionId)
       .first<{ status: string }>();
     expect(row!.status).toBe('pending');
+  });
+
+  it('P2: ok UPSERT commits then writeAudit THROWS → recovery must NOT downgrade ok→pending', async () => {
+    const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 8, date: '2026-05-15' });
+    const api = fakeIntervals();
+
+    // Let the ok UPSERT commit (real prepare), but make the AUDIT insert
+    // that immediately follows it throw — the exact "threw AFTER the ok
+    // UPSERT" interleave the P2 status guard protects.
+    const realPrepare = env.DB.prepare.bind(env.DB);
+    const spyPrepare = vi.fn((sql: string) => {
+      if (sql.includes('INSERT INTO audit_log')) {
+        return {
+          bind: () => ({
+            run: async () => {
+              throw new Error('writeAudit boom (post-ok-UPSERT)');
+            },
+          }),
+        } as any;
+      }
+      return realPrepare(sql);
+    });
+    (env.DB as any).prepare = spyPrepare;
+
+    // Sacred wrapper absorbs the post-ok throw; its recovery runs.
+    await expect(
+      tryExportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher }),
+    ).resolves.toBeUndefined();
+
+    (env.DB as any).prepare = realPrepare;
+    const row = await env.DB.prepare(
+      'SELECT status, intervals_ref FROM session_load_exports WHERE session_id=?1',
+    )
+      .bind(sessionId)
+      .first<{ status: string; intervals_ref: string | null }>();
+    // CRUX: the row stays terminal ok with its ref intact — NOT downgraded
+    // to pending (which would trigger a needless ok→pending→ok cron loop).
+    // This FAILS if the CASE WHEN status='ok' guard is removed.
+    expect(row!.status).toBe('ok');
+    expect(row!.intervals_ref).toBe(String(api.events[0]!.id));
+    expect(api.events).toHaveLength(1); // no duplicate remote event
   });
 
   it('zero non-warmup sets → skipped (no export row)', async () => {
@@ -575,6 +620,24 @@ describe('BLOCKER-2: log_workout_complete must not be blocked by the export', ()
     // it had entered the (still-hung) intervals call, then we release it.
     await enteredP;
     releaseSlow();
+
+    // Full chain end-to-end through the REAL HTTP route: the response
+    // already returned (above); now the route's ctx.waitUntil-scheduled
+    // export must finish and drive the ledger row to terminal `ok`. Poll
+    // (bounded) since waitUntil completes asynchronously after the
+    // response — no fixed sleep.
+    let status: string | undefined;
+    for (let i = 0; i < 50; i++) {
+      const row = await env.DB.prepare(
+        'SELECT status FROM session_load_exports WHERE session_id=?1',
+      )
+        .bind(sessionId)
+        .first<{ status: string }>();
+      status = row?.status;
+      if (status === 'ok') break;
+      await new Promise((res) => setTimeout(res, 10));
+    }
+    expect(status).toBe('ok');
   });
 
   it('intervals 500 → log_workout_complete still succeeds & returns normally; export left pending', async () => {

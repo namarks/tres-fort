@@ -1286,12 +1286,19 @@ export async function tryExportSessionLoad(
     // pending row (so the cron retries) and swallow. Even this recovery is
     // guarded so a DB hiccup here still cannot propagate.
     try {
+      // Status guard: if the ok UPSERT already committed and a LATER step
+      // (e.g. writeAudit) threw, the row is terminal `ok` with a real
+      // intervals_ref — must NOT be downgraded to `pending` (that would
+      // cause a needless ok→pending→ok cron round-trip). Only re-queue a
+      // non-terminal row. intervals_ref is still never touched on conflict.
       await db
         .prepare(
           `INSERT INTO session_load_exports (session_id,intervals_ref,load,status,attempts,updated_at)
            VALUES (?1,NULL,NULL,'pending',
              COALESCE((SELECT attempts FROM session_load_exports WHERE session_id=?1),0)+1,?2)
-           ON CONFLICT(session_id) DO UPDATE SET status='pending', updated_at=excluded.updated_at`,
+           ON CONFLICT(session_id) DO UPDATE SET
+             status = CASE WHEN status='ok' THEN 'ok' ELSE 'pending' END,
+             updated_at = excluded.updated_at`,
         )
         .bind(sessionId, now())
         .run();

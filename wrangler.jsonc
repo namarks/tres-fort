@@ -18,8 +18,11 @@
   "triggers": { "crons": ["0 */6 * * *"] },
   "vars": {
     "APPLE_BUNDLE_ID": "com.nmarkspdx.liftcoach",
-    // Non-sensitive: the intervals.icu athlete id (e.g. "i12345").
-    "INTERVALS_ICU_ATHLETE_ID": "i0"
+    // REQUIRED before deploy: real intervals.icu athlete id (see Juno
+    // INTERVALS_ICU_ATHLETE_ID). Non-sensitive (an id, not a key). The
+    // cycling-awareness feature stays a dormant no-op until this is a real
+    // athlete id AND the INTERVALS_ICU_API_KEY secret is set.
+    "INTERVALS_ICU_ATHLETE_ID": "REPLACE_ME_athlete_id"
   }
   // Secrets (set via `wrangler secret put`, NOT committed):
   //   APP_JWT_SECRET        - HS256 signing key for app JWTs

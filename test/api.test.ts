@@ -346,6 +346,79 @@ describe('/api/state external_events delta (own consistency class)', () => {
     ).json<{ plan_version: number }>();
     expect(after.plan_version).toBe(planVer);
   });
+
+  it('full-reload (events_since absent OR 0) → full NON-deleted set, no tombstones', async () => {
+    const jwt = await devJwt();
+    const H = auth(jwt);
+
+    await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Full Reload' }),
+    });
+    const planVer = (
+      await (await SELF.fetch(`${BASE}/api/state?since=0`, { headers: H })).json<{
+        plan_version: number;
+      }>()
+    ).plan_version;
+    const userId = (
+      await env.DB.prepare("SELECT id FROM users ORDER BY created_at LIMIT 1").first<{
+        id: string;
+      }>()
+    )!.id;
+
+    // One live ride + one soft-deleted (tombstone) ride.
+    const t = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO external_events
+         (id,user_id,source,external_id,date,kind,title,description,
+          planned_duration_sec,training_load,intensity,raw,synced_at,deleted_at)
+       VALUES ('intervals:fr-live',?1,'intervals','fr-live','2026-07-01','ride','Live',NULL,
+               3600,60,0.6,'{}',?2,NULL)`,
+    )
+      .bind(userId, t)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO external_events
+         (id,user_id,source,external_id,date,kind,title,description,
+          planned_duration_sec,training_load,intensity,raw,synced_at,deleted_at)
+       VALUES ('intervals:fr-dead',?1,'intervals','fr-dead','2026-07-02','ride','Dead',NULL,
+               3600,60,0.6,'{}',?2,?2)`,
+    )
+      .bind(userId, t)
+      .run();
+
+    // Absent events_since → full non-deleted set; tombstone NOT present.
+    const absent = await (
+      await SELF.fetch(`${BASE}/api/state?since=0`, { headers: H })
+    ).json<{ external_events: { id: string }[]; plan_version: number }>();
+    const absentIds = absent.external_events.map((e) => e.id);
+    expect(absentIds).toContain('intervals:fr-live');
+    expect(absentIds).not.toContain('intervals:fr-dead');
+
+    // events_since=0 is the same full-reload contract (also no tombstone).
+    const zero = await (
+      await SELF.fetch(`${BASE}/api/state?since=0&events_since=0`, { headers: H })
+    ).json<{ external_events: { id: string }[] }>();
+    const zeroIds = zero.external_events.map((e) => e.id);
+    expect(zeroIds).toContain('intervals:fr-live');
+    expect(zeroIds).not.toContain('intervals:fr-dead');
+
+    // Incremental path (events_since > 0) DOES carry the tombstone so a
+    // syncing client can drop it.
+    const incr = await (
+      await SELF.fetch(`${BASE}/api/state?events_since=${t - 1}`, { headers: H })
+    ).json<{ external_events: { id: string; deleted_at: number | null }[] }>();
+    const dead = incr.external_events.find((e) => e.id === 'intervals:fr-dead');
+    expect(dead).toBeTruthy();
+    expect(dead!.deleted_at).not.toBeNull();
+
+    // plans.version unaffected throughout.
+    const after = await (
+      await SELF.fetch(`${BASE}/api/state?since=0`, { headers: H })
+    ).json<{ plan_version: number }>();
+    expect(after.plan_version).toBe(planVer);
+  });
 });
 
 describe('exercise catalog', () => {

@@ -473,17 +473,32 @@ export async function getState(
     )
     .bind(userId, setsSince)
     .all<SetLogRow>();
-  // external_events ride a SEPARATE delta watermark (synced_at epoch-ms),
-  // exactly the sets pattern. This is a server-owned reconciled cache: it
-  // is NOT gated on plans.version and a ride sync NEVER bumps it. Soft-
-  // deleted rows are included in the delta (deleted_at set) so the client
-  // can drop them — clients filter on deleted_at, like set_logs.
-  const events = await db
-    .prepare(
-      'SELECT * FROM external_events WHERE user_id = ?1 AND synced_at > ?2 ORDER BY synced_at',
-    )
-    .bind(userId, eventsSince)
-    .all<ExternalEventRow>();
+  // external_events ride a SEPARATE watermark (synced_at epoch-ms). This is
+  // a server-owned reconciled cache: NOT gated on plans.version and a ride
+  // sync NEVER bumps it. TWO explicit modes (iOS must match):
+  //
+  //  - FULL RELOAD  (events_since absent OR 0): return the full CURRENT set
+  //    of NON-deleted external_events. The full-reload path does a full
+  //    replace (DESIGN §7, same as since=0/sets_since=0) so the server must
+  //    NOT hand it tombstones — there is nothing to reconcile them against.
+  //  - INCREMENTAL  (events_since > 0): return every row touched since the
+  //    cursor INCLUDING soft-deleted ones (deleted_at set), so a syncing
+  //    client learns about removals and drops them — exactly the set_logs
+  //    delta+tombstone pattern.
+  const events =
+    eventsSince > 0
+      ? await db
+          .prepare(
+            'SELECT * FROM external_events WHERE user_id = ?1 AND synced_at > ?2 ORDER BY synced_at',
+          )
+          .bind(userId, eventsSince)
+          .all<ExternalEventRow>()
+      : await db
+          .prepare(
+            'SELECT * FROM external_events WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY synced_at',
+          )
+          .bind(userId)
+          .all<ExternalEventRow>();
   return {
     plan: tree,
     plan_version: plan?.version ?? 0,
@@ -1383,6 +1398,14 @@ export async function getProjectedCalendar(
     .prepare('SELECT id FROM day_templates WHERE plan_id = ?1')
     .bind(plan.id)
     .all<{ id: string }>();
+  // NOTE: the `sessions` table has NO soft-delete column (only set_logs and
+  // external_events carry deleted_at — see migrations 0001/0006). A session
+  // is never soft-deleted; a cancelled/rest day is modelled as a real row
+  // with status='skipped'. So there is intentionally no `deleted_at IS NULL`
+  // guard here (it would reference a non-existent column). Spurious lift
+  // dates from cancellations are prevented downstream: getRideConflicts'
+  // liftDates filter includes only projected|planned|in_progress|completed
+  // and EXCLUDES 'skipped', so a skipped session produces no conflict.
   const sessions = await db
     .prepare(
       'SELECT * FROM sessions WHERE user_id = ?1 AND date >= ?2 AND date <= ?3 ORDER BY date',

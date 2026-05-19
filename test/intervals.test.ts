@@ -197,6 +197,12 @@ describe('syncExternalEvents — reconciled cache, the failed-fetch guard', () =
     expect(r.status).toBe('fetch_failed');
     const live = await getUpcomingRides(env.DB, userId, { from: TODAY });
     expect(live.map((x) => x.id)).toEqual(['intervals:a']);
+    // Symmetric with the 500-guard test: prove the existing row was NOT
+    // soft-deleted by the timed-out sync (deleted_at still NULL).
+    const row = await env.DB.prepare(
+      "SELECT deleted_at FROM external_events WHERE id='intervals:a'",
+    ).first<{ deleted_at: number | null }>();
+    expect(row!.deleted_at).toBeNull();
   });
 
   it('a genuinely-empty SUCCESSFUL window DOES soft-delete in-window rows', async () => {

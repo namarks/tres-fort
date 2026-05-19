@@ -448,8 +448,15 @@ export async function getState(
   setsSince: number,
 ) {
   const plan = await getActivePlan(db, userId);
-  const tree =
+  const baseTree =
     plan && plan.version > sincePlanVersion ? await getPlanTree(db, userId) : null;
+  // The weekly schedule rides the existing plan-tree sync: it is only
+  // returned when the tree is (i.e. when plans.version advanced past the
+  // client cursor). Parsed via the single meta accessor so iOS never
+  // hand-parses meta. Null when nothing changed — no new endpoint.
+  const tree = baseTree
+    ? { ...baseTree, schedule: parsePlanMeta(baseTree.meta).schedule }
+    : null;
   const sessions = await db
     .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND updated_at > ?2 ORDER BY date')
     .bind(userId, setsSince)

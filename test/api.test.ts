@@ -221,6 +221,60 @@ describe('sessions, idempotent set logging, history, volume', () => {
   });
 });
 
+describe('/api/state carries the weekly schedule, gated on version', () => {
+  it('schedule appears when plans.version advanced, and not otherwise', async () => {
+    const jwt = await devJwt();
+    const H = auth(jwt);
+
+    // Build a plan with a named day, then set the weekly schedule via MCP
+    // (schedule rides the plan-tree sync; there is no REST schedule write).
+    await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Sched Sync' }),
+    });
+    const day = await (
+      await SELF.fetch(`${BASE}/api/days`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ name: 'Push Day', day_label: 'A', order_index: 0 }),
+      })
+    ).json<{ id: string }>();
+
+    const setSched = await SELF.fetch(`${BASE}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: 'Bearer test-mcp-token' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'set_schedule', arguments: { week: { mon: 'Push Day' } } },
+      }),
+    });
+    const setBody = await setSched.json<any>();
+    const sched = JSON.parse(setBody.result.content[0].text);
+    expect(sched.ok).toBe(true);
+    const curVer = sched.version as number;
+
+    // Stale client (since below current version) → full tree WITH schedule.
+    const fresh = await (
+      await SELF.fetch(`${BASE}/api/state?since=0`, { headers: H })
+    ).json<{ plan: any; plan_version: number }>();
+    expect(fresh.plan).not.toBeNull();
+    expect(fresh.plan_version).toBe(curVer);
+    expect(fresh.plan.schedule).toBeTruthy();
+    expect(fresh.plan.schedule.version).toBe(1);
+    expect(fresh.plan.schedule.week.mon).toBe(day.id);
+    expect(fresh.plan.schedule.week.tue).toBeNull();
+
+    // Up-to-date client (since = current version) → plan null, no schedule.
+    const same = await (
+      await SELF.fetch(`${BASE}/api/state?since=${curVer}`, { headers: H })
+    ).json<{ plan: any }>();
+    expect(same.plan).toBeNull();
+  });
+});
+
 describe('exercise catalog', () => {
   it('lists the seeded catalog incl timed exercises', async () => {
     const jwt = await devJwt();

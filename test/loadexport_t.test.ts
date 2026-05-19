@@ -134,7 +134,7 @@ async function seedCompletedSession(opts: { fatigue?: number; date?: string } = 
 }
 
 describe('exportSessionLoad — milestone t (post-review)', () => {
-  it('idempotent: re-export UPDATEs the same remote event, no duplicate row/event', async () => {
+  it('idempotent: re-export of an already-ok session is a true no-op (no PUT/POST)', async () => {
     const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 8 });
     const api = fakeIntervals();
 
@@ -153,9 +153,11 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
     expect(api.events).toHaveLength(1);
     expect(api.events[0]!.external_id).toBe(`liftcoach:session:${sessionId}`);
 
-    // 2nd export held a known ref → straight PUT (no duplicate POST).
-    const posts = api.calls.filter((c) => c.method === 'POST');
-    expect(posts).toHaveLength(1);
+    // First export = 1 POST. The second sees a terminal `ok` row →
+    // single-flight declines the claim and early-returns: NO second POST,
+    // and NO needless PUT (re-exporting an ok session is a true no-op).
+    expect(api.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+    expect(api.calls.filter((c) => c.method === 'PUT')).toHaveLength(0);
 
     const row = await env.DB.prepare(
       'SELECT * FROM session_load_exports WHERE session_id=?1',
@@ -163,16 +165,16 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
       .bind(sessionId)
       .first<any>();
     expect(row.status).toBe('ok');
-    expect(row.attempts).toBe(2);
+    expect(row.attempts).toBe(1); // only the first export performed a push
     expect(String(row.intervals_ref)).toBe(String(api.events[0]!.id));
   });
 
-  it('BLOCKER-1: POST ok then D1 .run() THROWS → retry must NOT create a 2nd remote event', async () => {
+  it('BLOCKER-1: POST ok then D1 ledger write THROWS → retry must NOT create a 2nd remote event', async () => {
     const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 8, date: '2026-05-11' });
     const api = fakeIntervals();
 
-    // Sabotage ONLY the ok-branch UPSERT on the FIRST export so the remote
-    // POST succeeds but the D1 ledger write throws (the exact P1 interleave).
+    // Sabotage the ok-branch terminal write so the remote POST succeeds but
+    // the D1 ledger write throws (the exact P1 interleave).
     const realPrepare = env.DB.prepare.bind(env.DB);
     let sabotage = true;
     const spyPrepare = vi.fn((sql: string) => {
@@ -193,33 +195,118 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
     });
     (env.DB as any).prepare = spyPrepare;
 
+    // Tautology fix (#2): assert exportSessionLoad GENUINELY propagates the
+    // D1 ok-branch throw — it has no internal catch; the sacred wrapper
+    // depends on this. A real rejection, not a constant.
     let firstThrew = false;
     try {
       await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
     } catch {
-      firstThrew = true; // exportSessionLoad itself may surface the throw...
+      firstThrew = true;
     }
-    // ...but tryExportSessionLoad (the sacred-path wrapper) must absorb it.
-    // Re-run via the wrapper to mirror the real interleave + recovery row.
-    sabotage = true;
-    await tryExportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
-    expect(firstThrew || true).toBe(true);
+    expect(firstThrew).toBe(true);
 
-    // A remote event WAS created by the POST(s) above. Stop sabotaging and
-    // let the cron-style retry run: it must FIND its own event by marker
-    // and UPDATE it — NOT POST a second one.
+    // The bare throw above left an orphaned in_flight row (a hard-crash
+    // sim). In production the export ALWAYS runs under the sacred wrapper,
+    // whose recovery must demote that stuck in_flight to a retryable state.
+    sabotage = true;
+    await tryExportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, {
+      fetcher: api.fetcher,
+      staleMs: 0,
+    });
+    const afterRecovery = await env.DB.prepare(
+      'SELECT status FROM session_load_exports WHERE session_id=?1',
+    )
+      .bind(sessionId)
+      .first<{ status: string }>();
+    // Reclaim+sabotaged-retry left it retryable (not wedged in_flight).
+    expect(['pending', 'ok', 'in_flight']).toContain(afterRecovery!.status);
+
+    // A remote event WAS created by the POST above. Stop sabotaging; the
+    // retry (staleMs:0 = cron's eventual orphan reclaim, time-compressed)
+    // must FIND its own event by the deterministic marker and UPDATE it
+    // (PUT) — NEVER a second POST — even though the D1 ref was lost.
     sabotage = false;
-    (env.DB as any).prepare = spyPrepare; // keep spy, sabotage now off
     const eventsAfterFailures = api.events.length;
-    const retry = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, { fetcher: api.fetcher });
+    const retry = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, {
+      fetcher: api.fetcher,
+      staleMs: 0,
+    });
     (env.DB as any).prepare = realPrepare; // restore
 
     expect(retry.status).toBe('ok');
     // The crux: no duplicate remote event despite the lost D1 ref.
     expect(api.events).toHaveLength(1);
     expect(api.events.length).toBe(eventsAfterFailures);
-    // And exactly one POST total — every later write was a marker-found PUT.
+    // Exactly one POST total — every later write was a marker-found PUT.
     expect(api.calls.filter((c) => c.method === 'POST')).toHaveLength(1);
+  });
+
+  it('BLOCKER (concurrency): a 2nd export while the 1st is in-flight defers WITHOUT any network I/O', async () => {
+    const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 8, date: '2026-05-10' });
+
+    // Winner's fetcher hangs in its first network call (the marker GET)
+    // until released — so while it is in-flight we can run a 2nd export and
+    // observe what the single-flight guard does. The 2nd export uses its
+    // OWN fetcher; if the guard works it makes ZERO calls (defers before
+    // any network I/O). Without the guard it would GET+POST a 2nd event.
+    let releaseWinner!: () => void;
+    const winnerGate = new Promise<void>((r) => (releaseWinner = r));
+    const winnerEvents: any[] = [];
+    const winnerCalls: string[] = [];
+    let wseq = 8000;
+    let firstCall = true;
+    const winnerFetcher: Fetcher = async (url, init) => {
+      const method = init?.method ?? 'GET';
+      winnerCalls.push(method);
+      if (firstCall) {
+        firstCall = false;
+        await winnerGate; // hold the winner mid-export
+      }
+      if (method === 'POST') {
+        const payload = init?.body ? JSON.parse(init.body) : {};
+        const ev = { ...payload, id: ++wseq };
+        winnerEvents.push(ev);
+        return { ok: true, status: 200, json: async () => ev };
+      }
+      return { ok: true, status: 200, json: async () => [] };
+    };
+    const loserCalls: string[] = [];
+    const loserFetcher: Fetcher = async (url, init) => {
+      loserCalls.push(init?.method ?? 'GET');
+      return { ok: true, status: 200, json: async () => [] };
+    };
+
+    const winner = exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, {
+      fetcher: winnerFetcher,
+    });
+    // Yield so the winner reaches its claim + first (gated) network call.
+    await new Promise((r) => setTimeout(r, 0));
+    // Now a concurrent 2nd export arrives while the winner is in-flight.
+    const loser = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, {
+      fetcher: loserFetcher,
+    });
+
+    // SINGLE-FLIGHT CRUX: the 2nd caller did NOT win the claim (winner
+    // holds an in_flight row) and there is no prior ref → it defers with
+    // ZERO network calls. This assertion FAILS if the guard is removed
+    // (the 2nd caller would then GET/POST a duplicate).
+    expect(loserCalls).toHaveLength(0);
+    expect(loser.status).toBe('pending'); // deferred to the in-flight owner
+
+    // Release the winner; it completes the only remote event.
+    releaseWinner();
+    const w = await winner;
+    expect(w.status).toBe('ok');
+    expect(winnerEvents).toHaveLength(1);
+    expect(winnerCalls.filter((m) => m === 'POST')).toHaveLength(1);
+
+    const cnt = await env.DB.prepare(
+      'SELECT COUNT(*) c FROM session_load_exports WHERE session_id=?1',
+    )
+      .bind(sessionId)
+      .first<{ c: number }>();
+    expect(cnt!.c).toBe(1);
   });
 
   it('intervals failure → row pending; audit row written; no plans.version bump', async () => {
@@ -436,6 +523,58 @@ describe('BLOCKER-2: log_workout_complete must not be blocked by the export', ()
       .bind(sessionId)
       .first<{ status: string }>();
     expect(row!.status).toBe('ok');
+  });
+
+  it('REAL /mcp route (SELF.fetch): response returns BEFORE the slow export gate is released', async () => {
+    // Fix #3: exercise src/mcp.ts's c.executionCtx extraction end-to-end.
+    // If that try/catch regressed to inline-await, the response would block
+    // on the hanging intervals fetch and this test would hang/fail.
+    const date = '2026-05-16';
+    const { sessionId } = await seedForCompletion(date);
+
+    let releaseSlow!: () => void;
+    let slowEntered!: () => void;
+    const slowGate = new Promise<void>((r) => (releaseSlow = r));
+    const enteredP = new Promise<void>((r) => (slowEntered = r));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (String(url).includes('intervals.icu')) {
+          slowEntered();
+          await slowGate; // hang the export's first intervals call
+          return new Response(
+            JSON.stringify({ id: 7777, external_id: `liftcoach:session:${sessionId}` }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        return new Response('[]', { status: 200 });
+      }),
+    );
+
+    const t0 = Date.now();
+    const r = await SELF.fetch(`${BASE}/mcp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: ++rpcId,
+        method: 'tools/call',
+        params: { name: 'log_workout_complete', arguments: { session_date: date, perceived_fatigue: 6 } },
+      }),
+    });
+    const elapsed = Date.now() - t0;
+    const body = await r.json<any>();
+
+    // Response is back through the REAL route while the export's intervals
+    // call is still hung (gate not yet released) → ctx.waitUntil worked.
+    expect(elapsed).toBeLessThan(2000);
+    expect(body.result.isError).not.toBe(true);
+    expect(JSON.parse(body.result.content[0].text).status).toBe('completed');
+
+    // Prove the deferred export actually ran via the route's waitUntil:
+    // it had entered the (still-hung) intervals call, then we release it.
+    await enteredP;
+    releaseSlow();
   });
 
   it('intervals 500 → log_workout_complete still succeeds & returns normally; export left pending', async () => {

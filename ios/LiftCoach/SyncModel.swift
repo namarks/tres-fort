@@ -12,6 +12,7 @@ final class SyncModel: ObservableObject {
     // Rest timer (local Live Activity arrives in milestone g).
     @Published var restEndDate: Date?
     @Published var restExercise: String = ""
+    @Published var restTotal: Int = 0
 
     // Guided workout runner.
     @Published var running = false
@@ -120,19 +121,43 @@ final class SyncModel: ObservableObject {
     func adjustWeight(_ delta: Double) { weight = max(0, weight + delta) }
     func adjustReps(_ delta: Int) { reps = max(0, reps + delta) }
 
+    func setsDone(_ ex: TemplateExercise) -> Int { todaySets(ex.exercise_id).count }
+    func isComplete(_ ex: TemplateExercise) -> Bool { setsDone(ex) >= ex.target_sets }
+    var allComplete: Bool { !exercises.isEmpty && exercises.allSatisfy { isComplete($0) } }
+
+    /// First not-yet-complete exercise after the current one (wraps), so a
+    /// completed lift never traps you and order is flexible.
+    var nextIncompleteIndex: Int? {
+        let n = exercises.count
+        guard n > 0 else { return nil }
+        for offset in 1...n {
+            let i = (exerciseIndex + offset) % n
+            if !isComplete(exercises[i]) { return i }
+        }
+        return nil
+    }
+
+    func jump(to index: Int) {
+        guard exercises.indices.contains(index) else { return }
+        exerciseIndex = index
+        seedInputs()
+    }
+
     func logCurrentSet() async {
         guard let ex = currentExercise else { return }
         await logSet(ex, weight: weight, reps: reps)   // also starts rest timer
-        if todaySets(ex.exercise_id).count >= ex.target_sets { advance() }
+        if isComplete(ex) {
+            if let next = nextIncompleteIndex { jump(to: next) }
+            else { finished = true }
+        }
     }
 
-    func advance() {
-        if exerciseIndex + 1 < exercises.count {
-            exerciseIndex += 1
-            seedInputs()
-        } else {
-            finished = true
-        }
+    /// Manual "move on" — next exercise in order; falls back to any
+    /// remaining work, else ends.
+    func skip() {
+        if exerciseIndex + 1 < exercises.count { jump(to: exerciseIndex + 1) }
+        else if let next = nextIncompleteIndex { jump(to: next) }
+        else { finished = true }
     }
 
     func previous() {
@@ -153,8 +178,23 @@ final class SyncModel: ObservableObject {
 
     // MARK: rest timer
 
+    /// Name of the next not-complete exercise (for the rest screen's UP NEXT).
+    var upNextName: String {
+        if let i = nextIncompleteIndex { return exercises[i].exercise_name }
+        return "Done"
+    }
+
+    func removeSet(_ set: SetLog) async {
+        guard let jwt = auth.jwt else { return }
+        do {
+            try await api.deleteSet(setId: set.id, jwt: jwt)
+            sets.removeAll { $0.id == set.id }
+        } catch { handle(error) }
+    }
+
     func startRest(seconds: Int, name: String) {
         restExercise = name
+        restTotal = seconds
         restEndDate = Date().addingTimeInterval(TimeInterval(seconds))
     }
     func addRest(_ seconds: Int) {

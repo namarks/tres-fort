@@ -41,6 +41,11 @@ struct APIClient {
         try await patch("api/sessions/\(sessionId)", body: ["status": "completed"], jwt: jwt)
     }
 
+    struct EmptyResponse: Decodable {}
+    func deleteSet(setId: String, jwt: String) async throws {
+        let _: SetLog = try await patch("api/sets/\(setId)", body: ["deleted": true], jwt: jwt)
+    }
+
     // MARK: - transport
 
     private func get<T: Decodable>(_ path: String, jwt: String) async throws -> T {

@@ -105,3 +105,79 @@ export interface EnrichedTemplateExercise extends TemplateExerciseRow {
 export interface PlanTree extends PlanRow {
   days: (DayTemplateRow & { exercises: EnrichedTemplateExercise[] })[];
 }
+
+// ---- weekly schedule (frozen contract — see migrations/0005) -------------
+
+export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+
+/** Weekday-keyed recurring pattern. Value = day_template_id, or null = rest. */
+export type ScheduleWeek = Record<Weekday, string | null>;
+
+export interface WeeklySchedule {
+  version: number;
+  week: ScheduleWeek;
+}
+
+/** Canonical weekday order, indexable by the calendar-derived day index. */
+export const WEEKDAYS: readonly Weekday[] = [
+  'mon',
+  'tue',
+  'wed',
+  'thu',
+  'fri',
+  'sat',
+  'sun',
+];
+
+/** Parsed shape of plans.meta. Schedule is always present after migration. */
+export interface PlanMeta {
+  schedule: WeeklySchedule;
+  [k: string]: unknown;
+}
+
+function emptyWeek(): ScheduleWeek {
+  return { mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null };
+}
+
+export function emptySchedule(): WeeklySchedule {
+  return { version: 1, week: emptyWeek() };
+}
+
+/**
+ * The ONLY place plan.meta is parsed. Never hand-parse meta elsewhere.
+ * Tolerates null / invalid JSON / missing or malformed schedule and always
+ * returns a well-formed PlanMeta with a complete weekday map.
+ */
+export function parsePlanMeta(raw: string | null): PlanMeta {
+  let obj: Record<string, unknown> = {};
+  if (raw != null) {
+    try {
+      const p = JSON.parse(raw);
+      if (p && typeof p === 'object' && !Array.isArray(p)) {
+        obj = p as Record<string, unknown>;
+      }
+    } catch {
+      // fall through to defaults
+    }
+  }
+  const sched = obj.schedule as Partial<WeeklySchedule> | undefined;
+  const week = emptyWeek();
+  if (sched && typeof sched === 'object' && sched.week && typeof sched.week === 'object') {
+    for (const d of WEEKDAYS) {
+      const v = (sched.week as Record<string, unknown>)[d];
+      week[d] = typeof v === 'string' && v.length > 0 ? v : null;
+    }
+  }
+  return {
+    ...obj,
+    schedule: {
+      version: typeof sched?.version === 'number' ? sched.version : 1,
+      week,
+    },
+  };
+}
+
+/** Serialize meta back, with the schedule slotted in (preserving other keys). */
+export function serializePlanMeta(meta: PlanMeta, schedule: WeeklySchedule): string {
+  return JSON.stringify({ ...meta, schedule });
+}

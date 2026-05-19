@@ -100,6 +100,15 @@ final class SyncModel: ObservableObject {
         catalog.first { $0.id == id }?.name ?? id
     }
 
+    /// How many physical sides a logged set covers — 2 for unilateral
+    /// exercises (Bulgarian split squat, lunge, one-arm row; reps logged
+    /// per-side), 1 for everything else. Used by rollups to convert
+    /// logged-rep-count → physical-rep-count and tonnage → real tonnage.
+    /// Defaults to 1 when the catalog row is unknown.
+    func sides(for exerciseID: String) -> Int {
+        catalog.first { $0.id == exerciseID }?.laterality == "unilateral" ? 2 : 1
+    }
+
     // MARK: history aggregation
 
     struct SessionStat: Identifiable {
@@ -128,6 +137,10 @@ final class SyncModel: ObservableObject {
     func history(for exerciseID: String) -> [SessionStat] {
         let dateBySession = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.date) })
         let grouped = Dictionary(grouping: live(exerciseID), by: \.session_id)
+        // Volume doubles for unilateral exercises (reps logged per-side).
+        // topReps + est-1RM stay per-side: those represent per-leg/per-arm
+        // strength, which is what the lifter actually displaced in one rep.
+        let s = Double(sides(for: exerciseID))
         return grouped.compactMap { sid, rows -> SessionStat? in
             guard let date = dateBySession[sid], !rows.isEmpty else { return nil }
             let top = rows.max { epley($0.weight, $0.reps) < epley($1.weight, $1.reps) }!
@@ -136,7 +149,7 @@ final class SyncModel: ObservableObject {
                 id: sid, date: date,
                 est1RM: epley(top.weight, top.reps).rounded(),
                 topWeight: top.weight, topReps: top.reps,
-                volume: rows.reduce(0) { $0 + $1.weight * Double($1.reps) },
+                volume: rows.reduce(0) { $0 + $1.weight * Double($1.reps) * s },
                 setCount: rows.count,
                 avgDuration: durs.isEmpty ? 0 : durs.reduce(0, +) / durs.count)
         }

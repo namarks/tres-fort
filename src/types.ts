@@ -112,6 +112,8 @@ export interface EnrichedTemplateExercise extends TemplateExerciseRow {
   exercise_unit: string;
   exercise_muscle: string;
   exercise_modality: string;
+  /** 'bilateral' | 'unilateral'. Unilateral exercises log reps per-side. */
+  exercise_laterality: string;
 }
 
 export interface PlanTree extends PlanRow {

@@ -146,7 +146,8 @@ export async function getPlanTree(
     const res = await db
       .prepare(
         `SELECT te.*, e.name AS exercise_name, e.unit AS exercise_unit,
-                e.primary_muscle AS exercise_muscle, e.modality AS exercise_modality
+                e.primary_muscle AS exercise_muscle, e.modality AS exercise_modality,
+                e.laterality AS exercise_laterality
          FROM template_exercises te
          JOIN exercises e ON e.id = te.exercise_id
          WHERE te.day_template_id IN (${placeholders}) ORDER BY te.order_index`,
@@ -341,7 +342,14 @@ export async function getExercises(
   db: D1Database,
   filters: { query?: string; muscle?: string; modality?: string } = {},
 ): Promise<
-  { id: string; name: string; primary_muscle: string; modality: string; unit: string }[]
+  {
+    id: string;
+    name: string;
+    primary_muscle: string;
+    modality: string;
+    unit: string;
+    laterality: string;
+  }[]
 > {
   const where: string[] = [];
   const binds: (string | number)[] = [];
@@ -358,7 +366,7 @@ export async function getExercises(
     where.push(`lower(modality) = ?${binds.length}`);
   }
   const sql =
-    'SELECT id, name, primary_muscle, modality, unit FROM exercises' +
+    'SELECT id, name, primary_muscle, modality, unit, laterality FROM exercises' +
     (where.length ? ' WHERE ' + where.join(' AND ') : '') +
     ' ORDER BY name';
   const stmt = db.prepare(sql);
@@ -369,6 +377,7 @@ export async function getExercises(
     primary_muscle: string;
     modality: string;
     unit: string;
+    laterality: string;
   }>();
   return r.results;
 }
@@ -2063,11 +2072,16 @@ export async function getVolume(
   from: number,
   to: number,
 ) {
+  // Unilateral sets log reps per-side, so a 45x8 Bulgarian split squat is
+  // really 16 physical reps and 720 lb of work — not 8 reps and 360 lb.
+  // hard_sets stays a literal COUNT (one logged set is one set entered),
+  // tonnage doubles via the CASE so volume trends match reality.
   const rows = await db
     .prepare(
       `SELECT strftime('%Y-%W', s.date) AS week,
               COUNT(*) AS hard_sets,
-              SUM(sl.weight * sl.reps) AS tonnage
+              SUM(sl.weight * sl.reps
+                  * CASE WHEN e.laterality = 'unilateral' THEN 2 ELSE 1 END) AS tonnage
        FROM set_logs sl
        JOIN sessions s ON s.id = sl.session_id
        JOIN exercises e ON e.id = sl.exercise_id

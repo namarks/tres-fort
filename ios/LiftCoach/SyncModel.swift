@@ -405,8 +405,16 @@ final class SyncModel: ObservableObject {
     /// Today's resolved projection — the SAME `projection(for:)` /
     /// `CalendarProjection` the calendar uses (single source of truth, no
     /// parallel resolution). Today screen reads this, not a manual default.
+    ///
+    /// Single-clock: `todayString` is a computed var (fresh `Date()` each
+    /// access). It is read EXACTLY ONCE here and supplied as BOTH the date
+    /// to resolve and the `today` reference, so the past/future split
+    /// can't straddle midnight against itself (the convenience
+    /// `projection(for:)` would otherwise read the clock a second time
+    /// internally for `today:`).
     var todayProjection: DayProjection {
-        projection(for: todayString)
+        let t = todayString
+        return projection(for: t, today: t)
     }
 
     /// SINGLE definition of "is this raw session status a workout?" (i.e.
@@ -466,8 +474,26 @@ final class SyncModel: ObservableObject {
     ///   4. the first plan day.
     /// Returns nil ONLY when today is genuinely not a workout.
     var todayResolvedDay: DayTemplate? {
-        guard todayIsWorkout else { return nil }
-        switch todayProjection {
+        // Single-clock: capture `todayString` ONCE and derive the
+        // projection ONCE from it, instead of touching the computed clock
+        // ~5× via `todayIsWorkout` + `switch todayProjection` +
+        // `sessionDisplayTemplate(todayString)`. At a midnight rollover
+        // those independent reads could otherwise resolve against
+        // different civil days within this one property evaluation (the
+        // workout-guard sees day N, the template switch day N+1, etc.).
+        let today = todayString
+        let proj = projection(for: today, today: today)
+        // Inline `todayIsWorkout` against the SAME local projection (its
+        // own `.skipped`-aware rule, no forked logic — still
+        // `isWorkoutStatus`).
+        let isWorkout: Bool
+        switch proj {
+        case .projected:      isWorkout = true
+        case .session(let s): isWorkout = Self.isWorkoutStatus(s)
+        case .rest, .none:    isWorkout = false
+        }
+        guard isWorkout else { return nil }
+        switch proj {
         case .projected(let tid):
             // Schedule projection: the template id IS the schedule's.
             return dayTemplate(id: tid) ?? selectedDay ?? plan?.days.first
@@ -478,13 +504,14 @@ final class SyncModel: ObservableObject {
             // EXPLICITLY (matching the documented caller convention) so
             // the intent — today MUST schedule-infer its null-template
             // session (the BLOCKER fix) — is visible and a future
-            // refactor of the default can't silently mis-gate it. `today`
-            // here is by definition `todayString`, so `>= today` holds.
-            return sessionDisplayTemplate(forDateString: todayString,
+            // refactor of the default can't silently mis-gate it. The
+            // captured `today` is by definition `todayString`, so the
+            // resolver's `ymd >= today` boundary holds.
+            return sessionDisplayTemplate(forDateString: today,
                                           allowScheduleInference: true)
                 ?? selectedDay ?? plan?.days.first
         case .rest, .none:
-            return nil   // unreachable (guarded by todayIsWorkout)
+            return nil   // unreachable (guarded by isWorkout)
         }
     }
 
@@ -549,13 +576,23 @@ final class SyncModel: ObservableObject {
     struct NextWorkout { let dateString: String; let day: DayTemplate? }
 
     func nextWorkout(within maxDays: Int = 14) -> NextWorkout? {
+        // Single-clock: capture `todayString` ONCE (it's a computed var,
+        // fresh `Date()` per access) for BOTH the `start` anchor and every
+        // per-offset `projection(for:today:)` in the loop. Without this,
+        // `projection(for: ymd)` re-read the clock each iteration; while
+        // that was correctness-safe here (all `ymd` are strictly future,
+        // so `allowScheduleInference: true` stays valid even post-
+        // rollover), the prior comment overstated it — only the
+        // start/`ymd` GENERATION was TOCTOU-free, not the projection call.
+        // Now the whole scan runs off one clock.
+        let today = todayString
         guard maxDays > 0,
-              let start = CalendarProjection.date(from: todayString) else { return nil }
+              let start = CalendarProjection.date(from: today) else { return nil }
         for offset in 1...maxDays {
             guard let d = CalendarProjection.calendar
                 .date(byAdding: .day, value: offset, to: start) else { continue }
             let ymd = CalendarProjection.dateString(d)
-            switch projection(for: ymd) {
+            switch projection(for: ymd, today: today) {
             case .projected(let tid):
                 // Real next workout — return THIS date even if the
                 // template isn't cached (day == nil), never skip past it.
@@ -569,10 +606,10 @@ final class SyncModel: ObservableObject {
                     // same-date row) still resolves its template via the
                     // weekly schedule. `ymd` is strictly in the future
                     // here (offset 1...maxDays off the single `start`
-                    // capture — no intra-call midnight TOCTOU), so
-                    // `allowScheduleInference` is unconditionally valid;
-                    // passed EXPLICITLY to match the documented caller
-                    // convention. Stays nil-graceful for genuinely
+                    // anchor, which derives from the one `today` capture),
+                    // so `allowScheduleInference` is unconditionally
+                    // valid; passed EXPLICITLY to match the documented
+                    // caller convention. Stays nil-graceful for genuinely
                     // unresolvable days.
                     return NextWorkout(
                         dateString: ymd,

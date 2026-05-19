@@ -656,6 +656,7 @@ describe('mcp update_plan — FK-safe rebuild remaps session + set_log reference
     // failure uses — agents can pattern-match r.error === 'unknown_exercise'.
     expect(r.error).toBe('unknown_exercise');
     expect(r.query).toBe('<missing>');
+    expect(r.queries).toEqual(['<missing>']);
   });
 
   it('rejects an unrecognized exercise name with a structured unknown_exercise error', async () => {
@@ -665,6 +666,65 @@ describe('mcp update_plan — FK-safe rebuild remaps session + set_log reference
     });
     expect(r.error).toBe('unknown_exercise');
     expect(r.query).toBe('Kettlebell Underhand Push');
+    expect(r.queries).toEqual(['Kettlebell Underhand Push']);
+  });
+
+  it('collects ALL unknowns in one response — no fail-fix-retry round trips', async () => {
+    const r = await call('update_plan', {
+      name: 'multi-unknown',
+      days: [{
+        name: 'A', day_label: 'A', exercises: [
+          { exercise: 'Bench Press', target_sets: 3, target_reps: 5 }, // OK
+          { exercise: 'Kettlebell Underhand Push', target_sets: 3, target_reps: 5 }, // unknown
+          { exercise: 'Bird Cow Dog Squat', target_sets: 3, target_reps: 5 },        // unknown
+          { exercise: 'Banded Floor Crunch', target_sets: 3, target_reps: 10 },      // unknown
+        ],
+      }],
+    });
+    expect(r.error).toBe('unknown_exercise');
+    expect(r.queries).toEqual([
+      'Kettlebell Underhand Push',
+      'Bird Cow Dog Squat',
+      'Banded Floor Crunch',
+    ]);
+    // `query` retained as the first unknown for back-compat.
+    expect(r.query).toBe('Kettlebell Underhand Push');
+  });
+});
+
+describe('mcp set_planned_session — clean revival of a discarded session', () => {
+  it('returns a planned session with cleared started_at/completed_at when reviving a discarded row', async () => {
+    await call('update_plan', {
+      name: 'Revival',
+      days: [{ name: 'A', day_label: 'A', exercises: [
+        { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
+      ] }],
+    });
+    await call('set_planned_session', { date: '2026-11-01', day: 'A' });
+    const sid = (await env.DB.prepare("SELECT id FROM sessions WHERE date='2026-11-01'")
+      .first<{ id: string }>())!.id;
+    // Force the row to a discarded state with a past started_at.
+    await env.DB
+      .prepare("UPDATE sessions SET status='discarded', started_at=12345 WHERE id=?1")
+      .bind(sid)
+      .run();
+
+    const r = await call('set_planned_session', { date: '2026-11-01', day: 'A' });
+    // Pre-fix: r.session.status was 'discarded' (stale — the SQL had
+    // already flipped to 'planned' in the DB but the response spread
+    // ...existing). Post-fix: returned shape matches the row, with
+    // started_at/completed_at cleared on revival.
+    expect(r.ok).toBe(true);
+    expect(r.session.status).toBe('planned');
+    expect(r.session.started_at).toBeNull();
+    expect(r.session.completed_at).toBeNull();
+
+    const row = await env.DB
+      .prepare("SELECT status, started_at FROM sessions WHERE id=?1")
+      .bind(sid)
+      .first<{ status: string; started_at: number | null }>();
+    expect(row!.status).toBe('planned');
+    expect(row!.started_at).toBeNull();
   });
 });
 

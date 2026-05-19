@@ -225,5 +225,63 @@ describe('mcp write tools', () => {
       "SELECT COUNT(*) AS c FROM audit_log WHERE tool IN ('set_planned_session','skip_planned_session')",
     ).first<{ c: number }>();
     expect(oneOffAudit!.c).toBeGreaterThanOrEqual(2);
+
+    // schedule.version is a change counter: it increments per successful
+    // set_schedule (set1 was the 1st write, set2 the 2nd on this plan).
+    expect(set1.schedule.version).toBe(2); // migration baseline 1 → +1
+    expect(set2.schedule.version).toBe(3); // → +1 again
+  });
+
+  it('schedule survives update_plan for days kept by name; cleared for removed days', async () => {
+    // Build a plan with two named days and schedule both.
+    const built = await call('update_plan', {
+      name: 'Survive Test',
+      days: [
+        { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+        { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
+      ],
+    });
+    const planId = built.plan.id as string;
+
+    const setSched = await call('set_schedule', { week: { mon: 'Push Day', thu: 'Pull Day' } });
+    expect(setSched.ok).toBe(true);
+    const oldPushId = setSched.schedule.week.mon as string;
+    const oldPullId = setSched.schedule.week.thu as string;
+
+    // Rebuild keeping "Push Day" (same name, new label) + adding a deadlift
+    // day; "Pull Day" is dropped. This is the "add a deadlift day" path.
+    const rebuilt = await call('update_plan', {
+      expected_version: setSched.version,
+      name: 'Survive Test',
+      days: [
+        { day_label: 'PUSH', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+        { day_label: 'D', name: 'Deadlift Day', exercises: [{ exercise: 'deadlift', target_sets: 3, target_reps: 5 }] },
+      ],
+    });
+    expect(rebuilt.conflict).toBe(false);
+
+    // New ids differ from old ones (full rebuild).
+    const newDays = await env.DB.prepare(
+      'SELECT id, name FROM day_templates WHERE plan_id = ?1',
+    )
+      .bind(planId)
+      .all<{ id: string; name: string }>();
+    const newIdByName = Object.fromEntries(newDays.results.map((d) => [d.name, d.id]));
+    expect(newIdByName['Push Day']).not.toBe(oldPushId);
+
+    // Schedule: Mon (Push Day) remapped to the NEW Push Day id by name;
+    // Thu (Pull Day, removed) cleared to null.
+    const cp = await call('get_current_plan', {});
+    expect(cp.schedule.mon).toBe('Push Day'); // resolved name still present
+    expect(cp.schedule.thu).toBeNull();
+    void oldPullId;
+
+    // Raw schedule holds the NEW push id, not the stale one.
+    const planRow = await env.DB.prepare('SELECT meta FROM plans WHERE id = ?1')
+      .bind(planId)
+      .first<{ meta: string }>();
+    const week = JSON.parse(planRow!.meta).schedule.week;
+    expect(week.mon).toBe(newIdByName['Push Day']);
+    expect(week.thu).toBeNull();
   });
 });

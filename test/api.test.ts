@@ -263,7 +263,9 @@ describe('/api/state carries the weekly schedule, gated on version', () => {
     expect(fresh.plan).not.toBeNull();
     expect(fresh.plan_version).toBe(curVer);
     expect(fresh.plan.schedule).toBeTruthy();
-    expect(fresh.plan.schedule.version).toBe(1);
+    // schedule.version is a change counter: baseline 1, +1 for the
+    // set_schedule write performed above.
+    expect(fresh.plan.schedule.version).toBe(2);
     expect(fresh.plan.schedule.week.mon).toBe(day.id);
     expect(fresh.plan.schedule.week.tue).toBeNull();
 

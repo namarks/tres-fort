@@ -619,7 +619,37 @@ export async function updatePlanTree(
     }
   }
 
+  // Capture the OLD day identity (id → name/label) before the rebuild so we
+  // can re-point surviving schedule weekdays at the NEW day id whose
+  // name/label matches. Without this, every update_plan (e.g. "add a
+  // deadlift day") would silently wipe the entire weekly schedule because
+  // rebuilt days get fresh UUIDs.
+  const oldDays = await db
+    .prepare('SELECT id, name, day_label FROM day_templates WHERE plan_id = ?1')
+    .bind(plan.id)
+    .all<{ id: string; name: string; day_label: string | null }>();
+  const oldById = new Map<string, { name: string; day_label: string | null }>();
+  for (const od of oldDays.results) {
+    oldById.set(od.id, { name: od.name, day_label: od.day_label });
+  }
+
   const ts = now();
+  // Generate new day ids up-front so the schedule remap can reference them.
+  const newDayIds = input.days.map(() => uuid());
+  // Match old→new day identity by day_label first (the stable handle), then
+  // by name. First writer wins on a duplicate (schedule holds one id/slot).
+  const newIdByLabel = new Map<string, string>();
+  const newIdByName = new Map<string, string>();
+  input.days.forEach((d, i) => {
+    const id = newDayIds[i]!;
+    if (d.day_label != null) {
+      const lk = d.day_label.toLowerCase();
+      if (!newIdByLabel.has(lk)) newIdByLabel.set(lk, id);
+    }
+    const nk = d.name.toLowerCase();
+    if (!newIdByName.has(nk)) newIdByName.set(nk, id);
+  });
+
   const stmts: D1PreparedStatement[] = [
     db
       .prepare(
@@ -629,7 +659,7 @@ export async function updatePlanTree(
     db.prepare('DELETE FROM day_templates WHERE plan_id = ?1').bind(plan.id),
   ];
   input.days.forEach((d, di) => {
-    const dayId = uuid();
+    const dayId = newDayIds[di]!;
     stmts.push(
       db
         .prepare(
@@ -654,17 +684,31 @@ export async function updatePlanTree(
       );
     });
   });
-  // The full tree is being replaced: every old day_template_id is deleted
-  // (rebuilt days get fresh UUIDs), so any existing schedule entry is now
-  // dangling. Scrub the schedule (all entries → null) and carry it forward
-  // into whatever meta the caller supplied — never lose the schedule key.
-  // Same batch ⇒ shares the single version bump.
+  // The full tree is rebuilt with fresh day UUIDs. Re-point each schedule
+  // weekday at the NEW day whose name/label matches the OLD day it pointed
+  // at; weekdays whose day genuinely no longer exists (no matching new day)
+  // are cleared. Same batch ⇒ shares the single version bump. Never lose
+  // the schedule key.
   const baseMeta =
     input.meta === undefined
       ? parsePlanMeta(plan.meta)
       : parsePlanMeta(JSON.stringify(input.meta));
-  const scrubbedSchedule =
-    scrubSchedule(baseMeta.schedule, new Set<string>()) ?? baseMeta.schedule;
+  const remappedWeek = { ...baseMeta.schedule.week };
+  for (const wd of WEEKDAYS) {
+    const oldId = remappedWeek[wd];
+    if (oldId == null) continue;
+    const old = oldById.get(oldId);
+    let newId: string | undefined;
+    if (old) {
+      if (old.day_label != null) newId = newIdByLabel.get(old.day_label.toLowerCase());
+      if (!newId) newId = newIdByName.get(old.name.toLowerCase());
+    }
+    remappedWeek[wd] = newId ?? null;
+  }
+  const remappedSchedule: WeeklySchedule = {
+    version: baseMeta.schedule.version,
+    week: remappedWeek,
+  };
   stmts.push(
     db
       .prepare(
@@ -673,7 +717,7 @@ export async function updatePlanTree(
       .bind(
         plan.id,
         input.name ?? plan.name,
-        serializePlanMeta(baseMeta, scrubbedSchedule),
+        serializePlanMeta(baseMeta, remappedSchedule),
         ts,
       ),
   );
@@ -1035,8 +1079,11 @@ export async function setPlanSchedule(
     resolved[wd] = id;
   }
   const meta = parsePlanMeta(plan.meta);
+  // schedule.version is a monotonic change counter for the schedule itself
+  // (distinct from plans.version): bump it on every successful write so
+  // clients can detect a schedule change without diffing the full week map.
   const schedule: WeeklySchedule = {
-    version: meta.schedule.version,
+    version: meta.schedule.version + 1,
     week: resolved,
   };
   const ts = now();

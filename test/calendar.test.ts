@@ -1,6 +1,7 @@
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  deleteDayTemplate,
   getProjectedCalendar,
   projectCalendar,
   setPlanSchedule,
@@ -293,5 +294,55 @@ describe('migration 0005 + schedule round-trip via real D1', () => {
     const m = Object.fromEntries(cal.map((c) => [c.date, c]));
     expect(m['2026-05-25']).toMatchObject({ status: 'planned', real: true, day_template_id: dPush });
     expect(m['2026-05-26']).toMatchObject({ status: 'skipped', real: true });
+  });
+
+  it('deleteDayTemplate scrubs the schedule entry and bumps version once', async () => {
+    const userId = await freshPlan('Delete Scrub Plan');
+    const planId = (
+      await env.DB.prepare("SELECT id FROM plans WHERE user_id=?1 AND status='active'")
+        .bind(userId)
+        .first<{ id: string }>()
+    )!.id;
+    const dLegs = crypto.randomUUID();
+    await env.DB.prepare(
+      "INSERT INTO day_templates (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,'Legs Day','L',0,NULL,0,0)",
+    )
+      .bind(dLegs, planId)
+      .run();
+
+    // Point Friday at the Legs day.
+    const set = await setPlanSchedule(env.DB, userId, { fri: 'Legs Day' });
+    expect('ok' in set && set.ok).toBe(true);
+    if ('ok' in set) expect(set.schedule.week.fri).toBe(dLegs);
+
+    const verBefore = (
+      await env.DB.prepare('SELECT version FROM plans WHERE id=?1')
+        .bind(planId)
+        .first<{ version: number }>()
+    )!.version;
+
+    // Delete the day the schedule points at.
+    const del = await deleteDayTemplate(env.DB, userId, dLegs);
+    expect('ok' in del && del.ok).toBe(true);
+
+    // Day row is gone.
+    const stillThere = await env.DB.prepare('SELECT id FROM day_templates WHERE id=?1')
+      .bind(dLegs)
+      .first();
+    expect(stillThere).toBeNull();
+
+    // Schedule entry for that weekday is scrubbed to null.
+    const planRow = await env.DB.prepare('SELECT meta, version FROM plans WHERE id=?1')
+      .bind(planId)
+      .first<{ meta: string; version: number }>();
+    expect(parsePlanMeta(planRow!.meta).schedule.week.fri).toBeNull();
+
+    // plans.version bumped exactly once by the delete.
+    expect(planRow!.version).toBe(verBefore + 1);
+
+    // Projection no longer projects that weekday (dangling → rest).
+    // 2026-05-22 is a Friday.
+    const cal = await getProjectedCalendar(env.DB, userId, '2026-05-22', '2026-05-22', '2026-05-20');
+    expect(cal[0]).toMatchObject({ status: 'rest', day_template_id: null });
   });
 });

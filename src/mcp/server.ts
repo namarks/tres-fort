@@ -278,7 +278,7 @@ const TOOLS: Record<string, Tool> = {
   },
   update_plan: {
     description:
-      'Replace the plan tree (days + exercises) transactionally. Pass expected_version for optimistic concurrency; a mismatch returns a conflict — refetch get_current_plan and reapply.',
+      'Replace the plan tree (days + exercises) transactionally. Pass expected_version for optimistic concurrency; a mismatch returns a conflict — refetch get_current_plan and reapply. Days are matched by day_label/name across the rebuild, so the weekly schedule follows surviving days; schedule entries for removed days are cleared.',
     inputSchema: obj(
       {
         name: { type: 'string' },

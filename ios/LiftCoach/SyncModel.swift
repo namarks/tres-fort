@@ -495,10 +495,25 @@ final class SyncModel: ObservableObject {
     /// scheduled-by-weekday fallback. No `selectedDay`/first-day fallback
     /// here (callers that need a guaranteed non-nil add their own). Shared
     /// by Today and the calendar's `dayLabel` so the inference is identical.
-    func sessionDisplayTemplate(forDateString ymd: String) -> DayTemplate? {
+    ///
+    /// `allowScheduleInference` (default `true`) gates ONLY the
+    /// schedule-by-weekday fallback (step 2). The session's own
+    /// `day_template_id` (step 1) is ALWAYS honoured. Pass `false` for
+    /// HISTORICAL dates: the *current* `meta.schedule` must not relabel a
+    /// past completed session (a schedule edit would otherwise rewrite its
+    /// A/B), so a null-`day_template_id` past session resolves to nil
+    /// (glyph-only, no possibly-wrong label) rather than today's mapping.
+    /// `true` is REQUIRED for today/future (the BLOCKER fix:
+    /// `todayResolvedDay` must still infer today's template) — the valid
+    /// inference window is exactly `ymd >= today`, the same civil-date
+    /// boundary `CalendarProjection.project` uses (`dateString < today`),
+    /// not a forked date rule. Callers pass `ymd >= todayString`.
+    func sessionDisplayTemplate(forDateString ymd: String,
+                                allowScheduleInference: Bool = true) -> DayTemplate? {
         if let day = dayTemplate(id: sessionsByDate[ymd]?.day_template_id) {
             return day
         }
+        guard allowScheduleInference else { return nil }
         return scheduledTemplate(forDateString: ymd)
     }
 

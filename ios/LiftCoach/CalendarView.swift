@@ -55,8 +55,20 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
     case .session:
         // Same session→schedule inference Today uses (shared helper, no
         // forked logic) so a completed/ad-hoc session with a null
-        // day_template_id on a scheduled day still shows its A/B.
-        return sync.sessionDisplayTemplate(forDateString: ymd)?.day_label
+        // day_template_id on a scheduled day still shows its A/B —
+        // but the schedule-INFERENCE fallback is valid ONLY for
+        // today/future. For a PAST date the *current* weekly schedule
+        // would relabel a finished session with today's weekday→template
+        // mapping after any schedule edit (wrong A/B on history), so we
+        // gate inference to `ymd >= today` — the SAME civil-date boundary
+        // CalendarProjection uses (`dateString < today`), no forked rule.
+        // Past + null day_template_id → nil (glyph-only, no wrong label);
+        // today (and future) still resolve via the schedule, preserving
+        // the prior BLOCKER fix (today's null-template session).
+        return sync.sessionDisplayTemplate(
+            forDateString: ymd,
+            allowScheduleInference: ymd >= sync.todayString
+        )?.day_label
     case .rest, .none:
         return nil
     }

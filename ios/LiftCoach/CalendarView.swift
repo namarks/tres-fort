@@ -48,15 +48,35 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
 
 /// The A/B (or other) day label for the workout that resolves on `ymd`,
 /// for the on-cell badge. nil when the day has no resolvable template.
-@MainActor private func dayLabel(_ sync: SyncModel, _ ymd: String) -> String? {
-    switch sync.projection(for: ymd) {
+/// `today` is supplied by the caller (`dayCell` captures `sync.todayString`
+/// ONCE for the whole cell). It feeds BOTH the projection's past/future
+/// split AND the `allowScheduleInference` gate below. `sync.todayString`
+/// is a computed var (fresh `Date()` each access); the cell's projection
+/// ring, today-highlight ring, and this label MUST agree, so they all run
+/// off the one captured clock — no read can straddle midnight against
+/// another within a single `dayCell` render.
+@MainActor private func dayLabel(_ sync: SyncModel, _ ymd: String,
+                                 today: String) -> String? {
+    switch sync.projection(for: ymd, today: today) {
     case .projected(let tid):
         return sync.dayTemplate(id: tid)?.day_label
     case .session:
         // Same session→schedule inference Today uses (shared helper, no
         // forked logic) so a completed/ad-hoc session with a null
-        // day_template_id on a scheduled day still shows its A/B.
-        return sync.sessionDisplayTemplate(forDateString: ymd)?.day_label
+        // day_template_id on a scheduled day still shows its A/B —
+        // but the schedule-INFERENCE fallback is valid ONLY for
+        // today/future. For a PAST date the *current* weekly schedule
+        // would relabel a finished session with today's weekday→template
+        // mapping after any schedule edit (wrong A/B on history), so we
+        // gate inference to `ymd >= today` — the SAME civil-date boundary
+        // CalendarProjection uses (`dateString < today`), no forked rule.
+        // Past + null day_template_id → nil (glyph-only, no wrong label);
+        // today (and future) still resolve via the schedule, preserving
+        // the prior BLOCKER fix (today's null-template session).
+        return sync.sessionDisplayTemplate(
+            forDateString: ymd,
+            allowScheduleInference: ymd >= today
+        )?.day_label
     case .rest, .none:
         return nil
     }
@@ -205,12 +225,21 @@ struct CalendarView: View {
 
     @ViewBuilder private func dayCell(_ date: Date) -> some View {
         let ymd = CalendarProjection.dateString(date)
-        let proj = sync.projection(for: ymd)
+        // Single-clock: `sync.todayString` is a computed var (fresh
+        // `Date()` each access). The cell's projection ring (past/future
+        // split), the today-highlight ring (`isToday`), and the A/B label
+        // gate must all agree; reading the clock 3× (proj convenience
+        // overload + `isToday` + inside `dayLabel`) could straddle
+        // midnight so e.g. `proj` resolves `ymd` as a future projected
+        // workout while `isToday` is false. Capture ONCE, thread to all
+        // three.
+        let today = sync.todayString
+        let proj = sync.projection(for: ymd, today: today)
         let st = style(for: proj.kind)
         let isWorkout = st?.isWorkout ?? false
-        let isToday = ymd == sync.todayString
+        let isToday = ymd == today
         let dayNum = cal.component(.day, from: date)
-        let label = isWorkout ? dayLabel(sync, ymd) : nil
+        let label = isWorkout ? dayLabel(sync, ymd, today: today) : nil
         // Read-only ride overlay: distinct from the lift states.
         let hasRide = !sync.rides(on: ymd).isEmpty
         let conflict = sync.rideConflict(for: ymd)   // .none on non-lift days

@@ -33,13 +33,19 @@ struct DayAgendaView: View {
     }
 
     var body: some View {
-        let proj = sync.projection(for: dateString)
+        // Capture today ONCE for the whole render: it feeds the
+        // projection's past/future split AND the FIX6 inference gate in
+        // `plannedDisplayDay`. `sync.todayString` is a computed var (fresh
+        // `Date()` each access); separate reads across one agenda render
+        // could straddle midnight and disagree. One read, one clock.
+        let today = sync.todayString
+        let proj = sync.projection(for: dateString, today: today)
         ZStack {
             Theme.bg.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    header(proj)
-                    content(proj)
+                    header(proj, today: today)
+                    content(proj, today: today)
                     ridesSection
                 }
                 .padding(22)
@@ -51,18 +57,18 @@ struct DayAgendaView: View {
 
     // MARK: header
 
-    private func header(_ proj: DayProjection) -> some View {
+    private func header(_ proj: DayProjection, today: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(prettyDate)
                 .font(Theme.mono(11, .bold)).tracking(2)
                 .foregroundStyle(Theme.muted)
-            Text(title(proj))
+            Text(title(proj, today: today))
                 .font(Theme.display(34))
                 .foregroundStyle(Theme.text)
         }
     }
 
-    private func title(_ proj: DayProjection) -> String {
+    private func title(_ proj: DayProjection, today: String) -> String {
         switch proj {
         case .session(let s):
             switch s {
@@ -70,7 +76,7 @@ struct DayAgendaView: View {
             case "in_progress": return "IN PROGRESS"
             // Planned + projected collapse to one user-facing "WORKOUT"
             // (no "Planned"/"Projected" wording); prefer the template name.
-            case "planned":     return planTitle ?? "WORKOUT"
+            case "planned":     return planTitle(today: today) ?? "WORKOUT"
             case "skipped":     return "SKIPPED"
             default:            return s.uppercased()
             }
@@ -81,9 +87,33 @@ struct DayAgendaView: View {
         }
     }
 
-    /// Template title for a real session via its day_template_id.
-    private var planTitle: String? {
-        sync.dayTemplate(id: realSession?.day_template_id)?.title.uppercased()
+    /// The day template to DISPLAY for a real (planned) session on this
+    /// date — the SAME shared session→schedule resolver Today / the
+    /// calendar / `nextWorkout` use (FIX5's class), not a bare
+    /// `day_template_id` read. When the session's own `day_template_id`
+    /// is null (server drops it for an existing same-date row) this still
+    /// recovers the template via the weekly schedule.
+    ///
+    /// The schedule-inference fallback is gated EXACTLY as FIX6 gates it
+    /// in `CalendarView.dayLabel`: `dateString >= today` — the same
+    /// civil-date boundary `CalendarProjection.project` uses
+    /// (`dateString < today`). For a PAST date with a null
+    /// `day_template_id` this returns nil (no schedule-inferred relabel —
+    /// don't reintroduce the FIX6 class in the agenda); for today/future
+    /// the gate is true so a planned session resolves its template.
+    /// `today` is supplied by the caller (captured ONCE per render in
+    /// `body`, midnight-TOCTOU discipline) — title + content body share
+    /// that single value rather than re-reading the computed clock.
+    private func plannedDisplayDay(today: String) -> DayTemplate? {
+        sync.sessionDisplayTemplate(
+            forDateString: dateString,
+            allowScheduleInference: dateString >= today)
+    }
+
+    /// Template title for a real planned session (via the shared,
+    /// FIX6-gated resolver above — not a bare `day_template_id`).
+    private func planTitle(today: String) -> String? {
+        plannedDisplayDay(today: today)?.title.uppercased()
     }
 
     private var realSession: SessionRow? {
@@ -92,7 +122,7 @@ struct DayAgendaView: View {
 
     // MARK: content
 
-    @ViewBuilder private func content(_ proj: DayProjection) -> some View {
+    @ViewBuilder private func content(_ proj: DayProjection, today: String) -> some View {
         switch proj {
         case .session(let status):
             if status == "completed" || status == "in_progress" {
@@ -101,7 +131,12 @@ struct DayAgendaView: View {
                 note("This workout was skipped.")
             } else {
                 // planned real session → show its template targets.
-                if let day = sync.dayTemplate(id: realSession?.day_template_id) {
+                // Shared FIX6-gated resolver (not a bare day_template_id):
+                // recovers the template via the weekly schedule when the
+                // session's own id is null, for today/future only. Past
+                // planned w/ null id stays the graceful no-template note
+                // (no schedule-inferred relabel — FIX6 class preserved).
+                if let day = plannedDisplayDay(today: today) {
                     templateTargets(day)
                 } else {
                     note("Workout — no template details cached.")
@@ -213,61 +248,114 @@ struct DayAgendaView: View {
 
     @ViewBuilder private var ridesSection: some View {
         let dayRides = sync.rides(on: dateString)   // already non-deleted
-        if !dayRides.isEmpty {
-            let conflict = sync.rideConflict(for: dateString)
+        let conflict = sync.rideConflict(for: dateString)
+        // Render whenever there ARE same-day rides OR a conflict exists.
+        // `.heavyNextDay` is the day BEFORE a hard ride, so `dayRides` is
+        // empty BY DEFINITION (the ride is the next day) — the old
+        // `!dayRides.isEmpty` guard silently hid the warning even though
+        // the calendar cell shows a conflict badge. Now the explanation
+        // always renders when `conflict != .none`.
+        if !dayRides.isEmpty || conflict != .none {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Image(systemName: "bicycle")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(Theme.muted)
-                    Text("PLANNED RIDES")
-                        .font(Theme.mono(11, .bold)).tracking(2)
-                        .foregroundStyle(Theme.muted)
-                }
-
-                ForEach(dayRides) { ride in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(ride.displayTitle.uppercased())
-                            .font(Theme.display(20))
-                            .foregroundStyle(Theme.text)
-
-                        // Duration · TSS · IF — only the parts we have.
-                        let stats = rideStats(ride)
-                        if !stats.isEmpty {
-                            Text(stats)
-                                .font(Theme.mono(13, .bold))
-                                .foregroundStyle(Theme.accent)
-                        }
-
-                        if let d = ride.description, !d.isEmpty {
-                            Text(d)
-                                .font(Theme.mono(11))
-                                .foregroundStyle(Theme.dim)
-                        }
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                }
-
-                // Static, read-only conflict line (NO action / button).
-                if conflict != .none {
+                if !dayRides.isEmpty {
                     HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(Theme.accent)
-                        Text("Conflicts with a planned ride — ask Claude to adjust")
-                            .font(Theme.mono(12, .bold))
-                            .foregroundStyle(Theme.accent)
+                        Image(systemName: "bicycle")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Theme.muted)
+                        Text("PLANNED RIDES")
+                            .font(Theme.mono(11, .bold)).tracking(2)
+                            .foregroundStyle(Theme.muted)
+                    }
+
+                    ForEach(dayRides) { ride in
+                        rideCard(ride)
+                    }
+                }
+
+                conflictMessage(conflict)
+            }
+        }
+    }
+
+    /// A single ride's title + stats + description card.
+    private func rideCard(_ ride: ExternalEvent) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(ride.displayTitle.uppercased())
+                .font(Theme.display(20))
+                .foregroundStyle(Theme.text)
+
+            // Duration · TSS · IF — only the parts we have.
+            let stats = rideStats(ride)
+            if !stats.isEmpty {
+                Text(stats)
+                    .font(Theme.mono(13, .bold))
+                    .foregroundStyle(Theme.accent)
+            }
+
+            if let d = ride.description, !d.isEmpty {
+                Text(d)
+                    .font(Theme.mono(11))
+                    .foregroundStyle(Theme.dim)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// The hard ride on the NEXT calendar day that triggered a
+    /// `.heavyNextDay` conflict, if it can still be found. Uses the SAME
+    /// frozen civil-date rule + hard-thresholds as `RideConflict` (no
+    /// forked logic) so this names exactly the event the conflict rule
+    /// fired on. nil ⇒ render graceful text, never crash.
+    private var nextDayHardRide: ExternalEvent? {
+        guard let next = RideConflict.nextDateString(after: dateString) else { return nil }
+        return sync.rides(on: next).first(where: RideConflict.isHard)
+    }
+
+    /// Static, read-only conflict explanation (NO action / button —
+    /// adjustments happen in the Claude app, mirroring no-in-app-chat).
+    /// `.clash` (same-day) keeps the original single line; `.heavyNextDay`
+    /// adds the triggering next-day hard ride's context (named, with
+    /// duration/TSS when available, graceful when it can't be found).
+    @ViewBuilder private func conflictMessage(_ conflict: RideConflict.Severity) -> some View {
+        if conflict != .none {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Theme.accent)
+                    Text(conflict == .heavyNextDay
+                         ? "Hard ride the next day — ask Claude to adjust"
+                         : "Conflicts with a planned ride — ask Claude to adjust")
+                        .font(Theme.mono(12, .bold))
+                        .foregroundStyle(Theme.accent)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                // Next-day hard ride context (only for .heavyNextDay).
+                if conflict == .heavyNextDay {
+                    if let ride = nextDayHardRide {
+                        let stats = rideStats(ride)
+                        Text(stats.isEmpty
+                             ? "Tomorrow: \(ride.displayTitle)"
+                             : "Tomorrow: \(ride.displayTitle) — \(stats)")
+                            .font(Theme.mono(11, .bold))
+                            .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("A hard ride is planned for the next day.")
+                            .font(Theme.mono(11, .bold))
+                            .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
-                    .background(Theme.accent.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(Theme.accent.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
 

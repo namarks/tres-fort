@@ -97,7 +97,37 @@ No secrets are committed; they live only as Cloudflare Worker secrets.
 
 ## Connect Claude to the MCP server
 
-**Claude Code (static bearer):**
+This is what makes Claude your coach. Pick the path for how you use Claude.
+The two credentials below are **Cloudflare Worker secrets you set during
+deploy** (`MCP_STATIC_TOKEN`, `OWNER_AUTH_PASSPHRASE`) — keep them in a
+password manager; they are never stored in this repo.
+
+### Option A — Claude desktop / claude.ai / Claude mobile (OAuth)
+
+Custom connectors are added on **claude.ai (web) or the Claude desktop
+app**. Once added they're tied to your account and usable from the **Claude
+mobile app** too. Requires a paid Claude plan (Pro/Max); custom connectors
+aren't on the free tier.
+
+1. **Settings → Connectors → Add custom connector.**
+2. **Name:** anything (e.g. `Lift Coach`).
+3. **URL:** `https://<your-worker>.workers.dev/mcp`
+4. **Leave the Advanced fields (OAuth Client ID / Secret) blank** — the
+   server supports Dynamic Client Registration (RFC 7591), so Claude
+   registers itself automatically. Click **Add**.
+5. Claude discovers the OAuth endpoints and opens a **consent screen**
+   titled "Connect lift-coach" with an **Owner passphrase** field.
+6. Enter your `OWNER_AUTH_PASSPHRASE` → **Authorize**. The connector now
+   shows as **Connected** (single-user gate — only someone with the
+   passphrase can ever link a client).
+7. In a new chat, make sure the connector is enabled, and ask
+   *"what's my current plan?"* — it should call `get_current_plan` and
+   read your live database.
+
+> The OAuth flow uses PKCE + refresh tokens, all served by the Worker
+> itself (no third-party auth provider). Tokens are stored in your D1.
+
+### Option B — Claude Code (static bearer)
 
 ```bash
 claude mcp add --transport http --scope user lift-coach \
@@ -105,13 +135,23 @@ claude mcp add --transport http --scope user lift-coach \
   --header "Authorization: Bearer <MCP_STATIC_TOKEN>"
 ```
 
-**Claude desktop / claude.ai:** add a custom connector pointing at
-`https://<your-worker>.workers.dev/mcp`; it auto-discovers OAuth — enter the
-owner passphrase once on the consent screen.
+Restart Claude Code, then in a fresh session ask *"what's my plan?"*.
 
-Then, in any chat: *"build me an upper/lower plan"*, *"swap RDL for good
-mornings Wednesday"*, *"I'm beat today, drop the volume"*, *"how's bench
-trending?"*.
+### Cost
+
+Talking to Claude with this connector is **normal Claude usage on your
+subscription plan** — MCP tool calls are just tool-use inside a chat. The
+backend contains **no AI** (the Worker is pure data), so the pay-per-token
+Anthropic API is never involved. Cloudflare Workers + D1 stay within the
+free tier at single-user scale.
+
+### Using it
+
+Once connected, in any chat: *"build me a 4-day upper/lower, double
+progression on the main lifts"*, *"swap RDL for good mornings Wednesday"*,
+*"add a deadlift day"*, *"I'm beat today, drop the volume"*, *"how's bench
+trending?"*. Claude reads/writes your plan and history live via the tools;
+you execute and log in the iOS app. Both sides share one database.
 
 ## iOS: build
 

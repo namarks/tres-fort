@@ -17,6 +17,8 @@ struct MainTabView: View {
                 .tabItem {
                     Label("Today", systemImage: "figure.strengthtraining.traditional")
                 }
+            CalendarView(sync: sync)
+                .tabItem { Label("Calendar", systemImage: "calendar") }
             HistoryView(sync: sync)
                 .tabItem { Label("History", systemImage: "chart.xyaxis.line") }
         }

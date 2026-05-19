@@ -213,61 +213,114 @@ struct DayAgendaView: View {
 
     @ViewBuilder private var ridesSection: some View {
         let dayRides = sync.rides(on: dateString)   // already non-deleted
-        if !dayRides.isEmpty {
-            let conflict = sync.rideConflict(for: dateString)
+        let conflict = sync.rideConflict(for: dateString)
+        // Render whenever there ARE same-day rides OR a conflict exists.
+        // `.heavyNextDay` is the day BEFORE a hard ride, so `dayRides` is
+        // empty BY DEFINITION (the ride is the next day) — the old
+        // `!dayRides.isEmpty` guard silently hid the warning even though
+        // the calendar cell shows a conflict badge. Now the explanation
+        // always renders when `conflict != .none`.
+        if !dayRides.isEmpty || conflict != .none {
             VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Image(systemName: "bicycle")
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(Theme.muted)
-                    Text("PLANNED RIDES")
-                        .font(Theme.mono(11, .bold)).tracking(2)
-                        .foregroundStyle(Theme.muted)
-                }
-
-                ForEach(dayRides) { ride in
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(ride.displayTitle.uppercased())
-                            .font(Theme.display(20))
-                            .foregroundStyle(Theme.text)
-
-                        // Duration · TSS · IF — only the parts we have.
-                        let stats = rideStats(ride)
-                        if !stats.isEmpty {
-                            Text(stats)
-                                .font(Theme.mono(13, .bold))
-                                .foregroundStyle(Theme.accent)
-                        }
-
-                        if let d = ride.description, !d.isEmpty {
-                            Text(d)
-                                .font(Theme.mono(11))
-                                .foregroundStyle(Theme.dim)
-                        }
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                }
-
-                // Static, read-only conflict line (NO action / button).
-                if conflict != .none {
+                if !dayRides.isEmpty {
                     HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 12, weight: .bold))
-                            .foregroundStyle(Theme.accent)
-                        Text("Conflicts with a planned ride — ask Claude to adjust")
-                            .font(Theme.mono(12, .bold))
-                            .foregroundStyle(Theme.accent)
+                        Image(systemName: "bicycle")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Theme.muted)
+                        Text("PLANNED RIDES")
+                            .font(Theme.mono(11, .bold)).tracking(2)
+                            .foregroundStyle(Theme.muted)
+                    }
+
+                    ForEach(dayRides) { ride in
+                        rideCard(ride)
+                    }
+                }
+
+                conflictMessage(conflict)
+            }
+        }
+    }
+
+    /// A single ride's title + stats + description card.
+    private func rideCard(_ ride: ExternalEvent) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(ride.displayTitle.uppercased())
+                .font(Theme.display(20))
+                .foregroundStyle(Theme.text)
+
+            // Duration · TSS · IF — only the parts we have.
+            let stats = rideStats(ride)
+            if !stats.isEmpty {
+                Text(stats)
+                    .font(Theme.mono(13, .bold))
+                    .foregroundStyle(Theme.accent)
+            }
+
+            if let d = ride.description, !d.isEmpty {
+                Text(d)
+                    .font(Theme.mono(11))
+                    .foregroundStyle(Theme.dim)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// The hard ride on the NEXT calendar day that triggered a
+    /// `.heavyNextDay` conflict, if it can still be found. Uses the SAME
+    /// frozen civil-date rule + hard-thresholds as `RideConflict` (no
+    /// forked logic) so this names exactly the event the conflict rule
+    /// fired on. nil ⇒ render graceful text, never crash.
+    private var nextDayHardRide: ExternalEvent? {
+        guard let next = RideConflict.nextDateString(after: dateString) else { return nil }
+        return sync.rides(on: next).first(where: RideConflict.isHard)
+    }
+
+    /// Static, read-only conflict explanation (NO action / button —
+    /// adjustments happen in the Claude app, mirroring no-in-app-chat).
+    /// `.clash` (same-day) keeps the original single line; `.heavyNextDay`
+    /// adds the triggering next-day hard ride's context (named, with
+    /// duration/TSS when available, graceful when it can't be found).
+    @ViewBuilder private func conflictMessage(_ conflict: RideConflict.Severity) -> some View {
+        if conflict != .none {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Theme.accent)
+                    Text(conflict == .heavyNextDay
+                         ? "Hard ride the next day — ask Claude to adjust"
+                         : "Conflicts with a planned ride — ask Claude to adjust")
+                        .font(Theme.mono(12, .bold))
+                        .foregroundStyle(Theme.accent)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                // Next-day hard ride context (only for .heavyNextDay).
+                if conflict == .heavyNextDay {
+                    if let ride = nextDayHardRide {
+                        let stats = rideStats(ride)
+                        Text(stats.isEmpty
+                             ? "Tomorrow: \(ride.displayTitle)"
+                             : "Tomorrow: \(ride.displayTitle) — \(stats)")
+                            .font(Theme.mono(11, .bold))
+                            .foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("A hard ride is planned for the next day.")
+                            .font(Theme.mono(11, .bold))
+                            .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(14)
-                    .background(Theme.accent.opacity(0.12))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(Theme.accent.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
         }
     }
 

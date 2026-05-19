@@ -221,6 +221,127 @@ describe('sessions, idempotent set logging, history, volume', () => {
   });
 });
 
+// FIX2 class-completion: the REST PATCH /api/sessions/:id entry point must
+// reject a `skipped` patch on a started/finished session, exactly like the
+// MCP skipPlannedSession guard — otherwise iOS could bury logged history.
+describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished history', () => {
+  async function freshSession(H: Record<string, string>): Promise<string> {
+    await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Skip Guard Plan' }),
+    });
+    const s = await (
+      await SELF.fetch(`${BASE}/api/sessions`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ date: '2026-07-01' }),
+      })
+    ).json<{ id: string }>();
+    return s.id;
+  }
+
+  it('REJECTS skipped on a completed session (409); row + logged sets intact', async () => {
+    const H = auth(await devJwt());
+    const id = await freshSession(H);
+
+    // Log a set, then complete the session — this is the history to protect.
+    const setId = crypto.randomUUID();
+    await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ id: setId, exercise_id: 'ex_bench', set_index: 1, weight: 225, reps: 5, rpe: 8 }),
+    });
+    const comp = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    expect(comp.status).toBe(200);
+
+    const rej = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'skipped' }),
+    });
+    expect(rej.status).toBe(409);
+    expect(await rej.json()).toEqual({ error: 'session_already_started', status: 'completed' });
+
+    // Session row still completed; the logged set is untouched.
+    const row = await env.DB.prepare('SELECT status FROM sessions WHERE id=?1')
+      .bind(id)
+      .first<{ status: string }>();
+    expect(row!.status).toBe('completed');
+    const set = await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?1')
+      .bind(setId)
+      .first<{ deleted_at: number | null }>();
+    expect(set!.deleted_at).toBeNull();
+  });
+
+  it('REJECTS skipped on an in_progress session (409); row untouched', async () => {
+    const H = auth(await devJwt());
+    const id = await freshSession(H);
+    const start = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'in_progress' }),
+    });
+    expect(start.status).toBe(200);
+
+    const rej = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'skipped' }),
+    });
+    expect(rej.status).toBe(409);
+    expect(await rej.json()).toEqual({ error: 'session_already_started', status: 'in_progress' });
+    const row = await env.DB.prepare('SELECT status FROM sessions WHERE id=?1')
+      .bind(id)
+      .first<{ status: string }>();
+    expect(row!.status).toBe('in_progress');
+  });
+
+  it('ALLOWS skipped on a planned session (unchanged behavior)', async () => {
+    const H = auth(await devJwt());
+    const id = await freshSession(H); // freshly created => status 'planned'
+    const r = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'skipped' }),
+    });
+    expect(r.status).toBe(200);
+    expect(await r.json<{ status: string }>()).toMatchObject({ status: 'skipped' });
+  });
+
+  it('non-skipped status patch and field-only patch on a completed session are unchanged', async () => {
+    const H = auth(await devJwt());
+    const id = await freshSession(H);
+
+    // planned -> completed (non-skipped transition): allowed as before.
+    const toCompleted = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    expect(toCompleted.status).toBe(200);
+    expect(await toCompleted.json<{ status: string }>()).toMatchObject({ status: 'completed' });
+
+    // field-only patch (no status) on a completed session: allowed, status
+    // preserved — the guard only fires for an explicit skipped patch.
+    const fieldOnly = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ perceived_fatigue: 7, notes: 'cooked' }),
+    });
+    expect(fieldOnly.status).toBe(200);
+    expect(await fieldOnly.json<{ status: string; perceived_fatigue: number; notes: string }>()).toMatchObject({
+      status: 'completed',
+      perceived_fatigue: 7,
+      notes: 'cooked',
+    });
+  });
+});
+
 describe('/api/state carries the weekly schedule, gated on version', () => {
   it('schedule appears when plans.version advanced, and not otherwise', async () => {
     const jwt = await devJwt();

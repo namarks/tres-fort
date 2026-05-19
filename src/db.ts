@@ -335,12 +335,32 @@ export async function patchSession(
   userId: string,
   sessionId: string,
   patch: { status?: string; perceived_fatigue?: number; notes?: string },
-): Promise<SessionRow | null> {
+): Promise<
+  | SessionRow
+  | null
+  | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
+> {
   const s = await db
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
     .bind(sessionId, userId)
     .first<SessionRow>();
   if (!s) return null;
+  // History-integrity guard (REST sibling of FIX2's skipPlannedSession
+  // guard): a `skipped` patch must not bury a started/finished workout.
+  // Setting an in_progress/completed session to 'skipped' would render it
+  // skipped on the calendar/agenda and hide its logged set_logs. Reject
+  // and leave the row + its sets untouched — same rejection shape as
+  // skipPlannedSession. Other status transitions and non-status patches
+  // are unchanged.
+  if (
+    patch.status === 'skipped' &&
+    (s.status === 'in_progress' || s.status === 'completed')
+  ) {
+    return {
+      error: 'session_already_started',
+      status: s.status as 'in_progress' | 'completed',
+    };
+  }
   const status = patch.status ?? s.status;
   const fatigue = patch.perceived_fatigue ?? s.perceived_fatigue;
   const notes = patch.notes ?? s.notes;
@@ -907,11 +927,15 @@ export async function logWorkoutComplete(
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
   const session = await getOrCreateSession(db, userId, plan.id, date, null);
-  return patchSession(db, userId, session.id, {
+  const r = await patchSession(db, userId, session.id, {
     status: 'completed',
     perceived_fatigue: perceivedFatigue ?? undefined,
     notes: notes ?? undefined,
   });
+  // status:'completed' never triggers the skipped-burial guard, so the
+  // rejection variant is unreachable here; narrow it out for callers.
+  if (r && 'error' in r) return null;
+  return r;
 }
 
 // ---- one-way lifting-load export to intervals.icu (Option C) ------------

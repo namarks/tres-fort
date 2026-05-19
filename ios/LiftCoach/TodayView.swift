@@ -123,8 +123,13 @@ struct TodayView: View {
 // MARK: - Rest day (schedule-driven)
 
 /// Shown when today's projection resolves to rest (or a skipped session).
-/// No primary START WORKOUT CTA; surfaces the next upcoming workout found
-/// by forward-scanning the SAME projection, plus the demoted override.
+/// Surfaces the next upcoming workout found by forward-scanning the SAME
+/// projection, plus a **primary "Start a workout" CTA** that opens the
+/// override picker. The CTA matters because a rest-day projection can also
+/// follow a discard (vanish to schedule) on a day that isn't scheduled —
+/// without an obvious restart, the day looks stranded. Pair to the
+/// finished-view's demoted `OverrideButton`, which stays demoted there
+/// (the workout is done — "different day" is intentionally low-priority).
 private struct RestDayView: View {
     @ObservedObject var sync: SyncModel
     let onOverride: () -> Void
@@ -160,8 +165,13 @@ private struct RestDayView: View {
             }
             .refreshable { await sync.load() }
 
-            // Demoted, non-primary override affordance.
-            OverrideButton(onOverride: onOverride).padding(16)
+            // Primary CTA: ensures a rest day (recurring rest OR post-
+            // discard fall-through) is never stranded — one tap to pick a
+            // template and start. Same picker the workout-day "different
+            // day" override uses (`onOverride` → showOverridePicker).
+            StartWorkoutCTA(onOverride: onOverride)
+                .padding(16)
+                .disabled(sync.plan?.days.isEmpty ?? true)
         }
     }
 }
@@ -389,6 +399,26 @@ private struct TodayWorkoutView: View {
 
 /// Demoted, secondary affordance — never the primary CTA. Opens the
 /// day/template override picker.
+/// Primary "Start a workout" CTA used on RestDayView. Same visual weight
+/// as the schedule-day "START WORKOUT" button (Theme.accent fill, display
+/// font, glow), but opens the day picker rather than auto-starting today's
+/// resolved template — a rest day has no resolved template, so the user
+/// chooses which day (A/B) to run. The picker itself is the existing
+/// `showOverridePicker` confirmationDialog on TodayView.
+private struct StartWorkoutCTA: View {
+    let onOverride: () -> Void
+    var body: some View {
+        Button(action: onOverride) {
+            Text("START A WORKOUT")
+                .font(Theme.display(26)).tracking(1.5)
+                .frame(maxWidth: .infinity).padding(.vertical, 18)
+        }
+        .background(Theme.accent).foregroundStyle(.black)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
+    }
+}
+
 private struct OverrideButton: View {
     let onOverride: () -> Void
     var body: some View {

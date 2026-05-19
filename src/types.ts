@@ -65,6 +65,10 @@ export interface TemplateExerciseRow {
   target_rpe: number | null;
   rest_seconds: number;
   target_weight: number | null;
+  /** Planned hold/duration in seconds for timed slots (planks, Cat-Cow,
+   *  etc.). NULL → conventional weight-and-reps slot. Mirror of
+   *  set_logs.duration_s (the *logged* counterpart). Added in 0010. */
+  target_duration_s: number | null;
   progression: string | null;
   cues: string | null;
   created_at: number;

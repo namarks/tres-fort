@@ -84,6 +84,7 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
     target_rpe?: number | null;
     rest_seconds?: number;
     target_weight?: number | null;
+    target_duration_s?: number | null;
     progression?: unknown;
     cues?: string | null;
   }>();
@@ -104,6 +105,7 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
     target_rpe: b.target_rpe ?? null,
     rest_seconds: b.rest_seconds ?? 120,
     target_weight: b.target_weight ?? null,
+    target_duration_s: b.target_duration_s ?? null,
     progression: b.progression == null ? null : JSON.stringify(b.progression),
     cues: b.cues ?? null,
   });

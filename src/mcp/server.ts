@@ -477,6 +477,7 @@ const TOOLS: Record<string, Tool> = {
         target_rpe: { type: 'number' },
         rest_seconds: { type: 'integer' },
         target_weight: { type: 'number' },
+        target_duration_s: { type: 'integer', description: 'Planned hold seconds for timed exercises (planks, holds); leave unset for conventional reps slots.' },
         progression: { type: 'object' },
         order_index: { type: 'integer' },
       },
@@ -511,6 +512,8 @@ const TOOLS: Record<string, Tool> = {
         target_rpe: a.target_rpe == null ? null : Number(a.target_rpe),
         rest_seconds: typeof a.rest_seconds === 'number' ? a.rest_seconds : 120,
         target_weight: a.target_weight == null ? null : Number(a.target_weight),
+        target_duration_s:
+          a.target_duration_s == null ? null : Number(a.target_duration_s),
         progression: a.progression == null ? null : JSON.stringify(a.progression),
         cues: null,
       });

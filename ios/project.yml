@@ -30,6 +30,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: LiftCoach/LiftCoach.entitlements
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_PREVIEWS: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       # Automatic signing + the team above provisions Sign in with Apple.
 
   LiftCoachWidgets:

@@ -37,8 +37,14 @@ struct APIClient {
         try await get("api/exercises", jwt: jwt)
     }
 
-    func createSession(date: String, jwt: String) async throws -> SessionRow {
-        try await post("api/sessions", body: ["date": date], jwt: jwt)
+    /// `day_template_id` is an OPTIONAL field of the existing
+    /// `POST /api/sessions` contract (not a new endpoint) — passing it lets
+    /// the calendar/agenda resolve the one-off session as the right workout.
+    func createSession(date: String, dayTemplateID: String? = nil,
+                       jwt: String) async throws -> SessionRow {
+        var body: [String: Any] = ["date": date]
+        if let dayTemplateID { body["day_template_id"] = dayTemplateID }
+        return try await post("api/sessions", body: body, jwt: jwt)
     }
 
     /// Idempotent on `id` — safe to retry after a flaky gym connection.

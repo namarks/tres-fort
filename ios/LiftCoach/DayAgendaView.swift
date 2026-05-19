@@ -4,8 +4,10 @@ import SwiftUI
 // calendar day).
 //
 //   completed            → the actual logged sets, grouped by exercise.
-//   planned / projected  → the day-template name + its template_exercises
-//                           targets.
+//   workout              → the day-template name + its template_exercises
+//                           targets (the internal planned-vs-projected
+//                           CalendarProjection split collapses to one
+//                           user-facing "Workout" here — presentation only).
 //   skipped              → "Skipped".
 //   rest / nothing       → "Rest day".
 //
@@ -66,12 +68,14 @@ struct DayAgendaView: View {
             switch s {
             case "completed":   return "COMPLETED"
             case "in_progress": return "IN PROGRESS"
-            case "planned":     return planTitle ?? "PLANNED"
+            // Planned + projected collapse to one user-facing "WORKOUT"
+            // (no "Planned"/"Projected" wording); prefer the template name.
+            case "planned":     return planTitle ?? "WORKOUT"
             case "skipped":     return "SKIPPED"
             default:            return s.uppercased()
             }
         case .projected(let tid):
-            return sync.dayTemplate(id: tid)?.title.uppercased() ?? "PROJECTED"
+            return sync.dayTemplate(id: tid)?.title.uppercased() ?? "WORKOUT"
         case .rest:  return "REST DAY"
         case .none:  return "REST DAY"
         }
@@ -100,14 +104,14 @@ struct DayAgendaView: View {
                 if let day = sync.dayTemplate(id: realSession?.day_template_id) {
                     templateTargets(day)
                 } else {
-                    note("Planned — no template details cached.")
+                    note("Workout — no template details cached.")
                 }
             }
         case .projected(let tid):
             if let day = sync.dayTemplate(id: tid) {
                 templateTargets(day)
             } else {
-                note("Projected workout (template unavailable).")
+                note("Workout (template unavailable).")
             }
         case .rest, .none:
             note("Rest day — nothing scheduled.")

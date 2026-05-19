@@ -430,8 +430,14 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
     expect(row.status).toBe('pending');
     expect(row.load).toBeGreaterThan(0);
 
+    // Deterministic: select the SPECIFIC pending audit row by its result
+    // prefix, not "latest by created_at" — two audit rows for one session
+    // can share a Date.now() ms, making a bare created_at order pick the
+    // wrong row (~flake). created_at DESC, rowid DESC is a stable
+    // tie-breaker (rowid is monotonic on insert; id is a TEXT PK so an
+    // implicit rowid exists).
     const audit = await env.DB.prepare(
-      "SELECT * FROM audit_log WHERE tool='export_session_load' AND args LIKE ?1 ORDER BY created_at DESC",
+      "SELECT * FROM audit_log WHERE tool='export_session_load' AND args LIKE ?1 AND result LIKE 'pending%' ORDER BY created_at DESC, rowid DESC LIMIT 1",
     )
       .bind(`%${sessionId}%`)
       .first<any>();
@@ -881,8 +887,14 @@ describe('P2: post-completion load corrections propagate to intervals.icu', () =
     expect(row.load).toBe(loadY);
     expect(String(row.intervals_ref)).toBe(ref);
 
+    // Deterministic: target the specific reexport_load_changed row (the
+    // initial export also wrote an ok:ref=... row for this session; both
+    // can share a Date.now() ms). Filtering by the exact result + a
+    // rowid DESC tie-breaker removes the created_at-collision flake. Still
+    // revert-detecting: under the reverted early-return this row is never
+    // written, so .first() is null and audit!.result throws → test fails.
     const audit = await env.DB.prepare(
-      "SELECT result FROM audit_log WHERE tool='export_session_load' AND args LIKE ?1 ORDER BY created_at DESC LIMIT 1",
+      "SELECT result FROM audit_log WHERE tool='export_session_load' AND args LIKE ?1 AND result LIKE 'ok:%:reexport_load_changed' ORDER BY created_at DESC, rowid DESC LIMIT 1",
     )
       .bind(`%${sessionId}%`)
       .first<{ result: string }>();
@@ -977,8 +989,14 @@ describe('P2: post-completion load corrections propagate to intervals.icu', () =
     expect(row!.load).toBe(loadX);
     expect(String(row!.intervals_ref)).toBe(ref);
 
+    // Deterministic: target the specific reexport_update_failed row. The
+    // session has an earlier ok:ref=... row (initial export) that can
+    // collide on Date.now() ms; the exact-result filter + rowid DESC
+    // tie-breaker is collision-proof. Still revert-detecting: under the
+    // reverted early-return the PUT-failure path never runs, this row is
+    // never written, .first() is null and audit!.result throws → fails.
     const audit = await env.DB.prepare(
-      "SELECT result FROM audit_log WHERE tool='export_session_load' AND args LIKE ?1 ORDER BY created_at DESC LIMIT 1",
+      "SELECT result FROM audit_log WHERE tool='export_session_load' AND args LIKE ?1 AND result LIKE 'ok:reexport_update_failed:%' ORDER BY created_at DESC, rowid DESC LIMIT 1",
     )
       .bind(`%${sessionId}%`)
       .first<{ result: string }>();

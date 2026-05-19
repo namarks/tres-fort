@@ -16,26 +16,26 @@
 -- behind-the-neck, novelty/circus, band/ball/foam-only,
 -- kettlebell flows, stretching/cardio/plyo-only.
 --
--- ADDITIVE + IDEMPOTENT: INSERT OR IGNORE on the UUID-
--- stable PK. The original 12 ex_* rows are re-stated
--- BYTE-IDENTICAL to 0002 and OR IGNOREd, so 0002's rows
--- are never altered and re-running 0007 is a no-op.
--- created_at = 0 (epoch): seed rows are timeless.
+-- STRICTLY ADDITIVE + IDEMPOTENT. 0007 inserts ONLY the
+-- net-new exercises -- ids NOT already seeded by ANY earlier
+-- migration. It does NOT restate the original 12 (0002) nor
+-- the 5 timed core/hold exercises (0004: ex_plank,
+-- ex_side_plank, ex_hollow, ex_dead_hang, ex_wall_sit) --
+-- those rows are owned + frozen by their own migrations and
+-- keep their original definitions (e.g. plank stays
+-- modality='timed'/unit='sec'). Zero id overlap with
+-- 0002/0004. INSERT OR IGNORE on the UUID PK keeps re-runs
+-- a no-op. created_at = 0 (epoch): seed rows are timeless.
+--
+-- Plus ONE idempotent UPDATE: appends the conventional
+-- alias "dumbbell press" to the EXISTING 0002 row
+-- ex_db_press (Dumbbell Bench Press) so that phrase resolves
+-- to the bench press, not the new dumbbell shoulder press.
+-- Additive (alias-only mutation, no row add/delete) and
+-- idempotent (writes the identical literal each run).
 INSERT OR IGNORE INTO exercises
   (id, name, primary_muscle, secondary_muscles, modality, unit, aliases, created_at)
 VALUES
-  ('ex_back_squat', 'Back Squat', 'quads', '["glutes","core"]', 'barbell', 'lb', '["squat","back squat","bb squat"]', 0),
-  ('ex_front_squat', 'Front Squat', 'quads', '["glutes","core"]', 'barbell', 'lb', '["front squat"]', 0),
-  ('ex_deadlift', 'Conventional Deadlift', 'hamstrings', '["glutes","back"]', 'barbell', 'lb', '["deadlift","dl","conventional deadlift"]', 0),
-  ('ex_rdl', 'Romanian Deadlift', 'hamstrings', '["glutes","back"]', 'barbell', 'lb', '["rdl","romanian deadlift","romanian"]', 0),
-  ('ex_bench', 'Bench Press', 'chest', '["triceps","front delts"]', 'barbell', 'lb', '["bench","bench press","bp","flat bench"]', 0),
-  ('ex_incline_bench', 'Incline Bench Press', 'chest', '["triceps","front delts"]', 'barbell', 'lb', '["incline","incline bench"]', 0),
-  ('ex_ohp', 'Overhead Press', 'shoulders', '["triceps"]', 'barbell', 'lb', '["ohp","overhead press","press","military press"]', 0),
-  ('ex_barbell_row', 'Barbell Row', 'back', '["biceps","rear delts"]', 'barbell', 'lb', '["row","barbell row","bb row","pendlay row"]', 0),
-  ('ex_pullup', 'Pull-Up', 'back', '["biceps"]', 'bw', 'lb', '["pullup","pull-up","pull up","chin up"]', 0),
-  ('ex_db_press', 'Dumbbell Bench Press', 'chest', '["triceps","front delts"]', 'dumbbell', 'lb', '["db press","dumbbell bench","db bench"]', 0),
-  ('ex_lat_pulldown', 'Lat Pulldown', 'back', '["biceps"]', 'machine', 'lb', '["pulldown","lat pulldown"]', 0),
-  ('ex_leg_press', 'Leg Press', 'quads', '["glutes"]', 'machine', 'lb', '["leg press"]', 0),
   ('ex_goblet_squat', 'Goblet Squat', 'quads', '["calves", "glutes", "hamstrings", "shoulders"]', 'dumbbell', 'lb', '["goblet squat", "goblet"]', 0),
   ('ex_db_squat', 'Dumbbell Squat', 'quads', '["calves", "glutes", "hamstrings", "back"]', 'dumbbell', 'lb', '["dumbbell squat"]', 0),
   ('ex_hack_squat', 'Hack Squat', 'quads', '["calves", "glutes", "hamstrings"]', 'machine', 'lb', '["hack squat"]', 0),
@@ -103,7 +103,7 @@ VALUES
   ('ex_cable_shrug', 'Cable Shrug', 'traps', '[]', 'machine', 'lb', '["cable shrug"]', 0),
   ('ex_upright_row', 'Upright Row', 'shoulders', '["traps"]', 'barbell', 'lb', '["upright row", "barbell upright row"]', 0),
   ('ex_face_pull', 'Face Pull', 'shoulders', '["back"]', 'machine', 'lb', '["face pull", "face pulls"]', 0),
-  ('ex_db_ohp', 'Dumbbell Shoulder Press', 'shoulders', '["triceps"]', 'dumbbell', 'lb', '["dumbbell shoulder press", "db shoulder press", "db ohp", "dumbbell press"]', 0),
+  ('ex_db_ohp', 'Dumbbell Shoulder Press', 'shoulders', '["triceps"]', 'dumbbell', 'lb', '["dumbbell shoulder press", "db shoulder press", "db ohp"]', 0),
   ('ex_seated_db_press', 'Seated Dumbbell Press', 'shoulders', '["triceps"]', 'dumbbell', 'lb', '["seated dumbbell press", "seated db press"]', 0),
   ('ex_arnold_press', 'Arnold Press', 'shoulders', '["triceps"]', 'dumbbell', 'lb', '["arnold press", "arnold"]', 0),
   ('ex_push_press', 'Push Press', 'shoulders', '["quads", "triceps"]', 'barbell', 'lb', '["push press"]', 0),
@@ -137,8 +137,6 @@ VALUES
   ('ex_tricep_kickback', 'Triceps Kickback', 'triceps', '[]', 'dumbbell', 'lb', '["triceps kickback", "tricep kickback", "kickback"]', 0),
   ('ex_machine_tricep_ext', 'Machine Triceps Extension', 'triceps', '[]', 'machine', 'lb', '["machine triceps extension", "machine tricep extension"]', 0),
   ('ex_machine_dip', 'Machine Dip', 'triceps', '["chest", "shoulders"]', 'machine', 'lb', '["machine dip", "assisted dip"]', 0),
-  ('ex_plank', 'Plank', 'core', '[]', 'bw', 'lb', '["plank", "front plank"]', 0),
-  ('ex_side_plank', 'Side Plank', 'core', '["shoulders"]', 'bw', 'lb', '["side plank", "side bridge"]', 0),
   ('ex_hanging_leg_raise', 'Hanging Leg Raise', 'core', '[]', 'bw', 'lb', '["hanging leg raise", "hanging leg raises", "leg raise"]', 0),
   ('ex_cable_crunch', 'Cable Crunch', 'core', '[]', 'machine', 'lb', '["cable crunch", "cable crunches"]', 0),
   ('ex_crunch', 'Crunch', 'core', '[]', 'bw', 'lb', '["crunch", "crunches"]', 0),
@@ -152,3 +150,8 @@ VALUES
   ('ex_reverse_wrist_curl', 'Barbell Reverse Wrist Curl', 'forearms', '[]', 'barbell', 'lb', '["barbell reverse wrist curl", "reverse wrist curl", "wrist extension"]', 0),
   ('ex_ab_wheel', 'Ab Wheel Rollout', 'core', '["shoulders","back"]', 'bw', 'lb', '["ab wheel rollout", "ab wheel", "ab rollout", "ab roller"]', 0),
   ('ex_sissy_squat', 'Sissy Squat', 'quads', '[]', 'bw', 'lb', '["sissy squat"]', 0);
+
+-- Conventional-alias backfill for the existing 0002 row.
+-- Idempotent: sets the exact target literal regardless of
+-- current value, so re-running is a no-op.
+UPDATE exercises SET aliases = '["db press", "dumbbell bench", "db bench", "dumbbell press"]' WHERE id = 'ex_db_press';

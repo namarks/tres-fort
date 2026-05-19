@@ -274,7 +274,8 @@ struct CalendarView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
                     .stroke(isToday ? Theme.accent
-                            : (isWorkout ? st!.color.opacity(0.35) : Color.clear),
+                            : (isWorkout ? (st?.color ?? Theme.accent).opacity(0.35)
+                               : Color.clear),
                             lineWidth: isToday ? 1.5 : 1)
             )
             // Amber clash badge: a lift date that conflicts with a ride.

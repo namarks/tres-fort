@@ -126,15 +126,18 @@ private struct RestDayView: View {
                             Text("NEXT WORKOUT")
                                 .font(Theme.mono(11, .bold)).tracking(2)
                                 .foregroundStyle(Theme.muted)
-                            Text(next.day.title.uppercased())
+                            // `next.day` is nil when the resolved template
+                            // isn't cached — we still show the real next
+                            // date (never skip ahead), just without detail.
+                            Text((next.day?.title ?? "Workout scheduled").uppercased())
                                 .font(Theme.display(28))
                                 .foregroundStyle(Theme.text)
                                 .lineLimit(2).minimumScaleFactor(0.6)
                             Text(sync.relativeLabel(for: next.dateString).uppercased())
                                 .font(Theme.mono(13, .bold)).tracking(1)
                                 .foregroundStyle(Theme.accent)
-                            if !next.day.exercises.isEmpty {
-                                Text(next.day.exercises
+                            if let day = next.day, !day.exercises.isEmpty {
+                                Text(day.exercises
                                         .map(\.exercise_name)
                                         .joined(separator: " · "))
                                     .font(Theme.mono(11))

@@ -396,38 +396,79 @@ final class SyncModel: ObservableObject {
         projection(for: todayString)
     }
 
-    /// The day template that "today" resolves to, if today is a workout
-    /// (real planned session OR weekly-schedule projection). Resolved purely
-    /// through `todayProjection` so it can never diverge from the calendar.
-    var todayResolvedDay: DayTemplate? {
+    /// Does today resolve to a workout? Mirrors the projection's
+    /// real-session-wins semantics EXACTLY (same `todayProjection` /
+    /// `CalendarProjection` the calendar uses): a real NON-skipped session
+    /// (completed / in_progress / planned / other) is a workout day
+    /// REGARDLESS of whether its `day_template_id` is populated, OR a
+    /// weekly-schedule projection resolves a template. This is the
+    /// authority for the Today workout-vs-rest split — it never depends on
+    /// `day_template_id` being non-null (the BLOCKER root cause).
+    var todayIsWorkout: Bool {
         switch todayProjection {
-        case .projected(let tid):
-            return dayTemplate(id: tid)
-        case .session(let status):
-            // A real session for today: completed/in_progress/planned
-            // resolve to their cached template (skipped → no workout view).
-            guard status != "skipped" else { return nil }
-            return dayTemplate(id: sessionsByDate[todayString]?.day_template_id)
-        case .rest, .none:
-            return nil
+        case .projected:           return true
+        case .session(let s):      return s != "skipped"
+        case .rest, .none:         return false
         }
     }
 
-    /// Is today a pure rest day (no real session, no scheduled template)?
-    var todayIsRest: Bool {
+    /// Is today a pure rest day (no real session, no scheduled template) —
+    /// or a skipped session. The exact negation of `todayIsWorkout`.
+    var todayIsRest: Bool { !todayIsWorkout }
+
+    /// The day template to DISPLAY for today when it's a workout. Distinct
+    /// from `todayIsWorkout`: a real session can BE a workout while its
+    /// `day_template_id` is null (server-side `getOrCreateSession` ignores
+    /// the passed template id for an existing same-date row). Fallback
+    /// order so the workout still renders sensibly:
+    ///   1. the session's own `day_template_id` (if populated), else
+    ///   2. today's scheduled template (the SAME projection/schedule the
+    ///      calendar uses — derived from `meta.schedule`, no fork), else
+    ///   3. `selectedDay` (whatever the runner last targeted), else
+    ///   4. the first plan day.
+    /// Returns nil ONLY when today is genuinely not a workout.
+    var todayResolvedDay: DayTemplate? {
+        guard todayIsWorkout else { return nil }
         switch todayProjection {
-        case .rest, .none: return true
-        case .session(let s): return s == "skipped"
-        case .projected:     return false
+        case .projected(let tid):
+            // Schedule projection: the template id IS the schedule's.
+            return dayTemplate(id: tid) ?? selectedDay ?? plan?.days.first
+        case .session:
+            // Real non-skipped session. Prefer its own template; if null,
+            // fall back to today's scheduled template, then selected/first.
+            if let day = dayTemplate(id: sessionsByDate[todayString]?.day_template_id) {
+                return day
+            }
+            if let key = CalendarProjection.weekdayKey(forDateString: todayString),
+               let tid = plan?.schedule?.templateID(forWeekdayKey: key),
+               let day = dayTemplate(id: tid) {
+                return day
+            }
+            return selectedDay ?? plan?.days.first
+        case .rest, .none:
+            return nil   // unreachable (guarded by todayIsWorkout)
         }
+    }
+
+    /// Raw status of today's real session, if any (for the Today header /
+    /// CTA wording — e.g. "completed" vs "in_progress"). nil ⇒ no real
+    /// session today (pure schedule projection or rest).
+    var todaySessionStatus: String? {
+        if case .session(let s) = todayProjection { return s }
+        return nil
     }
 
     /// The next upcoming workout, found by forward-scanning the SAME
     /// projection used by the calendar (no second algorithm). Starts at
-    /// tomorrow, walks up to `maxDays` civil days, and returns the first
+    /// tomorrow, walks up to `maxDays` civil days, and returns the FIRST
     /// date whose resolved state is a workout (a weekly-schedule projection
     /// OR a real planned/in_progress session — `.skipped` does not count).
-    struct NextWorkout { let dateString: String; let day: DayTemplate }
+    ///
+    /// `day` is OPTIONAL: when the resolved template isn't in the local
+    /// cache we still return THAT date (with `day == nil`) rather than
+    /// skipping ahead to a wrong, later "next workout". The view renders
+    /// the date/label without exercise detail.
+    struct NextWorkout { let dateString: String; let day: DayTemplate? }
 
     func nextWorkout(within maxDays: Int = 14) -> NextWorkout? {
         guard maxDays > 0,
@@ -438,14 +479,16 @@ final class SyncModel: ObservableObject {
             let ymd = CalendarProjection.dateString(d)
             switch projection(for: ymd) {
             case .projected(let tid):
-                if let day = dayTemplate(id: tid) {
-                    return NextWorkout(dateString: ymd, day: day)
-                }
+                // Real next workout — return THIS date even if the
+                // template isn't cached (day == nil), never skip past it.
+                return NextWorkout(dateString: ymd, day: dayTemplate(id: tid))
             case .session(let status):
-                if status == "planned" || status == "in_progress",
-                   let day = dayTemplate(id: sessionsByDate[ymd]?.day_template_id) {
-                    return NextWorkout(dateString: ymd, day: day)
+                if status == "planned" || status == "in_progress" {
+                    return NextWorkout(
+                        dateString: ymd,
+                        day: dayTemplate(id: sessionsByDate[ymd]?.day_template_id))
                 }
+                continue   // skipped/completed/other → not an upcoming workout
             case .rest, .none:
                 continue
             }

@@ -22,8 +22,15 @@ struct APIClient {
     }
 
     /// Full sync pull (since=0 → everything; the app dedupes locally).
+    ///
+    /// `events_since=0` is passed explicitly (not omitted) so the
+    /// external_events contract is greppable here. The app does a FULL
+    /// reload every sync — all watermarks are 0 — and the server returns
+    /// the full current non-deleted external_events set. No client-side
+    /// watermark / tombstone-merge / incremental-delta sync is used (by
+    /// design: server is the single source of truth).
     func getState(jwt: String) async throws -> StateResponse {
-        try await get("api/state?since=0&sets_since=0", jwt: jwt)
+        try await get("api/state?since=0&sets_since=0&events_since=0", jwt: jwt)
     }
 
     func getExercises(jwt: String) async throws -> [ExerciseCatalog] {

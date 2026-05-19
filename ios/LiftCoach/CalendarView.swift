@@ -180,6 +180,9 @@ struct CalendarView: View {
         let st = style(for: proj.kind)
         let isToday = ymd == sync.todayString
         let dayNum = cal.component(.day, from: date)
+        // Read-only ride overlay: distinct from the 6 lift states.
+        let hasRide = !sync.rides(on: ymd).isEmpty
+        let conflict = sync.rideConflict(for: ymd)   // .none on non-lift days
 
         Button {
             selectedDate = ymd
@@ -198,6 +201,17 @@ struct CalendarView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(.clear)
                 }
+                // Ride glyph sits BELOW the lift state so both read at a
+                // glance and the existing 6 states are never displaced.
+                if hasRide {
+                    Image(systemName: "bicycle")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Theme.muted)
+                } else {
+                    Image(systemName: "bicycle")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(.clear)
+                }
             }
             .frame(maxWidth: .infinity)
             .frame(height: 56)
@@ -209,6 +223,16 @@ struct CalendarView: View {
                 RoundedRectangle(cornerRadius: 10)
                     .stroke(isToday ? Theme.accent : Color.clear, lineWidth: 1.5)
             )
+            // Amber clash badge: a lift date that conflicts with a ride.
+            // Corner triangle-ish dot, distinct from every lift glyph.
+            .overlay(alignment: .topTrailing) {
+                if conflict != .none {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(Theme.accent)
+                        .padding(4)
+                }
+            }
         }
         .buttonStyle(.plain)
     }
@@ -233,6 +257,25 @@ struct CalendarView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+            // Read-only ride overlay legend (distinct from lift states).
+            HStack(spacing: 6) {
+                Image(systemName: "bicycle")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.muted)
+                Text("RIDE")
+                    .font(Theme.mono(9, .bold)).tracking(0.5)
+                    .foregroundStyle(Theme.muted)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.accent)
+                Text("CONFLICT")
+                    .font(Theme.mono(9, .bold)).tracking(0.5)
+                    .foregroundStyle(Theme.muted)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)

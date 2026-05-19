@@ -13,6 +13,7 @@ import {
   getState,
   getVolume,
   logSet,
+  nextExerciseOrderIndex,
   patchDayTemplate,
   patchSession,
   patchSet,
@@ -81,10 +82,15 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
   }>();
   const ex = await resolveExercise(c.env.DB, b.exercise);
   if (!ex) return c.json({ error: 'unknown_exercise', query: b.exercise }, 400);
+  const dayId = c.req.param('id');
+  const orderIndex =
+    typeof b.order_index === 'number'
+      ? b.order_index
+      : await nextExerciseOrderIndex(c.env.DB, dayId);
   const row = await addTemplateExercise(c.env.DB, plan.id, {
-    day_template_id: c.req.param('id'),
+    day_template_id: dayId,
     exercise_id: (ex as { id: string }).id,
-    order_index: b.order_index ?? 0,
+    order_index: orderIndex,
     target_sets: b.target_sets,
     target_reps: b.target_reps,
     target_reps_max: b.target_reps_max ?? null,

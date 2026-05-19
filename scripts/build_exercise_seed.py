@@ -41,14 +41,29 @@ Field mapping:
   - unit             -> always 'lb' (matches all original 12, incl. ex_pullup)
   - aliases          -> deterministic JSON array; see ALIASES + auto-gen below.
 
-The original 12 ex_* rows are re-stated here BYTE-IDENTICAL to
-0002_seed_exercises.sql and emitted with INSERT OR IGNORE so re-running is a
-no-op and never alters them (they were already inserted by 0002).
+STRICTLY ADDITIVE: 0007 emits INSERTs ONLY for ids NOT already inserted by an
+earlier migration. It does NOT restate the original 12 (0002) nor the 5 timed
+core/hold exercises (0004) -- those rows are owned and frozen by their own
+migrations. The PRIOR_SEEDED_* tables below are reference data used purely to
+(a) exclude any colliding id from emission and (b) feed the resolver
+collision/shadow invariant so determinism holds DB-wide, not just within
+0007's own rows. Net result: 0007 = exactly the net-new exercises, zero id
+overlap with 0002/0004.
+
+One targeted, idempotent UPDATE is emitted: it appends the conventional alias
+"dumbbell press" to the existing 0002 row ex_db_press (Dumbbell Bench Press)
+so that common phrase resolves to the bench press, not the new dumbbell
+shoulder press. This is additive (mutates only an alias array, no row
+insert/delete, re-running writes the identical literal) and keeps 0002 itself
+untouched on disk.
 """
 import json
 import sys
 
-# --- the original 12, copied verbatim from 0002_seed_exercises.sql ----------
+# --- 0002's original 12, copied verbatim. REFERENCE ONLY: used for id
+# exclusion + DB-wide collision validation. NOT emitted by 0007 (0002 owns
+# these rows). ex_db_press's alias list is augmented at runtime with
+# "dumbbell press" to mirror the UPDATE 0007 emits (see DB_PRESS_ALIAS_ADD).
 # (id, name, primary_muscle, secondary_muscles_json, modality, unit, aliases_json)
 ORIGINAL_12 = [
     ("ex_back_squat", "Back Squat", "quads", '["glutes","core"]', "barbell", "lb", '["squat","back squat","bb squat"]'),
@@ -64,6 +79,24 @@ ORIGINAL_12 = [
     ("ex_lat_pulldown", "Lat Pulldown", "back", '["biceps"]', "machine", "lb", '["pulldown","lat pulldown"]'),
     ("ex_leg_press", "Leg Press", "quads", '["glutes"]', "machine", "lb", '["leg press"]'),
 ]
+
+# --- 0004's timed exercises, copied verbatim from
+# 0004_set_duration_and_timed.sql. REFERENCE ONLY: used for id exclusion +
+# DB-wide collision validation. NOT emitted by 0007 (0004 owns these rows;
+# they are modality='timed'/unit='sec' and 0007 must not restate them stale).
+PRIOR_SEEDED_0004 = [
+    ("ex_plank", "Plank", "core", '["shoulders"]', "timed", "sec", '["plank","front plank","rkc plank"]'),
+    ("ex_side_plank", "Side Plank", "core", '["obliques"]', "timed", "sec", '["side plank"]'),
+    ("ex_hollow", "Hollow Hold", "core", '[]', "timed", "sec", '["hollow hold","hollow body"]'),
+    ("ex_dead_hang", "Dead Hang", "back", '["grip"]', "timed", "sec", '["dead hang","bar hang"]'),
+    ("ex_wall_sit", "Wall Sit", "quads", '[]', "timed", "sec", '["wall sit"]'),
+]
+
+# Conventional alias appended to the EXISTING 0002 row ex_db_press via an
+# idempotent UPDATE in 0007 (NOT a new row). "db press" is already a 0002
+# alias; "dumbbell press" is added so it routes to the bench press rather
+# than the new ex_db_ohp (dumbbell shoulder press).
+DB_PRESS_ALIAS_ADD = "dumbbell press"
 
 # free-exercise-db primaryMuscles -> app volume-grouping vocabulary.
 MUSCLE_MAP = {
@@ -209,7 +242,14 @@ CURATED = {
     "Face Pull": ("ex_face_pull", None, ["face pull", "face pulls"]),
 
     # ---- shoulders ----
-    "Standing Dumbbell Press": ("ex_db_ohp", "Dumbbell Shoulder Press", ["dumbbell shoulder press", "db shoulder press", "db ohp", "dumbbell press"]),
+    # BLOCKER fix: "dumbbell press" REMOVED -- it is ambiguous with the
+    # original ex_db_press (Dumbbell Bench Press) and resolveExercise has no
+    # ORDER BY (LIMIT 1), so it could misroute. ex_db_ohp keeps only
+    # unambiguous shoulder-press aliases; "dumbbell press"/"db press" route
+    # to ex_db_press (0002 + the DB_PRESS_ALIAS_ADD UPDATE). NB: "seated
+    # dumbbell press" is owned by ex_seated_db_press, so it is intentionally
+    # NOT added here (would collide).
+    "Standing Dumbbell Press": ("ex_db_ohp", "Dumbbell Shoulder Press", ["dumbbell shoulder press", "db shoulder press", "db ohp"]),
     "Seated Dumbbell Press": ("ex_seated_db_press", "Seated Dumbbell Press", ["seated dumbbell press", "seated db press"]),
     "Arnold Dumbbell Press": ("ex_arnold_press", "Arnold Press", ["arnold press", "arnold"]),
     "Push Press": ("ex_push_press", None, ["push press"]),
@@ -287,18 +327,33 @@ def main() -> int:
     data = json.load(open(src_path))
     by_name = {x["name"]: x for x in data}
 
-    rows = []  # (id, name, primary, secondary_json, modality, unit, aliases_json)
-
-    # 1) original 12 verbatim
+    # Ids already inserted by an EARLIER migration. 0007 must NOT restate or
+    # collide with any of these (strictly additive).
+    prior_rows = []
     for (eid, name, pm, sec, mod, unit, al) in ORIGINAL_12:
-        rows.append((eid, name, pm, sec, mod, unit, al))
+        # mirror the idempotent UPDATE 0007 emits: ex_db_press gains the
+        # conventional alias "dumbbell press" so collision validation sees
+        # the post-migration alias set.
+        if eid == "ex_db_press":
+            cur = json.loads(al)
+            if DB_PRESS_ALIAS_ADD not in cur:
+                cur.append(DB_PRESS_ALIAS_ADD)
+            al = json.dumps(cur)
+        prior_rows.append((eid, name, pm, sec, mod, unit, al))
+    for r in PRIOR_SEEDED_0004:
+        prior_rows.append(r)
+    prior_ids = {r[0] for r in prior_rows}
 
-    original_ids = {r[0] for r in rows}
-    original_names_lc = {r[1].lower() for r in rows}
+    rows = []  # net-new rows ONLY (id,name,primary,sec,mod,unit,aliases)
+    seen_ids = set()
 
-    # 2) curated, mapped from source
-    seen_ids = set(original_ids)
+    # 1) curated, mapped from source -- skip anything an earlier migration
+    #    already owns.
     for src_name, (eid, override, extra) in CURATED.items():
+        if eid in prior_ids:
+            # owned/frozen by 0002 or 0004 (e.g. ex_plank, ex_side_plank);
+            # do not restate -- the existing row's definition survives.
+            continue
         ex = by_name.get(src_name)
         if ex is None:
             # source name not present (e.g. pruned variant); skip silently.
@@ -322,27 +377,37 @@ def main() -> int:
         rows.append((eid, name, pm, json.dumps(sec), modality, "lb",
                      json.dumps(aliases)))
 
-    # 3) manual extras
+    # 2) manual extras
     for (eid, name, pm, sec_json, mod, extra) in MANUAL_EXTRA:
+        if eid in prior_ids:
+            continue
         if eid in seen_ids:
             raise SystemExit(f"duplicate manual id {eid}")
         seen_ids.add(eid)
         aliases = list(dict.fromkeys([name.lower()] + list(extra)))
         rows.append((eid, name, pm, sec_json, mod, "lb", json.dumps(aliases)))
 
-    # ---- collision validation (resolver determinism) ----------------------
+    # additive-only invariant: zero id overlap with prior migrations.
+    overlap = seen_ids & prior_ids
+    if overlap:
+        raise SystemExit(f"0007 id overlap with prior migrations: {overlap}")
+
+    # ---- collision validation (resolver determinism), DB-WIDE -------------
     # The resolver matches: id, lower(name) exact, or lower(aliases) LIKE
-    # '%"<q>"%'. So: (a) no two exercises share an alias token; (b) no alias
-    # token equals another exercise's canonical lowercased name; (c) all ids
-    # unique; (d) all names unique.
+    # '%"<q>"%', LIMIT 1, no ORDER BY. Determinism must hold across the WHOLE
+    # post-0007 catalog (prior migrations' rows + the net-new rows), not just
+    # 0007's own rows. So validate over prior_rows + rows: (a) no two
+    # exercises share an alias token; (b) no alias token equals another
+    # exercise's canonical lower(name); (c) ids unique; (d) names unique.
+    all_rows = prior_rows + rows
     alias_owner = {}
     name_owner = {}
-    for (eid, name, pm, sec, mod, unit, al) in rows:
+    for (eid, name, pm, sec, mod, unit, al) in all_rows:
         nlc = name.lower()
-        if nlc in name_owner:
+        if nlc in name_owner and name_owner[nlc] != eid:
             raise SystemExit(f"duplicate canonical name: {name!r}")
         name_owner[nlc] = eid
-    for (eid, name, pm, sec, mod, unit, al) in rows:
+    for (eid, name, pm, sec, mod, unit, al) in all_rows:
         for a in json.loads(al):
             a = a.lower()
             if a in alias_owner and alias_owner[a] != eid:
@@ -376,11 +441,23 @@ def main() -> int:
     out.append("-- behind-the-neck, novelty/circus, band/ball/foam-only,")
     out.append("-- kettlebell flows, stretching/cardio/plyo-only.")
     out.append("--")
-    out.append("-- ADDITIVE + IDEMPOTENT: INSERT OR IGNORE on the UUID-")
-    out.append("-- stable PK. The original 12 ex_* rows are re-stated")
-    out.append("-- BYTE-IDENTICAL to 0002 and OR IGNOREd, so 0002's rows")
-    out.append("-- are never altered and re-running 0007 is a no-op.")
-    out.append("-- created_at = 0 (epoch): seed rows are timeless.")
+    out.append("-- STRICTLY ADDITIVE + IDEMPOTENT. 0007 inserts ONLY the")
+    out.append("-- net-new exercises -- ids NOT already seeded by ANY earlier")
+    out.append("-- migration. It does NOT restate the original 12 (0002) nor")
+    out.append("-- the 5 timed core/hold exercises (0004: ex_plank,")
+    out.append("-- ex_side_plank, ex_hollow, ex_dead_hang, ex_wall_sit) --")
+    out.append("-- those rows are owned + frozen by their own migrations and")
+    out.append("-- keep their original definitions (e.g. plank stays")
+    out.append("-- modality='timed'/unit='sec'). Zero id overlap with")
+    out.append("-- 0002/0004. INSERT OR IGNORE on the UUID PK keeps re-runs")
+    out.append("-- a no-op. created_at = 0 (epoch): seed rows are timeless.")
+    out.append("--")
+    out.append("-- Plus ONE idempotent UPDATE: appends the conventional")
+    out.append("-- alias \"dumbbell press\" to the EXISTING 0002 row")
+    out.append("-- ex_db_press (Dumbbell Bench Press) so that phrase resolves")
+    out.append("-- to the bench press, not the new dumbbell shoulder press.")
+    out.append("-- Additive (alias-only mutation, no row add/delete) and")
+    out.append("-- idempotent (writes the identical literal each run).")
     out.append("INSERT OR IGNORE INTO exercises")
     out.append("  (id, name, primary_muscle, secondary_muscles, modality, unit, aliases, created_at)")
     out.append("VALUES")
@@ -392,9 +469,26 @@ def main() -> int:
             f"{sql_str(al)}, 0)")
     out.append(",\n".join(lines) + ";")
     out.append("")
+    # Idempotent alias augmentation of the existing 0002 ex_db_press row.
+    db_press_al = None
+    for (eid, name, pm, sec, mod, unit, al) in ORIGINAL_12:
+        if eid == "ex_db_press":
+            cur = json.loads(al)
+            if DB_PRESS_ALIAS_ADD not in cur:
+                cur.append(DB_PRESS_ALIAS_ADD)
+            db_press_al = json.dumps(cur)
+    out.append("-- Conventional-alias backfill for the existing 0002 row.")
+    out.append("-- Idempotent: sets the exact target literal regardless of")
+    out.append("-- current value, so re-running is a no-op.")
+    out.append(
+        f"UPDATE exercises SET aliases = {sql_str(db_press_al)} "
+        "WHERE id = 'ex_db_press';")
+    out.append("")
     sys.stdout.write("\n".join(out))
-    sys.stderr.write(f"emitted {len(rows)} rows "
-                     f"({len(rows) - len(ORIGINAL_12)} new + 12 original)\n")
+    sys.stderr.write(
+        f"emitted {len(rows)} net-new rows (zero overlap with "
+        f"{len(prior_ids)} prior-seeded ids: 12 from 0002 + 5 from 0004) "
+        f"+ 1 idempotent ex_db_press alias UPDATE\n")
     return 0
 
 

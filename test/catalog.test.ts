@@ -16,7 +16,11 @@ beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 });
 
-// The original 12, byte-identical to migrations/0002_seed_exercises.sql.
+// The original 12 as defined by 0002. All fields are byte-identical to
+// 0002_seed_exercises.sql EXCEPT ex_db_press.aliases: 0007 emits one
+// documented, idempotent, additive UPDATE that appends the conventional
+// alias "dumbbell press" to ex_db_press so that phrase routes to the bench
+// press (not the new ex_db_ohp). Every other original row is untouched.
 const ORIGINAL_12: Array<{
   id: string;
   name: string;
@@ -35,21 +39,23 @@ const ORIGINAL_12: Array<{
   { id: 'ex_ohp', name: 'Overhead Press', primary_muscle: 'shoulders', secondary_muscles: '["triceps"]', modality: 'barbell', unit: 'lb', aliases: '["ohp","overhead press","press","military press"]' },
   { id: 'ex_barbell_row', name: 'Barbell Row', primary_muscle: 'back', secondary_muscles: '["biceps","rear delts"]', modality: 'barbell', unit: 'lb', aliases: '["row","barbell row","bb row","pendlay row"]' },
   { id: 'ex_pullup', name: 'Pull-Up', primary_muscle: 'back', secondary_muscles: '["biceps"]', modality: 'bw', unit: 'lb', aliases: '["pullup","pull-up","pull up","chin up"]' },
-  { id: 'ex_db_press', name: 'Dumbbell Bench Press', primary_muscle: 'chest', secondary_muscles: '["triceps","front delts"]', modality: 'dumbbell', unit: 'lb', aliases: '["db press","dumbbell bench","db bench"]' },
+  // aliases = 0002's '["db press","dumbbell bench","db bench"]' + the
+  // documented 0007 additive backfill of "dumbbell press".
+  { id: 'ex_db_press', name: 'Dumbbell Bench Press', primary_muscle: 'chest', secondary_muscles: '["triceps","front delts"]', modality: 'dumbbell', unit: 'lb', aliases: '["db press", "dumbbell bench", "db bench", "dumbbell press"]' },
   { id: 'ex_lat_pulldown', name: 'Lat Pulldown', primary_muscle: 'back', secondary_muscles: '["biceps"]', modality: 'machine', unit: 'lb', aliases: '["pulldown","lat pulldown"]' },
   { id: 'ex_leg_press', name: 'Leg Press', primary_muscle: 'quads', secondary_muscles: '["glutes"]', modality: 'machine', unit: 'lb', aliases: '["leg press"]' },
 ];
 
 describe('expanded exercise catalog (0007)', () => {
-  it('expands the catalog to ~130 exercises', async () => {
+  it('expands the catalog to ~131 exercises (12 + 5 + 114)', async () => {
+    // 0002 = 12, 0004 = 5 timed, 0007 = 114 net-new -> 131 total.
     const { count } = (await env.DB.prepare(
       'SELECT COUNT(*) AS count FROM exercises',
     ).first<{ count: number }>())!;
-    expect(count).toBeGreaterThanOrEqual(120);
-    expect(count).toBeLessThanOrEqual(140);
+    expect(count).toBe(131);
   });
 
-  it('preserves the original 12 ex_* rows byte-identically', async () => {
+  it('preserves the original 12 ex_* rows (byte-identical except the documented ex_db_press alias backfill)', async () => {
     for (const o of ORIGINAL_12) {
       const row = await env.DB.prepare(
         'SELECT id,name,primary_muscle,secondary_muscles,modality,unit,aliases,created_at FROM exercises WHERE id = ?1',
@@ -90,7 +96,6 @@ describe('expanded exercise catalog (0007)', () => {
     const cases: Array<[string, string]> = [
       ['Goblet Squat', 'ex_goblet_squat'],
       ['Push-Up', 'ex_pushup'],
-      ['Plank', 'ex_plank'],
       ['Dips', 'ex_dips'],
       ['Bodyweight Squat', 'ex_bw_squat'],
       ['Hip Thrust', 'ex_hip_thrust'],
@@ -142,6 +147,119 @@ describe('expanded exercise catalog (0007)', () => {
       const r = await resolveExercise(env.DB, alias);
       expect(r, `alias ${alias} unresolved`).toBeTruthy();
       expect((r as { id: string }).id).toBe(id);
+    }
+  });
+
+  it('all 12 original keywords still resolve to their original ids', async () => {
+    // Guards the active plan + every user-facing legacy phrase. Includes
+    // the BLOCKER fix: "dumbbell press"/"db press" MUST route to the
+    // original ex_db_press (Dumbbell Bench Press), never the new
+    // ex_db_ohp (Dumbbell Shoulder Press).
+    const cases: Array<[string, string]> = [
+      ['squat', 'ex_back_squat'],
+      ['back squat', 'ex_back_squat'],
+      ['front squat', 'ex_front_squat'],
+      ['deadlift', 'ex_deadlift'],
+      ['dl', 'ex_deadlift'],
+      ['rdl', 'ex_rdl'],
+      ['romanian deadlift', 'ex_rdl'],
+      ['bench', 'ex_bench'],
+      ['bench press', 'ex_bench'],
+      ['incline', 'ex_incline_bench'],
+      ['incline bench', 'ex_incline_bench'],
+      ['ohp', 'ex_ohp'],
+      ['overhead press', 'ex_ohp'],
+      ['military press', 'ex_ohp'],
+      ['row', 'ex_barbell_row'],
+      ['barbell row', 'ex_barbell_row'],
+      ['pullup', 'ex_pullup'],
+      ['chin up', 'ex_pullup'],
+      ['dumbbell press', 'ex_db_press'], // BLOCKER: not ex_db_ohp
+      ['db press', 'ex_db_press'], // BLOCKER: not ex_db_ohp
+      ['dumbbell bench', 'ex_db_press'],
+      ['pulldown', 'ex_lat_pulldown'],
+      ['lat pulldown', 'ex_lat_pulldown'],
+      ['leg press', 'ex_leg_press'],
+    ];
+    for (const [kw, id] of cases) {
+      const r = await resolveExercise(env.DB, kw);
+      expect(r, `keyword ${kw} unresolved`).toBeTruthy();
+      expect(
+        (r as { id: string }).id,
+        `keyword "${kw}" routed to ${(r as { id: string }).id}, expected ${id}`,
+      ).toBe(id);
+    }
+
+    // And the dumbbell shoulder press is reachable by its own unambiguous
+    // aliases (it must NOT own "dumbbell press").
+    for (const kw of ['dumbbell shoulder press', 'db shoulder press', 'db ohp']) {
+      const r = await resolveExercise(env.DB, kw);
+      expect((r as { id: string })?.id, `${kw} should be ex_db_ohp`).toBe(
+        'ex_db_ohp',
+      );
+    }
+  });
+
+  it('0007 is strictly additive: introduces NO id already seeded by 0002/0004', async () => {
+    // 0002 (the 12) and 0004 (5 timed core/hold) own these ids; 0007 must
+    // not restate or collide with any of them.
+    const PRIOR_IDS = [
+      // 0002
+      'ex_back_squat', 'ex_front_squat', 'ex_deadlift', 'ex_rdl', 'ex_bench',
+      'ex_incline_bench', 'ex_ohp', 'ex_barbell_row', 'ex_pullup',
+      'ex_db_press', 'ex_lat_pulldown', 'ex_leg_press',
+      // 0004
+      'ex_plank', 'ex_side_plank', 'ex_hollow', 'ex_dead_hang', 'ex_wall_sit',
+    ];
+    const mig = (
+      env.TEST_MIGRATIONS as Array<{ name: string; queries: string[] }>
+    ).find((m) => m.name.includes('0007'));
+    expect(mig, '0007 migration not found').toBeTruthy();
+    const sql = mig!.queries.join('\n');
+
+    // Every id 0007 INSERTs (the VALUES tuples) -- exclude the trailing
+    // UPDATE which targets the pre-existing ex_db_press by design.
+    const insertIds = [...sql.matchAll(/\(\s*'(ex_[a-z0-9_]+)'\s*,/g)]
+      .map((m) => m[1])
+      .filter((x): x is string => x !== undefined);
+    expect(insertIds.length).toBeGreaterThanOrEqual(110);
+    for (const id of insertIds) {
+      expect(
+        PRIOR_IDS.includes(id),
+        `0007 INSERTs prior-owned id ${id} (must be additive-only)`,
+      ).toBe(false);
+    }
+
+    // The only id 0007 is allowed to write to that pre-exists is
+    // ex_db_press, and only via UPDATE (alias backfill), never INSERT.
+    expect(insertIds).not.toContain('ex_db_press');
+    expect(
+      /UPDATE\s+exercises\s+SET\s+aliases\s*=.*WHERE\s+id\s*=\s*'ex_db_press'/i.test(
+        sql,
+      ),
+      '0007 must contain the idempotent ex_db_press alias UPDATE',
+    ).toBe(true);
+  });
+
+  it("0004's timed exercises survive untouched (plank/side plank stay timed/sec)", async () => {
+    for (const [id, name] of [
+      ['ex_plank', 'Plank'],
+      ['ex_side_plank', 'Side Plank'],
+    ] as const) {
+      const row = await env.DB.prepare(
+        'SELECT id,name,modality,unit FROM exercises WHERE id = ?1',
+      )
+        .bind(id)
+        .first<{ id: string; name: string; modality: string; unit: string }>();
+      expect(row, `${id} missing`).toBeTruthy();
+      expect(row!.name).toBe(name);
+      // 0004 defined these as timed/sec; 0007 must NOT have overwritten
+      // them with the generator's stale bw/lb values.
+      expect(row!.modality, `${id} modality clobbered`).toBe('timed');
+      expect(row!.unit, `${id} unit clobbered`).toBe('sec');
+      // and they still resolve by their natural phrase
+      const r = await resolveExercise(env.DB, name);
+      expect((r as { id: string })?.id).toBe(id);
     }
   });
 

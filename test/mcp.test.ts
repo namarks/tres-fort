@@ -147,6 +147,46 @@ describe('mcp tools read live D1', () => {
     expect(toolJson(body)).toMatchObject({ plan: null });
   });
 
+  // Regression: getSessionByDate (→ get_today_workout / get_session_log)
+  // must NOT surface a discarded session to Claude — it reads as "no
+  // session on this date", same vanish semantics as the calendar.
+  it('a discarded session is invisible to get_today_workout', async () => {
+    const jwt = (
+      await (
+        await SELF.fetch(`${BASE}/auth/dev`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ secret: 'test-dev' }),
+        })
+      ).json<{ jwt: string }>()
+    ).jwt;
+    const H = { 'content-type': 'application/json', Authorization: `Bearer ${jwt}` };
+    await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Discard Vis' }),
+    });
+    // No date → server uses todayLocal(), which is what get_today_workout reads.
+    const session = await (
+      await SELF.fetch(`${BASE}/api/sessions`, { method: 'POST', headers: H, body: '{}' })
+    ).json<{ id: string }>();
+    await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ id: crypto.randomUUID(), exercise_id: 'ex_bench', set_index: 1, weight: 95, reps: 5 }),
+    });
+
+    const before = toolJson((await rpc('tools/call', { name: 'get_today_workout', arguments: {} })).body);
+    expect(before.session?.id).toBe(session.id);
+
+    await SELF.fetch(`${BASE}/api/sessions/${session.id}/discard`, { method: 'POST', headers: H });
+
+    const after = toolJson((await rpc('tools/call', { name: 'get_today_workout', arguments: {} })).body);
+    expect(after.session).toBeNull();
+    // …and it must not resurface as the coach's "last_session" either.
+    expect(after.last_session?.id).not.toBe(session.id);
+  });
+
   it('reads a seeded plan, history, and volume', async () => {
     await seed();
 

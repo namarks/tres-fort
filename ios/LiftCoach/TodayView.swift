@@ -13,6 +13,8 @@ struct TodayView: View {
 
     /// Presents the demoted "Train a different day" override picker.
     @State private var showOverridePicker = false
+    /// Confirms discarding the in-progress workout (destructive, undo-less).
+    @State private var showDiscardConfirm = false
 
     var body: some View {
         NavigationStack {
@@ -43,6 +45,9 @@ struct TodayView: View {
                             Button("End workout", role: .destructive) {
                                 Task { await sync.finishWorkout() }
                             }
+                            Button("Discard workout", role: .destructive) {
+                                showDiscardConfirm = true
+                            }
                         }
                         Button("Sign out", role: .destructive) { auth.signOut() }
                     } label: { Image(systemName: "ellipsis.circle").foregroundStyle(Theme.muted) }
@@ -60,6 +65,18 @@ struct TodayView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Starts a one-off session. Your weekly schedule is unchanged — ask Claude to edit the schedule.")
+            }
+            .confirmationDialog(
+                "Discard this workout?",
+                isPresented: $showDiscardConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("Discard — don't save", role: .destructive) {
+                    Task { await sync.discardWorkout() }
+                }
+                Button("Keep workout", role: .cancel) {}
+            } message: {
+                Text("The sets you logged will be deleted and this session won't count. The day goes back to its normal schedule. This can't be undone.")
             }
         }
         .preferredColorScheme(.dark)
@@ -132,33 +149,7 @@ private struct RestDayView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 16))
 
                     if let next = sync.nextWorkout() {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("NEXT WORKOUT")
-                                .font(Theme.mono(11, .bold)).tracking(2)
-                                .foregroundStyle(Theme.muted)
-                            // `next.day` is nil when the resolved template
-                            // isn't cached — we still show the real next
-                            // date (never skip ahead), just without detail.
-                            Text((next.day?.title ?? "Workout scheduled").uppercased())
-                                .font(Theme.display(28))
-                                .foregroundStyle(Theme.text)
-                                .lineLimit(2).minimumScaleFactor(0.6)
-                            Text(sync.relativeLabel(for: next.dateString).uppercased())
-                                .font(Theme.mono(13, .bold)).tracking(1)
-                                .foregroundStyle(Theme.accent)
-                            if let day = next.day, !day.exercises.isEmpty {
-                                Text(day.exercises
-                                        .map(\.exercise_name)
-                                        .joined(separator: " · "))
-                                    .font(Theme.mono(11))
-                                    .foregroundStyle(Theme.dim)
-                                    .padding(.top, 2)
-                            }
-                        }
-                        .padding(20)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Theme.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                        NextWorkoutCard(sync: sync, next: next)
                     }
 
                     if let err = sync.loadError {
@@ -175,6 +166,67 @@ private struct RestDayView: View {
     }
 }
 
+// MARK: - Next workout card (tappable → full preview)
+
+/// The "NEXT WORKOUT" card, shared by the rest-day and workout-complete
+/// screens. Tapping it opens the SAME full workout preview the calendar
+/// uses (`DayAgendaView`) as a sheet for the upcoming date — so "what's
+/// tomorrow's session" is one tap from Today, not a trip to the Calendar
+/// tab. Preview only: DayAgendaView is read-only for future dates (start
+/// still happens from the Today screen on the day itself).
+private struct AgendaDate: Identifiable { let id: String }
+
+private struct NextWorkoutCard: View {
+    @ObservedObject var sync: SyncModel
+    let next: SyncModel.NextWorkout
+    @State private var preview: AgendaDate?
+
+    var body: some View {
+        Button {
+            preview = AgendaDate(id: next.dateString)
+        } label: {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("NEXT WORKOUT")
+                        .font(Theme.mono(11, .bold)).tracking(2)
+                        .foregroundStyle(Theme.muted)
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Theme.dim)
+                }
+                // `next.day` is nil when the resolved template isn't cached
+                // — still show the real next date (never skip ahead), just
+                // without detail; the tap still opens the live preview.
+                Text((next.day?.title ?? "Workout scheduled").uppercased())
+                    .font(Theme.display(28))
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(2).minimumScaleFactor(0.6)
+                Text(sync.relativeLabel(for: next.dateString).uppercased())
+                    .font(Theme.mono(13, .bold)).tracking(1)
+                    .foregroundStyle(Theme.accent)
+                if let day = next.day, !day.exercises.isEmpty {
+                    Text(day.exercises
+                            .map(\.exercise_name)
+                            .joined(separator: " · "))
+                        .font(Theme.mono(11))
+                        .foregroundStyle(Theme.dim)
+                        .multilineTextAlignment(.leading)
+                        .padding(.top, 2)
+                }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+        .sheet(item: $preview) { d in
+            DayAgendaView(sync: sync, dateString: d.id)
+        }
+    }
+}
+
 // MARK: - Workout complete (today's session is done)
 
 /// Shown when today's resolved session is COMPLETED. A clean recap with
@@ -185,6 +237,9 @@ private struct RestDayView: View {
 /// day uses); pull-to-refresh remains so a server change is reflected.
 private struct WorkoutDoneView: View {
     @ObservedObject var sync: SyncModel
+    /// Confirms discarding the just-completed session ("didn't really do
+    /// this" — e.g. an accidental/test End workout).
+    @State private var showDiscardConfirm = false
 
     private var doneTemplateTitle: String {
         sync.todayResolvedDay?.title.uppercased() ?? "WORKOUT"
@@ -238,31 +293,43 @@ private struct WorkoutDoneView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 16))
 
                 if let next = sync.nextWorkout() {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("NEXT WORKOUT")
-                            .font(Theme.mono(11, .bold)).tracking(2)
-                            .foregroundStyle(Theme.muted)
-                        Text((next.day?.title ?? "Workout scheduled").uppercased())
-                            .font(Theme.display(28))
-                            .foregroundStyle(Theme.text)
-                            .lineLimit(2).minimumScaleFactor(0.6)
-                        Text(sync.relativeLabel(for: next.dateString).uppercased())
-                            .font(Theme.mono(13, .bold)).tracking(1)
-                            .foregroundStyle(Theme.accent)
-                    }
-                    .padding(20)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    NextWorkoutCard(sync: sync, next: next)
                 }
 
                 if let err = sync.loadError {
                     Text(err).font(Theme.mono(12)).foregroundStyle(Theme.danger)
                 }
+
+                // Demoted, non-primary escape hatch: an accidental/test
+                // "End workout" recorded a session you didn't really do.
+                // Discard throws it away and the day reverts to its normal
+                // schedule (no SQL, fully reversible by just redoing it).
+                Button(role: .destructive) {
+                    showDiscardConfirm = true
+                } label: {
+                    Text("Discard — didn't really do this")
+                        .font(Theme.mono(12, .bold)).tracking(1)
+                        .foregroundStyle(Theme.danger)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                }
+                .buttonStyle(.plain)
             }
             .padding(16)
         }
         .refreshable { await sync.load() }
+        .confirmationDialog(
+            "Discard this workout?",
+            isPresented: $showDiscardConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Discard — don't save", role: .destructive) {
+                Task { await sync.discardWorkout() }
+            }
+            Button("Keep workout", role: .cancel) {}
+        } message: {
+            Text("The sets you logged will be deleted and this session won't count. The day goes back to its normal schedule. This can't be undone.")
+        }
     }
 }
 

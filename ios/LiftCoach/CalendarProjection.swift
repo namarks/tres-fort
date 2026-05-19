@@ -8,6 +8,13 @@ import Foundation
 // it is deliberately isolated here and over-commented so the lead can
 // diff it against the server's projection.
 //
+//   A 'discarded' session is treated as if it NEVER EXISTED (the user
+//   explicitly threw it away; its set_logs are soft-deleted server-side).
+//   It is dropped before the rule below, so the date falls through:
+//     date < today  → .none ;  date >= today → schedule/rest.
+//   This mirrors projectCalendar's byDate `discarded` carve-out in the
+//   backend byte-for-byte (test/calendar.test.ts is the contract).
+//
 //   date < today  → show a cell ONLY if a real cached session exists,
 //                    using that session's status.
 //   date >= today  → a real session WINS (planned / in_progress /
@@ -121,7 +128,15 @@ enum CalendarProjection {
         schedule: PlanSchedule?,
         templateIDs: Set<String>
     ) -> DayProjection {
-        let real = sessionByDate[dateString]
+        // A 'discarded' session is treated as if it never existed — the
+        // user explicitly threw it away (set_logs soft-deleted server
+        // side). Dropping it here (vs. returning .session) makes the date
+        // fall through to past=.none / today+=schedule — it VANISHES
+        // rather than showing as a skip. Byte-for-byte mirror of
+        // projectCalendar's `if (s.status === 'discarded') continue;`.
+        let real = sessionByDate[dateString].flatMap {
+            $0.status == "discarded" ? nil : $0
+        }
 
         if dateString < today {
             // Past: only a real session is ever shown.

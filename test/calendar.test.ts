@@ -349,6 +349,110 @@ describe('migration 0005 + schedule round-trip via real D1', () => {
   });
 });
 
+// FIX 2 — skip_planned_session must NOT clobber a started/finished workout.
+// Previously it unconditionally set the date's session to 'skipped',
+// hiding logged sets and destroying visible history for a mis-dated skip.
+// The fix rejects when the date already has an in_progress/completed
+// session and leaves the row (and its sets) untouched.
+describe('FIX 2: skipPlannedSession refuses to bury started/finished history', () => {
+  async function planFor(name: string): Promise<{ userId: string; planId: string }> {
+    const userId = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,?3,?4,?5)',
+    )
+      .bind(userId, `sub-${userId}`, null, 'Owner', Date.now())
+      .run();
+    const planId = crypto.randomUUID();
+    await env.DB.prepare(
+      "INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at) VALUES (?1,?2,?3,'active',1,NULL,?4,?4)",
+    )
+      .bind(planId, userId, name, Date.now())
+      .run();
+    return { userId, planId };
+  }
+  async function insertSession(
+    userId: string,
+    planId: string,
+    date: string,
+    status: string,
+  ): Promise<string> {
+    const sid = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,?7,NULL,NULL,?8,?8)',
+    )
+      .bind(sid, userId, planId, date, status, status === 'planned' ? null : 1, status === 'completed' ? 2 : null, Date.now())
+      .run();
+    return sid;
+  }
+
+  it('skipping a planned/empty date still produces a skipped row, no version bump', async () => {
+    const { userId, planId } = await planFor('Skip Empty');
+    const verBefore = (
+      await env.DB.prepare('SELECT version FROM plans WHERE id=?1').bind(planId).first<{ version: number }>()
+    )!.version;
+    const r = await skipPlannedSession(env.DB, userId, '2026-06-01');
+    expect('ok' in r && r.ok).toBe(true);
+    const row = await env.DB
+      .prepare('SELECT status FROM sessions WHERE user_id=?1 AND date=?2')
+      .bind(userId, '2026-06-01')
+      .first<{ status: string }>();
+    expect(row!.status).toBe('skipped');
+    expect(
+      (await env.DB.prepare('SELECT version FROM plans WHERE id=?1').bind(planId).first<{ version: number }>())!.version,
+    ).toBe(verBefore); // append-only: skip never bumps plan version
+  });
+
+  it('skipping a planned session overrides it to skipped (unchanged behavior)', async () => {
+    const { userId, planId } = await planFor('Skip Planned');
+    await insertSession(userId, planId, '2026-06-02', 'planned');
+    const r = await skipPlannedSession(env.DB, userId, '2026-06-02');
+    expect('ok' in r && r.ok).toBe(true);
+    const row = await env.DB
+      .prepare('SELECT status FROM sessions WHERE user_id=?1 AND date=?2')
+      .bind(userId, '2026-06-02')
+      .first<{ status: string }>();
+    expect(row!.status).toBe('skipped');
+  });
+
+  it('REJECTS skipping a completed session and leaves the row + sets intact', async () => {
+    const { userId, planId } = await planFor('Skip Completed');
+    const sid = await insertSession(userId, planId, '2026-06-03', 'completed');
+    // A logged set on that session — this is the history that must survive.
+    const setId = crypto.randomUUID();
+    await env.DB.prepare(
+      "INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,deleted_at) VALUES (?1,?2,'ex_back_squat',NULL,1,225,5,8,0,NULL,?3,'mcp',NULL)",
+    )
+      .bind(setId, sid, Date.now())
+      .run();
+
+    const r = await skipPlannedSession(env.DB, userId, '2026-06-03');
+    expect(r).toEqual({ error: 'session_already_started', status: 'completed' });
+
+    const row = await env.DB
+      .prepare('SELECT status FROM sessions WHERE id=?1')
+      .bind(sid)
+      .first<{ status: string }>();
+    expect(row!.status).toBe('completed'); // NOT skipped — history preserved
+    const set = await env.DB
+      .prepare('SELECT deleted_at FROM set_logs WHERE id=?1')
+      .bind(setId)
+      .first<{ deleted_at: number | null }>();
+    expect(set!.deleted_at).toBeNull(); // logged set untouched
+  });
+
+  it('REJECTS skipping an in_progress session and leaves it untouched', async () => {
+    const { userId, planId } = await planFor('Skip InProgress');
+    const sid = await insertSession(userId, planId, '2026-06-04', 'in_progress');
+    const r = await skipPlannedSession(env.DB, userId, '2026-06-04');
+    expect(r).toEqual({ error: 'session_already_started', status: 'in_progress' });
+    const row = await env.DB
+      .prepare('SELECT status FROM sessions WHERE id=?1')
+      .bind(sid)
+      .first<{ status: string }>();
+    expect(row!.status).toBe('in_progress');
+  });
+});
+
 describe('detectConflicts — truth table (iOS mirrors this byte-for-byte)', () => {
   const evt = (
     id: string,

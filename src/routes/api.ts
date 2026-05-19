@@ -127,7 +127,14 @@ apiRoutes.post('/sessions', async (c) => {
 apiRoutes.patch('/sessions/:id', async (c) => {
   const b = await c.req.json<{ status?: string; perceived_fatigue?: number; notes?: string }>();
   const s = await patchSession(c.env.DB, c.get('userId'), c.req.param('id'), b);
-  return s ? c.json(s) : c.json({ error: 'not_found' }, 404);
+  if (!s) return c.json({ error: 'not_found' }, 404);
+  if ('error' in s) {
+    // Exhaustive: invalid_status → 400 (bad request, nothing persisted);
+    // session_already_started → 409 (history-integrity burial guard).
+    if (s.error === 'invalid_status') return c.json(s, 400);
+    return c.json(s, 409);
+  }
+  return c.json(s);
 });
 
 apiRoutes.post('/sessions/:id/sets', async (c) => {

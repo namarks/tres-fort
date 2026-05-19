@@ -329,4 +329,230 @@ describe('mcp write tools', () => {
     expect(week.mon).toBe(newIdByName['Push Day']);
     expect(week.thu).toBeNull();
   });
+
+  // FIX 1 — update_plan must not silently wipe the weekly schedule when an
+  // unrelated metadata-only edit is made. Without the fix, an incoming
+  // `meta` lacking a `schedule` key parsed to an EMPTY schedule and the
+  // plan write turned every weekday to rest while all day templates still
+  // existed. The fix merges incoming meta over the existing persisted meta
+  // and preserves the existing schedule unless meta explicitly carries one.
+  describe('FIX 1: update_plan meta merge preserves the weekly schedule', () => {
+    it('(a) meta without schedule preserves+remaps the existing schedule; (d) the other meta key persists', async () => {
+      const built = await call('update_plan', {
+        name: 'Meta Merge A',
+        days: [
+          { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+          { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
+        ],
+      });
+      const planId = built.plan.id as string;
+      const setSched = await call('set_schedule', { week: { mon: 'Push Day', thu: 'Pull Day' } });
+      expect(setSched.ok).toBe(true);
+
+      // Metadata-only-ish edit: pass `meta` with an unrelated key and NO
+      // schedule, rebuilding the SAME two days (kept by name).
+      const updated = await call('update_plan', {
+        expected_version: setSched.version,
+        name: 'Meta Merge A',
+        meta: { deload_scheme: 'week4-50%' },
+        days: [
+          { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+          { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
+        ],
+      });
+      expect(updated.conflict).toBe(false);
+
+      // Schedule survived AND was remapped onto the rebuilt day UUIDs by name.
+      const cp = await call('get_current_plan', {});
+      expect(cp.schedule.mon).toBe('Push Day');
+      expect(cp.schedule.thu).toBe('Pull Day');
+
+      const newDays = await env.DB.prepare(
+        'SELECT id, name FROM day_templates WHERE plan_id = ?1',
+      )
+        .bind(planId)
+        .all<{ id: string; name: string }>();
+      const newIdByName = Object.fromEntries(newDays.results.map((d) => [d.name, d.id]));
+      const meta = JSON.parse(
+        (await env.DB.prepare('SELECT meta FROM plans WHERE id = ?1').bind(planId).first<{ meta: string }>())!.meta,
+      );
+      // (a) raw schedule points at the NEW (rebuilt) day ids, not stale ones.
+      expect(meta.schedule.week.mon).toBe(newIdByName['Push Day']);
+      expect(meta.schedule.week.thu).toBe(newIdByName['Pull Day']);
+      // (d) the unrelated meta key was actually persisted.
+      expect(meta.deload_scheme).toBe('week4-50%');
+    });
+
+    it('(b) an explicit meta.schedule replaces the existing one (and still rides the day remap)', async () => {
+      const built = await call('update_plan', {
+        name: 'Meta Merge B',
+        days: [
+          { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+          { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
+        ],
+      });
+      const planId = built.plan.id as string;
+      const setSched = await call('set_schedule', { week: { mon: 'Push Day' } });
+      expect(setSched.ok).toBe(true);
+      const oldPushId = setSched.schedule.week.mon as string;
+
+      // Explicit incoming schedule pointing Fri at the (old) Push day id.
+      // It must REPLACE the mon entry and still be remapped to the rebuilt
+      // Push Day id by name across the UUID rebuild.
+      const updated = await call('update_plan', {
+        expected_version: setSched.version,
+        name: 'Meta Merge B',
+        meta: {
+          schedule: {
+            version: 9,
+            week: { mon: null, tue: null, wed: null, thu: null, fri: oldPushId, sat: null, sun: null },
+          },
+        },
+        days: [
+          { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+          { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
+        ],
+      });
+      expect(updated.conflict).toBe(false);
+
+      const newDays = await env.DB.prepare(
+        'SELECT id, name FROM day_templates WHERE plan_id = ?1',
+      )
+        .bind(planId)
+        .all<{ id: string; name: string }>();
+      const newIdByName = Object.fromEntries(newDays.results.map((d) => [d.name, d.id]));
+      const meta = JSON.parse(
+        (await env.DB.prepare('SELECT meta FROM plans WHERE id = ?1').bind(planId).first<{ meta: string }>())!.meta,
+      );
+      // The explicit schedule replaced: Mon now null, Fri = remapped Push id.
+      expect(meta.schedule.week.mon).toBeNull();
+      expect(meta.schedule.week.fri).toBe(newIdByName['Push Day']);
+      expect(meta.schedule.version).toBe(9);
+    });
+
+    it('(c) no meta at all leaves behavior unchanged (schedule survives by name)', async () => {
+      const built = await call('update_plan', {
+        name: 'Meta Merge C',
+        days: [
+          { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+        ],
+      });
+      const planId = built.plan.id as string;
+      const setSched = await call('set_schedule', { week: { mon: 'Push Day' } });
+      expect(setSched.ok).toBe(true);
+
+      const updated = await call('update_plan', {
+        expected_version: setSched.version,
+        name: 'Meta Merge C',
+        days: [
+          { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+        ],
+      });
+      expect(updated.conflict).toBe(false);
+
+      const newDays = await env.DB.prepare(
+        'SELECT id, name FROM day_templates WHERE plan_id = ?1',
+      )
+        .bind(planId)
+        .all<{ id: string; name: string }>();
+      const newIdByName = Object.fromEntries(newDays.results.map((d) => [d.name, d.id]));
+      const meta = JSON.parse(
+        (await env.DB.prepare('SELECT meta FROM plans WHERE id = ?1').bind(planId).first<{ meta: string }>())!.meta,
+      );
+      expect(meta.schedule.week.mon).toBe(newIdByName['Push Day']);
+    });
+  });
+});
+
+// FIX2 (MCP path) — the skip_planned_session TOOL's session_already_started
+// rejection (added in f7638ce) had no rejection-path coverage; mcp_write
+// only ever skipped a planned date. These exercise the guard end-to-end
+// through the MCP tool, including no-mutation + sets-intact, and confirm
+// the planned/empty path still works.
+describe('mcp skip_planned_session — rejects burying started/finished history', () => {
+  // The MCP tool resolves the single owner via ensureOwnerUser; update_plan
+  // bootstraps it. Resolve that owner + its active plan, then seed a
+  // session directly with the status under test.
+  async function ownerAndPlan(): Promise<{ userId: string; planId: string }> {
+    await call('update_plan', {
+      name: 'MCP Skip Guard',
+      days: [{ day_label: 'A', name: 'Day A', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] }],
+    });
+    const userId = (
+      await env.DB.prepare('SELECT id FROM users ORDER BY created_at LIMIT 1').first<{ id: string }>()
+    )!.id;
+    const planId = (
+      await env.DB.prepare("SELECT id FROM plans WHERE user_id=?1 AND status='active'")
+        .bind(userId)
+        .first<{ id: string }>()
+    )!.id;
+    return { userId, planId };
+  }
+  async function seedSession(
+    userId: string,
+    planId: string,
+    date: string,
+    status: string,
+  ): Promise<string> {
+    const sid = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,?7,NULL,NULL,?8,?8)',
+    )
+      .bind(sid, userId, planId, date, status, status === 'planned' ? null : 1, status === 'completed' ? 2 : null, Date.now())
+      .run();
+    return sid;
+  }
+
+  it('REJECTS via the tool when the date has a completed session; row + sets intact', async () => {
+    const { userId, planId } = await ownerAndPlan();
+    const sid = await seedSession(userId, planId, '2026-08-01', 'completed');
+    const setId = crypto.randomUUID();
+    await env.DB.prepare(
+      "INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,deleted_at) VALUES (?1,?2,'ex_bench',NULL,1,225,5,8,0,NULL,?3,'mcp',NULL)",
+    )
+      .bind(setId, sid, Date.now())
+      .run();
+
+    const r = await call('skip_planned_session', { date: '2026-08-01' });
+    expect(r).toEqual({ error: 'session_already_started', status: 'completed' });
+
+    const row = await env.DB.prepare('SELECT status FROM sessions WHERE id=?1')
+      .bind(sid)
+      .first<{ status: string }>();
+    expect(row!.status).toBe('completed'); // not buried
+    const set = await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?1')
+      .bind(setId)
+      .first<{ deleted_at: number | null }>();
+    expect(set!.deleted_at).toBeNull();
+  });
+
+  it('REJECTS via the tool when the date has an in_progress session; row untouched', async () => {
+    const { userId, planId } = await ownerAndPlan();
+    const sid = await seedSession(userId, planId, '2026-08-02', 'in_progress');
+    const r = await call('skip_planned_session', { date: '2026-08-02' });
+    expect(r).toEqual({ error: 'session_already_started', status: 'in_progress' });
+    const row = await env.DB.prepare('SELECT status FROM sessions WHERE id=?1')
+      .bind(sid)
+      .first<{ status: string }>();
+    expect(row!.status).toBe('in_progress');
+  });
+
+  it('still skips a planned/empty date via the tool (unchanged behavior)', async () => {
+    const { userId, planId } = await ownerAndPlan();
+    await seedSession(userId, planId, '2026-08-03', 'planned');
+    const r = await call('skip_planned_session', { date: '2026-08-03' });
+    expect(r.ok).toBe(true);
+    const row = await env.DB.prepare('SELECT status FROM sessions WHERE user_id=?1 AND date=?2')
+      .bind(userId, '2026-08-03')
+      .first<{ status: string }>();
+    expect(row!.status).toBe('skipped');
+
+    // empty date (no prior session) → create-as-skipped
+    const r2 = await call('skip_planned_session', { date: '2026-08-04' });
+    expect(r2.ok).toBe(true);
+    const row2 = await env.DB.prepare('SELECT status FROM sessions WHERE user_id=?1 AND date=?2')
+      .bind(userId, '2026-08-04')
+      .first<{ status: string }>();
+    expect(row2!.status).toBe('skipped');
+  });
 });

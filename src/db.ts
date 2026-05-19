@@ -6,6 +6,7 @@ import type {
   EnrichedTemplateExercise,
   Env,
   ExternalEventRow,
+  PlanMeta,
   PlanRow,
   PlanTree,
   ScheduleWeek,
@@ -333,14 +334,67 @@ export async function patchSession(
   db: D1Database,
   userId: string,
   sessionId: string,
-  patch: { status?: string; perceived_fatigue?: number; notes?: string },
-): Promise<SessionRow | null> {
+  // `status` is `unknown`: the PATCH body is NOT runtime-validated, so a
+  // client can send a number/null/bool/object/array here. Typing it
+  // honestly forces the type-guard below.
+  patch: { status?: unknown; perceived_fatigue?: number; notes?: string },
+): Promise<
+  | SessionRow
+  | null
+  | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
+  | { error: 'invalid_status'; status: unknown }
+> {
   const s = await db
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
     .bind(sessionId, userId)
     .first<SessionRow>();
   if (!s) return null;
-  const status = patch.status ?? s.status;
+  // Type-guard BEFORE normalizing: a present-but-non-string `status`
+  // (e.g. {"status":123|null|true|{}|[]}) must be treated exactly like an
+  // invalid status — return the invalid_status arm (→ HTTP 400), never
+  // call .trim() on a non-string (that was a 500-causing regression),
+  // never persist, never reach the burial guard. Key absent / undefined
+  // → field-only patch, unchanged. Only a string proceeds to normalize.
+  if (patch.status !== undefined && typeof patch.status !== 'string') {
+    return { error: 'invalid_status', status: patch.status };
+  }
+  // Normalize the incoming status ONCE (trim + lowercase) so casing /
+  // whitespace cannot bypass the skipped-guard ({"status":"  SKIPPED "})
+  // and so the value compared here is the value persisted below — a
+  // non-canonical status can never silently corrupt the row.
+  const normalizedStatus =
+    patch.status === undefined ? undefined : patch.status.trim().toLowerCase();
+  // Validate against the closed status set BEFORE the burial guard and
+  // BEFORE any write: an unknown status (e.g. "junk") is rejected, never
+  // persisted. A field-only patch (no `status` key) skips this entirely.
+  // This is app-layer validation (no DB CHECK / migration) and is what
+  // makes the "can never silently corrupt the row" guarantee true.
+  if (
+    normalizedStatus !== undefined &&
+    normalizedStatus !== 'planned' &&
+    normalizedStatus !== 'in_progress' &&
+    normalizedStatus !== 'completed' &&
+    normalizedStatus !== 'skipped'
+  ) {
+    return { error: 'invalid_status', status: normalizedStatus };
+  }
+  // History-integrity guard (REST sibling of FIX2's skipPlannedSession
+  // guard): a `skipped` patch must not bury a started/finished workout.
+  // Setting an in_progress/completed session to 'skipped' would render it
+  // skipped on the calendar/agenda and hide its logged set_logs. Reject
+  // and leave the row + its sets untouched — same rejection shape as
+  // skipPlannedSession. Other status transitions and non-status patches
+  // are unchanged.
+  if (
+    normalizedStatus === 'skipped' &&
+    (s.status === 'in_progress' || s.status === 'completed')
+  ) {
+    return {
+      error: 'session_already_started',
+      status: s.status as 'in_progress' | 'completed',
+    };
+  }
+  const status = normalizedStatus ?? s.status;
   const fatigue = patch.perceived_fatigue ?? s.perceived_fatigue;
   const notes = patch.notes ?? s.notes;
   const completedAt = status === 'completed' ? s.completed_at ?? now() : s.completed_at;
@@ -440,6 +494,10 @@ export async function patchSet(
   const reps = patch.reps ?? row.reps;
   const rpe = patch.rpe === undefined ? row.rpe : patch.rpe;
   const notes = patch.notes === undefined ? row.notes : patch.notes;
+  // WARNING: this soft-delete is INVISIBLE to an incremental `sets_since`
+  // client — the getState sets query gates on the immutable `logged_at`,
+  // not deleted_at (see the WARNING on that query). Only safe while the
+  // iOS client full-reloads; needs a mutable updated_at cursor (follow-up).
   const deletedAt = patch.deleted ? row.deleted_at ?? now() : patch.deleted === false ? null : row.deleted_at;
   await db
     .prepare('UPDATE set_logs SET weight=?2, reps=?3, rpe=?4, notes=?5, deleted_at=?6 WHERE id=?1')
@@ -471,6 +529,12 @@ export async function getState(
     .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND updated_at > ?2 ORDER BY date')
     .bind(userId, setsSince)
     .all<SessionRow>();
+  // WARNING: `logged_at` is an IMMUTABLE incremental cursor — a set
+  // soft-deleted (deleted_at set) AFTER a client's watermark passed its
+  // logged_at is NEVER delivered incrementally (FIX3-class tombstone gap,
+  // like external_events). Only safe because the current iOS client
+  // full-reloads (sets_since=0). An incremental client needs a mutable
+  // set_logs `updated_at` cursor — tracked follow-up; see patchSet.
   const sets = await db
     .prepare(
       `SELECT sl.* FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
@@ -726,10 +790,36 @@ export async function updatePlanTree(
   // at; weekdays whose day genuinely no longer exists (no matching new day)
   // are cleared. Same batch ⇒ shares the single version bump. Never lose
   // the schedule key.
-  const baseMeta =
-    input.meta === undefined
-      ? parsePlanMeta(plan.meta)
-      : parsePlanMeta(JSON.stringify(input.meta));
+  // baseMeta ALWAYS starts from the EXISTING persisted plan.meta so the
+  // user's recurring schedule survives a metadata-only update_plan. An
+  // incoming `meta` is MERGED over it (incoming keys win). The existing
+  // meta.schedule is PRESERVED unless the incoming meta explicitly carries
+  // its own `schedule` key — only then does that replace it (and it still
+  // rides the day-name/label remap below). Passing NO meta is unchanged.
+  const existingMeta = parsePlanMeta(plan.meta);
+  const incomingMetaRaw =
+    input.meta !== undefined &&
+    input.meta !== null &&
+    typeof input.meta === 'object' &&
+    !Array.isArray(input.meta)
+      ? (input.meta as Record<string, unknown>)
+      : undefined;
+  const incomingHasSchedule =
+    incomingMetaRaw !== undefined &&
+    Object.prototype.hasOwnProperty.call(incomingMetaRaw, 'schedule');
+  // Merge: existing meta is the base; incoming non-schedule keys overlay it.
+  // The schedule is decided explicitly below so a schedule-less incoming
+  // meta cannot erase the persisted one.
+  const mergedMeta: PlanMeta = parsePlanMeta(
+    JSON.stringify({
+      ...existingMeta,
+      ...(input.meta === undefined ? {} : input.meta ?? {}),
+      schedule: incomingHasSchedule
+        ? (incomingMetaRaw as Record<string, unknown>).schedule
+        : existingMeta.schedule,
+    }),
+  );
+  const baseMeta = mergedMeta;
   const remappedWeek = { ...baseMeta.schedule.week };
   for (const wd of WEEKDAYS) {
     const oldId = remappedWeek[wd];
@@ -880,11 +970,22 @@ export async function logWorkoutComplete(
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
   const session = await getOrCreateSession(db, userId, plan.id, date, null);
-  return patchSession(db, userId, session.id, {
+  const r = await patchSession(db, userId, session.id, {
     status: 'completed',
     perceived_fatigue: perceivedFatigue ?? undefined,
     notes: notes ?? undefined,
   });
+  // logWorkoutComplete ALWAYS passes status:'completed', which is a valid
+  // status and never the skipped-burial case — so neither patchSession
+  // rejection arm ('invalid_status' / 'session_already_started') is
+  // reachable here. Fail LOUD rather than silently return null if that
+  // ever changes (e.g. the guard's scope is widened beyond 'skipped').
+  if (r && 'error' in r) {
+    throw new Error(
+      `unreachable: patchSession returned ${r.error} on the status:'completed' path — guard scope changed`,
+    );
+  }
+  return r;
 }
 
 // ---- one-way lifting-load export to intervals.icu (Option C) ------------
@@ -1840,7 +1941,11 @@ export async function skipPlannedSession(
   db: D1Database,
   userId: string,
   date: string,
-): Promise<{ error: 'no_active_plan' } | { ok: true; session: SessionRow }> {
+): Promise<
+  | { error: 'no_active_plan' }
+  | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
+  | { ok: true; session: SessionRow }
+> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' };
   const existing = await db
@@ -1849,6 +1954,17 @@ export async function skipPlannedSession(
     .first<SessionRow>();
   const ts = now();
   if (existing) {
+    // A skip may only override a planned (or absent) session. If the date
+    // already has a started/finished workout, skipping it would hide logged
+    // sets and destroy visible history for a mis-dated skip. Reject and
+    // leave the row untouched — Claude must explicitly intend something
+    // else. The MCP wrapper still audits this rejection (audit-on-write).
+    if (existing.status === 'in_progress' || existing.status === 'completed') {
+      return {
+        error: 'session_already_started',
+        status: existing.status as 'in_progress' | 'completed',
+      };
+    }
     await db
       .prepare("UPDATE sessions SET status = 'skipped', updated_at = ?2 WHERE id = ?1")
       .bind(existing.id, ts)
@@ -2138,8 +2254,12 @@ export async function syncExternalEvents(
   stmts.push(
     db
       .prepare(
+        // Advance synced_at to the deletion time alongside deleted_at:
+        // /api/state?events_since= filters `synced_at > cursor`, so a
+        // tombstone that kept its old synced_at would never reach an
+        // incremental client (it would keep showing the deleted ride).
         `UPDATE external_events
-            SET deleted_at = ?3
+            SET deleted_at = ?3, synced_at = ?3
           WHERE user_id = ?1
             AND deleted_at IS NULL
             AND date >= ?2 AND date <= ?${seenIds.length ? seenIds.length + 4 : 4}

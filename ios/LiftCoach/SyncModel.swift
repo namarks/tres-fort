@@ -294,15 +294,20 @@ final class SyncModel: ObservableObject {
     func startRest(seconds: Int, name: String) {
         restExercise = name
         restTotal = seconds
-        restEndDate = Date().addingTimeInterval(TimeInterval(seconds))
+        let end = Date().addingTimeInterval(TimeInterval(seconds))
+        restEndDate = end
+        RestLiveActivity.start(exercise: name, endDate: end, upNext: upNextName)
     }
     func addRest(_ seconds: Int) {
         guard let end = restEndDate else { return }
-        restEndDate = end.addingTimeInterval(TimeInterval(seconds))
+        let newEnd = end.addingTimeInterval(TimeInterval(seconds))
+        restEndDate = newEnd
+        RestLiveActivity.update(endDate: newEnd, upNext: upNextName)
     }
     func skipRest() {
         restEndDate = nil
         setClock = Date()   // next set begins when rest ends
+        RestLiveActivity.endNow()
     }
 
     private func handle(_ error: Error) {

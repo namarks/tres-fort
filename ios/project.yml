@@ -11,21 +11,35 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     GENERATE_INFOPLIST_FILE: NO
+    DEVELOPMENT_TEAM: "8BA2RY6RCA"   # Nicholas Marks (Apple Developer Program)
+    CODE_SIGN_STYLE: Automatic
 targets:
   LiftCoach:
     type: application
     platform: iOS
     sources:
       - LiftCoach
+      - Shared            # RestActivityAttributes — shared with the widget
+    dependencies:
+      - target: LiftCoachWidgets
+        embed: true        # bundles the Live Activity extension into the app
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nmarkspdx.liftcoach
         INFOPLIST_FILE: LiftCoach/Info.plist
         CODE_SIGN_ENTITLEMENTS: LiftCoach/LiftCoach.entitlements
-        CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: "8BA2RY6RCA"   # Nicholas Marks (Apple Developer Program)
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_PREVIEWS: YES
-      # Automatic signing + the team above provisions the Sign in with
-      # Apple capability. To use a different team, change DEVELOPMENT_TEAM
-      # and re-run `xcodegen generate`.
+      # Automatic signing + the team above provisions Sign in with Apple.
+
+  LiftCoachWidgets:
+    type: app-extension
+    platform: iOS
+    sources:
+      - LiftCoachWidgets
+      - Shared            # same attributes type, compiled into the extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nmarkspdx.liftcoach.widgets
+        INFOPLIST_FILE: LiftCoachWidgets/Info.plist
+        TARGETED_DEVICE_FAMILY: "1"

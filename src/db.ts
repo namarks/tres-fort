@@ -1011,7 +1011,23 @@ export interface ExportDeps {
   /** Injected in tests so the suite never hits the network. */
   fetcher?: Fetcher;
   timeoutMs?: number;
+  /**
+   * Override the in-flight staleness window (ms). Defaults to
+   * IN_FLIGHT_STALE_MS. Tests set this (e.g. 0) to deterministically
+   * exercise the crashed-in_flight reclaim path without sleeping 15 min;
+   * production never sets it.
+   */
+  staleMs?: number;
 }
+
+/**
+ * An `in_flight` ledger row older than this (epoch-ms age) is treated as a
+ * crashed/abandoned export and is eligible for cron retry, so a process
+ * that died mid-push cannot wedge a session forever. 15 min comfortably
+ * exceeds the export's worst-case wall time (a couple of ~10s intervals
+ * round-trips) while still recovering quickly.
+ */
+export const IN_FLIGHT_STALE_MS = 15 * 60_000;
 
 /**
  * Best-effort, one-way push of a completed session's sRPE load into
@@ -1062,12 +1078,106 @@ export async function exportSessionLoad(
   }
   const name = `Lift: ${dayName}`;
 
-  // Read any prior export row (idempotency key = session_id).
+  // ---- PER-SESSION SINGLE-FLIGHT (concurrency guard) -------------------
+  //
+  // The offline-first iOS client can fire two log_workout_complete requests
+  // for the SAME session concurrently (retry-on-timeout while the first is
+  // still in-flight) → two waitUntil exports racing. Without serialization
+  // both read prior=null, both GET (neither sees the other yet), both POST
+  // → a duplicate intervals.icu event with NO cleanup path. The D1 PK
+  // dedupes the ledger ROW but not the remote calls.
+  //
+  // The ledger row is the mutex. Two atomic claim attempts BEFORE any
+  // network I/O; `meta.changes === 1` on either ⇒ this caller won and is
+  // the ONLY one allowed to GET/POST/PUT-create this session's event:
+  //  (a) INSERT a fresh `in_flight` sentinel (first-ever export); or
+  //  (b) transition an existing RETRYABLE row (pending / disabled /
+  //      STALE in_flight from a crashed run) to `in_flight`.
+  // A live in_flight owned by a concurrent export, or a terminal `ok`,
+  // matches neither → this caller defers (no remote create).
+  const claimTs = now();
+  const ins = await db
+    .prepare(
+      `INSERT INTO session_load_exports
+         (session_id,intervals_ref,load,status,attempts,updated_at)
+       VALUES (?1,NULL,?2,'in_flight',0,?3)
+       ON CONFLICT(session_id) DO NOTHING`,
+    )
+    .bind(sessionId, computed.load, claimTs)
+    .run();
+  let wonClaim = ins.meta.changes === 1;
+  if (!wonClaim) {
+    const staleBefore = claimTs - (deps.staleMs ?? IN_FLIGHT_STALE_MS);
+    const take = await db
+      .prepare(
+        `UPDATE session_load_exports
+           SET status='in_flight', updated_at=?2
+         WHERE session_id=?1
+           AND ( status IN ('pending','disabled')
+                 OR (status='in_flight' AND updated_at < ?3) )`,
+      )
+      .bind(sessionId, claimTs, staleBefore)
+      .run();
+    wonClaim = take.meta.changes === 1;
+  }
+
+  // Read the (now-guaranteed) row to learn any prior ref / terminal state.
   const prior = await db
     .prepare('SELECT * FROM session_load_exports WHERE session_id = ?1')
     .bind(sessionId)
     .first<LoadExportRow>();
 
+  if (!wonClaim) {
+    // We did NOT claim — another export already owns this session, OR a
+    // terminal row exists. We must NOT create a remote event (that is the
+    // exact concurrent-duplicate window).
+    if (prior?.status === 'ok') {
+      // Already exported successfully — nothing to do.
+      return { status: 'ok', load: prior.load ?? computed.load };
+    }
+    if (prior?.intervals_ref) {
+      // A remote event already exists → it is safe & duplicate-free to
+      // PUT-update that EXACT ref (known id ⇒ pushStrengthActivity goes
+      // straight to PUT, no GET, no POST). This refreshes load without a
+      // duplicate even if we lost the claim race.
+      const upd = await pushStrengthActivity(
+        env,
+        {
+          date: session.date,
+          name,
+          loadTss: computed.load,
+          durationSec: computed.durationSec,
+          sessionId,
+          ref: prior.intervals_ref,
+        },
+        { fetcher: deps.fetcher, timeoutMs: deps.timeoutMs },
+      );
+      const ts2 = now();
+      if (upd.ok) {
+        await db
+          .prepare(
+            `UPDATE session_load_exports
+               SET intervals_ref=?2, load=?3, status='ok', updated_at=?4
+             WHERE session_id=?1`,
+          )
+          .bind(sessionId, upd.ref, computed.load, ts2)
+          .run();
+        await writeAudit(db, userId, 'export_session_load', { session_id: sessionId, load: computed.load }, `ok:ref=${upd.ref}:deferred_update`);
+        return { status: 'ok', load: computed.load };
+      }
+      // Update failed — leave whatever the in-flight owner / cron will
+      // reconcile; do not downgrade a possibly-good row.
+      await writeAudit(db, userId, 'export_session_load', { session_id: sessionId }, `deferred:update_failed:${upd.reason}`);
+      return { status: 'pending', load: computed.load };
+    }
+    // Another export is in flight with no ref yet (or row is pending) —
+    // defer entirely. The in-flight owner finishes it; if that owner
+    // crashed, the cron retries the stale in_flight row.
+    await writeAudit(db, userId, 'export_session_load', { session_id: sessionId }, 'deferred:in_flight');
+    return { status: 'pending', load: computed.load };
+  }
+
+  // --- This caller WON the claim: it alone performs the create/push. ---
   const push = await pushStrengthActivity(
     env,
     {
@@ -1082,6 +1192,8 @@ export async function exportSessionLoad(
   );
 
   const ts = now();
+  // prior.attempts is 0 for a fresh sentinel, or the prior count for a
+  // reclaimed retryable row (claim transitions didn't bump it). Count this.
   const attempts = (prior?.attempts ?? 0) + 1;
 
   if (push.ok) {
@@ -1191,10 +1303,14 @@ export async function tryExportSessionLoad(
 }
 
 /**
- * Cron retry: re-attempt every still-`pending` export. Idempotent — each
- * retry routes back through exportSessionLoad's session_id-keyed upsert,
- * so a retry UPDATEs the same intervals activity (never a duplicate) and
- * bumps `attempts`. A failing retry stays 'pending'. Never throws.
+ * Cron retry: re-attempt every still-`pending` export PLUS any STALE
+ * `in_flight` row (older than IN_FLIGHT_STALE_MS — a crashed export that
+ * never reached a terminal state, so it can't wedge a session forever).
+ * Idempotent — each retry routes back through exportSessionLoad, whose
+ * single-flight reclaim transitions the stale/pending row to in_flight and
+ * the marker lookup / known ref guarantees the same intervals activity is
+ * UPDATEd (never a duplicate). A failing retry stays 'pending'. Never
+ * throws.
  */
 export async function retryPendingLoadExports(
   db: D1Database,
@@ -1204,8 +1320,14 @@ export async function retryPendingLoadExports(
   const out = { retried: 0, ok: 0, stillPending: 0 };
   let rows: { session_id: string }[];
   try {
+    const staleBefore = now() - (deps.staleMs ?? IN_FLIGHT_STALE_MS);
     const r = await db
-      .prepare("SELECT session_id FROM session_load_exports WHERE status = 'pending'")
+      .prepare(
+        `SELECT session_id FROM session_load_exports
+          WHERE status = 'pending'
+             OR (status = 'in_flight' AND updated_at < ?1)`,
+      )
+      .bind(staleBefore)
       .all<{ session_id: string }>();
     rows = r.results;
   } catch (e) {

@@ -33,13 +33,19 @@ struct DayAgendaView: View {
     }
 
     var body: some View {
-        let proj = sync.projection(for: dateString)
+        // Capture today ONCE for the whole render: it feeds the
+        // projection's past/future split AND the FIX6 inference gate in
+        // `plannedDisplayDay`. `sync.todayString` is a computed var (fresh
+        // `Date()` each access); separate reads across one agenda render
+        // could straddle midnight and disagree. One read, one clock.
+        let today = sync.todayString
+        let proj = sync.projection(for: dateString, today: today)
         ZStack {
             Theme.bg.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    header(proj)
-                    content(proj)
+                    header(proj, today: today)
+                    content(proj, today: today)
                     ridesSection
                 }
                 .padding(22)
@@ -51,18 +57,18 @@ struct DayAgendaView: View {
 
     // MARK: header
 
-    private func header(_ proj: DayProjection) -> some View {
+    private func header(_ proj: DayProjection, today: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(prettyDate)
                 .font(Theme.mono(11, .bold)).tracking(2)
                 .foregroundStyle(Theme.muted)
-            Text(title(proj))
+            Text(title(proj, today: today))
                 .font(Theme.display(34))
                 .foregroundStyle(Theme.text)
         }
     }
 
-    private func title(_ proj: DayProjection) -> String {
+    private func title(_ proj: DayProjection, today: String) -> String {
         switch proj {
         case .session(let s):
             switch s {
@@ -70,7 +76,7 @@ struct DayAgendaView: View {
             case "in_progress": return "IN PROGRESS"
             // Planned + projected collapse to one user-facing "WORKOUT"
             // (no "Planned"/"Projected" wording); prefer the template name.
-            case "planned":     return planTitle ?? "WORKOUT"
+            case "planned":     return planTitle(today: today) ?? "WORKOUT"
             case "skipped":     return "SKIPPED"
             default:            return s.uppercased()
             }
@@ -81,9 +87,33 @@ struct DayAgendaView: View {
         }
     }
 
-    /// Template title for a real session via its day_template_id.
-    private var planTitle: String? {
-        sync.dayTemplate(id: realSession?.day_template_id)?.title.uppercased()
+    /// The day template to DISPLAY for a real (planned) session on this
+    /// date — the SAME shared session→schedule resolver Today / the
+    /// calendar / `nextWorkout` use (FIX5's class), not a bare
+    /// `day_template_id` read. When the session's own `day_template_id`
+    /// is null (server drops it for an existing same-date row) this still
+    /// recovers the template via the weekly schedule.
+    ///
+    /// The schedule-inference fallback is gated EXACTLY as FIX6 gates it
+    /// in `CalendarView.dayLabel`: `dateString >= today` — the same
+    /// civil-date boundary `CalendarProjection.project` uses
+    /// (`dateString < today`). For a PAST date with a null
+    /// `day_template_id` this returns nil (no schedule-inferred relabel —
+    /// don't reintroduce the FIX6 class in the agenda); for today/future
+    /// the gate is true so a planned session resolves its template.
+    /// `today` is supplied by the caller (captured ONCE per render in
+    /// `body`, midnight-TOCTOU discipline) — title + content body share
+    /// that single value rather than re-reading the computed clock.
+    private func plannedDisplayDay(today: String) -> DayTemplate? {
+        sync.sessionDisplayTemplate(
+            forDateString: dateString,
+            allowScheduleInference: dateString >= today)
+    }
+
+    /// Template title for a real planned session (via the shared,
+    /// FIX6-gated resolver above — not a bare `day_template_id`).
+    private func planTitle(today: String) -> String? {
+        plannedDisplayDay(today: today)?.title.uppercased()
     }
 
     private var realSession: SessionRow? {
@@ -92,7 +122,7 @@ struct DayAgendaView: View {
 
     // MARK: content
 
-    @ViewBuilder private func content(_ proj: DayProjection) -> some View {
+    @ViewBuilder private func content(_ proj: DayProjection, today: String) -> some View {
         switch proj {
         case .session(let status):
             if status == "completed" || status == "in_progress" {
@@ -101,7 +131,12 @@ struct DayAgendaView: View {
                 note("This workout was skipped.")
             } else {
                 // planned real session → show its template targets.
-                if let day = sync.dayTemplate(id: realSession?.day_template_id) {
+                // Shared FIX6-gated resolver (not a bare day_template_id):
+                // recovers the template via the weekly schedule when the
+                // session's own id is null, for today/future only. Past
+                // planned w/ null id stays the graceful no-template note
+                // (no schedule-inferred relabel — FIX6 class preserved).
+                if let day = plannedDisplayDay(today: today) {
                     templateTargets(day)
                 } else {
                     note("Workout — no template details cached.")

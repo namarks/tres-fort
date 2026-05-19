@@ -49,7 +49,14 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
 /// The A/B (or other) day label for the workout that resolves on `ymd`,
 /// for the on-cell badge. nil when the day has no resolvable template.
 @MainActor private func dayLabel(_ sync: SyncModel, _ ymd: String) -> String? {
-    switch sync.projection(for: ymd) {
+    // Capture today ONCE: it feeds BOTH the projection's past/future
+    // split AND the `allowScheduleInference` gate below. `sync.todayString`
+    // is a computed var (fresh `Date()` each access); two reads inside one
+    // `dayLabel` call could straddle midnight and disagree (projection
+    // sees today's session, gate evaluates against the rolled-over day).
+    // One read, one clock for the whole decision.
+    let today = sync.todayString
+    switch sync.projection(for: ymd, today: today) {
     case .projected(let tid):
         return sync.dayTemplate(id: tid)?.day_label
     case .session:
@@ -67,7 +74,7 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
         // the prior BLOCKER fix (today's null-template session).
         return sync.sessionDisplayTemplate(
             forDateString: ymd,
-            allowScheduleInference: ymd >= sync.todayString
+            allowScheduleInference: ymd >= today
         )?.day_label
     case .rest, .none:
         return nil

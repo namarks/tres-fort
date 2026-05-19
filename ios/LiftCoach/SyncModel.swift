@@ -377,14 +377,27 @@ final class SyncModel: ObservableObject {
             ridesOn: { [self] in rides(on: $0) })
     }
 
-    /// Resolve one calendar day via the frozen projection algorithm.
-    func projection(for dateString: String) -> DayProjection {
+    /// Resolve one calendar day via the frozen projection algorithm,
+    /// against an EXPLICITLY supplied `today`. Lets a caller that also
+    /// needs the same `today` for a second decision (e.g. the
+    /// `allowScheduleInference` gate in `dayLabel`) capture `todayString`
+    /// ONCE and pass it here — eliminating the midnight TOCTOU where two
+    /// separate `todayString` reads in one logical operation straddle the
+    /// rollover and disagree. Same single algorithm; no forked logic.
+    func projection(for dateString: String, today: String) -> DayProjection {
         CalendarProjection.project(
             dateString: dateString,
-            today: todayString,
+            today: today,
             sessionByDate: sessionsByDate,
             schedule: plan?.schedule,
             templateIDs: planTemplateIDs)
+    }
+
+    /// Resolve one calendar day via the frozen projection algorithm
+    /// (convenience: reads `todayString` once for callers that don't
+    /// need to share the clock with another decision).
+    func projection(for dateString: String) -> DayProjection {
+        projection(for: dateString, today: todayString)
     }
 
     // MARK: schedule-driven Today
@@ -461,8 +474,14 @@ final class SyncModel: ObservableObject {
         case .session:
             // Real workout-status session. Shared session→schedule
             // inference, then selected/first so Today always has something
-            // to render.
-            return sessionDisplayTemplate(forDateString: todayString)
+            // to render. `allowScheduleInference: true` is passed
+            // EXPLICITLY (matching the documented caller convention) so
+            // the intent — today MUST schedule-infer its null-template
+            // session (the BLOCKER fix) — is visible and a future
+            // refactor of the default can't silently mis-gate it. `today`
+            // here is by definition `todayString`, so `>= today` holds.
+            return sessionDisplayTemplate(forDateString: todayString,
+                                          allowScheduleInference: true)
                 ?? selectedDay ?? plan?.days.first
         case .rest, .none:
             return nil   // unreachable (guarded by todayIsWorkout)
@@ -548,12 +567,17 @@ final class SyncModel: ObservableObject {
                     // a real planned/in_progress session with a null
                     // day_template_id (server drops it for an existing
                     // same-date row) still resolves its template via the
-                    // weekly schedule. `ymd` is strictly in the future here
-                    // (offset 1...maxDays), so schedule inference is valid.
-                    // Stays nil-graceful for genuinely unresolvable days.
+                    // weekly schedule. `ymd` is strictly in the future
+                    // here (offset 1...maxDays off the single `start`
+                    // capture — no intra-call midnight TOCTOU), so
+                    // `allowScheduleInference` is unconditionally valid;
+                    // passed EXPLICITLY to match the documented caller
+                    // convention. Stays nil-graceful for genuinely
+                    // unresolvable days.
                     return NextWorkout(
                         dateString: ymd,
-                        day: sessionDisplayTemplate(forDateString: ymd))
+                        day: sessionDisplayTemplate(forDateString: ymd,
+                                                    allowScheduleInference: true))
                 }
                 // A COMPLETED future session (e.g. pre-logged via MCP) is
                 // intentionally NOT surfaced as the "next workout" — it's

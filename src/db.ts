@@ -1067,6 +1067,11 @@ export async function exportSessionLoad(
     return { status: 'skipped' };
   }
 
+  // Non-null aliases (TS can't carry the `session`/`computed` guards above
+  // into the nested putUpdateKnownRef closure defined later).
+  const sessionRow = session;
+  const computedLoad = computed;
+
   // Day name for a friendly activity title.
   let dayName = 'Lifting';
   if (session.day_template_id) {
@@ -1127,54 +1132,125 @@ export async function exportSessionLoad(
     .bind(sessionId)
     .first<LoadExportRow>();
 
+  // Idempotent PUT-update against a KNOWN remote ref. Used by BOTH the
+  // non-winner deferred-update path and the post-completion changed-load
+  // re-export path. A known ref makes pushStrengthActivity go straight to
+  // PUT — no GET, no POST — so concurrent callers issuing this against the
+  // SAME ref are idempotent and cannot create a duplicate remote event. On
+  // success it UPSERTs load/updated_at/status='ok' and writes an audit row
+  // (reason supplied by the caller so the audit trail still distinguishes
+  // the two callers). It NEVER downgrades the row on failure — the caller
+  // decides the (non-downgrading) return value. Returns whether the remote
+  // PUT succeeded so the caller can shape its own status/load result.
+  async function putUpdateKnownRef(
+    ref: string,
+    okReason: string,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    const upd = await pushStrengthActivity(
+      env,
+      {
+        date: sessionRow.date,
+        name,
+        loadTss: computedLoad.load,
+        durationSec: computedLoad.durationSec,
+        sessionId,
+        ref,
+      },
+      { fetcher: deps.fetcher, timeoutMs: deps.timeoutMs },
+    );
+    if (upd.ok) {
+      const ts2 = now();
+      await db
+        .prepare(
+          `UPDATE session_load_exports
+             SET intervals_ref=?2, load=?3, status='ok', updated_at=?4
+           WHERE session_id=?1`,
+        )
+        .bind(sessionId, upd.ref, computedLoad.load, ts2)
+        .run();
+      await writeAudit(
+        db,
+        userId,
+        'export_session_load',
+        { session_id: sessionId, load: computedLoad.load },
+        `ok:ref=${upd.ref}:${okReason}`,
+      );
+      return { ok: true };
+    }
+    return { ok: false, reason: upd.reason };
+  }
+
   if (!wonClaim) {
     // We did NOT claim — another export already owns this session, OR a
     // terminal row exists. We must NOT create a remote event (that is the
     // exact concurrent-duplicate window).
     if (prior?.status === 'ok') {
-      // Already exported successfully — nothing to do.
-      return { status: 'ok', load: prior.load ?? computed.load };
-    }
-    if (prior?.intervals_ref) {
+      // Already exported successfully. `computed.load` is recomputed on
+      // EVERY call, so a post-completion correction (re-running
+      // log_workout_complete after editing perceived_fatigue / sets / RPE)
+      // shows up here as a changed load. Unconditionally early-returning
+      // would strand that correction locally — the remote activity would
+      // keep the stale load, contradicting the 0008 FROZEN CONTRACT.
+      if (computed.load === prior.load) {
+        // Inputs unchanged → genuine no-op. Do NOT hit intervals.icu on
+        // benign re-calls (idempotent re-export of an ok session).
+        return { status: 'ok', load: prior.load };
+      }
+      if (prior.intervals_ref) {
+        // Load changed AND we know the remote ref → idempotently
+        // PUT-update the SAME activity (no GET, no POST ⇒ duplicate-free
+        // even if two corrections race: concurrent PUTs to the same known
+        // ref converge). This is what makes "re-completing with a changed
+        // load updates the same activity" actually true.
+        const r = await putUpdateKnownRef(prior.intervals_ref, 'reexport_load_changed');
+        if (r.ok) return { status: 'ok', load: computed.load };
+        // PUT failed — do NOT downgrade the good `ok` row. The stored
+        // remote value is still the last good one; a future correction (or
+        // the user re-running completion) will retry. P2 ok-not-downgraded
+        // recovery guard is preserved.
+        await writeAudit(
+          db,
+          userId,
+          'export_session_load',
+          { session_id: sessionId },
+          `ok:reexport_update_failed:${r.reason}`,
+        );
+        return { status: 'ok', load: prior.load ?? computed.load };
+      }
+      // Defensive: an `ok` row with a changed load but NO ref should not
+      // happen (an ok row always carries a ref). Don't silently drop the
+      // correction. We are NOT the claim winner here, so we must NOT enter
+      // the winner-only create/marker path (that is the exact concurrent-
+      // duplicate window the single-flight guard exists for). Audit the
+      // anomaly and defer to `pending` so the cron's normal claim/marker
+      // path reconciles it on a later run — the correction is preserved,
+      // not dropped, and the single-flight guard is untouched.
+      await writeAudit(
+        db,
+        userId,
+        'export_session_load',
+        { session_id: sessionId, load: computed.load },
+        'anomaly:ok_changed_load_no_ref',
+      );
+      return { status: 'pending', load: computed.load };
+    } else if (prior?.intervals_ref) {
       // A remote event already exists → it is safe & duplicate-free to
       // PUT-update that EXACT ref (known id ⇒ pushStrengthActivity goes
       // straight to PUT, no GET, no POST). This refreshes load without a
       // duplicate even if we lost the claim race.
-      const upd = await pushStrengthActivity(
-        env,
-        {
-          date: session.date,
-          name,
-          loadTss: computed.load,
-          durationSec: computed.durationSec,
-          sessionId,
-          ref: prior.intervals_ref,
-        },
-        { fetcher: deps.fetcher, timeoutMs: deps.timeoutMs },
-      );
-      const ts2 = now();
-      if (upd.ok) {
-        await db
-          .prepare(
-            `UPDATE session_load_exports
-               SET intervals_ref=?2, load=?3, status='ok', updated_at=?4
-             WHERE session_id=?1`,
-          )
-          .bind(sessionId, upd.ref, computed.load, ts2)
-          .run();
-        await writeAudit(db, userId, 'export_session_load', { session_id: sessionId, load: computed.load }, `ok:ref=${upd.ref}:deferred_update`);
-        return { status: 'ok', load: computed.load };
-      }
+      const r = await putUpdateKnownRef(prior.intervals_ref, 'deferred_update');
+      if (r.ok) return { status: 'ok', load: computed.load };
       // Update failed — leave whatever the in-flight owner / cron will
       // reconcile; do not downgrade a possibly-good row.
-      await writeAudit(db, userId, 'export_session_load', { session_id: sessionId }, `deferred:update_failed:${upd.reason}`);
+      await writeAudit(db, userId, 'export_session_load', { session_id: sessionId }, `deferred:update_failed:${r.reason}`);
+      return { status: 'pending', load: computed.load };
+    } else {
+      // Another export is in flight with no ref yet (or row is pending) —
+      // defer entirely. The in-flight owner finishes it; if that owner
+      // crashed, the cron retries the stale in_flight row.
+      await writeAudit(db, userId, 'export_session_load', { session_id: sessionId }, 'deferred:in_flight');
       return { status: 'pending', load: computed.load };
     }
-    // Another export is in flight with no ref yet (or row is pending) —
-    // defer entirely. The in-flight owner finishes it; if that owner
-    // crashed, the cron retries the stale in_flight row.
-    await writeAudit(db, userId, 'export_session_load', { session_id: sessionId }, 'deferred:in_flight');
-    return { status: 'pending', load: computed.load };
   }
 
   // --- This caller WON the claim: it alone performs the create/push. ---

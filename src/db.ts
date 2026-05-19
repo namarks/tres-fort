@@ -1217,22 +1217,38 @@ export async function exportSessionLoad(
         );
         return { status: 'ok', load: prior.load ?? computed.load };
       }
-      // Defensive: an `ok` row with a changed load but NO ref should not
-      // happen (an ok row always carries a ref). Don't silently drop the
-      // correction. We are NOT the claim winner here, so we must NOT enter
-      // the winner-only create/marker path (that is the exact concurrent-
-      // duplicate window the single-flight guard exists for). Audit the
-      // anomaly and defer to `pending` so the cron's normal claim/marker
-      // path reconciles it on a later run — the correction is preserved,
-      // not dropped, and the single-flight guard is untouched.
-      await writeAudit(
-        db,
-        userId,
-        'export_session_load',
-        { session_id: sessionId, load: computed.load },
-        'anomaly:ok_changed_load_no_ref',
-      );
-      return { status: 'pending', load: computed.load };
+      // Defensive / unreachable: a terminal `ok` row ALWAYS carries an
+      // intervals_ref (a row only becomes `ok` after a push that stored
+      // the ref). An `ok` row with a changed load and NO ref therefore
+      // should never occur. Handle it like the PUT-failure case above:
+      // do NOT downgrade `ok` → that would violate the ok-not-downgraded
+      // invariant, and the cron's pending/in_flight selector NEVER picks
+      // an `ok` row, so a "defer to pending" here would neither persist
+      // nor get reconciled — it would silently drop the correction while
+      // re-entering this branch (and re-auditing) on every later call.
+      // Keep the row `ok`, return the stored last-good load. Write the
+      // anomaly audit AT MOST ONCE per session so this (unreachable) state
+      // cannot spam audit_log unbounded across repeated calls.
+      const priorAnomaly = await db
+        .prepare(
+          `SELECT 1 FROM audit_log
+             WHERE tool='export_session_load'
+               AND result='anomaly:ok_changed_load_no_ref'
+               AND args LIKE ?1
+             LIMIT 1`,
+        )
+        .bind(`%${sessionId}%`)
+        .first<{ 1: number }>();
+      if (!priorAnomaly) {
+        await writeAudit(
+          db,
+          userId,
+          'export_session_load',
+          { session_id: sessionId, load: computed.load },
+          'anomaly:ok_changed_load_no_ref',
+        );
+      }
+      return { status: 'ok', load: prior.load ?? computed.load };
     } else if (prior?.intervals_ref) {
       // A remote event already exists → it is safe & duplicate-free to
       // PUT-update that EXACT ref (known id ⇒ pushStrengthActivity goes

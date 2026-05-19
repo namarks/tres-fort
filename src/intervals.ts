@@ -125,6 +125,12 @@ export async function fetchPlannedEvents(
   for (const raw of body as Record<string, unknown>[]) {
     if (!raw || typeof raw !== 'object') continue;
     if (String(raw.category ?? '') !== 'WORKOUT') continue;
+    // BLOCKER-3 fix: never ingest OUR OWN exported lift events back into
+    // the endurance cache. Without this, exportSessionLoad's WeightTraining
+    // event lands in `external_events` and detectConflicts flags every lift
+    // day as clashing with its own exported load (a self-conflict loop).
+    // `external_events` stays endurance-commitments-only.
+    if (isLiftCoachExport(raw)) continue;
     const externalId = raw.id != null ? String(raw.id) : null;
     const startLocal = str(raw.start_date_local);
     if (!externalId || !startLocal) continue;
@@ -163,8 +169,16 @@ export interface StrengthActivity {
   /** Clamped session duration in seconds → intervals `moving_time`. */
   durationSec: number;
   /**
-   * Existing intervals.icu event id to UPDATE (idempotent re-export of the
-   * same session). When absent a new event is created.
+   * lift-coach session id. Drives the DETERMINISTIC `external_id` marker
+   * (`liftcoach:session:<id>`) stamped on the remote event so a re-export
+   * — even with a lost D1 ref — finds and UPDATEs its own prior event
+   * instead of creating a duplicate.
+   */
+  sessionId: string;
+  /**
+   * Known intervals.icu event id to UPDATE directly (fast path; from our
+   * D1 ledger). When absent we fall back to a marker lookup before any
+   * create, so a blind retry never duplicates.
    */
   ref?: string | null;
 }
@@ -172,6 +186,26 @@ export interface StrengthActivity {
 export type PushResult =
   | { ok: true; ref: string }
   | { ok: false; reason: 'disabled' | 'http' | 'timeout' | 'parse'; status?: number };
+
+/** Deterministic, session-stable marker stamped as the event `external_id`.
+ *  This is THE idempotency key for the remote artifact (see EXPORT MARKER
+ *  note on pushStrengthActivity). */
+export function exportMarker(sessionId: string): string {
+  return `liftcoach:session:${sessionId}`;
+}
+
+/** Recognises our own exported lift events (used to keep them OUT of the
+ *  endurance `external_events` cache — no self-conflict). Matches either
+ *  the deterministic external_id marker or the strength `type`. */
+export function isLiftCoachExport(raw: {
+  external_id?: unknown;
+  type?: unknown;
+}): boolean {
+  const ext = typeof raw.external_id === 'string' ? raw.external_id : '';
+  if (ext.startsWith('liftcoach:session:')) return true;
+  const t = String(raw.type ?? '').toLowerCase();
+  return t === 'weighttraining';
+}
 
 /**
  * Create-or-update a COMPLETED strength entry in intervals.icu carrying the
@@ -197,6 +231,21 @@ export type PushResult =
  * mechanism for injecting strength load into the intervals.icu calendar;
  * it is isolated behind THIS one function so the artifact can be swapped
  * without touching db.ts if a manual-activity endpoint is later confirmed.
+ *
+ * EXPORT MARKER / remote idempotency (BLOCKER-1 fix). The intervals.icu
+ * event API does NOT expose a verified server-side dedupe on create:
+ * `models.py` shows the Event model HAS an `external_id` field and
+ * `client.create_event` POSTs an arbitrary body (so we can set it), but
+ * `client.get_events` only filters by date window and NO code path relies
+ * on the server rejecting/upserting a duplicate `external_id`. So a blind
+ * re-POST after a lost D1 ref WOULD create a duplicate. Per the verified
+ * API we therefore use the **pre-POST lookup**: stamp a deterministic
+ * `external_id = liftcoach:session:<id>` AND, whenever we don't already
+ * hold a ref, GET that date's events and PUT-update our own prior event
+ * if the marker is present — we never POST without first checking for our
+ * own export. Evidence: ~/repos/mcp-servers/intervals-icu/src/
+ * intervals_icu_mcp/{models.py:191 external_id field, client.py
+ * create_event/get_events/update_event}.
  */
 export async function pushStrengthActivity(
   env: Env,
@@ -211,10 +260,47 @@ export async function pushStrengthActivity(
   const fetcher = deps.fetcher ?? (globalThis.fetch as unknown as Fetcher);
   const base =
     `https://intervals.icu/api/v1/athlete/${encodeURIComponent(athleteId)}/events`;
-  const isUpdate = activity.ref != null && activity.ref.length > 0;
-  const url = isUpdate ? `${base}/${encodeURIComponent(activity.ref!)}` : base;
-  const method = isUpdate ? 'PUT' : 'POST';
   const authToken = btoa(`API_KEY:${apiKey}`);
+  const marker = exportMarker(activity.sessionId);
+  const timeoutMs = deps.timeoutMs ?? 10_000;
+
+  // One AbortController per HTTP call; total wall-time is bounded by each
+  // call's own timeout (the export runs off the response path via
+  // waitUntil — see db.ts/mcp.ts).
+  async function call(
+    url: string,
+    method: string,
+    jsonBody?: string,
+  ): Promise<
+    | { ok: true; status: number; json: unknown }
+    | { ok: false; reason: 'http' | 'timeout' | 'parse'; status?: number }
+  > {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let res: { ok: boolean; status: number; json: () => Promise<unknown> };
+    try {
+      res = await fetcher(url, {
+        method,
+        headers: {
+          Authorization: `Basic ${authToken}`,
+          Accept: 'application/json',
+          ...(jsonBody ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body: jsonBody,
+        signal: controller.signal,
+      });
+    } catch {
+      return { ok: false, reason: 'timeout' };
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) return { ok: false, reason: 'http', status: res.status };
+    try {
+      return { ok: true, status: res.status, json: await res.json() };
+    } catch {
+      return { ok: false, reason: 'parse' };
+    }
+  }
 
   const body = JSON.stringify({
     // T00:00:00 suffix is required by the intervals.icu API; the date part
@@ -225,44 +311,58 @@ export async function pushStrengthActivity(
     type: 'WeightTraining',
     moving_time: activity.durationSec,
     icu_training_load: activity.loadTss,
+    // Deterministic remote idempotency key (see EXPORT MARKER note).
+    external_id: marker,
   });
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 10_000);
-  let res: { ok: boolean; status: number; json: () => Promise<unknown> };
-  try {
-    res = await fetcher(url, {
-      method,
-      headers: {
-        Authorization: `Basic ${authToken}`,
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-      },
-      body,
-      signal: controller.signal,
-    });
-  } catch {
-    // AbortError (timeout) or any network error — caller leaves the export
-    // row 'pending' for the cron to retry. NEVER throws to the caller.
-    return { ok: false, reason: 'timeout' };
-  } finally {
-    clearTimeout(timer);
+  // Resolve the target event id. Fast path: a known ref from our ledger.
+  let ref: string | null =
+    activity.ref != null && activity.ref.length > 0 ? activity.ref : null;
+
+  // Slow path / SAFETY NET: no known ref → look up our own prior export
+  // for this date by the deterministic marker BEFORE any create, so a
+  // blind retry (D1 ref lost after a successful POST) updates instead of
+  // duplicating on intervals.icu.
+  if (ref == null) {
+    const day = activity.date;
+    const lookup = await call(
+      `${base}?oldest=${day}&newest=${day}`,
+      'GET',
+    );
+    if (!lookup.ok) {
+      return lookup.reason === 'parse'
+        ? { ok: false, reason: 'parse' }
+        : lookup.reason === 'http'
+          ? { ok: false, reason: 'http', status: lookup.status }
+          : { ok: false, reason: 'timeout' };
+    }
+    if (Array.isArray(lookup.json)) {
+      for (const e of lookup.json as Record<string, unknown>[]) {
+        if (e && typeof e === 'object' && e.external_id === marker && e.id != null) {
+          ref = String(e.id);
+          break;
+        }
+      }
+    }
   }
 
-  if (!res.ok) return { ok: false, reason: 'http', status: res.status };
-
-  let parsed: unknown;
-  try {
-    parsed = await res.json();
-  } catch {
-    return { ok: false, reason: 'parse' };
+  const isUpdate = ref != null;
+  const url = isUpdate ? `${base}/${encodeURIComponent(ref!)}` : base;
+  const out = await call(url, isUpdate ? 'PUT' : 'POST', body);
+  if (!out.ok) {
+    return out.reason === 'parse'
+      ? { ok: false, reason: 'parse' }
+      : out.reason === 'http'
+        ? { ok: false, reason: 'http', status: out.status }
+        : { ok: false, reason: 'timeout' };
   }
-  // On update we already know the ref; the id echo is best-effort.
+
+  const parsed = out.json;
   const echoed =
     parsed && typeof parsed === 'object' && (parsed as { id?: unknown }).id != null
       ? String((parsed as { id: unknown }).id)
       : null;
-  const ref = echoed ?? (isUpdate ? activity.ref! : null);
-  if (!ref) return { ok: false, reason: 'parse' };
-  return { ok: true, ref };
+  const finalRef = echoed ?? ref;
+  if (!finalRef) return { ok: false, reason: 'parse' };
+  return { ok: true, ref: finalRef };
 }

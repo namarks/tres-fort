@@ -1075,6 +1075,7 @@ export async function exportSessionLoad(
       name,
       loadTss: computed.load,
       durationSec: computed.durationSec,
+      sessionId, // drives the deterministic remote idempotency marker
       ref: prior?.intervals_ref ?? null,
     },
     { fetcher: deps.fetcher, timeoutMs: deps.timeoutMs },

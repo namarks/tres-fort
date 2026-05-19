@@ -21,9 +21,10 @@ struct TodayView: View {
                 content
                 if sync.restEndDate != nil { RestOverlay(sync: sync) }
             }
-            // FIX 1: let the plan name breathe instead of hard-truncating
-            // mid-word. Use a principal title that wraps to 2 lines and
-            // scales down rather than the single-line inline title.
+            // FIX 1: let the plan name degrade gracefully instead of hard-
+            // truncating mid-word. A principal title shows short names full
+            // size on one line, wraps medium names to 2 lines, and scales
+            // long names down to 65% — the meaningful name always shows.
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     Text(sync.plan?.name ?? "lift-coach")
@@ -31,8 +32,9 @@ struct TodayView: View {
                         .foregroundStyle(Theme.text)
                         .multilineTextAlignment(.center)
                         .lineLimit(2)
-                        .minimumScaleFactor(0.7)
-                        .frame(maxWidth: 260)
+                        .minimumScaleFactor(0.65)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 280)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {

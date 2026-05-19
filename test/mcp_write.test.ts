@@ -732,3 +732,110 @@ describe('mcp order_index — settable on add and update; rejects unknown patch 
     expect(r.fields).toContain('orderIndex');
   });
 });
+
+describe('mcp update_day — patch a day in place (no full plan rebuild)', () => {
+  it('updates notes/name/day_label/order_index via day label; bumps plan version', async () => {
+    const built = await call('update_plan', {
+      name: 'Day patch',
+      days: [{ name: 'Old A', day_label: 'A', notes: 'old', exercises: [
+        { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
+      ] }],
+    });
+    const v0 = built.plan.version;
+
+    const r = await call('update_day', {
+      day: 'A',
+      patch: { name: 'New A', notes: 'warmup first', order_index: 7 },
+    });
+    expect(r.error).toBeUndefined();
+    expect(r.name).toBe('New A');
+    expect(r.notes).toBe('warmup first');
+    expect(r.order_index).toBe(7);
+
+    const after = await call('get_current_plan', {});
+    expect(after.version).toBeGreaterThan(v0);
+    expect(after.days[0].name).toBe('New A');
+  });
+
+  it('rejects unknown patch keys with structured error', async () => {
+    await call('update_plan', {
+      name: 'Unknown day key',
+      days: [{ name: 'A', day_label: 'A', exercises: [
+        { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
+      ] }],
+    });
+    const r = await call('update_day', {
+      day: 'A',
+      patch: { dayName: 'oops' }, // wrong key
+    });
+    expect(r.error).toBe('unknown_fields');
+    expect(r.fields).toContain('dayName');
+  });
+
+  it('returns day_not_found for an unknown ref', async () => {
+    await call('update_plan', {
+      name: 'Missing day',
+      days: [{ name: 'A', day_label: 'A', exercises: [
+        { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
+      ] }],
+    });
+    const r = await call('update_day', { day: 'Z', patch: { notes: 'x' } });
+    expect(r.error).toBe('day_not_found');
+  });
+});
+
+describe('mcp delete_exercise — removes a slot; detaches historical sets', () => {
+  it('deletes by (day, exercise) and NULLs set_logs.template_exercise_id', async () => {
+    await call('update_plan', {
+      name: 'Delete slot',
+      days: [{ name: 'A', day_label: 'A', exercises: [
+        { exercise: 'Bench Press',  order_index: 0, target_sets: 3, target_reps: 5 },
+        { exercise: 'Barbell Row',  order_index: 1, target_sets: 3, target_reps: 8 },
+      ] }],
+    });
+    // Plant a set_log that references the te id we're about to delete.
+    const te = await env.DB
+      .prepare(
+        "SELECT te.id FROM template_exercises te JOIN day_templates d ON d.id=te.day_template_id WHERE d.day_label='A' AND te.exercise_id='ex_bench'",
+      )
+      .first<{ id: string }>();
+    const teId = te!.id;
+    await call('set_planned_session', { date: '2026-10-01', day: 'A' });
+    const sess = await env.DB.prepare("SELECT id FROM sessions WHERE date='2026-10-01'").first<{ id: string }>();
+    const setId = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s)
+       VALUES (?1,?2,'ex_bench',?3,1,135,5,NULL,0,NULL,?4,'test',NULL)`,
+    ).bind(setId, sess!.id, teId, Date.now()).run();
+
+    const r = await call('delete_exercise', { day: 'A', exercise: 'bench' });
+    expect(r.error).toBeUndefined();
+    expect(r.id).toBe(teId);
+
+    // Slot gone; sibling row still there.
+    const remaining = await env.DB
+      .prepare(
+        "SELECT exercise_id FROM template_exercises te JOIN day_templates d ON d.id=te.day_template_id WHERE d.day_label='A'",
+      )
+      .all<{ exercise_id: string }>();
+    expect(remaining.results.map((r) => r.exercise_id)).toEqual(['ex_barbell_row']);
+
+    // Historical set: detached (template_exercise_id NULLed) but still present (exercise_id preserved).
+    const set = await env.DB.prepare('SELECT template_exercise_id, exercise_id FROM set_logs WHERE id=?1')
+      .bind(setId)
+      .first<{ template_exercise_id: string | null; exercise_id: string }>();
+    expect(set!.template_exercise_id).toBeNull();
+    expect(set!.exercise_id).toBe('ex_bench');
+  });
+
+  it('returns slot_not_found for an unknown ref', async () => {
+    await call('update_plan', {
+      name: 'No slot',
+      days: [{ name: 'A', day_label: 'A', exercises: [
+        { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
+      ] }],
+    });
+    const r = await call('delete_exercise', { day: 'A', exercise: 'pullup' });
+    expect(r.error).toBe('slot_not_found');
+  });
+});

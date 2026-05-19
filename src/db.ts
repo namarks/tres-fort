@@ -882,6 +882,117 @@ export async function logWorkoutComplete(
   });
 }
 
+// ---- one-way lifting-load export to intervals.icu (Option C) ------------
+//
+// This whole block is its OWN concern: a best-effort, decoupled, one-way
+// EXPORT. It never bumps plans.version, never touches the plan tree or the
+// append-only log, and an intervals.icu failure must never fail/block/throw
+// into log_workout_complete.
+
+/**
+ * sRPE-load calibration knob: `load = round(sessionRPE * durationMin * K)`.
+ *
+ * This is a TUNABLE calibration constant, NOT a correctness value — it only
+ * scales the absolute number to sit on a TSS-comparable axis in
+ * intervals.icu. Adjust it to taste; nothing in this codebase depends on
+ * its exact value.
+ */
+export const SRPE_LOAD_K = 0.2;
+
+/** Session-RPE fallback when neither perceived_fatigue nor set RPE exist.
+ *  Documented ESTIMATE: a "moderately hard" session on the 1-10 scale. */
+export const SRPE_FALLBACK_RPE = 7;
+
+/** Duration is clamped to this minute window before the load formula. */
+export const SRPE_MIN_MINUTES = 20;
+export const SRPE_MAX_MINUTES = 180;
+
+export interface SessionLoad {
+  /** Final integer load to push as icu_training_load. */
+  load: number;
+  /** Resolved session-RPE (1-10) and which source produced it. */
+  sessionRpe: number;
+  rpeSource: 'perceived_fatigue' | 'weighted_set_rpe' | 'fallback';
+  /** Clamped duration in minutes / raw seconds (for the activity payload). */
+  durationMin: number;
+  durationSec: number;
+}
+
+/**
+ * PURE sRPE load model (no I/O). Locked design:
+ *   load = round(sessionRPE * durationMin * K)
+ *
+ * sessionRPE priority:
+ *   1. session.perceived_fatigue (1-10) if set
+ *   2. else load-weighted mean of NON-warmup set RPE
+ *      (weight = weight*reps; sets without RPE are excluded)
+ *   3. else SRPE_FALLBACK_RPE (documented estimate)
+ *
+ * duration = (completed_at - started_at) → minutes, clamped to
+ * [SRPE_MIN_MINUTES, SRPE_MAX_MINUTES]. If started/completed are missing
+ * the duration is treated as 0 then clamped up to the floor.
+ *
+ * Returns `null` when the session has NO non-warmup sets → caller SKIPS
+ * the export entirely (a no-op, NOT a load of 0).
+ */
+export function computeSessionLoad(
+  session: Pick<SessionRow, 'perceived_fatigue' | 'started_at' | 'completed_at'>,
+  sets: Pick<SetLogRow, 'weight' | 'reps' | 'rpe' | 'is_warmup' | 'deleted_at'>[],
+): SessionLoad | null {
+  const working = sets.filter((s) => !s.is_warmup && s.deleted_at == null);
+  // No non-warmup work → nothing to export. Skip, do not push load 0.
+  if (working.length === 0) return null;
+
+  let sessionRpe: number;
+  let rpeSource: SessionLoad['rpeSource'];
+  if (
+    session.perceived_fatigue != null &&
+    Number.isFinite(session.perceived_fatigue)
+  ) {
+    sessionRpe = session.perceived_fatigue;
+    rpeSource = 'perceived_fatigue';
+  } else {
+    // Load-weighted mean of non-warmup set RPE; weight = weight*reps.
+    let wSum = 0;
+    let wRpe = 0;
+    for (const s of working) {
+      if (s.rpe == null || !Number.isFinite(s.rpe)) continue;
+      const w = Math.max(0, s.weight) * Math.max(0, s.reps);
+      // A bodyweight/zero-volume set still counts (min weight 1) so its
+      // RPE is not silently dropped.
+      const ww = w > 0 ? w : 1;
+      wSum += ww;
+      wRpe += ww * s.rpe;
+    }
+    if (wSum > 0) {
+      sessionRpe = wRpe / wSum;
+      rpeSource = 'weighted_set_rpe';
+    } else {
+      sessionRpe = SRPE_FALLBACK_RPE;
+      rpeSource = 'fallback';
+    }
+  }
+
+  const rawMs =
+    session.started_at != null && session.completed_at != null
+      ? session.completed_at - session.started_at
+      : 0;
+  const rawMin = rawMs > 0 ? rawMs / 60_000 : 0;
+  const durationMin = Math.min(
+    SRPE_MAX_MINUTES,
+    Math.max(SRPE_MIN_MINUTES, rawMin),
+  );
+
+  const load = Math.round(sessionRpe * durationMin * SRPE_LOAD_K);
+  return {
+    load,
+    sessionRpe,
+    rpeSource,
+    durationMin,
+    durationSec: Math.round(durationMin * 60),
+  };
+}
+
 /** "I'm beat — adjust." Scales target day(s) and records the reasoning. */
 export async function adjustToday(
   db: D1Database,

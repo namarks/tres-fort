@@ -396,6 +396,11 @@ final class SyncModel: ObservableObject {
     /// Resolve one calendar day via the frozen projection algorithm
     /// (convenience: reads `todayString` once for callers that don't
     /// need to share the clock with another decision).
+    ///
+    /// WARNING: reads todayString internally. Do NOT use at any call site
+    /// that ALSO reads todayString separately (midnight TOCTOU) — use
+    /// projection(for:today:) with a single captured clock there. Safe
+    /// only when the result is used in isolation.
     func projection(for dateString: String) -> DayProjection {
         projection(for: dateString, today: todayString)
     }
@@ -436,37 +441,20 @@ final class SyncModel: ObservableObject {
         status != "skipped"
     }
 
-    /// Does today resolve to a workout? Mirrors the projection's
-    /// real-session-wins semantics EXACTLY (same `todayProjection` /
-    /// `CalendarProjection` the calendar uses): a real workout-status
-    /// session (completed / in_progress / planned / other) is a workout day
-    /// REGARDLESS of whether its `day_template_id` is populated, OR a
-    /// weekly-schedule projection resolves a template. This is the
-    /// authority for the Today workout-vs-rest split — it never depends on
-    /// `day_template_id` being non-null (the BLOCKER root cause).
-    var todayIsWorkout: Bool {
-        switch todayProjection {
-        case .projected:           return true
-        case .session(let s):      return Self.isWorkoutStatus(s)
-        case .rest, .none:         return false
-        }
-    }
-
     /// True when today's real session is already COMPLETED — Today renders
     /// a done/recap state with NO start/override path (the single
     /// session-per-(user,date) invariant means any "start" re-opens and
     /// double-logs the completed row; see `WorkoutDoneView`).
     var todayIsCompleted: Bool { todaySessionStatus == "completed" }
 
-    /// Is today a pure rest day (no real session, no scheduled template) —
-    /// or a skipped session. The exact negation of `todayIsWorkout`.
-    var todayIsRest: Bool { !todayIsWorkout }
-
-    /// The day template to DISPLAY for today when it's a workout. Distinct
-    /// from `todayIsWorkout`: a real session can BE a workout while its
-    /// `day_template_id` is null (server-side `getOrCreateSession` ignores
-    /// the passed template id for an existing same-date row). Fallback
-    /// order so the workout still renders sensibly:
+    /// The day template to DISPLAY for today when it's a workout — and
+    /// the SINGLE authority for the Today workout-vs-rest split: non-nil
+    /// ⇒ workout, nil ⇒ rest/skipped (callers use `todayResolvedDay !=
+    /// nil` / its negation; there is no separate `todayIsWorkout` twin).
+    /// A real session can BE a workout while its `day_template_id` is
+    /// null (server-side `getOrCreateSession` ignores the passed template
+    /// id for an existing same-date row). Fallback order so the workout
+    /// still renders sensibly:
     ///   1. the session's own `day_template_id` (if populated), else
     ///   2. today's scheduled template (the SAME projection/schedule the
     ///      calendar uses — derived from `meta.schedule`, no fork), else
@@ -476,16 +464,18 @@ final class SyncModel: ObservableObject {
     var todayResolvedDay: DayTemplate? {
         // Single-clock: capture `todayString` ONCE and derive the
         // projection ONCE from it, instead of touching the computed clock
-        // ~5× via `todayIsWorkout` + `switch todayProjection` +
-        // `sessionDisplayTemplate(todayString)`. At a midnight rollover
+        // multiple times (workout test + template switch +
+        // `sessionDisplayTemplate(todayString)`). At a midnight rollover
         // those independent reads could otherwise resolve against
         // different civil days within this one property evaluation (the
         // workout-guard sees day N, the template switch day N+1, etc.).
         let today = todayString
         let proj = projection(for: today, today: today)
-        // Inline `todayIsWorkout` against the SAME local projection (its
-        // own `.skipped`-aware rule, no forked logic — still
-        // `isWorkoutStatus`).
+        // The workout-vs-rest test, evaluated ONCE against the SAME local
+        // projection. This is the ONLY copy of this switch (no separate
+        // `todayIsWorkout` property) — it still delegates to the single
+        // `isWorkoutStatus` predicate, mirroring the projection's
+        // `.skipped`-aware semantics, no forked logic.
         let isWorkout: Bool
         switch proj {
         case .projected:      isWorkout = true

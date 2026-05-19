@@ -129,9 +129,12 @@ describe('mcp tools list', () => {
         'add_exercise',
         'add_day',
         'adjust_today',
+        'set_schedule',
+        'set_planned_session',
+        'skip_planned_session',
       ]),
     );
-    expect(names).toHaveLength(15);
+    expect(names).toHaveLength(18);
     for (const t of body.result.tools) expect(t.inputSchema.type).toBe('object');
   });
 });

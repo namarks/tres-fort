@@ -14,18 +14,23 @@ import {
   getOrCreateSession,
   getPlanTree,
   getRecentSessions,
+  getResolvedScheduleNames,
   getSessionByDate,
   getSetsForSession,
   getVolume,
   logSet,
   logWorkoutComplete,
   resolveExercise,
+  setPlanSchedule,
+  setPlannedSession,
+  skipPlannedSession,
   swapExercise,
   updateExercise,
   updatePlanTree,
   writeAudit,
   writeNote,
 } from '../db';
+import type { Weekday } from '../types';
 
 const SERVER_INFO = { name: 'lift-coach', version: '0.1.0' };
 const DEFAULT_PROTOCOL = '2025-06-18';
@@ -85,7 +90,10 @@ const TOOLS: Record<string, Tool> = {
     inputSchema: obj({}),
     handler: async (_a, env, userId) => {
       const tree = await getPlanTree(env.DB, userId);
-      return tree ?? { plan: null, note: 'No active plan yet.' };
+      if (!tree) return { plan: null, note: 'No active plan yet.' };
+      // Fold in the resolved recurring weekly schedule (weekday → day name).
+      const schedule = await getResolvedScheduleNames(env.DB, userId);
+      return { ...tree, schedule };
     },
   },
   get_today_workout: {
@@ -453,6 +461,75 @@ const TOOLS: Record<string, Tool> = {
       `${r?.changes?.length ?? 0} change(s).` +
       (typeof a.reason === 'string' ? ` Reason: ${a.reason}` : ''),
   },
+  set_schedule: {
+    description:
+      'Set the PERMANENT recurring weekly training pattern (which day template runs each weekday — Mon..Sun). This is the standing routine, not a one-off: it repeats every week and drives the future calendar. Pass `week` as a full map keyed mon/tue/wed/thu/fri/sat/sun; each value is a day template id, day_label, or day name, or null for a rest day. Omitted weekdays become rest. Optionally pass expected_version for optimistic concurrency (mismatch → conflict, refetch get_current_plan and reapply). Bumps the plan version. For a single specific date use set_planned_session / skip_planned_session instead.',
+    inputSchema: obj(
+      {
+        week: {
+          type: 'object',
+          description: 'Keys mon..sun → day id/label/name or null (rest).',
+          properties: {
+            mon: { type: ['string', 'null'] },
+            tue: { type: ['string', 'null'] },
+            wed: { type: ['string', 'null'] },
+            thu: { type: ['string', 'null'] },
+            fri: { type: ['string', 'null'] },
+            sat: { type: ['string', 'null'] },
+            sun: { type: ['string', 'null'] },
+          },
+          additionalProperties: false,
+        },
+        expected_version: { type: 'integer' },
+      },
+      ['week'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const week = (a.week as Record<string, string | null>) ?? {};
+      const r = await setPlanSchedule(
+        env.DB,
+        userId,
+        week as Partial<Record<Weekday, string | null>>,
+        typeof a.expected_version === 'number' ? a.expected_version : null,
+      );
+      return r;
+    },
+    note: (_a, r) =>
+      r?.ok
+        ? `Set recurring weekly schedule (v${r.version}): ` +
+          (['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const)
+            .map((d) => `${d}:${r.schedule.week[d] ?? 'rest'}`)
+            .join(' ')
+        : null,
+  },
+  set_planned_session: {
+    description:
+      'Pin ONE specific calendar date to a training day (a single-date override, NOT a recurring change). Use this for "next Saturday do legs" — it does not alter the standing weekly pattern and does not bump the plan version. `day` accepts a day template id, day_label, or name. For the permanent weekly routine use set_schedule.',
+    inputSchema: obj(
+      {
+        date: { type: 'string', description: 'YYYY-MM-DD (device-local)' },
+        day: { type: 'string', description: 'day template id, label, or name' },
+      },
+      ['date', 'day'],
+    ),
+    write: true,
+    handler: async (a, env, userId) =>
+      setPlannedSession(env.DB, userId, String(a.date), String(a.day)),
+    note: (a, r) =>
+      r?.ok ? `Planned ${a.date} → day "${a.day}" (one-off, no plan change).` : null,
+  },
+  skip_planned_session: {
+    description:
+      'Mark ONE specific calendar date as a rest/skip day (single-date override, NOT recurring). Use for "skip this Friday". Does not change the standing weekly pattern and does not bump the plan version.',
+    inputSchema: obj(
+      { date: { type: 'string', description: 'YYYY-MM-DD (device-local)' } },
+      ['date'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => skipPlannedSession(env.DB, userId, String(a.date)),
+    note: (a, r) => (r?.ok ? `Skipped ${a.date} (one-off rest, no plan change).` : null),
+  },
 };
 
 // ---- resource + prompt ---------------------------------------------------
@@ -464,12 +541,14 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
   const recent = await getRecentSessions(env.DB, userId, 1);
   const last = recent[0] ?? null;
   const lastSets = last ? await getSetsForSession(env.DB, last.id) : [];
+  const schedule = tree ? await getResolvedScheduleNames(env.DB, userId) : null;
   const brief = {
     today: todayLocal(),
     active_plan: tree
       ? {
           name: tree.name,
           version: tree.version,
+          weekly_schedule: schedule,
           days: tree.days.map((d) => ({
             label: d.day_label,
             name: d.name,

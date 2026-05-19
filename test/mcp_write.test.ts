@@ -148,4 +148,82 @@ describe('mcp write tools', () => {
     });
     expect(JSON.stringify(r)).toContain('unknown_exercise');
   });
+
+  it('set_schedule: resolve names, +1 version, 409 stale, cross-plan reject, audit+note; one-offs no bump', async () => {
+    // Fresh plan with two named days.
+    const built = await call('update_plan', {
+      name: 'Sched Test',
+      days: [
+        { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+        { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
+      ],
+    });
+    const planId = built.plan.id as string;
+    const v0 = built.plan.version as number;
+
+    // happy path: resolve by day name + label, exactly +1 version
+    const set1 = await call('set_schedule', {
+      week: { mon: 'Push Day', wed: 'B', fri: 'Push Day' },
+    });
+    expect(set1.ok).toBe(true);
+    expect(set1.version).toBe(v0 + 1);
+    // resolved to ids belonging to the active plan
+    const dayIds = await env.DB.prepare(
+      'SELECT id, name FROM day_templates WHERE plan_id = ?1',
+    )
+      .bind(planId)
+      .all<{ id: string; name: string }>();
+    const idByName = Object.fromEntries(dayIds.results.map((d) => [d.name, d.id]));
+    expect(set1.schedule.week.mon).toBe(idByName['Push Day']);
+    expect(set1.schedule.week.wed).toBe(idByName['Pull Day']);
+    expect(set1.schedule.week.tue).toBeNull();
+
+    // get_current_plan exposes the resolved weekday → name schedule
+    const cp = await call('get_current_plan', {});
+    expect(cp.schedule.mon).toBe('Push Day');
+    expect(cp.schedule.wed).toBe('Pull Day');
+    expect(cp.schedule.tue).toBeNull();
+
+    // 409-style stale expected_version → conflict, no write
+    const v1 = set1.version as number;
+    const stale = await call('set_schedule', { week: { mon: 'Push Day' }, expected_version: v0 });
+    expect(stale).toMatchObject({ conflict: true, current_version: v1 });
+    expect((await call('get_current_plan', {})).version).toBe(v1);
+
+    // cross-plan / foreign id rejected, no partial write
+    const foreign = await call('set_schedule', {
+      week: { mon: 'this-is-not-a-real-day-id' },
+    });
+    expect(foreign).toMatchObject({ error: 'unknown_day_ref' });
+    expect((await call('get_current_plan', {})).version).toBe(v1);
+
+    // correct expected_version succeeds, +1 again
+    const set2 = await call('set_schedule', { week: { tue: 'A' }, expected_version: v1 });
+    expect(set2.ok).toBe(true);
+    expect(set2.version).toBe(v1 + 1);
+
+    // audit rows + Claude notes recorded for schedule writes
+    const audit = await env.DB.prepare(
+      "SELECT COUNT(*) AS c FROM audit_log WHERE tool='set_schedule'",
+    ).first<{ c: number }>();
+    expect(audit!.c).toBeGreaterThanOrEqual(4); // 2 ok + stale + foreign
+    const note = await env.DB.prepare(
+      "SELECT COUNT(*) AS c FROM notes WHERE author='claude' AND body LIKE 'Set recurring weekly schedule%'",
+    ).first<{ c: number }>();
+    expect(note!.c).toBeGreaterThanOrEqual(2);
+
+    // one-off tools: write a session, do NOT bump version
+    const vBefore = (await call('get_current_plan', {})).version as number;
+    const planned = await call('set_planned_session', { date: '2026-06-06', day: 'Pull Day' });
+    expect(planned.ok).toBe(true);
+    const skipped = await call('skip_planned_session', { date: '2026-06-07' });
+    expect(skipped.ok).toBe(true);
+    expect((await call('get_current_plan', {})).version).toBe(vBefore);
+
+    // one-offs are still audited + noted
+    const oneOffAudit = await env.DB.prepare(
+      "SELECT COUNT(*) AS c FROM audit_log WHERE tool IN ('set_planned_session','skip_planned_session')",
+    ).first<{ c: number }>();
+    expect(oneOffAudit!.c).toBeGreaterThanOrEqual(2);
+  });
 });

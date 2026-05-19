@@ -49,7 +49,20 @@ mcpRoutes.post('*', async (c) => {
   } catch {
     return c.json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } }, 400);
   }
-  const { status, json } = await handleMcp(body, c.env);
+  // Plumb the Cloudflare execution context so best-effort work (the
+  // intervals.icu load export) runs via waitUntil AFTER the response is
+  // sent — log_workout_complete must not be blocked by an intervals
+  // round-trip (BLOCKER-2). executionCtx can throw if unavailable; guard.
+  let bg: { waitUntil(p: Promise<unknown>): void } | undefined;
+  try {
+    const ec = c.executionCtx;
+    if (ec && typeof ec.waitUntil === 'function') {
+      bg = { waitUntil: (p) => ec.waitUntil(p) };
+    }
+  } catch {
+    bg = undefined;
+  }
+  const { status, json } = await handleMcp(body, c.env, bg);
   if (json === undefined) return c.body(null, status as any);
   return c.json(json as object, status as any);
 });

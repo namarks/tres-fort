@@ -132,7 +132,7 @@ export async function getPlanTree(
     const res = await db
       .prepare(
         `SELECT te.*, e.name AS exercise_name, e.unit AS exercise_unit,
-                e.primary_muscle AS exercise_muscle
+                e.primary_muscle AS exercise_muscle, e.modality AS exercise_modality
          FROM template_exercises te
          JOIN exercises e ON e.id = te.exercise_id
          WHERE te.day_template_id IN (${placeholders}) ORDER BY te.order_index`,
@@ -355,6 +355,7 @@ export async function logSet(
     is_warmup?: boolean;
     notes?: string | null;
     logged_at?: number;
+    duration_s?: number | null;
     source: 'ios' | 'mcp';
   },
 ): Promise<{ set: SetLogRow; deduped: boolean }> {
@@ -384,18 +385,20 @@ export async function logSet(
     notes: input.notes ?? null,
     logged_at: input.logged_at ?? now(),
     source: input.source,
+    duration_s: input.duration_s ?? null,
     deleted_at: null,
   };
   await db
     .prepare(
       `INSERT INTO set_logs
-       (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,deleted_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL)
+       (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,deleted_at)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL)
        ON CONFLICT(id) DO NOTHING`,
     )
     .bind(
       row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
       row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
+      row.duration_s,
     )
     .run();
   // Logging a set implicitly starts the session.

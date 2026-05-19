@@ -163,6 +163,16 @@ private struct RunnerView: View {
         if let ex = sync.currentExercise {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
+                    if let ws = sync.workoutStart {
+                        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                            let e = max(0, Int(ctx.date.timeIntervalSince(ws)))
+                            Text("WORKOUT  \(e / 60):\(String(format: "%02d", e % 60))")
+                                .font(Theme.mono(11, .bold)).tracking(2)
+                                .foregroundStyle(Theme.muted)
+                        }
+                        .padding(.bottom, 12)
+                    }
+
                     ProgressBar(exercises: sync.exercises,
                                 currentIndex: sync.exerciseIndex, sync: sync)
                         .padding(.bottom, 22)
@@ -188,26 +198,30 @@ private struct RunnerView: View {
 
                     jumpStrip(ex: ex)
 
-                    if ex.exercise_unit != "bw" {
-                        stepper(label: "WEIGHT (\(ex.exercise_unit))", value: fmt(sync.weight),
-                                steps: [("−10", { sync.adjustWeight(-10) }, true),
-                                        ("−5", { sync.adjustWeight(-5) }, false),
-                                        ("+5", { sync.adjustWeight(5) }, false),
-                                        ("+10", { sync.adjustWeight(10) }, true)])
-                    }
-                    stepper(label: "REPS", value: "\(sync.reps)",
-                            steps: [("−1", { sync.adjustReps(-1) }, false),
-                                    ("+1", { sync.adjustReps(1) }, false)])
+                    if ex.isTimed {
+                        TimedSetView(sync: sync, ex: ex)
+                    } else {
+                        if !ex.isBodyweight {
+                            stepper(label: "WEIGHT (\(ex.exercise_unit))", value: fmt(sync.weight),
+                                    steps: [("−10", { sync.adjustWeight(-10) }, true),
+                                            ("−5", { sync.adjustWeight(-5) }, false),
+                                            ("+5", { sync.adjustWeight(5) }, false),
+                                            ("+10", { sync.adjustWeight(10) }, true)])
+                        }
+                        stepper(label: "REPS", value: "\(sync.reps)",
+                                steps: [("−1", { sync.adjustReps(-1) }, false),
+                                        ("+1", { sync.adjustReps(1) }, false)])
 
-                    Button { Task { await sync.logCurrentSet() } } label: {
-                        Text("LOG SET \(sync.currentSetNumber)")
-                            .font(Theme.display(26)).tracking(1.2)
-                            .frame(maxWidth: .infinity).padding(.vertical, 18)
+                        Button { Task { await sync.logCurrentSet() } } label: {
+                            Text("LOG SET \(sync.currentSetNumber)")
+                                .font(Theme.display(26)).tracking(1.2)
+                                .frame(maxWidth: .infinity).padding(.vertical, 18)
+                        }
+                        .background(Theme.accent).foregroundStyle(.black)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
+                        .padding(.top, 18)
                     }
-                    .background(Theme.accent).foregroundStyle(.black)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
-                    .padding(.top, 18)
 
                     completedChips(ex: ex)
 
@@ -337,6 +351,69 @@ private struct FlowChips: View {
                 .padding(.horizontal, 12).padding(.vertical, 10)
                 .background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 10))
             }
+        }
+    }
+}
+
+// MARK: - Timed set (plank, holds)
+
+private struct TimedSetView: View {
+    @ObservedObject var sync: SyncModel
+    let ex: TemplateExercise
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text(sync.timedActive ? "HOLD" : "DURATION")
+                .font(Theme.mono(10, .bold)).tracking(2).foregroundStyle(Theme.muted)
+
+            if sync.timedActive, let end = sync.timedEndDate {
+                TimelineView(.periodic(from: .now, by: 0.2)) { ctx in
+                    let remaining = max(0, Int(ceil(end.timeIntervalSince(ctx.date))))
+                    Text("\(remaining)s")
+                        .font(.system(size: 64, weight: .heavy)).monospacedDigit()
+                        .foregroundStyle(remaining <= 0 ? Theme.done : Theme.accent)
+                }
+            } else {
+                Text("\(ex.target_reps)s")
+                    .font(.system(size: 64, weight: .heavy)).monospacedDigit()
+                    .foregroundStyle(Theme.text)
+            }
+
+            if sync.timedActive {
+                Button {
+                    let held: Int = {
+                        guard let end = sync.timedEndDate else { return ex.target_reps }
+                        let left = max(0, Int(ceil(end.timeIntervalSince(Date()))))
+                        return max(1, ex.target_reps - left)
+                    }()
+                    Task { await sync.finishTimedSet(held: held) }
+                } label: {
+                    Text("STOP & LOG").font(Theme.display(24)).tracking(1.2)
+                        .frame(maxWidth: .infinity).padding(.vertical, 16)
+                }
+                .background(Theme.surface2).foregroundStyle(Theme.text)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+            } else {
+                Button { sync.startTimedSet() } label: {
+                    Text("START SET \(sync.currentSetNumber)")
+                        .font(Theme.display(24)).tracking(1.2)
+                        .frame(maxWidth: .infinity).padding(.vertical, 16)
+                }
+                .background(Theme.accent).foregroundStyle(.black)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(20)
+        .background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 14))
+        .padding(.top, 16)
+        // Auto-log when the prescribed hold elapses (cancelled if STOPped).
+        .task(id: sync.timedActive) {
+            guard sync.timedActive else { return }
+            let secs = ex.target_reps
+            try? await Task.sleep(nanoseconds: UInt64(max(0, secs)) * 1_000_000_000)
+            if sync.timedActive { await sync.finishTimedSet(held: secs) }
         }
     }
 }

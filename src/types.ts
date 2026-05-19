@@ -91,6 +91,7 @@ export interface SetLogRow {
   notes: string | null;
   logged_at: number;
   source: string;
+  duration_s: number | null;
   deleted_at: number | null;
 }
 
@@ -98,6 +99,7 @@ export interface EnrichedTemplateExercise extends TemplateExerciseRow {
   exercise_name: string;
   exercise_unit: string;
   exercise_muscle: string;
+  exercise_modality: string;
 }
 
 export interface PlanTree extends PlanRow {

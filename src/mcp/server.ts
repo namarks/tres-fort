@@ -186,6 +186,7 @@ const TOOLS: Record<string, Tool> = {
         is_warmup: { type: 'boolean' },
         set_index: { type: 'integer' },
         session_date: { type: 'string', description: 'YYYY-MM-DD (default today)' },
+        duration_s: { type: 'integer', description: 'seconds the set took / was held' },
         notes: { type: 'string' },
       },
       ['exercise', 'weight', 'reps'],
@@ -214,6 +215,7 @@ const TOOLS: Record<string, Tool> = {
         rpe: a.rpe == null ? null : Number(a.rpe),
         is_warmup: a.is_warmup === true,
         notes: typeof a.notes === 'string' ? a.notes : null,
+        duration_s: a.duration_s == null ? null : Number(a.duration_s),
         source: 'mcp',
       });
       return { set, deduped, session_id: session.id };

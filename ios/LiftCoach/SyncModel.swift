@@ -21,6 +21,12 @@ final class SyncModel: ObservableObject {
     @Published var weight: Double = 0
     @Published var reps: Int = 0
 
+    // Timers.
+    @Published var workoutStart: Date?      // whole-session stopwatch
+    @Published var timedActive = false      // a timed exercise is running
+    @Published var timedEndDate: Date?
+    private var setClock = Date()           // when the current set began
+
     private let api = APIClient()
     private unowned let auth: AuthModel
 
@@ -68,8 +74,11 @@ final class SyncModel: ObservableObject {
             .sorted { $0.set_index < $1.set_index }
     }
 
-    func logSet(_ ex: TemplateExercise, weight: Double, reps: Int) async {
+    func logSet(_ ex: TemplateExercise, weight: Double, reps: Int,
+                durationOverride: Int? = nil) async {
         guard let jwt = auth.jwt else { return }
+        let duration = durationOverride
+            ?? max(0, Int(Date().timeIntervalSince(setClock)))
         do {
             if todaySession == nil {
                 todaySession = try await api.createSession(date: todayString, jwt: jwt)
@@ -82,9 +91,11 @@ final class SyncModel: ObservableObject {
                 "set_index": nextIndex,
                 "weight": weight,
                 "reps": reps,
+                "duration_s": duration,
             ]
             let res = try await api.logSet(sessionId: session.id, body: body, jwt: jwt)
             if !sets.contains(where: { $0.id == res.set.id }) { sets.append(res.set) }
+            setClock = Date()
             startRest(seconds: ex.rest_seconds, name: ex.exercise_name)
         } catch {
             handle(error)
@@ -107,15 +118,41 @@ final class SyncModel: ObservableObject {
         running = true
         finished = false
         exerciseIndex = 0
+        workoutStart = Date()
         seedInputs()
     }
 
-    /// Seed weight/reps from last time → plan target → empty-bar default.
+    /// Seed weight/reps from last time → plan target → default. Resets the
+    /// per-set clock (a new set begins on arrival at an exercise).
     private func seedInputs() {
+        timedActive = false
+        timedEndDate = nil
+        setClock = Date()
         guard let ex = currentExercise else { return }
         let last = lastWorkingSet(ex.exercise_id)
         weight = last?.weight ?? ex.target_weight ?? 45
         reps = last?.reps ?? ex.target_reps
+    }
+
+    // MARK: timed exercises (plank, holds)
+
+    func startTimedSet() {
+        guard let ex = currentExercise, ex.isTimed else { return }
+        setClock = Date()
+        timedActive = true
+        timedEndDate = Date().addingTimeInterval(TimeInterval(ex.target_reps))
+    }
+
+    /// End a timed set — `held` seconds actually performed (auto at 0, or
+    /// early via STOP). Logs reps=held, duration=held.
+    func finishTimedSet(held: Int) async {
+        guard let ex = currentExercise, timedActive else { return }
+        timedActive = false
+        timedEndDate = nil
+        await logSet(ex, weight: 0, reps: held, durationOverride: held)
+        if isComplete(ex) {
+            if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
+        }
     }
 
     func adjustWeight(_ delta: Double) { weight = max(0, weight + delta) }
@@ -172,6 +209,9 @@ final class SyncModel: ObservableObject {
         }
         running = false
         finished = false
+        workoutStart = nil
+        timedActive = false
+        timedEndDate = nil
         skipRest()
         await load()
     }
@@ -201,7 +241,10 @@ final class SyncModel: ObservableObject {
         guard let end = restEndDate else { return }
         restEndDate = end.addingTimeInterval(TimeInterval(seconds))
     }
-    func skipRest() { restEndDate = nil }
+    func skipRest() {
+        restEndDate = nil
+        setClock = Date()   // next set begins when rest ends
+    }
 
     private func handle(_ error: Error) {
         if case let APIError.http(code, _) = error, code == 401 {

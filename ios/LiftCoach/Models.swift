@@ -26,9 +26,14 @@ struct TemplateExercise: Decodable, Identifiable, Equatable {
     let rest_seconds: Int
     let target_weight: Double?
     let cues: String?
+    let exercise_modality: String
 
-    /// "3×5" or "3×5–8".
+    var isTimed: Bool { exercise_modality == "timed" }
+    var isBodyweight: Bool { exercise_unit == "bw" }
+
+    /// "3×5" / "3×5–8" / "3×45s" (timed).
     var targetLabel: String {
+        if isTimed { return "\(target_sets)×\(target_reps)s" }
         if let hi = target_reps_max, hi != target_reps {
             return "\(target_sets)×\(target_reps)–\(hi)"
         }
@@ -69,6 +74,7 @@ struct SetLog: Decodable, Identifiable {
     let rpe: Double?
     let is_warmup: Int
     let logged_at: Int
+    let duration_s: Int?
 }
 
 struct StateResponse: Decodable {

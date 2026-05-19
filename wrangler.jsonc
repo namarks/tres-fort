@@ -17,19 +17,18 @@
   // Invokes the `scheduled` handler in src/index.ts (syncExternalEvents).
   "triggers": { "crons": ["0 */6 * * *"] },
   "vars": {
-    "APPLE_BUNDLE_ID": "com.nmarkspdx.liftcoach",
-    // REQUIRED before deploy: real intervals.icu athlete id (see Juno
-    // INTERVALS_ICU_ATHLETE_ID). Non-sensitive (an id, not a key). The
-    // cycling-awareness feature stays a dormant no-op until this is a real
-    // athlete id AND the INTERVALS_ICU_API_KEY secret is set.
-    "INTERVALS_ICU_ATHLETE_ID": "REPLACE_ME_athlete_id"
+    "APPLE_BUNDLE_ID": "com.nmarkspdx.liftcoach"
   }
   // Secrets (set via `wrangler secret put`, NOT committed):
   //   APP_JWT_SECRET        - HS256 signing key for app JWTs
   //   MCP_STATIC_TOKEN      - static bearer accepted at /mcp (Claude Code / curl)
   //   OWNER_APPLE_SUB       - allowlisted Apple `sub`; only this user may sign in
   //   DEV_AUTH_SECRET       - if set, enables POST /auth/dev (local + tests only)
-  //   INTERVALS_ICU_API_KEY - intervals.icu API key; enables cycling
-  //                           awareness. `wrangler secret put` ONLY — never
-  //                           committed. Feature is a dormant no-op if unset.
+  //   INTERVALS_ICU_API_KEY    - intervals.icu API key; enables cycling
+  //                              awareness. Feature is a dormant no-op if unset.
+  //   INTERVALS_ICU_ATHLETE_ID - intervals.icu athlete id. A secret (NOT a
+  //                              committed var) because this repo is public —
+  //                              a personal id should not live in git history.
+  //                              env.INTERVALS_ICU_ATHLETE_ID resolves to it
+  //                              identically whether secret or var.
 }

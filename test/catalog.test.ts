@@ -338,5 +338,33 @@ describe('expanded exercise catalog (0007)', () => {
     expect(sq!.name).toBe('Back Squat');
     expect(sq!.primary_muscle).toBe('quads');
     expect(sq!.aliases).toBe('["squat","back squat","bb squat"]');
+
+    // The ex_db_press alias backfill UPDATE must be IDEMPOTENT on replay:
+    // re-running 0007 must leave the alias array EXACTLY as 0007's UPDATE
+    // sets it -- it must NOT grow (e.g. a future switch to json_insert /
+    // append-on-conflict would duplicate "dumbbell press" and this guards
+    // that). Strict equality, not a contains-check.
+    const EXPECTED_DB_PRESS_ALIASES =
+      '["db press", "dumbbell bench", "db bench", "dumbbell press"]';
+    const dbp = await env.DB.prepare(
+      "SELECT aliases FROM exercises WHERE id = 'ex_db_press'",
+    ).first<{ aliases: string }>();
+    expect(dbp, 'ex_db_press missing after replay').toBeTruthy();
+    // (a) exact literal that 0007's UPDATE sets -- no growth, no reorder.
+    expect(dbp!.aliases).toBe(EXPECTED_DB_PRESS_ALIASES);
+    // (b) "dumbbell press" appears EXACTLY once (proves the array did not
+    //     accumulate the alias across the original apply + this replay).
+    const occurrences = dbp!.aliases.split('"dumbbell press"').length - 1;
+    expect(
+      occurrences,
+      `"dumbbell press" should appear exactly once, found ${occurrences} in ${dbp!.aliases}`,
+    ).toBe(1);
+    // and it must still be valid JSON of exactly 4 elements.
+    expect(JSON.parse(dbp!.aliases)).toEqual([
+      'db press',
+      'dumbbell bench',
+      'db bench',
+      'dumbbell press',
+    ]);
   });
 });

@@ -150,7 +150,16 @@ final class SyncModel: ObservableObject {
             ?? max(0, Int(Date().timeIntervalSince(setClock)))
         do {
             if todaySession == nil {
-                todaySession = try await api.createSession(date: todayString, jwt: jwt)
+                // Tie the lazily-created session to the day template the
+                // runner is executing so the calendar/agenda resolve it as
+                // that workout. `day_template_id` is part of the EXISTING
+                // POST /api/sessions contract; getOrCreateSession is
+                // idempotent per (user, date) — this is a one-off `sessions`
+                // write, never a `plans.meta.schedule` mutation.
+                todaySession = try await api.createSession(
+                    date: todayString,
+                    dayTemplateID: selectedDay?.id,
+                    jwt: jwt)
             }
             guard let session = todaySession else { return }
             let nextIndex = todaySets(ex.exercise_id).count + 1
@@ -376,6 +385,112 @@ final class SyncModel: ObservableObject {
             sessionByDate: sessionsByDate,
             schedule: plan?.schedule,
             templateIDs: planTemplateIDs)
+    }
+
+    // MARK: schedule-driven Today
+
+    /// Today's resolved projection — the SAME `projection(for:)` /
+    /// `CalendarProjection` the calendar uses (single source of truth, no
+    /// parallel resolution). Today screen reads this, not a manual default.
+    var todayProjection: DayProjection {
+        projection(for: todayString)
+    }
+
+    /// The day template that "today" resolves to, if today is a workout
+    /// (real planned session OR weekly-schedule projection). Resolved purely
+    /// through `todayProjection` so it can never diverge from the calendar.
+    var todayResolvedDay: DayTemplate? {
+        switch todayProjection {
+        case .projected(let tid):
+            return dayTemplate(id: tid)
+        case .session(let status):
+            // A real session for today: completed/in_progress/planned
+            // resolve to their cached template (skipped → no workout view).
+            guard status != "skipped" else { return nil }
+            return dayTemplate(id: sessionsByDate[todayString]?.day_template_id)
+        case .rest, .none:
+            return nil
+        }
+    }
+
+    /// Is today a pure rest day (no real session, no scheduled template)?
+    var todayIsRest: Bool {
+        switch todayProjection {
+        case .rest, .none: return true
+        case .session(let s): return s == "skipped"
+        case .projected:     return false
+        }
+    }
+
+    /// The next upcoming workout, found by forward-scanning the SAME
+    /// projection used by the calendar (no second algorithm). Starts at
+    /// tomorrow, walks up to `maxDays` civil days, and returns the first
+    /// date whose resolved state is a workout (a weekly-schedule projection
+    /// OR a real planned/in_progress session — `.skipped` does not count).
+    struct NextWorkout { let dateString: String; let day: DayTemplate }
+
+    func nextWorkout(within maxDays: Int = 14) -> NextWorkout? {
+        guard maxDays > 0,
+              let start = CalendarProjection.date(from: todayString) else { return nil }
+        for offset in 1...maxDays {
+            guard let d = CalendarProjection.calendar
+                .date(byAdding: .day, value: offset, to: start) else { continue }
+            let ymd = CalendarProjection.dateString(d)
+            switch projection(for: ymd) {
+            case .projected(let tid):
+                if let day = dayTemplate(id: tid) {
+                    return NextWorkout(dateString: ymd, day: day)
+                }
+            case .session(let status):
+                if status == "planned" || status == "in_progress",
+                   let day = dayTemplate(id: sessionsByDate[ymd]?.day_template_id) {
+                    return NextWorkout(dateString: ymd, day: day)
+                }
+            case .rest, .none:
+                continue
+            }
+        }
+        return nil
+    }
+
+    /// Friendly relative label for an upcoming `YYYY-MM-DD`:
+    /// "Tomorrow", a weekday name ("Wed") within the week, else a date.
+    func relativeLabel(for ymd: String) -> String {
+        guard let target = CalendarProjection.date(from: ymd),
+              let today = CalendarProjection.date(from: todayString) else { return ymd }
+        let days = CalendarProjection.calendar
+            .dateComponents([.day], from: today, to: target).day ?? 0
+        if days == 1 { return "Tomorrow" }
+        if days >= 2 && days <= 6 {
+            let f = DateFormatter()
+            f.calendar = CalendarProjection.calendar
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.dateFormat = "EEEE"
+            return f.string(from: target)
+        }
+        let f = DateFormatter()
+        f.calendar = CalendarProjection.calendar
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "EEE d MMM"
+        return f.string(from: target)
+    }
+
+    /// Start the guided workout for the template TODAY resolves to (via
+    /// `todayResolvedDay`, i.e. the SAME CalendarProjection the calendar
+    /// uses). Reuses the EXISTING session-start path verbatim.
+    func startToday() {
+        if let id = todayResolvedDay?.id { selectedDayID = id }
+        startWorkout()
+    }
+
+    /// Start a guided workout for an explicitly chosen day template — the
+    /// "train a different day" OVERRIDE. Reuses the EXISTING session-start
+    /// path verbatim (set `selectedDayID`, then `startWorkout()`); the
+    /// session row is created lazily on the first logged set. This is a
+    /// one-off `sessions` write only — it never touches `plans.meta.schedule`.
+    func startOverride(dayID: String) {
+        selectedDayID = dayID
+        startWorkout()
     }
 
     /// Plan day for a template id (agenda exercise targets).

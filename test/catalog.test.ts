@@ -47,12 +47,13 @@ const ORIGINAL_12: Array<{
 ];
 
 describe('expanded exercise catalog (0007)', () => {
-  it('expands the catalog to ~131 exercises (12 + 5 + 114)', async () => {
-    // 0002 = 12, 0004 = 5 timed, 0007 = 114 net-new -> 131 total.
+  it('expands the catalog to 138 exercises (12 + 5 + 114 + 7)', async () => {
+    // 0002 = 12, 0004 = 5 timed, 0007 = 114 net-new, 0009 = 7 warmup/core
+    // (ex_dead_bug already shipped in 0007 → INSERT OR IGNORE).
     const { count } = (await env.DB.prepare(
       'SELECT COUNT(*) AS count FROM exercises',
     ).first<{ count: number }>())!;
-    expect(count).toBe(131);
+    expect(count).toBe(138);
   });
 
   it('preserves the original 12 ex_* rows (byte-identical except the documented ex_db_press alias backfill)', async () => {
@@ -366,5 +367,59 @@ describe('expanded exercise catalog (0007)', () => {
       'db bench',
       'dumbbell press',
     ]);
+  });
+});
+
+// 0009 — warmup / core / activation primitives the original catalog
+// curation deliberately excluded (band/kettlebell/quadruped movements).
+// Closes the agent-facing P1 "catalog gaps" finding.
+describe('0009_seed_warmup_core: kettlebell, band, quadruped primitives', () => {
+  it('adds the new entries with the expected canonical names', async () => {
+    const expected = [
+      ['ex_kb_deadlift',         'Kettlebell Deadlift',     'kettlebell'],
+      ['ex_kb_swing',            'Kettlebell Swing',        'kettlebell'],
+      ['ex_bird_dog',            'Bird Dog',                'bw'],
+      ['ex_cat_cow',             'Cat-Cow',                 'bw'],
+      ['ex_banded_pull_apart',   'Banded Pull-Apart',       'band'],
+      ['ex_banded_glute_bridge', 'Banded Glute Bridge',     'band'],
+      ['ex_chest_supported_row', 'Chest-Supported Row',     'machine'],
+    ] as const;
+    for (const [id, name, modality] of expected) {
+      const row = await env.DB
+        .prepare('SELECT id, name, modality FROM exercises WHERE id = ?1')
+        .bind(id)
+        .first<{ id: string; name: string; modality: string }>();
+      expect(row, `expected ${id} to exist after 0009`).not.toBeNull();
+      expect(row!.name).toBe(name);
+      expect(row!.modality).toBe(modality);
+    }
+  });
+
+  it('resolves the abbreviated / hyphenated spellings the bug report hit', async () => {
+    // Each tuple: alias query → expected canonical id.
+    const cases: Array<[string, string]> = [
+      ['KB Deadlift',           'ex_kb_deadlift'],
+      ['kb dl',                 'ex_kb_deadlift'],
+      ['Kettlebell Deadlift',   'ex_kb_deadlift'],
+      ['KB Swing',              'ex_kb_swing'],
+      ['Bird Dog',              'ex_bird_dog'],
+      ['bird-dog',              'ex_bird_dog'],
+      ['Cat Cow',               'ex_cat_cow'],
+      ['cat-cow',               'ex_cat_cow'],
+      ['Cat Camel',             'ex_cat_cow'],
+      ['Dead Bug',              'ex_dead_bug'],
+      ['Banded Pull-Apart',     'ex_banded_pull_apart'],
+      ['Pull Apart',            'ex_banded_pull_apart'],
+      ['Scap Pull-Apart',       'ex_banded_pull_apart'],
+      ['Scap Pull Apart',       'ex_banded_pull_apart'],
+      ['Banded Glute Bridge',   'ex_banded_glute_bridge'],
+      ['Chest-Supported Row',   'ex_chest_supported_row'],
+      ['Chest Supported Row',   'ex_chest_supported_row'],
+    ];
+    for (const [query, id] of cases) {
+      const ex = await resolveExercise(env.DB, query);
+      expect(ex, `expected "${query}" to resolve to ${id}`).not.toBeNull();
+      expect((ex as { id: string }).id).toBe(id);
+    }
   });
 });

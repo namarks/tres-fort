@@ -256,6 +256,24 @@ export async function patchDayTemplate(
   return { ...existing, ...merged, updated_at: now() };
 }
 
+/**
+ * Next `order_index` for an append to a day — max existing + 1, or 0 if
+ * the day has no exercises yet. Callers should use this when no explicit
+ * order_index is given, instead of defaulting to a sentinel like 99
+ * (which silently stranded every after-creation `add_exercise` at the
+ * bottom; agent-facing P0 in the bug report).
+ */
+export async function nextExerciseOrderIndex(
+  db: D1Database,
+  dayTemplateId: string,
+): Promise<number> {
+  const row = await db
+    .prepare('SELECT COALESCE(MAX(order_index), -1) AS m FROM template_exercises WHERE day_template_id = ?1')
+    .bind(dayTemplateId)
+    .first<{ m: number }>();
+  return (row?.m ?? -1) + 1;
+}
+
 export async function addTemplateExercise(
   db: D1Database,
   planId: string,
@@ -814,10 +832,17 @@ export async function updatePlanTree(
     return { conflict: true, current_version: plan.version };
   }
 
-  // Resolve every exercise name up front (outside the batch).
+  // Resolve every exercise name up front (outside the batch). `exercise`
+  // is REQUIRED per the input contract; null-guard the resolver so a
+  // malformed item gives a clean unknown_exercise rather than a cryptic
+  // `Cannot read properties of undefined (reading 'trim')` from inside the
+  // alias matcher (P0 in the agent-facing bug report).
   const resolved = new Map<string, string>();
   for (const d of input.days) {
     for (const e of d.exercises ?? []) {
+      if (typeof e.exercise !== 'string' || e.exercise.trim() === '') {
+        throw new Error('unknown_exercise:<missing>');
+      }
       if (!resolved.has(e.exercise)) {
         resolved.set(e.exercise, await resolveOrThrow(db, e.exercise));
       }
@@ -855,14 +880,73 @@ export async function updatePlanTree(
     if (!newIdByName.has(nk)) newIdByName.set(nk, id);
   });
 
-  const stmts: D1PreparedStatement[] = [
-    db
-      .prepare(
-        'DELETE FROM template_exercises WHERE day_template_id IN (SELECT id FROM day_templates WHERE plan_id = ?1)',
-      )
-      .bind(plan.id),
-    db.prepare('DELETE FROM day_templates WHERE plan_id = ?1').bind(plan.id),
-  ];
+  // FK-safe rebuild: sessions.day_template_id and set_logs.template_exercise_id
+  // reference rows we're about to DELETE. With no ON DELETE clause on those
+  // FKs (schema 0001), a strict-FK delete fails the moment any real session
+  // or logged set points at a day_template/template_exercise that's being
+  // rebuilt — the agent-facing bug report's P0. The fix is a pre-DELETE
+  // REMAP: for every old → new (matched by day_label/name, then by
+  // exercise_id within the matched day), repoint the referencing rows at
+  // the NEW id; for genuinely-removed old rows, NULL out the reference
+  // (history preserved, plan-tree pointer detached). All in the same D1
+  // batch so it's atomic with the rebuild.
+
+  // Pre-generate new template_exercise ids so the remap can target them
+  // (the old code uuid()'d inline during INSERT — replaced below). Keyed
+  // by (newDayId, exercise_id); a duplicate-within-day collapses to the
+  // first occurrence's id for remap purposes (the inserted rows still get
+  // distinct ids per occurrence — see the inserter below).
+  const newTeIdByDayAndEx = new Map<string, string>();
+  const teIdPerExerciseOccurrence: string[][] = input.days.map((d) =>
+    (d.exercises ?? []).map(() => uuid()),
+  );
+  input.days.forEach((d, di) => {
+    const dayId = newDayIds[di]!;
+    (d.exercises ?? []).forEach((e, ei) => {
+      const exId = resolved.get(e.exercise)!;
+      const key = `${dayId}:${exId}`;
+      if (!newTeIdByDayAndEx.has(key)) {
+        newTeIdByDayAndEx.set(key, teIdPerExerciseOccurrence[di]![ei]!);
+      }
+    });
+  });
+
+  // Build old → new remaps (null = removed; reference must NULL out).
+  const oldToNewDay = new Map<string, string | null>();
+  for (const od of oldDays.results) {
+    const lk = od.day_label?.toLowerCase();
+    const nk = od.name.toLowerCase();
+    const newId = (lk != null ? newIdByLabel.get(lk) : undefined) ?? newIdByName.get(nk) ?? null;
+    oldToNewDay.set(od.id, newId);
+  }
+  const oldTeRows = await db
+    .prepare(
+      `SELECT te.id, te.day_template_id, te.exercise_id
+         FROM template_exercises te
+         JOIN day_templates d ON d.id = te.day_template_id
+        WHERE d.plan_id = ?1`,
+    )
+    .bind(plan.id)
+    .all<{ id: string; day_template_id: string; exercise_id: string }>();
+  const oldToNewTe = new Map<string, string | null>();
+  for (const ot of oldTeRows.results) {
+    const newDayId = oldToNewDay.get(ot.day_template_id) ?? null;
+    if (newDayId == null) {
+      oldToNewTe.set(ot.id, null);
+    } else {
+      const newTeId = newTeIdByDayAndEx.get(`${newDayId}:${ot.exercise_id}`) ?? null;
+      oldToNewTe.set(ot.id, newTeId);
+    }
+  }
+
+  // FK-safe order: INSERT new rows FIRST (so the remap can point at real
+  // parents), then UPDATE refs old→new (or NULL for removed), then DELETE
+  // the now-orphaned old rows by EXPLICIT id (not by plan_id sweep —
+  // that'd catch the freshly-inserted new rows too). The original DELETE-
+  // before-INSERT order failed FK the moment any real session or set_log
+  // referenced a row being deleted.
+  const stmts: D1PreparedStatement[] = [];
+  // 1) INSERT new day_templates (parents) — coexist with old by id.
   input.days.forEach((d, di) => {
     const dayId = newDayIds[di]!;
     stmts.push(
@@ -872,6 +956,10 @@ export async function updatePlanTree(
         )
         .bind(dayId, plan!.id, d.name, d.day_label ?? null, d.order_index ?? di, d.notes ?? null, ts, ts),
     );
+  });
+  // 2) INSERT new template_exercises (children of step 1's parents).
+  input.days.forEach((d, di) => {
+    const dayId = newDayIds[di]!;
     (d.exercises ?? []).forEach((e, ei) => {
       stmts.push(
         db
@@ -881,7 +969,7 @@ export async function updatePlanTree(
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)`,
           )
           .bind(
-            uuid(), dayId, resolved.get(e.exercise)!, e.order_index ?? ei, e.target_sets,
+            teIdPerExerciseOccurrence[di]![ei]!, dayId, resolved.get(e.exercise)!, e.order_index ?? ei, e.target_sets,
             e.target_reps, e.target_reps_max ?? null, e.target_rpe ?? null, e.rest_seconds ?? 120,
             e.target_weight ?? null, e.progression == null ? null : JSON.stringify(e.progression),
             e.cues ?? null, ts, ts,
@@ -889,6 +977,47 @@ export async function updatePlanTree(
       );
     });
   });
+  // 3) Remap session.day_template_id: old → new (surviving) or NULL.
+  for (const [oldDayId, newDayId] of oldToNewDay.entries()) {
+    if (newDayId != null) {
+      stmts.push(
+        db
+          .prepare('UPDATE sessions SET day_template_id = ?2 WHERE day_template_id = ?1')
+          .bind(oldDayId, newDayId),
+      );
+    } else {
+      stmts.push(
+        db
+          .prepare('UPDATE sessions SET day_template_id = NULL WHERE day_template_id = ?1')
+          .bind(oldDayId),
+      );
+    }
+  }
+  // 4) Remap set_logs.template_exercise_id (same scheme).
+  for (const [oldTeId, newTeId] of oldToNewTe.entries()) {
+    if (newTeId != null) {
+      stmts.push(
+        db
+          .prepare('UPDATE set_logs SET template_exercise_id = ?2 WHERE template_exercise_id = ?1')
+          .bind(oldTeId, newTeId),
+      );
+    } else {
+      stmts.push(
+        db
+          .prepare('UPDATE set_logs SET template_exercise_id = NULL WHERE template_exercise_id = ?1')
+          .bind(oldTeId),
+      );
+    }
+  }
+  // 5) DELETE old template_exercises by EXPLICIT id (avoid catching the
+  //    freshly-inserted new rows that now share plan_id). Children first.
+  for (const ot of oldTeRows.results) {
+    stmts.push(db.prepare('DELETE FROM template_exercises WHERE id = ?1').bind(ot.id));
+  }
+  // 6) DELETE old day_templates by EXPLICIT id. Parents last.
+  for (const od of oldDays.results) {
+    stmts.push(db.prepare('DELETE FROM day_templates WHERE id = ?1').bind(od.id));
+  }
   // The full tree is rebuilt with fresh day UUIDs. Re-point each schedule
   // weekday at the NEW day whose name/label matches the OLD day it pointed
   // at; weekdays whose day genuinely no longer exists (no matching new day)
@@ -987,6 +1116,22 @@ async function findSlot(
     .first<TemplateExerciseRow>();
 }
 
+/** Allowlist of patch keys accepted by `updateExercise`. Any unknown key
+ *  in the incoming patch returns an explicit `unknown_fields` error
+ *  instead of being silently dropped (the agent-facing diagnosability bug
+ *  — `orderIndex` camelCase had returned 200 OK with no change). */
+const TEMPLATE_EXERCISE_PATCH_KEYS = new Set<string>([
+  'target_sets',
+  'target_reps',
+  'target_reps_max',
+  'target_rpe',
+  'rest_seconds',
+  'target_weight',
+  'cues',
+  'progression',
+  'order_index',
+]);
+
 export async function updateExercise(
   db: D1Database,
   userId: string,
@@ -1001,9 +1146,12 @@ export async function updateExercise(
       | 'rest_seconds'
       | 'target_weight'
       | 'cues'
+      | 'order_index'
     >
   > & { progression?: unknown },
-): Promise<TemplateExerciseRow | null> {
+): Promise<TemplateExerciseRow | { error: 'unknown_fields'; fields: string[] } | null> {
+  const unknown = Object.keys(patch).filter((k) => !TEMPLATE_EXERCISE_PATCH_KEYS.has(k));
+  if (unknown.length > 0) return { error: 'unknown_fields', fields: unknown };
   const slot = await findSlot(db, userId, ref);
   if (!slot) return null;
   const m: TemplateExerciseRow = {
@@ -1017,6 +1165,7 @@ export async function updateExercise(
     target_weight:
       patch.target_weight === undefined ? slot.target_weight : patch.target_weight,
     cues: patch.cues === undefined ? slot.cues : patch.cues,
+    order_index: patch.order_index === undefined ? slot.order_index : patch.order_index,
     progression:
       patch.progression === undefined
         ? slot.progression
@@ -1028,12 +1177,12 @@ export async function updateExercise(
   await db
     .prepare(
       `UPDATE template_exercises SET target_sets=?2,target_reps=?3,target_reps_max=?4,
-       target_rpe=?5,rest_seconds=?6,target_weight=?7,cues=?8,progression=?9,updated_at=?10
+       target_rpe=?5,rest_seconds=?6,target_weight=?7,cues=?8,progression=?9,order_index=?10,updated_at=?11
        WHERE id=?1`,
     )
     .bind(
       slot.id, m.target_sets, m.target_reps, m.target_reps_max, m.target_rpe,
-      m.rest_seconds, m.target_weight, m.cues, m.progression, m.updated_at,
+      m.rest_seconds, m.target_weight, m.cues, m.progression, m.order_index, m.updated_at,
     )
     .run();
   await bumpPlanVersionByDay(db, slot.day_template_id);

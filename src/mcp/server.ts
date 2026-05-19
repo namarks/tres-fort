@@ -22,6 +22,7 @@ import {
   getVolume,
   logSet,
   logWorkoutComplete,
+  nextExerciseOrderIndex,
   tryExportSessionLoad,
   resolveExercise,
   setPlanSchedule,
@@ -466,10 +467,17 @@ const TOOLS: Record<string, Tool> = {
       if (!day) return { error: 'day_not_found', day: a.day };
       const ex = await resolveExercise(env.DB, String(a.exercise));
       if (!ex) return { error: 'unknown_exercise', query: a.exercise };
+      // Honor an explicit order_index; otherwise append densely (max+1)
+      // instead of the old 99 sentinel, which stranded everything at the
+      // bottom (P0 in the bug report).
+      const orderIndex =
+        typeof a.order_index === 'number'
+          ? a.order_index
+          : await nextExerciseOrderIndex(env.DB, day.id);
       return addTemplateExercise(env.DB, plan.id, {
         day_template_id: day.id,
         exercise_id: (ex as { id: string }).id,
-        order_index: typeof a.order_index === 'number' ? a.order_index : 99,
+        order_index: orderIndex,
         target_sets: Number(a.target_sets),
         target_reps: Number(a.target_reps),
         target_reps_max: a.target_reps_max == null ? null : Number(a.target_reps_max),

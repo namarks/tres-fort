@@ -556,3 +556,155 @@ describe('mcp skip_planned_session — rejects burying started/finished history'
     expect(row2!.status).toBe('skipped');
   });
 });
+
+describe('mcp update_plan — FK-safe rebuild remaps session + set_log references', () => {
+  // Repro: a real `sessions` row references a day_template_id that
+  // update_plan would DELETE during the rebuild. Pre-fix: D1_ERROR
+  // FOREIGN KEY constraint failed. Post-fix: sessions remap to the new
+  // day id (matched by label/name); a removed day → NULL.
+  it('remaps a session.day_template_id when the day survives by label', async () => {
+    await call('update_plan', {
+      name: 'Remap test',
+      days: [{ name: 'Full Body A', day_label: 'A', exercises: [
+        { exercise: 'Bench Press', target_sets: 3, target_reps: 5 },
+      ] }],
+    });
+    // Plant a real session pointing at day A
+    await call('set_planned_session', { date: '2026-09-01', day: 'A' });
+    const before = await env.DB.prepare("SELECT day_template_id FROM sessions WHERE date='2026-09-01'")
+      .first<{ day_template_id: string | null }>();
+    const oldDayId = before!.day_template_id!;
+    expect(oldDayId).not.toBeNull();
+
+    // Rebuild — same day label "A", new UUID. Pre-fix: FK error.
+    const rebuilt = await call('update_plan', {
+      name: 'Remap test',
+      days: [{ name: 'Full Body A renamed', day_label: 'A', exercises: [
+        { exercise: 'Bench Press', target_sets: 4, target_reps: 5 },
+      ] }],
+    });
+    expect(rebuilt.conflict).toBe(false);
+    const newDayId = rebuilt.plan.days[0].id;
+    expect(newDayId).not.toBe(oldDayId);
+
+    const after = await env.DB.prepare("SELECT day_template_id FROM sessions WHERE date='2026-09-01'")
+      .first<{ day_template_id: string | null }>();
+    expect(after!.day_template_id).toBe(newDayId);
+  });
+
+  it('NULLs a session.day_template_id when the day is removed in the rebuild', async () => {
+    await call('update_plan', {
+      name: 'Drop test',
+      days: [
+        { name: 'A day', day_label: 'A', exercises: [{ exercise: 'Bench Press', target_sets: 3, target_reps: 5 }] },
+        { name: 'B day', day_label: 'B', exercises: [{ exercise: 'Conventional Deadlift', target_sets: 3, target_reps: 5 }] },
+      ],
+    });
+    await call('set_planned_session', { date: '2026-09-02', day: 'B' });
+
+    // Rebuild WITHOUT day B
+    const rebuilt = await call('update_plan', {
+      name: 'Drop test',
+      days: [{ name: 'A day', day_label: 'A', exercises: [{ exercise: 'Bench Press', target_sets: 3, target_reps: 5 }] }],
+    });
+    expect(rebuilt.conflict).toBe(false);
+
+    const sess = await env.DB.prepare("SELECT day_template_id FROM sessions WHERE date='2026-09-02'")
+      .first<{ day_template_id: string | null }>();
+    expect(sess!.day_template_id).toBeNull();
+  });
+
+  it('remaps set_logs.template_exercise_id to the new te id when the exercise survives', async () => {
+    await call('update_plan', {
+      name: 'TE remap',
+      days: [{ name: 'A', day_label: 'A', exercises: [{ exercise: 'Bench Press', target_sets: 3, target_reps: 5 }] }],
+    });
+    await call('set_planned_session', { date: '2026-09-03', day: 'A' });
+    // Read the current te id
+    const teBefore = await env.DB.prepare(
+      "SELECT te.id FROM template_exercises te JOIN day_templates d ON d.id=te.day_template_id WHERE d.day_label='A'",
+    ).first<{ id: string }>();
+    const oldTeId = teBefore!.id;
+    // Plant a set_log with that template_exercise_id
+    const sess = await env.DB.prepare("SELECT id FROM sessions WHERE date='2026-09-03'").first<{ id: string }>();
+    const setId = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s)
+       VALUES (?1,?2,'ex_bench',?3,1,135,5,NULL,0,NULL,?4,'test',NULL)`,
+    ).bind(setId, sess!.id, oldTeId, Date.now()).run();
+
+    // Rebuild keeps day A + Bench Press → te should remap
+    const rebuilt = await call('update_plan', {
+      name: 'TE remap',
+      days: [{ name: 'A', day_label: 'A', exercises: [{ exercise: 'Bench Press', target_sets: 4, target_reps: 8 }] }],
+    });
+    expect(rebuilt.conflict).toBe(false);
+    const newTeId = rebuilt.plan.days[0].exercises[0].id;
+
+    const set = await env.DB.prepare('SELECT template_exercise_id FROM set_logs WHERE id=?1')
+      .bind(setId)
+      .first<{ template_exercise_id: string | null }>();
+    expect(set!.template_exercise_id).toBe(newTeId);
+  });
+
+  it('rejects an exercise item with missing/empty `exercise` (no .trim() crash)', async () => {
+    const r = await call('update_plan', {
+      name: 'trim test',
+      days: [{ name: 'A', day_label: 'A', exercises: [{ target_sets: 3, target_reps: 5 } as never] }],
+    });
+    // Throws unknown_exercise:<missing> — surfaced as the tool's error text.
+    expect(JSON.stringify(r)).toMatch(/unknown_exercise/);
+  });
+});
+
+describe('mcp order_index — settable on add and update; rejects unknown patch keys', () => {
+  it('add_exercise appends densely (max+1), not the old 99 sentinel', async () => {
+    await call('update_plan', {
+      name: 'Order test',
+      days: [{ name: 'A', day_label: 'A', exercises: [
+        { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
+        { exercise: 'Barbell Row',  order_index: 1, target_sets: 3, target_reps: 8 },
+      ] }],
+    });
+
+    // No explicit order_index → should land at 2 (max 1 + 1), not 99.
+    const r = await call('add_exercise', {
+      day: 'A', exercise: 'Overhead Press', target_sets: 3, target_reps: 5,
+    });
+    expect(r.order_index).toBe(2);
+
+    // Explicit value → honored.
+    const r2 = await call('add_exercise', {
+      day: 'A', exercise: 'Pull-Up', target_sets: 3, target_reps: 5, order_index: 5,
+    });
+    expect(r2.order_index).toBe(5);
+  });
+
+  it('update_exercise applies order_index', async () => {
+    await call('update_plan', {
+      name: 'Order patch',
+      days: [{ name: 'A', day_label: 'A', exercises: [
+        { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
+      ] }],
+    });
+    const r = await call('update_exercise', {
+      day: 'A', exercise: 'bench', patch: { order_index: 7 },
+    });
+    expect(r.order_index).toBe(7);
+  });
+
+  it('update_exercise rejects unknown patch keys instead of silent 200', async () => {
+    await call('update_plan', {
+      name: 'Unknown key',
+      days: [{ name: 'A', day_label: 'A', exercises: [
+        { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
+      ] }],
+    });
+    // camelCase is the actual diagnosability bug from the report
+    const r = await call('update_exercise', {
+      day: 'A', exercise: 'bench', patch: { orderIndex: 0 },
+    });
+    expect(r.error).toBe('unknown_fields');
+    expect(r.fields).toContain('orderIndex');
+  });
+});

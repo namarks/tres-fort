@@ -425,10 +425,14 @@ private struct RestOverlay: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.2)) { ctx in
-            let remaining = Int(ceil((sync.restEndDate ?? ctx.date).timeIntervalSince(ctx.date)))
-            let frac = sync.restTotal > 0
-                ? max(0, min(1, (sync.restEndDate!.timeIntervalSince(ctx.date)) / Double(sync.restTotal)))
-                : 0
+            // restEndDate can flip to nil mid-render when DONE is tapped —
+            // never force-unwrap it.
+            let remaining = sync.restEndDate
+                .map { Int(ceil($0.timeIntervalSince(ctx.date))) } ?? 0
+            let frac: Double = {
+                guard let end = sync.restEndDate, sync.restTotal > 0 else { return 0 }
+                return max(0, min(1, end.timeIntervalSince(ctx.date) / Double(sync.restTotal)))
+            }()
             ZStack {
                 Theme.bg.opacity(0.96).ignoresSafeArea()
                 VStack(spacing: 0) {

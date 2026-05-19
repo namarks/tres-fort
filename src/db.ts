@@ -5,11 +5,15 @@ import type {
   EnrichedTemplateExercise,
   PlanRow,
   PlanTree,
+  ScheduleWeek,
   SessionRow,
   SetLogRow,
   TemplateExerciseRow,
   User,
+  Weekday,
+  WeeklySchedule,
 } from './types';
+import { WEEKDAYS, parsePlanMeta, serializePlanMeta } from './types';
 
 const now = () => Date.now();
 const uuid = () => crypto.randomUUID();
@@ -643,6 +647,17 @@ export async function updatePlanTree(
       );
     });
   });
+  // The full tree is being replaced: every old day_template_id is deleted
+  // (rebuilt days get fresh UUIDs), so any existing schedule entry is now
+  // dangling. Scrub the schedule (all entries → null) and carry it forward
+  // into whatever meta the caller supplied — never lose the schedule key.
+  // Same batch ⇒ shares the single version bump.
+  const baseMeta =
+    input.meta === undefined
+      ? parsePlanMeta(plan.meta)
+      : parsePlanMeta(JSON.stringify(input.meta));
+  const scrubbedSchedule =
+    scrubSchedule(baseMeta.schedule, new Set<string>()) ?? baseMeta.schedule;
   stmts.push(
     db
       .prepare(
@@ -651,7 +666,7 @@ export async function updatePlanTree(
       .bind(
         plan.id,
         input.name ?? plan.name,
-        input.meta === undefined ? plan.meta : JSON.stringify(input.meta),
+        serializePlanMeta(baseMeta, scrubbedSchedule),
         ts,
       ),
   );
@@ -892,4 +907,444 @@ export async function getVolume(
     .bind(userId, muscle, from, to)
     .all<{ week: string; hard_sets: number; tonnage: number }>();
   return { muscle_group: muscle, buckets: rows.results };
+}
+
+// ---- weekly schedule + future-calendar projection ------------------------
+//
+// The recurring pattern lives in plans.meta JSON (frozen contract, see
+// migrations/0005). Schedule edits are plan-tree mutations: they bump
+// plans.version and use optimistic concurrency. The one-off planned/skip
+// session writes are append-only sessions rows and do NOT bump version.
+
+/**
+ * Calendar weekday rule (iOS MUST mirror this byte-for-byte):
+ * parse the device-local 'YYYY-MM-DD' string as a proleptic Gregorian date,
+ * compute days since the fixed Monday epoch 1970-01-05 using integer day
+ * arithmetic (NOT a UTC Date offset, NOT timezone-aware), and index
+ * WEEKDAYS = [mon,tue,wed,thu,fri,sat,sun]. 1970-01-05 was a Monday, so
+ * ((daysSinceEpoch % 7) + 7) % 7 gives 0=mon ... 6=sun.
+ */
+function dayNumber(ymd: string): number {
+  const parts = ymd.split('-');
+  const y = Number(parts[0]);
+  const m = Number(parts[1]);
+  const d = Number(parts[2]);
+  // Days from 1970-01-01 via a pure civil-from-date algorithm (Howard
+  // Hinnant's days_from_civil) — no Date object, no UTC, no DST.
+  const yy = m <= 2 ? y - 1 : y;
+  const era = Math.floor((yy >= 0 ? yy : yy - 399) / 400);
+  const yoe = yy - era * 400;
+  const doy = Math.floor((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1;
+  const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+  return era * 146097 + doe - 719468; // days since 1970-01-01
+}
+
+/** 'YYYY-MM-DD' -> weekday key, via the calendar rule above (1970-01-05=Mon). */
+export function weekdayOf(ymd: string): Weekday {
+  const days = dayNumber(ymd) - 4; // 1970-01-05 (Monday) is day 4
+  const idx = ((days % 7) + 7) % 7;
+  return WEEKDAYS[idx]!;
+}
+
+/** Inclusive day count between two 'YYYY-MM-DD' strings (calendar, not UTC). */
+function daySpan(from: string, to: string): number {
+  return dayNumber(to) - dayNumber(from);
+}
+
+/** Add n days to a 'YYYY-MM-DD' string, returning 'YYYY-MM-DD'. */
+function addDays(ymd: string, n: number): string {
+  // Civil-from-days inverse of dayNumber (Hinnant), pure integer math.
+  let z = dayNumber(ymd) + n + 719468;
+  const era = Math.floor((z >= 0 ? z : z - 146096) / 146097);
+  const doe = z - era * 146097;
+  const yoe = Math.floor(
+    (doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365,
+  );
+  const y = yoe + era * 400;
+  const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+  const mp = Math.floor((5 * doy + 2) / 153);
+  const d = doy - Math.floor((153 * mp + 2) / 5) + 1;
+  const m = mp < 10 ? mp + 3 : mp - 9;
+  const yr = m <= 2 ? y + 1 : y;
+  const pad = (x: number, w = 2) => String(x).padStart(w, '0');
+  return `${pad(yr, 4)}-${pad(m)}-${pad(d)}`;
+}
+
+export async function getPlanSchedule(
+  db: D1Database,
+  userId: string,
+): Promise<{ plan: PlanRow; schedule: WeeklySchedule } | null> {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return null;
+  return { plan, schedule: parsePlanMeta(plan.meta).schedule };
+}
+
+/**
+ * Replace the full weekly map. Resolves each value (id, day_label, or day
+ * name) to a day_template_id belonging to the active plan; rejects any ref
+ * that doesn't resolve to a day in THIS plan (no partial write). Optimistic
+ * concurrency on expected_version. Bumps plans.version on success.
+ */
+export async function setPlanSchedule(
+  db: D1Database,
+  userId: string,
+  weekInput: Partial<Record<Weekday, string | null>>,
+  expectedVersion?: number | null,
+): Promise<
+  | { conflict: true; current_version: number }
+  | { error: 'no_active_plan' }
+  | { error: 'unknown_day_ref'; ref: string }
+  | { ok: true; plan: PlanRow; schedule: WeeklySchedule; version: number }
+> {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return { error: 'no_active_plan' };
+  if (expectedVersion != null && expectedVersion !== plan.version) {
+    return { conflict: true, current_version: plan.version };
+  }
+  const days = await db
+    .prepare('SELECT id, name, day_label FROM day_templates WHERE plan_id = ?1')
+    .bind(plan.id)
+    .all<{ id: string; name: string; day_label: string | null }>();
+  // Build resolution maps; id wins, then exact day_label, then exact name.
+  const byId = new Map(days.results.map((d) => [d.id, d.id]));
+  const byLabel = new Map<string, string>();
+  const byName = new Map<string, string>();
+  for (const d of days.results) {
+    if (d.day_label) byLabel.set(d.day_label.toLowerCase(), d.id);
+    byName.set(d.name.toLowerCase(), d.id);
+  }
+  const resolved: ScheduleWeek = {
+    mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null,
+  };
+  for (const wd of WEEKDAYS) {
+    const ref = weekInput[wd];
+    if (ref == null || ref === '') {
+      resolved[wd] = null;
+      continue;
+    }
+    const id =
+      byId.get(ref) ?? byLabel.get(ref.toLowerCase()) ?? byName.get(ref.toLowerCase());
+    if (!id) return { error: 'unknown_day_ref', ref };
+    resolved[wd] = id;
+  }
+  const meta = parsePlanMeta(plan.meta);
+  const schedule: WeeklySchedule = {
+    version: meta.schedule.version,
+    week: resolved,
+  };
+  const ts = now();
+  const row = await db
+    .prepare(
+      'UPDATE plans SET meta = ?2, version = version + 1, updated_at = ?3 WHERE id = ?1 RETURNING version',
+    )
+    .bind(plan.id, serializePlanMeta(meta, schedule), ts)
+    .first<{ version: number }>();
+  return {
+    ok: true,
+    plan: { ...plan, version: row?.version ?? plan.version + 1, updated_at: ts },
+    schedule,
+    version: row?.version ?? plan.version + 1,
+  };
+}
+
+/**
+ * Scrub schedule weekday entries whose day_template_id is not in `liveIds`.
+ * Returns the cleaned schedule, or null if nothing changed. Caller decides
+ * whether to persist (used inside the plan-rebuild batch so it shares the
+ * single version bump).
+ */
+function scrubSchedule(
+  schedule: WeeklySchedule,
+  liveIds: Set<string>,
+): WeeklySchedule | null {
+  let changed = false;
+  const week: ScheduleWeek = { ...schedule.week };
+  for (const wd of WEEKDAYS) {
+    const v = week[wd];
+    if (v != null && !liveIds.has(v)) {
+      week[wd] = null;
+      changed = true;
+    }
+  }
+  return changed ? { version: schedule.version, week } : null;
+}
+
+/**
+ * Delete one day_template and, in the same transaction, scrub any schedule
+ * entries pointing at it and bump plans.version exactly once.
+ */
+export async function deleteDayTemplate(
+  db: D1Database,
+  userId: string,
+  dayId: string,
+): Promise<{ ok: true } | { error: 'day_not_found' }> {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return { error: 'day_not_found' };
+  const day = await db
+    .prepare('SELECT id FROM day_templates WHERE id = ?1 AND plan_id = ?2')
+    .bind(dayId, plan.id)
+    .first<{ id: string }>();
+  if (!day) return { error: 'day_not_found' };
+  const meta = parsePlanMeta(plan.meta);
+  const remaining = await db
+    .prepare('SELECT id FROM day_templates WHERE plan_id = ?1 AND id != ?2')
+    .bind(plan.id, dayId)
+    .all<{ id: string }>();
+  const liveIds = new Set(remaining.results.map((r) => r.id));
+  const scrubbed = scrubSchedule(meta.schedule, liveIds);
+  const ts = now();
+  const stmts: D1PreparedStatement[] = [
+    db
+      .prepare('DELETE FROM template_exercises WHERE day_template_id = ?1')
+      .bind(dayId),
+    db.prepare('DELETE FROM day_templates WHERE id = ?1').bind(dayId),
+    db
+      .prepare(
+        'UPDATE plans SET meta = ?2, version = version + 1, updated_at = ?3 WHERE id = ?1',
+      )
+      .bind(
+        plan.id,
+        serializePlanMeta(meta, scrubbed ?? meta.schedule),
+        ts,
+      ),
+  ];
+  await db.batch(stmts);
+  return { ok: true };
+}
+
+/**
+ * One-off: pin a specific date to a day template (or clear to a bare planned
+ * session). Writes/updates a sessions row ONLY — append-only log, NO version
+ * bump. `day` accepts id, day_label, or day name.
+ */
+export async function setPlannedSession(
+  db: D1Database,
+  userId: string,
+  date: string,
+  day: string,
+): Promise<
+  | { error: 'no_active_plan' }
+  | { error: 'unknown_day_ref'; ref: string }
+  | { ok: true; session: SessionRow }
+> {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return { error: 'no_active_plan' };
+  const d = await db
+    .prepare(
+      "SELECT id FROM day_templates WHERE plan_id = ?1 AND (id = ?2 OR lower(day_label) = lower(?2) OR lower(name) = lower(?2)) LIMIT 1",
+    )
+    .bind(plan.id, day)
+    .first<{ id: string }>();
+  if (!d) return { error: 'unknown_day_ref', ref: day };
+  const existing = await db
+    .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at LIMIT 1')
+    .bind(userId, date)
+    .first<SessionRow>();
+  const ts = now();
+  if (existing) {
+    await db
+      .prepare(
+        "UPDATE sessions SET day_template_id = ?2, status = CASE WHEN status IN ('completed','in_progress') THEN status ELSE 'planned' END, updated_at = ?3 WHERE id = ?1",
+      )
+      .bind(existing.id, d.id, ts)
+      .run();
+    return {
+      ok: true,
+      session: { ...existing, day_template_id: d.id, updated_at: ts },
+    };
+  }
+  const s: SessionRow = {
+    id: uuid(),
+    user_id: userId,
+    plan_id: plan.id,
+    day_template_id: d.id,
+    date,
+    status: 'planned',
+    started_at: null,
+    completed_at: null,
+    perceived_fatigue: null,
+    notes: null,
+    created_at: ts,
+    updated_at: ts,
+  };
+  await db
+    .prepare(
+      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)',
+    )
+    .bind(s.id, s.user_id, s.plan_id, s.day_template_id, s.date, s.status, s.started_at, s.completed_at, s.perceived_fatigue, s.notes, s.created_at, s.updated_at)
+    .run();
+  return { ok: true, session: s };
+}
+
+/**
+ * One-off: mark a specific date a rest/skip day. Writes/updates a sessions
+ * row with status 'skipped' — append-only, NO version bump.
+ */
+export async function skipPlannedSession(
+  db: D1Database,
+  userId: string,
+  date: string,
+): Promise<{ error: 'no_active_plan' } | { ok: true; session: SessionRow }> {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return { error: 'no_active_plan' };
+  const existing = await db
+    .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at LIMIT 1')
+    .bind(userId, date)
+    .first<SessionRow>();
+  const ts = now();
+  if (existing) {
+    await db
+      .prepare("UPDATE sessions SET status = 'skipped', updated_at = ?2 WHERE id = ?1")
+      .bind(existing.id, ts)
+      .run();
+    return { ok: true, session: { ...existing, status: 'skipped', updated_at: ts } };
+  }
+  const s: SessionRow = {
+    id: uuid(),
+    user_id: userId,
+    plan_id: plan.id,
+    day_template_id: null,
+    date,
+    status: 'skipped',
+    started_at: null,
+    completed_at: null,
+    perceived_fatigue: null,
+    notes: null,
+    created_at: ts,
+    updated_at: ts,
+  };
+  await db
+    .prepare(
+      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)',
+    )
+    .bind(s.id, s.user_id, s.plan_id, s.day_template_id, s.date, s.status, s.started_at, s.completed_at, s.perceived_fatigue, s.notes, s.created_at, s.updated_at)
+    .run();
+  return { ok: true, session: s };
+}
+
+export interface CalendarCell {
+  date: string;
+  /** projected: from the weekly pattern. rest: no template that weekday.
+   *  Otherwise the real sessions.status (planned|in_progress|completed|skipped). */
+  status: 'projected' | 'rest' | 'planned' | 'in_progress' | 'completed' | 'skipped';
+  /** Set when a template resolves (projected or a real session w/ day). */
+  day_template_id: string | null;
+  /** True iff this cell came from a real sessions row. */
+  real: boolean;
+}
+
+/**
+ * Pure projection. Given the plan, its schedule, the real sessions in range,
+ * and an inclusive [fromDate,toDate] window (capped at 90 days span), emit a
+ * calendar cell per date:
+ *
+ *  - date < today: emit ONLY if a real sessions row exists (use its status).
+ *    Never fabricate past rest/missed days.
+ *  - date >= today: a real sessions row wins; otherwise weekday(date) ->
+ *    schedule.week -> template id. Resolvable id -> 'projected'; null /
+ *    missing / dangling id -> 'rest'.
+ *
+ * Weekday is derived from the 'YYYY-MM-DD' string via weekdayOf() (calendar
+ * rule, NOT a UTC offset) — iOS must mirror weekdayOf byte-for-byte.
+ */
+export function projectCalendar(
+  plan: { id: string },
+  schedule: WeeklySchedule,
+  realSessions: SessionRow[],
+  fromDate: string,
+  toDate: string,
+  today: string,
+  /** Day-template ids that still exist; a schedule id not here is dangling
+   *  and degrades to 'rest'. Pass [] only if you have no plan tree. */
+  liveDayIds: Iterable<string> = [],
+): CalendarCell[] {
+  void plan;
+  const resolvable = new Set(liveDayIds);
+  // Clamp the span to 90 days (inclusive endpoint counts as span 0..89).
+  let span = daySpan(fromDate, toDate);
+  if (span < 0) return [];
+  if (span > 89) span = 89;
+  const byDate = new Map<string, SessionRow>();
+  for (const s of realSessions) {
+    if (!byDate.has(s.date)) byDate.set(s.date, s);
+  }
+  const cells: CalendarCell[] = [];
+  for (let i = 0; i <= span; i++) {
+    const date = addDays(fromDate, i);
+    const real = byDate.get(date);
+    const isPast = daySpan(today, date) < 0;
+    if (real) {
+      cells.push({
+        date,
+        status: real.status as CalendarCell['status'],
+        day_template_id: real.day_template_id,
+        real: true,
+      });
+      continue;
+    }
+    if (isPast) continue; // no fabricated past cells
+    const tid = schedule.week[weekdayOf(date)];
+    if (tid && resolvable.has(tid)) {
+      cells.push({ date, status: 'projected', day_template_id: tid, real: false });
+    } else {
+      cells.push({ date, status: 'rest', day_template_id: null, real: false });
+    }
+  }
+  return cells;
+}
+
+/**
+ * Data-layer entry point: load the active plan, its schedule, the live day
+ * ids (for dangling detection), and the real sessions in range, then return
+ * the pure projection. fromDate/toDate are device-local 'YYYY-MM-DD'.
+ */
+export async function getProjectedCalendar(
+  db: D1Database,
+  userId: string,
+  fromDate: string,
+  toDate: string,
+  today: string,
+): Promise<CalendarCell[]> {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return [];
+  const schedule = parsePlanMeta(plan.meta).schedule;
+  const liveDays = await db
+    .prepare('SELECT id FROM day_templates WHERE plan_id = ?1')
+    .bind(plan.id)
+    .all<{ id: string }>();
+  const sessions = await db
+    .prepare(
+      'SELECT * FROM sessions WHERE user_id = ?1 AND date >= ?2 AND date <= ?3 ORDER BY date',
+    )
+    .bind(userId, fromDate, toDate)
+    .all<SessionRow>();
+  return projectCalendar(
+    plan,
+    schedule,
+    sessions.results,
+    fromDate,
+    toDate,
+    today,
+    liveDays.results.map((r) => r.id),
+  );
+}
+
+/** Resolve the schedule to human-readable weekday → day name, for context. */
+export async function getResolvedScheduleNames(
+  db: D1Database,
+  userId: string,
+): Promise<Record<Weekday, string | null> | null> {
+  const got = await getPlanSchedule(db, userId);
+  if (!got) return null;
+  const days = await db
+    .prepare('SELECT id, name FROM day_templates WHERE plan_id = ?1')
+    .bind(got.plan.id)
+    .all<{ id: string; name: string }>();
+  const nameById = new Map(days.results.map((d) => [d.id, d.name]));
+  const out = {} as Record<Weekday, string | null>;
+  for (const wd of WEEKDAYS) {
+    const id = got.schedule.week[wd];
+    out[wd] = id ? nameById.get(id) ?? null : null;
+  }
+  return out;
 }

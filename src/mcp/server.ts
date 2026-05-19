@@ -15,8 +15,10 @@ import {
   getPlanTree,
   getRecentSessions,
   getResolvedScheduleNames,
+  getRideConflicts,
   getSessionByDate,
   getSetsForSession,
+  getUpcomingRides,
   getVolume,
   logSet,
   logWorkoutComplete,
@@ -25,6 +27,7 @@ import {
   setPlannedSession,
   skipPlannedSession,
   swapExercise,
+  syncExternalEvents,
   updateExercise,
   updatePlanTree,
   writeAudit,
@@ -53,6 +56,10 @@ const err = (id: RpcRequest['id'], code: number, message: string) => ({
 });
 
 const todayLocal = () => new Date().toISOString().slice(0, 10);
+
+/** Add n whole days to a YYYY-MM-DD (UTC math, date part only — no DST). */
+const addDaysIso = (ymd: string, n: number) =>
+  new Date(Date.parse(`${ymd}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
 
 /** "30d" | "8w" | "6mo" | "all" -> epoch-ms lower bound. */
 function rangeToFrom(range: string | undefined): number {
@@ -93,7 +100,17 @@ const TOOLS: Record<string, Tool> = {
       if (!tree) return { plan: null, note: 'No active plan yet.' };
       // Fold in the resolved recurring weekly schedule (weekday → day name).
       const schedule = await getResolvedScheduleNames(env.DB, userId);
-      return { ...tree, schedule };
+      // Conflict-aware with zero extra calls: a compact 28-day lift/ride
+      // conflict list rides along with the plan context.
+      const today = todayLocal();
+      const ride_conflicts = await getRideConflicts(
+        env.DB,
+        userId,
+        today,
+        addDaysIso(today, 28),
+        today,
+      );
+      return { ...tree, schedule, ride_conflicts };
     },
   },
   get_today_workout: {
@@ -177,6 +194,35 @@ const TOOLS: Record<string, Tool> = {
     handler: async (a, env, userId) => {
       const from = rangeToFrom(typeof a.range === 'string' ? a.range : '12w');
       return getVolume(env.DB, userId, String(a.muscle_group), from, Date.now());
+    },
+  },
+
+  get_upcoming_rides: {
+    description:
+      "Get planned cycling/endurance events (from intervals.icu) and where they conflict with the lift calendar. `range` is a day count from today (default 30, max 90). Conflicts: severity 'clash' = a lift and a ride on the SAME day; 'heavy-next-day' = a lift the calendar day BEFORE a hard ride (training_load >= 150 or planned_duration_sec >= 9000). Use this to coordinate lifting around riding.",
+    inputSchema: obj(
+      { range: { type: 'integer', minimum: 1, maximum: 90, description: 'days ahead (default 30)' } },
+      [],
+    ),
+    handler: async (a, env, userId) => {
+      const range = typeof a.range === 'number' ? Math.min(90, Math.max(1, a.range)) : 30;
+      const today = todayLocal();
+      const to = addDaysIso(today, range);
+      const rides = await getUpcomingRides(env.DB, userId, { from: today, range });
+      const conflicts = await getRideConflicts(env.DB, userId, today, to, today);
+      return {
+        from: today,
+        to,
+        rides: rides.map((r) => ({
+          id: r.id,
+          date: r.date,
+          kind: r.kind,
+          title: r.title,
+          planned_duration_sec: r.planned_duration_sec,
+          training_load: r.training_load,
+        })),
+        conflicts,
+      };
     },
   },
 
@@ -530,6 +576,18 @@ const TOOLS: Record<string, Tool> = {
     handler: async (a, env, userId) => skipPlannedSession(env.DB, userId, String(a.date)),
     note: (a, r) => (r?.ok ? `Skipped ${a.date} (one-off rest, no plan change).` : null),
   },
+  refresh_rides: {
+    description:
+      'Force an immediate refresh of the planned cycling/endurance calendar from intervals.icu (the cron also does this every 6h). Returns how many upcoming rides are cached and the sync status. Does NOT change the training plan or its version. No-op if the intervals.icu integration is not configured.',
+    inputSchema: obj({}),
+    // An action → audited. Reconciled cache only: NO plans.version bump and
+    // (no `note`) NO notes row.
+    write: true,
+    handler: async (_a, env, userId) => {
+      const r = await syncExternalEvents(env.DB, env, { userId });
+      return { synced: r.synced, status: r.status, ...(r.detail ? { detail: r.detail } : {}) };
+    },
+  },
 };
 
 // ---- resource + prompt ---------------------------------------------------
@@ -542,8 +600,14 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
   const last = recent[0] ?? null;
   const lastSets = last ? await getSetsForSession(env.DB, last.id) : [];
   const schedule = tree ? await getResolvedScheduleNames(env.DB, userId) : null;
+  const today = todayLocal();
+  // Cycling awareness, zero extra Claude calls: a compact 28-day ride
+  // window + conflicts folded straight into the auto-loaded brief.
+  const horizon = addDaysIso(today, 28);
+  const rides = await getUpcomingRides(env.DB, userId, { from: today, range: 28 });
+  const conflicts = await getRideConflicts(env.DB, userId, today, horizon, today);
   const brief = {
-    today: todayLocal(),
+    today,
     active_plan: tree
       ? {
           name: tree.name,
@@ -566,6 +630,16 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
             .map((s) => `ex:${s.exercise_id} ${s.weight}x${s.reps}${s.rpe ? `@${s.rpe}` : ''}`),
         }
       : null,
+    // Upcoming endurance load + lift/ride conflicts (next 28 days). Empty
+    // arrays when the intervals.icu integration is dormant or clear.
+    upcoming_rides: rides.map((r) => ({
+      date: r.date,
+      kind: r.kind,
+      title: r.title,
+      training_load: r.training_load,
+      planned_duration_sec: r.planned_duration_sec,
+    })),
+    ride_conflicts: conflicts,
   };
   return [
     '# lift-coach — current state',

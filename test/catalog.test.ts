@@ -110,16 +110,20 @@ describe('expanded exercise catalog (0007)', () => {
 
   it('resolveExercise resolves conversational aliases', async () => {
     const cases: Array<[string, string]> = [
-      ['pushup', 'ex_pushup'],
+      // NOTE: every input here is an alias token that is NOT equal to its
+      // exercise's lower(name), so it can ONLY match the resolver's
+      // `lower(aliases) LIKE '%"<q>"%'` branch (not the lower(name)=q
+      // branch) -- this genuinely exercises the alias path.
+      ['pushup', 'ex_pushup'], // name is "push-up"
       ['press up', 'ex_pushup'],
-      ['goblet', 'ex_goblet_squat'],
+      ['goblet', 'ex_goblet_squat'], // name is "goblet squat"
       ['skull crusher', 'ex_skullcrusher'],
       ['cgbp', 'ex_cgbp'],
-      ['hammer curl', 'ex_hammer_curl'],
+      ['hammers', 'ex_hammer_curl'], // name is "hammer curl"
       ['rope pushdown', 'ex_rope_pushdown'],
-      ['arnold press', 'ex_arnold_press'],
+      ['arnold', 'ex_arnold_press'], // name is "arnold press"
       ['lat raise', 'ex_lateral_raise'],
-      ['face pull', 'ex_face_pull'],
+      ['face pulls', 'ex_face_pull'], // name is "face pull"
       ['walking lunge', 'ex_bw_lunge'],
       ['bulgarian split squat', 'ex_db_split_squat'],
       // case-insensitive
@@ -127,6 +131,12 @@ describe('expanded exercise catalog (0007)', () => {
       // original-12 aliases still resolve unchanged
       ['squat', 'ex_back_squat'],
       ['rdl', 'ex_rdl'],
+      // REGRESSION GUARD: "chin up" is a long-standing ex_pullup alias.
+      // The expanded catalog adds a distinct ex_chinup ("chin-up"/
+      // "chinup"). The existing user-facing phrase "chin up" must keep
+      // routing to ex_pullup, not the new ex_chinup -- guards against a
+      // future alias move silently re-pointing it.
+      ['chin up', 'ex_pullup'],
     ];
     for (const [alias, id] of cases) {
       const r = await resolveExercise(env.DB, alias);

@@ -10,7 +10,8 @@
 -- triceps/calves/core/forearms) and ALL modalities
 -- (barbell/dumbbell/machine/cable->machine/bw incl. the
 -- bodyweight staples push-up, plank, dips, BW squat/lunge,
--- chin-up, inverted row, hanging leg raise, glute bridge).
+-- chin-up, inverted row, hanging leg raise) and the
+-- barbell glute bridge (barbell).
 -- Excluded: near-duplicate grip/stance/Smith variants,
 -- behind-the-neck, novelty/circus, band/ball/foam-only,
 -- kettlebell flows, stretching/cardio/plyo-only.
@@ -131,7 +132,7 @@ VALUES
   ('ex_skullcrusher', 'Skullcrusher', 'triceps', '["forearms"]', 'barbell', 'lb', '["skullcrusher", "skull crusher", "lying tricep extension"]', 0),
   ('ex_dips', 'Dips', 'triceps', '["chest", "shoulders"]', 'bw', 'lb', '["dips", "dip", "tricep dip", "tricep dips", "chest dip", "parallel bar dip"]', 0),
   ('ex_bench_dips', 'Bench Dip', 'triceps', '["chest", "shoulders"]', 'bw', 'lb', '["bench dip", "bench dips"]', 0),
-  ('ex_overhead_tricep_ext', 'Overhead Triceps Extension', 'triceps', '[]', 'machine', 'lb', '["overhead triceps extension", "overhead tricep extension", "tricep extension"]', 0),
+  ('ex_overhead_tricep_ext', 'Cable Overhead Triceps Extension', 'triceps', '[]', 'machine', 'lb', '["cable overhead triceps extension", "overhead tricep extension", "overhead triceps extension", "tricep extension"]', 0),
   ('ex_db_overhead_ext', 'Dumbbell Overhead Triceps Extension', 'triceps', '[]', 'dumbbell', 'lb', '["dumbbell overhead triceps extension", "dumbbell overhead extension", "db tricep extension"]', 0),
   ('ex_tricep_kickback', 'Triceps Kickback', 'triceps', '[]', 'dumbbell', 'lb', '["triceps kickback", "tricep kickback", "kickback"]', 0),
   ('ex_machine_tricep_ext', 'Machine Triceps Extension', 'triceps', '[]', 'machine', 'lb', '["machine triceps extension", "machine tricep extension"]', 0),

@@ -18,8 +18,9 @@ Curation criteria (judgment, encoded as the explicit CURATED allowlist below):
     lats, shoulders, traps, biceps, triceps, calves, core, forearms.
   - All modalities: barbell, dumbbell, machine, cable, AND bodyweight (bw) --
     bodyweight staples (push-up, plank, dips, BW squat/lunge, chin-up,
-    inverted row, hanging leg raise, glute bridge ...) are explicitly included
-    to close the known catalog gap.
+    inverted row, hanging leg raise ...) are explicitly included to close
+    the known catalog gap. (NB: the barbell glute bridge / hip thrust are
+    seeded with modality='barbell', not bw -- they are barbell movements.)
   - Excluded: near-duplicate grip/stance/Smith variants, behind-the-neck
     variants, novelty/circus lifts, band/ball/foam-roll-only, kettlebell flow
     movements, stretching/cardio/plyometric-only entries.
@@ -241,7 +242,7 @@ CURATED = {
     "EZ-Bar Skullcrusher": ("ex_skullcrusher", "Skullcrusher", ["skullcrusher", "skull crusher", "lying tricep extension"]),
     "Dips - Triceps Version": ("ex_dips", "Dips", ["dip", "dips", "tricep dip", "tricep dips", "chest dip", "parallel bar dip"]),
     "Bench Dips": ("ex_bench_dips", "Bench Dip", ["bench dip", "bench dips"]),
-    "Cable Rope Overhead Triceps Extension": ("ex_overhead_tricep_ext", "Overhead Triceps Extension", ["overhead tricep extension", "overhead triceps extension", "tricep extension"]),
+    "Cable Rope Overhead Triceps Extension": ("ex_overhead_tricep_ext", "Cable Overhead Triceps Extension", ["overhead tricep extension", "overhead triceps extension", "tricep extension"]),
     "Standing Dumbbell Triceps Extension": ("ex_db_overhead_ext", "Dumbbell Overhead Triceps Extension", ["dumbbell overhead extension", "db tricep extension"]),
     "Tricep Dumbbell Kickback": ("ex_tricep_kickback", "Triceps Kickback", ["tricep kickback", "triceps kickback", "kickback"]),
     "Machine Triceps Extension": ("ex_machine_tricep_ext", "Machine Triceps Extension", ["machine tricep extension"]),
@@ -369,7 +370,8 @@ def main() -> int:
     out.append("-- triceps/calves/core/forearms) and ALL modalities")
     out.append("-- (barbell/dumbbell/machine/cable->machine/bw incl. the")
     out.append("-- bodyweight staples push-up, plank, dips, BW squat/lunge,")
-    out.append("-- chin-up, inverted row, hanging leg raise, glute bridge).")
+    out.append("-- chin-up, inverted row, hanging leg raise) and the")
+    out.append("-- barbell glute bridge (barbell).")
     out.append("-- Excluded: near-duplicate grip/stance/Smith variants,")
     out.append("-- behind-the-neck, novelty/circus, band/ball/foam-only,")
     out.append("-- kettlebell flows, stretching/cardio/plyo-only.")

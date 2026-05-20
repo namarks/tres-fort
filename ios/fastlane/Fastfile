@@ -1,0 +1,61 @@
+default_platform(:ios)
+
+# Reuses the same App Store Connect API key Tally uses — it's account-level
+# (team 8BA2RY6RCA), not app-scoped, so a single .p8 authorizes uploads for
+# every app under Nick's Apple Developer Program account.
+API_KEY_ID = "723T6CFSD9"
+API_ISSUER_ID = "b169cd8d-cb73-4efc-8d72-8c92c5ad29ed"
+P8_PATH = File.expand_path("~/.appstoreconnect/private_keys/AuthKey_#{API_KEY_ID}.p8")
+
+platform :ios do
+  before_all do
+    UI.user_error!("Missing ASC API key at #{P8_PATH}") unless File.exist?(P8_PATH)
+    app_store_connect_api_key(
+      key_id: API_KEY_ID,
+      issuer_id: API_ISSUER_ID,
+      key_filepath: P8_PATH,
+      duration: 1200,
+      in_house: false
+    )
+  end
+
+  # No lane for creating the App Store Connect record. fastlane's `produce`
+  # action requires Apple ID password (Spaceship / Developer Portal API) — the
+  # ASC API key set above doesn't authorize entity creation, only build &
+  # metadata ops. With 2FA on the Apple ID, automating produce needs an
+  # app-specific password and a keychain dance for what's a one-time op. Do
+  # it in the App Store Connect web UI instead; see fastlane/SETUP.md.
+
+  desc "Upload an already-built IPA to TestFlight (run scripts/upload-testflight.sh first to build)"
+  lane :upload_testflight do |options|
+    upload_to_testflight(
+      ipa: options[:ipa] || "build/export/LiftCoach.ipa",
+      skip_waiting_for_build_processing: true,
+      skip_submission: true
+    )
+  end
+
+  desc "Submit the latest TestFlight build for App Store review. Manual release after approval (toggle in ASC). Usage: bundle exec fastlane ios submit_for_review"
+  lane :submit_for_review do
+    deliver(
+      app_identifier: "com.nmarkspdx.liftcoach",
+      metadata_path: "./fastlane/metadata",
+      screenshots_path: "./fastlane/screenshots",
+      skip_binary_upload: true,
+      skip_screenshots: false,
+      skip_metadata: false,
+      submit_for_review: true,
+      automatic_release: false,
+      run_precheck_before_submit: true,
+      force: true,
+      reject_if_possible: true,
+      precheck_include_in_app_purchases: false,
+      submission_information: {
+        add_id_info_uses_idfa: false,
+        export_compliance_uses_encryption: false,
+        export_compliance_encryption_updated: false,
+        content_rights_contains_third_party_content: false
+      }
+    )
+  end
+end

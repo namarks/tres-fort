@@ -11,7 +11,8 @@
     "test:watch": "vitest",
     "db:migrate:local": "wrangler d1 migrations apply lift-coach-db --local",
     "db:migrate:remote": "wrangler d1 migrations apply lift-coach-db --remote",
-    "release": "npm run db:migrate:remote && npm run deploy"
+    "release": "npm run db:migrate:remote && npm run deploy",
+    "ios:testflight": "./scripts/upload-testflight.sh"
   },
   "dependencies": {
     "hono": "^4.6.14",

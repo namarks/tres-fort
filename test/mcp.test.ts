@@ -91,6 +91,11 @@ describe('mcp auth + protocol', () => {
     expect(body.result.protocolVersion).toBe('2025-06-18');
     expect(body.result.capabilities).toMatchObject({ tools: {}, resources: {}, prompts: {} });
     expect(body.result.serverInfo.name).toBe('lift-coach');
+    // Host-injected guidance: must mention the no-auto-log policy so the
+    // model picks up the narration guard at session start.
+    expect(typeof body.result.instructions).toBe('string');
+    expect(body.result.instructions).toMatch(/log_set/);
+    expect(body.result.instructions).toMatch(/iOS/);
   });
 
   it('notifications get a bare 202', async () => {
@@ -122,6 +127,7 @@ describe('mcp tools list', () => {
         'get_volume_trend',
         'list_exercises',
         'log_set',
+        'delete_set',
         'log_workout_complete',
         'add_note',
         'update_plan',
@@ -139,7 +145,7 @@ describe('mcp tools list', () => {
         'delete_exercise',
       ]),
     );
-    expect(names).toHaveLength(23);
+    expect(names).toHaveLength(24);
     for (const t of body.result.tools) expect(t.inputSchema.type).toBe('object');
   });
 });

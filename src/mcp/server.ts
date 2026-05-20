@@ -9,6 +9,7 @@ import {
   adjustToday,
   deleteTemplateExercise,
   ensureOwnerUser,
+  findRecentMatchingSet,
   getActivePlan,
   getExercises,
   getHistory,
@@ -27,6 +28,7 @@ import {
   nextDayOrderIndex,
   nextExerciseOrderIndex,
   patchDayTemplate,
+  patchSet,
   tryExportSessionLoad,
   resolveExercise,
   setPlanSchedule,
@@ -42,6 +44,23 @@ import {
 import type { Weekday } from '../types';
 
 const SERVER_INFO = { name: 'lift-coach', version: '0.1.0' };
+// Host-injected system instructions (MCP `initialize.instructions`). Shapes
+// how the model uses these tools — specifically the no-auto-log policy that
+// stops phantom/duplicate set_logs when the user is just narrating a workout
+// they are already logging in the iOS app.
+const SERVER_INSTRUCTIONS =
+  "You are the user's strength coach. The iOS app is the primary set " +
+  'logger: the user records their own reps and weights in the gym. Your ' +
+  'job in chat is to coach (review history, adapt the plan, motivate, ' +
+  'answer questions) — NOT to mirror what they are logging. Do NOT call ' +
+  'log_set unless the user explicitly asks you to log/record/add a set ' +
+  '("log this", "add 225x5", "I forgot to log my warmup"). Narration like ' +
+  '"set 2 down", "5x135", "just hit a PR", or "that felt easy" is a ' +
+  'status update — acknowledge it, do not log. Sets with source="ios" in ' +
+  'get_current_session / get_today_workout are evidence the user is ' +
+  'logging in-app right now; assume any set they mention is already ' +
+  'recorded. When in doubt, ask before logging. Use delete_set to undo a ' +
+  'wrongly-logged set; the user fixes weight/reps mistakes in iOS.';
 const DEFAULT_PROTOCOL = '2025-06-18';
 const SUPPORTED_PROTOCOLS = new Set(['2025-06-18', '2025-03-26', '2024-11-05']);
 
@@ -275,7 +294,25 @@ const TOOLS: Record<string, Tool> = {
 
   log_set: {
     description:
-      'Log one working/warmup set. Auto-creates the day\'s session and infers set_index. Logs to today unless session_date is given.',
+      "Log one working/warmup set into the workout database. Auto-creates " +
+      "the day's session and infers set_index. Logs to today unless " +
+      'session_date is given. ' +
+      'STRICT USAGE: do NOT call this tool while the user is narrating a ' +
+      'workout in progress. Assume the iOS app is the primary logger — ' +
+      'sets with source="ios" in get_current_session / get_today_workout ' +
+      'mean the user is actively logging in-app, so any set they mention ' +
+      'in chat is almost certainly ALREADY recorded. Only call log_set ' +
+      'when the user explicitly asks you to ("log this", "record this ' +
+      'set", "add 225x5 for me", "I forgot to log my warmup"). Phrases ' +
+      'like "set 2 down", "5x135", "just did bench", "that felt heavy" ' +
+      'are status reports, not logging requests — acknowledge them, do ' +
+      'not call this tool. When unsure, ask the user before logging. The ' +
+      'server also rejects sets that duplicate a same exercise/weight/' +
+      'reps logged within the last 120 seconds (error: "recent_duplicate"' +
+      '); that signal almost always means iOS already logged it — do NOT ' +
+      'retry, and do NOT re-call with tweaked numbers. The dedupe gate is ' +
+      'skipped for explicit backfill (session_date set to a past day, e.g. ' +
+      '"log yesterday\'s 185x5") — those are explicit logging intents.',
     inputSchema: obj(
       {
         exercise: { type: 'string', description: 'name, alias, or id' },
@@ -294,11 +331,43 @@ const TOOLS: Record<string, Tool> = {
     handler: async (a, env, userId) => {
       const plan = await getActivePlan(env.DB, userId);
       if (!plan) return { error: 'no_active_plan' };
-      const date = typeof a.session_date === 'string' ? a.session_date : todayLocal();
+      const today = todayLocal();
+      const date = typeof a.session_date === 'string' ? a.session_date : today;
       const session = await getOrCreateSession(env.DB, userId, plan.id, date, null);
       const ex = await resolveExercise(env.DB, String(a.exercise));
       if (!ex) return { error: 'unknown_exercise', query: a.exercise };
       const exId = (ex as { id: string }).id;
+      const isWarmup = a.is_warmup === true;
+      // Phantom-dupe guard: if the same exercise/weight/reps was logged by
+      // ANY source in the last 120s, refuse. The narration-while-logging-
+      // in-iOS case (the bug this fixes) hits exactly this window.
+      // BUT: skip the gate for explicit backfill ("log yesterday's 185x5")
+      // — when session_date is supplied and isn't today, the user is making
+      // an explicit historical log, not narrating; rejecting it on a same-
+      // day same-triple iOS write would block a legitimate workflow.
+      const isBackfill = typeof a.session_date === 'string' && a.session_date !== today;
+      const recent = isBackfill
+        ? null
+        : await findRecentMatchingSet(env.DB, userId, {
+            exercise_id: exId,
+            weight: Number(a.weight),
+            reps: Number(a.reps),
+            is_warmup: isWarmup,
+          });
+      if (recent) {
+        const ageS = Math.max(0, Math.round((Date.now() - recent.logged_at) / 1000));
+        return {
+          error: 'recent_duplicate',
+          message:
+            `A ${a.weight}x${a.reps}${isWarmup ? ' warmup' : ''} set for ` +
+            `${(ex as { name: string }).name} was already logged ${ageS}s ` +
+            `ago (source=${recent.source}). This is almost certainly a ` +
+            `duplicate from the user logging in iOS — do NOT retry, and ` +
+            `do NOT tweak the numbers to bypass this. Use delete_set if ` +
+            `the existing set is wrong.`,
+          existing_set: recent,
+        };
+      }
       const existing = await getSetsForSession(env.DB, session.id);
       const setIndex =
         typeof a.set_index === 'number'
@@ -319,6 +388,31 @@ const TOOLS: Record<string, Tool> = {
       });
       return { set, deduped, session_id: session.id };
     },
+  },
+  delete_set: {
+    description:
+      'Soft-delete a logged set by id — use this to undo a wrong log_set ' +
+      'call (a phantom set you logged in error, or a true duplicate). The ' +
+      'row is marked deleted (deleted_at set); history is preserved but ' +
+      'it stops counting toward volume/sync. To find the set_id, call ' +
+      'get_current_session or get_session_log first. For value ' +
+      'corrections (wrong weight/reps), ask the user to fix it in iOS — ' +
+      'there is no patch tool here.',
+    inputSchema: obj(
+      {
+        set_id: { type: 'string', description: 'set_logs.id (UUID) to soft-delete' },
+      },
+      ['set_id'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const row = await patchSet(env.DB, userId, String(a.set_id), { deleted: true });
+      return row ?? { error: 'not_found', set_id: a.set_id };
+    },
+    note: (a, r) =>
+      r?.error
+        ? null
+        : `Deleted set ${a.set_id} (${r.weight}x${r.reps}${r.is_warmup ? ' warmup' : ''}).`,
   },
   log_workout_complete: {
     description: 'Mark a session complete, optionally with perceived fatigue (1-10) and notes.',
@@ -798,6 +892,7 @@ async function dispatch(
         protocolVersion: SUPPORTED_PROTOCOLS.has(requested) ? requested : DEFAULT_PROTOCOL,
         capabilities: { tools: {}, resources: {}, prompts: {} },
         serverInfo: SERVER_INFO,
+        instructions: SERVER_INSTRUCTIONS,
       });
     }
     case 'ping':

@@ -959,4 +959,141 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     // Non-timed slot stays null.
     expect(exs.find((e: { exercise_id: string }) => e.exercise_id === 'ex_bench').target_duration_s).toBeNull();
   });
+
+  it('log_set rejects a recent_duplicate of an iOS-logged set within 120s', async () => {
+    // Plan + a session iOS just logged a 185x5 squat into.
+    const built = await call('update_plan', {
+      name: 'Dedupe',
+      days: [
+        {
+          day_label: 'L',
+          name: 'Legs',
+          exercises: [{ exercise: 'squat', target_sets: 3, target_reps: 5 }],
+        },
+      ],
+    });
+    expect(built.conflict).toBe(false);
+    // Simulate the iOS write directly: create today's session + a set with
+    // source='ios' logged 30s ago. (Bypasses the MCP gate — that's the
+    // point: iOS is the source of truth, MCP must respect what's there.)
+    const planId = built.plan.id as string;
+    // The plan's owner is the MCP-resolved owner; use that user_id so the
+    // hand-inserted iOS session shares the same user (single-user invariant).
+    const planRow = await env.DB
+      .prepare("SELECT user_id FROM plans WHERE id = ?1")
+      .bind(planId)
+      .first<{ user_id: string }>();
+    const userId = planRow!.user_id;
+    const today = new Date().toISOString().slice(0, 10);
+    const sessionId = crypto.randomUUID();
+    const tNow = Date.now();
+    await env.DB
+      .prepare(
+        `INSERT INTO sessions (id,user_id,plan_id,date,status,started_at,created_at,updated_at)
+         VALUES (?1,?2,?3,?4,'in_progress',?5,?5,?5)`,
+      )
+      .bind(sessionId, userId, planId, today, tNow - 30_000)
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,deleted_at)
+         VALUES (?1,?2,'ex_back_squat',NULL,1,185,5,NULL,0,NULL,?3,'ios',NULL,NULL)`,
+      )
+      .bind(crypto.randomUUID(), sessionId, tNow - 30_000)
+      .run();
+
+    // The phantom narration call: same exercise/weight/reps, ~30s later.
+    const dup = await call('log_set', { exercise: 'squat', weight: 185, reps: 5 });
+    expect(dup.error).toBe('recent_duplicate');
+    expect(dup.existing_set.source).toBe('ios');
+    expect(dup.message).toMatch(/iOS/);
+
+    // Only the one (iOS) live set survives — the MCP call did NOT insert.
+    const live = await env.DB
+      .prepare(
+        "SELECT COUNT(*) AS c FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL AND weight = 185 AND reps = 5",
+      )
+      .bind(sessionId)
+      .first<{ c: number }>();
+    expect(live!.c).toBe(1);
+
+    // Same triple-but-warmup is NOT considered a dupe of a working set.
+    const wu = await call('log_set', {
+      exercise: 'squat',
+      weight: 185,
+      reps: 5,
+      is_warmup: true,
+    });
+    expect(wu.error).toBeUndefined();
+    expect(wu.set.is_warmup).toBe(1);
+
+    // Different weight in the window logs fine (real next set).
+    const next = await call('log_set', { exercise: 'squat', weight: 225, reps: 5 });
+    expect(next.error).toBeUndefined();
+    expect(next.set.weight).toBe(225);
+
+    // Explicit backfill to a past date bypasses the gate — "log yesterday's
+    // 185x5" is an explicit logging intent and must not be blocked by today's
+    // matching iOS set.
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const backfill = await call('log_set', {
+      exercise: 'squat',
+      weight: 185,
+      reps: 5,
+      session_date: yesterday,
+    });
+    expect(backfill.error).toBeUndefined();
+    expect(backfill.set.weight).toBe(185);
+
+    // session_date == today still goes through the gate (narration could
+    // supply today explicitly; we only trust an explicit *past* date).
+    const sameDay = await call('log_set', {
+      exercise: 'squat',
+      weight: 185,
+      reps: 5,
+      session_date: today,
+    });
+    expect(sameDay.error).toBe('recent_duplicate');
+  });
+
+  it('delete_set soft-deletes a logged set; missing id reports not_found', async () => {
+    // Fresh plan + one MCP-logged set.
+    const built = await call('update_plan', {
+      name: 'Delete',
+      days: [
+        {
+          day_label: 'P',
+          name: 'Press',
+          exercises: [{ exercise: 'overhead press', target_sets: 3, target_reps: 5 }],
+        },
+      ],
+    });
+    expect(built.conflict).toBe(false);
+    const logged = await call('log_set', {
+      exercise: 'overhead press',
+      weight: 95,
+      reps: 5,
+    });
+    expect(logged.error).toBeUndefined();
+    const setId = logged.set.id as string;
+
+    // Delete via MCP.
+    const del = await call('delete_set', { set_id: setId });
+    expect(del.error).toBeUndefined();
+    expect(del.id).toBe(setId);
+    expect(del.deleted_at).toBeTruthy();
+
+    // get_current_session no longer surfaces it.
+    const cur = await call('get_current_session', {});
+    const stillThere = (cur.sets ?? []).some((s: { id: string }) => s.id === setId);
+    expect(stillThere).toBe(false);
+
+    // Audit row written; missing id returns not_found.
+    const audit = await env.DB
+      .prepare("SELECT COUNT(*) AS c FROM audit_log WHERE tool='delete_set'")
+      .first<{ c: number }>();
+    expect(audit!.c).toBeGreaterThanOrEqual(1);
+    const miss = await call('delete_set', { set_id: 'no-such-uuid' });
+    expect(miss.error).toBe('not_found');
+  });
 });

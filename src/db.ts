@@ -661,6 +661,42 @@ export async function logSet(
   return { set: row, deduped: false };
 }
 
+/**
+ * Most recent live set across ALL sources for (user, exercise, weight, reps,
+ * is_warmup) within a sliding window (default 120s). Used by the MCP log_set
+ * path to refuse phantom dupes when iOS just logged the same work; REST
+ * writes from iOS are not gated by this (their idempotency is the row UUID).
+ */
+export async function findRecentMatchingSet(
+  db: D1Database,
+  userId: string,
+  args: {
+    exercise_id: string;
+    weight: number;
+    reps: number;
+    is_warmup: boolean;
+    within_ms?: number;
+  },
+): Promise<SetLogRow | null> {
+  const since = now() - (args.within_ms ?? 120_000);
+  const row = await db
+    .prepare(
+      `SELECT sl.* FROM set_logs sl
+       JOIN sessions s ON s.id = sl.session_id
+       WHERE s.user_id = ?1
+         AND sl.exercise_id = ?2
+         AND sl.weight = ?3
+         AND sl.reps = ?4
+         AND sl.is_warmup = ?5
+         AND sl.deleted_at IS NULL
+         AND sl.logged_at >= ?6
+       ORDER BY sl.logged_at DESC LIMIT 1`,
+    )
+    .bind(userId, args.exercise_id, args.weight, args.reps, args.is_warmup ? 1 : 0, since)
+    .first<SetLogRow>();
+  return row ?? null;
+}
+
 export async function patchSet(
   db: D1Database,
   userId: string,

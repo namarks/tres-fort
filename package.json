@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "db:migrate:local": "wrangler d1 migrations apply lift-coach-db --local",
-    "db:migrate:remote": "wrangler d1 migrations apply lift-coach-db --remote"
+    "db:migrate:remote": "wrangler d1 migrations apply lift-coach-db --remote",
+    "release": "npm run db:migrate:remote && npm run deploy"
   },
   "dependencies": {
     "hono": "^4.6.14",

@@ -25,6 +25,9 @@ npm run dev                    # wrangler dev (local Worker + local D1)
 npm run db:migrate:local       # apply migrations/ to local D1
 npm run db:migrate:remote      # apply migrations/ to deployed D1
 npm run deploy                 # wrangler deploy
+npm run release                # db:migrate:remote && deploy (migration MUST run first
+                               # — deploying code that SELECTs a new column before the
+                               # column exists 500s every read)
 ```
 
 iOS (`ios/`):

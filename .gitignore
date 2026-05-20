@@ -12,3 +12,14 @@ ios/DerivedData/
 ios/build/
 *.xcuserstate
 .swiftpm/
+
+# fastlane (ios/fastlane/) — local secrets and run artifacts
+ios/fastlane/.api_key.json
+ios/fastlane/report.xml
+ios/fastlane/Preview.html
+ios/fastlane/screenshots/**/*.png
+ios/fastlane/test_output/
+
+# Ruby (fastlane gems) — Gemfile.lock IS checked in for reproducibility
+ios/.bundle/
+ios/vendor/bundle/

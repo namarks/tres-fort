@@ -284,8 +284,14 @@ private struct WorkoutDoneView: View {
                         .foregroundStyle(Theme.accent)
                     let n = todaySets.count
                     if n > 0 {
-                        let reps = todaySets.reduce(0) { $0 + $1.reps }
-                        let vol = todaySets.reduce(0.0) { $0 + $1.weight * Double($1.reps) }
+                        // Unilateral exercises log reps per-side; double them
+                        // so 45×8 Bulgarian split squat reads 16 reps / 720 lb.
+                        let reps = todaySets.reduce(0) {
+                            $0 + $1.reps * sync.sides(for: $1.exercise_id)
+                        }
+                        let vol = todaySets.reduce(0.0) {
+                            $0 + $1.weight * Double($1.reps * sync.sides(for: $1.exercise_id))
+                        }
                         Text("✓ \(n) SET\(n == 1 ? "" : "S") · \(reps) REPS · \(Int(vol)) LB")
                             .font(Theme.mono(12, .bold)).tracking(1)
                             .foregroundStyle(Theme.muted)
@@ -812,8 +818,14 @@ private struct FinishedView: View {
                     .foregroundStyle(Theme.muted)
 
                 let sets = todaysSets
-                let reps = sets.reduce(0) { $0 + $1.reps }
-                let vol = sets.reduce(0.0) { $0 + $1.weight * Double($1.reps) }
+                // Match the WorkoutDoneView rollup: unilateral reps & volume
+                // are doubled (45×8 Bulgarian split squat → 16 reps / 720 lb).
+                let reps = sets.reduce(0) {
+                    $0 + $1.reps * sync.sides(for: $1.exercise_id)
+                }
+                let vol = sets.reduce(0.0) {
+                    $0 + $1.weight * Double($1.reps * sync.sides(for: $1.exercise_id))
+                }
                 VStack(spacing: 0) {
                     sumRow("Sets logged", "\(sets.count)")
                     sumRow("Total reps", "\(reps)")

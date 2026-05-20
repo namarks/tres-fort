@@ -27,9 +27,13 @@ struct TemplateExercise: Decodable, Identifiable, Equatable {
     let target_weight: Double?
     let cues: String?
     let exercise_modality: String
+    /// "bilateral" (default) | "unilateral". Optional so older payloads
+    /// (pre-0011 migration) still decode — defaults to bilateral.
+    let exercise_laterality: String?
 
     var isTimed: Bool { exercise_modality == "timed" }
     var isBodyweight: Bool { exercise_unit == "bw" }
+    var isUnilateral: Bool { exercise_laterality == "unilateral" }
 
     /// "3×5" / "3×5–8" / "3×45s" (timed).
     var targetLabel: String {
@@ -122,6 +126,12 @@ struct ExerciseCatalog: Decodable, Identifiable {
     let primary_muscle: String
     let modality: String
     let unit: String
+    /// "bilateral" | "unilateral". Unilateral exercises log reps per-side;
+    /// rollups (set count, total reps, volume) double for unilateral so the
+    /// 45×8 Bulgarian split squat reads as 16 reps / 720 lb of work, not
+    /// 8 reps / 360 lb. Optional for older payloads (pre-0011 migration)
+    /// — defaults to bilateral.
+    let laterality: String?
 }
 
 /// An externally-sourced training event (e.g. an intervals.icu planned

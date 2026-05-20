@@ -666,13 +666,19 @@ describe('/api/state external_events delta (own consistency class)', () => {
 });
 
 describe('exercise catalog', () => {
-  it('lists the seeded catalog incl timed exercises', async () => {
+  it('lists the seeded catalog incl timed exercises and laterality', async () => {
     const jwt = await devJwt();
     const r = await SELF.fetch(`${BASE}/api/exercises`, { headers: auth(jwt) });
     expect(r.status).toBe(200);
-    const list = await r.json<{ id: string; modality: string }[]>();
+    const list = await r.json<{ id: string; modality: string; laterality?: string }[]>();
     expect(list.find((e) => e.id === 'ex_bench')).toBeTruthy();
     expect(list.find((e) => e.id === 'ex_plank')?.modality).toBe('timed');
+    // Regression guard: laterality MUST ride along so iOS's sides(for:)
+    // lookup doesn't silently default unilateral rows to bilateral and
+    // halve every Bulgarian split squat rollup (Codex review on #18).
+    expect(list.find((e) => e.id === 'ex_bench')?.laterality).toBe('bilateral');
+    expect(list.find((e) => e.id === 'ex_db_split_squat')?.laterality).toBe('unilateral');
+    expect(list.every((e) => typeof e.laterality === 'string')).toBe(true);
   });
 });
 

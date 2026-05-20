@@ -244,7 +244,7 @@ const TOOLS: Record<string, Tool> = {
 
   list_exercises: {
     description:
-      'List the exercise catalog so you can discover what is resolvable BEFORE calling add_exercise / update_plan (those reject unknown names with `unknown_exercise`). Optional filters: `query` (case-insensitive substring on name), `muscle` (primary_muscle exact, e.g. "quads"), `modality` (e.g. "barbell","dumbbell","bw","machine","timed"). Returns up to a few hundred rows in the seeded catalog; combine filters to narrow.',
+      'List the exercise catalog so you can discover what is resolvable BEFORE calling add_exercise / update_plan (those reject unknown names with `unknown_exercise`). Optional filters: `query` (case-insensitive substring on name), `muscle` (primary_muscle exact, e.g. "quads"), `modality` (e.g. "barbell","dumbbell","bw","machine","timed"). Each row includes `laterality` ("bilateral" | "unilateral"); unilateral exercises log reps per-side, and the system doubles for total reps / tonnage (see log_set). Returns up to a few hundred rows in the seeded catalog; combine filters to narrow.',
     inputSchema: obj(
       {
         query: { type: 'string' },
@@ -312,7 +312,15 @@ const TOOLS: Record<string, Tool> = {
       '); that signal almost always means iOS already logged it — do NOT ' +
       'retry, and do NOT re-call with tweaked numbers. The dedupe gate is ' +
       'skipped for explicit backfill (session_date set to a past day, e.g. ' +
-      '"log yesterday\'s 185x5") — those are explicit logging intents.',
+      '"log yesterday\'s 185x5") — those are explicit logging intents. ' +
+      'CONVENTION: weight is per implement and reps is per side. For a ' +
+      'unilateral exercise (Bulgarian split squat, lunge, one-arm row — ' +
+      'list_exercises returns laterality), log ONE set with the per-side ' +
+      'numbers; the system doubles for total reps and tonnage. Example: ' +
+      'DB Bulgarian split squat with 45lb DBs, 8 reps each leg → ' +
+      '`weight=45, reps=8` (NOT 90, NOT 16). The response echoes ' +
+      'exercise.laterality + effective.{sides,total_reps,tonnage} so you ' +
+      'can confirm to the user.',
     inputSchema: obj(
       {
         exercise: { type: 'string', description: 'name, alias, or id' },
@@ -386,7 +394,26 @@ const TOOLS: Record<string, Tool> = {
         duration_s: a.duration_s == null ? null : Number(a.duration_s),
         source: 'mcp',
       });
-      return { set, deduped, session_id: session.id };
+      // Surface the resolved exercise + per-side accounting so the agent
+      // can confirm "45x8 each leg → 16 total reps, 720 lb tonnage" to the
+      // user without a second lookup.
+      const exLat = (ex as { laterality?: string }).laterality ?? 'bilateral';
+      const sides = exLat === 'unilateral' ? 2 : 1;
+      return {
+        set,
+        deduped,
+        session_id: session.id,
+        exercise: {
+          id: exId,
+          name: (ex as { name: string }).name,
+          laterality: exLat,
+        },
+        effective: {
+          sides,
+          total_reps: set.reps * sides,
+          tonnage: set.weight * set.reps * sides,
+        },
+      };
     },
   },
   delete_set: {

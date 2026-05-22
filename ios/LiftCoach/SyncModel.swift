@@ -227,9 +227,11 @@ final class SyncModel: ObservableObject {
         setClock = Date()
         guard let ex = currentExercise else { return }
         let last = lastWorkingSet(ex.exercise_id)
-        // Bodyweight exercises have no weight input (#2); seed 0 so the
-        // hidden field never logs a phantom default (45) as added load.
-        weight = ex.isBodyweight ? (last?.weight ?? 0) : (last?.weight ?? ex.target_weight ?? 45)
+        // Bodyweight exercises have no weight input (#2); the field is
+        // hidden and uneditable, so always seed 0 — never carry a prior
+        // (possibly mis-logged) non-zero load forward where the user can't
+        // see or fix it mid-workout.
+        weight = ex.isBodyweight ? 0 : (last?.weight ?? ex.target_weight ?? 45)
         reps = last?.reps ?? ex.target_reps
     }
 

@@ -147,7 +147,7 @@ export async function getPlanTree(
       .prepare(
         `SELECT te.*, e.name AS exercise_name, e.unit AS exercise_unit,
                 e.primary_muscle AS exercise_muscle, e.modality AS exercise_modality,
-                e.laterality AS exercise_laterality
+                e.laterality AS exercise_laterality, e.load_mode AS exercise_load_mode
          FROM template_exercises te
          JOIN exercises e ON e.id = te.exercise_id
          WHERE te.day_template_id IN (${placeholders}) ORDER BY te.order_index`,
@@ -349,6 +349,7 @@ export async function getExercises(
     modality: string;
     unit: string;
     laterality: string;
+    load_mode: string;
   }[]
 > {
   const where: string[] = [];
@@ -366,7 +367,7 @@ export async function getExercises(
     where.push(`lower(modality) = ?${binds.length}`);
   }
   const sql =
-    'SELECT id, name, primary_muscle, modality, unit, laterality FROM exercises' +
+    'SELECT id, name, primary_muscle, modality, unit, laterality, load_mode FROM exercises' +
     (where.length ? ' WHERE ' + where.join(' AND ') : '') +
     ' ORDER BY name';
   const stmt = db.prepare(sql);
@@ -378,6 +379,7 @@ export async function getExercises(
     modality: string;
     unit: string;
     laterality: string;
+    load_mode: string;
   }>();
   return r.results;
 }

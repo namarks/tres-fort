@@ -114,6 +114,8 @@ export interface EnrichedTemplateExercise extends TemplateExerciseRow {
   exercise_modality: string;
   /** 'bilateral' | 'unilateral'. Unilateral exercises log reps per-side. */
   exercise_laterality: string;
+  /** 'total' | 'per_hand'. per_hand → weight is one dumbbell, shown "X each hand". */
+  exercise_load_mode: string;
 }
 
 export interface PlanTree extends PlanRow {

@@ -520,7 +520,12 @@ private struct RunnerView: View {
                         TimedSetView(sync: sync, ex: ex)
                     } else {
                         if !ex.isBodyweight {
-                            stepper(label: "WEIGHT (\(ex.exercise_unit))", value: fmt(sync.weight),
+                            // Two-dumbbell lifts: the number is one dumbbell, so
+                            // label it "EACH HAND" rather than implying a total.
+                            let weightLabel = ex.isPerHand
+                                ? "WEIGHT (\(ex.exercise_unit)) · EACH HAND"
+                                : "WEIGHT (\(ex.exercise_unit))"
+                            stepper(label: weightLabel, value: fmt(sync.weight),
                                     steps: [("−10", { sync.adjustWeight(-10) }, true),
                                             ("−5", { sync.adjustWeight(-5) }, false),
                                             ("+5", { sync.adjustWeight(5) }, false),

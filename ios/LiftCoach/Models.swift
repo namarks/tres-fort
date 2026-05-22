@@ -30,10 +30,14 @@ struct TemplateExercise: Decodable, Identifiable, Equatable {
     /// "bilateral" (default) | "unilateral". Optional so older payloads
     /// (pre-0011 migration) still decode — defaults to bilateral.
     let exercise_laterality: String?
+    /// "total" (default) | "per_hand". per_hand → weight is ONE dumbbell;
+    /// display "X each hand". Optional so pre-0014 payloads still decode.
+    let exercise_load_mode: String?
 
     var isTimed: Bool { exercise_modality == "timed" }
     var isBodyweight: Bool { exercise_unit == "bw" }
     var isUnilateral: Bool { exercise_laterality == "unilateral" }
+    var isPerHand: Bool { exercise_load_mode == "per_hand" }
 
     /// "3×5" / "3×5–8" / "3×45s" (timed).
     var targetLabel: String {
@@ -132,6 +136,9 @@ struct ExerciseCatalog: Decodable, Identifiable {
     /// 8 reps / 360 lb. Optional for older payloads (pre-0011 migration)
     /// — defaults to bilateral.
     let laterality: String?
+    /// "total" | "per_hand". per_hand two-dumbbell lifts log one dumbbell's
+    /// weight; display "X each hand". Optional (pre-0014 payloads).
+    let load_mode: String?
 }
 
 /// An externally-sourced training event (e.g. an intervals.icu planned

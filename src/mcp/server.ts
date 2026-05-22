@@ -244,7 +244,7 @@ const TOOLS: Record<string, Tool> = {
 
   list_exercises: {
     description:
-      'List the exercise catalog so you can discover what is resolvable BEFORE calling add_exercise / update_plan (those reject unknown names with `unknown_exercise`). Optional filters: `query` (case-insensitive substring on name), `muscle` (primary_muscle exact, e.g. "quads"), `modality` (e.g. "barbell","dumbbell","bw","machine","timed"). Each row includes `laterality` ("bilateral" | "unilateral"); unilateral exercises log reps per-side, and the system doubles for total reps / tonnage (see log_set). Returns up to a few hundred rows in the seeded catalog; combine filters to narrow.',
+      'List the exercise catalog so you can discover what is resolvable BEFORE calling add_exercise / update_plan (those reject unknown names with `unknown_exercise`). Optional filters: `query` (case-insensitive substring on name), `muscle` (primary_muscle exact, e.g. "quads"), `modality` (e.g. "barbell","dumbbell","bw","machine","timed"). Each row includes `laterality` ("bilateral" | "unilateral"); unilateral exercises log reps per-side, and the system doubles for total reps / tonnage (see log_set). Each row also includes `load_mode` ("total" | "per_hand"); for "per_hand" two-dumbbell lifts the weight is ONE dumbbell — set target_weight and phrase guidance per hand ("25 lb each hand"), never the doubled total. Returns up to a few hundred rows in the seeded catalog; combine filters to narrow.',
     inputSchema: obj(
       {
         query: { type: 'string' },
@@ -320,7 +320,13 @@ const TOOLS: Record<string, Tool> = {
       'DB Bulgarian split squat with 45lb DBs, 8 reps each leg → ' +
       '`weight=45, reps=8` (NOT 90, NOT 16). The response echoes ' +
       'exercise.laterality + effective.{sides,total_reps,tonnage} so you ' +
-      'can confirm to the user.',
+      'can confirm to the user. ' +
+      'TWO-DUMBBELL LIFTS: when list_exercises reports load_mode="per_hand" ' +
+      '(DB bench, DB shoulder press, DB curl, lateral raise, DB lunge…), ' +
+      'weight is the weight of ONE dumbbell. Set target_weight and phrase ' +
+      'all guidance per hand — say "25 lb in each hand", never a vague ' +
+      'doubled "50 lb". The response echoes exercise.load_mode so you can ' +
+      'word it correctly.',
     inputSchema: obj(
       {
         exercise: { type: 'string', description: 'name, alias, or id' },
@@ -398,7 +404,9 @@ const TOOLS: Record<string, Tool> = {
       // can confirm "45x8 each leg → 16 total reps, 720 lb tonnage" to the
       // user without a second lookup.
       const exLat = (ex as { laterality?: string }).laterality ?? 'bilateral';
+      const exLoad = (ex as { load_mode?: string }).load_mode ?? 'total';
       const sides = exLat === 'unilateral' ? 2 : 1;
+      const perHand = exLoad === 'per_hand';
       return {
         set,
         deduped,
@@ -407,11 +415,17 @@ const TOOLS: Record<string, Tool> = {
           id: exId,
           name: (ex as { name: string }).name,
           laterality: exLat,
+          load_mode: exLoad,
         },
         effective: {
           sides,
           total_reps: set.reps * sides,
           tonnage: set.weight * set.reps * sides,
+          // For two-dumbbell lifts, the weight is one dumbbell — surface a
+          // ready-to-say phrasing so guidance never reads as the vague total.
+          weight_display: perHand
+            ? `${set.weight} lb in each hand`
+            : `${set.weight} lb`,
         },
       };
     },

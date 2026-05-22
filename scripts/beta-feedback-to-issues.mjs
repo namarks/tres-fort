@@ -68,11 +68,18 @@ async function asc(token, path) {
 }
 
 // Walk every page of a list endpoint, gathering data + included resources.
+// Follows links.next until exhausted so a large first-time backfill is never
+// silently truncated. MAX_PAGES is only a runaway guard (≈50k submissions at
+// limit=50) and fails LOUDLY rather than dropping data if ever hit.
+const MAX_PAGES = 1000;
 async function ascAll(token, startPath) {
   const data = [];
   const included = [];
   let path = startPath;
-  for (let page = 0; page < 20 && path; page++) {
+  for (let page = 0; path; page++) {
+    if (page >= MAX_PAGES) {
+      fail(`ASC pagination exceeded ${MAX_PAGES} pages for ${startPath} — aborting (runaway guard)`);
+    }
     const body = await asc(token, path);
     data.push(...(body.data || []));
     included.push(...(body.included || []));

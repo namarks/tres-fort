@@ -672,19 +672,45 @@ export async function logSet(
     duration_s: input.duration_s ?? null,
     deleted_at: null,
   };
-  await db
-    .prepare(
-      `INSERT INTO set_logs
-       (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,deleted_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL)
-       ON CONFLICT(id) DO NOTHING`,
-    )
-    .bind(
-      row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
-      row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
-      row.duration_s,
-    )
-    .run();
+  // The pre-check above resolves the common collision, but two concurrent
+  // writers can both pass it and then race on the INSERT — only the unique
+  // index ux_set_slot catches that. Honor the "renumber, don't reject"
+  // contract: on a slot-unique violation, recompute max+1 and retry rather
+  // than letting one writer's set be dropped. ON CONFLICT(id) DO NOTHING
+  // still covers a concurrent same-id retry (idempotency).
+  const insert = () =>
+    db
+      .prepare(
+        `INSERT INTO set_logs
+         (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,deleted_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL)
+         ON CONFLICT(id) DO NOTHING`,
+      )
+      .bind(
+        row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
+        row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
+        row.duration_s,
+      )
+      .run();
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await insert();
+      break;
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? '');
+      const slotConflict = /unique constraint failed/i.test(msg) && /set_index/i.test(msg);
+      if (!slotConflict || attempt >= 5) throw e;
+      const max = await db
+        .prepare(
+          `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
+           WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
+             AND deleted_at IS NULL`,
+        )
+        .bind(input.session_id, input.exercise_id, isWarmupInt)
+        .first<{ m: number }>();
+      row.set_index = (max?.m ?? 0) + 1;
+    }
+  }
   // Logging a set implicitly starts the session. A 'discarded' row is
   // also revived here (defense-in-depth: getOrCreateSession already
   // resurrects on the get path, but logging work into a discarded session

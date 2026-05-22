@@ -235,20 +235,35 @@ struct CalendarView: View {
         // three.
         let today = sync.todayString
         let proj = sync.projection(for: ymd, today: today)
-        let st = style(for: proj.kind)
+        // An in-progress session with NOTHING logged yet (sets logged then
+        // all deleted) records no work — it is not really "in progress".
+        // Present it as the planned workout instead of an active one. This is
+        // a VIEW-LAYER override only: the frozen CalendarProjection and the
+        // ride-conflict parity still run off the raw `proj` untouched.
+        let emptyInProgress = proj.kind == .inProgress
+            && sync.loggedSetCount(forDate: ymd) == 0
+        let st = style(for: emptyInProgress ? .planned : proj.kind)
         let isWorkout = st?.isWorkout ?? false
+        let isSkipped = proj.kind == .skipped
         let isToday = ymd == today
         let dayNum = cal.component(.day, from: date)
         let label = isWorkout ? dayLabel(sync, ymd, today: today) : nil
-        // Read-only ride overlay: distinct from the lift states.
-        let hasRide = !sync.rides(on: ymd).isEmpty
         let conflict = sync.rideConflict(for: ymd)   // .none on non-lift days
-        // Read-only COMPLETED endurance activity (intervals.icu actuals).
-        // Shown as a "workout completed" — accent glyph, distinct from the
-        // muted PLANNED-ride glyph.
+        // Endurance overlay (read-only). A COMPLETED activity (accent,
+        // kind-specific glyph) outranks a PLANNED ride (muted bicycle). On a
+        // NO-LIFT day the endurance glyph IS the day's identity (a bike day,
+        // not a rest day); on a lift/skip day it rides along as a small
+        // corner badge ("lift + bike").
         let dayActivities = sync.activities(on: ymd)
         let hasActivity = !dayActivities.isEmpty
-        let activityGlyph = dayActivities.first?.glyph ?? "figure.run"
+        let hasRide = !sync.rides(on: ymd).isEmpty
+        let hasEndurance = hasActivity || hasRide
+        let enduranceGlyph = hasActivity ? (dayActivities.first?.glyph ?? "figure.run") : "bicycle"
+        let enduranceColor: Color = hasActivity ? Theme.accent : Theme.muted
+        // Endurance is a secondary corner badge ONLY when a lift or skip
+        // already occupies the primary marker; on a no-lift day it becomes
+        // the primary glyph below.
+        let secondaryEndurance = hasEndurance && (isWorkout || isSkipped)
 
         Button {
             selectedDate = ymd
@@ -258,52 +273,49 @@ struct CalendarView: View {
                     .font(Theme.mono(13, (isToday || isWorkout) ? .bold : .medium))
                     .foregroundStyle(isToday ? Theme.accent
                                      : (isWorkout ? Theme.text : Theme.muted))
-                if let st {
+                // ONE primary marker per day, anchored inside the cell box
+                // (the old below-the-lift endurance glyph floated against
+                // the next week's row — ambiguous which day it belonged to).
+                if isWorkout, let st {
                     // Workout days POP: a filled accent marker carrying the
-                    // A/B (day_label). Rest/skipped recede to a small muted
-                    // glyph. Internal planned vs projected is irrelevant
-                    // here — both render as this single "Workout" marker.
-                    if isWorkout {
-                        Text(label?.uppercased() ?? "")
-                            .font(Theme.mono(11, .bold))
-                            .foregroundStyle(.black)
-                            .frame(minWidth: 22, minHeight: 18)
-                            .padding(.horizontal, 5)
-                            .background(
-                                Capsule().fill(st.color))
-                            .overlay {
-                                if label == nil {
-                                    Image(systemName: st.glyph)
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundStyle(.black)
-                                }
+                    // A/B (day_label). Internal planned vs projected (and an
+                    // empty in-progress, normalized to planned above) collapse
+                    // to this single "Workout" marker.
+                    Text(label?.uppercased() ?? "")
+                        .font(Theme.mono(11, .bold))
+                        .foregroundStyle(.black)
+                        .frame(minWidth: 22, minHeight: 18)
+                        .padding(.horizontal, 5)
+                        .background(Capsule().fill(st.color))
+                        .overlay {
+                            if label == nil {
+                                Image(systemName: st.glyph)
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(.black)
                             }
-                    } else {
-                        Image(systemName: st.glyph)
-                            .font(.system(size: 12))
-                            .foregroundStyle(st.color)
-                    }
+                        }
+                } else if isSkipped, let st {
+                    // Skipped lift keeps its distinct xmark (an endurance
+                    // badge, if any, rides the corner overlay below).
+                    Image(systemName: st.glyph)
+                        .font(.system(size: 12))
+                        .foregroundStyle(st.color)
+                } else if hasEndurance {
+                    // No lift, but a ride/run happened or is planned — this is
+                    // a BIKE (or run/swim) day, not a rest day. The endurance
+                    // glyph is the day's identity (replaces the rest moon).
+                    Image(systemName: enduranceGlyph)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(enduranceColor)
+                } else if let st {
+                    // True rest day — a small muted moon.
+                    Image(systemName: st.glyph)
+                        .font(.system(size: 12))
+                        .foregroundStyle(st.color)
                 } else {
                     // keep cell height uniform when nothing to show
                     Image(systemName: "circle.fill")
                         .font(.system(size: 13))
-                        .foregroundStyle(.clear)
-                }
-                // Endurance glyph sits BELOW the lift state so both read at
-                // a glance and the existing states are never displaced. A
-                // COMPLETED activity (accent, kind-specific glyph) wins over
-                // a PLANNED ride (muted bicycle); neither displaces lifts.
-                if hasActivity {
-                    Image(systemName: activityGlyph)
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(Theme.accent)
-                } else if hasRide {
-                    Image(systemName: "bicycle")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(Theme.muted)
-                } else {
-                    Image(systemName: "bicycle")
-                        .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.clear)
                 }
             }
@@ -329,6 +341,17 @@ struct CalendarView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(Theme.accent)
+                        .padding(4)
+                }
+            }
+            // "Lift + bike": on a lift/skip day the endurance glyph rides a
+            // bottom-leading corner — clearly INSIDE this day's box, never
+            // floating toward the next row.
+            .overlay(alignment: .bottomLeading) {
+                if secondaryEndurance {
+                    Image(systemName: enduranceGlyph)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(enduranceColor)
                         .padding(4)
                 }
             }

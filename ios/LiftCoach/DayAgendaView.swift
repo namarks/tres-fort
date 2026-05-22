@@ -73,19 +73,44 @@ struct DayAgendaView: View {
         switch proj {
         case .session(let s):
             switch s {
-            case "completed":   return "COMPLETED"
-            case "in_progress": return "IN PROGRESS"
+            case "completed":   return withBike("COMPLETED")
+            // An in-progress session with nothing logged yet records no work
+            // — it's the upcoming workout, not an active one. Show its name.
+            case "in_progress":
+                return withBike(liveSetCount > 0 ? "IN PROGRESS" : (planTitle(today: today) ?? "WORKOUT"))
             // Planned + projected collapse to one user-facing "WORKOUT"
             // (no "Planned"/"Projected" wording); prefer the template name.
-            case "planned":     return planTitle(today: today) ?? "WORKOUT"
+            case "planned":     return withBike(planTitle(today: today) ?? "WORKOUT")
+            // Skipped lift was NOT performed → not "lift + bike"; no suffix.
             case "skipped":     return "SKIPPED"
-            default:            return s.uppercased()
+            default:            return withBike(s.uppercased())
             }
         case .projected(let tid):
-            return sync.dayTemplate(id: tid)?.title.uppercased() ?? "WORKOUT"
-        case .rest:  return "REST DAY"
-        case .none:  return "REST DAY"
+            return withBike(sync.dayTemplate(id: tid)?.title.uppercased() ?? "WORKOUT")
+        // No lift on this day: a ride/run makes it a "<noun> DAY" (a ride
+        // day is not a rest day); nothing at all is a true rest day.
+        case .rest, .none:
+            return restOrEnduranceTitle
         }
+    }
+
+    /// Suffix a LIFT-day title with " + BIKE" / "+ RUN" / … when the same
+    /// date also carries a ride/run/swim — the "lift + bike" classification
+    /// the user asked for. No endurance → the bare lift title, unchanged.
+    private func withBike(_ liftTitle: String) -> String {
+        guard let noun = sync.enduranceNoun(on: dateString) else { return liftTitle }
+        return "\(liftTitle) + \(noun.uppercased())"
+    }
+
+    /// "BIKE DAY" / "RUN DAY" / … when this no-lift date carries endurance,
+    /// else "REST DAY". The single source for the no-lift title + note.
+    private var restOrEnduranceTitle: String {
+        sync.enduranceNoun(on: dateString).map { "\($0.uppercased()) DAY" } ?? "REST DAY"
+    }
+
+    /// Live (non-deleted) logged-set count for this date's real session.
+    private var liveSetCount: Int {
+        realSession.map { sync.setsForSession($0.id).count } ?? 0
     }
 
     /// The day template to DISPLAY for a real (planned) session on this
@@ -126,22 +151,18 @@ struct DayAgendaView: View {
     @ViewBuilder private func content(_ proj: DayProjection, today: String) -> some View {
         switch proj {
         case .session(let status):
-            if status == "completed" || status == "in_progress" {
+            if status == "in_progress" && liveSetCount == 0 {
+                // Phantom in-progress (sets logged then all deleted): nothing
+                // was recorded, so show the planned workout's targets — not a
+                // bare "no sets logged" under an "in progress" header.
+                plannedContent(today: today)
+            } else if status == "completed" || status == "in_progress" {
                 loggedSets
             } else if status == "skipped" {
                 note("This workout was skipped.")
             } else {
                 // planned real session → show its template targets.
-                // Shared FIX6-gated resolver (not a bare day_template_id):
-                // recovers the template via the weekly schedule when the
-                // session's own id is null, for today/future only. Past
-                // planned w/ null id stays the graceful no-template note
-                // (no schedule-inferred relabel — FIX6 class preserved).
-                if let day = plannedDisplayDay(today: today) {
-                    templateTargets(day)
-                } else {
-                    note("Workout — no template details cached.")
-                }
+                plannedContent(today: today)
             }
         case .projected(let tid):
             if let day = sync.dayTemplate(id: tid) {
@@ -150,7 +171,26 @@ struct DayAgendaView: View {
                 note("Workout (template unavailable).")
             }
         case .rest, .none:
-            note("Rest day — nothing scheduled.")
+            // A ride/run day reads "<noun> day — no lift scheduled" (the
+            // ride/activity cards render below); a bare rest day stays rest.
+            if let noun = sync.enduranceNoun(on: dateString) {
+                note("\(noun) day — no lift scheduled.")
+            } else {
+                note("Rest day — nothing scheduled.")
+            }
+        }
+    }
+
+    // planned (or phantom-empty in-progress) → the day-template targets.
+    // Shared FIX6-gated resolver (not a bare day_template_id): recovers the
+    // template via the weekly schedule when the session's own id is null,
+    // for today/future only. Past planned w/ null id stays the graceful
+    // no-template note (no schedule-inferred relabel — FIX6 class preserved).
+    @ViewBuilder private func plannedContent(today: String) -> some View {
+        if let day = plannedDisplayDay(today: today) {
+            templateTargets(day)
+        } else {
+            note("Workout — no template details cached.")
         }
     }
 

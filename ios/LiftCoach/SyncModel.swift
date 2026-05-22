@@ -437,6 +437,32 @@ final class SyncModel: ObservableObject {
         activities.filter { !$0.isDeleted && $0.date == dateString }
     }
 
+    /// The endurance "noun" for a date — "Bike" / "Run" / "Swim" / "Active"
+    /// — drawn from BOTH completed activities and planned rides, or nil when
+    /// the date carries no cycling/endurance at all. A no-lift day with
+    /// endurance is a "<noun> day", NOT a rest day; a lift day with endurance
+    /// is "lift + <noun>". Cycling wins when several kinds coexist (the
+    /// athlete is primarily a cyclist).
+    func enduranceNoun(on dateString: String) -> String? {
+        let kinds = activities(on: dateString).map(\.kind)
+            + rides(on: dateString).map(\.kind)
+        guard !kinds.isEmpty else { return nil }
+        if kinds.contains("ride") { return "Bike" }
+        if kinds.contains("run")  { return "Run" }
+        if kinds.contains("swim") { return "Swim" }
+        return "Active"
+    }
+
+    /// Count of live (non-deleted) logged sets for the session on `ymd`, 0
+    /// when there is no session or all its sets were deleted. An
+    /// `in_progress` session with 0 here is a PHANTOM — sets were logged
+    /// then removed — and should be presented as the planned workout, not as
+    /// an active in-progress one (it records no work).
+    func loggedSetCount(forDate ymd: String) -> Int {
+        guard let sid = sessionsByDate[ymd]?.id else { return 0 }
+        return setsForSession(sid).count
+    }
+
     /// True if this calendar date carries a lift (real session OR a
     /// projected lift) — the precondition for any ride conflict.
     func dateHasLift(_ dateString: String) -> Bool {

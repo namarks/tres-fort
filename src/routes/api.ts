@@ -19,7 +19,6 @@ import {
   patchSession,
   patchSet,
   resolveExercise,
-  setUserTimezoneIfChanged,
 } from '../db';
 
 export const apiRoutes = new Hono<HonoEnv>();
@@ -28,13 +27,11 @@ apiRoutes.use('*', requireAppJwt);
 const todayLocal = () => new Date().toISOString().slice(0, 10);
 
 // ---- sync pull -----------------------------------------------------------
+// Device timezone (X-Device-TZ) is captured for EVERY authenticated request
+// in the requireAppJwt middleware, so it stays fresh even on non-/state
+// actions after the user travels — not handled here anymore.
 apiRoutes.get('/state', async (c) => {
   const userId = c.get('userId');
-  // The device reports its IANA timezone on each sync so the MCP read side
-  // ("today") tracks the user across time zones. Best-effort: only writes
-  // when changed, ignores invalid values.
-  const tz = c.req.header('X-Device-TZ');
-  if (tz) await setUserTimezoneIfChanged(c.env.DB, userId, tz);
   const since = Number(c.req.query('since') ?? 0);
   const setsSince = Number(c.req.query('sets_since') ?? 0);
   const eventsSince = Number(c.req.query('events_since') ?? 0);

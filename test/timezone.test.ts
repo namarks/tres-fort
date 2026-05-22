@@ -81,4 +81,18 @@ describe('#4 device-local today', () => {
     const today = await call('get_today_workout', {});
     expect(today.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
+
+  it('captures tz from a NON-/state authenticated request (middleware)', async () => {
+    // 2026-05-22 06:32 UTC: still 2026-05-21 in Honolulu (UTC-10), already
+    // the 22nd in UTC. A non-/state call must update the stored tz so MCP
+    // "today" follows the user even when they only log sets after travel.
+    vi.setSystemTime(new Date('2026-05-22T06:32:00Z'));
+    const jwt = await devJwt();
+    const r = await SELF.fetch(`${BASE}/api/exercises`, {
+      headers: { Authorization: `Bearer ${jwt}`, 'X-Device-TZ': 'Pacific/Honolulu' },
+    });
+    expect(r.status).toBe(200);
+    const today = await call('get_today_workout', {});
+    expect(today.date).toBe('2026-05-21');
+  });
 });

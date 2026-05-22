@@ -56,6 +56,7 @@ export async function upsertUser(
     email,
     display_name: displayName,
     created_at: now(),
+    timezone: null,
   };
   await db
     .prepare(
@@ -115,6 +116,65 @@ export async function ensureOwnerUser(
     .first<User>();
   if (existing) return existing;
   return upsertUser(db, ownerAppleSub ?? 'mcp-owner', null, 'Owner');
+}
+
+/** True if `tz` is a valid IANA timezone the runtime accepts. */
+export function isValidTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Civil date (YYYY-MM-DD) "now" in the given IANA timezone. Falls back to
+ * UTC when tz is null/invalid (the pre-0012 behavior). Uses formatToParts
+ * to assemble the date locale-independently — never parses a formatted
+ * string.
+ */
+export function todayInTz(tz: string | null | undefined): string {
+  if (!tz || !isValidTimezone(tz)) {
+    return new Date().toISOString().slice(0, 10);
+  }
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date());
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
+  return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+/** The owner's stored IANA timezone, or null if none recorded yet. */
+export async function getUserTimezone(
+  db: D1Database,
+  userId: string,
+): Promise<string | null> {
+  const row = await db
+    .prepare('SELECT timezone FROM users WHERE id = ?1')
+    .bind(userId)
+    .first<{ timezone: string | null }>();
+  return row?.timezone ?? null;
+}
+
+/**
+ * Record the device's current IANA timezone on the user row when it differs
+ * from what's stored. The iOS app reports it on each sync, so "today" on the
+ * MCP side follows the user across time zones. Invalid/empty values are
+ * ignored. Returns the effective stored value.
+ */
+export async function setUserTimezoneIfChanged(
+  db: D1Database,
+  userId: string,
+  tz: string | null | undefined,
+): Promise<void> {
+  if (!tz || !isValidTimezone(tz)) return;
+  const current = await getUserTimezone(db, userId);
+  if (current === tz) return;
+  await db.prepare('UPDATE users SET timezone = ?2 WHERE id = ?1').bind(userId, tz).run();
 }
 
 // ---- plan tree -----------------------------------------------------------

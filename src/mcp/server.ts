@@ -22,6 +22,7 @@ import {
   getSessionByDate,
   getSetsForSession,
   getUpcomingRides,
+  getUserTimezone,
   getVolume,
   logSet,
   logWorkoutComplete,
@@ -34,6 +35,7 @@ import {
   setPlanSchedule,
   setPlannedSession,
   skipPlannedSession,
+  todayInTz,
   swapExercise,
   syncExternalEvents,
   updateExercise,
@@ -80,7 +82,14 @@ const err = (id: RpcRequest['id'], code: number, message: string) => ({
   error: { code, message },
 });
 
-const todayLocal = () => new Date().toISOString().slice(0, 10);
+/**
+ * The owner's civil "today" (YYYY-MM-DD) in their device-reported timezone.
+ * MCP calls come from Claude, not the device, so we resolve "today" from the
+ * tz the iOS app last synced (falls back to UTC when none recorded). This is
+ * what stops get_today_workout returning tomorrow's date after ~17:00 PT.
+ */
+const ownerToday = async (env: Env, userId: string): Promise<string> =>
+  todayInTz(await getUserTimezone(env.DB, userId));
 
 /** Add n whole days to a YYYY-MM-DD (UTC math, date part only — no DST). */
 const addDaysIso = (ymd: string, n: number) =>
@@ -143,7 +152,7 @@ const TOOLS: Record<string, Tool> = {
       const schedule = await getResolvedScheduleNames(env.DB, userId);
       // Conflict-aware with zero extra calls: a compact 28-day lift/ride
       // conflict list rides along with the plan context.
-      const today = todayLocal();
+      const today = await ownerToday(env, userId);
       const ride_conflicts = await getRideConflicts(
         env.DB,
         userId,
@@ -159,7 +168,7 @@ const TOOLS: Record<string, Tool> = {
       "Get today's workout: the date, any existing session for today, the plan's day templates, the recurring weekly schedule (so you can answer 'what should I do today?' from one call), and the most recent prior session for context.",
     inputSchema: obj({}),
     handler: async (_a, env, userId) => {
-      const date = todayLocal();
+      const date = await ownerToday(env, userId);
       const tree = await getPlanTree(env.DB, userId);
       const session = await getSessionByDate(env.DB, userId, date);
       const recent = await getRecentSessions(env.DB, userId, 2);
@@ -270,7 +279,7 @@ const TOOLS: Record<string, Tool> = {
     ),
     handler: async (a, env, userId) => {
       const range = typeof a.range === 'number' ? Math.min(90, Math.max(1, a.range)) : 30;
-      const today = todayLocal();
+      const today = await ownerToday(env, userId);
       const to = addDaysIso(today, range);
       const rides = await getUpcomingRides(env.DB, userId, { from: today, range });
       const conflicts = await getRideConflicts(env.DB, userId, today, to, today);
@@ -339,7 +348,7 @@ const TOOLS: Record<string, Tool> = {
     handler: async (a, env, userId) => {
       const plan = await getActivePlan(env.DB, userId);
       if (!plan) return { error: 'no_active_plan' };
-      const today = todayLocal();
+      const today = await ownerToday(env, userId);
       const date = typeof a.session_date === 'string' ? a.session_date : today;
       const session = await getOrCreateSession(env.DB, userId, plan.id, date, null);
       const ex = await resolveExercise(env.DB, String(a.exercise));
@@ -453,7 +462,7 @@ const TOOLS: Record<string, Tool> = {
     ),
     write: true,
     handler: async (a, env, userId, bg) => {
-      const date = typeof a.session_date === 'string' ? a.session_date : todayLocal();
+      const date = typeof a.session_date === 'string' ? a.session_date : await ownerToday(env, userId);
       const s = await logWorkoutComplete(
         env.DB,
         userId,
@@ -854,7 +863,7 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
   const last = recent[0] ?? null;
   const lastSets = last ? await getSetsForSession(env.DB, last.id) : [];
   const schedule = tree ? await getResolvedScheduleNames(env.DB, userId) : null;
-  const today = todayLocal();
+  const today = await ownerToday(env, userId);
   // Cycling awareness, zero extra Claude calls: a compact 28-day ride
   // window + conflicts folded straight into the auto-loaded brief.
   const horizon = addDaysIso(today, 28);

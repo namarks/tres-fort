@@ -101,11 +101,16 @@ function resolveRepo() {
 }
 
 // Existing issues already filed from feedback, keyed by ASC submission id.
+// Fully paginated (gh api --paginate merges all array pages into one) so the
+// dedup scan never silently drops older `asc-feedback` markers once the repo
+// has accumulated many mirrored issues — `gh issue list --limit N` would cap.
+// Filtering by the beta-feedback label scopes it to feedback issues (and
+// excludes PRs, which the issues endpoint otherwise returns); an absent label
+// just yields an empty array.
 function existingFeedbackIds(repo) {
   const out = gh([
-    "issue", "list", "--repo", repo, "--state", "all",
-    "--search", "asc-feedback in:body", "--limit", "500",
-    "--json", "number,body",
+    "api", "--paginate",
+    `repos/${repo}/issues?state=all&labels=${LABEL}&per_page=100`,
   ]);
   const issues = JSON.parse(out);
   const ids = new Map();
@@ -116,15 +121,22 @@ function existingFeedbackIds(repo) {
   return ids;
 }
 
-function ensureLabel(repo) {
+// Provision every label the run may apply. Crash submissions add `crash`; if
+// it didn't exist, `gh issue create` would fail on the first crash and abort
+// the whole sync, so create it up front alongside beta-feedback.
+function ensureLabels(repo) {
   if (DRY_RUN) return;
-  try {
-    gh([
-      "label", "create", LABEL, "--repo", repo,
-      "--color", "D93F0B", "--description", "Auto-filed from TestFlight beta feedback",
-    ], { stdio: "ignore" });
-  } catch {
-    // already exists — fine
+  const defs = [
+    [LABEL, "D93F0B", "Auto-filed from TestFlight beta feedback"],
+    ["crash", "B60205", "TestFlight crash feedback"],
+  ];
+  for (const [name, color, description] of defs) {
+    try {
+      gh(["label", "create", name, "--repo", repo, "--color", color,
+        "--description", description], { stdio: "ignore" });
+    } catch {
+      // already exists — fine
+    }
   }
 }
 
@@ -190,7 +202,7 @@ function makeIssue(kind, sub, build, tester) {
     "_Filed automatically from App Store Connect → TestFlight → Feedback._",
     `<!-- asc-feedback:${sub.id} -->`,
   ].join("\n");
-  return { title, body, labels: isCrash ? `${LABEL},crash` : LABEL };
+  return { title, body, labels: isCrash ? [LABEL, "crash"] : [LABEL] };
 }
 
 async function collect(token, appId) {
@@ -226,7 +238,7 @@ async function main() {
   if (!feedback.length) return;
 
   const existing = existingFeedbackIds(repo);
-  ensureLabel(repo);
+  ensureLabels(repo);
 
   let created = 0;
   for (const { kind, sub, build, tester } of feedback) {
@@ -236,15 +248,16 @@ async function main() {
     }
     const { title, body, labels } = makeIssue(kind, sub, build, tester);
     if (DRY_RUN) {
-      console.log(`\n  WOULD CREATE [${labels}] ${title}\n${body.replace(/^/gm, "    ")}`);
+      console.log(`\n  WOULD CREATE [${labels.join(",")}] ${title}\n${body.replace(/^/gm, "    ")}`);
       created++;
       continue;
     }
     const tmp = join(mkdtempSync(join(tmpdir(), "asc-fb-")), "body.md");
     writeFileSync(tmp, body);
+    const labelArgs = labels.flatMap((l) => ["--label", l]);
     const url = gh([
       "issue", "create", "--repo", repo,
-      "--title", title, "--body-file", tmp, "--label", labels,
+      "--title", title, "--body-file", tmp, ...labelArgs,
     ]).trim();
     console.log(`  created ${url}`);
     created++;

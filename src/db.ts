@@ -966,6 +966,31 @@ export async function patchSet(
       setIndex = (max?.m ?? 0) + 1;
     }
   }
+  // Phantom-session guard. Logging a set promotes a session 'planned' ->
+  // 'in_progress' (see logSet). Deleting the LAST live set must do the
+  // inverse: an 'in_progress' session with zero live sets records no work,
+  // yet without this it lingers as a stale "in progress" row that the
+  // calendar/agenda (and MCP get_today_workout) still surface. Revert it to
+  // 'planned' and clear started_at so EVERY client — app, REST, MCP — agrees
+  // the day is simply the upcoming workout again. Fires only on a real
+  // live->deleted transition (undeletes / field-only edits never touch
+  // status), and only for 'in_progress' (a 'completed' session is NOT
+  // auto-un-completed — that's a deliberate terminal state).
+  const isDelete = row.deleted_at === null && deletedAt !== null;
+  if (isDelete) {
+    const remaining = await db
+      .prepare('SELECT COUNT(*) AS c FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL')
+      .bind(row.session_id)
+      .first<{ c: number }>();
+    if ((remaining?.c ?? 0) === 0) {
+      await db
+        .prepare(
+          "UPDATE sessions SET status = 'planned', started_at = NULL, updated_at = ?2 WHERE id = ?1 AND status = 'in_progress'",
+        )
+        .bind(row.session_id, now())
+        .run();
+    }
+  }
   return { ...row, weight, reps, rpe, notes, deleted_at: deletedAt, set_index: setIndex };
 }
 

@@ -33,6 +33,9 @@ struct TemplateExercise: Decodable, Identifiable, Equatable {
     /// "total" (default) | "per_hand". per_hand → weight is ONE dumbbell;
     /// display "X each hand". Optional so pre-0014 payloads still decode.
     let exercise_load_mode: String?
+    /// Planned hold seconds for timed slots (planks, holds). Optional;
+    /// when null, fall back to target_reps (the legacy timed convention).
+    let target_duration_s: Int?
 
     var isTimed: Bool { exercise_modality == "timed" }
     // Key off MODALITY, not unit: bw exercises (Pull-Up, Dead Bug) are
@@ -41,10 +44,14 @@ struct TemplateExercise: Decodable, Identifiable, Equatable {
     var isBodyweight: Bool { exercise_modality == "bw" }
     var isUnilateral: Bool { exercise_laterality == "unilateral" }
     var isPerHand: Bool { exercise_load_mode == "per_hand" }
+    /// Prescribed hold for a timed set, in seconds. Uses target_duration_s
+    /// (the real field) and falls back to target_reps for older slots that
+    /// stored the hold there. Min 1s so the timer is never zero-length.
+    var holdSeconds: Int { max(1, target_duration_s ?? target_reps) }
 
     /// "3×5" / "3×5–8" / "3×45s" (timed).
     var targetLabel: String {
-        if isTimed { return "\(target_sets)×\(target_reps)s" }
+        if isTimed { return "\(target_sets)×\(holdSeconds)s" }
         if let hi = target_reps_max, hi != target_reps {
             return "\(target_sets)×\(target_reps)–\(hi)"
         }

@@ -697,7 +697,7 @@ private struct TimedSetView: View {
                         .foregroundStyle(remaining <= 0 ? Theme.done : Theme.accent)
                 }
             } else {
-                Text("\(ex.target_reps)s")
+                Text("\(ex.holdSeconds)s")
                     .font(Theme.number(64))
                     .foregroundStyle(Theme.text)
             }
@@ -705,9 +705,9 @@ private struct TimedSetView: View {
             if sync.timedActive {
                 Button {
                     let held: Int = {
-                        guard let end = sync.timedEndDate else { return ex.target_reps }
+                        guard let end = sync.timedEndDate else { return ex.holdSeconds }
                         let left = max(0, Int(ceil(end.timeIntervalSince(Date()))))
-                        return max(1, ex.target_reps - left)
+                        return max(1, ex.holdSeconds - left)
                     }()
                     Task { await sync.finishTimedSet(held: held) }
                 } label: {
@@ -734,7 +734,7 @@ private struct TimedSetView: View {
         // Auto-log when the prescribed hold elapses (cancelled if STOPped).
         .task(id: sync.timedActive) {
             guard sync.timedActive else { return }
-            let secs = ex.target_reps
+            let secs = ex.holdSeconds
             try? await Task.sleep(nanoseconds: UInt64(max(0, secs)) * 1_000_000_000)
             if sync.timedActive { await sync.finishTimedSet(held: secs) }
         }

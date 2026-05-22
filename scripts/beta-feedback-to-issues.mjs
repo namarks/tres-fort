@@ -101,20 +101,24 @@ function resolveRepo() {
 }
 
 // Existing issues already filed from feedback, keyed by ASC submission id.
-// Fully paginated (gh api --paginate merges all array pages into one) so the
-// dedup scan never silently drops older `asc-feedback` markers once the repo
-// has accumulated many mirrored issues — `gh issue list --limit N` would cap.
-// Filtering by the beta-feedback label scopes it to feedback issues (and
-// excludes PRs, which the issues endpoint otherwise returns); an absent label
-// just yields an empty array.
+// Fully paginated so the dedup scan never silently drops older `asc-feedback`
+// markers once the repo has many mirrored issues — `gh issue list --limit N`
+// would cap. `--paginate --jq` applies the filter per page and concatenates,
+// yielding newline-delimited JSON across all pages (plain `--paginate` would
+// emit one separate JSON array per page, which JSON.parse can't read; `--slurp`
+// can't be combined with `--jq`). Filtering by the beta-feedback label scopes
+// it to feedback issues (and excludes PRs, which the issues endpoint otherwise
+// returns); an absent label just yields nothing.
 function existingFeedbackIds(repo) {
   const out = gh([
     "api", "--paginate",
     `repos/${repo}/issues?state=all&labels=${LABEL}&per_page=100`,
+    "--jq", ".[] | {number, body}",
   ]);
-  const issues = JSON.parse(out);
   const ids = new Map();
-  for (const it of issues) {
+  for (const line of out.split("\n")) {
+    if (!line.trim()) continue;
+    const it = JSON.parse(line);
     const m = (it.body || "").match(/<!--\s*asc-feedback:([^\s>]+)\s*-->/);
     if (m) ids.set(m[1], it.number);
   }

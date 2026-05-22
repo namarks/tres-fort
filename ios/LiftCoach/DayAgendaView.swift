@@ -197,7 +197,9 @@ struct DayAgendaView: View {
     }
 
     private func setLine(_ s: SetLog) -> String {
-        var parts: [String] = [s.valueLabel(timed: sync.isTimedExercise(s.exercise_id))]
+        var parts: [String] = [s.valueLabel(
+            timed: sync.isTimedExercise(s.exercise_id),
+            bodyweight: sync.isBodyweightExercise(s.exercise_id))]
         if let r = s.rpe { parts.append("RPE \(fmtWeight(r))") }
         if s.is_warmup == 1 { parts.append("(warmup)") }
         return parts.joined(separator: "  ")

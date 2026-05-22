@@ -136,15 +136,15 @@ struct SetLog: Decodable, Identifiable {
 
 extension SetLog {
     /// One-line value for a logged set: a timed hold reads "45s"; a bodyweight
-    /// rep set reads "BW × 6"; a weighted set reads "85 × 5". `timed` is the
-    /// exercise's catalog modality — a SetLog carries none, so the caller
-    /// resolves it (see SyncModel.isTimedExercise). The old guess of
-    /// "duration_s > 0 && weight == 0" wrongly rendered bodyweight reps
-    /// (pull-ups, which also recorded an incidental wall-clock duration) as
-    /// seconds. #30
-    func valueLabel(timed: Bool) -> String {
+    /// rep set reads "BW × 6"; a weighted set reads "85 × 5". A SetLog carries
+    /// no modality, so the caller resolves both flags from the exercise's
+    /// catalog row (see SyncModel.isTimedExercise / isBodyweightExercise) —
+    /// "BW" keys off modality == "bw", NOT weight == 0, so a weighted lift
+    /// logged at 0 load (unloaded warmup, machine/cable at zero) still reads
+    /// "0 × reps", not "BW × reps". #30
+    func valueLabel(timed: Bool, bodyweight: Bool) -> String {
         if timed, let d = duration_s, d > 0 { return "\(d)s" }
-        if weight == 0 { return "BW × \(reps)" }
+        if bodyweight { return "BW × \(reps)" }
         let w = weight.rounded() == weight ? String(Int(weight)) : String(format: "%.1f", weight)
         return "\(w) × \(reps)"
     }

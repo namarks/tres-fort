@@ -638,7 +638,7 @@ private struct RunnerView: View {
                 Text("No sets logged yet").font(Theme.mono(12)).italic()
                     .foregroundStyle(Theme.dim)
             } else {
-                FlowChips(sets: done, timed: ex.isTimed) { s in Task { await sync.removeSet(s) } }
+                FlowChips(sets: done, timed: ex.isTimed, bodyweight: ex.isBodyweight) { s in Task { await sync.removeSet(s) } }
             }
         }
         .padding(.top, 24)
@@ -657,6 +657,7 @@ private struct RunnerView: View {
 private struct FlowChips: View {
     let sets: [SetLog]
     let timed: Bool
+    let bodyweight: Bool
     let onRemove: (SetLog) -> Void
     var body: some View {
         let cols = [GridItem(.adaptive(minimum: 110), spacing: 8)]
@@ -665,7 +666,7 @@ private struct FlowChips: View {
                 HStack(spacing: 8) {
                     Text(String(format: "%02d", i + 1))
                         .font(Theme.mono(10)).foregroundStyle(Theme.dim)
-                    Text(s.valueLabel(timed: timed))
+                    Text(s.valueLabel(timed: timed, bodyweight: bodyweight))
                         .font(Theme.mono(13)).foregroundStyle(Theme.text)
                     Button { onRemove(s) } label: {
                         Image(systemName: "xmark").font(.system(size: 10))

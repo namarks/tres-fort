@@ -126,6 +126,14 @@ final class SyncModel: ObservableObject {
         catalog.first { $0.id == exerciseID }?.modality == "timed"
     }
 
+    /// True when the catalog row is a bodyweight modality — these render
+    /// "BW × reps". Keyed off modality (not weight == 0) so a weighted lift
+    /// logged at 0 load isn't mislabeled as bodyweight. Defaults to false
+    /// when the catalog row is unknown. #30
+    func isBodyweightExercise(_ exerciseID: String) -> Bool {
+        catalog.first { $0.id == exerciseID }?.modality == "bw"
+    }
+
     // MARK: history aggregation
 
     struct SessionStat: Identifiable {

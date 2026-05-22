@@ -93,10 +93,15 @@ describe('#5 order_index determinism', () => {
     expect(patched.error).toBeUndefined();
 
     const plan = await call('get_current_plan', {});
-    const slots = plan.days[0].exercises as { order_index: number }[];
+    const slots = plan.days[0].exercises as { order_index: number; exercise_id: string }[];
     const indices = slots.map((s) => s.order_index).sort((a, b) => a - b);
     expect(indices).toEqual([0, 1, 2]);
     expect(new Set(indices).size).toBe(3);
+    // The MOVED slot must actually land at the requested index 0 — not lose
+    // the tie to the older sibling already there.
+    expect(slots.find((s) => s.exercise_id === 'ex_deadlift')!.order_index).toBe(0);
+    // Plan tree is returned in order, so first slot is deadlift.
+    expect(slots[0]!.exercise_id).toBe('ex_deadlift');
   });
 });
 

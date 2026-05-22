@@ -357,20 +357,26 @@ export async function nextExerciseOrderIndex(
  * Collapse duplicate `order_index` values within one day to a dense,
  * deterministic 0..n-1 sequence. No-op when indices are already unique, so
  * it's cheap to call defensively after any write that takes an explicit
- * order_index (add_exercise / update_exercise). Ordering is the same
- * (order_index, created_at, id) tiebreak the read path uses, so the
- * renumber is stable and matches what the client already sees. Returns
- * true if it rewrote anything.
+ * order_index (add_exercise / update_exercise). Ordering matches the read
+ * path's (order_index, created_at, id) tiebreak, so the renumber is stable.
+ *
+ * `preferId` is the slot the caller just placed at an explicit index: on a
+ * collision it wins the tie (sorts first within that order_index), so the
+ * requested position is actually honored — e.g. moving a slot to index 0
+ * lands it at 0 rather than letting the older sibling keep the spot.
+ * Returns true if it rewrote anything.
  */
 export async function dedupeDayOrderIndexes(
   db: D1Database,
   dayTemplateId: string,
+  preferId?: string,
 ): Promise<boolean> {
   const rows = await db
     .prepare(
-      'SELECT id, order_index FROM template_exercises WHERE day_template_id = ?1 ORDER BY order_index, created_at, id',
+      `SELECT id, order_index FROM template_exercises WHERE day_template_id = ?1
+       ORDER BY order_index, CASE WHEN id = ?2 THEN 0 ELSE 1 END, created_at, id`,
     )
-    .bind(dayTemplateId)
+    .bind(dayTemplateId, preferId ?? '')
     .all<{ id: string; order_index: number }>();
   const list = rows.results;
   const hasDup = new Set(list.map((r) => r.order_index)).size !== list.length;
@@ -421,7 +427,7 @@ export async function addTemplateExercise(
     .run();
   // An explicit order_index can collide with a sibling; densify so the day
   // never holds duplicate indices (non-deterministic display otherwise).
-  if (await dedupeDayOrderIndexes(db, row.day_template_id)) {
+  if (await dedupeDayOrderIndexes(db, row.day_template_id, row.id)) {
     const fresh = await db
       .prepare('SELECT order_index FROM template_exercises WHERE id = ?1')
       .bind(row.id)
@@ -1564,7 +1570,7 @@ export async function updateExercise(
     .run();
   // Patching order_index can collide with a sibling; densify the day so the
   // result has unique 0..n-1 indices honoring the requested position.
-  if (patch.order_index !== undefined && (await dedupeDayOrderIndexes(db, slot.day_template_id))) {
+  if (patch.order_index !== undefined && (await dedupeDayOrderIndexes(db, slot.day_template_id, slot.id))) {
     const fresh = await db
       .prepare('SELECT order_index FROM template_exercises WHERE id = ?1')
       .bind(slot.id)

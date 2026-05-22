@@ -1,7 +1,7 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-const BASE = 'https://lift-coach.test';
+const BASE = 'https://tres-forte.test';
 const MCP_TOKEN = 'test-mcp-token';
 
 beforeAll(async () => {
@@ -90,7 +90,7 @@ describe('mcp auth + protocol', () => {
     const { body } = await rpc('initialize', { protocolVersion: '2025-06-18' });
     expect(body.result.protocolVersion).toBe('2025-06-18');
     expect(body.result.capabilities).toMatchObject({ tools: {}, resources: {}, prompts: {} });
-    expect(body.result.serverInfo.name).toBe('lift-coach');
+    expect(body.result.serverInfo.name).toBe('tres-forte');
     // Host-injected guidance: must mention the no-auto-log policy so the
     // model picks up the narration guard at session start.
     expect(typeof body.result.instructions).toBe('string');

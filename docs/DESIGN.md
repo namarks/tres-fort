@@ -1,4 +1,4 @@
-# lift-coach — Design Doc
+# tres-forte — Design Doc
 
 > Claude is the coach. It owns the plan and adapts it through conversation.
 > You execute and log in a native iOS app. A Cloudflare backend is the
@@ -8,7 +8,7 @@ Status: **DESIGN — awaiting approval before scaffolding (milestone a).**
 Date: 2026-05-18 · Owner: Nick · Apple Developer Program: **Active** ·
 Claude surface: all (auth designed OAuth-capable with static-bearer fallback).
 
-Project name `lift-coach` is a placeholder — renaming the repo later is free.
+Project name `tres-forte` (originally scaffolded as `lift-coach`).
 
 ---
 
@@ -335,7 +335,7 @@ SwiftUI, iOS 17+, SwiftData as a cache mirroring the server tree. A
 
 ## 10. Deploy
 
-**Backend:** `wrangler d1 create lift-coach-db`; migrations in `/migrations`
+**Backend:** `wrangler d1 create tres-forte-db`; migrations in `/migrations`
 via `wrangler d1 migrations apply`. Secrets via `wrangler secret put`:
 `APP_JWT_SECRET`, `MCP_STATIC_TOKEN`, `APPLE_BUNDLE_ID`, `OWNER_APPLE_SUB`,
 OAuth signing material. `wrangler deploy`. Start on `*.workers.dev`; add

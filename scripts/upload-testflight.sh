@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build, archive, export, and upload LiftCoach to TestFlight via App Store Connect API.
+# Build, archive, export, and upload TresForte to TestFlight via App Store Connect API.
 #
 # Build-number strategy depends on environment:
 #   - BUILD_NUMBER env var set (CI):
@@ -14,7 +14,7 @@
 # $(CURRENT_PROJECT_VERSION) and xcodebuild resolves it at build time, picking
 # up the command-line override when set. (Unlike Tally, which has literal
 # CFBundleVersion values in three plists that all need sed/PlistBuddy in
-# lockstep — lift-coach's project.yml is the single source of truth.)
+# lockstep — tres-forte's project.yml is the single source of truth.)
 #
 # Marketing version (MARKETING_VERSION) is always left alone — bump that
 # manually in ios/project.yml when you want a new train (e.g. 0.1.0 -> 0.1.1)
@@ -30,7 +30,7 @@ set -euo pipefail
 readonly TEAM_ID="8BA2RY6RCA"
 readonly API_KEY_ID="723T6CFSD9"
 readonly API_ISSUER_ID="b169cd8d-cb73-4efc-8d72-8c92c5ad29ed"
-readonly SCHEME="LiftCoach"
+readonly SCHEME="TresForte"
 
 cd "$(dirname "$0")/../ios"
 
@@ -48,7 +48,7 @@ fi
 
 xcodegen generate
 
-rm -rf build/LiftCoach.xcarchive build/export
+rm -rf build/TresForte.xcarchive build/export
 
 # Sanity-check the ASC API .p8 exists — altool uses it by key id below.
 readonly P8_PATH="${HOME}/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8"
@@ -68,11 +68,11 @@ test -f "${P8_PATH}" || { echo "Missing ASC API key at ${P8_PATH}"; exit 1; }
 # Mac with the .p8 on disk, regardless of Xcode GUI state — needed if we ever
 # move this to CI.
 xcodebuild \
-  -project LiftCoach.xcodeproj \
+  -project TresForte.xcodeproj \
   -scheme "${SCHEME}" \
   -configuration Release \
   -destination 'generic/platform=iOS' \
-  -archivePath build/LiftCoach.xcarchive \
+  -archivePath build/TresForte.xcarchive \
   -allowProvisioningUpdates \
   DEVELOPMENT_TEAM="${TEAM_ID}" \
   CODE_SIGN_STYLE=Automatic \
@@ -81,14 +81,14 @@ xcodebuild \
 
 xcodebuild \
   -exportArchive \
-  -archivePath build/LiftCoach.xcarchive \
+  -archivePath build/TresForte.xcarchive \
   -exportPath build/export \
   -exportOptionsPlist ExportOptions.plist \
   -allowProvisioningUpdates
 
 xcrun altool --upload-app \
   --type ios \
-  --file build/export/LiftCoach.ipa \
+  --file build/export/TresForte.ipa \
   --apiKey "${API_KEY_ID}" \
   --apiIssuer "${API_ISSUER_ID}"
 

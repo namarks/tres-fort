@@ -20,7 +20,7 @@ import { handleMcp } from '../src/mcp/server';
 import type { Env } from '../src/types';
 import type { Fetcher } from '../src/intervals';
 
-const BASE = 'https://lift-coach.test';
+const BASE = 'https://tres-forte.test';
 const TOKEN = 'test-mcp-token';
 
 beforeAll(async () => {

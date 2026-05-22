@@ -43,7 +43,7 @@ struct TodayView: View {
             // long names down to 65% — the meaningful name always shows.
             .toolbar {
                 ToolbarItem(placement: .principal) {
-                    Text(sync.plan?.name ?? "lift-coach")
+                    Text(sync.plan?.name ?? "Tres Forte")
                         .font(Theme.mono(15, .bold))
                         .foregroundStyle(Theme.text)
                         .multilineTextAlignment(.center)

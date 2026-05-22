@@ -33,11 +33,11 @@ npm run release                # db:migrate:remote && deploy (migration MUST run
 iOS (`ios/`):
 
 ```bash
-cd ios && xcodegen generate    # regenerate LiftCoach.xcodeproj from project.yml — run after any project.yml change
-open ios/LiftCoach.xcodeproj
+cd ios && xcodegen generate    # regenerate TresForte.xcodeproj from project.yml — run after any project.yml change
+open ios/TresForte.xcodeproj
 ```
 
-Build/run with the **LiftCoach** scheme, never the widget-extension scheme.
+Build/run with the **TresForte** scheme, never the widget-extension scheme.
 The `.xcodeproj` is generated; treat `project.yml` as the source of truth.
 
 ## Architecture

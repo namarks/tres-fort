@@ -29,7 +29,7 @@ platform :ios do
   desc "Upload an already-built IPA to TestFlight (run scripts/upload-testflight.sh first to build)"
   lane :upload_testflight do |options|
     upload_to_testflight(
-      ipa: options[:ipa] || "build/export/LiftCoach.ipa",
+      ipa: options[:ipa] || "build/export/TresForte.ipa",
       skip_waiting_for_build_processing: true,
       skip_submission: true
     )
@@ -38,7 +38,7 @@ platform :ios do
   desc "Submit the latest TestFlight build for App Store review. Manual release after approval (toggle in ASC). Usage: bundle exec fastlane ios submit_for_review"
   lane :submit_for_review do
     deliver(
-      app_identifier: "com.nmarkspdx.liftcoach",
+      app_identifier: "com.nmarkspdx.tresforte",
       metadata_path: "./fastlane/metadata",
       screenshots_path: "./fastlane/screenshots",
       skip_binary_upload: true,

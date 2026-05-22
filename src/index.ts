@@ -12,7 +12,7 @@ import {
 
 const app = new Hono<HonoEnv>();
 
-app.get('/health', (c) => c.json({ ok: true, service: 'lift-coach' }));
+app.get('/health', (c) => c.json({ ok: true, service: 'tres-forte' }));
 
 app.route('/', oauthRoutes); // /.well-known/* + /oauth/*
 app.route('/auth', authRoutes);

@@ -103,6 +103,47 @@ describe('#5 order_index determinism', () => {
     // Plan tree is returned in order, so first slot is deadlift.
     expect(slots[0]!.exercise_id).toBe('ex_deadlift');
   });
+
+  it('honors a DOWNWARD move to a later occupied index', async () => {
+    const built = await call('update_plan', {
+      name: 'OrderDown',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Day A',
+          exercises: [
+            { exercise: 'bench', order_index: 0, target_sets: 3, target_reps: 5 },
+            { exercise: 'squat', order_index: 1, target_sets: 3, target_reps: 5 },
+            { exercise: 'deadlift', order_index: 2, target_sets: 1, target_reps: 5 },
+            { exercise: 'overhead press', order_index: 3, target_sets: 3, target_reps: 5 },
+          ],
+        },
+      ],
+    });
+    expect(built.conflict).toBe(false);
+
+    // Move bench (0) DOWN to 2 (occupied by deadlift). Must land at 2,
+    // not one short at 1 (the bug Codex flagged in the tiebreak approach).
+    const patched = await call('update_exercise', {
+      day: 'A',
+      exercise: 'bench',
+      patch: { order_index: 2 },
+    });
+    expect(patched.error).toBeUndefined();
+
+    const plan = await call('get_current_plan', {});
+    const slots = plan.days[0].exercises as { order_index: number; exercise_id: string }[];
+    const indices = slots.map((s) => s.order_index).sort((a, b) => a - b);
+    expect(indices).toEqual([0, 1, 2, 3]);
+    expect(slots.find((s) => s.exercise_id === 'ex_bench')!.order_index).toBe(2);
+    // Expected resulting order: squat, deadlift, bench, OHP.
+    expect(slots.map((s) => s.exercise_id)).toEqual([
+      'ex_back_squat',
+      'ex_deadlift',
+      'ex_bench',
+      'ex_ohp',
+    ]);
+  });
 });
 
 describe('last_completed_session', () => {

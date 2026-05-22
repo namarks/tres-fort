@@ -357,14 +357,15 @@ export async function nextExerciseOrderIndex(
  * Collapse duplicate `order_index` values within one day to a dense,
  * deterministic 0..n-1 sequence. No-op when indices are already unique, so
  * it's cheap to call defensively after any write that takes an explicit
- * order_index (add_exercise / update_exercise). Ordering matches the read
- * path's (order_index, created_at, id) tiebreak, so the renumber is stable.
+ * order_index (add_exercise / update_exercise). Returns true if it rewrote.
  *
- * `preferId` is the slot the caller just placed at an explicit index: on a
- * collision it wins the tie (sorts first within that order_index), so the
- * requested position is actually honored — e.g. moving a slot to index 0
- * lands it at 0 rather than letting the older sibling keep the spot.
- * Returns true if it rewrote anything.
+ * `preferId` is the slot the caller just placed at an explicit index. To
+ * honor that destination exactly (in BOTH directions — moving up or down),
+ * we rebuild the order by removing that slot, densely ordering the rest by
+ * (order_index, created_at, id), then re-inserting the slot at its requested
+ * index (clamped). A tiebreak alone is insufficient: it works for upward
+ * moves but a downward move (e.g. 0 → 2) would land one short after the
+ * dense pass.
  */
 export async function dedupeDayOrderIndexes(
   db: D1Database,
@@ -373,20 +374,33 @@ export async function dedupeDayOrderIndexes(
 ): Promise<boolean> {
   const rows = await db
     .prepare(
-      `SELECT id, order_index FROM template_exercises WHERE day_template_id = ?1
-       ORDER BY order_index, CASE WHEN id = ?2 THEN 0 ELSE 1 END, created_at, id`,
+      'SELECT id, order_index FROM template_exercises WHERE day_template_id = ?1 ORDER BY order_index, created_at, id',
     )
-    .bind(dayTemplateId, preferId ?? '')
+    .bind(dayTemplateId)
     .all<{ id: string; order_index: number }>();
   const list = rows.results;
   const hasDup = new Set(list.map((r) => r.order_index)).size !== list.length;
   if (!hasDup) return false;
+
+  let ordered: { id: string; order_index: number }[];
+  const moved = preferId ? list.find((r) => r.id === preferId) : undefined;
+  if (moved) {
+    // Requested destination = the index the caller just set on this slot.
+    // Drop it, then splice it back at that position so siblings shift around
+    // it — landing the moved slot exactly there for up- and down-moves alike.
+    const others = list.filter((r) => r.id !== moved.id);
+    const target = Math.max(0, Math.min(moved.order_index, others.length));
+    ordered = [...others.slice(0, target), moved, ...others.slice(target)];
+  } else {
+    ordered = list;
+  }
+
   const ts = now();
-  for (let i = 0; i < list.length; i++) {
-    if (list[i]!.order_index !== i) {
+  for (let i = 0; i < ordered.length; i++) {
+    if (ordered[i]!.order_index !== i) {
       await db
         .prepare('UPDATE template_exercises SET order_index = ?2, updated_at = ?3 WHERE id = ?1')
-        .bind(list[i]!.id, i, ts)
+        .bind(ordered[i]!.id, i, ts)
         .run();
     }
   }

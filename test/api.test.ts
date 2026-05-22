@@ -221,6 +221,128 @@ describe('sessions, idempotent set logging, history, volume', () => {
   });
 });
 
+// Phantom-session guard: logging promotes a session planned->in_progress;
+// deleting the LAST live set must reverse it back to 'planned' so an empty
+// "in progress" row can never linger (the calendar/agenda + MCP otherwise
+// surface a workout that records no work). See patchSet's isDelete branch.
+describe('deleting the last set reverts an in_progress session to planned', () => {
+  it('reverts to planned only when zero live sets remain', async () => {
+    const jwt = await devJwt();
+    const H = auth(jwt);
+
+    await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Strength' }),
+    });
+
+    const session = await (
+      await SELF.fetch(`${BASE}/api/sessions`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ date: '2026-06-01' }),
+      })
+    ).json<{ id: string; status: string }>();
+    expect(session.status).toBe('planned'); // fresh row
+
+    const statusOf = async () =>
+      (
+        await env.DB.prepare('SELECT status, started_at FROM sessions WHERE id=?1')
+          .bind(session.id)
+          .first<{ status: string; started_at: number | null }>()
+      )!;
+
+    // Log two sets -> session promoted to in_progress with a started_at.
+    const setA = crypto.randomUUID();
+    const setB = crypto.randomUUID();
+    for (const [id, idx] of [
+      [setA, 1],
+      [setB, 2],
+    ] as const) {
+      const r = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ id, exercise_id: 'ex_bench', set_index: idx, weight: 135, reps: 5 }),
+      });
+      expect(r.status).toBe(201);
+    }
+    let s = await statusOf();
+    expect(s.status).toBe('in_progress');
+    expect(s.started_at).not.toBeNull();
+
+    // Delete ONE of two -> a live set remains -> still in_progress.
+    await SELF.fetch(`${BASE}/api/sets/${setA}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ deleted: true }),
+    });
+    expect((await statusOf()).status).toBe('in_progress');
+
+    // Delete the LAST live set -> revert to planned, started_at cleared.
+    await SELF.fetch(`${BASE}/api/sets/${setB}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ deleted: true }),
+    });
+    s = await statusOf();
+    expect(s.status).toBe('planned');
+    expect(s.started_at).toBeNull();
+
+    // Re-logging cleanly promotes it back to in_progress (no stranded state).
+    const setC = crypto.randomUUID();
+    const relog = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ id: setC, exercise_id: 'ex_bench', set_index: 1, weight: 145, reps: 5 }),
+    });
+    expect(relog.status).toBe(201);
+    expect((await statusOf()).status).toBe('in_progress');
+  });
+
+  it('does NOT un-complete a completed session when its last set is deleted', async () => {
+    const jwt = await devJwt();
+    const H = auth(jwt);
+
+    await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Strength' }),
+    });
+    const session = await (
+      await SELF.fetch(`${BASE}/api/sessions`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ date: '2026-06-02' }),
+      })
+    ).json<{ id: string }>();
+
+    const setId = crypto.randomUUID();
+    await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ id: setId, exercise_id: 'ex_bench', set_index: 1, weight: 135, reps: 5 }),
+    });
+    // Mark the session completed (a deliberate terminal state).
+    const comp = await SELF.fetch(`${BASE}/api/sessions/${session.id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    expect(comp.status).toBe(200);
+
+    // Deleting its only set must NOT auto-un-complete it.
+    await SELF.fetch(`${BASE}/api/sets/${setId}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ deleted: true }),
+    });
+    const row = await env.DB.prepare('SELECT status FROM sessions WHERE id=?1')
+      .bind(session.id)
+      .first<{ status: string }>();
+    expect(row!.status).toBe('completed');
+  });
+});
+
 // FIX2 class-completion: the REST PATCH /api/sessions/:id entry point must
 // reject a `skipped` patch on a started/finished session, exactly like the
 // MCP skipPlannedSession guard — otherwise iOS could bury logged history.

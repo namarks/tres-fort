@@ -811,10 +811,33 @@ export async function patchSet(
       setIndex = (max?.m ?? 0) + 1;
     }
   }
-  await db
-    .prepare('UPDATE set_logs SET weight=?2, reps=?3, rpe=?4, notes=?5, deleted_at=?6, set_index=?7 WHERE id=?1')
-    .bind(setId, weight, reps, rpe, notes, deletedAt, setIndex)
-    .run();
+  // The clash pre-check above narrows the common case, but a concurrent
+  // undelete/logSet can still race onto the same slot and trip ux_set_slot.
+  // Retry-renumber on conflict (same contract as logSet) so an undelete is
+  // never a 500. Non-undelete patches keep their set_index, so they never
+  // conflict and the loop runs once.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await db
+        .prepare('UPDATE set_logs SET weight=?2, reps=?3, rpe=?4, notes=?5, deleted_at=?6, set_index=?7 WHERE id=?1')
+        .bind(setId, weight, reps, rpe, notes, deletedAt, setIndex)
+        .run();
+      break;
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? '');
+      const slotConflict = /unique constraint failed/i.test(msg) && /set_index/i.test(msg);
+      if (!slotConflict || attempt >= 5) throw e;
+      const max = await db
+        .prepare(
+          `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
+           WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
+             AND deleted_at IS NULL`,
+        )
+        .bind(row.session_id, row.exercise_id, row.is_warmup)
+        .first<{ m: number }>();
+      setIndex = (max?.m ?? 0) + 1;
+    }
+  }
   return { ...row, weight, reps, rpe, notes, deleted_at: deletedAt, set_index: setIndex };
 }
 

@@ -628,16 +628,44 @@ export async function logSet(
     .first<SetLogRow>();
   if (existing) return { set: existing, deduped: true };
 
+  // Collision-safe set_index. MCP and iOS each compute set_index
+  // independently, so two writers could pick the same index for the same
+  // (session, exercise, is_warmup) — the bug that produced two set_index=3
+  // squat sets. Renumber on collision: keep the provided index unless a live
+  // row already holds it, in which case bump to max+1. The partial unique
+  // index ux_set_slot (migration 0013) is the hard backstop for races.
+  const isWarmupInt = input.is_warmup ? 1 : 0;
+  let setIndex = input.set_index;
+  const clash = await db
+    .prepare(
+      `SELECT 1 FROM set_logs
+       WHERE session_id = ?1 AND exercise_id = ?2 AND set_index = ?3
+         AND is_warmup = ?4 AND deleted_at IS NULL LIMIT 1`,
+    )
+    .bind(input.session_id, input.exercise_id, setIndex, isWarmupInt)
+    .first();
+  if (clash) {
+    const max = await db
+      .prepare(
+        `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
+         WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
+           AND deleted_at IS NULL`,
+      )
+      .bind(input.session_id, input.exercise_id, isWarmupInt)
+      .first<{ m: number }>();
+    setIndex = (max?.m ?? 0) + 1;
+  }
+
   const row: SetLogRow = {
     id: input.id,
     session_id: input.session_id,
     exercise_id: input.exercise_id,
     template_exercise_id: input.template_exercise_id ?? null,
-    set_index: input.set_index,
+    set_index: setIndex,
     weight: input.weight,
     reps: input.reps,
     rpe: input.rpe ?? null,
-    is_warmup: input.is_warmup ? 1 : 0,
+    is_warmup: isWarmupInt,
     notes: input.notes ?? null,
     logged_at: input.logged_at ?? now(),
     source: input.source,

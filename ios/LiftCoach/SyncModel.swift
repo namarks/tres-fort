@@ -241,7 +241,10 @@ final class SyncModel: ObservableObject {
         guard let ex = currentExercise, ex.isTimed else { return }
         setClock = Date()
         timedActive = true
-        timedEndDate = Date().addingTimeInterval(TimeInterval(ex.target_reps))
+        // Count down the prescribed hold (target_duration_s, fallback
+        // target_reps) — not target_reps directly, which was 1s for slots
+        // that never set a duration (the "plank ended instantly" bug).
+        timedEndDate = Date().addingTimeInterval(TimeInterval(ex.holdSeconds))
     }
 
     /// End a timed set — `held` seconds actually performed (auto at 0, or

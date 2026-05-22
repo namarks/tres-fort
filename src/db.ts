@@ -196,7 +196,7 @@ export async function getPlanTree(
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
   const days = await db
-    .prepare('SELECT * FROM day_templates WHERE plan_id = ?1 ORDER BY order_index, created_at')
+    .prepare('SELECT * FROM day_templates WHERE plan_id = ?1 ORDER BY order_index, created_at, id')
     .bind(plan.id)
     .all<DayTemplateRow>();
   const dayIds = days.results.map((d) => d.id);
@@ -210,7 +210,7 @@ export async function getPlanTree(
                 e.laterality AS exercise_laterality, e.load_mode AS exercise_load_mode
          FROM template_exercises te
          JOIN exercises e ON e.id = te.exercise_id
-         WHERE te.day_template_id IN (${placeholders}) ORDER BY te.order_index, te.created_at`,
+         WHERE te.day_template_id IN (${placeholders}) ORDER BY te.order_index, te.created_at, te.id`,
       )
       .bind(...dayIds)
       .all<EnrichedTemplateExercise>();

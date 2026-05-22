@@ -783,11 +783,39 @@ export async function patchSet(
   // not deleted_at (see the WARNING on that query). Only safe while the
   // iOS client full-reloads; needs a mutable updated_at cursor (follow-up).
   const deletedAt = patch.deleted ? row.deleted_at ?? now() : patch.deleted === false ? null : row.deleted_at;
+  // Undelete collision: the partial unique index ux_set_slot only covers
+  // live rows, so reviving a soft-deleted set whose slot was reused while it
+  // was gone would violate the constraint (→ 500). Renumber the revived row
+  // to max+1 before clearing deleted_at — same "renumber, don't reject"
+  // contract logSet uses.
+  let setIndex = row.set_index;
+  const isUndelete = row.deleted_at !== null && deletedAt === null;
+  if (isUndelete) {
+    const clash = await db
+      .prepare(
+        `SELECT 1 FROM set_logs
+         WHERE session_id = ?1 AND exercise_id = ?2 AND set_index = ?3
+           AND is_warmup = ?4 AND deleted_at IS NULL AND id != ?5 LIMIT 1`,
+      )
+      .bind(row.session_id, row.exercise_id, setIndex, row.is_warmup, setId)
+      .first();
+    if (clash) {
+      const max = await db
+        .prepare(
+          `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
+           WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
+             AND deleted_at IS NULL`,
+        )
+        .bind(row.session_id, row.exercise_id, row.is_warmup)
+        .first<{ m: number }>();
+      setIndex = (max?.m ?? 0) + 1;
+    }
+  }
   await db
-    .prepare('UPDATE set_logs SET weight=?2, reps=?3, rpe=?4, notes=?5, deleted_at=?6 WHERE id=?1')
-    .bind(setId, weight, reps, rpe, notes, deletedAt)
+    .prepare('UPDATE set_logs SET weight=?2, reps=?3, rpe=?4, notes=?5, deleted_at=?6, set_index=?7 WHERE id=?1')
+    .bind(setId, weight, reps, rpe, notes, deletedAt, setIndex)
     .run();
-  return { ...row, weight, reps, rpe, notes, deleted_at: deletedAt };
+  return { ...row, weight, reps, rpe, notes, deleted_at: deletedAt, set_index: setIndex };
 }
 
 // ---- read models ---------------------------------------------------------

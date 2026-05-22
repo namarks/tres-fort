@@ -112,6 +112,26 @@ describe('#7 set_index collision safety', () => {
     // Re-log at index 1 — the freed slot means no bump.
     const second = await logSet(H, sid, setBody({ set_index: 1, weight: 235 }));
     expect(second.json.set.set_index).toBe(1);
+
+    // Undeleting the original must NOT 500 on the now-occupied slot — it
+    // gets renumbered to max+1 instead (renumber, don't reject).
+    const undel = await SELF.fetch(`${BASE}/api/sets/${first.json.set.id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ deleted: false }),
+    });
+    expect(undel.status).toBe(200);
+    const undelBody = await undel.json<any>();
+    expect(undelBody.deleted_at).toBeNull();
+    expect(undelBody.set_index).toBe(2); // bumped off the reused index 1
+    // Both rows now live with distinct indices.
+    const live = await env.DB
+      .prepare(
+        "SELECT set_index FROM set_logs WHERE session_id=?1 AND exercise_id='ex_back_squat' AND deleted_at IS NULL ORDER BY set_index",
+      )
+      .bind(sid)
+      .all<{ set_index: number }>();
+    expect(live.results.map((r) => r.set_index)).toEqual([1, 2]);
   });
 
   it('idempotent retry by id still dedupes (no bump, no second row)', async () => {

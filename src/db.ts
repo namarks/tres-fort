@@ -690,35 +690,89 @@ export async function logSet(
     .first<SetLogRow>();
   if (existing) return { set: existing, deduped: true };
 
+  // Collision-safe set_index. MCP and iOS each compute set_index
+  // independently, so two writers could pick the same index for the same
+  // (session, exercise, is_warmup) — the bug that produced two set_index=3
+  // squat sets. Renumber on collision: keep the provided index unless a live
+  // row already holds it, in which case bump to max+1. The partial unique
+  // index ux_set_slot (migration 0013) is the hard backstop for races.
+  const isWarmupInt = input.is_warmup ? 1 : 0;
+  let setIndex = input.set_index;
+  const clash = await db
+    .prepare(
+      `SELECT 1 FROM set_logs
+       WHERE session_id = ?1 AND exercise_id = ?2 AND set_index = ?3
+         AND is_warmup = ?4 AND deleted_at IS NULL LIMIT 1`,
+    )
+    .bind(input.session_id, input.exercise_id, setIndex, isWarmupInt)
+    .first();
+  if (clash) {
+    const max = await db
+      .prepare(
+        `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
+         WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
+           AND deleted_at IS NULL`,
+      )
+      .bind(input.session_id, input.exercise_id, isWarmupInt)
+      .first<{ m: number }>();
+    setIndex = (max?.m ?? 0) + 1;
+  }
+
   const row: SetLogRow = {
     id: input.id,
     session_id: input.session_id,
     exercise_id: input.exercise_id,
     template_exercise_id: input.template_exercise_id ?? null,
-    set_index: input.set_index,
+    set_index: setIndex,
     weight: input.weight,
     reps: input.reps,
     rpe: input.rpe ?? null,
-    is_warmup: input.is_warmup ? 1 : 0,
+    is_warmup: isWarmupInt,
     notes: input.notes ?? null,
     logged_at: input.logged_at ?? now(),
     source: input.source,
     duration_s: input.duration_s ?? null,
     deleted_at: null,
   };
-  await db
-    .prepare(
-      `INSERT INTO set_logs
-       (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,deleted_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL)
-       ON CONFLICT(id) DO NOTHING`,
-    )
-    .bind(
-      row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
-      row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
-      row.duration_s,
-    )
-    .run();
+  // The pre-check above resolves the common collision, but two concurrent
+  // writers can both pass it and then race on the INSERT — only the unique
+  // index ux_set_slot catches that. Honor the "renumber, don't reject"
+  // contract: on a slot-unique violation, recompute max+1 and retry rather
+  // than letting one writer's set be dropped. ON CONFLICT(id) DO NOTHING
+  // still covers a concurrent same-id retry (idempotency).
+  const insert = () =>
+    db
+      .prepare(
+        `INSERT INTO set_logs
+         (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,deleted_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL)
+         ON CONFLICT(id) DO NOTHING`,
+      )
+      .bind(
+        row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
+        row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
+        row.duration_s,
+      )
+      .run();
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await insert();
+      break;
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? '');
+      const slotConflict = /unique constraint failed/i.test(msg) && /set_index/i.test(msg);
+      if (!slotConflict || attempt >= 5) throw e;
+      const max = await db
+        .prepare(
+          `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
+           WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
+             AND deleted_at IS NULL`,
+        )
+        .bind(input.session_id, input.exercise_id, isWarmupInt)
+        .first<{ m: number }>();
+      row.set_index = (max?.m ?? 0) + 1;
+    }
+  }
   // Logging a set implicitly starts the session. A 'discarded' row is
   // also revived here (defense-in-depth: getOrCreateSession already
   // resurrects on the get path, but logging work into a discarded session
@@ -791,11 +845,62 @@ export async function patchSet(
   // not deleted_at (see the WARNING on that query). Only safe while the
   // iOS client full-reloads; needs a mutable updated_at cursor (follow-up).
   const deletedAt = patch.deleted ? row.deleted_at ?? now() : patch.deleted === false ? null : row.deleted_at;
-  await db
-    .prepare('UPDATE set_logs SET weight=?2, reps=?3, rpe=?4, notes=?5, deleted_at=?6 WHERE id=?1')
-    .bind(setId, weight, reps, rpe, notes, deletedAt)
-    .run();
-  return { ...row, weight, reps, rpe, notes, deleted_at: deletedAt };
+  // Undelete collision: the partial unique index ux_set_slot only covers
+  // live rows, so reviving a soft-deleted set whose slot was reused while it
+  // was gone would violate the constraint (→ 500). Renumber the revived row
+  // to max+1 before clearing deleted_at — same "renumber, don't reject"
+  // contract logSet uses.
+  let setIndex = row.set_index;
+  const isUndelete = row.deleted_at !== null && deletedAt === null;
+  if (isUndelete) {
+    const clash = await db
+      .prepare(
+        `SELECT 1 FROM set_logs
+         WHERE session_id = ?1 AND exercise_id = ?2 AND set_index = ?3
+           AND is_warmup = ?4 AND deleted_at IS NULL AND id != ?5 LIMIT 1`,
+      )
+      .bind(row.session_id, row.exercise_id, setIndex, row.is_warmup, setId)
+      .first();
+    if (clash) {
+      const max = await db
+        .prepare(
+          `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
+           WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
+             AND deleted_at IS NULL`,
+        )
+        .bind(row.session_id, row.exercise_id, row.is_warmup)
+        .first<{ m: number }>();
+      setIndex = (max?.m ?? 0) + 1;
+    }
+  }
+  // The clash pre-check above narrows the common case, but a concurrent
+  // undelete/logSet can still race onto the same slot and trip ux_set_slot.
+  // Retry-renumber on conflict (same contract as logSet) so an undelete is
+  // never a 500. Non-undelete patches keep their set_index, so they never
+  // conflict and the loop runs once.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await db
+        .prepare('UPDATE set_logs SET weight=?2, reps=?3, rpe=?4, notes=?5, deleted_at=?6, set_index=?7 WHERE id=?1')
+        .bind(setId, weight, reps, rpe, notes, deletedAt, setIndex)
+        .run();
+      break;
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? '');
+      const slotConflict = /unique constraint failed/i.test(msg) && /set_index/i.test(msg);
+      if (!slotConflict || attempt >= 5) throw e;
+      const max = await db
+        .prepare(
+          `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
+           WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
+             AND deleted_at IS NULL`,
+        )
+        .bind(row.session_id, row.exercise_id, row.is_warmup)
+        .first<{ m: number }>();
+      setIndex = (max?.m ?? 0) + 1;
+    }
+  }
+  return { ...row, weight, reps, rpe, notes, deleted_at: deletedAt, set_index: setIndex };
 }
 
 // ---- read models ---------------------------------------------------------

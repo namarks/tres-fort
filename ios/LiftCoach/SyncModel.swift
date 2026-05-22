@@ -38,7 +38,6 @@ final class SyncModel: ObservableObject {
     @Published var workoutStart: Date?      // whole-session stopwatch
     @Published var timedActive = false      // a timed exercise is running
     @Published var timedEndDate: Date?
-    private var setClock = Date()           // when the current set began
 
     private let api = APIClient()
     private unowned let auth: AuthModel
@@ -119,6 +118,22 @@ final class SyncModel: ObservableObject {
         catalog.first { $0.id == exerciseID }?.laterality == "unilateral" ? 2 : 1
     }
 
+    /// True when the catalog row is a timed modality (planks/holds) — the only
+    /// sets whose logged value is seconds, not reps. Logged sets carry no
+    /// modality, so resolve it from the catalog. Defaults to false (rep set)
+    /// when the catalog row is unknown. #30
+    func isTimedExercise(_ exerciseID: String) -> Bool {
+        catalog.first { $0.id == exerciseID }?.modality == "timed"
+    }
+
+    /// True when the catalog row is a bodyweight modality — these render
+    /// "BW × reps". Keyed off modality (not weight == 0) so a weighted lift
+    /// logged at 0 load isn't mislabeled as bodyweight. Defaults to false
+    /// when the catalog row is unknown. #30
+    func isBodyweightExercise(_ exerciseID: String) -> Bool {
+        catalog.first { $0.id == exerciseID }?.modality == "bw"
+    }
+
     // MARK: history aggregation
 
     struct SessionStat: Identifiable {
@@ -169,8 +184,6 @@ final class SyncModel: ObservableObject {
     func logSet(_ ex: TemplateExercise, weight: Double, reps: Int,
                 durationOverride: Int? = nil) async {
         guard let jwt = auth.jwt else { return }
-        let duration = durationOverride
-            ?? max(0, Int(Date().timeIntervalSince(setClock)))
         do {
             if todaySession == nil {
                 // Tie the lazily-created session to the day template the
@@ -186,17 +199,20 @@ final class SyncModel: ObservableObject {
             }
             guard let session = todaySession else { return }
             let nextIndex = todaySets(ex.exercise_id).count + 1
-            let body: [String: Any] = [
+            var body: [String: Any] = [
                 "id": UUID().uuidString,
                 "exercise_id": ex.exercise_id,
                 "set_index": nextIndex,
                 "weight": weight,
                 "reps": reps,
-                "duration_s": duration,
             ]
+            // Only timed holds (planks) record a duration. Rep sets must NOT —
+            // previously every set stored wall-clock seconds since it began,
+            // which then rendered as the set's value for bodyweight lifts, so
+            // pull-ups read "31s" instead of reps. #30
+            if let durationOverride { body["duration_s"] = durationOverride }
             let res = try await api.logSet(sessionId: session.id, body: body, jwt: jwt)
             if !sets.contains(where: { $0.id == res.set.id }) { sets.append(res.set) }
-            setClock = Date()
             startRest(seconds: ex.rest_seconds, name: ex.exercise_name)
         } catch {
             handle(error)
@@ -224,12 +240,10 @@ final class SyncModel: ObservableObject {
         seedInputs()
     }
 
-    /// Seed weight/reps from last time → plan target → default. Resets the
-    /// per-set clock (a new set begins on arrival at an exercise).
+    /// Seed weight/reps from last time → plan target → default.
     private func seedInputs() {
         timedActive = false
         timedEndDate = nil
-        setClock = Date()
         guard let ex = currentExercise else { return }
         let last = lastWorkingSet(ex.exercise_id)
         // Bodyweight exercises have no weight input (#2); the field is
@@ -244,7 +258,6 @@ final class SyncModel: ObservableObject {
 
     func startTimedSet() {
         guard let ex = currentExercise, ex.isTimed else { return }
-        setClock = Date()
         timedActive = true
         // Count down the prescribed hold (target_duration_s, fallback
         // target_reps) — not target_reps directly, which was 1s for slots
@@ -383,7 +396,6 @@ final class SyncModel: ObservableObject {
     }
     func skipRest() {
         restEndDate = nil
-        setClock = Date()   // next set begins when rest ends
         RestLiveActivity.endNow()
     }
 

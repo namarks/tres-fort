@@ -576,12 +576,14 @@ private struct RunnerView: View {
                 ForEach(Array(sync.exercises.enumerated()), id: \.element.id) { i, e in
                     let cur = i == sync.exerciseIndex
                     let done = sync.isComplete(e)
+                    let skipped = sync.isSkipped(e) && !done
                     Button { sync.jump(to: i) } label: {
                         Text(e.exercise_name)
                             .font(Theme.mono(11, .bold))
+                            .strikethrough(skipped, color: Theme.muted)
                             .padding(.horizontal, 12).padding(.vertical, 8)
                             .background(cur ? Theme.accent : Theme.surface)
-                            .foregroundStyle(cur ? .black : (done ? Theme.done : Theme.muted))
+                            .foregroundStyle(cur ? .black : (done ? Theme.done : (skipped ? Theme.muted.opacity(0.5) : Theme.muted)))
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                             .overlay(RoundedRectangle(cornerRadius: 8)
                                 .stroke(done && !cur ? Theme.done.opacity(0.3) : .clear))

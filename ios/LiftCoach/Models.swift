@@ -35,7 +35,10 @@ struct TemplateExercise: Decodable, Identifiable, Equatable {
     let exercise_load_mode: String?
 
     var isTimed: Bool { exercise_modality == "timed" }
-    var isBodyweight: Bool { exercise_unit == "bw" }
+    // Key off MODALITY, not unit: bw exercises (Pull-Up, Dead Bug) are
+    // seeded with unit "lb" in the catalog, so checking the unit left the
+    // weight field showing for them (bug #2). Modality is the truth.
+    var isBodyweight: Bool { exercise_modality == "bw" }
     var isUnilateral: Bool { exercise_laterality == "unilateral" }
     var isPerHand: Bool { exercise_load_mode == "per_hand" }
 

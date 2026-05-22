@@ -243,6 +243,12 @@ struct CalendarView: View {
         // Read-only ride overlay: distinct from the lift states.
         let hasRide = !sync.rides(on: ymd).isEmpty
         let conflict = sync.rideConflict(for: ymd)   // .none on non-lift days
+        // Read-only COMPLETED endurance activity (intervals.icu actuals).
+        // Shown as a "workout completed" — accent glyph, distinct from the
+        // muted PLANNED-ride glyph.
+        let dayActivities = sync.activities(on: ymd)
+        let hasActivity = !dayActivities.isEmpty
+        let activityGlyph = dayActivities.first?.glyph ?? "figure.run"
 
         Button {
             selectedDate = ymd
@@ -283,9 +289,15 @@ struct CalendarView: View {
                         .font(.system(size: 13))
                         .foregroundStyle(.clear)
                 }
-                // Ride glyph sits BELOW the lift state so both read at a
-                // glance and the existing states are never displaced.
-                if hasRide {
+                // Endurance glyph sits BELOW the lift state so both read at
+                // a glance and the existing states are never displaced. A
+                // COMPLETED activity (accent, kind-specific glyph) wins over
+                // a PLANNED ride (muted bicycle); neither displaces lifts.
+                if hasActivity {
+                    Image(systemName: activityGlyph)
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Theme.accent)
+                } else if hasRide {
                     Image(systemName: "bicycle")
                         .font(.system(size: 10, weight: .bold))
                         .foregroundStyle(Theme.muted)
@@ -356,6 +368,16 @@ struct CalendarView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(Theme.muted)
                 Text("RIDE")
+                    .font(Theme.mono(9, .bold)).tracking(0.5)
+                    .foregroundStyle(Theme.muted)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            // Completed endurance activity (intervals.icu actuals).
+            HStack(spacing: 6) {
+                Image(systemName: "figure.run")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.accent)
+                Text("CARDIO DONE")
                     .font(Theme.mono(9, .bold)).tracking(0.5)
                     .foregroundStyle(Theme.muted)
             }

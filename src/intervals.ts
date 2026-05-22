@@ -4,7 +4,7 @@
 // (vitest-pool-workers is offline). The cycling-awareness feature is
 // DORMANT when INTERVALS_ICU_API_KEY is unset: fetchPlannedEvents returns
 // a clean {ok:false, reason:'disabled'} with no network call and no throw.
-import type { Env, PlannedEvent } from './types';
+import type { CompletedActivity, Env, PlannedEvent } from './types';
 
 /** Minimal fetch signature we depend on (URL or string + RequestInit). */
 export type Fetcher = (
@@ -149,6 +149,113 @@ export async function fetchPlannedEvents(
     });
   }
   return { ok: true, events };
+}
+
+// ---- READ path: completed activities (the intervals.icu actuals) -------
+//
+// Mirror of fetchPlannedEvents but against the /activities feed — the
+// RECORDED, COMPLETED activities (rides/runs) the intervals.icu app shows,
+// carrying actual duration/power/HR/distance/TSS. Same discipline:
+// injectable fetcher (offline in tests), dormant no-op when unconfigured,
+// discriminated result. Window looks BACKWARD: [today-pastDays, today].
+
+export interface ActivityFetchDeps {
+  /** Defaults to global fetch. Stubbed in tests so the suite is offline. */
+  fetcher?: Fetcher;
+  /** Device-local "today" YYYY-MM-DD. Defaults to the worker clock. */
+  today?: string;
+  /** How many days back from today to pull (inclusive). Defaults to 90. */
+  pastDays?: number;
+  /** Per-request timeout in ms (default 10s). */
+  timeoutMs?: number;
+}
+
+export type ActivityFetchResult =
+  | { ok: true; activities: CompletedActivity[] }
+  | { ok: false; reason: 'disabled' | 'http' | 'timeout' | 'parse'; status?: number };
+
+/**
+ * GET intervals.icu completed activities in [today-pastDays, today]. Returns
+ * the same discriminated result shape as fetchPlannedEvents. Our own
+ * exported strength rows are skipped (isLiftCoachExport) so the completed
+ * cache stays endurance-actuals-only. `date` is the `start_date_local` date
+ * part VERBATIM — no timezone math (the contract).
+ */
+export async function fetchCompletedActivities(
+  env: Env,
+  deps: ActivityFetchDeps = {},
+): Promise<ActivityFetchResult> {
+  const apiKey = env.INTERVALS_ICU_API_KEY;
+  const athleteId = env.INTERVALS_ICU_ATHLETE_ID;
+  // Dormant when unconfigured: a clean no-op, never an error/throw.
+  if (!apiKey || !athleteId) return { ok: false, reason: 'disabled' };
+
+  const fetcher = deps.fetcher ?? (globalThis.fetch as unknown as Fetcher);
+  const today = deps.today ?? todayLocal();
+  const pastDays = deps.pastDays ?? 90;
+  const oldest = addDays(today, -pastDays);
+  const url =
+    `https://intervals.icu/api/v1/athlete/${encodeURIComponent(athleteId)}` +
+    `/activities?oldest=${oldest}&newest=${today}`;
+  // Same HTTP Basic scheme as the read/write paths.
+  const authToken = btoa(`API_KEY:${apiKey}`);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 10_000);
+  let res: { ok: boolean; status: number; json: () => Promise<unknown> };
+  try {
+    res = await fetcher(url, {
+      method: 'GET',
+      headers: { Authorization: `Basic ${authToken}`, Accept: 'application/json' },
+      signal: controller.signal,
+    });
+  } catch {
+    return { ok: false, reason: 'timeout' };
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!res.ok) return { ok: false, reason: 'http', status: res.status };
+
+  let body: unknown;
+  try {
+    body = await res.json();
+  } catch {
+    return { ok: false, reason: 'parse' };
+  }
+  if (!Array.isArray(body)) return { ok: false, reason: 'parse' };
+
+  const activities: CompletedActivity[] = [];
+  for (const raw of body as Record<string, unknown>[]) {
+    if (!raw || typeof raw !== 'object') continue;
+    // Never ingest our OWN exported lift activities back in (symmetry with
+    // the planned-event read path) — keeps this cache endurance-only.
+    if (isLiftCoachExport(raw)) continue;
+    const externalId = raw.id != null ? String(raw.id) : null;
+    const startLocal = str(raw.start_date_local);
+    if (!externalId || !startLocal) continue;
+    activities.push({
+      external_id: externalId,
+      date: startLocal.slice(0, 10), // verbatim civil date, no tz math
+      kind: kindOf(raw.type),
+      name: str(raw.name),
+      moving_time_sec: num(raw.moving_time),
+      elapsed_time_sec: num(raw.elapsed_time),
+      distance_m: num(raw.distance),
+      // intervals computes icu_average_watts; fall back to the Strava-style
+      // average_watts when only that is present.
+      average_watts: num(raw.icu_average_watts) ?? num(raw.average_watts),
+      weighted_avg_watts: num(raw.icu_weighted_avg_watts),
+      average_hr: num(raw.average_heartrate),
+      max_hr: num(raw.max_heartrate),
+      training_load: num(raw.icu_training_load),
+      intensity: num(raw.icu_intensity),
+      calories: num(raw.calories),
+      elevation_gain_m: num(raw.total_elevation_gain),
+      raw: JSON.stringify(raw),
+    });
+  }
+  return { ok: true, activities };
 }
 
 // ---- WRITE path: one-way lifting-load export ---------------------------

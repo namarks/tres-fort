@@ -46,6 +46,7 @@ struct DayAgendaView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     header(proj, today: today)
                     content(proj, today: today)
+                    completedActivitiesSection
                     ridesSection
                 }
                 .padding(22)
@@ -237,6 +238,89 @@ struct DayAgendaView: View {
                 }
             }
         }
+    }
+
+    // MARK: read-only completed activities (intervals.icu actuals)
+    //
+    // COMPLETED endurance activities (rides/runs) for this date, shown as
+    // "workouts completed" with the same basic stats the intervals.icu app
+    // shows: duration, power, heart rate, distance, elevation, load.
+    // READ-ONLY — recorded upstream, never editable here.
+
+    @ViewBuilder private var completedActivitiesSection: some View {
+        let dayActivities = sync.activities(on: dateString)   // non-deleted
+        if !dayActivities.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Theme.accent)
+                    Text("COMPLETED ACTIVITIES")
+                        .font(Theme.mono(11, .bold)).tracking(2)
+                        .foregroundStyle(Theme.muted)
+                }
+                ForEach(dayActivities) { activity in
+                    activityCard(activity)
+                }
+            }
+        }
+    }
+
+    /// A completed activity's title + the intervals.icu basic stats grid.
+    private func activityCard(_ a: ExternalActivity) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: a.glyph)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Theme.accent)
+                Text(a.displayTitle.uppercased())
+                    .font(Theme.display(20))
+                    .foregroundStyle(Theme.text)
+            }
+
+            let stats = activityStats(a)
+            if !stats.isEmpty {
+                LazyVGrid(
+                    columns: [
+                        GridItem(.flexible(), alignment: .leading),
+                        GridItem(.flexible(), alignment: .leading),
+                    ],
+                    alignment: .leading,
+                    spacing: 12
+                ) {
+                    ForEach(stats, id: \.label) { stat in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(stat.label.uppercased())
+                                .font(Theme.mono(9, .bold)).tracking(1)
+                                .foregroundStyle(Theme.dim)
+                            Text(stat.value)
+                                .font(Theme.mono(15, .bold))
+                                .foregroundStyle(Theme.text)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    /// The present (non-nil) basic stats, in display order — duration and
+    /// power and heart rate first (what the user explicitly asked for).
+    private func activityStats(_ a: ExternalActivity) -> [(label: String, value: String)] {
+        var out: [(label: String, value: String)] = []
+        if let v = a.durationLabel { out.append((label: "Duration", value: v)) }
+        if let v = a.distanceLabel { out.append((label: "Distance", value: v)) }
+        if let v = a.avgPowerLabel { out.append((label: "Avg Power", value: v)) }
+        if let v = a.normPowerLabel { out.append((label: "Norm Power", value: v)) }
+        if let v = a.hrLabel { out.append((label: "Heart Rate", value: v)) }
+        if let v = a.elevationLabel { out.append((label: "Elevation", value: v)) }
+        if let v = a.tssLabel { out.append((label: "Load", value: v)) }
+        if let v = a.caloriesLabel { out.append((label: "Calories", value: v)) }
+        return out
     }
 
     // MARK: read-only ride overlay

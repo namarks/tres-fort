@@ -4,7 +4,11 @@ import { authRoutes } from './routes/auth';
 import { apiRoutes } from './routes/api';
 import { mcpRoutes } from './mcp';
 import { oauthRoutes } from './oauth';
-import { syncExternalEvents, retryPendingLoadExports } from './db';
+import {
+  syncExternalActivities,
+  syncExternalEvents,
+  retryPendingLoadExports,
+} from './db';
 
 const app = new Hono<HonoEnv>();
 
@@ -23,13 +27,14 @@ app.onError((err, c) => {
 app.notFound((c) => c.json({ error: 'not_found' }, 404));
 
 /**
- * Cron entrypoint (wrangler triggers.crons). Two independent best-effort
- * jobs, each isolated so one's failure cannot affect the other:
+ * Cron entrypoint (wrangler triggers.crons). Three independent best-effort
+ * jobs, each isolated so one's failure cannot affect the others:
  *  1. reconcile the intervals.icu planned-event cache (ride awareness);
- *  2. retry any still-`pending` one-way lifting-load exports (Option C).
- * Both are dormant no-ops when INTERVALS_ICU_API_KEY is unset and NEVER
+ *  2. reconcile the intervals.icu completed-activity cache (workouts done);
+ *  3. retry any still-`pending` one-way lifting-load exports (Option C).
+ * All are dormant no-ops when INTERVALS_ICU_API_KEY is unset and NEVER
  * bump plans.version. exportSessionLoad audits its own attempts; the cache
- * sync is the audited-elsewhere manual path (refresh_rides).
+ * syncs are the audited-elsewhere manual path (refresh_rides).
  */
 async function scheduled(
   _event: ScheduledController,
@@ -44,6 +49,12 @@ async function scheduled(
         // A sync failure must never crash the scheduled handler — the
         // failed-fetch guard already left the cache untouched.
         console.error('scheduled syncExternalEvents failed', e);
+      }
+      try {
+        await syncExternalActivities(env.DB, env);
+      } catch (e) {
+        // Same isolation as the planned-event sync above.
+        console.error('scheduled syncExternalActivities failed', e);
       }
       try {
         // Idempotent: each retry routes back through the session_id-keyed

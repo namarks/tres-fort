@@ -1,10 +1,16 @@
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { fetchPlannedEvents, type Fetcher } from '../src/intervals';
+import {
+  fetchCompletedActivities,
+  fetchPlannedEvents,
+  type Fetcher,
+} from '../src/intervals';
 import {
   ensureOwnerUser,
+  getRecentActivities,
   getState,
   getUpcomingRides,
+  syncExternalActivities,
   syncExternalEvents,
 } from '../src/db';
 import type { Env } from '../src/types';
@@ -308,5 +314,241 @@ describe('FIX 3: tombstone advances synced_at so incremental clients see removal
     const full = await getState(env.DB, userId, 0, 0, 0);
     expect(full.external_events.some((e) => e.id === 'intervals:b')).toBe(false);
     expect(full.external_events.some((e) => e.id === 'intervals:a')).toBe(true);
+  });
+});
+
+// ---- completed activities (own consistency class; migrations/0015) --------
+
+// A canned intervals.icu /activities row. Mirrors the recorded-activity
+// shape (start_date_local + actuals). pastDays defaults to 90, so dates are
+// chosen to land BEFORE/at TODAY.
+const act = (over: Record<string, unknown>) => ({
+  id: 'a1',
+  type: 'Ride',
+  start_date_local: '2026-05-15T07:00:00',
+  name: 'Morning ride',
+  moving_time: 5400,
+  elapsed_time: 5700,
+  distance: 42000,
+  icu_average_watts: 185,
+  icu_weighted_avg_watts: 205,
+  average_heartrate: 142,
+  max_heartrate: 171,
+  icu_training_load: 88,
+  icu_intensity: 0.74,
+  calories: 760,
+  total_elevation_gain: 430,
+  ...over,
+});
+
+describe('fetchCompletedActivities — injected fetcher, never real network', () => {
+  it('dormant (no fetch, no error) when API key unset', async () => {
+    let called = false;
+    const spy: Fetcher = async () => {
+      called = true;
+      return { ok: true, status: 200, json: async () => [] };
+    };
+    const res = await fetchCompletedActivities(
+      { ...env, INTERVALS_ICU_API_KEY: undefined } as unknown as Env,
+      { fetcher: spy, today: TODAY },
+    );
+    expect(res).toEqual({ ok: false, reason: 'disabled' });
+    expect(called).toBe(false);
+  });
+
+  it('queries the /activities feed with a backward window', async () => {
+    let seenUrl = '';
+    const spy: Fetcher = async (url) => {
+      seenUrl = url;
+      return { ok: true, status: 200, json: async () => [] };
+    };
+    await fetchCompletedActivities(env as unknown as Env, {
+      fetcher: spy,
+      today: TODAY,
+      pastDays: 30,
+    });
+    expect(seenUrl).toContain('/activities?');
+    expect(seenUrl).toContain(`newest=${TODAY}`);
+    expect(seenUrl).toContain('oldest=2026-04-18'); // TODAY - 30d
+  });
+
+  it('parses 2xx, maps actuals, skips our own strength exports', async () => {
+    const res = await fetchCompletedActivities(env as unknown as Env, {
+      today: TODAY,
+      fetcher: payload([
+        act({ id: 'a1' }),
+        act({ id: 'a2', type: 'Run', start_date_local: '2026-05-16T05:30:00' }),
+        // our own exported lift — must be filtered out
+        { id: 'x', type: 'WeightTraining', start_date_local: '2026-05-14T18:00:00' },
+      ]),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.activities).toHaveLength(2);
+    expect(res.activities[0]).toMatchObject({
+      external_id: 'a1',
+      date: '2026-05-15',
+      kind: 'ride',
+      moving_time_sec: 5400,
+      distance_m: 42000,
+      average_watts: 185,
+      weighted_avg_watts: 205,
+      average_hr: 142,
+      max_hr: 171,
+      training_load: 88,
+      intensity: 0.74,
+      calories: 760,
+      elevation_gain_m: 430,
+    });
+    expect(res.activities[1]).toMatchObject({ external_id: 'a2', kind: 'run' });
+  });
+
+  it('falls back to average_watts when icu_average_watts is absent', async () => {
+    const res = await fetchCompletedActivities(env as unknown as Env, {
+      today: TODAY,
+      fetcher: payload([act({ id: 'a1', icu_average_watts: undefined, average_watts: 150 })]),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.activities[0]!.average_watts).toBe(150);
+  });
+
+  it('non-2xx → http; thrown → timeout', async () => {
+    expect(
+      await fetchCompletedActivities(env as unknown as Env, { fetcher: httpErr(503), today: TODAY }),
+    ).toEqual({ ok: false, reason: 'http', status: 503 });
+    expect(
+      await fetchCompletedActivities(env as unknown as Env, {
+        fetcher: timeoutFetcher,
+        today: TODAY,
+      }),
+    ).toEqual({ ok: false, reason: 'timeout' });
+  });
+});
+
+describe('syncExternalActivities — reconciled cache + failed-fetch guard', () => {
+  it('upserts completed activities on a successful sync', async () => {
+    const userId = await freshUser();
+    const r = await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'a1' }), act({ id: 'a2', start_date_local: '2026-05-10T06:00:00' })]),
+    } as any);
+    expect(r.status).toBe('ok');
+    expect(r.synced).toBe(2);
+    const rows = await getRecentActivities(env.DB, userId, { to: TODAY });
+    expect(rows.map((x) => x.id).sort()).toEqual([
+      'intervals:activity:a1',
+      'intervals:activity:a2',
+    ]);
+    expect(rows.find((x) => x.id === 'intervals:activity:a1')!.average_watts).toBe(185);
+  });
+
+  it('re-sync with changed actuals updates the same row in place', async () => {
+    const userId = await freshUser();
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'a1', icu_average_watts: 185 })]),
+    } as any);
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'a1', icu_average_watts: 999 })]),
+    } as any);
+    const rows = await getRecentActivities(env.DB, userId, { to: TODAY });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.average_watts).toBe(999);
+  });
+
+  it('an activity removed in intervals.icu is soft-deleted', async () => {
+    const userId = await freshUser();
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'a1' }), act({ id: 'a2', start_date_local: '2026-05-10T06:00:00' })]),
+    } as any);
+    const r = await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'a1' })]),
+    } as any);
+    expect(r.synced).toBe(1);
+    const live = await getRecentActivities(env.DB, userId, { to: TODAY });
+    expect(live.map((x) => x.id)).toEqual(['intervals:activity:a1']);
+    const dead = await env.DB.prepare(
+      "SELECT deleted_at FROM external_activities WHERE id='intervals:activity:a2'",
+    ).first<{ deleted_at: number | null }>();
+    expect(dead!.deleted_at).not.toBeNull();
+  });
+
+  it('CRITICAL GUARD: a 500 leaves the completed cache COMPLETELY untouched', async () => {
+    const userId = await freshUser();
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'a1' })]),
+    } as any);
+    const r = await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: httpErr(500),
+    } as any);
+    expect(r.status).toBe('fetch_failed');
+    const live = await getRecentActivities(env.DB, userId, { to: TODAY });
+    expect(live.map((x) => x.id)).toEqual(['intervals:activity:a1']);
+  });
+
+  it('dormant when key unset: status disabled, cache untouched', async () => {
+    const userId = await freshUser();
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'a1' })]),
+    } as any);
+    const r = await syncExternalActivities(
+      env.DB,
+      { ...env, INTERVALS_ICU_API_KEY: undefined } as unknown as Env,
+      { userId, today: TODAY } as any,
+    );
+    expect(r.status).toBe('disabled');
+    const live = await getRecentActivities(env.DB, userId, { to: TODAY });
+    expect(live).toHaveLength(1);
+  });
+
+  it('getState carries external_activities (full reload + incremental delta)', async () => {
+    const userId = await freshUser();
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'a1' })]),
+    } as any);
+
+    // Full reload (activities_since omitted/0) → present.
+    const full = await getState(env.DB, userId, 0, 0, 0, 0);
+    expect(full.external_activities.some((a) => a.id === 'intervals:activity:a1')).toBe(true);
+
+    // Pin an OLD cursor, then tombstone via an empty successful sync.
+    const OLD = 1000;
+    await env.DB.prepare(
+      "UPDATE external_activities SET synced_at=?1 WHERE id='intervals:activity:a1'",
+    )
+      .bind(OLD)
+      .run();
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([]),
+    } as any);
+
+    // Incremental (activities_since=OLD) → the tombstone reaches the client.
+    const incr = await getState(env.DB, userId, 0, 0, 0, OLD);
+    const tomb = incr.external_activities.find((a) => a.id === 'intervals:activity:a1');
+    expect(tomb).toBeDefined();
+    expect(tomb!.deleted_at).not.toBeNull();
+
+    // Full reload now excludes the tombstoned activity.
+    const after = await getState(env.DB, userId, 0, 0, 0, 0);
+    expect(after.external_activities.some((a) => a.id === 'intervals:activity:a1')).toBe(false);
   });
 });

@@ -198,6 +198,116 @@ struct ExternalEvent: Decodable, Identifiable, Equatable {
     }
 }
 
+/// A COMPLETED endurance activity (e.g. an intervals.icu recorded ride or
+/// run) surfaced read-only in the lift calendar as a "workout completed".
+/// FROZEN CONTRACT — wire shape mirrors the backend exactly (see
+/// migrations/0015); the app NEVER writes these.
+///
+/// Wire shape (a NEW array alongside `external_events` in `/api/state`):
+///   { "id": "intervals:activity:{id}", "source": "intervals",
+///     "external_id": "{id}", "date": "YYYY-MM-DD",
+///     "kind": "ride|run|swim|other", "name": "...",
+///     "moving_time_sec": 5400, "elapsed_time_sec": 5700,
+///     "distance_m": 42000, "average_watts": 185,
+///     "weighted_avg_watts": 205, "average_hr": 142, "max_hr": 171,
+///     "training_load": 88, "intensity": 0.74, "calories": 760,
+///     "elevation_gain_m": 430, "synced_at": ..., "deleted_at": null }
+///
+/// `deleted_at` non-null ⇒ tombstoned and must be hidden. All actuals are
+/// optional: a thin/older payload still decodes.
+struct ExternalActivity: Decodable, Identifiable, Equatable {
+    let id: String
+    let source: String
+    let external_id: String
+    let date: String                 // YYYY-MM-DD (device-local civil date)
+    let kind: String                 // ride / run / swim / other
+    let name: String?
+    let moving_time_sec: Int?
+    let elapsed_time_sec: Int?
+    let distance_m: Double?
+    let average_watts: Double?
+    let weighted_avg_watts: Double?  // normalized power
+    let average_hr: Double?
+    let max_hr: Int?
+    let training_load: Int?          // TSS
+    let intensity: Double?           // IF
+    let calories: Int?
+    let elevation_gain_m: Double?
+    let synced_at: Int?
+    let deleted_at: Int?             // non-null ⇒ hidden
+
+    /// A tombstoned activity must never be shown.
+    var isDeleted: Bool { deleted_at != nil }
+
+    /// Display title, falling back to a humanised kind when absent.
+    var displayTitle: String {
+        if let n = name, !n.isEmpty { return n }
+        return kind.capitalized
+    }
+
+    /// SF Symbol per activity kind (calendar glyph + agenda header).
+    var glyph: String {
+        switch kind {
+        case "ride": return "bicycle"
+        case "run":  return "figure.run"
+        case "swim": return "figure.pool.swim"
+        default:     return "figure.mixed.cardio"
+        }
+    }
+
+    /// "1h 30m" / "45m" from `moving_time_sec` (nil → nil).
+    var durationLabel: String? {
+        guard let s = moving_time_sec, s > 0 else { return nil }
+        let h = s / 3600
+        let m = (s % 3600) / 60
+        if h > 0 { return m > 0 ? "\(h)h \(m)m" : "\(h)h" }
+        return "\(m)m"
+    }
+
+    /// Distance in miles ("26.1 mi") — the athlete is US-based.
+    var distanceLabel: String? {
+        guard let m = distance_m, m > 0 else { return nil }
+        return String(format: "%.1f mi", m / 1609.344)
+    }
+
+    var avgPowerLabel: String? {
+        guard let w = average_watts, w > 0 else { return nil }
+        return "\(Int(w.rounded())) W"
+    }
+
+    var normPowerLabel: String? {
+        guard let w = weighted_avg_watts, w > 0 else { return nil }
+        return "\(Int(w.rounded())) W"
+    }
+
+    /// "142 / 171 bpm" — omits max when absent; nil when no HR at all.
+    var hrLabel: String? {
+        let avg = (average_hr ?? 0) > 0 ? Int(average_hr!.rounded()) : nil
+        let mx = (max_hr ?? 0) > 0 ? max_hr! : nil
+        if let a = avg, let x = mx { return "\(a) / \(x) bpm" }
+        if let a = avg { return "\(a) bpm" }
+        if let x = mx { return "\(x) bpm" }
+        return nil
+    }
+
+    /// Elevation in feet ("1,410 ft").
+    var elevationLabel: String? {
+        guard let m = elevation_gain_m, m > 0 else { return nil }
+        let ft = Int((m * 3.28084).rounded())
+        return "\(ft) ft"
+    }
+
+    var tssLabel: String? {
+        guard let t = training_load, t > 0 else { return nil }
+        return "\(t) TSS"
+    }
+
+    var caloriesLabel: String? {
+        guard let c = calories, c > 0 else { return nil }
+        return "\(c) cal"
+    }
+}
+
 struct StateResponse: Decodable {
     let plan: PlanTree?
     let plan_version: Int
@@ -207,10 +317,14 @@ struct StateResponse: Decodable {
     /// overlay). Absent or empty in older/thin payloads → `[]`, never a
     /// decode failure.
     let external_events: [ExternalEvent]
+    /// NEW (FROZEN CONTRACT): completed endurance activities (read-only
+    /// "workouts completed"). Same defensive decode as external_events.
+    let external_activities: [ExternalActivity]
     let server_time: Int
 
     private enum CodingKeys: String, CodingKey {
-        case plan, plan_version, sessions, sets, external_events, server_time
+        case plan, plan_version, sessions, sets
+        case external_events, external_activities, server_time
     }
 
     init(from decoder: Decoder) throws {
@@ -222,6 +336,9 @@ struct StateResponse: Decodable {
         // Absent key OR JSON null → no rides (defensive, never throws).
         external_events =
             (try? c.decodeIfPresent([ExternalEvent].self, forKey: .external_events))
+            .flatMap { $0 } ?? []
+        external_activities =
+            (try? c.decodeIfPresent([ExternalActivity].self, forKey: .external_activities))
             .flatMap { $0 } ?? []
         server_time = try c.decode(Int.self, forKey: .server_time)
     }

@@ -25,6 +25,11 @@ final class SyncModel: ObservableObject {
     @Published var exerciseIndex = 0
     @Published var weight: Double = 0
     @Published var reps: Int = 0
+    /// Exercise ids the user explicitly skipped this session. A skip is
+    /// honored for the rest of the workout — the exercise is NOT requeued
+    /// (#3). In-memory + per-session: cleared on startWorkout; logging a set
+    /// for a skipped exercise un-skips it (you came back and did it).
+    @Published var skipped: Set<String> = []
 
     // Timers.
     @Published var workoutStart: Date?      // whole-session stopwatch
@@ -209,6 +214,7 @@ final class SyncModel: ObservableObject {
         running = true
         finished = false
         exerciseIndex = 0
+        skipped = []
         workoutStart = Date()
         seedInputs()
     }
@@ -221,7 +227,9 @@ final class SyncModel: ObservableObject {
         setClock = Date()
         guard let ex = currentExercise else { return }
         let last = lastWorkingSet(ex.exercise_id)
-        weight = last?.weight ?? ex.target_weight ?? 45
+        // Bodyweight exercises have no weight input (#2); seed 0 so the
+        // hidden field never logs a phantom default (45) as added load.
+        weight = ex.isBodyweight ? (last?.weight ?? 0) : (last?.weight ?? ex.target_weight ?? 45)
         reps = last?.reps ?? ex.target_reps
     }
 
@@ -240,6 +248,7 @@ final class SyncModel: ObservableObject {
         guard let ex = currentExercise, timedActive else { return }
         timedActive = false
         timedEndDate = nil
+        skipped.remove(ex.exercise_id)   // logging work un-skips it
         await logSet(ex, weight: 0, reps: held, durationOverride: held)
         if isComplete(ex) {
             if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
@@ -251,16 +260,21 @@ final class SyncModel: ObservableObject {
 
     func setsDone(_ ex: TemplateExercise) -> Int { todaySets(ex.exercise_id).count }
     func isComplete(_ ex: TemplateExercise) -> Bool { setsDone(ex) >= ex.target_sets }
+    func isSkipped(_ ex: TemplateExercise) -> Bool { skipped.contains(ex.exercise_id) }
+    /// "Resolved" = nothing left to do here: either completed or skipped.
+    /// Drives requeue/finish so a skipped exercise is never auto-represented.
+    func isResolved(_ ex: TemplateExercise) -> Bool { isComplete(ex) || isSkipped(ex) }
     var allComplete: Bool { !exercises.isEmpty && exercises.allSatisfy { isComplete($0) } }
 
-    /// First not-yet-complete exercise after the current one (wraps), so a
-    /// completed lift never traps you and order is flexible.
+    /// First UNRESOLVED exercise after the current one (wraps), so a
+    /// completed-or-skipped lift never traps you and order is flexible.
+    /// Skipped exercises are excluded — they do not requeue (#3).
     var nextIncompleteIndex: Int? {
         let n = exercises.count
         guard n > 0 else { return nil }
         for offset in 1...n {
             let i = (exerciseIndex + offset) % n
-            if !isComplete(exercises[i]) { return i }
+            if !isResolved(exercises[i]) { return i }
         }
         return nil
     }
@@ -273,6 +287,7 @@ final class SyncModel: ObservableObject {
 
     func logCurrentSet() async {
         guard let ex = currentExercise else { return }
+        skipped.remove(ex.exercise_id)   // logging work un-skips it
         await logSet(ex, weight: weight, reps: reps)   // also starts rest timer
         if isComplete(ex) {
             if let next = nextIncompleteIndex { jump(to: next) }
@@ -280,12 +295,12 @@ final class SyncModel: ObservableObject {
         }
     }
 
-    /// Manual "move on" — next exercise in order; falls back to any
-    /// remaining work, else ends.
+    /// Manual "move on" — marks the current exercise skipped for this
+    /// session (so it is NOT requeued, #3) and advances to the next
+    /// unresolved exercise; ends the workout if none remain.
     func skip() {
-        if exerciseIndex + 1 < exercises.count { jump(to: exerciseIndex + 1) }
-        else if let next = nextIncompleteIndex { jump(to: next) }
-        else { finished = true }
+        if let ex = currentExercise { skipped.insert(ex.exercise_id) }
+        if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
     }
 
     func previous() {

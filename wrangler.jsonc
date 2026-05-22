@@ -1,6 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "lift-coach",
+  // Pin the account so wrangler never has to resolve it via the /accounts
+  // control-plane endpoint, which intermittently 503s during Cloudflare
+  // dashboard incidents and would otherwise fail every deploy/migrate/dev.
+  // This is an identifier, not a secret (it appears in dashboard URLs).
+  "account_id": "f8d78ce7cbf48da4f2a3ac9d9a63a5d5",
   "main": "src/index.ts",
   "compatibility_date": "2024-12-30",
   "compatibility_flags": ["nodejs_compat"],

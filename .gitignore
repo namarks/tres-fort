@@ -23,3 +23,4 @@ ios/fastlane/test_output/
 # Ruby (fastlane gems) — Gemfile.lock IS checked in for reproducibility
 ios/.bundle/
 ios/vendor/bundle/
+.env

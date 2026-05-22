@@ -160,6 +160,59 @@ export interface PlannedEvent {
   raw: string; // source JSON for this event
 }
 
+// ---- completed activities (frozen contract — see migrations/0015) ---------
+
+/**
+ * Server-owned reconciled cache of COMPLETED endurance activities pulled
+ * from intervals.icu (the actuals: duration, power, HR, distance, TSS).
+ * Parallel to ExternalEventRow but a SEPARATE consistency class: completed
+ * (past) actuals, never the planned (future) conflict-awareness feed.
+ * Soft-deleted only; a sync never bumps plans.version.
+ */
+export interface ExternalActivityRow {
+  id: string; // "intervals:activity:{external_id}"
+  user_id: string;
+  source: string; // 'intervals'
+  external_id: string;
+  date: string; // YYYY-MM-DD from start_date_local, verbatim
+  kind: string; // ride|run|swim|other
+  name: string | null;
+  moving_time_sec: number | null;
+  elapsed_time_sec: number | null;
+  distance_m: number | null;
+  average_watts: number | null;
+  weighted_avg_watts: number | null; // normalized power
+  average_hr: number | null;
+  max_hr: number | null;
+  training_load: number | null; // TSS-like
+  intensity: number | null; // IF
+  calories: number | null;
+  elevation_gain_m: number | null;
+  raw: string | null;
+  synced_at: number; // epoch-ms
+  deleted_at: number | null;
+}
+
+/** A normalized completed activity as returned by the intervals.icu fetcher. */
+export interface CompletedActivity {
+  external_id: string;
+  date: string; // start_date_local YYYY-MM-DD verbatim
+  kind: string; // ride|run|swim|other
+  name: string | null;
+  moving_time_sec: number | null;
+  elapsed_time_sec: number | null;
+  distance_m: number | null;
+  average_watts: number | null;
+  weighted_avg_watts: number | null;
+  average_hr: number | null;
+  max_hr: number | null;
+  training_load: number | null;
+  intensity: number | null;
+  calories: number | null;
+  elevation_gain_m: number | null;
+  raw: string; // source JSON for this activity
+}
+
 /** Per-date conflict between lift sessions/projections and external events. */
 export interface DayConflict {
   date: string;

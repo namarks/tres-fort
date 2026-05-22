@@ -8,6 +8,9 @@ final class SyncModel: ObservableObject {
     /// Read-only ride overlay (intervals.icu etc). Already filtered to
     /// non-deleted events — the rest of the app never sees tombstones.
     @Published var rides: [ExternalEvent] = []
+    /// Read-only COMPLETED endurance activities (intervals.icu actuals),
+    /// shown as "workouts completed". Already filtered to non-deleted.
+    @Published var activities: [ExternalActivity] = []
     @Published var catalog: [ExerciseCatalog] = []
     @Published var todaySession: SessionRow?
     @Published var selectedDayID: String?
@@ -72,6 +75,8 @@ final class SyncModel: ObservableObject {
             // defensively drop any tombstoned events at the cache boundary
             // so glyphs, agenda, and conflict detection never see them.
             rides = state.external_events.filter { !$0.isDeleted }
+            // Same full-replace + tombstone-drop boundary as `rides`.
+            activities = state.external_activities.filter { !$0.isDeleted }
             todaySession = state.sessions.first { $0.date == todayString }
             if selectedDayID == nil { selectedDayID = state.plan?.days.first?.id }
             if catalog.isEmpty {
@@ -413,6 +418,11 @@ final class SyncModel: ObservableObject {
     /// Non-deleted external events for a `YYYY-MM-DD` date (read-only).
     func rides(on dateString: String) -> [ExternalEvent] {
         rides.filter { !$0.isDeleted && $0.date == dateString }
+    }
+
+    /// Non-deleted COMPLETED activities for a `YYYY-MM-DD` date (read-only).
+    func activities(on dateString: String) -> [ExternalActivity] {
+        activities.filter { !$0.isDeleted && $0.date == dateString }
     }
 
     /// True if this calendar date carries a lift (real session OR a

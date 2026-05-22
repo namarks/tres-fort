@@ -5,6 +5,7 @@ import type {
   DayTemplateRow,
   EnrichedTemplateExercise,
   Env,
+  ExternalActivityRow,
   ExternalEventRow,
   PlanMeta,
   PlanRow,
@@ -19,8 +20,10 @@ import type {
 } from './types';
 import { WEEKDAYS, parsePlanMeta, serializePlanMeta } from './types';
 import {
+  fetchCompletedActivities,
   fetchPlannedEvents,
   pushStrengthActivity,
+  type ActivityFetchDeps,
   type FetchDeps,
   type Fetcher,
 } from './intervals';
@@ -974,6 +977,7 @@ export async function getState(
   sincePlanVersion: number,
   setsSince: number,
   eventsSince = 0,
+  activitiesSince = 0,
 ) {
   const plan = await getActivePlan(db, userId);
   const baseTree =
@@ -1028,12 +1032,34 @@ export async function getState(
           )
           .bind(userId)
           .all<ExternalEventRow>();
+  // external_activities ride their OWN watermark (activities_since), exactly
+  // like external_events: a separate server-owned reconciled cache (COMPLETED
+  // endurance actuals), never gated on plans.version. Same two modes:
+  //  - FULL RELOAD  (activities_since absent/0): full current non-deleted set
+  //    (full replace on the client — no tombstones to reconcile).
+  //  - INCREMENTAL  (activities_since > 0): every row touched since the cursor
+  //    INCLUDING soft-deleted ones, so a syncing client learns about removals.
+  const activities =
+    activitiesSince > 0
+      ? await db
+          .prepare(
+            'SELECT * FROM external_activities WHERE user_id = ?1 AND synced_at > ?2 ORDER BY synced_at',
+          )
+          .bind(userId, activitiesSince)
+          .all<ExternalActivityRow>()
+      : await db
+          .prepare(
+            'SELECT * FROM external_activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY date',
+          )
+          .bind(userId)
+          .all<ExternalActivityRow>();
   return {
     plan: tree,
     plan_version: plan?.version ?? 0,
     sessions: sessions.results,
     sets: sets.results,
     external_events: events.results,
+    external_activities: activities.results,
     server_time: now(),
   };
 }
@@ -3025,6 +3051,171 @@ export async function getUpcomingRides(
     )
     .bind(userId, from, to)
     .all<ExternalEventRow>();
+  return r.results;
+}
+
+// ---- completed activities (own consistency class; see migrations/0015) ----
+//
+// PARALLEL to syncExternalEvents/getUpcomingRides but for COMPLETED, PAST
+// recorded activities (the intervals.icu actuals) instead of planned events.
+// Same server-owned reconciled-cache discipline: failed/disabled fetch =>
+// cache left COMPLETELY untouched; only a successful window soft-deletes the
+// in-window rows that vanished. Never bumps plans.version; never writes notes.
+
+export interface ActivitySyncDeps extends ActivityFetchDeps {
+  /** Override the user id (defaults to the single owner). */
+  userId?: string;
+  /** Allow injecting the env-resolved owner sub (tests). */
+  ownerSub?: string;
+}
+
+/**
+ * Pull intervals.icu completed activities and reconcile the cache.
+ *
+ * Window is BACKWARD: [today-pastDays, today]. On a failed/disabled fetch the
+ * cache is left untouched (a transient outage must never wipe completed-
+ * activity history). On a successful sync, in-window rows not present in the
+ * fetched set are soft-deleted (an activity deleted in intervals.icu) — with
+ * synced_at advanced to the deletion time so incremental clients see it
+ * (the FIX 3 tombstone rule, same as external_events).
+ */
+export async function syncExternalActivities(
+  db: D1Database,
+  env: Env,
+  deps: ActivitySyncDeps = {},
+): Promise<SyncResult> {
+  const userId =
+    deps.userId ?? (await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB)).id;
+  const today = deps.today ?? new Date().toISOString().slice(0, 10);
+  const pastDays = deps.pastDays ?? 90;
+
+  const fetched = await fetchCompletedActivities(env, { ...deps, today, pastDays });
+  if (!fetched.ok) {
+    return {
+      status: fetched.reason === 'disabled' ? 'disabled' : 'fetch_failed',
+      synced: 0,
+      detail:
+        fetched.reason +
+        (fetched.reason === 'http' && 'status' in fetched ? `:${fetched.status}` : ''),
+    };
+  }
+
+  const oldest = addDays(today, -pastDays);
+  const ts = now();
+  const seen = new Set<string>();
+  const stmts: D1PreparedStatement[] = [];
+
+  for (const a of fetched.activities) {
+    const id = `intervals:activity:${a.external_id}`;
+    seen.add(id);
+    stmts.push(
+      db
+        .prepare(
+          `INSERT INTO external_activities
+             (id,user_id,source,external_id,date,kind,name,
+              moving_time_sec,elapsed_time_sec,distance_m,average_watts,
+              weighted_avg_watts,average_hr,max_hr,training_load,intensity,
+              calories,elevation_gain_m,raw,synced_at,deleted_at)
+           VALUES (?1,?2,'intervals',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,
+                   ?15,?16,?17,?18,?19,NULL)
+           ON CONFLICT(id) DO UPDATE SET
+             date=excluded.date,
+             kind=excluded.kind,
+             name=excluded.name,
+             moving_time_sec=excluded.moving_time_sec,
+             elapsed_time_sec=excluded.elapsed_time_sec,
+             distance_m=excluded.distance_m,
+             average_watts=excluded.average_watts,
+             weighted_avg_watts=excluded.weighted_avg_watts,
+             average_hr=excluded.average_hr,
+             max_hr=excluded.max_hr,
+             training_load=excluded.training_load,
+             intensity=excluded.intensity,
+             calories=excluded.calories,
+             elevation_gain_m=excluded.elevation_gain_m,
+             raw=excluded.raw,
+             synced_at=excluded.synced_at,
+             deleted_at=NULL`,
+        )
+        .bind(
+          id,
+          userId,
+          a.external_id,
+          a.date,
+          a.kind,
+          a.name,
+          a.moving_time_sec,
+          a.elapsed_time_sec,
+          a.distance_m,
+          a.average_watts,
+          a.weighted_avg_watts,
+          a.average_hr,
+          a.max_hr,
+          a.training_load,
+          a.intensity,
+          a.calories,
+          a.elevation_gain_m,
+          a.raw,
+          ts,
+        ),
+    );
+  }
+
+  // Soft-delete in-window rows not seen this sync (advancing synced_at so the
+  // tombstone reaches incremental clients). Rows outside [oldest,today] are
+  // left alone (we didn't query them).
+  const seenIds = [...seen];
+  const placeholders = seenIds.map((_, i) => `?${i + 4}`).join(',');
+  const notInSeen = seenIds.length ? `AND id NOT IN (${placeholders})` : '';
+  stmts.push(
+    db
+      .prepare(
+        `UPDATE external_activities
+            SET deleted_at = ?3, synced_at = ?3
+          WHERE user_id = ?1
+            AND deleted_at IS NULL
+            AND date >= ?2 AND date <= ?${seenIds.length ? seenIds.length + 4 : 4}
+            ${notInSeen}`,
+      )
+      .bind(userId, oldest, ts, ...seenIds, today),
+  );
+
+  await db.batch(stmts);
+
+  const cnt = await db
+    .prepare(
+      `SELECT COUNT(*) AS c FROM external_activities
+        WHERE user_id = ?1 AND deleted_at IS NULL
+          AND date >= ?2 AND date <= ?3`,
+    )
+    .bind(userId, oldest, today)
+    .first<{ c: number }>();
+  return { status: 'ok', synced: cnt?.c ?? 0 };
+}
+
+/**
+ * Non-deleted completed activities for a user, most-recent first. `range` is
+ * an inclusive day count back from `to` (default: last 90 days). `limit`
+ * caps the result (default 50).
+ */
+export async function getRecentActivities(
+  db: D1Database,
+  userId: string,
+  opts: { to?: string; range?: number; limit?: number } = {},
+): Promise<ExternalActivityRow[]> {
+  const to = opts.to ?? new Date().toISOString().slice(0, 10);
+  const from = addDays(to, -(opts.range ?? 90));
+  const limit = Math.max(1, Math.min(500, opts.limit ?? 50));
+  const r = await db
+    .prepare(
+      `SELECT * FROM external_activities
+        WHERE user_id = ?1 AND deleted_at IS NULL
+          AND date >= ?2 AND date <= ?3
+        ORDER BY date DESC
+        LIMIT ?4`,
+    )
+    .bind(userId, from, to, limit)
+    .all<ExternalActivityRow>();
   return r.results;
 }
 

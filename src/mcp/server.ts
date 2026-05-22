@@ -17,6 +17,7 @@ import {
   getLastCompletedSession,
   getOrCreateSession,
   getPlanTree,
+  getRecentActivities,
   getRecentSessions,
   getResolvedScheduleNames,
   getRideConflicts,
@@ -38,6 +39,7 @@ import {
   skipPlannedSession,
   todayInTz,
   swapExercise,
+  syncExternalActivities,
   syncExternalEvents,
   updateExercise,
   updatePlanTree,
@@ -863,14 +865,59 @@ const TOOLS: Record<string, Tool> = {
   },
   refresh_rides: {
     description:
-      'Force an immediate refresh of the planned cycling/endurance calendar from intervals.icu (the cron also does this every 6h). Returns how many upcoming rides are cached and the sync status. Does NOT change the training plan or its version. No-op if the intervals.icu integration is not configured.',
+      'Force an immediate refresh from intervals.icu (the cron also does this every 6h): both the PLANNED cycling/endurance calendar (upcoming rides) AND the COMPLETED activity feed (rides/runs you finished, with their actual duration/power/HR). Returns how many of each are cached and the sync status. Does NOT change the training plan or its version. No-op if the intervals.icu integration is not configured.',
     inputSchema: obj({}),
-    // An action → audited. Reconciled cache only: NO plans.version bump and
+    // An action → audited. Reconciled caches only: NO plans.version bump and
     // (no `note`) NO notes row.
     write: true,
     handler: async (_a, env, userId) => {
       const r = await syncExternalEvents(env.DB, env, { userId });
-      return { synced: r.synced, status: r.status, ...(r.detail ? { detail: r.detail } : {}) };
+      const a = await syncExternalActivities(env.DB, env, { userId });
+      return {
+        rides: { synced: r.synced, status: r.status, ...(r.detail ? { detail: r.detail } : {}) },
+        activities: {
+          synced: a.synced,
+          status: a.status,
+          ...(a.detail ? { detail: a.detail } : {}),
+        },
+      };
+    },
+  },
+  get_recent_activities: {
+    description:
+      'Get COMPLETED endurance activities recorded in intervals.icu (rides, runs, swims) with their actuals: duration, average/normalized power, average/max heart rate, distance, elevation, TSS. `range` is a day count back from today (default 30, max 365); `limit` caps the count (default 20). Use this to see what endurance work has actually been done when coaching around lifting.',
+    inputSchema: obj(
+      {
+        range: { type: 'integer', minimum: 1, maximum: 365, description: 'days back (default 30)' },
+        limit: { type: 'integer', minimum: 1, maximum: 200, description: 'max results (default 20)' },
+      },
+      [],
+    ),
+    handler: async (a, env, userId) => {
+      const range = typeof a.range === 'number' ? Math.min(365, Math.max(1, a.range)) : 30;
+      const limit = typeof a.limit === 'number' ? Math.min(200, Math.max(1, a.limit)) : 20;
+      const today = await ownerToday(env, userId);
+      const acts = await getRecentActivities(env.DB, userId, { to: today, range, limit });
+      return {
+        to: today,
+        range,
+        activities: acts.map((x) => ({
+          id: x.id,
+          date: x.date,
+          kind: x.kind,
+          name: x.name,
+          moving_time_sec: x.moving_time_sec,
+          distance_m: x.distance_m,
+          average_watts: x.average_watts,
+          weighted_avg_watts: x.weighted_avg_watts,
+          average_hr: x.average_hr,
+          max_hr: x.max_hr,
+          training_load: x.training_load,
+          intensity: x.intensity,
+          calories: x.calories,
+          elevation_gain_m: x.elevation_gain_m,
+        })),
+      };
     },
   },
 };
@@ -897,6 +944,13 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
   const horizon = addDaysIso(today, 28);
   const rides = await getUpcomingRides(env.DB, userId, { from: today, range: 28 });
   const conflicts = await getRideConflicts(env.DB, userId, today, horizon, today);
+  // Completed endurance actuals (last 14d) so the coach sees real ride/run
+  // load without an extra call. Empty when the integration is dormant.
+  const recentActivities = await getRecentActivities(env.DB, userId, {
+    to: today,
+    range: 14,
+    limit: 10,
+  });
   const brief = {
     today,
     active_plan: tree
@@ -942,6 +996,17 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
       planned_duration_sec: r.planned_duration_sec,
     })),
     ride_conflicts: conflicts,
+    // Recently COMPLETED endurance work (actuals from intervals.icu).
+    recent_activities: recentActivities.map((a) => ({
+      date: a.date,
+      kind: a.kind,
+      name: a.name,
+      moving_time_sec: a.moving_time_sec,
+      distance_m: a.distance_m,
+      average_watts: a.average_watts,
+      average_hr: a.average_hr,
+      training_load: a.training_load,
+    })),
   };
   return [
     '# lift-coach — current state',

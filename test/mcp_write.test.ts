@@ -141,7 +141,7 @@ describe('mcp write tools', () => {
     expect(reason?.body).toContain('reduce_volume');
   });
 
-  it('refresh_rides: audited, returns {synced,status}, NO version bump, NO note', async () => {
+  it('refresh_rides: audited, returns {rides,activities}, NO version bump, NO note', async () => {
     // Establish a plan so there is a version to watch.
     const built = await call('update_plan', {
       name: 'Ride Refresh',
@@ -163,12 +163,16 @@ describe('mcp write tools', () => {
     )!.c;
 
     // In the offline test runtime the real intervals.icu fetch cannot
-    // connect, so the sync returns the failed-fetch guard status WITHOUT
-    // touching the cache. The tool still returns {synced,status}.
+    // connect, so both syncs return the failed-fetch guard status WITHOUT
+    // touching the caches. The tool returns {rides,activities}, each a
+    // {synced,status} pair (planned events + completed activities).
     const r = await call('refresh_rides', {});
-    expect(r).toHaveProperty('status');
-    expect(r).toHaveProperty('synced');
-    expect(['ok', 'fetch_failed', 'disabled']).toContain(r.status);
+    expect(r.rides).toHaveProperty('status');
+    expect(r.rides).toHaveProperty('synced');
+    expect(r.activities).toHaveProperty('status');
+    expect(r.activities).toHaveProperty('synced');
+    expect(['ok', 'fetch_failed', 'disabled']).toContain(r.rides.status);
+    expect(['ok', 'fetch_failed', 'disabled']).toContain(r.activities.status);
 
     // Audited (action), but NO plan-version bump and NO claude notes row.
     const auditAfter = (

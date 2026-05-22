@@ -5,6 +5,7 @@ import { sign, verify } from 'hono/jwt';
 import { createMiddleware } from 'hono/factory';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type { HonoEnv } from './types';
+import { setUserTimezoneIfChanged } from './db';
 
 const APPLE_ISS = 'https://appleid.apple.com';
 const APP_JWT_TTL_SECONDS = 60 * 60 * 24 * 60; // 60 days
@@ -51,6 +52,12 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
   } catch {
     return c.json({ error: 'invalid_token' }, 401);
   }
+  // The device sends its IANA timezone on EVERY authenticated request, so
+  // "today" on the MCP side tracks the user across zones even when they only
+  // do non-/state actions (logging sets) after travelling. Best-effort:
+  // setUserTimezoneIfChanged only writes on change and ignores invalid values.
+  const tz = c.req.header('X-Device-TZ');
+  if (tz) await setUserTimezoneIfChanged(c.env.DB, c.get('userId'), tz);
   await next();
 });
 

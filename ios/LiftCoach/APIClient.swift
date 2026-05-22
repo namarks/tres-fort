@@ -77,6 +77,7 @@ struct APIClient {
         var req = URLRequest(url: URL(string: baseURL.absoluteString + "/" + path)!)
         req.httpMethod = "GET"
         req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
         return try await send(req)
     }
 
@@ -85,6 +86,7 @@ struct APIClient {
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let jwt { req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization") }
+        req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
         req.httpBody = try JSONSerialization.data(
             withJSONObject: body.compactMapValues { $0 is NSNull ? nil : $0 })
         return try await send(req)
@@ -95,6 +97,7 @@ struct APIClient {
         req.httpMethod = "PATCH"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         return try await send(req)
     }

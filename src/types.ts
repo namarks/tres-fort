@@ -30,6 +30,8 @@ export interface User {
   email: string | null;
   display_name: string | null;
   created_at: number;
+  /** Device-reported IANA timezone (e.g. America/Los_Angeles); null until first sync. */
+  timezone: string | null;
 }
 
 export interface PlanRow {

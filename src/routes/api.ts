@@ -27,6 +27,9 @@ apiRoutes.use('*', requireAppJwt);
 const todayLocal = () => new Date().toISOString().slice(0, 10);
 
 // ---- sync pull -----------------------------------------------------------
+// Device timezone (X-Device-TZ) is captured for EVERY authenticated request
+// in the requireAppJwt middleware, so it stays fresh even on non-/state
+// actions after the user travels — not handled here anymore.
 apiRoutes.get('/state', async (c) => {
   const userId = c.get('userId');
   const since = Number(c.req.query('since') ?? 0);

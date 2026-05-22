@@ -87,7 +87,11 @@ private struct ExerciseDetailView: View {
 
                 chartCard("ESTIMATED 1RM", hist) { s in s.est1RM }
 
-                if hist.contains(where: { $0.avgDuration > 0 }) {
+                // Only timed holds have a meaningful set duration. Rep sets
+                // logged before #30 still carry an incidental wall-clock
+                // duration in the DB, so gate this chart on modality, not
+                // just avgDuration > 0.
+                if sync.isTimedExercise(exerciseID), hist.contains(where: { $0.avgDuration > 0 }) {
                     chartCard("AVG SET DURATION (s)", hist) { Double($0.avgDuration) }
                 }
 
@@ -98,13 +102,9 @@ private struct ExerciseDetailView: View {
                             .foregroundStyle(Theme.muted)
                         ForEach(lastSessionSets(last.id)) { s in
                             HStack {
-                                Text("\(fmtW(s.weight)) × \(s.reps)")
+                                Text(s.valueLabel(timed: sync.isTimedExercise(exerciseID)))
                                     .font(Theme.mono(14)).foregroundStyle(Theme.text)
                                 Spacer()
-                                if let d = s.duration_s, d > 0 {
-                                    Text("\(d)s").font(Theme.mono(12))
-                                        .foregroundStyle(Theme.muted)
-                                }
                             }
                             .padding(.vertical, 8)
                             .overlay(alignment: .bottom) { Divider().overlay(Theme.surface2) }

@@ -134,6 +134,22 @@ struct SetLog: Decodable, Identifiable {
     let deleted_at: Int?
 }
 
+extension SetLog {
+    /// One-line value for a logged set: a timed hold reads "45s"; a bodyweight
+    /// rep set reads "BW × 6"; a weighted set reads "85 × 5". `timed` is the
+    /// exercise's catalog modality — a SetLog carries none, so the caller
+    /// resolves it (see SyncModel.isTimedExercise). The old guess of
+    /// "duration_s > 0 && weight == 0" wrongly rendered bodyweight reps
+    /// (pull-ups, which also recorded an incidental wall-clock duration) as
+    /// seconds. #30
+    func valueLabel(timed: Bool) -> String {
+        if timed, let d = duration_s, d > 0 { return "\(d)s" }
+        if weight == 0 { return "BW × \(reps)" }
+        let w = weight.rounded() == weight ? String(Int(weight)) : String(format: "%.1f", weight)
+        return "\(w) × \(reps)"
+    }
+}
+
 struct ExerciseCatalog: Decodable, Identifiable {
     let id: String
     let name: String

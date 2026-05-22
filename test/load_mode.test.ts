@@ -38,7 +38,13 @@ describe('load_mode (per-hand dumbbell lifts)', () => {
     expect(all.every((e: { load_mode?: string }) => typeof e.load_mode === 'string')).toBe(true);
     const byId = Object.fromEntries(all.map((e: { id: string }) => [e.id, e]));
 
-    for (const exId of ['ex_db_curl', 'ex_db_ohp', 'ex_lateral_raise', 'ex_incline_db_press']) {
+    for (const exId of [
+      'ex_db_press', // flat DB bench — the most common two-DB lift
+      'ex_db_curl',
+      'ex_db_ohp',
+      'ex_lateral_raise',
+      'ex_incline_db_press',
+    ]) {
       expect(byId[exId]?.load_mode).toBe('per_hand');
     }
     // Single-implement / barbell / one-arm stay total.

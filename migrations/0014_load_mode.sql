@@ -14,6 +14,7 @@
 ALTER TABLE exercises ADD COLUMN load_mode TEXT NOT NULL DEFAULT 'total';
 
 UPDATE exercises SET load_mode = 'per_hand' WHERE id IN (
+  'ex_db_press',
   'ex_db_squat',
   'ex_db_lunge',
   'ex_db_reverse_lunge',

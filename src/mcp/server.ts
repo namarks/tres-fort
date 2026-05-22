@@ -14,6 +14,7 @@ import {
   getExercises,
   getHistory,
   getInProgressSession,
+  getLastCompletedSession,
   getOrCreateSession,
   getPlanTree,
   getRecentSessions,
@@ -165,7 +166,7 @@ const TOOLS: Record<string, Tool> = {
   },
   get_today_workout: {
     description:
-      "Get today's workout: the date, any existing session for today, the plan's day templates, the recurring weekly schedule (so you can answer 'what should I do today?' from one call), and the most recent prior session for context.",
+      "Get today's workout: the date, any existing session for today, the plan's day templates, the recurring weekly schedule (so you can answer 'what should I do today?' from one call), and prior-session context. `last_session` is the most recent non-discarded session of ANY status (could be a skip/planned row); `last_completed_session` is the most recent COMPLETED session — use that for real training context, since a skipped day in between obscures `last_session`.",
     inputSchema: obj({}),
     handler: async (_a, env, userId) => {
       const date = await ownerToday(env, userId);
@@ -173,6 +174,9 @@ const TOOLS: Record<string, Tool> = {
       const session = await getSessionByDate(env.DB, userId, date);
       const recent = await getRecentSessions(env.DB, userId, 2);
       const last = recent.find((s) => s.date !== date) ?? null;
+      // The most recent COMPLETED session — the real "last training" for
+      // coaching, unobscured by an intervening skip/planned row.
+      const lastCompleted = await getLastCompletedSession(env.DB, userId, date);
       // `schedule` lets an agent answer "what should I do today?" without
       // a second call to get_current_plan — the natural one-shot answer.
       const schedule = tree ? await getResolvedScheduleNames(env.DB, userId) : null;
@@ -184,6 +188,10 @@ const TOOLS: Record<string, Tool> = {
         schedule,
         last_session: last,
         last_session_sets: last ? await getSetsForSession(env.DB, last.id) : [],
+        last_completed_session: lastCompleted,
+        last_completed_session_sets: lastCompleted
+          ? await getSetsForSession(env.DB, lastCompleted.id)
+          : [],
       };
     },
   },
@@ -878,6 +886,12 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
   const lastSets = last ? await getSetsForSession(env.DB, last.id) : [];
   const schedule = tree ? await getResolvedScheduleNames(env.DB, userId) : null;
   const today = await ownerToday(env, userId);
+  // Most recent COMPLETED session — the real training context, unobscured
+  // by an intervening skip/planned row that getRecentSessions surfaces.
+  const lastCompleted = await getLastCompletedSession(env.DB, userId);
+  const lastCompletedSets = lastCompleted
+    ? await getSetsForSession(env.DB, lastCompleted.id)
+    : [];
   // Cycling awareness, zero extra Claude calls: a compact 28-day ride
   // window + conflicts folded straight into the auto-loaded brief.
   const horizon = addDaysIso(today, 28);
@@ -907,6 +921,17 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
             .map((s) => `ex:${s.exercise_id} ${s.weight}x${s.reps}${s.rpe ? `@${s.rpe}` : ''}`),
         }
       : null,
+    last_completed_session:
+      lastCompleted && lastCompleted.id !== last?.id
+        ? {
+            date: lastCompleted.date,
+            status: lastCompleted.status,
+            perceived_fatigue: lastCompleted.perceived_fatigue,
+            key_sets: lastCompletedSets
+              .filter((s) => !s.is_warmup)
+              .map((s) => `ex:${s.exercise_id} ${s.weight}x${s.reps}${s.rpe ? `@${s.rpe}` : ''}`),
+          }
+        : null,
     // Upcoming endurance load + lift/ride conflicts (next 28 days). Empty
     // arrays when the intervals.icu integration is dormant or clear.
     upcoming_rides: rides.map((r) => ({

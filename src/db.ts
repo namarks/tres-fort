@@ -196,7 +196,7 @@ export async function getPlanTree(
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
   const days = await db
-    .prepare('SELECT * FROM day_templates WHERE plan_id = ?1 ORDER BY order_index')
+    .prepare('SELECT * FROM day_templates WHERE plan_id = ?1 ORDER BY order_index, created_at, id')
     .bind(plan.id)
     .all<DayTemplateRow>();
   const dayIds = days.results.map((d) => d.id);
@@ -210,7 +210,7 @@ export async function getPlanTree(
                 e.laterality AS exercise_laterality, e.load_mode AS exercise_load_mode
          FROM template_exercises te
          JOIN exercises e ON e.id = te.exercise_id
-         WHERE te.day_template_id IN (${placeholders}) ORDER BY te.order_index`,
+         WHERE te.day_template_id IN (${placeholders}) ORDER BY te.order_index, te.created_at, te.id`,
       )
       .bind(...dayIds)
       .all<EnrichedTemplateExercise>();
@@ -353,6 +353,60 @@ export async function nextExerciseOrderIndex(
   return (row?.m ?? -1) + 1;
 }
 
+/**
+ * Collapse duplicate `order_index` values within one day to a dense,
+ * deterministic 0..n-1 sequence. No-op when indices are already unique, so
+ * it's cheap to call defensively after any write that takes an explicit
+ * order_index (add_exercise / update_exercise). Returns true if it rewrote.
+ *
+ * `preferId` is the slot the caller just placed at an explicit index. To
+ * honor that destination exactly (in BOTH directions — moving up or down),
+ * we rebuild the order by removing that slot, densely ordering the rest by
+ * (order_index, created_at, id), then re-inserting the slot at its requested
+ * index (clamped). A tiebreak alone is insufficient: it works for upward
+ * moves but a downward move (e.g. 0 → 2) would land one short after the
+ * dense pass.
+ */
+export async function dedupeDayOrderIndexes(
+  db: D1Database,
+  dayTemplateId: string,
+  preferId?: string,
+): Promise<boolean> {
+  const rows = await db
+    .prepare(
+      'SELECT id, order_index FROM template_exercises WHERE day_template_id = ?1 ORDER BY order_index, created_at, id',
+    )
+    .bind(dayTemplateId)
+    .all<{ id: string; order_index: number }>();
+  const list = rows.results;
+  const hasDup = new Set(list.map((r) => r.order_index)).size !== list.length;
+  if (!hasDup) return false;
+
+  let ordered: { id: string; order_index: number }[];
+  const moved = preferId ? list.find((r) => r.id === preferId) : undefined;
+  if (moved) {
+    // Requested destination = the index the caller just set on this slot.
+    // Drop it, then splice it back at that position so siblings shift around
+    // it — landing the moved slot exactly there for up- and down-moves alike.
+    const others = list.filter((r) => r.id !== moved.id);
+    const target = Math.max(0, Math.min(moved.order_index, others.length));
+    ordered = [...others.slice(0, target), moved, ...others.slice(target)];
+  } else {
+    ordered = list;
+  }
+
+  const ts = now();
+  for (let i = 0; i < ordered.length; i++) {
+    if (ordered[i]!.order_index !== i) {
+      await db
+        .prepare('UPDATE template_exercises SET order_index = ?2, updated_at = ?3 WHERE id = ?1')
+        .bind(ordered[i]!.id, i, ts)
+        .run();
+    }
+  }
+  return true;
+}
+
 /** Sibling of `nextExerciseOrderIndex` for `day_templates` — append a new
  *  day densely instead of the old 99 sentinel that `add_day` used. */
 export async function nextDayOrderIndex(
@@ -385,6 +439,15 @@ export async function addTemplateExercise(
       row.target_weight, row.target_duration_s, row.progression, row.cues, row.created_at, row.updated_at,
     )
     .run();
+  // An explicit order_index can collide with a sibling; densify so the day
+  // never holds duplicate indices (non-deterministic display otherwise).
+  if (await dedupeDayOrderIndexes(db, row.day_template_id, row.id)) {
+    const fresh = await db
+      .prepare('SELECT order_index FROM template_exercises WHERE id = ?1')
+      .bind(row.id)
+      .first<{ order_index: number }>();
+    if (fresh) row.order_index = fresh.order_index;
+  }
   await bumpPlanVersion(db, planId);
   return row;
 }
@@ -1014,6 +1077,26 @@ export async function getRecentSessions(
   return r.results;
 }
 
+/**
+ * Most recent COMPLETED session, optionally excluding a date (usually
+ * today). Coaching context wants "the last real training session" — a
+ * skipped/planned row in between (status != 'completed') should not obscure
+ * it. Distinct from getRecentSessions, which returns the latest row of any
+ * non-discarded status.
+ */
+export async function getLastCompletedSession(
+  db: D1Database,
+  userId: string,
+  excludeDate?: string,
+): Promise<SessionRow | null> {
+  return db
+    .prepare(
+      "SELECT * FROM sessions WHERE user_id = ?1 AND status = 'completed' AND date != ?2 ORDER BY date DESC LIMIT 1",
+    )
+    .bind(userId, excludeDate ?? '')
+    .first<SessionRow>();
+}
+
 export async function getSessionByDate(
   db: D1Database,
   userId: string,
@@ -1499,6 +1582,15 @@ export async function updateExercise(
       m.rest_seconds, m.target_weight, m.target_duration_s, m.cues, m.progression, m.order_index, m.updated_at,
     )
     .run();
+  // Patching order_index can collide with a sibling; densify the day so the
+  // result has unique 0..n-1 indices honoring the requested position.
+  if (patch.order_index !== undefined && (await dedupeDayOrderIndexes(db, slot.day_template_id, slot.id))) {
+    const fresh = await db
+      .prepare('SELECT order_index FROM template_exercises WHERE id = ?1')
+      .bind(slot.id)
+      .first<{ order_index: number }>();
+    if (fresh) m.order_index = fresh.order_index;
+  }
   await bumpPlanVersionByDay(db, slot.day_template_id);
   return m;
 }

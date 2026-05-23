@@ -1,6 +1,6 @@
-# fastlane — TresForte TestFlight setup
+# fastlane — TresFort TestFlight setup
 
-Local-only pipeline for shipping TresForte to TestFlight. No CI. Modeled on
+Local-only pipeline for shipping TresFort to TestFlight. No CI. Modeled on
 `tally-app/apple/fastlane/`.
 
 > Why not `README.md`? fastlane regenerates `fastlane/README.md` from the
@@ -32,14 +32,14 @@ Integrations → App Store Connect API.
 [developer.apple.com](https://developer.apple.com/account) → Certificates,
 Identifiers & Profiles → Identifiers → **+** → App IDs → App.
 
-- **Description:** TresForte
-- **Bundle ID:** Explicit, `com.nmarkspdx.tresforte`
+- **Description:** TresFort
+- **Bundle ID:** Explicit, `com.nmarkspdx.tresfort`
 - **Capabilities:** check **Sign in with Apple**. (Live Activities is an
   Info.plist key — `NSSupportsLiveActivities` — not a Developer Portal
   capability, so nothing to toggle there.)
 - **Continue → Register**.
 
-The widget extension bundle id `com.nmarkspdx.tresforte.widgets` will be
+The widget extension bundle id `com.nmarkspdx.tresfort.widgets` will be
 auto-registered on first archive by Xcode's automatic signing
 (`-allowProvisioningUpdates` flag in `scripts/upload-testflight.sh`). If
 that ever fails, register it manually with the same flow above, no
@@ -51,11 +51,11 @@ capabilities needed.
 **+** → New App.
 
 - **Platforms:** iOS
-- **Name:** Tres Forte *(editable later, before App Store submission)*
+- **Name:** Très Fort *(editable later, before App Store submission)*
 - **Primary Language:** English (U.S.)
-- **Bundle ID:** select `com.nmarkspdx.tresforte` from the dropdown (it
+- **Bundle ID:** select `com.nmarkspdx.tresfort` from the dropdown (it
   only appears if step 3 was done)
-- **SKU:** `tresforte-ios` *(immutable, choose carefully)*
+- **SKU:** `tresfort-ios` *(immutable, choose carefully)*
 - **User Access:** Full Access
 
 Why manual instead of `fastlane produce`? fastlane's produce uses Spaceship

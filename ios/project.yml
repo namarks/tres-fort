@@ -1,5 +1,5 @@
 # XcodeGen spec. Regenerate the .xcodeproj with: cd ios && xcodegen generate
-name: TresForte
+name: TresFort
 options:
   bundleIdPrefix: com.nmarkspdx
   deploymentTarget:
@@ -14,45 +14,45 @@ settings:
     DEVELOPMENT_TEAM: "8BA2RY6RCA"   # Nicholas Marks (Apple Developer Program)
     CODE_SIGN_STYLE: Automatic
 targets:
-  TresForte:
+  TresFort:
     type: application
     platform: iOS
     sources:
-      - TresForte
+      - TresFort
       - Shared            # RestActivityAttributes — shared with the widget
     dependencies:
-      - target: TresForteWidgets
+      - target: TresFortWidgets
         embed: true        # bundles the Live Activity extension into the app
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.nmarkspdx.tresforte
-        INFOPLIST_FILE: TresForte/Info.plist
-        CODE_SIGN_ENTITLEMENTS: TresForte/TresForte.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: com.nmarkspdx.tresfort
+        INFOPLIST_FILE: TresFort/Info.plist
+        CODE_SIGN_ENTITLEMENTS: TresFort/TresFort.entitlements
         TARGETED_DEVICE_FAMILY: "1"
         ENABLE_PREVIEWS: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       # Automatic signing + the team above provisions Sign in with Apple.
 
-  TresForteWidgets:
+  TresFortWidgets:
     type: app-extension
     platform: iOS
     sources:
-      - TresForteWidgets
+      - TresFortWidgets
       - Shared            # same attributes type, compiled into the extension
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.nmarkspdx.tresforte.widgets
-        INFOPLIST_FILE: TresForteWidgets/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.nmarkspdx.tresfort.widgets
+        INFOPLIST_FILE: TresFortWidgets/Info.plist
         TARGETED_DEVICE_FAMILY: "1"
 
 # Only the app gets a run scheme. The widget extension is built+embedded
 # via the dependency above — never run it directly (doing so triggers the
 # "Failed to show Widget / get descriptors" SpringBoard error).
 schemes:
-  TresForte:
+  TresFort:
     build:
       targets:
-        TresForte: all
+        TresFort: all
     run:
       config: Debug
     test:

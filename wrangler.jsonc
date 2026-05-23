@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "tres-forte",
+  "name": "tres-fort",
   // Pin the account so wrangler never has to resolve it via the /accounts
   // control-plane endpoint, which intermittently 503s during Cloudflare
   // dashboard incidents and would otherwise fail every deploy/migrate/dev.
@@ -13,8 +13,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "tres-forte-db",
-      "database_id": "37ba0f63-f82b-4e2c-a282-7c022f05c0c9",
+      "database_name": "tres-fort-db",
+      "database_id": "35bb3a9c-7bb5-40ac-9958-1d3c99df8fc5",
       "migrations_dir": "migrations"
     }
   ],
@@ -22,7 +22,7 @@
   // Invokes the `scheduled` handler in src/index.ts (syncExternalEvents).
   "triggers": { "crons": ["0 */6 * * *"] },
   "vars": {
-    "APPLE_BUNDLE_ID": "com.nmarkspdx.tresforte"
+    "APPLE_BUNDLE_ID": "com.nmarkspdx.tresfort"
   }
   // Secrets (set via `wrangler secret put`, NOT committed):
   //   APP_JWT_SECRET        - HS256 signing key for app JWTs

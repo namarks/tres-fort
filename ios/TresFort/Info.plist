@@ -15,7 +15,7 @@
   <key>LSRequiresIPhoneOS</key>
   <true/>
   <key>CFBundleDisplayName</key>
-  <string>Tres Forte</string>
+  <string>Très Fort</string>
   <key>CFBundleShortVersionString</key>
   <string>$(MARKETING_VERSION)</string>
   <key>CFBundleVersion</key>

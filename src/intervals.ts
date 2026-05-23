@@ -130,7 +130,7 @@ export async function fetchPlannedEvents(
     // event lands in `external_events` and detectConflicts flags every lift
     // day as clashing with its own exported load (a self-conflict loop).
     // `external_events` stays endurance-commitments-only.
-    if (isTresForteExport(raw)) continue;
+    if (isTresFortExport(raw)) continue;
     const externalId = raw.id != null ? String(raw.id) : null;
     const startLocal = str(raw.start_date_local);
     if (!externalId || !startLocal) continue;
@@ -177,7 +177,7 @@ export type ActivityFetchResult =
 /**
  * GET intervals.icu completed activities in [today-pastDays, today]. Returns
  * the same discriminated result shape as fetchPlannedEvents. Our own
- * exported strength rows are skipped (isTresForteExport) so the completed
+ * exported strength rows are skipped (isTresFortExport) so the completed
  * cache stays endurance-actuals-only. `date` is the `start_date_local` date
  * part VERBATIM — no timezone math (the contract).
  */
@@ -230,7 +230,7 @@ export async function fetchCompletedActivities(
     if (!raw || typeof raw !== 'object') continue;
     // Never ingest our OWN exported lift activities back in (symmetry with
     // the planned-event read path) — keeps this cache endurance-only.
-    if (isTresForteExport(raw)) continue;
+    if (isTresFortExport(raw)) continue;
     const externalId = raw.id != null ? String(raw.id) : null;
     const startLocal = str(raw.start_date_local);
     if (!externalId || !startLocal) continue;
@@ -276,7 +276,7 @@ export interface StrengthActivity {
   /** Clamped session duration in seconds → intervals `moving_time`. */
   durationSec: number;
   /**
-   * tres-forte session id. Drives the DETERMINISTIC `external_id` marker
+   * tres-fort session id. Drives the DETERMINISTIC `external_id` marker
    * (`liftcoach:session:<id>`) stamped on the remote event so a re-export
    * — even with a lost D1 ref — finds and UPDATEs its own prior event
    * instead of creating a duplicate.
@@ -299,7 +299,7 @@ export type PushResult =
  *  note on pushStrengthActivity).
  *
  *  The `liftcoach:` prefix is a FROZEN wire format — it is intentionally NOT
- *  renamed to `tresforte:` in the rebrand. It is already persisted on every
+ *  renamed to `tresfort:` in the rebrand. It is already persisted on every
  *  exported intervals.icu event; changing it would orphan those events and
  *  duplicate them on the next sync. Leave it. */
 export function exportMarker(sessionId: string): string {
@@ -309,7 +309,7 @@ export function exportMarker(sessionId: string): string {
 /** Recognises our own exported lift events (used to keep them OUT of the
  *  endurance `external_events` cache — no self-conflict). Matches either
  *  the deterministic external_id marker or the strength `type`. */
-export function isTresForteExport(raw: {
+export function isTresFortExport(raw: {
   external_id?: unknown;
   type?: unknown;
 }): boolean {

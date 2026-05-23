@@ -11,7 +11,7 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-const BASE = 'https://tres-forte.test';
+const BASE = 'https://tres-fort.test';
 const TOKEN = 'test-mcp-token';
 
 beforeAll(async () => {

@@ -17,7 +17,7 @@ import {
 import type { Env } from '../src/types';
 import type { Fetcher } from '../src/intervals';
 
-const BASE = 'https://tres-forte.test';
+const BASE = 'https://tres-fort.test';
 const TOKEN = 'test-mcp-token';
 
 beforeAll(async () => {

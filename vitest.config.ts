@@ -23,7 +23,7 @@ export default defineWorkersConfig(async () => {
               MCP_STATIC_TOKEN: 'test-mcp-token',
               DEV_AUTH_SECRET: 'test-dev',
               OWNER_AUTH_PASSPHRASE: 'test-pass',
-              APPLE_BUNDLE_ID: 'com.example.tresforte',
+              APPLE_BUNDLE_ID: 'com.example.tresfort',
               // intervals.icu cycling-awareness: test values so the feature
               // is "enabled" in tests, but the fetcher is always injected/
               // stubbed — the suite makes ZERO real network calls.

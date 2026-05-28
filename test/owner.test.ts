@@ -1,5 +1,5 @@
 import { env, applyD1Migrations } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   claimOrCreateOwner,
   createPlan,
@@ -54,9 +54,42 @@ describe('single-owner claim (MCP bootstrap -> Sign in with Apple)', () => {
 // intervals creds to the wrong user. Fix: when OWNER_APPLE_SUB is set,
 // findOwnerRow looks up by apple_sub specifically.
 describe('open sign-in does not capture owner state (Codex PR#38 P1)', () => {
-  it('ensureOwnerUser with OWNER_APPLE_SUB ignores an earlier non-owner row', async () => {
-    await env.DB.prepare('DELETE FROM users').run();
+  // The first describe block in this file creates a `plans` row
+  // referencing the bootstrap user. FK constraints aren't enforced in
+  // the current D1 test runtime, but a DELETE FROM users with a live
+  // dependent row would be load-bearing-fragile the moment D1 turns
+  // them on (Codex PR#38 P2). Wipe dependents in FK-safe order before
+  // each test in this block. We intentionally include the wider set of
+  // children-of-users tables here so this is defensive against future
+  // tests in OTHER files seeding dependents into the shared D1 too.
+  beforeEach(async () => {
+    await env.DB.batch([
+      // Append-only logs that reference users directly.
+      env.DB.prepare('DELETE FROM set_logs'),
+      env.DB.prepare('DELETE FROM notes'),
+      env.DB.prepare('DELETE FROM activities'),
+      // Sessions reference users + plans.
+      env.DB.prepare('DELETE FROM sessions'),
+      // Plan tree references users.
+      env.DB.prepare('DELETE FROM template_exercises'),
+      env.DB.prepare('DELETE FROM day_templates'),
+      env.DB.prepare('DELETE FROM plans'),
+      // Groups subtree references users.
+      env.DB.prepare('DELETE FROM group_invites'),
+      env.DB.prepare('DELETE FROM group_members'),
+      env.DB.prepare('DELETE FROM groups'),
+      // Intervals.icu reconciled caches reference users.
+      env.DB.prepare('DELETE FROM external_activities'),
+      env.DB.prepare('DELETE FROM external_events'),
+      env.DB.prepare('DELETE FROM session_load_exports'),
+      // Audit log references users.
+      env.DB.prepare('DELETE FROM audit_log'),
+      // Finally the parent.
+      env.DB.prepare('DELETE FROM users'),
+    ]);
+  });
 
+  it('ensureOwnerUser with OWNER_APPLE_SUB ignores an earlier non-owner row', async () => {
     // Simulate: a reviewer / random new user signed in via Path 4 BEFORE
     // the owner or MCP touched the system. upsertUser is the same primitive
     // Path 4 invokes, so this mirrors the production scenario.
@@ -76,7 +109,6 @@ describe('open sign-in does not capture owner state (Codex PR#38 P1)', () => {
   });
 
   it('findOwnerRow returns null when OWNER_APPLE_SUB owner row does not exist yet', async () => {
-    await env.DB.prepare('DELETE FROM users').run();
     await upsertUser(env.DB, 'random-1', null, null);
     await upsertUser(env.DB, 'random-2', null, null);
 
@@ -94,7 +126,6 @@ describe('open sign-in does not capture owner state (Codex PR#38 P1)', () => {
   });
 
   it('findOwnerRow falls back to earliest-by-created_at when OWNER_APPLE_SUB unset', async () => {
-    await env.DB.prepare('DELETE FROM users').run();
     const first = await upsertUser(env.DB, 'first-sub', null, null);
     await upsertUser(env.DB, 'second-sub', null, null);
 

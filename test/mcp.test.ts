@@ -144,9 +144,10 @@ describe('mcp tools list', () => {
         'get_recent_activities',
         'update_day',
         'delete_exercise',
+        'log_activity',
       ]),
     );
-    expect(names).toHaveLength(25);
+    expect(names).toHaveLength(26);
     for (const t of body.result.tools) expect(t.inputSchema.type).toBe('object');
   });
 });

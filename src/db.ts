@@ -1,6 +1,7 @@
 // Service layer: all D1 access goes through here so REST (now) and MCP
 // (milestone b) share identical behavior. Timestamps are epoch-ms integers.
 import type {
+  ActivityRow,
   DayConflict,
   DayTemplateRow,
   EnrichedTemplateExercise,
@@ -1003,6 +1004,7 @@ export async function getState(
   setsSince: number,
   eventsSince = 0,
   activitiesSince = 0,
+  logSince = 0,
 ) {
   const plan = await getActivePlan(db, userId);
   const baseTree =
@@ -1078,6 +1080,25 @@ export async function getState(
           )
           .bind(userId)
           .all<ExternalActivityRow>();
+  // Generic activity log (M3 — `activities` table). Append-only,
+  // user-authored. Same delta-sync pattern as set_logs / external_events:
+  //  - FULL RELOAD  (log_since absent/0): full current non-deleted set.
+  //  - INCREMENTAL  (log_since > 0): every row touched since the cursor
+  //    INCLUDING soft-deleted ones, so a syncing client learns about
+  //    removals. Uses `logged_at` as the cursor for inserts and
+  //    `deleted_at` to surface tombstones past the cursor (see
+  //    listActivitiesForUser for the delta-sync contract).
+  const userActivities =
+    logSince > 0
+      ? await listActivitiesForUser(db, userId, logSince)
+      : (
+          await db
+            .prepare(
+              'SELECT * FROM activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY logged_at',
+            )
+            .bind(userId)
+            .all<ActivityRow>()
+        ).results;
   return {
     plan: tree,
     plan_version: plan?.version ?? 0,
@@ -1085,6 +1106,7 @@ export async function getState(
     sets: sets.results,
     external_events: events.results,
     external_activities: activities.results,
+    activities: userActivities,
     server_time: now(),
   };
 }
@@ -1196,6 +1218,126 @@ export async function writeAudit(
     )
     .bind(uuid(), userId, 'mcp', tool, JSON.stringify(args).slice(0, 4000), result.slice(0, 500), now())
     .run();
+}
+
+// ---- generic activity log (M3 — append-only, user-authored) --------------
+//
+// The "everything else" bucket alongside strength sessions (set_logs) and
+// intervals.icu actuals (external_activities). Same consistency model as
+// set_logs:
+//   - `id` is the CLIENT-generated UUID idempotency key (iOS outbox safe-
+//     retries land on ON CONFLICT(id) DO NOTHING). MCP-source rows mint the
+//     id server-side because Claude doesn't retry like the iOS outbox.
+//   - Rows are SOFT-deleted only (deleted_at) — preserve history.
+//   - Writes do NOT bump plans.version.
+
+export interface ActivityInput {
+  id: string;
+  date: string;
+  type: string;
+  title?: string | null;
+  duration_minutes?: number | null;
+  notes?: string | null;
+  logged_at?: number;
+}
+
+/**
+ * Idempotent on the client-generated `id`. A retry of the same id is a
+ * no-op (returns the existing row). The user_id is stamped from the
+ * authenticated caller, never trusted from the client body.
+ */
+export async function logActivity(
+  db: D1Database,
+  userId: string,
+  input: ActivityInput,
+  source: 'ios' | 'mcp',
+): Promise<ActivityRow> {
+  const loggedAt = input.logged_at ?? now();
+  await db
+    .prepare(
+      `INSERT INTO activities
+         (id,user_id,date,type,title,duration_minutes,notes,logged_at,source,deleted_at)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL)
+       ON CONFLICT(id) DO NOTHING`,
+    )
+    .bind(
+      input.id,
+      userId,
+      input.date,
+      input.type,
+      input.title ?? null,
+      input.duration_minutes ?? null,
+      input.notes ?? null,
+      loggedAt,
+      source,
+    )
+    .run();
+  // Re-select so retries return the *original* persisted row (preserving the
+  // original logged_at/title/etc.), not the fresh-looking input.
+  const row = await db
+    .prepare('SELECT * FROM activities WHERE id = ?1 AND user_id = ?2')
+    .bind(input.id, userId)
+    .first<ActivityRow>();
+  if (!row) {
+    // Either the user_id mismatched (an id collision across users — should
+    // be impossible for UUIDs, but we surface it rather than silently
+    // returning a stale row from another user) or the insert failed
+    // mysteriously. Either way the caller needs to see this.
+    throw new Error('activity_insert_failed');
+  }
+  return row;
+}
+
+/**
+ * Soft-delete by id, scoped to the caller's user. Returns true on success,
+ * false if the row doesn't exist or belongs to another user — REST surfaces
+ * both as 404 (don't leak existence of other users' rows). Idempotent:
+ * deleting an already-deleted row returns false (the row still exists but
+ * the second call is a no-op delete).
+ */
+export async function softDeleteActivity(
+  db: D1Database,
+  userId: string,
+  activityId: string,
+): Promise<boolean> {
+  const ts = now();
+  const r = await db
+    .prepare(
+      `UPDATE activities SET deleted_at = ?3
+       WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL`,
+    )
+    .bind(activityId, userId, ts)
+    .run();
+  // D1 exposes meta.changes; fall back to 0 if absent.
+  const changes = (r as { meta?: { changes?: number } }).meta?.changes ?? 0;
+  return changes > 0;
+}
+
+/**
+ * Delta-sync read for /api/state. Returns every row TOUCHED since the
+ * cursor — both fresh inserts (logged_at > since) AND tombstones
+ * (deleted_at > since), so a syncing client can apply removals. Same
+ * pattern as the set_logs sync described in DESIGN.md §7. Ordered by
+ * logged_at so the client can advance its watermark monotonically.
+ */
+export async function listActivitiesForUser(
+  db: D1Database,
+  userId: string,
+  sinceMs: number,
+  limit?: number,
+): Promise<ActivityRow[]> {
+  const cap = typeof limit === 'number' && limit > 0 ? Math.min(limit, 1000) : 1000;
+  const rows = await db
+    .prepare(
+      `SELECT * FROM activities
+       WHERE user_id = ?1
+         AND (logged_at > ?2 OR (deleted_at IS NOT NULL AND deleted_at > ?2))
+       ORDER BY logged_at
+       LIMIT ?3`,
+    )
+    .bind(userId, sinceMs, cap)
+    .all<ActivityRow>();
+  return rows.results;
 }
 
 // ---- plan-tree mutations (MCP write tools) -------------------------------

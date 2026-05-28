@@ -13,12 +13,14 @@ import {
   getPlanTree,
   getState,
   getVolume,
+  logActivity,
   logSet,
   nextExerciseOrderIndex,
   patchDayTemplate,
   patchSession,
   patchSet,
   resolveExercise,
+  softDeleteActivity,
 } from '../db';
 
 export const apiRoutes = new Hono<HonoEnv>();
@@ -36,8 +38,12 @@ apiRoutes.get('/state', async (c) => {
   const setsSince = Number(c.req.query('sets_since') ?? 0);
   const eventsSince = Number(c.req.query('events_since') ?? 0);
   const activitiesSince = Number(c.req.query('activities_since') ?? 0);
+  // log_since gates the M3 generic activity log delta (separate cursor —
+  // `activities_since` is already taken by the intervals.icu external
+  // actuals cache, see migration 0015 / getState).
+  const logSince = Number(c.req.query('log_since') ?? 0);
   return c.json(
-    await getState(c.env.DB, userId, since, setsSince, eventsSince, activitiesSince),
+    await getState(c.env.DB, userId, since, setsSince, eventsSince, activitiesSince, logSince),
   );
 });
 
@@ -232,4 +238,60 @@ apiRoutes.get('/volume', async (c) => {
   const from = Number(c.req.query('from') ?? 0);
   const to = Number(c.req.query('to') ?? Date.now());
   return c.json(await getVolume(c.env.DB, c.get('userId'), muscle, from, to));
+});
+
+// ---- generic activities (M3 — pilates / cardio / yoga / walks / …) -------
+//
+// Append-only log, client-UUID idempotent (same model as POST /sessions/:id/
+// sets). The iOS outbox can retry safely; the second POST with the same `id`
+// returns the existing row instead of duplicating.
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+apiRoutes.post('/activities', async (c) => {
+  const b = await c.req.json<{
+    id?: string;
+    date?: string;
+    type?: string;
+    title?: string | null;
+    duration_minutes?: number | null;
+    notes?: string | null;
+    logged_at?: number;
+  }>();
+  if (!b.id || typeof b.id !== 'string' || !UUID_RE.test(b.id)) {
+    return c.json({ error: 'invalid_id' }, 400);
+  }
+  if (typeof b.date !== 'string' || !ISO_DATE_RE.test(b.date)) {
+    return c.json({ error: 'invalid_date' }, 400);
+  }
+  if (typeof b.type !== 'string' || b.type.length === 0 || b.type !== b.type.toLowerCase()) {
+    return c.json({ error: 'invalid_type' }, 400);
+  }
+  if (typeof b.logged_at !== 'number' || !Number.isFinite(b.logged_at)) {
+    return c.json({ error: 'invalid_logged_at' }, 400);
+  }
+  const row = await logActivity(
+    c.env.DB,
+    c.get('userId'),
+    {
+      id: b.id,
+      date: b.date,
+      type: b.type,
+      title: b.title ?? null,
+      duration_minutes:
+        typeof b.duration_minutes === 'number' ? b.duration_minutes : null,
+      notes: b.notes ?? null,
+      logged_at: b.logged_at,
+    },
+    'ios',
+  );
+  return c.json(row, 201);
+});
+
+apiRoutes.delete('/activities/:id', async (c) => {
+  const ok = await softDeleteActivity(c.env.DB, c.get('userId'), c.req.param('id'));
+  if (!ok) return c.json({ error: 'not_found' }, 404);
+  return c.json({ ok: true });
 });

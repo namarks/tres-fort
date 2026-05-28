@@ -26,6 +26,7 @@ import {
   getUpcomingRides,
   getUserTimezone,
   getVolume,
+  logActivity,
   logSet,
   logWorkoutComplete,
   nextDayOrderIndex,
@@ -473,6 +474,61 @@ const TOOLS: Record<string, Tool> = {
       r?.error
         ? null
         : `Deleted set ${a.set_id} (${r.weight}x${r.reps}${r.is_warmup ? ' warmup' : ''}).`,
+  },
+  log_activity: {
+    description:
+      'Log a non-strength activity — pilates, yoga, jump rope, walks, ' +
+      'cardio, "anything else" — to the generic activities log. This is ' +
+      'the bucket for movement OUTSIDE strength sessions (use log_set for ' +
+      'lifts) and OUTSIDE intervals.icu cycling/running (which syncs ' +
+      'automatically). `type` is free-form lower-case (e.g. "pilates", ' +
+      '"yoga", "walk", "cardio", "other"). `date` defaults to the user\'s ' +
+      'civil "today" in their device timezone if omitted. The activity ' +
+      "id is generated server-side; Claude isn't an outbox retrying like " +
+      'iOS, so client-side idempotency keys are unnecessary.',
+    inputSchema: obj(
+      {
+        type: { type: 'string', description: 'lower-case freeform: pilates|cardio|yoga|walk|other|...' },
+        title: { type: 'string', description: 'e.g. "Reformer class at Studio MDR"' },
+        duration_minutes: { type: 'integer', minimum: 0 },
+        date: { type: 'string', description: 'YYYY-MM-DD (default today in user tz)' },
+        notes: { type: 'string' },
+      },
+      ['type'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const today = await ownerToday(env, userId);
+      const date = typeof a.date === 'string' && a.date.length > 0 ? a.date : today;
+      const type = String(a.type).toLowerCase().trim();
+      if (!type) return { error: 'invalid_type' };
+      const row = await logActivity(
+        env.DB,
+        userId,
+        {
+          id: crypto.randomUUID(),
+          date,
+          type,
+          title: typeof a.title === 'string' ? a.title : null,
+          duration_minutes:
+            typeof a.duration_minutes === 'number' ? a.duration_minutes : null,
+          notes: typeof a.notes === 'string' ? a.notes : null,
+          logged_at: Date.now(),
+        },
+        'mcp',
+      );
+      const dur = row.duration_minutes != null ? `${row.duration_minutes}min ` : '';
+      const msg = `Logged ${dur}${row.type} on ${row.date}${row.title ? ` — ${row.title}` : ''}`;
+      return { ok: true, message: msg, activity: row };
+    },
+    // Audited like every write tool (dispatch loop calls writeAudit). The
+    // `note` hook persists a Claude-authored note row, matching the pattern
+    // used by delete_set / adjust_today so the activity has a visible
+    // coaching trail.
+    note: (_a, r) =>
+      r?.error || !r?.activity
+        ? null
+        : `Logged activity: ${r.message}.`,
   },
   log_workout_complete: {
     description: 'Mark a session complete, optionally with perceived fatigue (1-10) and notes.',

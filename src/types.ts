@@ -213,6 +213,28 @@ export interface CompletedActivity {
   raw: string; // source JSON for this activity
 }
 
+// ---- user-authored generic activities (see migrations/0017) --------------
+
+/**
+ * Generic activity log: Pilates classes, jump rope, yoga, walks, anything
+ * outside strength sessions (set_logs) and intervals.icu actuals
+ * (external_activities). Append-only log class — `id` is the client-
+ * generated UUID idempotency key, rows are soft-deleted only, writes never
+ * bump plans.version. Powers the group/family accountability feed (M4).
+ */
+export interface ActivityRow {
+  id: string;
+  user_id: string;
+  date: string;            // 'YYYY-MM-DD' device-local, verbatim
+  type: string;            // lower-case freeform: pilates|cardio|yoga|walk|other|...
+  title: string | null;
+  duration_minutes: number | null;
+  notes: string | null;
+  logged_at: number;       // epoch ms; also the delta-sync cursor
+  source: string;          // 'ios' | 'mcp'
+  deleted_at: number | null;
+}
+
 /** Per-date conflict between lift sessions/projections and external events. */
 export interface DayConflict {
   date: string;

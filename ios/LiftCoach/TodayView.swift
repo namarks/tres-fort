@@ -491,6 +491,13 @@ private struct ProgressBar: View {
 private struct RunnerView: View {
     @ObservedObject var sync: SyncModel
 
+    /// Tap-to-edit on the big weight number → decimal-pad sheet. Persists
+    /// the in-flight edit string (`""` while the sheet is open and the user
+    /// has cleared the field — TextField needs a Binding, not a transient
+    /// value) so a partially-typed entry isn't lost on a re-render.
+    @State private var editingWeight = false
+    @State private var weightDraft = ""
+
     var body: some View {
         if let ex = sync.currentExercise {
             ScrollView {
@@ -537,13 +544,17 @@ private struct RunnerView: View {
                             // Two-dumbbell lifts: the number is one dumbbell, so
                             // label it "EACH HAND" rather than implying a total.
                             let weightLabel = ex.isPerHand
-                                ? "WEIGHT (\(ex.exercise_unit)) · EACH HAND"
-                                : "WEIGHT (\(ex.exercise_unit))"
+                                ? "WEIGHT (\(ex.exercise_unit)) · EACH HAND · TAP TO EDIT"
+                                : "WEIGHT (\(ex.exercise_unit)) · TAP TO EDIT"
                             stepper(label: weightLabel, value: fmt(sync.weight),
                                     steps: [("−10", { sync.adjustWeight(-10) }, true),
                                             ("−5", { sync.adjustWeight(-5) }, false),
                                             ("+5", { sync.adjustWeight(5) }, false),
-                                            ("+10", { sync.adjustWeight(10) }, true)])
+                                            ("+10", { sync.adjustWeight(10) }, true)],
+                                    onTapValue: {
+                                        weightDraft = fmt(sync.weight)
+                                        editingWeight = true
+                                    })
                         }
                         stepper(label: "REPS", value: "\(sync.reps)",
                                 steps: [("−1", { sync.adjustReps(-1) }, false),
@@ -573,6 +584,20 @@ private struct RunnerView: View {
                     .padding(.top, 24)
                 }
                 .padding(20)
+            }
+            .sheet(isPresented: $editingWeight) {
+                WeightEditorSheet(
+                    draft: $weightDraft,
+                    unit: ex.exercise_unit,
+                    onSave: {
+                        // Trim and parse — empty / non-numeric drafts cancel
+                        // silently rather than zeroing the working weight.
+                        let trimmed = weightDraft.trimmingCharacters(in: .whitespaces)
+                        if let v = Double(trimmed) { sync.setWeight(v) }
+                        editingWeight = false
+                    },
+                    onCancel: { editingWeight = false }
+                )
             }
         }
     }
@@ -609,7 +634,8 @@ private struct RunnerView: View {
     }
 
     private func stepper(label: String, value: String,
-                         steps: [(String, () -> Void, Bool)]) -> some View {
+                         steps: [(String, () -> Void, Bool)],
+                         onTapValue: (() -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label).font(Theme.mono(10, .bold)).tracking(2).foregroundStyle(Theme.muted)
             HStack(spacing: 8) {
@@ -618,12 +644,36 @@ private struct RunnerView: View {
                 }
                 // JetBrains Mono is fixed-width: every value is the same
                 // size in a fixed-height slot (no digit jitter).
-                Text(value)
-                    .font(Theme.number(52))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(1).minimumScaleFactor(0.5)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 56)
+                // The whole slot is one tap target when `onTapValue` is set
+                // (decimal-pad entry for weird-increment machines), with a
+                // dotted underline as the hint. plain buttonStyle so the
+                // number doesn't tint accent on press.
+                Group {
+                    if let onTapValue {
+                        Button(action: onTapValue) {
+                            Text(value)
+                                .font(Theme.number(52))
+                                .foregroundStyle(Theme.text)
+                                .lineLimit(1).minimumScaleFactor(0.5)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 56)
+                                .overlay(alignment: .bottom) {
+                                    Rectangle()
+                                        .fill(Theme.muted.opacity(0.35))
+                                        .frame(height: 1)
+                                        .padding(.horizontal, 8)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Text(value)
+                            .font(Theme.number(52))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(1).minimumScaleFactor(0.5)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 56)
+                    }
+                }
                 ForEach(Array(steps.suffix(steps.count - steps.count / 2)), id: \.0) { s in
                     stepBtn(s.0, s.2, s.1)
                 }
@@ -665,6 +715,62 @@ private struct RunnerView: View {
                 .background(Theme.surface).foregroundStyle(Theme.text)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
         }
+    }
+}
+
+// MARK: - Weight editor sheet
+
+/// Decimal-pad sheet for direct weight entry — handles weird-increment
+/// machines (14.3 lb plate stack) the ±5/±10 stepper can't reach without
+/// adding more buttons. Parent holds the draft string so an in-flight edit
+/// survives a re-render. Auto-focus + select-all so the typical flow is
+/// tap → keypad up → type → Save.
+private struct WeightEditorSheet: View {
+    @Binding var draft: String
+    let unit: String
+    let onSave: () -> Void
+    let onCancel: () -> Void
+
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 20) {
+                Text("WEIGHT (\(unit))")
+                    .font(Theme.mono(11, .bold)).tracking(2)
+                    .foregroundStyle(Theme.muted)
+                    .padding(.top, 8)
+                TextField("0", text: $draft)
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.center)
+                    .font(Theme.number(56))
+                    .foregroundStyle(Theme.text)
+                    .padding(.horizontal, 20).padding(.vertical, 14)
+                    .background(Theme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .focused($focused)
+                Text("Any value — \(unit) (e.g. 14.3)")
+                    .font(Theme.mono(11)).foregroundStyle(Theme.dim)
+                Spacer()
+            }
+            .padding(20)
+            .background(Theme.bg.ignoresSafeArea())
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel", action: onCancel)
+                        .foregroundStyle(Theme.muted)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Save", action: onSave)
+                        .font(Theme.mono(14, .bold))
+                        .foregroundStyle(Theme.accent)
+                }
+            }
+        }
+        .presentationDetents([.height(280)])
+        .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
+        .onAppear { focused = true }
     }
 }
 

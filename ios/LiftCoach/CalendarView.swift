@@ -46,42 +46,6 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
     }
 }
 
-/// The A/B (or other) day label for the workout that resolves on `ymd`,
-/// for the on-cell badge. nil when the day has no resolvable template.
-/// `today` is supplied by the caller (`dayCell` captures `sync.todayString`
-/// ONCE for the whole cell). It feeds BOTH the projection's past/future
-/// split AND the `allowScheduleInference` gate below. `sync.todayString`
-/// is a computed var (fresh `Date()` each access); the cell's projection
-/// ring, today-highlight ring, and this label MUST agree, so they all run
-/// off the one captured clock — no read can straddle midnight against
-/// another within a single `dayCell` render.
-@MainActor private func dayLabel(_ sync: SyncModel, _ ymd: String,
-                                 today: String) -> String? {
-    switch sync.projection(for: ymd, today: today) {
-    case .projected(let tid):
-        return sync.dayTemplate(id: tid)?.day_label
-    case .session:
-        // Same session→schedule inference Today uses (shared helper, no
-        // forked logic) so a completed/ad-hoc session with a null
-        // day_template_id on a scheduled day still shows its A/B —
-        // but the schedule-INFERENCE fallback is valid ONLY for
-        // today/future. For a PAST date the *current* weekly schedule
-        // would relabel a finished session with today's weekday→template
-        // mapping after any schedule edit (wrong A/B on history), so we
-        // gate inference to `ymd >= today` — the SAME civil-date boundary
-        // CalendarProjection uses (`dateString < today`), no forked rule.
-        // Past + null day_template_id → nil (glyph-only, no wrong label);
-        // today (and future) still resolve via the schedule, preserving
-        // the prior BLOCKER fix (today's null-template session).
-        return sync.sessionDisplayTemplate(
-            forDateString: ymd,
-            allowScheduleInference: ymd >= today
-        )?.day_label
-    case .rest, .none:
-        return nil
-    }
-}
-
 struct CalendarView: View {
     @ObservedObject var sync: SyncModel
 
@@ -247,7 +211,6 @@ struct CalendarView: View {
         let isSkipped = proj.kind == .skipped
         let isToday = ymd == today
         let dayNum = cal.component(.day, from: date)
-        let label = isWorkout ? dayLabel(sync, ymd, today: today) : nil
         let conflict = sync.rideConflict(for: ymd)   // .none on non-lift days
         // Endurance overlay (read-only). A COMPLETED activity (accent,
         // kind-specific glyph) outranks a PLANNED ride (muted bicycle). On a
@@ -277,23 +240,16 @@ struct CalendarView: View {
                 // (the old below-the-lift endurance glyph floated against
                 // the next week's row — ambiguous which day it belonged to).
                 if isWorkout, let st {
-                    // Workout days POP: a filled accent marker carrying the
-                    // A/B (day_label). Internal planned vs projected (and an
-                    // empty in-progress, normalized to planned above) collapse
-                    // to this single "Workout" marker.
-                    Text(label?.uppercased() ?? "")
-                        .font(Theme.mono(11, .bold))
-                        .foregroundStyle(.black)
-                        .frame(minWidth: 22, minHeight: 18)
-                        .padding(.horizontal, 5)
-                        .background(Capsule().fill(st.color))
-                        .overlay {
-                            if label == nil {
-                                Image(systemName: st.glyph)
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundStyle(.black)
-                            }
-                        }
+                    // One consistent glyph per state (matches the legend):
+                    // dumbbell for upcoming, checkmark for done, bolt for
+                    // in-progress. The day_template's day_label (A/B/Push/
+                    // Pull/etc.) is intentionally NOT shown — it added a
+                    // second visual language on top of the state glyph and
+                    // made the calendar feel noisy. Tap the cell for the
+                    // full agenda (template name + exercises).
+                    Image(systemName: st.glyph)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(st.color)
                 } else if isSkipped, let st {
                     // Skipped lift keeps its distinct xmark (an endurance
                     // badge, if any, rides the corner overlay below).

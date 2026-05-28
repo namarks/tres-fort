@@ -15,10 +15,17 @@ enum APIError: Error, LocalizedError {
 struct APIClient {
     var baseURL = Config.apiBaseURL
 
-    func authApple(identityToken: String, fullName: String?) async throws -> AuthResponse {
-        try await post("auth/apple",
-                        body: ["identityToken": identityToken, "fullName": fullName as Any],
-                        jwt: nil)
+    func authApple(identityToken: String,
+                   fullName: String?,
+                   inviteCode: String? = nil) async throws -> AuthResponse {
+        // M5: `invite_code` is OPTIONAL — bootstrap users (OWNER_APPLE_SUB
+        // path, fresh-install path) and existing users sign in without one.
+        // Only new Apple subs need an invite. POST helper strips NSNull, so
+        // omit the key entirely (vs. pass null) when no code is present.
+        var body: [String: Any] = ["identityToken": identityToken]
+        if let fullName { body["fullName"] = fullName }
+        if let inviteCode, !inviteCode.isEmpty { body["invite_code"] = inviteCode }
+        return try await post("auth/apple", body: body, jwt: nil)
     }
 
     /// Full sync pull (since=0 → everything; the app dedupes locally).
@@ -73,8 +80,12 @@ struct APIClient {
     }
 
     // MARK: - transport
+    //
+    // INTERNAL (not private) so extension files (APIClient+Groups.swift,
+    // etc.) can add new endpoint methods without re-implementing the
+    // URLSession + JWT + JSON plumbing.
 
-    private func get<T: Decodable>(_ path: String, jwt: String) async throws -> T {
+    func get<T: Decodable>(_ path: String, jwt: String) async throws -> T {
         // Build the URL by string so query strings aren't percent-escaped.
         var req = URLRequest(url: URL(string: baseURL.absoluteString + "/" + path)!)
         req.httpMethod = "GET"
@@ -83,7 +94,7 @@ struct APIClient {
         return try await send(req)
     }
 
-    private func post<T: Decodable>(_ path: String, body: [String: Any], jwt: String?) async throws -> T {
+    func post<T: Decodable>(_ path: String, body: [String: Any], jwt: String?) async throws -> T {
         var req = URLRequest(url: URL(string: baseURL.absoluteString + "/" + path)!)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -94,17 +105,32 @@ struct APIClient {
         return try await send(req)
     }
 
-    private func patch<T: Decodable>(_ path: String, body: [String: Any], jwt: String) async throws -> T {
+    func patch<T: Decodable>(_ path: String, body: [String: Any], jwt: String) async throws -> T {
         var req = URLRequest(url: URL(string: baseURL.absoluteString + "/" + path)!)
         req.httpMethod = "PATCH"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
         req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
+        // No NSNull stripping here — PATCH bodies need to send explicit
+        // `null` (e.g. the intervals.icu disconnect path sends both fields
+        // null to clear credentials). JSONSerialization writes Swift's
+        // NSNull as JSON null.
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         return try await send(req)
     }
 
-    private func send<T: Decodable>(_ req: URLRequest) async throws -> T {
+    /// DELETE with no request body. Decodes the JSON response into T (the
+    /// backend mostly returns `{ok: true}` for deletes; use `EmptyResponse`
+    /// when you don't care about the body).
+    func delete<T: Decodable>(_ path: String, jwt: String) async throws -> T {
+        var req = URLRequest(url: URL(string: baseURL.absoluteString + "/" + path)!)
+        req.httpMethod = "DELETE"
+        req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
+        return try await send(req)
+    }
+
+    func send<T: Decodable>(_ req: URLRequest) async throws -> T {
         let (data, resp) = try await URLSession.shared.data(for: req)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
         guard (200..<300).contains(code) else {

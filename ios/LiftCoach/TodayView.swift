@@ -10,6 +10,11 @@ private func clock(_ s: Int) -> String {
 struct TodayView: View {
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
+    /// Opens the shared ManualActivitySheet hosted by MainTabView so a user
+    /// can log "I just did Pilates" without tab-switching. Optional so
+    /// existing tests / previews can construct the view without the new
+    /// dependency.
+    var onLogActivity: (() -> Void)? = nil
 
     /// Presents the demoted "Train a different day" override picker.
     @State private var showOverridePicker = false
@@ -41,6 +46,17 @@ struct TodayView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Refresh") { Task { await sync.load() } }
+                        if let onLogActivity {
+                            // M5: log Pilates/walk/etc. from the Today
+                            // toolbar — the natural moment-of-truth for "I
+                            // just did this". Same sheet as the Group tab's
+                            // FAB; both call groupModel.logActivity.
+                            Button {
+                                onLogActivity()
+                            } label: {
+                                Label("Log activity", systemImage: "plus.circle")
+                            }
+                        }
                         if sync.running {
                             Button("End workout", role: .destructive) {
                                 Task { await sync.finishWorkout() }

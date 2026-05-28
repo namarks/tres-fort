@@ -5,6 +5,11 @@ import Foundation
 struct AuthResponse: Decodable {
     let jwt: String
     let user: UserDTO
+    /// Present only when /auth/apple was called with a valid invite_code (M2);
+    /// the freshly-redeemed group id, so the caller can pre-select it. Older
+    /// payloads (OWNER bootstrap, fresh-install bootstrap, returning user)
+    /// omit this and the field decodes to nil.
+    let group_id: String?
 }
 
 struct UserDTO: Decodable {

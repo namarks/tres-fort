@@ -4,12 +4,14 @@ import { issueAppJwt, verifyAppleToken } from '../auth';
 import {
   claimOrCreateOwner,
   isBootstrapClaimEligible,
+  redeemInvite,
   upsertUser,
 } from '../db';
 
 export const authRoutes = new Hono<HonoEnv>();
 
-// POST /auth/apple  { identityToken, fullName? } -> { jwt, user }
+// POST /auth/apple  { identityToken, fullName?, invite_code? }
+//   -> { jwt, user, group_id? }
 //
 // Open sign-in. Four paths, evaluated in order:
 //
@@ -25,16 +27,24 @@ export const authRoutes = new Hono<HonoEnv>();
 //
 // GROUPS REMAIN INVITE-ONLY: a user joins a group exclusively via a
 // valid invite code on POST /api/groups/join. Sign-in being open does
-// NOT make groups public. The previous "supply invite_code on /auth/apple
-// to auto-join in one step" shortcut was removed — it created an
-// existing-user vs new-user asymmetry (a later sign-in by an established
-// user with a code would be silently ignored on the existing-user fast
-// path) and the "in-app join" flow covers the same intent without that
-// trap.
+// NOT make groups public.
+//
+// `invite_code` BACK-COMPAT (Codex PR#38 P2): the open-signin iOS UI
+// no longer renders an invite-code field on sign-in, but build 12 and
+// earlier (already shipped to TestFlight) still POST `invite_code`
+// from a "Have an invite code?" reveal. To avoid those clients landing
+// "signed in but never joined" after this Worker deploys, Path 4 will
+// also redeem a supplied code best-effort against the just-created
+// user. Success returns `group_id` (which legacy clients' AuthResponse
+// decoder picks up and uses to pre-select the group). Failure does
+// NOT block sign-in — the user is signed in normally and can paste a
+// fresh code from the in-app Group tab. New clients send no code and
+// the redemption step is a no-op for them.
 authRoutes.post('/apple', async (c) => {
   const body = await c.req.json<{
     identityToken?: string;
     fullName?: string;
+    invite_code?: string;
   }>();
   if (!body.identityToken) return c.json({ error: 'missing_identityToken' }, 400);
   let claims;
@@ -87,11 +97,26 @@ authRoutes.post('/apple', async (c) => {
     return c.json({ jwt, user });
   }
 
-  // Path 4: any other new Apple sub. Open sign-in, zero memberships.
-  // upsertUser is safe here because Path 1 already returned for known
-  // subs: we reach here only with an unknown apple_sub, so this INSERTs.
+  // Path 4: any other new Apple sub. Open sign-in, zero memberships by
+  // default. upsertUser is safe here because Path 1 already returned for
+  // known subs: we reach here only with an unknown apple_sub, so this
+  // INSERTs.
   const user = await upsertUser(c.env.DB, claims.sub, claims.email, body.fullName ?? null);
   const jwt = await issueAppJwt(user.id, c.env.APP_JWT_SECRET);
+  // Back-compat shim for pre-open-signin clients (see file header). If
+  // a code was posted, best-effort redeem it against the just-created
+  // user. We do NOT fail sign-in on a bad code — the legacy UX was
+  // "type code → sign in → land in group"; failing the whole sign-in
+  // because the code was typo'd would be more hostile than the worst-
+  // case quiet success of "signed in but not in a group" (which the
+  // in-app Group tab's Join flow resolves).
+  const code = typeof body.invite_code === 'string' ? body.invite_code.trim() : '';
+  if (code) {
+    const r = await redeemInvite(c.env.DB, code, user.id);
+    if ('ok' in r) {
+      return c.json({ jwt, user, group_id: r.group_id });
+    }
+  }
   return c.json({ jwt, user });
 });
 

@@ -20,8 +20,12 @@ import {
   BOOTSTRAP_APPLE_SUB,
   claimOrCreateOwner,
   countUsers,
+  createGroup,
+  createInvite,
   ensureOwnerUser,
   isBootstrapClaimEligible,
+  isGroupMember,
+  redeemInvite,
   upsertUser,
 } from '../src/db';
 
@@ -66,6 +70,77 @@ describe('/auth/apple bad-input branches (no JWKS network needed)', () => {
       body: JSON.stringify({ identityToken: 'not-a-real-jwt' }),
     });
     expect(r.status).toBe(401);
+  });
+});
+
+// Codex PR#38 P2: /auth/apple Path 4 now also redeems a supplied
+// `invite_code` best-effort so build 12 and earlier iOS clients (which
+// still post the field from the old "Have an invite code?" reveal) keep
+// landing in the inviter's group instead of "signed in but never
+// joined." Failure does NOT block sign-in — new clients send no code
+// and skip the redemption step entirely. This describe-block walks the
+// SAME db primitives /auth/apple invokes (upsertUser then redeemInvite),
+// proving the back-compat sequence is well-behaved at all branches.
+describe('Path 4 back-compat: legacy invite_code shim (Codex PR#38 P2)', () => {
+  it('valid code → user created, joined to inviter\'s group, group_id returned', async () => {
+    const owner = await ensureOwnerUser(env.DB, undefined);
+    const group = await createGroup(env.DB, owner.id, 'BackCompat');
+    const invite = await createInvite(env.DB, owner.id, group.id);
+
+    const sub = `legacy-${crypto.randomUUID()}`;
+    const user = await upsertUser(env.DB, sub, 'legacy@test', 'Legacy');
+    const r = await redeemInvite(env.DB, invite.code, user.id);
+    expect('ok' in r && r.ok).toBe(true);
+    if (!('ok' in r)) throw new Error('unreachable');
+    expect(r.group_id).toBe(group.id);
+
+    // Membership row exists; legacy iOS reads group_id from AuthResponse
+    // and pre-selects the joined group on first open.
+    expect(await isGroupMember(env.DB, user.id, group.id)).toBe(true);
+
+    // Code is consumed; not reusable.
+    const inv = await env.DB
+      .prepare('SELECT used_at FROM group_invites WHERE code = ?1')
+      .bind(invite.code)
+      .first<{ used_at: number | null }>();
+    expect(inv!.used_at).not.toBeNull();
+  });
+
+  it('bad code → user STILL signed in (sign-in is not blocked)', async () => {
+    const sub = `bad-${crypto.randomUUID()}`;
+    const user = await upsertUser(env.DB, sub, null, null);
+    // The Path 4 contract: redeemInvite failure is swallowed; user is
+    // already created above, the JWT path would proceed unchanged.
+    const r = await redeemInvite(env.DB, 'NOSUCH', user.id);
+    expect(r).toEqual({ error: 'unknown' });
+
+    // User row persists — they're signed in, just without auto-join.
+    // They can paste a fresh code from the in-app Group tab.
+    const stillThere = await env.DB
+      .prepare('SELECT id FROM users WHERE apple_sub = ?1')
+      .bind(sub)
+      .first<{ id: string }>();
+    expect(stillThere?.id).toBe(user.id);
+  });
+
+  it('expired code → user STILL signed in, code stays unused', async () => {
+    const owner = await ensureOwnerUser(env.DB, undefined);
+    const group = await createGroup(env.DB, owner.id, 'Stale');
+    const invite = await createInvite(env.DB, owner.id, group.id, Date.now() - 1000);
+
+    const sub = `exp-${crypto.randomUUID()}`;
+    const user = await upsertUser(env.DB, sub, null, null);
+    const r = await redeemInvite(env.DB, invite.code, user.id);
+    expect(r).toEqual({ error: 'expired' });
+
+    // No membership formed; the legacy code stays unused (caller didn't
+    // burn it on a failed attempt).
+    expect(await isGroupMember(env.DB, user.id, group.id)).toBe(false);
+    const inv = await env.DB
+      .prepare('SELECT used_at FROM group_invites WHERE code = ?1')
+      .bind(invite.code)
+      .first<{ used_at: number | null }>();
+    expect(inv!.used_at).toBeNull();
   });
 });
 

@@ -20,8 +20,10 @@ struct APIClient {
                    inviteCode: String? = nil) async throws -> AuthResponse {
         // M5: `invite_code` is OPTIONAL — bootstrap users (OWNER_APPLE_SUB
         // path, fresh-install path) and existing users sign in without one.
-        // Only new Apple subs need an invite. POST helper strips NSNull, so
-        // omit the key entirely (vs. pass null) when no code is present.
+        // Only new Apple subs need an invite. We build the dict conditionally
+        // (omit the key) rather than passing NSNull, which the POST helper
+        // would now serialize as explicit JSON `null` — and the server's
+        // path 4 treats a string value differently from null/absent.
         var body: [String: Any] = ["identityToken": identityToken]
         if let fullName { body["fullName"] = fullName }
         if let inviteCode, !inviteCode.isEmpty { body["invite_code"] = inviteCode }
@@ -100,8 +102,14 @@ struct APIClient {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let jwt { req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization") }
         req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
-        req.httpBody = try JSONSerialization.data(
-            withJSONObject: body.compactMapValues { $0 is NSNull ? nil : $0 })
+        // NSNull must round-trip as JSON `null` — some POST endpoints
+        // distinguish `null` from an omitted key (POST /groups/:id/invites
+        // treats `expires_at: null` as "never expires" but `expires_at`
+        // absent as "default 30d"). Call sites that want to OMIT a field
+        // build the dict conditionally (see e.g. createSession), so
+        // dropping NSNull here would silently re-map the explicit-null
+        // contract to the default-value path.
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
         return try await send(req)
     }
 

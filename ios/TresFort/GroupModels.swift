@@ -97,6 +97,12 @@ struct GroupFeedResponse: Decodable {
     /// epoch_ms of the OLDEST item returned — pass back as `?since=` to
     /// page through history. Null when the response is empty.
     let next_since: Int?
+    /// Tie-breaker for the composite (`occurred_at`, `id`) cursor: the id
+    /// of the OLDEST item returned. MUST be sent back alongside `since`
+    /// (as `?since_id=`) when paginating — otherwise rows that share the
+    /// page-boundary `occurred_at` get strict-older semantics applied and
+    /// are permanently skipped. Null when the response is empty.
+    let next_since_id: String?
     let server_time: Int
 }
 

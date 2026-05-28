@@ -133,14 +133,20 @@ extension APIClient {
 
     /// GET /api/groups/:id/feed — interleaved session/ride/activity stream
     /// ordered by `occurred_at` DESC. Default limit 30, max 100. Pass
-    /// `since` (= the `next_since` from a previous page) to paginate back
-    /// through history; pass nil for "most recent N".
+    /// `since` (= the `next_since` from a previous page) AND `sinceID`
+    /// (= the `next_since_id` from the same page) to paginate back through
+    /// history; pass nil for "most recent N". The composite cursor is
+    /// required: omitting `sinceID` makes the server fall back to strict
+    /// older-than semantics on `since`, which silently drops every row
+    /// tied at the page-boundary `occurred_at`.
     func getGroupFeed(groupID: String,
                       since: Int? = nil,
+                      sinceID: String? = nil,
                       limit: Int = 30,
                       jwt: String) async throws -> GroupFeedResponse {
         var path = "api/groups/\(groupID)/feed?limit=\(limit)"
         if let since { path += "&since=\(since)" }
+        if let sinceID { path += "&since_id=\(sinceID)" }
         return try await get(path, jwt: jwt)
     }
 

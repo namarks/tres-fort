@@ -68,6 +68,18 @@ function num(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
+/**
+ * Parse an intervals.icu `start_date_local` ("YYYY-MM-DDTHH:MM:SS") to
+ * epoch-ms by treating it as UTC. Used ONLY as an ordering key for the
+ * group feed — comparing the same civil-time strings across users in
+ * different timezones gives a stable, reproducible numeric order without
+ * needing a per-user timezone lookup. Returns null on any parse failure.
+ */
+function parseCivilToMs(startLocal: string): number | null {
+  const ms = Date.parse(startLocal + 'Z');
+  return Number.isFinite(ms) ? ms : null;
+}
+
 function str(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
@@ -143,6 +155,12 @@ export async function fetchPlannedEvents(
     events.push({
       external_id: externalId,
       date: startLocal.slice(0, 10), // verbatim civil date, no tz math
+      // start_date_local is "YYYY-MM-DDTHH:MM:SS" (civil time, no zone).
+      // Parse as UTC for an order-stable numeric — across users in different
+      // tzs, two events at the same civil time get the same numeric key,
+      // which is the correct ordering for a "what happened on each day"
+      // feed. Returns null on parse failure rather than NaN.
+      start_date_local_ms: parseCivilToMs(startLocal),
       kind: kindOf(raw.type),
       title: str(raw.name),
       description: str(raw.description),
@@ -242,6 +260,8 @@ export async function fetchCompletedActivities(
     activities.push({
       external_id: externalId,
       date: startLocal.slice(0, 10), // verbatim civil date, no tz math
+      // See note on PlannedEvent.start_date_local_ms — same ordering proxy.
+      start_date_local_ms: parseCivilToMs(startLocal),
       kind: kindOf(raw.type),
       name: str(raw.name),
       moving_time_sec: num(raw.moving_time),

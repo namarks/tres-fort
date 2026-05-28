@@ -56,7 +56,7 @@ describe('scheduled() cron entrypoint', () => {
     expect(urls.some((u) => u.includes('/events?'))).toBe(true);
     expect(urls.some((u) => u.includes('/activities?'))).toBe(true);
     const rows = await getUpcomingRides(env.DB, owner.id, { from: '2026-05-18' });
-    expect(rows.some((r) => r.id === 'intervals:sched-1')).toBe(true);
+    expect(rows.some((r) => r.id === `intervals:${owner.id}:sched-1`)).toBe(true);
   });
 
   it('a failing fetch does not throw and leaves the cache untouched', async () => {

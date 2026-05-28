@@ -159,6 +159,8 @@ export interface ExternalEventRow {
 export interface PlannedEvent {
   external_id: string;
   date: string; // start_date_local YYYY-MM-DD verbatim
+  /** start_date_local parsed to epoch-ms (treated as UTC for ordering only). */
+  start_date_local_ms: number | null;
   kind: string; // ride|run|swim|other
   title: string | null;
   description: string | null;
@@ -205,6 +207,8 @@ export interface ExternalActivityRow {
 export interface CompletedActivity {
   external_id: string;
   date: string; // start_date_local YYYY-MM-DD verbatim
+  /** start_date_local parsed to epoch-ms (treated as UTC for ordering only). */
+  start_date_local_ms: number | null;
   kind: string; // ride|run|swim|other
   name: string | null;
   moving_time_sec: number | null;

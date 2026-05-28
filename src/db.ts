@@ -279,14 +279,33 @@ export async function seedOwnerIntervalsCredsFromEnv(
   apiKey: string | null | undefined,
   athleteId: string | null | undefined,
 ): Promise<IntervalsUserCreds[]> {
-  const existing = await listUsersWithIntervalsCreds(db);
-  if (existing.length > 0) return existing;
-  if (!apiKey || !athleteId) return existing;
+  // Owner is the first user by created_at. The seed gate is OWNER-SPECIFIC:
+  // an early "any user has creds → done" check would skip the owner if a
+  // later-joined member happened to connect their intervals account before
+  // the first post-deploy sync (the owner would then lose ride syncing
+  // until they manually re-entered creds).
   const owner = await db
-    .prepare('SELECT id FROM users ORDER BY created_at LIMIT 1')
-    .first<{ id: string }>();
-  if (!owner) return existing;
-  if (await userHasTouchedIntervalsCreds(db, owner.id)) return existing;
+    .prepare(
+      `SELECT id, intervals_api_key, intervals_athlete_id
+         FROM users ORDER BY created_at LIMIT 1`,
+    )
+    .first<{
+      id: string;
+      intervals_api_key: string | null;
+      intervals_athlete_id: string | null;
+    }>();
+  if (!owner) return listUsersWithIntervalsCreds(db);
+  // Already seeded (or set via PATCH): no-op.
+  if (owner.intervals_api_key && owner.intervals_athlete_id) {
+    return listUsersWithIntervalsCreds(db);
+  }
+  // Owner has explicitly PATCHed their creds (set then cleared, possibly):
+  // NULLs here are intentional disconnects, not "never migrated." Respect.
+  if (await userHasTouchedIntervalsCreds(db, owner.id)) {
+    return listUsersWithIntervalsCreds(db);
+  }
+  // No env values to seed from → dormant.
+  if (!apiKey || !athleteId) return listUsersWithIntervalsCreds(db);
   await db
     .prepare(
       `UPDATE users
@@ -3803,20 +3822,24 @@ export async function syncExternalEvents(
   const stmts: D1PreparedStatement[] = [];
 
   for (const ev of fetched.events) {
-    const id = `intervals:${ev.external_id}`;
+    // Per-user PK. The old "intervals:{external_id}" format collided when
+    // two users returned the same upstream id; migration 0019 re-keys
+    // legacy rows to the new format so this UPDATE path matches them.
+    const id = `intervals:${userId}:${ev.external_id}`;
     seen.add(id);
-    // Upsert by PK (id is deterministic from source+external_id). A reschedule
-    // (same external_id, new date) just updates `date` on the same row and
-    // clears any prior soft-delete (the event came back).
+    // Upsert by PK (id is deterministic from source+user+external_id). A
+    // reschedule (same external_id, new date) just updates `date` on the
+    // same row and clears any prior soft-delete (the event came back).
     stmts.push(
       db
         .prepare(
           `INSERT INTO external_events
-             (id,user_id,source,external_id,date,kind,title,description,
+             (id,user_id,source,external_id,date,start_date_local_ms,kind,title,description,
               planned_duration_sec,training_load,intensity,raw,synced_at,deleted_at)
-           VALUES (?1,?2,'intervals',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL)
+           VALUES (?1,?2,'intervals',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL)
            ON CONFLICT(id) DO UPDATE SET
              date=excluded.date,
+             start_date_local_ms=excluded.start_date_local_ms,
              kind=excluded.kind,
              title=excluded.title,
              description=excluded.description,
@@ -3832,6 +3855,7 @@ export async function syncExternalEvents(
           userId,
           ev.external_id,
           ev.date,
+          ev.start_date_local_ms,
           ev.kind,
           ev.title,
           ev.description,
@@ -4011,20 +4035,22 @@ export async function syncExternalActivities(
   const stmts: D1PreparedStatement[] = [];
 
   for (const a of fetched.activities) {
-    const id = `intervals:activity:${a.external_id}`;
+    // Per-user PK — see note in syncExternalEvents and migration 0019.
+    const id = `intervals:activity:${userId}:${a.external_id}`;
     seen.add(id);
     stmts.push(
       db
         .prepare(
           `INSERT INTO external_activities
-             (id,user_id,source,external_id,date,kind,name,
+             (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
               moving_time_sec,elapsed_time_sec,distance_m,average_watts,
               weighted_avg_watts,average_hr,max_hr,training_load,intensity,
               calories,elevation_gain_m,raw,synced_at,deleted_at)
            VALUES (?1,?2,'intervals',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,
-                   ?15,?16,?17,?18,?19,NULL)
+                   ?15,?16,?17,?18,?19,?20,NULL)
            ON CONFLICT(id) DO UPDATE SET
              date=excluded.date,
+             start_date_local_ms=excluded.start_date_local_ms,
              kind=excluded.kind,
              name=excluded.name,
              moving_time_sec=excluded.moving_time_sec,
@@ -4047,6 +4073,7 @@ export async function syncExternalActivities(
           userId,
           a.external_id,
           a.date,
+          a.start_date_local_ms,
           a.kind,
           a.name,
           a.moving_time_sec,
@@ -4546,20 +4573,23 @@ export async function getGroupFeed(
     },
   }));
 
-  // 2c. Rides (external_activities). `start_date_local` isn't a column in
-  //     this table (see migration 0015) — we use `synced_at` as the
-  //     epoch-ms timestamp ordering proxy. The wire `date` is the civil
-  //     YYYY-MM-DD from the row, which IS derived from start_date_local
-  //     upstream in the intervals.ts fetcher.
+  // 2c. Rides (external_activities). Order by `start_date_local_ms`
+  //     (migration 0019) — the actual workout start time. `synced_at`
+  //     used to be the proxy but it rewrites on every cron tick, which
+  //     bubbled every recent ride to the top of the feed after each
+  //     sync and broke pagination. COALESCE handles any legacy row that
+  //     somehow escaped the migration backfill (defensive — should not
+  //     happen on a freshly-migrated DB).
   const rideRows = await db
     .prepare(
       `SELECT id, user_id, date, kind, name, moving_time_sec, distance_m,
-              average_watts, training_load, elevation_gain_m, synced_at
+              average_watts, training_load, elevation_gain_m,
+              COALESCE(start_date_local_ms, synced_at) AS occurred_at
          FROM external_activities
         WHERE user_id IN (${placeholders})
           AND deleted_at IS NULL
-          AND synced_at < ?${memberIds.length + 1}
-        ORDER BY synced_at DESC
+          AND COALESCE(start_date_local_ms, synced_at) < ?${memberIds.length + 1}
+        ORDER BY COALESCE(start_date_local_ms, synced_at) DESC
         LIMIT ?${memberIds.length + 2}`,
     )
     .bind(...memberIds, upper, sourceLimit)
@@ -4574,7 +4604,7 @@ export async function getGroupFeed(
       average_watts: number | null;
       training_load: number | null;
       elevation_gain_m: number | null;
-      synced_at: number;
+      occurred_at: number;
     }>();
 
   const rideItems: FeedRideItem[] = rideRows.results.map((r) => ({
@@ -4584,7 +4614,7 @@ export async function getGroupFeed(
     user_display_name: memberMeta.get(r.user_id)?.displayName ?? 'Member',
     is_me: r.user_id === callerUserId,
     date: r.date,
-    occurred_at: r.synced_at,
+    occurred_at: r.occurred_at,
     ride: {
       kind: r.kind,
       name: r.name,

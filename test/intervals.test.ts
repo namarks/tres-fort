@@ -128,8 +128,11 @@ describe('syncExternalEvents — reconciled cache, the failed-fetch guard', () =
     expect(r.status).toBe('ok');
     expect(r.synced).toBe(2);
     const rows = await getUpcomingRides(env.DB, userId, { from: TODAY });
-    expect(rows.map((x) => x.id).sort()).toEqual(['intervals:a', 'intervals:b']);
-    expect(rows.find((x) => x.id === 'intervals:a')!.date).toBe('2026-05-20');
+    expect(rows.map((x) => x.id).sort()).toEqual([
+      `intervals:${userId}:a`,
+      `intervals:${userId}:b`,
+    ]);
+    expect(rows.find((x) => x.id === `intervals:${userId}:a`)!.date).toBe('2026-05-20');
   });
 
   it('reschedule: same external_id, new date → date updates in place', async () => {
@@ -146,7 +149,7 @@ describe('syncExternalEvents — reconciled cache, the failed-fetch guard', () =
     } as any);
     const rows = await getUpcomingRides(env.DB, userId, { from: TODAY });
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.id).toBe('intervals:a');
+    expect(rows[0]!.id).toBe(`intervals:${userId}:a`);
     expect(rows[0]!.date).toBe('2026-05-27');
   });
 
@@ -165,10 +168,12 @@ describe('syncExternalEvents — reconciled cache, the failed-fetch guard', () =
     } as any);
     expect(r.synced).toBe(1);
     const live = await getUpcomingRides(env.DB, userId, { from: TODAY });
-    expect(live.map((x) => x.id)).toEqual(['intervals:a']);
+    expect(live.map((x) => x.id)).toEqual([`intervals:${userId}:a`]);
     const dead = await env.DB.prepare(
-      "SELECT deleted_at FROM external_events WHERE id='intervals:b'",
-    ).first<{ deleted_at: number | null }>();
+      "SELECT deleted_at FROM external_events WHERE id=?1",
+    )
+      .bind(`intervals:${userId}:b`)
+      .first<{ deleted_at: number | null }>();
     expect(dead!.deleted_at).not.toBeNull();
   });
 
@@ -188,7 +193,10 @@ describe('syncExternalEvents — reconciled cache, the failed-fetch guard', () =
     expect(r.synced).toBe(0);
     // BOTH rows still live — nothing upserted, nothing soft-deleted.
     const live = await getUpcomingRides(env.DB, userId, { from: TODAY });
-    expect(live.map((x) => x.id).sort()).toEqual(['intervals:a', 'intervals:b']);
+    expect(live.map((x) => x.id).sort()).toEqual([
+      `intervals:${userId}:a`,
+      `intervals:${userId}:b`,
+    ]);
     const anyDeleted = await env.DB.prepare(
       'SELECT COUNT(*) AS c FROM external_events WHERE user_id=?1 AND deleted_at IS NOT NULL',
     )
@@ -211,12 +219,14 @@ describe('syncExternalEvents — reconciled cache, the failed-fetch guard', () =
     } as any);
     expect(r.status).toBe('fetch_failed');
     const live = await getUpcomingRides(env.DB, userId, { from: TODAY });
-    expect(live.map((x) => x.id)).toEqual(['intervals:a']);
+    expect(live.map((x) => x.id)).toEqual([`intervals:${userId}:a`]);
     // Symmetric with the 500-guard test: prove the existing row was NOT
     // soft-deleted by the timed-out sync (deleted_at still NULL).
     const row = await env.DB.prepare(
-      "SELECT deleted_at FROM external_events WHERE id='intervals:a'",
-    ).first<{ deleted_at: number | null }>();
+      "SELECT deleted_at FROM external_events WHERE id=?1",
+    )
+      .bind(`intervals:${userId}:a`)
+      .first<{ deleted_at: number | null }>();
     expect(row!.deleted_at).toBeNull();
   });
 
@@ -237,8 +247,10 @@ describe('syncExternalEvents — reconciled cache, the failed-fetch guard', () =
     const live = await getUpcomingRides(env.DB, userId, { from: TODAY });
     expect(live).toHaveLength(0);
     const dead = await env.DB.prepare(
-      "SELECT deleted_at FROM external_events WHERE id='intervals:a'",
-    ).first<{ deleted_at: number | null }>();
+      "SELECT deleted_at FROM external_events WHERE id=?1",
+    )
+      .bind(`intervals:${userId}:a`)
+      .first<{ deleted_at: number | null }>();
     expect(dead!.deleted_at).not.toBeNull();
   });
 
@@ -267,7 +279,7 @@ describe('syncExternalEvents — reconciled cache, the failed-fetch guard', () =
     } as any);
     expect(r.status).toBe('ok');
     const rows = await getUpcomingRides(env.DB, owner.id, { from: TODAY });
-    expect(rows.some((x) => x.id === 'intervals:owner-ride')).toBe(true);
+    expect(rows.some((x) => x.id === `intervals:${owner.id}:owner-ride`)).toBe(true);
   });
 });
 
@@ -288,10 +300,10 @@ describe('FIX 3: tombstone advances synced_at so incremental clients see removal
     // Pin 'b' to a known OLD synced_at — the cursor an incremental client
     // would hold after it saw the live event. Deterministic, clock-free.
     const OLD = 1000;
-    await env.DB.prepare(
-      "UPDATE external_events SET synced_at = ?1 WHERE id = 'intervals:b'",
-    )
-      .bind(OLD)
+    const bId = `intervals:${userId}:b`;
+    const aId = `intervals:${userId}:a`;
+    await env.DB.prepare('UPDATE external_events SET synced_at = ?1 WHERE id = ?2')
+      .bind(OLD, bId)
       .run();
 
     // Successful sync that no longer contains 'b' → tombstone.
@@ -303,8 +315,10 @@ describe('FIX 3: tombstone advances synced_at so incremental clients see removal
     expect(r.status).toBe('ok');
 
     const dead = await env.DB.prepare(
-      "SELECT deleted_at, synced_at FROM external_events WHERE id='intervals:b'",
-    ).first<{ deleted_at: number | null; synced_at: number }>();
+      'SELECT deleted_at, synced_at FROM external_events WHERE id=?1',
+    )
+      .bind(bId)
+      .first<{ deleted_at: number | null; synced_at: number }>();
     expect(dead!.deleted_at).not.toBeNull();
     // The fix: synced_at moved off the old cursor to the deletion time.
     expect(dead!.synced_at).toBe(dead!.deleted_at);
@@ -314,14 +328,14 @@ describe('FIX 3: tombstone advances synced_at so incremental clients see removal
     // the tombstone so the client can drop it. Pre-fix this is excluded
     // because synced_at stayed at OLD and the filter is `synced_at > OLD`.
     const incr = await getState(env.DB, userId, 0, 0, OLD);
-    const bTomb = incr.external_events.find((e) => e.id === 'intervals:b');
+    const bTomb = incr.external_events.find((e) => e.id === bId);
     expect(bTomb).toBeDefined();
     expect(bTomb!.deleted_at).not.toBeNull();
 
     // Full reload (events_since absent/0) still returns only non-deleted.
     const full = await getState(env.DB, userId, 0, 0, 0);
-    expect(full.external_events.some((e) => e.id === 'intervals:b')).toBe(false);
-    expect(full.external_events.some((e) => e.id === 'intervals:a')).toBe(true);
+    expect(full.external_events.some((e) => e.id === bId)).toBe(false);
+    expect(full.external_events.some((e) => e.id === aId)).toBe(true);
   });
 });
 
@@ -450,10 +464,10 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
     expect(r.synced).toBe(2);
     const rows = await getRecentActivities(env.DB, userId, { to: TODAY });
     expect(rows.map((x) => x.id).sort()).toEqual([
-      'intervals:activity:a1',
-      'intervals:activity:a2',
+      `intervals:activity:${userId}:a1`,
+      `intervals:activity:${userId}:a2`,
     ]);
-    expect(rows.find((x) => x.id === 'intervals:activity:a1')!.average_watts).toBe(185);
+    expect(rows.find((x) => x.id === `intervals:activity:${userId}:a1`)!.average_watts).toBe(185);
   });
 
   it('re-sync with changed actuals updates the same row in place', async () => {
@@ -487,10 +501,12 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
     } as any);
     expect(r.synced).toBe(1);
     const live = await getRecentActivities(env.DB, userId, { to: TODAY });
-    expect(live.map((x) => x.id)).toEqual(['intervals:activity:a1']);
+    expect(live.map((x) => x.id)).toEqual([`intervals:activity:${userId}:a1`]);
     const dead = await env.DB.prepare(
-      "SELECT deleted_at FROM external_activities WHERE id='intervals:activity:a2'",
-    ).first<{ deleted_at: number | null }>();
+      'SELECT deleted_at FROM external_activities WHERE id=?1',
+    )
+      .bind(`intervals:activity:${userId}:a2`)
+      .first<{ deleted_at: number | null }>();
     expect(dead!.deleted_at).not.toBeNull();
   });
 
@@ -508,7 +524,7 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
     } as any);
     expect(r.status).toBe('fetch_failed');
     const live = await getRecentActivities(env.DB, userId, { to: TODAY });
-    expect(live.map((x) => x.id)).toEqual(['intervals:activity:a1']);
+    expect(live.map((x) => x.id)).toEqual([`intervals:activity:${userId}:a1`]);
   });
 
   it('dormant when key unset: status disabled, cache untouched', async () => {
@@ -536,16 +552,15 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
       fetcher: payload([act({ id: 'a1' })]),
     } as any);
 
+    const a1Id = `intervals:activity:${userId}:a1`;
     // Full reload (activities_since omitted/0) → present.
     const full = await getState(env.DB, userId, 0, 0, 0, 0);
-    expect(full.external_activities.some((a) => a.id === 'intervals:activity:a1')).toBe(true);
+    expect(full.external_activities.some((a) => a.id === a1Id)).toBe(true);
 
     // Pin an OLD cursor, then tombstone via an empty successful sync.
     const OLD = 1000;
-    await env.DB.prepare(
-      "UPDATE external_activities SET synced_at=?1 WHERE id='intervals:activity:a1'",
-    )
-      .bind(OLD)
+    await env.DB.prepare('UPDATE external_activities SET synced_at=?1 WHERE id=?2')
+      .bind(OLD, a1Id)
       .run();
     await syncExternalActivities(env.DB, env as unknown as Env, {
       userId,
@@ -555,13 +570,13 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
 
     // Incremental (activities_since=OLD) → the tombstone reaches the client.
     const incr = await getState(env.DB, userId, 0, 0, 0, OLD);
-    const tomb = incr.external_activities.find((a) => a.id === 'intervals:activity:a1');
+    const tomb = incr.external_activities.find((a) => a.id === a1Id);
     expect(tomb).toBeDefined();
     expect(tomb!.deleted_at).not.toBeNull();
 
     // Full reload now excludes the tombstoned activity.
     const after = await getState(env.DB, userId, 0, 0, 0, 0);
-    expect(after.external_activities.some((a) => a.id === 'intervals:activity:a1')).toBe(false);
+    expect(after.external_activities.some((a) => a.id === a1Id)).toBe(false);
   });
 });
 
@@ -634,9 +649,9 @@ describe('M1: per-user creds — multi-user fan-out in syncExternalEvents', () =
     // Each user's cache contains only their own external_id, tagged with
     // their own user_id — no cross-contamination.
     const aRows = await getUpcomingRides(env.DB, userA, { from: TODAY });
-    expect(aRows.map((x) => x.id)).toEqual(['intervals:A1']);
+    expect(aRows.map((x) => x.id)).toEqual([`intervals:${userA}:A1`]);
     const bRows = await getUpcomingRides(env.DB, userB, { from: TODAY });
-    expect(bRows.map((x) => x.id)).toEqual(['intervals:B1']);
+    expect(bRows.map((x) => x.id)).toEqual([`intervals:${userB}:B1`]);
   });
 
   it('env-seed fallback: zero users with creds + env present → owner row seeded once', async () => {
@@ -677,7 +692,7 @@ describe('M1: per-user creds — multi-user fan-out in syncExternalEvents', () =
 
     // And the synced row tags to the owner.
     const rows = await getUpcomingRides(env.DB, ownerId, { from: TODAY });
-    expect(rows.map((x) => x.id)).toEqual(['intervals:seed-1']);
+    expect(rows.map((x) => x.id)).toEqual([`intervals:${ownerId}:seed-1`]);
   });
 
   it('env-seed fallback: respects explicit disconnect — once owner has PATCHed creds, env is not re-seeded', async () => {
@@ -816,8 +831,138 @@ describe('M1: per-user creds — multi-user fan-out in syncExternalActivities', 
     expect(seen.find((c) => c.athleteId === 'aath-B')!.apiKey).toBe('akey-B');
 
     const aRows = await getRecentActivities(env.DB, userA, { to: TODAY });
-    expect(aRows.map((x) => x.id)).toEqual(['intervals:activity:aA1']);
+    expect(aRows.map((x) => x.id)).toEqual([`intervals:activity:${userA}:aA1`]);
     const bRows = await getRecentActivities(env.DB, userB, { to: TODAY });
-    expect(bRows.map((x) => x.id)).toEqual(['intervals:activity:aB1']);
+    expect(bRows.map((x) => x.id)).toEqual([`intervals:activity:${userB}:aB1`]);
+  });
+
+  // Codex PR #36 P2: under the single-user schema, the PK was just
+  // "intervals:activity:{external_id}", so two users returning the SAME
+  // upstream external_id (intervals.icu ids are per-athlete, not globally
+  // unique) would collide on the PK and the second sync's ON CONFLICT
+  // would silently overwrite user_A's row with user_B's payload while
+  // leaving user_id pointing at user_A. The fix is per-user PKs; this
+  // test reproduces a same-external_id collision and asserts both users
+  // get their own row attributed correctly.
+  it('two users syncing the SAME upstream external_id keep their rows separate', async () => {
+    await env.DB.prepare('DELETE FROM external_activities').run();
+    await env.DB.prepare('DELETE FROM users').run();
+    const userA = await userWithCreds('cAk-A', 'cAath-A');
+    const userB = await userWithCreds('cAk-B', 'cAath-B');
+    // Both athletes return an activity with the SAME external_id 'shared-7'.
+    const dispatchFetcher = (async (url: string) => {
+      const m = /athlete\/([^/]+)\//.exec(url);
+      const athleteId = m ? m[1]! : '';
+      const rows =
+        athleteId === 'cAath-A'
+          ? [act({ id: 'shared-7', icu_average_watts: 200 })]
+          : [act({ id: 'shared-7', icu_average_watts: 300 })];
+      return { ok: true, status: 200, json: async () => rows };
+    }) as Fetcher;
+
+    const r = await syncExternalActivities(env.DB, env as unknown as Env, {
+      today: TODAY,
+      fetcher: dispatchFetcher,
+    } as any);
+    expect(r.status).toBe('ok');
+    expect(r.synced).toBe(2);
+
+    // Each user's row stays attributed to them with their own payload.
+    const aRows = await getRecentActivities(env.DB, userA, { to: TODAY });
+    expect(aRows).toHaveLength(1);
+    expect(aRows[0]!.id).toBe(`intervals:activity:${userA}:shared-7`);
+    expect(aRows[0]!.average_watts).toBe(200);
+
+    const bRows = await getRecentActivities(env.DB, userB, { to: TODAY });
+    expect(bRows).toHaveLength(1);
+    expect(bRows[0]!.id).toBe(`intervals:activity:${userB}:shared-7`);
+    expect(bRows[0]!.average_watts).toBe(300);
+  });
+});
+
+// Codex PR #36 P2: the owner env-seed must not be skipped just because
+// SOMEONE ELSE happens to have intervals creds. If a newly-invited member
+// connected their intervals account before the first post-deploy cron tick,
+// the owner row would never get seeded and the owner would silently lose
+// ride syncing. The seed gate is OWNER-SPECIFIC.
+describe('M1: owner env-seed gate is owner-specific (not global)', () => {
+  it('seeds owner even when another user already has intervals creds', async () => {
+    await env.DB.prepare('DELETE FROM external_events').run();
+    await env.DB.prepare('DELETE FROM external_activities').run();
+    await env.DB.prepare('DELETE FROM users').run();
+    await env.DB.prepare('DELETE FROM audit_log').run();
+
+    // Owner FIRST by created_at; columns NULL (legacy env-secret deploy
+    // that hasn't been seeded yet). Use a hand-picked older created_at to
+    // make the ordering deterministic regardless of insert speed.
+    const ownerId = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,?3,?4,?5)',
+    )
+      .bind(ownerId, 'owner-sub', null, 'Owner', 1000)
+      .run();
+
+    // Newly-invited user joined AFTER and connected their own account first.
+    await env.DB.prepare(
+      `INSERT INTO users (id,apple_sub,email,display_name,created_at,intervals_api_key,intervals_athlete_id)
+       VALUES (?1,?2,?3,?4,?5,?6,?7)`,
+    )
+      .bind(crypto.randomUUID(), 'second-sub', null, 'Second', 2000, 'second-key', 'second-ath')
+      .run();
+
+    const r = await syncExternalEvents(env.DB, env as unknown as Env, {
+      today: TODAY,
+      fetcher: payload([]), // empty success — we care about the seed side-effect, not the sync
+    } as any);
+    expect(r.status).toBe('ok');
+
+    // Owner row got seeded from env on this same call.
+    const post = await env.DB.prepare(
+      'SELECT intervals_api_key, intervals_athlete_id FROM users WHERE id = ?1',
+    )
+      .bind(ownerId)
+      .first<{ intervals_api_key: string; intervals_athlete_id: string }>();
+    expect(post!.intervals_api_key).toBe(env.INTERVALS_ICU_API_KEY);
+    expect(post!.intervals_athlete_id).toBe(env.INTERVALS_ICU_ATHLETE_ID);
+  });
+});
+
+// Codex PR #36 P1: rides were ordered by synced_at in the group feed, but
+// synced_at rewrites on every cron tick. The fix is to populate (and
+// order by) start_date_local_ms — the actual activity start time.
+describe('M1: ride sync writes start_date_local_ms for ordering', () => {
+  it('start_date_local_ms is populated from intervals start_date_local; survives re-sync without bumping', async () => {
+    await env.DB.prepare('DELETE FROM external_activities').run();
+    const userId = await freshUser();
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'r1', start_date_local: '2026-05-15T07:30:00' })]),
+    } as any);
+    const before = await env.DB.prepare(
+      'SELECT start_date_local_ms, synced_at FROM external_activities WHERE id=?1',
+    )
+      .bind(`intervals:activity:${userId}:r1`)
+      .first<{ start_date_local_ms: number; synced_at: number }>();
+    // 2026-05-15T07:30:00Z = epoch-ms 1779341400000
+    expect(before!.start_date_local_ms).toBe(Date.parse('2026-05-15T07:30:00Z'));
+
+    // Re-sync the same activity. start_date_local_ms should stay (same
+    // upstream time), but synced_at moves forward.
+    await new Promise((r) => setTimeout(r, 5));
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'r1', start_date_local: '2026-05-15T07:30:00' })]),
+    } as any);
+    const after = await env.DB.prepare(
+      'SELECT start_date_local_ms, synced_at FROM external_activities WHERE id=?1',
+    )
+      .bind(`intervals:activity:${userId}:r1`)
+      .first<{ start_date_local_ms: number; synced_at: number }>();
+    expect(after!.start_date_local_ms).toBe(before!.start_date_local_ms);
+    // synced_at moved forward — proving the ordering proxy USED to bubble
+    // this ride on every cron tick. The new start_date_local_ms stays put.
+    expect(after!.synced_at).toBeGreaterThanOrEqual(before!.synced_at);
   });
 });

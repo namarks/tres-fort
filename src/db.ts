@@ -2701,12 +2701,20 @@ export async function exportSessionLoad(
   const sessionRow = session;
   const computedLoad = computed;
 
-  // Per-user intervals.icu credentials (M1). Fall back to legacy env vars so
-  // a not-yet-migrated owner row still exports; the first sync after deploy
-  // seeds the columns from env via seedOwnerIntervalsCredsFromEnv.
+  // Per-user intervals.icu credentials (M1). Fall back to legacy env vars
+  // ONLY when this user has never PATCHed their creds — after an explicit
+  // disconnect, both columns are NULL but the audit row says "intentionally
+  // cleared." Without this guard, completing a session would re-export to
+  // intervals.icu via env creds even though the user explicitly disconnected
+  // (the sync paths already enforce the same invariant via the same helper).
   const userCreds = await getUserIntervalsCreds(db, userId);
-  const apiKey = userCreds.api_key ?? env.INTERVALS_ICU_API_KEY;
-  const athleteId = userCreds.athlete_id ?? env.INTERVALS_ICU_ATHLETE_ID;
+  const envFallbackOk =
+    userCreds.api_key === null &&
+    userCreds.athlete_id === null &&
+    !(await userHasTouchedIntervalsCreds(db, userId));
+  const apiKey = userCreds.api_key ?? (envFallbackOk ? env.INTERVALS_ICU_API_KEY : null);
+  const athleteId =
+    userCreds.athlete_id ?? (envFallbackOk ? env.INTERVALS_ICU_ATHLETE_ID : null);
 
   // Day name for a friendly activity title.
   let dayName = 'Lifting';

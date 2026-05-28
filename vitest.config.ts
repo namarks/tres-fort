@@ -8,6 +8,10 @@ export default defineWorkersConfig(async () => {
   const migrations = await readD1Migrations(path.join(here, 'migrations'));
   return {
     test: {
+      // Only run this repo's own tests. Without an explicit include, vitest's
+      // default glob descends into agent worktrees under .claude/worktrees/
+      // and runs their stale snapshots.
+      include: ['test/**/*.test.ts'],
       poolOptions: {
         workers: {
           singleWorker: true,
@@ -19,7 +23,7 @@ export default defineWorkersConfig(async () => {
               MCP_STATIC_TOKEN: 'test-mcp-token',
               DEV_AUTH_SECRET: 'test-dev',
               OWNER_AUTH_PASSPHRASE: 'test-pass',
-              APPLE_BUNDLE_ID: 'com.example.liftcoach',
+              APPLE_BUNDLE_ID: 'com.example.tresfort',
               // intervals.icu cycling-awareness: test values so the feature
               // is "enabled" in tests, but the fetcher is always injected/
               // stubbed — the suite makes ZERO real network calls.

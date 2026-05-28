@@ -1,4 +1,4 @@
-# lift-coach
+# tres-fort
 
 An AI-coached lifting system. **Claude is the coach** — it owns and adapts your
 training plan through conversation (via MCP). A **native iOS app** is the gym
@@ -82,8 +82,8 @@ npm install
 npm test                              # 25 integration tests vs real D1
 npm run typecheck
 
-npx wrangler d1 create lift-coach-db  # first time; paste id into wrangler.jsonc
-npx wrangler d1 migrations apply lift-coach-db --remote
+npx wrangler d1 create tres-fort-db  # first time; paste id into wrangler.jsonc
+npx wrangler d1 migrations apply tres-fort-db --remote
 # secrets (set once, write-only):
 npx wrangler secret put APP_JWT_SECRET
 npx wrangler secret put MCP_STATIC_TOKEN
@@ -110,13 +110,13 @@ mobile app** too. Requires a paid Claude plan (Pro/Max); custom connectors
 aren't on the free tier.
 
 1. **Settings → Connectors → Add custom connector.**
-2. **Name:** anything (e.g. `Lift Coach`).
+2. **Name:** anything (e.g. `Très Fort`).
 3. **URL:** `https://<your-worker>.workers.dev/mcp`
 4. **Leave the Advanced fields (OAuth Client ID / Secret) blank** — the
    server supports Dynamic Client Registration (RFC 7591), so Claude
    registers itself automatically. Click **Add**.
 5. Claude discovers the OAuth endpoints and opens a **consent screen**
-   titled "Connect lift-coach" with an **Owner passphrase** field.
+   titled "Connect tres-fort" with an **Owner passphrase** field.
 6. Enter your `OWNER_AUTH_PASSPHRASE` → **Authorize**. The connector now
    shows as **Connected** (single-user gate — only someone with the
    passphrase can ever link a client).
@@ -130,7 +130,7 @@ aren't on the free tier.
 ### Option B — Claude Code (static bearer)
 
 ```bash
-claude mcp add --transport http --scope user lift-coach \
+claude mcp add --transport http --scope user tres-fort \
   https://<your-worker>.workers.dev/mcp \
   --header "Authorization: Bearer <MCP_STATIC_TOKEN>"
 ```
@@ -157,11 +157,11 @@ you execute and log in the iOS app. Both sides share one database.
 
 ```bash
 cd ios
-xcodegen generate          # regenerate LiftCoach.xcodeproj from project.yml
-open LiftCoach.xcodeproj
+xcodegen generate          # regenerate TresFort.xcodeproj from project.yml
+open TresFort.xcodeproj
 ```
 
-Use the **LiftCoach** scheme (never the widget-extension scheme). Automatic
+Use the **TresFort** scheme (never the widget-extension scheme). Automatic
 signing is preconfigured; set your own `DEVELOPMENT_TEAM` and
 `PRODUCT_BUNDLE_IDENTIFIER` in `ios/project.yml` if you fork. Distribution is
 TestFlight (internal).

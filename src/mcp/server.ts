@@ -53,7 +53,7 @@ import {
 } from '../db';
 import type { Weekday } from '../types';
 
-const SERVER_INFO = { name: 'lift-coach', version: '0.1.0' };
+const SERVER_INFO = { name: 'tres-fort', version: '0.1.0' };
 // Host-injected system instructions (MCP `initialize.instructions`). Shapes
 // how the model uses these tools — specifically the no-auto-log policy that
 // stops phantom/duplicate set_logs when the user is just narrating a workout
@@ -1116,7 +1116,7 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
     })),
   };
   return [
-    '# lift-coach — current state',
+    '# tres-fort — current state',
     'Auto-loaded context. Use the tools for anything deeper.',
     '```json',
     JSON.stringify(brief, null, 2),
@@ -1216,7 +1216,7 @@ async function dispatch(
               text:
                 'You are my strength coach. Here is my current state:\n\n' +
                 (await buildStateBrief(env, userId)) +
-                '\n\nUse the lift-coach tools to read history and adapt the plan as we talk.',
+                '\n\nUse the tres-fort tools to read history and adapt the plan as we talk.',
             },
           },
         ],

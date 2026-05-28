@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct LiftCoachApp: App {
+struct TresFortApp: App {
     @StateObject private var model = AuthModel()
 
     var body: some Scene {

@@ -56,6 +56,6 @@ struct RestActivityWidget: Widget {
 }
 
 @main
-struct LiftCoachWidgetsBundle: WidgetBundle {
+struct TresFortWidgetsBundle: WidgetBundle {
     var body: some Widget { RestActivityWidget() }
 }

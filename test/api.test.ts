@@ -1,7 +1,7 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-const BASE = 'https://lift-coach.test';
+const BASE = 'https://tres-fort.test';
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);

@@ -110,7 +110,7 @@ function consentPage(params: Record<string, string>, error?: string): string {
         `<input type="hidden" name="${k}" value="${v.replace(/"/g, '&quot;')}">`,
     )
     .join('');
-  return `<!doctype html><html><head><meta charset="utf-8"><title>lift-coach</title>
+  return `<!doctype html><html><head><meta charset="utf-8"><title>tres-fort</title>
 <style>body{font-family:-apple-system,system-ui,sans-serif;background:#0a0a0a;color:#eee;
 display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
 form{background:#161616;padding:32px;border-radius:14px;width:320px;border:1px solid #262626}
@@ -121,7 +121,7 @@ button{width:100%;margin-top:14px;padding:12px;background:#fff;color:#000;border
 border-radius:8px;font-weight:600;font-size:15px;cursor:pointer}
 .err{color:#ff6b6b;font-size:13px;margin-top:10px}</style></head>
 <body><form method="POST" action="/oauth/authorize">${hidden}
-<h1>Connect lift-coach</h1><p>Enter the owner passphrase to let Claude coach you.</p>
+<h1>Connect tres-fort</h1><p>Enter the owner passphrase to let Claude coach you.</p>
 <input type="password" name="passphrase" placeholder="Owner passphrase" autofocus>
 ${error ? `<div class="err">${error}</div>` : ''}
 <button type="submit">Authorize</button></form></body></html>`;

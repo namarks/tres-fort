@@ -9,7 +9,7 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-const BASE = 'https://lift-coach.test';
+const BASE = 'https://tres-fort.test';
 const TOKEN = 'test-mcp-token';
 
 beforeAll(async () => {

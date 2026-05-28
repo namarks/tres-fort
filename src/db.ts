@@ -129,11 +129,43 @@ export async function ensureOwnerUser(
   db: D1Database,
   ownerAppleSub: string | undefined,
 ): Promise<User> {
-  const existing = await db
-    .prepare('SELECT * FROM users ORDER BY created_at LIMIT 1')
-    .first<User>();
+  const existing = await findOwnerRow(db, ownerAppleSub);
   if (existing) return existing;
   return upsertUser(db, ownerAppleSub ?? BOOTSTRAP_APPLE_SUB, null, 'Owner');
+}
+
+/**
+ * Find the owner user row. Two semantics depending on whether the
+ * deployment has configured an OWNER_APPLE_SUB allowlist:
+ *
+ *  - ownerAppleSub SET → look up by apple_sub. The owner is specifically
+ *    the row whose apple_sub matches the configured allowlist; "earliest
+ *    user by created_at" would be wrong here because open sign-in (Path
+ *    4 in /auth/apple) can create non-owner accounts before the owner
+ *    ever signs in or MCP seeds the row. Treating a reviewer/new-user
+ *    row as the owner would attribute Claude's plan + sets + intervals
+ *    creds to the wrong user. (Codex PR #38 P1.)
+ *  - ownerAppleSub UNSET → fall back to "earliest by created_at." The
+ *    fresh-install/claim path (Path 3) ensures the earliest row is
+ *    always the rightful owner in this mode (no other path can create
+ *    a user before the owner has signed in or been bootstrap-seeded).
+ *
+ * Returns null when no matching row exists; the caller chooses whether
+ * to seed (ensureOwnerUser) or no-op (seedOwnerIntervalsCredsFromEnv).
+ */
+export async function findOwnerRow(
+  db: D1Database,
+  ownerAppleSub: string | undefined,
+): Promise<User | null> {
+  if (ownerAppleSub) {
+    return await db
+      .prepare('SELECT * FROM users WHERE apple_sub = ?1')
+      .bind(ownerAppleSub)
+      .first<User>();
+  }
+  return await db
+    .prepare('SELECT * FROM users ORDER BY created_at LIMIT 1')
+    .first<User>();
 }
 
 /**
@@ -304,22 +336,16 @@ export async function seedOwnerIntervalsCredsFromEnv(
   db: D1Database,
   apiKey: string | null | undefined,
   athleteId: string | null | undefined,
+  ownerAppleSub: string | undefined,
 ): Promise<IntervalsUserCreds[]> {
-  // Owner is the first user by created_at. The seed gate is OWNER-SPECIFIC:
-  // an early "any user has creds → done" check would skip the owner if a
-  // later-joined member happened to connect their intervals account before
-  // the first post-deploy sync (the owner would then lose ride syncing
-  // until they manually re-entered creds).
-  const owner = await db
-    .prepare(
-      `SELECT id, intervals_api_key, intervals_athlete_id
-         FROM users ORDER BY created_at LIMIT 1`,
-    )
-    .first<{
-      id: string;
-      intervals_api_key: string | null;
-      intervals_athlete_id: string | null;
-    }>();
+  // Resolve the owner row through findOwnerRow so OWNER_APPLE_SUB-set
+  // deployments don't accidentally seed env creds onto a non-owner row
+  // that happened to sign in first (Codex PR #38 P1). The seed gate is
+  // also OWNER-SPECIFIC: an early "any user has creds → done" check
+  // would skip the owner if a later-joined member happened to connect
+  // their intervals account before the first post-deploy sync (the
+  // owner would then lose ride syncing until they manually re-entered).
+  const owner = await findOwnerRow(db, ownerAppleSub);
   if (!owner) return listUsersWithIntervalsCreds(db);
   // Already seeded (or set via PATCH): no-op.
   if (owner.intervals_api_key && owner.intervals_athlete_id) {
@@ -3706,6 +3732,7 @@ export async function syncExternalEvents(
       db,
       env.INTERVALS_ICU_API_KEY,
       env.INTERVALS_ICU_ATHLETE_ID,
+      deps.ownerSub ?? env.OWNER_APPLE_SUB,
     );
     if (seeded.length === 0) {
       // No user has creds AND env is unset → dormant no-op for everyone.
@@ -3930,6 +3957,7 @@ export async function syncExternalActivities(
       db,
       env.INTERVALS_ICU_API_KEY,
       env.INTERVALS_ICU_ATHLETE_ID,
+      deps.ownerSub ?? env.OWNER_APPLE_SUB,
     );
     if (seeded.length === 0) {
       return { status: 'disabled', synced: 0, detail: 'disabled' };

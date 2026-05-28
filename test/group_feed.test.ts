@@ -378,6 +378,49 @@ describe('group feed: privacy contract', () => {
     expect(it.activity.duration_min).toBe(60);
   });
 
+  // Codex PR #36 P2: GET /api/today auto-creates a status='planned'
+  // session via getOrCreateSession before the user logs anything. Without
+  // a filter on session status, those planned rows leak into the group
+  // feed as 0-set "session" items — a groupmate who just opened Today
+  // would show up as having "trained." Only started/completed sessions
+  // count as activity.
+  it('planned sessions (auto-created by /api/today) are EXCLUDED from the feed', async () => {
+    const a = await devJwt();
+    const groupId = await createGroup(a.jwt, 'planned-leak');
+
+    // Hand-craft a planned session (status='planned', no started_at,
+    // no completed_at) directly — seedSession only writes completed /
+    // in_progress, which is precisely the legitimate states we want
+    // to keep in the feed. This row mirrors what getOrCreateSession
+    // writes when the user opens Today.
+    const planId = crypto.randomUUID();
+    const dayId = crypto.randomUUID();
+    const sessionId = crypto.randomUUID();
+    const ts = Date.now();
+    await env.DB.prepare(
+      "INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at) VALUES (?1,?2,'P','active',1,NULL,?3,?3)",
+    )
+      .bind(planId, a.id, ts)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO day_templates (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,'Lower A','A',0,NULL,?3,?3)",
+    )
+      .bind(dayId, planId, ts)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,'planned',NULL,NULL,NULL,NULL,?6,?6)",
+    )
+      .bind(sessionId, a.id, planId, dayId, '2026-05-26', ts)
+      .run();
+
+    const r = await SELF.fetch(`${BASE}/api/groups/${groupId}/feed`, {
+      headers: headers(a.jwt),
+    });
+    const body = await r.json<any>();
+    // Without the fix, this would return 1 item (the planned row).
+    expect(body.items).toHaveLength(0);
+  });
+
   it('soft-deleted activities are excluded from the feed', async () => {
     const a = await devJwt();
     const groupId = await createGroup(a.jwt, 'activity-deleted');

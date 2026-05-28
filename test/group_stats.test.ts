@@ -197,6 +197,49 @@ describe('group stats: workout_count + streak_days', () => {
     expect(me.streak_days).toBe(2);
   });
 
+  // Codex PR #36 P2: same planned-session leak as the feed query.
+  // getOrCreateSession (called by GET /api/today) creates a planned row
+  // before the user does anything. Without filtering on status, those
+  // rows inflate workout_count and can preserve / extend streak_days.
+  it('planned sessions are EXCLUDED from workout_count and streak_days', async () => {
+    const a = await devJwt();
+    const groupId = await createGroup(a.jwt, 'planned-stats');
+    const today = todayUtc();
+
+    // Hand-craft a planned session on today's date — mirroring what
+    // getOrCreateSession writes when the user opens Today.
+    const planId = crypto.randomUUID();
+    const dayId = crypto.randomUUID();
+    const sessionId = crypto.randomUUID();
+    const ts = Date.now();
+    await env.DB.prepare(
+      "INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at) VALUES (?1,?2,'P','active',1,NULL,?3,?3)",
+    )
+      .bind(planId, a.id, ts)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO day_templates (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,'Lower A','A',0,NULL,?3,?3)",
+    )
+      .bind(dayId, planId, ts)
+      .run();
+    await env.DB.prepare(
+      "INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,'planned',NULL,NULL,NULL,NULL,?6,?6)",
+    )
+      .bind(sessionId, a.id, planId, dayId, today, ts)
+      .run();
+
+    const r = await SELF.fetch(
+      `${BASE}/api/groups/${groupId}/stats?range=7d`,
+      { headers: headers(a.jwt) },
+    );
+    const body = await r.json<any>();
+    const me = body.members.find((m: any) => m.user_id === a.id);
+    // Without the fix: workout_count=1 (the planned row's date),
+    // streak_days=1 (today active via the planned row).
+    expect(me.workout_count).toBe(0);
+    expect(me.streak_days).toBe(0);
+  });
+
   it('streak = 0 when neither today nor yesterday have activity', async () => {
     const a = await devJwt();
     const groupId = await createGroup(a.jwt, 'streak-zero');

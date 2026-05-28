@@ -12,12 +12,14 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
+  BOOTSTRAP_APPLE_SUB,
   claimOrCreateOwner,
   countUsers,
   createGroup,
   createInvite,
   createUserAndRedeemInvite,
   ensureOwnerUser,
+  isBootstrapClaimEligible,
   isGroupMember,
 } from '../src/db';
 
@@ -201,6 +203,83 @@ describe('bootstrap path: claimOrCreateOwner + countUsers', () => {
     const user = await claimOrCreateOwner(env.DB, sub, 'fresh@test', 'Fresh', false);
     expect(user.apple_sub).toBe(sub);
     expect(await countUsers(env.DB)).toBe(1);
+  });
+
+  // Codex PR #36 P1: when MCP has already called ensureOwnerUser (the
+  // single 'mcp-owner' row exists) AND OWNER_APPLE_SUB is unset, the
+  // FIRST iOS sign-in must still be able to claim that row. Path 3 in
+  // /auth/apple used to require countUsers === 0 and locked the legit
+  // owner out — they hit "not_invited" 403 despite owning the install.
+  // The fix is isBootstrapClaimEligible, which also accepts a sole row
+  // matching the BOOTSTRAP_APPLE_SUB sentinel.
+  it('claim-eligible when sole users row is the MCP bootstrap sentinel (countUsers=1)', async () => {
+    await env.DB.prepare('DELETE FROM group_invites').run();
+    await env.DB.prepare('DELETE FROM group_members').run();
+    await env.DB.prepare('DELETE FROM groups').run();
+    await env.DB.prepare('DELETE FROM users').run();
+
+    // Simulate MCP/OAuth seeding the owner row before any iOS sign-in.
+    // ensureOwnerUser(undefined) writes apple_sub = BOOTSTRAP_APPLE_SUB.
+    const seeded = await ensureOwnerUser(env.DB, undefined);
+    expect(seeded.apple_sub).toBe(BOOTSTRAP_APPLE_SUB);
+    expect(await countUsers(env.DB)).toBe(1);
+
+    // The bug: under the old "countUsers === 0" gate, this would be
+    // false and the iOS sub would fall through to "not_invited" 403.
+    expect(await isBootstrapClaimEligible(env.DB)).toBe(true);
+
+    // Sign-in path then calls claimOrCreateOwner(unlocked), which rebinds
+    // the seeded row to the real Apple sub (no duplicate user created).
+    const realSub = `sub-real-${crypto.randomUUID()}`;
+    const claimed = await claimOrCreateOwner(env.DB, realSub, 'real@test', 'Real', false);
+    expect(claimed.id).toBe(seeded.id);
+    expect(claimed.apple_sub).toBe(realSub);
+    expect(await countUsers(env.DB)).toBe(1); // no duplicate
+  });
+
+  it('NOT claim-eligible once the sole row has been claimed by a real apple_sub', async () => {
+    // After legitimate claim, the row's apple_sub is no longer the
+    // sentinel. A second unrelated Apple sub must NOT be able to claim
+    // that same row — otherwise it would steal the existing user.
+    await env.DB.prepare('DELETE FROM group_invites').run();
+    await env.DB.prepare('DELETE FROM group_members').run();
+    await env.DB.prepare('DELETE FROM groups').run();
+    await env.DB.prepare('DELETE FROM users').run();
+
+    const realSub = `sub-real-${crypto.randomUUID()}`;
+    await claimOrCreateOwner(env.DB, realSub, 'r@test', 'R', false);
+    expect(await countUsers(env.DB)).toBe(1);
+    // Sole row's apple_sub is NOT the sentinel anymore -> not eligible.
+    expect(await isBootstrapClaimEligible(env.DB)).toBe(false);
+  });
+
+  it('NOT claim-eligible when ≥2 users exist regardless of sentinels', async () => {
+    // Multi-user world (post-M2): even if one of N>=2 rows happens to be
+    // the bootstrap sentinel (it shouldn't, but be defensive), don't
+    // allow a new sign-in to claim it. countUsers > 1 is a hard gate.
+    // Use direct INSERT to bypass claimOrCreateOwner's claim-on-single-row
+    // path — we deliberately want both the sentinel row AND a second row
+    // to coexist (mirroring a degenerate state where someone seeded users
+    // out of band).
+    await env.DB.prepare('DELETE FROM group_invites').run();
+    await env.DB.prepare('DELETE FROM group_members').run();
+    await env.DB.prepare('DELETE FROM groups').run();
+    await env.DB.prepare('DELETE FROM users').run();
+    const ts = Date.now();
+    await env.DB
+      .prepare(
+        'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,NULL,NULL,?3)',
+      )
+      .bind(crypto.randomUUID(), BOOTSTRAP_APPLE_SUB, ts)
+      .run();
+    await env.DB
+      .prepare(
+        'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,NULL,NULL,?3)',
+      )
+      .bind(crypto.randomUUID(), `sub-other-${crypto.randomUUID()}`, ts)
+      .run();
+    expect(await countUsers(env.DB)).toBeGreaterThanOrEqual(2);
+    expect(await isBootstrapClaimEligible(env.DB)).toBe(false);
   });
 
   it('OWNER_APPLE_SUB matches -> bootstrap is locked to that sub', async () => {

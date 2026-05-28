@@ -112,6 +112,14 @@ export async function claimOrCreateOwner(
 }
 
 /**
+ * Sentinel apple_sub the MCP bootstrap path stamps on the seeded owner row
+ * when OWNER_APPLE_SUB is unset. iOS sign-in detects this value to decide
+ * whether the sole users row is an unclaimed bootstrap (safe to claim) vs.
+ * a real Apple-bound account (must NOT be re-claimed by a different sub).
+ */
+export const BOOTSTRAP_APPLE_SUB = 'mcp-owner';
+
+/**
  * Resolve the single owner user for MCP calls. The MCP principal is "Claude
  * acting as the owner", not an end-user login — so it maps to the one user
  * row. If none exists yet (iOS app not built), bootstrap it so Claude can
@@ -125,7 +133,25 @@ export async function ensureOwnerUser(
     .prepare('SELECT * FROM users ORDER BY created_at LIMIT 1')
     .first<User>();
   if (existing) return existing;
-  return upsertUser(db, ownerAppleSub ?? 'mcp-owner', null, 'Owner');
+  return upsertUser(db, ownerAppleSub ?? BOOTSTRAP_APPLE_SUB, null, 'Owner');
+}
+
+/**
+ * Sign-in bootstrap eligibility for the OWNER_APPLE_SUB-unset path: true
+ * when (a) the users table is empty (fresh deploy) OR (b) the only row is
+ * the MCP-seeded bootstrap sentinel still waiting to be claimed by a real
+ * Apple identity. A second case must NEVER claim a row that's already been
+ * bound to a real apple_sub, hence the strict sentinel match.
+ */
+export async function isBootstrapClaimEligible(db: D1Database): Promise<boolean> {
+  const rows = await db
+    .prepare('SELECT apple_sub FROM users')
+    .all<{ apple_sub: string }>();
+  if (rows.results.length === 0) return true;
+  if (rows.results.length === 1) {
+    return rows.results[0]!.apple_sub === BOOTSTRAP_APPLE_SUB;
+  }
+  return false;
 }
 
 /** True if `tz` is a valid IANA timezone the runtime accepts. */
@@ -4474,7 +4500,13 @@ export async function getGroupFeed(
          FROM sessions s
          LEFT JOIN day_templates dt ON dt.id = s.day_template_id
         WHERE s.user_id IN (${placeholders})
-          AND s.status != 'discarded'
+          -- Codex PR#36 P2: opening Today calls getOrCreateSession which
+          -- creates status='planned' rows BEFORE any set is logged. Those
+          -- aren't activity, they're intent — keep them out of the feed
+          -- so a groupmate who just glanced at Today doesn't show up as
+          -- a 0-set "session" item. Only started/completed sessions are
+          -- real activity worth surfacing.
+          AND s.status IN ('in_progress', 'completed')
           AND (
             COALESCE(s.completed_at, s.created_at) < ?${memberIds.length + 1}
             OR (
@@ -4781,9 +4813,13 @@ export async function getGroupStats(
     // strings to keep the bucketing tz-correct.
     const sessionsRows = await db
       .prepare(
+        // Same planned-session leak fix as the feed query: a session row
+        // with status='planned' (auto-created by GET /api/today) is intent,
+        // not activity. workout_count and streak_days must only count
+        // sessions that were actually started or completed.
         `SELECT DISTINCT date FROM sessions
           WHERE user_id = ?1
-            AND status != 'discarded'
+            AND status IN ('in_progress', 'completed')
             AND date >= ?2 AND date <= ?3`,
       )
       .bind(m.user_id, streakStart, today)

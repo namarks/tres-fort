@@ -3,8 +3,8 @@ import type { HonoEnv, User } from '../types';
 import { issueAppJwt, verifyAppleToken } from '../auth';
 import {
   claimOrCreateOwner,
-  countUsers,
   createUserAndRedeemInvite,
+  isBootstrapClaimEligible,
   upsertUser,
 } from '../db';
 
@@ -74,11 +74,16 @@ authRoutes.post('/apple', async (c) => {
     return c.json({ jwt, user });
   }
 
-  // Path 3: fresh-install bootstrap (no OWNER_APPLE_SUB and an empty users
-  // table). First sub to sign in claims/creates the owner row, mirroring
-  // the OWNER_APPLE_SUB path so the new deployment is usable without env
-  // configuration.
-  if (!ownerSubLocked && (await countUsers(c.env.DB)) === 0) {
+  // Path 3: bootstrap / claim. With OWNER_APPLE_SUB unset, the first
+  // Apple sub to sign in is the owner. Eligible when:
+  //   (a) users table is empty (fresh deploy), OR
+  //   (b) the only existing row is the MCP-seeded `mcp-owner` sentinel
+  //       that hasn't been bound to a real Apple identity yet — Claude's
+  //       MCP/OAuth path may have created that row before the first iOS
+  //       sign-in, and claimOrCreateOwner is built to rebind it.
+  // Without (b), the owner is silently locked out and falls through to
+  // not_invited even though they're entitled to the bootstrap row.
+  if (!ownerSubLocked && (await isBootstrapClaimEligible(c.env.DB))) {
     const user = await claimOrCreateOwner(
       c.env.DB,
       claims.sub,

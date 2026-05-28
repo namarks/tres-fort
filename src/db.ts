@@ -4378,9 +4378,15 @@ export interface MemberStat {
 }
 
 /**
- * Group feed. Returns up to `limit` FeedItems with `occurred_at <= sinceMs`
- * (when `sinceMs` is null → no upper bound, get the most recent N).
- * Items are ordered by `occurred_at` DESC.
+ * Group feed. Returns up to `limit` FeedItems strictly OLDER than the
+ * cursor (when both `sinceMs` and `sinceId` are null → no upper bound,
+ * get the most recent N). Items are ordered by `(occurred_at, id)` DESC.
+ *
+ * The cursor is COMPOSITE on `(occurred_at, id)` so ties at the page
+ * boundary don't drop items: when N rows share an occurred_at timestamp
+ * (bulk sync / two activities logged in the same millisecond), a plain
+ * "occurred_at < since" cursor would skip every remaining tied row. The
+ * filter is "occurred_at < ?upper OR (occurred_at = ?upper AND id < ?upperId)".
  *
  * NOTE: callers MUST enforce group membership BEFORE calling this — the
  * function itself trusts the caller has done the auth check. Same pattern
@@ -4390,15 +4396,25 @@ export async function getGroupFeed(
   db: D1Database,
   groupId: string,
   sinceMs: number | null,
+  sinceId: string | null,
   limit: number,
   callerUserId: string,
 ): Promise<FeedItem[]> {
   const cap = Math.max(1, Math.min(limit, FEED_LIMIT_MAX));
-  // `since` semantics: return items STRICTLY OLDER than this cursor (so
-  // `next_since` paginates back through history without dupes). When the
-  // caller wants "the most recent N", they pass null/undefined and we
-  // skip the upper-bound filter entirely.
+  // Composite upper-bound cursor. `upper` is the timestamp; `upperId` is
+  // the tiebreaker for items with that exact timestamp. When sinceMs is
+  // null we treat the timestamp as infinity (no upper bound) and the
+  // tiebreaker is irrelevant.
+  //
+  // When the caller passes since but NO since_id (a legacy/first-page
+  // request), we deliberately collapse to STRICT `occurred_at < upper`
+  // semantics — the tiebreaker would otherwise return rows the previous
+  // page already returned (their occurred_at = upper). We do this by
+  // setting upperId to the empty string: SQLite's lexicographic `id < ''`
+  // is always false for non-empty UUIDs, so the tiebreaker OR branch is
+  // dead. Composite cursor only activates when the caller passes BOTH.
   const upper = sinceMs ?? Number.MAX_SAFE_INTEGER;
+  const upperId = sinceId ?? '';
 
   // 1. Resolve group members + their effective display names + email
   //    fallback. Join into a single row per user_id for the join later.
@@ -4459,11 +4475,17 @@ export async function getGroupFeed(
          LEFT JOIN day_templates dt ON dt.id = s.day_template_id
         WHERE s.user_id IN (${placeholders})
           AND s.status != 'discarded'
-          AND COALESCE(s.completed_at, s.created_at) < ?${memberIds.length + 1}
-        ORDER BY occurred_at DESC
-        LIMIT ?${memberIds.length + 2}`,
+          AND (
+            COALESCE(s.completed_at, s.created_at) < ?${memberIds.length + 1}
+            OR (
+              COALESCE(s.completed_at, s.created_at) = ?${memberIds.length + 1}
+              AND s.id < ?${memberIds.length + 2}
+            )
+          )
+        ORDER BY occurred_at DESC, s.id DESC
+        LIMIT ?${memberIds.length + 3}`,
     )
-    .bind(...memberIds, upper, sourceLimit)
+    .bind(...memberIds, upper, upperId, sourceLimit)
     .all<{
       id: string;
       user_id: string;
@@ -4588,11 +4610,17 @@ export async function getGroupFeed(
          FROM external_activities
         WHERE user_id IN (${placeholders})
           AND deleted_at IS NULL
-          AND COALESCE(start_date_local_ms, synced_at) < ?${memberIds.length + 1}
-        ORDER BY COALESCE(start_date_local_ms, synced_at) DESC
-        LIMIT ?${memberIds.length + 2}`,
+          AND (
+            COALESCE(start_date_local_ms, synced_at) < ?${memberIds.length + 1}
+            OR (
+              COALESCE(start_date_local_ms, synced_at) = ?${memberIds.length + 1}
+              AND id < ?${memberIds.length + 2}
+            )
+          )
+        ORDER BY COALESCE(start_date_local_ms, synced_at) DESC, id DESC
+        LIMIT ?${memberIds.length + 3}`,
     )
-    .bind(...memberIds, upper, sourceLimit)
+    .bind(...memberIds, upper, upperId, sourceLimit)
     .all<{
       id: string;
       user_id: string;
@@ -4636,11 +4664,14 @@ export async function getGroupFeed(
          FROM activities
         WHERE user_id IN (${placeholders})
           AND deleted_at IS NULL
-          AND logged_at < ?${memberIds.length + 1}
-        ORDER BY logged_at DESC
-        LIMIT ?${memberIds.length + 2}`,
+          AND (
+            logged_at < ?${memberIds.length + 1}
+            OR (logged_at = ?${memberIds.length + 1} AND id < ?${memberIds.length + 2})
+          )
+        ORDER BY logged_at DESC, id DESC
+        LIMIT ?${memberIds.length + 3}`,
     )
-    .bind(...memberIds, upper, sourceLimit)
+    .bind(...memberIds, upper, upperId, sourceLimit)
     .all<{
       id: string;
       user_id: string;

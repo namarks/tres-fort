@@ -38,11 +38,18 @@ final class GroupModel: ObservableObject {
 
     // MARK: Intervals.icu connection
 
+    /// UserDefaults key holding the JSON-encoded `IntervalsConnection`.
+    /// Exposed here so `AuthModel.invalidate()` can wipe it on sign-out
+    /// (the key is global to the device but represents the CURRENT user's
+    /// connection — if user A signs out and user B signs in, the settings
+    /// screen must not show user A's athlete id as "connected").
+    static let intervalsConnectionKey = "com.nmarkspdx.liftcoach.intervals-connection.v1"
+
     /// What the user last successfully PATCHed. There's no GET endpoint
     /// today, so this is the only place iOS knows about a connection.
     /// Persisted in @AppStorage by IntervalsSettingsView itself; mirrored
     /// here for convenience reads.
-    @AppStorage("com.nmarkspdx.liftcoach.intervals-connection.v1")
+    @AppStorage(GroupModel.intervalsConnectionKey)
     var intervalsConnectionRaw: Data = Data()
     var intervalsConnection: IntervalsConnection? {
         get {

@@ -536,6 +536,64 @@ describe('group feed: pagination + limit cap', () => {
     expect(b3.next_since).toBe(base);
   });
 
+  // Codex PR #36 P2: when N rows share the SAME occurred_at at a page
+  // boundary, a plain "occurred_at < since" cursor would skip every
+  // remaining tied row on the next page. The fix is a composite
+  // (occurred_at, id) cursor — iOS passes since_id alongside since.
+  it('composite cursor (since + since_id) preserves rows tied at the boundary', async () => {
+    const a = await devJwt();
+    const groupId = await createGroup(a.jwt, 'tie');
+    // Five activities all logged at the SAME logged_at — the worst case
+    // for the old cursor (every row at the boundary would get skipped).
+    const t = Date.now();
+    for (let i = 0; i < 5; i++) {
+      await seedActivity(a.id, {
+        date: '2026-05-26',
+        loggedAt: t,
+        type: 'walk',
+        title: `tied-${i}`,
+      });
+    }
+
+    // First page, limit=2. Returns 2 of the tied items. The pagination
+    // contract returns the TAIL item's (occurred_at, id) as the cursor.
+    const r1 = await SELF.fetch(
+      `${BASE}/api/groups/${groupId}/feed?limit=2`,
+      { headers: headers(a.jwt) },
+    );
+    const b1 = await r1.json<any>();
+    expect(b1.items).toHaveLength(2);
+    expect(b1.next_since).toBe(t);
+    expect(typeof b1.next_since_id).toBe('string');
+    expect(b1.next_since_id.length).toBeGreaterThan(0);
+
+    // Without the composite cursor, page 2 with just `since=t` would
+    // skip every tied row → empty page → 3 rows lost forever. With the
+    // composite cursor passing since_id, the remaining 3 ARE returned.
+    const r2 = await SELF.fetch(
+      `${BASE}/api/groups/${groupId}/feed?since=${b1.next_since}&since_id=${b1.next_since_id}&limit=10`,
+      { headers: headers(a.jwt) },
+    );
+    const b2 = await r2.json<any>();
+    expect(b2.items).toHaveLength(3);
+    // And the union of page-1 + page-2 ids covers all 5 seeded rows.
+    const ids = new Set<string>([
+      ...b1.items.map((it: any) => it.id),
+      ...b2.items.map((it: any) => it.id),
+    ]);
+    expect(ids.size).toBe(5);
+
+    // Backward-compat sanity: a legacy client sending only `since=t` (no
+    // since_id) still gets strict-older semantics — none of the tied
+    // rows leak duplicates onto the next page.
+    const r3 = await SELF.fetch(
+      `${BASE}/api/groups/${groupId}/feed?since=${t}`,
+      { headers: headers(a.jwt) },
+    );
+    const b3 = await r3.json<any>();
+    expect(b3.items).toHaveLength(0);
+  });
+
   it('limit=200 is capped at 100', async () => {
     const a = await devJwt();
     const groupId = await createGroup(a.jwt, 'cap');

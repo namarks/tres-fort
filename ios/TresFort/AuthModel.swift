@@ -88,12 +88,20 @@ final class AuthModel: ObservableObject {
     }
 
     /// Called by the data layer on a 401 (stale JWT) → force re-auth.
-    /// Also clears the persisted activity outbox — outbox entries are
-    /// per-user-implicit (no user_id baked in), so on a different account
-    /// re-signing in they would mis-attribute to the new user's JWT.
+    /// Also clears every piece of PER-USER state persisted on the device:
+    ///   - keychain JWT,
+    ///   - userID + pendingGroupID (UserDefaults),
+    ///   - the activity outbox (entries have no user_id baked in, so on
+    ///     re-auth as a different account they would POST through the
+    ///     new user's JWT and mis-attribute the rows),
+    ///   - the intervals.icu connection record (the AppStorage key is
+    ///     device-global but its content represents the current user's
+    ///     athlete connection — a different signed-in user must not see
+    ///     the previous user's athlete id as "connected").
     func invalidate() {
         Keychain.clear()
         UserDefaults.standard.removeObject(forKey: Self.userIDKey)
+        UserDefaults.standard.removeObject(forKey: GroupModel.intervalsConnectionKey)
         ActivityOutboxStore.clear()
         jwt = nil
         userID = nil

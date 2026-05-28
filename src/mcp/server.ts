@@ -1015,7 +1015,7 @@ const TOOLS: Record<string, Tool> = {
       const days = m ? Math.max(1, Math.min(365, Number(m[1]))) : 7;
       const limit =
         typeof a.limit === 'number' ? Math.max(1, Math.min(100, Math.floor(a.limit))) : 30;
-      const items = await getGroupFeed(env.DB, groupId, null, limit, userId);
+      const items = await getGroupFeed(env.DB, groupId, null, null, limit, userId);
       const stats = await getGroupStats(env.DB, groupId, days, userId);
       const groupName = groups.find((g) => g.id === groupId)?.name ?? null;
       return {

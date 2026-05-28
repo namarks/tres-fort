@@ -542,9 +542,12 @@ apiRoutes.get('/groups/:id/feed', async (c) => {
   const guard = await requireGroupMembership(c, userId, groupId);
   if (guard) return guard;
 
-  // `since`: epoch-ms upper bound — return items strictly OLDER than this
-  // (so iOS can call again with next_since to load history). Default =
-  // unset → most-recent N.
+  // Composite pagination cursor on (occurred_at, id): when N rows share
+  // an occurred_at at the page boundary, a plain timestamp cursor would
+  // drop the rest of the tied rows on the next page. iOS passes BOTH
+  // `since` (epoch-ms upper bound) and `since_id` (the tail item's id);
+  // server filters strictly older on the composite. Both null → no upper
+  // bound (most-recent N).
   const sinceRaw = c.req.query('since');
   let sinceMs: number | null = null;
   if (sinceRaw != null) {
@@ -552,6 +555,9 @@ apiRoutes.get('/groups/:id/feed', async (c) => {
     if (!Number.isFinite(n)) return c.json({ error: 'invalid_since' }, 400);
     sinceMs = n;
   }
+  const sinceIdRaw = c.req.query('since_id');
+  const sinceId =
+    sinceIdRaw != null && sinceIdRaw.length > 0 ? sinceIdRaw : null;
   // `limit`: default 30, capped at 100 (FEED_LIMIT_MAX in db.ts). Out-of-
   // range values clamp rather than 400 — the iOS client's safer to keep
   // moving on a typo than to surface a "what did you do wrong" error.
@@ -562,20 +568,16 @@ apiRoutes.get('/groups/:id/feed', async (c) => {
     if (Number.isFinite(n) && n > 0) limit = Math.min(100, Math.floor(n));
   }
 
-  const items = await getGroupFeed(c.env.DB, groupId, sinceMs, limit, userId);
-  // next_since = the smallest occurred_at returned. iOS passes it back as
-  // `?since=` to paginate. null when items is empty → end of stream.
-  const nextSince =
-    items.length === 0
-      ? null
-      : items.reduce(
-          (min, it) => (it.occurred_at < min ? it.occurred_at : min),
-          items[0]!.occurred_at,
-        );
+  const items = await getGroupFeed(c.env.DB, groupId, sinceMs, sinceId, limit, userId);
+  // Composite next cursor = the LAST returned item (smallest by
+  // (occurred_at, id) DESC). iOS passes both fields back as ?since= and
+  // ?since_id= to load the next page. null both when empty → end of stream.
+  const tail = items.length === 0 ? null : items[items.length - 1]!;
   return c.json({
     group_id: groupId,
     items,
-    next_since: nextSince,
+    next_since: tail?.occurred_at ?? null,
+    next_since_id: tail?.id ?? null,
     server_time: Date.now(),
   });
 });

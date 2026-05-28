@@ -33,6 +33,12 @@ final class GroupModel: ObservableObject {
     @Published var feed: [String: [FeedItem]] = [:]
     @Published var stats: [String: [MemberStat]] = [:]
     @Published var feedNextSince: [String: Int?] = [:]
+    /// Tie-breaker companion to `feedNextSince`: server returns BOTH
+    /// `next_since` and `next_since_id`, and the paginated call must echo
+    /// both back. iOS doesn't paginate today (full-replace at limit=30),
+    /// but we mirror the field so the moment a caller switches on
+    /// pagination they can pass `sinceID:` without a re-plumb.
+    @Published var feedNextSinceID: [String: String?] = [:]
     @Published var isRefreshingFeed: [String: Bool] = [:]
     @Published var isRefreshingStats: [String: Bool] = [:]
 
@@ -151,6 +157,7 @@ final class GroupModel: ObservableObject {
             let res = try await api.getGroupFeed(groupID: groupID, limit: 30, jwt: jwt)
             feed[groupID] = res.items
             feedNextSince[groupID] = res.next_since
+            feedNextSinceID[groupID] = res.next_since_id
             lastError = nil
         } catch {
             handle(error)
@@ -222,6 +229,7 @@ final class GroupModel: ObservableObject {
         feed[id] = nil
         stats[id] = nil
         feedNextSince[id] = nil
+        feedNextSinceID[id] = nil
         ensureSelection()
         phase = groups.isEmpty ? .none : .ready
     }

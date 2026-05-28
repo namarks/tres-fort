@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import type { HonoEnv } from '../types';
 import { requireAppJwt } from '../auth';
 import {
@@ -10,6 +11,8 @@ import {
   discardSession,
   getActivePlan,
   getExercises,
+  getGroupFeed,
+  getGroupStats,
   getGroupWithMembers,
   getHistory,
   getOrCreateSession,
@@ -497,4 +500,102 @@ apiRoutes.patch('/groups/:id/members/me', async (c) => {
   // Return the hydrated group so the iOS client can update its model.
   const full = await getGroupWithMembers(c.env.DB, groupId);
   return c.json(full);
+});
+
+// ---- M4: group feed + stats ---------------------------------------------
+//
+// Two read endpoints on top of the existing group-membership authz:
+// `/feed` (interleaved session/ride/activity stream) and `/stats` (per-
+// member workout_count + streak). Both 403 non-members, 404 unknown ids,
+// and stamp `is_me` so the iOS client doesn't compare user ids manually.
+//
+// Privacy contract enforced INSIDE the db.ts helpers (notes / RPE / set
+// notes / perceived_fatigue are never selected). See the long comment at
+// the top of the M4 section in db.ts for the full rules.
+
+/**
+ * Shared guard for /groups/:id/feed and /groups/:id/stats: 404 if the
+ * group doesn't exist, 403 if the caller isn't a member. Returns null on
+ * pass-through (call site continues), or a Response on reject (call site
+ * `return`s it). Mirrors the same 404-before-403 ordering POST
+ * /:id/invites uses.
+ */
+async function requireGroupMembership(
+  c: Context<HonoEnv>,
+  userId: string,
+  groupId: string,
+): Promise<Response | null> {
+  const exists = await c.env.DB
+    .prepare('SELECT 1 AS x FROM groups WHERE id = ?1')
+    .bind(groupId)
+    .first<{ x: number }>();
+  if (!exists) return c.json({ error: 'not_found' }, 404);
+  if (!(await isGroupMember(c.env.DB, userId, groupId))) {
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  return null;
+}
+
+apiRoutes.get('/groups/:id/feed', async (c) => {
+  const userId = c.get('userId');
+  const groupId = c.req.param('id');
+  const guard = await requireGroupMembership(c, userId, groupId);
+  if (guard) return guard;
+
+  // `since`: epoch-ms upper bound — return items strictly OLDER than this
+  // (so iOS can call again with next_since to load history). Default =
+  // unset → most-recent N.
+  const sinceRaw = c.req.query('since');
+  let sinceMs: number | null = null;
+  if (sinceRaw != null) {
+    const n = Number(sinceRaw);
+    if (!Number.isFinite(n)) return c.json({ error: 'invalid_since' }, 400);
+    sinceMs = n;
+  }
+  // `limit`: default 30, capped at 100 (FEED_LIMIT_MAX in db.ts). Out-of-
+  // range values clamp rather than 400 — the iOS client's safer to keep
+  // moving on a typo than to surface a "what did you do wrong" error.
+  let limit = 30;
+  const limitRaw = c.req.query('limit');
+  if (limitRaw != null) {
+    const n = Number(limitRaw);
+    if (Number.isFinite(n) && n > 0) limit = Math.min(100, Math.floor(n));
+  }
+
+  const items = await getGroupFeed(c.env.DB, groupId, sinceMs, limit, userId);
+  // next_since = the smallest occurred_at returned. iOS passes it back as
+  // `?since=` to paginate. null when items is empty → end of stream.
+  const nextSince =
+    items.length === 0
+      ? null
+      : items.reduce(
+          (min, it) => (it.occurred_at < min ? it.occurred_at : min),
+          items[0]!.occurred_at,
+        );
+  return c.json({
+    group_id: groupId,
+    items,
+    next_since: nextSince,
+    server_time: Date.now(),
+  });
+});
+
+apiRoutes.get('/groups/:id/stats', async (c) => {
+  const userId = c.get('userId');
+  const groupId = c.req.param('id');
+  const guard = await requireGroupMembership(c, userId, groupId);
+  if (guard) return guard;
+
+  // `range`: "7d" | "14d" | "30d" (default 7d). Other suffixes (weeks,
+  // months) are rejected so the iOS surface is honest about what it
+  // accepts — 5d would silently round, etc.
+  const rangeRaw = c.req.query('range') ?? '7d';
+  const m = /^(\d+)d$/.exec(rangeRaw);
+  if (!m) return c.json({ error: 'invalid_range' }, 400);
+  const days = Number(m[1]);
+  if (!Number.isFinite(days) || days < 1 || days > 365) {
+    return c.json({ error: 'invalid_range' }, 400);
+  }
+  const members = await getGroupStats(c.env.DB, groupId, days, userId);
+  return c.json({ group_id: groupId, range: rangeRaw, members });
 });

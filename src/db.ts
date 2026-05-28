@@ -3176,7 +3176,7 @@ function daySpan(from: string, to: string): number {
 }
 
 /** Add n days to a 'YYYY-MM-DD' string, returning 'YYYY-MM-DD'. */
-function addDays(ymd: string, n: number): string {
+export function addDays(ymd: string, n: number): string {
   // Civil-from-days inverse of dayNumber (Hinnant), pure integer math.
   let z = dayNumber(ymd) + n + 719468;
   const era = Math.floor((z >= 0 ? z : z - 146096) / 146097);
@@ -4171,4 +4171,585 @@ export async function getRideConflicts(
     .bind(userId, fromDate, addDays(toDate, 1))
     .all<Pick<ExternalEventRow, 'id' | 'date' | 'training_load' | 'planned_duration_sec'>>();
   return detectConflicts(liftDates, events.results);
+}
+
+// ---- M4: group feed + stats ---------------------------------------------
+//
+// Group accountability surface. The feed merges three sources into a single
+// time-ordered stream of FeedItems (session | ride | activity); the stats
+// roll up per-member workout_count + streak_days over a rolling window.
+//
+// Privacy contract (do not break — this is the trust substrate that lets
+// the feature ship):
+//   * Strength sessions: SHARE date, completed_at, day_name, set_count,
+//     duration_sec, per-exercise top set (exercise name + weight + reps +
+//     Epley est_1rm). HIDE session.notes, session.perceived_fatigue, every
+//     set's `notes`, every set's `rpe`.
+//   * Intervals.icu rides: SHARE all the ride metrics (these are not
+//     personal). Soft-deleted rows are excluded.
+//   * Activities (M3): SHARE type, title, duration_minutes, notes (the
+//     user-authored notes ARE the description of what they did — sharing
+//     them is the point). Soft-deleted rows are excluded.
+//
+// Wire shape matches `.context/m5-ios-spec.md` §5 verbatim: discriminated
+// on `type` with nested `session`/`ride`/`activity` inner objects, plus
+// `id, user_id, user_display_name, occurred_at, date` at the top level.
+// `is_me` is server-stamped so the iOS client does not have to compare
+// user ids manually.
+
+const FEED_LIMIT_DEFAULT = 30;
+const FEED_LIMIT_MAX = 100;
+
+/** Per-feed-item shapes the wire emits. Matches iOS m5-ios-spec.md §5. */
+export interface FeedSessionItem {
+  type: 'session';
+  id: string;
+  user_id: string;
+  user_display_name: string;
+  is_me: boolean;
+  date: string;
+  occurred_at: number;
+  session: {
+    day_name: string | null;
+    day_label: string | null;
+    duration_sec: number | null;
+    set_count: number;
+    top_sets: Array<{
+      exercise: string;
+      weight: number;
+      reps: number;
+      unit: string | null;
+      est_1rm: number;
+    }>;
+  };
+}
+export interface FeedRideItem {
+  type: 'ride';
+  id: string;
+  user_id: string;
+  user_display_name: string;
+  is_me: boolean;
+  date: string;
+  occurred_at: number;
+  ride: {
+    kind: string;
+    name: string | null;
+    distance_m: number | null;
+    moving_time_sec: number | null;
+    average_watts: number | null;
+    training_load: number | null;
+    elevation_gain_m: number | null;
+  };
+}
+export interface FeedActivityItem {
+  type: 'activity';
+  id: string;
+  user_id: string;
+  user_display_name: string;
+  is_me: boolean;
+  date: string;
+  occurred_at: number;
+  activity: {
+    kind: string;
+    title: string | null;
+    duration_min: number | null;
+    notes: string | null;
+  };
+}
+export type FeedItem = FeedSessionItem | FeedRideItem | FeedActivityItem;
+
+/**
+ * Two-character avatar initials from a display name. "Sarah Kim" -> "SK",
+ * "nick" -> "N", "" -> "?". Pure, locale-stable (uppercased once at the
+ * end). Per-member initials live on MemberStat so the iOS chip strip
+ * doesn't have to recompute.
+ */
+function avatarInitials(name: string | null | undefined): string {
+  const s = (name ?? '').trim();
+  if (s.length === 0) return '?';
+  // Split on whitespace, take first letter of first two non-empty words.
+  const words = s.split(/\s+/).filter((w) => w.length > 0);
+  if (words.length === 0) return '?';
+  if (words.length === 1) return words[0]!.charAt(0).toUpperCase();
+  return (words[0]!.charAt(0) + words[1]!.charAt(0)).toUpperCase();
+}
+
+/**
+ * Resolve effective display name for a member. Order:
+ *   1. per-group nickname (group_members.display_name)
+ *   2. user's global display name (users.display_name)
+ *   3. email prefix (everything before '@')
+ *   4. literal "Member"
+ * Pure function; the caller pre-joins the three input columns.
+ */
+function resolveDisplayName(
+  perGroup: string | null,
+  global: string | null,
+  email: string | null,
+): string {
+  if (perGroup && perGroup.length > 0) return perGroup;
+  if (global && global.length > 0) return global;
+  if (email && email.length > 0) {
+    const at = email.indexOf('@');
+    const pre = at > 0 ? email.slice(0, at) : email;
+    if (pre.length > 0) return pre;
+  }
+  return 'Member';
+}
+
+export interface MemberStat {
+  user_id: string;
+  display_name: string;
+  avatar_initials: string;
+  is_me: boolean;
+  workout_count: number;
+  streak_days: number;
+  last_active: number | null;
+}
+
+/**
+ * Group feed. Returns up to `limit` FeedItems with `occurred_at <= sinceMs`
+ * (when `sinceMs` is null → no upper bound, get the most recent N).
+ * Items are ordered by `occurred_at` DESC.
+ *
+ * NOTE: callers MUST enforce group membership BEFORE calling this — the
+ * function itself trusts the caller has done the auth check. Same pattern
+ * as createInvite / setGroupDisplayName.
+ */
+export async function getGroupFeed(
+  db: D1Database,
+  groupId: string,
+  sinceMs: number | null,
+  limit: number,
+  callerUserId: string,
+): Promise<FeedItem[]> {
+  const cap = Math.max(1, Math.min(limit, FEED_LIMIT_MAX));
+  // `since` semantics: return items STRICTLY OLDER than this cursor (so
+  // `next_since` paginates back through history without dupes). When the
+  // caller wants "the most recent N", they pass null/undefined and we
+  // skip the upper-bound filter entirely.
+  const upper = sinceMs ?? Number.MAX_SAFE_INTEGER;
+
+  // 1. Resolve group members + their effective display names + email
+  //    fallback. Join into a single row per user_id for the join later.
+  const memberRows = await db
+    .prepare(
+      `SELECT gm.user_id,
+              gm.display_name AS per_group_name,
+              u.display_name  AS global_name,
+              u.email
+         FROM group_members gm
+         JOIN users u ON u.id = gm.user_id
+        WHERE gm.group_id = ?1`,
+    )
+    .bind(groupId)
+    .all<{
+      user_id: string;
+      per_group_name: string | null;
+      global_name: string | null;
+      email: string | null;
+    }>();
+  if (memberRows.results.length === 0) return [];
+
+  const memberMeta = new Map<string, { displayName: string }>();
+  const memberIds: string[] = [];
+  for (const m of memberRows.results) {
+    memberMeta.set(m.user_id, {
+      displayName: resolveDisplayName(m.per_group_name, m.global_name, m.email),
+    });
+    memberIds.push(m.user_id);
+  }
+
+  const placeholders = memberIds.map((_, i) => `?${i + 1}`).join(',');
+
+  // Over-pull each source by `cap` so the post-merge slice still has
+  // enough items in the worst case (one source dominates the window).
+  // The merge-then-slice keeps the SQL simple at the cost of fetching up
+  // to 3*cap rows. Friends/family scale: <10 members, ~30 limit → trivial.
+  const sourceLimit = cap;
+
+  // 2a. Strength sessions. We surface "item timestamp" = completed_at if
+  //     the session is completed, else created_at — sessions still
+  //     in_progress show as "currently doing X" rows so groupmates see
+  //     today's lift as it's happening. Discarded sessions are excluded.
+  const sessionRows = await db
+    .prepare(
+      `SELECT s.id,
+              s.user_id,
+              s.date,
+              s.status,
+              s.completed_at,
+              s.created_at,
+              s.day_template_id,
+              dt.name AS day_name,
+              dt.day_label AS day_label,
+              s.started_at,
+              COALESCE(s.completed_at, s.created_at) AS occurred_at
+         FROM sessions s
+         LEFT JOIN day_templates dt ON dt.id = s.day_template_id
+        WHERE s.user_id IN (${placeholders})
+          AND s.status != 'discarded'
+          AND COALESCE(s.completed_at, s.created_at) < ?${memberIds.length + 1}
+        ORDER BY occurred_at DESC
+        LIMIT ?${memberIds.length + 2}`,
+    )
+    .bind(...memberIds, upper, sourceLimit)
+    .all<{
+      id: string;
+      user_id: string;
+      date: string;
+      status: string;
+      completed_at: number | null;
+      created_at: number;
+      day_template_id: string | null;
+      day_name: string | null;
+      day_label: string | null;
+      started_at: number | null;
+      occurred_at: number;
+    }>();
+
+  // 2b. Top sets — single query keyed by session_id IN (...). Aggregating
+  //     in JS keeps the SQL portable; D1 (SQLite) doesn't have window
+  //     functions on every version path. Warmups excluded; soft-deleted
+  //     sets excluded. We pre-join exercises so we get the display name.
+  const sessionIds = sessionRows.results.map((s) => s.id);
+  const topSetsBySession = new Map<string, FeedSessionItem['session']['top_sets']>();
+  const setCountBySession = new Map<string, number>();
+  if (sessionIds.length > 0) {
+    const setPlaceholders = sessionIds.map((_, i) => `?${i + 1}`).join(',');
+    const sets = await db
+      .prepare(
+        `SELECT sl.session_id,
+                sl.exercise_id,
+                sl.weight,
+                sl.reps,
+                e.name AS exercise_name,
+                e.unit AS exercise_unit
+           FROM set_logs sl
+           JOIN exercises e ON e.id = sl.exercise_id
+          WHERE sl.session_id IN (${setPlaceholders})
+            AND sl.deleted_at IS NULL
+            AND sl.is_warmup = 0`,
+      )
+      .bind(...sessionIds)
+      .all<{
+        session_id: string;
+        exercise_id: string;
+        weight: number;
+        reps: number;
+        exercise_name: string;
+        exercise_unit: string;
+      }>();
+    // Aggregate: per (session_id, exercise_id) → highest-est-1RM working
+    // set. Ties broken by higher reps (matches the convention of "show me
+    // the harder set"). Total set_count is just the row count per session.
+    type TopAcc = {
+      exercise: string;
+      unit: string | null;
+      weight: number;
+      reps: number;
+      est_1rm: number;
+    };
+    const acc = new Map<string, Map<string, TopAcc>>(); // session_id -> exercise_id -> top
+    for (const r of sets.results) {
+      setCountBySession.set(r.session_id, (setCountBySession.get(r.session_id) ?? 0) + 1);
+      const est = epley(r.weight, r.reps);
+      let perSession = acc.get(r.session_id);
+      if (!perSession) {
+        perSession = new Map();
+        acc.set(r.session_id, perSession);
+      }
+      const cur = perSession.get(r.exercise_id);
+      if (
+        !cur ||
+        est > cur.est_1rm ||
+        (est === cur.est_1rm && r.reps > cur.reps)
+      ) {
+        perSession.set(r.exercise_id, {
+          exercise: r.exercise_name,
+          unit: r.exercise_unit,
+          weight: r.weight,
+          reps: r.reps,
+          est_1rm: est,
+        });
+      }
+    }
+    for (const [sid, perEx] of acc) {
+      // Sort top_sets by est_1rm DESC so the "headline" lift renders first.
+      const list = [...perEx.values()].sort((a, b) => b.est_1rm - a.est_1rm);
+      topSetsBySession.set(sid, list);
+    }
+  }
+
+  const sessionItems: FeedSessionItem[] = sessionRows.results.map((s) => ({
+    type: 'session',
+    id: s.id,
+    user_id: s.user_id,
+    user_display_name: memberMeta.get(s.user_id)?.displayName ?? 'Member',
+    is_me: s.user_id === callerUserId,
+    date: s.date,
+    occurred_at: s.occurred_at,
+    session: {
+      day_name: s.day_name,
+      day_label: s.day_label,
+      // duration_sec is only meaningful once the session is completed;
+      // a still-in-progress session emits null (matches calendar.ts).
+      duration_sec:
+        s.started_at != null && s.completed_at != null
+          ? Math.max(0, Math.round((s.completed_at - s.started_at) / 1000))
+          : null,
+      set_count: setCountBySession.get(s.id) ?? 0,
+      top_sets: topSetsBySession.get(s.id) ?? [],
+    },
+  }));
+
+  // 2c. Rides (external_activities). `start_date_local` isn't a column in
+  //     this table (see migration 0015) — we use `synced_at` as the
+  //     epoch-ms timestamp ordering proxy. The wire `date` is the civil
+  //     YYYY-MM-DD from the row, which IS derived from start_date_local
+  //     upstream in the intervals.ts fetcher.
+  const rideRows = await db
+    .prepare(
+      `SELECT id, user_id, date, kind, name, moving_time_sec, distance_m,
+              average_watts, training_load, elevation_gain_m, synced_at
+         FROM external_activities
+        WHERE user_id IN (${placeholders})
+          AND deleted_at IS NULL
+          AND synced_at < ?${memberIds.length + 1}
+        ORDER BY synced_at DESC
+        LIMIT ?${memberIds.length + 2}`,
+    )
+    .bind(...memberIds, upper, sourceLimit)
+    .all<{
+      id: string;
+      user_id: string;
+      date: string;
+      kind: string;
+      name: string | null;
+      moving_time_sec: number | null;
+      distance_m: number | null;
+      average_watts: number | null;
+      training_load: number | null;
+      elevation_gain_m: number | null;
+      synced_at: number;
+    }>();
+
+  const rideItems: FeedRideItem[] = rideRows.results.map((r) => ({
+    type: 'ride',
+    id: r.id,
+    user_id: r.user_id,
+    user_display_name: memberMeta.get(r.user_id)?.displayName ?? 'Member',
+    is_me: r.user_id === callerUserId,
+    date: r.date,
+    occurred_at: r.synced_at,
+    ride: {
+      kind: r.kind,
+      name: r.name,
+      distance_m: r.distance_m,
+      moving_time_sec: r.moving_time_sec,
+      average_watts: r.average_watts,
+      training_load: r.training_load,
+      elevation_gain_m: r.elevation_gain_m,
+    },
+  }));
+
+  // 2d. Activities (M3 generic log). Soft-deleted rows excluded. The wire
+  //     `notes` field IS shared — per the privacy contract above, the
+  //     user-authored notes on an activity are the description of what
+  //     they did.
+  const actRows = await db
+    .prepare(
+      `SELECT id, user_id, date, type, title, duration_minutes, notes, logged_at
+         FROM activities
+        WHERE user_id IN (${placeholders})
+          AND deleted_at IS NULL
+          AND logged_at < ?${memberIds.length + 1}
+        ORDER BY logged_at DESC
+        LIMIT ?${memberIds.length + 2}`,
+    )
+    .bind(...memberIds, upper, sourceLimit)
+    .all<{
+      id: string;
+      user_id: string;
+      date: string;
+      type: string;
+      title: string | null;
+      duration_minutes: number | null;
+      notes: string | null;
+      logged_at: number;
+    }>();
+
+  const activityItems: FeedActivityItem[] = actRows.results.map((a) => ({
+    type: 'activity',
+    id: a.id,
+    user_id: a.user_id,
+    user_display_name: memberMeta.get(a.user_id)?.displayName ?? 'Member',
+    is_me: a.user_id === callerUserId,
+    date: a.date,
+    occurred_at: a.logged_at,
+    activity: {
+      kind: a.type,
+      title: a.title,
+      duration_min: a.duration_minutes,
+      notes: a.notes,
+    },
+  }));
+
+  // 3. Merge + sort + cap. Stable secondary key (id) for determinism when
+  //    two items share an occurred_at (rare but possible — a cron-synced
+  //    ride and a logged set in the same ms).
+  const merged: FeedItem[] = [...sessionItems, ...rideItems, ...activityItems];
+  merged.sort((a, b) => {
+    if (b.occurred_at !== a.occurred_at) return b.occurred_at - a.occurred_at;
+    return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+  });
+  return merged.slice(0, cap);
+}
+
+/**
+ * Per-member stats over a rolling N-day window (typically 7/14/30). The
+ * window is anchored to "today" in each MEMBER's own timezone so a
+ * groupmate in Sydney isn't penalized by your civil clock.
+ *
+ * `workout_count` = number of DISTINCT dates in the window with at least
+ * one activity (strength session that isn't discarded, intervals ride,
+ * or generic activity). Three Pilates classes in one day count as one.
+ *
+ * `streak_days` = consecutive member-local civil days ending at "today"
+ * with at least one activity. Simplification rule for v1: if today has
+ * activity, count back from today; else count back from yesterday (so a
+ * member who hasn't logged today yet still sees their existing streak).
+ *
+ * NOTE: callers MUST enforce group membership BEFORE calling this — same
+ * authorization pattern as getGroupFeed / createInvite.
+ */
+export async function getGroupStats(
+  db: D1Database,
+  groupId: string,
+  rangeDays: number,
+  callerUserId: string,
+): Promise<MemberStat[]> {
+  const range = Math.max(1, Math.min(rangeDays, 365));
+
+  // 1. Resolve members + names + timezones + emails in one round trip.
+  const memberRows = await db
+    .prepare(
+      `SELECT gm.user_id,
+              gm.display_name AS per_group_name,
+              u.display_name  AS global_name,
+              u.email,
+              u.timezone
+         FROM group_members gm
+         JOIN users u ON u.id = gm.user_id
+        WHERE gm.group_id = ?1
+        ORDER BY gm.joined_at, gm.user_id`,
+    )
+    .bind(groupId)
+    .all<{
+      user_id: string;
+      per_group_name: string | null;
+      global_name: string | null;
+      email: string | null;
+      timezone: string | null;
+    }>();
+
+  if (memberRows.results.length === 0) return [];
+
+  const out: MemberStat[] = [];
+  for (const m of memberRows.results) {
+    const displayName = resolveDisplayName(m.per_group_name, m.global_name, m.email);
+    const today = todayInTz(m.timezone);
+    // The window: [windowStart, today] inclusive, in this member's civil
+    // calendar. We collect ALL activity dates within (and one day before,
+    // so the streak walker has continuity at the boundary), then compute
+    // count + streak in JS.
+    const windowStart = addDays(today, -(range - 1));
+    // Streak walker may need to look further back than the workout-count
+    // window when the streak is longer than `range`. We cap streak look-
+    // back at 365d (one year) — generous enough for a friends-and-family
+    // streak, bounded so the query stays small.
+    const streakStart = addDays(today, -365);
+
+    // Pull dates from all three sources for this member in one go. Each
+    // SELECT projects (date) only — we don't need the row payloads here,
+    // just the civil-date column. epoch_ms-keyed rows (set_logs.logged_at,
+    // external_activities.synced_at) use the SESSION.date / activity.date
+    // strings to keep the bucketing tz-correct.
+    const sessionsRows = await db
+      .prepare(
+        `SELECT DISTINCT date FROM sessions
+          WHERE user_id = ?1
+            AND status != 'discarded'
+            AND date >= ?2 AND date <= ?3`,
+      )
+      .bind(m.user_id, streakStart, today)
+      .all<{ date: string }>();
+    const ridesRows = await db
+      .prepare(
+        `SELECT DISTINCT date FROM external_activities
+          WHERE user_id = ?1
+            AND deleted_at IS NULL
+            AND date >= ?2 AND date <= ?3`,
+      )
+      .bind(m.user_id, streakStart, today)
+      .all<{ date: string }>();
+    const actRows = await db
+      .prepare(
+        `SELECT DISTINCT date FROM activities
+          WHERE user_id = ?1
+            AND deleted_at IS NULL
+            AND date >= ?2 AND date <= ?3`,
+      )
+      .bind(m.user_id, streakStart, today)
+      .all<{ date: string }>();
+    const activeDates = new Set<string>();
+    for (const r of sessionsRows.results) activeDates.add(r.date);
+    for (const r of ridesRows.results) activeDates.add(r.date);
+    for (const r of actRows.results) activeDates.add(r.date);
+
+    // workout_count = distinct active dates within the rolling window.
+    let workoutCount = 0;
+    for (const d of activeDates) {
+      if (d >= windowStart && d <= today) workoutCount++;
+    }
+
+    // streak_days = consecutive days back from "today" (or yesterday if
+    // today is empty). Walk one civil day at a time using addDays so the
+    // boundary math is identical to the rest of the project.
+    let streak = 0;
+    let cursor: string;
+    if (activeDates.has(today)) {
+      cursor = today;
+    } else {
+      cursor = addDays(today, -1);
+      // If yesterday is ALSO empty, streak is 0 — both today and the
+      // most recent prior day broke the chain.
+      if (!activeDates.has(cursor)) cursor = '';
+    }
+    while (cursor && activeDates.has(cursor)) {
+      streak++;
+      cursor = addDays(cursor, -1);
+    }
+
+    // last_active = the most recent active date as an epoch-ms timestamp
+    // (midnight UTC of that civil date — iOS just needs *something* to
+    // render "active 3d ago"; precise wall-clock isn't surfaced).
+    let lastActiveMs: number | null = null;
+    if (activeDates.size > 0) {
+      const sorted = [...activeDates].sort();
+      const latest = sorted[sorted.length - 1]!;
+      lastActiveMs = Date.parse(`${latest}T00:00:00Z`);
+    }
+
+    out.push({
+      user_id: m.user_id,
+      display_name: displayName,
+      avatar_initials: avatarInitials(displayName),
+      is_me: m.user_id === callerUserId,
+      workout_count: workoutCount,
+      streak_days: streak,
+      last_active: lastActiveMs,
+    });
+  }
+  return out;
 }

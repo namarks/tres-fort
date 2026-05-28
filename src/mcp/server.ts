@@ -12,6 +12,8 @@ import {
   findRecentMatchingSet,
   getActivePlan,
   getExercises,
+  getGroupFeed,
+  getGroupStats,
   getHistory,
   getInProgressSession,
   getLastCompletedSession,
@@ -26,6 +28,8 @@ import {
   getUpcomingRides,
   getUserTimezone,
   getVolume,
+  isGroupMember,
+  listGroupsForUser,
   logActivity,
   logSet,
   logWorkoutComplete,
@@ -973,6 +977,53 @@ const TOOLS: Record<string, Tool> = {
           calories: x.calories,
           elevation_gain_m: x.elevation_gain_m,
         })),
+      };
+    },
+  },
+  get_group_feed: {
+    description:
+      'See the recent training activity of the people in a group — strength sessions (with top sets), intervals.icu rides, and free-form activities (pilates, yoga, walks) from every member, interleaved by recency. Pass `group_id` for a specific group or omit to default to the first group the user is in. `range` is "7d" | "14d" | "30d" (default 7d) and ALSO returns per-member workout_count + streak_days so you can compare. Use this to answer questions like "how is the group doing this week?" or "did Sarah lift yesterday?". Read-only; does not log anything. Privacy contract: a strength session here exposes the day name + top set per exercise but NEVER the session notes, perceived fatigue, set notes, or set-level RPE — those stay private to the lifter.',
+    inputSchema: obj(
+      {
+        group_id: { type: 'string', description: 'Group id (UUID). Omit to default to the first group the user belongs to.' },
+        range: { type: 'string', description: '7d | 14d | 30d (default 7d)' },
+        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Max feed items (default 30)' },
+      },
+      [],
+    ),
+    handler: async (a, env, userId) => {
+      // Resolve target group: explicit `group_id` (and verify caller is in
+      // it — same 403/404 collapse the REST surface uses since MCP can't
+      // distinguish a stranger vs a stale id any better) OR the caller's
+      // first group via listGroupsForUser. The "no groups yet" empty-state
+      // is a normal return value, not an error.
+      const groups = await listGroupsForUser(env.DB, userId);
+      let groupId: string | undefined;
+      if (typeof a.group_id === 'string' && a.group_id.length > 0) {
+        groupId = a.group_id;
+        if (!(await isGroupMember(env.DB, userId, groupId))) {
+          return { error: 'forbidden_or_not_found', group_id: groupId };
+        }
+      } else if (groups.length > 0) {
+        groupId = groups[0]!.id;
+      } else {
+        return { groups: [], items: [], stats: [], note: 'You are not in any groups yet.' };
+      }
+      // range: same accepted set as the REST endpoint.
+      const rangeStr = typeof a.range === 'string' ? a.range : '7d';
+      const m = /^(\d+)d$/.exec(rangeStr);
+      const days = m ? Math.max(1, Math.min(365, Number(m[1]))) : 7;
+      const limit =
+        typeof a.limit === 'number' ? Math.max(1, Math.min(100, Math.floor(a.limit))) : 30;
+      const items = await getGroupFeed(env.DB, groupId, null, limit, userId);
+      const stats = await getGroupStats(env.DB, groupId, days, userId);
+      const groupName = groups.find((g) => g.id === groupId)?.name ?? null;
+      return {
+        group_id: groupId,
+        group_name: groupName,
+        range: `${days}d`,
+        items,
+        stats,
       };
     },
   },

@@ -9,7 +9,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "11"
+    CURRENT_PROJECT_VERSION: "12"
     GENERATE_INFOPLIST_FILE: NO
     DEVELOPMENT_TEAM: "8BA2RY6RCA"   # Nicholas Marks (Apple Developer Program)
     CODE_SIGN_STYLE: Automatic

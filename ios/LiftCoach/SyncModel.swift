@@ -279,6 +279,11 @@ final class SyncModel: ObservableObject {
     }
 
     func adjustWeight(_ delta: Double) { weight = max(0, weight + delta) }
+    /// Direct-set the working weight (tap-to-edit on the runner). Same
+    /// non-negative clamp as `adjustWeight` so weird-increment machines
+    /// (14.3 lb plate stack) can be entered exactly without making the
+    /// stepper row carry every possible delta button.
+    func setWeight(_ value: Double) { weight = max(0, value) }
     func adjustReps(_ delta: Int) { reps = max(0, reps + delta) }
 
     func setsDone(_ ex: TemplateExercise) -> Int { todaySets(ex.exercise_id).count }

@@ -15,13 +15,27 @@ struct TodayView: View {
     @State private var showOverridePicker = false
     /// Confirms discarding the in-progress workout (destructive, undo-less).
     @State private var showDiscardConfirm = false
+    /// Rest overlay collapsed to a floating pill so the runner underneath
+    /// (current exercise, jump strip, completed sets) is visible/scrollable
+    /// without ending the rest timer. Reset whenever `restEndDate` clears so
+    /// the next rest starts in the expanded state.
+    @State private var restMinimized = false
 
     var body: some View {
         NavigationStack {
-            ZStack {
+            ZStack(alignment: .top) {
                 Theme.background
                 content
-                if sync.restEndDate != nil { RestOverlay(sync: sync) }
+                if sync.restEndDate != nil {
+                    if restMinimized {
+                        RestPill(sync: sync) { restMinimized = false }
+                    } else {
+                        RestOverlay(sync: sync) { restMinimized = true }
+                    }
+                }
+            }
+            .onChange(of: sync.restEndDate) { _, new in
+                if new == nil { restMinimized = false }
             }
             // FIX 1: let the plan name degrade gracefully instead of hard-
             // truncating mid-word. A principal title shows short names full
@@ -477,6 +491,13 @@ private struct ProgressBar: View {
 private struct RunnerView: View {
     @ObservedObject var sync: SyncModel
 
+    /// Tap-to-edit on the big weight number → decimal-pad sheet. Persists
+    /// the in-flight edit string (`""` while the sheet is open and the user
+    /// has cleared the field — TextField needs a Binding, not a transient
+    /// value) so a partially-typed entry isn't lost on a re-render.
+    @State private var editingWeight = false
+    @State private var weightDraft = ""
+
     var body: some View {
         if let ex = sync.currentExercise {
             ScrollView {
@@ -523,13 +544,17 @@ private struct RunnerView: View {
                             // Two-dumbbell lifts: the number is one dumbbell, so
                             // label it "EACH HAND" rather than implying a total.
                             let weightLabel = ex.isPerHand
-                                ? "WEIGHT (\(ex.exercise_unit)) · EACH HAND"
-                                : "WEIGHT (\(ex.exercise_unit))"
+                                ? "WEIGHT (\(ex.exercise_unit)) · EACH HAND · TAP TO EDIT"
+                                : "WEIGHT (\(ex.exercise_unit)) · TAP TO EDIT"
                             stepper(label: weightLabel, value: fmt(sync.weight),
                                     steps: [("−10", { sync.adjustWeight(-10) }, true),
                                             ("−5", { sync.adjustWeight(-5) }, false),
                                             ("+5", { sync.adjustWeight(5) }, false),
-                                            ("+10", { sync.adjustWeight(10) }, true)])
+                                            ("+10", { sync.adjustWeight(10) }, true)],
+                                    onTapValue: {
+                                        weightDraft = fmt(sync.weight)
+                                        editingWeight = true
+                                    })
                         }
                         stepper(label: "REPS", value: "\(sync.reps)",
                                 steps: [("−1", { sync.adjustReps(-1) }, false),
@@ -559,6 +584,20 @@ private struct RunnerView: View {
                     .padding(.top, 24)
                 }
                 .padding(20)
+            }
+            .sheet(isPresented: $editingWeight) {
+                WeightEditorSheet(
+                    draft: $weightDraft,
+                    unit: ex.exercise_unit,
+                    onSave: {
+                        // Trim and parse — empty / non-numeric drafts cancel
+                        // silently rather than zeroing the working weight.
+                        let trimmed = weightDraft.trimmingCharacters(in: .whitespaces)
+                        if let v = Double(trimmed) { sync.setWeight(v) }
+                        editingWeight = false
+                    },
+                    onCancel: { editingWeight = false }
+                )
             }
         }
     }
@@ -595,7 +634,8 @@ private struct RunnerView: View {
     }
 
     private func stepper(label: String, value: String,
-                         steps: [(String, () -> Void, Bool)]) -> some View {
+                         steps: [(String, () -> Void, Bool)],
+                         onTapValue: (() -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label).font(Theme.mono(10, .bold)).tracking(2).foregroundStyle(Theme.muted)
             HStack(spacing: 8) {
@@ -604,12 +644,36 @@ private struct RunnerView: View {
                 }
                 // JetBrains Mono is fixed-width: every value is the same
                 // size in a fixed-height slot (no digit jitter).
-                Text(value)
-                    .font(Theme.number(52))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(1).minimumScaleFactor(0.5)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 56)
+                // The whole slot is one tap target when `onTapValue` is set
+                // (decimal-pad entry for weird-increment machines), with a
+                // dotted underline as the hint. plain buttonStyle so the
+                // number doesn't tint accent on press.
+                Group {
+                    if let onTapValue {
+                        Button(action: onTapValue) {
+                            Text(value)
+                                .font(Theme.number(52))
+                                .foregroundStyle(Theme.text)
+                                .lineLimit(1).minimumScaleFactor(0.5)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 56)
+                                .overlay(alignment: .bottom) {
+                                    Rectangle()
+                                        .fill(Theme.muted.opacity(0.35))
+                                        .frame(height: 1)
+                                        .padding(.horizontal, 8)
+                                }
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Text(value)
+                            .font(Theme.number(52))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(1).minimumScaleFactor(0.5)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 56)
+                    }
+                }
                 ForEach(Array(steps.suffix(steps.count - steps.count / 2)), id: \.0) { s in
                     stepBtn(s.0, s.2, s.1)
                 }
@@ -651,6 +715,62 @@ private struct RunnerView: View {
                 .background(Theme.surface).foregroundStyle(Theme.text)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
         }
+    }
+}
+
+// MARK: - Weight editor sheet
+
+/// Decimal-pad sheet for direct weight entry — handles weird-increment
+/// machines (14.3 lb plate stack) the ±5/±10 stepper can't reach without
+/// adding more buttons. Parent holds the draft string so an in-flight edit
+/// survives a re-render. Auto-focus + select-all so the typical flow is
+/// tap → keypad up → type → Save.
+private struct WeightEditorSheet: View {
+    @Binding var draft: String
+    let unit: String
+    let onSave: () -> Void
+    let onCancel: () -> Void
+
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 20) {
+                Text("WEIGHT (\(unit))")
+                    .font(Theme.mono(11, .bold)).tracking(2)
+                    .foregroundStyle(Theme.muted)
+                    .padding(.top, 8)
+                TextField("0", text: $draft)
+                    .keyboardType(.decimalPad)
+                    .multilineTextAlignment(.center)
+                    .font(Theme.number(56))
+                    .foregroundStyle(Theme.text)
+                    .padding(.horizontal, 20).padding(.vertical, 14)
+                    .background(Theme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .focused($focused)
+                Text("Any value — \(unit) (e.g. 14.3)")
+                    .font(Theme.mono(11)).foregroundStyle(Theme.dim)
+                Spacer()
+            }
+            .padding(20)
+            .background(Theme.bg.ignoresSafeArea())
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel", action: onCancel)
+                        .foregroundStyle(Theme.muted)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Save", action: onSave)
+                        .font(Theme.mono(14, .bold))
+                        .foregroundStyle(Theme.accent)
+                }
+            }
+        }
+        .presentationDetents([.height(280)])
+        .presentationDragIndicator(.visible)
+        .preferredColorScheme(.dark)
+        .onAppear { focused = true }
     }
 }
 
@@ -747,6 +867,10 @@ private struct TimedSetView: View {
 
 private struct RestOverlay: View {
     @ObservedObject var sync: SyncModel
+    /// Collapse the overlay to the floating pill (timer keeps running). The
+    /// pill caller restores it; this view never ends rest on its own —
+    /// only DONE / +15 / −15 mutate the timer.
+    let onMinimize: () -> Void
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.2)) { ctx in
@@ -792,8 +916,35 @@ private struct RestOverlay: View {
                             .font(Theme.display(22)).foregroundStyle(Theme.text)
                     }
                     .padding(.top, 28)
+
+                    // Peek-through: collapse to a floating pill so the runner
+                    // (current exercise, jump strip, completed sets) is
+                    // visible/scrollable without ending the timer. Discoverable
+                    // tap target; swipe-down on the overlay also minimizes.
+                    Button(action: onMinimize) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 11, weight: .bold))
+                            Text("PREVIEW WORKOUT")
+                                .font(Theme.mono(11, .bold)).tracking(2)
+                        }
+                        .foregroundStyle(Theme.muted)
+                        .padding(.horizontal, 16).padding(.vertical, 12)
+                        .background(Capsule().fill(Theme.surface))
+                    }
+                    .padding(.top, 36)
                 }
             }
+            // Swipe-down anywhere on the overlay minimizes (matches the
+            // sheet-dismissal idiom). Threshold high enough not to fight the
+            // button taps above.
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 30)
+                    .onEnded { v in
+                        if v.translation.height > 60 { onMinimize() }
+                    }
+            )
         }
     }
 
@@ -805,6 +956,44 @@ private struct RestOverlay: View {
                 .background(primary ? Theme.accent : Theme.surface)
                 .foregroundStyle(primary ? .black : Theme.text)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+    }
+}
+
+// MARK: - Rest pill (minimized overlay)
+
+/// Floating countdown chip shown when the rest overlay is minimized. Sits
+/// at the top safe area, hit-tests only itself (taps elsewhere pass through
+/// to the runner underneath), and re-expands the overlay on tap. The timer
+/// state lives in SyncModel — this view only renders it.
+private struct RestPill: View {
+    @ObservedObject var sync: SyncModel
+    let onExpand: () -> Void
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
+            let remaining = sync.restEndDate
+                .map { Int(ceil($0.timeIntervalSince(ctx.date))) } ?? 0
+            let color = remaining <= 0 ? Theme.done : Theme.accent
+            Button(action: onExpand) {
+                HStack(spacing: 10) {
+                    Image(systemName: "timer")
+                        .font(.system(size: 13, weight: .bold))
+                    Text("REST")
+                        .font(Theme.mono(11, .bold)).tracking(2)
+                    Text(clock(remaining))
+                        .font(Theme.mono(15, .bold))
+                    Image(systemName: "chevron.up")
+                        .font(.system(size: 10, weight: .bold))
+                }
+                .foregroundStyle(color)
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(Capsule().fill(Theme.surface))
+                .overlay(Capsule().stroke(color.opacity(0.5), lineWidth: 1))
+                .shadow(color: .black.opacity(0.45), radius: 12, y: 4)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 6)
         }
     }
 }

@@ -15,18 +15,13 @@ enum APIError: Error, LocalizedError {
 struct APIClient {
     var baseURL = Config.apiBaseURL
 
-    func authApple(identityToken: String,
-                   fullName: String?,
-                   inviteCode: String? = nil) async throws -> AuthResponse {
-        // M5: `invite_code` is OPTIONAL — bootstrap users (OWNER_APPLE_SUB
-        // path, fresh-install path) and existing users sign in without one.
-        // Only new Apple subs need an invite. We build the dict conditionally
-        // (omit the key) rather than passing NSNull, which the POST helper
-        // would now serialize as explicit JSON `null` — and the server's
-        // path 4 treats a string value differently from null/absent.
+    func authApple(identityToken: String, fullName: String?) async throws -> AuthResponse {
+        // Open sign-in: identityToken (required) + optional display name.
+        // Invite redemption is NOT bundled into sign-in — invited users
+        // sign in first, then redeem via POST /api/groups/join (see
+        // APIClient+Groups.joinGroup).
         var body: [String: Any] = ["identityToken": identityToken]
         if let fullName { body["fullName"] = fullName }
-        if let inviteCode, !inviteCode.isEmpty { body["invite_code"] = inviteCode }
         return try await post("auth/apple", body: body, jwt: nil)
     }
 

@@ -34,15 +34,12 @@ struct RootView: View {
     }
 }
 
-/// Open sign-in with optional invite code. Anyone can sign in with
-/// Apple — supplying an invite code is a shortcut that auto-joins the
-/// caller to the inviter's group atomically with account creation.
-/// Without a code, the user signs in to an empty Group tab and can
-/// create / join groups later from there.
+/// Open sign-in. Anyone can sign in with Apple; no invite code required.
+/// Invited friends sign in first, then redeem their code from inside the
+/// Group tab via "Join with code" — that path lives entirely in the
+/// signed-in app surface, so the sign-in screen stays a single button.
 private struct SignedOutView: View {
     @ObservedObject var model: AuthModel
-    @State private var showInviteField = false
-    @State private var inviteCode: String = ""
 
     var body: some View {
         VStack(spacing: 16) {
@@ -50,67 +47,14 @@ private struct SignedOutView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
-            if showInviteField {
-                VStack(spacing: 6) {
-                    TextField("INVITE CODE", text: $inviteCode)
-                        .font(.system(.body, design: .monospaced).weight(.bold))
-                        .multilineTextAlignment(.center)
-                        .textInputAutocapitalization(.characters)
-                        .disableAutocorrection(true)
-                        .padding(.vertical, 10)
-                        .background(Color.white.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .foregroundStyle(.white)
-                        .onChange(of: inviteCode) { _, new in
-                            // 6-char base-32 alphabet (no I/L/O/0/1) per
-                            // the backend invite generator. Normalize on
-                            // the fly so a pasted lowercase code works.
-                            let cleaned = new.uppercased()
-                                .filter { "ABCDEFGHJKMNPQRSTUVWXYZ23456789".contains($0) }
-                                .prefix(6)
-                            if String(cleaned) != new {
-                                inviteCode = String(cleaned)
-                            }
-                        }
-                    Text("6 letters/numbers, no I L O 0 1")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
             SignInWithAppleButton(.signIn,
                                   onRequest: { req in
                                       req.requestedScopes = [.fullName, .email]
-                                      // Stash the code so handleAppleResult can
-                                      // pick it up out-of-band (the callback
-                                      // doesn't take user data). Gate on the
-                                      // field being VISIBLE so a code the
-                                      // user typed and then hid via "Sign in
-                                      // without code" doesn't get sent — the
-                                      // visible field is the source of truth
-                                      // for "user intends to redeem a code."
-                                      model.pendingInviteCode =
-                                          (showInviteField && !inviteCode.isEmpty) ? inviteCode : nil
                                   },
                                   onCompletion: model.handleAppleResult)
                 .signInWithAppleButtonStyle(.white)
                 .frame(height: 50)
                 .cornerRadius(10)
-
-            Button {
-                // Hiding the field implies "I don't want to use a code."
-                // Clear it so a previously-typed stale code can't leak
-                // through onRequest above.
-                withAnimation {
-                    if showInviteField { inviteCode = "" }
-                    showInviteField.toggle()
-                }
-            } label: {
-                Text(showInviteField ? "Sign in without code" : "Have an invite code?")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .underline()
-            }
 
             if case let .error(msg) = model.phase {
                 Text(msg)

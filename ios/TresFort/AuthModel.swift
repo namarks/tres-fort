@@ -18,17 +18,9 @@ final class AuthModel: ObservableObject {
     /// against /api/groups members (the M2 list endpoint doesn't stamp
     /// `is_me` — only /feed and /stats do).
     @Published var userID: String?
-    /// Newly-redeemed group id (only set when /auth/apple was called with
-    /// an invite_code). GroupModel watches this and pre-selects the group
-    /// after first login. Cleared once GroupModel consumes it.
-    @Published var pendingGroupID: String?
 
     private let api = APIClient()
     private static let userIDKey = "com.nmarkspdx.liftcoach.user-id.v1"
-    /// Invite code captured from the sign-in form. Pulled in by the next
-    /// `handleAppleResult` call so we don't have to thread it through the
-    /// SignInWithAppleButton's `onCompletion`.
-    var pendingInviteCode: String?
 
     init() {
         if let token = Keychain.load() {
@@ -55,39 +47,21 @@ final class AuthModel: ObservableObject {
                 let s = PersonNameComponentsFormatter().string(from: comps)
                 return s.isEmpty ? nil : s
             }
-            let code = pendingInviteCode
-            pendingInviteCode = nil   // consume; one-shot
-            Task { await exchange(identityToken: identityToken, fullName: name,
-                                  inviteCode: code) }
+            Task { await exchange(identityToken: identityToken, fullName: name) }
         }
     }
 
-    private func exchange(identityToken: String,
-                          fullName: String?,
-                          inviteCode: String?) async {
+    private func exchange(identityToken: String, fullName: String?) async {
         phase = .working("Signing in…")
         do {
             let res = try await api.authApple(
                 identityToken: identityToken,
-                fullName: fullName,
-                inviteCode: inviteCode)
+                fullName: fullName)
             Keychain.save(res.jwt)
             jwt = res.jwt
             userID = res.user.id
             UserDefaults.standard.set(res.user.id, forKey: Self.userIDKey)
-            if let gid = res.group_id { pendingGroupID = gid }
             phase = .signedIn
-        } catch let APIError.http(code, body) where code == 403 && body.contains("invalid_invite") {
-            // Map the backend's `invalid_invite` 403 to a friendly message.
-            // (Backend renamed from `not_invited` when sign-in opened up:
-            // now this status code ONLY fires when an invite_code was
-            // supplied but didn't validate — typo / expired / used / already-
-            // member. We still also accept the old token for safety while
-            // older clients may be in the field.)
-            phase = .error("This invite is invalid or expired.")
-        } catch let APIError.http(code, body) where code == 403 && body.contains("not_invited") {
-            // Legacy back-compat with the pre-open-signin server. Same UX.
-            phase = .error("This invite is invalid or expired.")
         } catch {
             phase = .error(error.localizedDescription)
         }
@@ -96,7 +70,7 @@ final class AuthModel: ObservableObject {
     /// Called by the data layer on a 401 (stale JWT) → force re-auth.
     /// Also clears every piece of PER-USER state persisted on the device:
     ///   - keychain JWT,
-    ///   - userID + pendingGroupID (UserDefaults),
+    ///   - userID (UserDefaults),
     ///   - the activity outbox (entries have no user_id baked in, so on
     ///     re-auth as a different account they would POST through the
     ///     new user's JWT and mis-attribute the rows),
@@ -111,7 +85,6 @@ final class AuthModel: ObservableObject {
         ActivityOutboxStore.clear()
         jwt = nil
         userID = nil
-        pendingGroupID = nil
         phase = .signedOut
     }
 

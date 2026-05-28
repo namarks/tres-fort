@@ -1,26 +1,27 @@
-// M2: invite-gated sign-in. The /auth/apple HTTP path verifies an Apple
-// identity token against Apple's live JWKS, which we deliberately do NOT
-// stub in this suite (the project policy is zero real network calls; see
-// vitest.config.ts). Instead we exercise the SAME logic via the db.ts
-// helpers that /auth/apple calls (createUserAndRedeemInvite, countUsers,
-// claimOrCreateOwner) — those are the unit of truth for the path-decision
-// table documented in src/routes/auth.ts. The HTTP layer is a thin
-// dispatcher over them.
+// Open sign-in path. /auth/apple verifies an Apple identity token against
+// Apple's live JWKS, which we deliberately do NOT stub here (the project
+// policy is zero real network calls; see vitest.config.ts). So this file
+// exercises the SAME logic via the db.ts helpers /auth/apple calls
+// (upsertUser, claimOrCreateOwner, isBootstrapClaimEligible) — those are
+// the unit of truth for the path-decision table documented in
+// src/routes/auth.ts. The HTTP layer is a thin dispatcher over them.
 //
 // We additionally smoke-test the HTTP path's BAD-INPUT branches (missing
 // identityToken, malformed body) since those don't require JWKS.
+//
+// Note: there is NO invite-code-on-signin path anymore — the prior
+// `createUserAndRedeemInvite` shortcut was removed because it created an
+// existing-user vs new-user asymmetry that silently dropped codes on
+// repeat sign-ins. Invite redemption now lives exclusively in
+// POST /api/groups/join (see groups.test.ts).
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   BOOTSTRAP_APPLE_SUB,
   claimOrCreateOwner,
   countUsers,
-  createGroup,
-  createInvite,
-  createUserAndRedeemInvite,
   ensureOwnerUser,
   isBootstrapClaimEligible,
-  isGroupMember,
   upsertUser,
 } from '../src/db';
 
@@ -68,130 +69,11 @@ describe('/auth/apple bad-input branches (no JWKS network needed)', () => {
   });
 });
 
-describe('invite-gated user creation (createUserAndRedeemInvite)', () => {
-  async function freshOwnerAndGroup(): Promise<{ ownerId: string; groupId: string }> {
-    const owner = await ensureOwnerUser(env.DB, undefined);
-    const group = await createGroup(env.DB, owner.id, 'Cycle Crew');
-    return { ownerId: owner.id, groupId: group.id };
-  }
-
-  it('rejects with `unknown` when the code does not exist', async () => {
-    const result = await createUserAndRedeemInvite(
-      env.DB,
-      `sub-${crypto.randomUUID()}`,
-      'someone@test',
-      'Someone',
-      'XYZ987',
-    );
-    expect(result).toEqual({ error: 'unknown' });
-
-    // No user row was created — the unknown-code branch rejects BEFORE
-    // touching users (cheap pre-check). When the /auth/apple route hits
-    // this, it surfaces as `invalid_invite` 403 (a code was supplied but
-    // didn't validate — distinct from the open-signin path where NO code
-    // creates the user with zero memberships).
-    const count = await countUsers(env.DB);
-    // ensureOwnerUser may have seeded a row in a previous test; we just
-    // assert the count didn't change relative to right-after-pre-check.
-    expect(count).toBeGreaterThanOrEqual(0);
-  });
-
-  it('creates the user + membership + audit on a valid code', async () => {
-    const { groupId } = await freshOwnerAndGroup();
-    const invite = await createInvite(env.DB, (await ensureOwnerUser(env.DB, undefined)).id, groupId);
-
-    const beforeAudits = await env.DB
-      .prepare("SELECT COUNT(*) AS c FROM audit_log WHERE tool = 'redeem_invite'")
-      .first<{ c: number }>();
-
-    const sub = `sub-new-${crypto.randomUUID()}`;
-    const result = await createUserAndRedeemInvite(
-      env.DB,
-      sub,
-      'new@test',
-      'New User',
-      invite.code,
-    );
-    expect('ok' in result && result.ok).toBe(true);
-    if (!('ok' in result)) throw new Error('unreachable');
-
-    expect(result.group_id).toBe(groupId);
-    expect(result.user.apple_sub).toBe(sub);
-
-    // Invite is consumed and tied to the new user.
-    const inv = await env.DB
-      .prepare('SELECT * FROM group_invites WHERE code = ?1')
-      .bind(invite.code)
-      .first<any>();
-    expect(inv.used_at).toBeGreaterThan(0);
-    expect(inv.used_by).toBe(result.user.id);
-
-    // Membership row exists.
-    expect(await isGroupMember(env.DB, result.user.id, groupId)).toBe(true);
-
-    // redeem_invite audit landed (the via='signup' tag distinguishes it
-    // from the already-signed-in POST /api/groups/join path).
-    const afterAudits = await env.DB
-      .prepare("SELECT COUNT(*) AS c FROM audit_log WHERE tool = 'redeem_invite'")
-      .first<{ c: number }>();
-    expect((afterAudits?.c ?? 0) - (beforeAudits?.c ?? 0)).toBe(1);
-  });
-
-  it('rejects with `used` once the code is consumed', async () => {
-    const owner = await ensureOwnerUser(env.DB, undefined);
-    const group = await createGroup(env.DB, owner.id, 'one-shot');
-    const invite = await createInvite(env.DB, owner.id, group.id);
-
-    const r1 = await createUserAndRedeemInvite(
-      env.DB,
-      `sub-1-${crypto.randomUUID()}`,
-      null,
-      null,
-      invite.code,
-    );
-    expect('ok' in r1).toBe(true);
-
-    // Second attempt with the same code -> used.
-    const r2 = await createUserAndRedeemInvite(
-      env.DB,
-      `sub-2-${crypto.randomUUID()}`,
-      null,
-      null,
-      invite.code,
-    );
-    expect(r2).toEqual({ error: 'used' });
-  });
-
-  it('rejects with `expired` on a past expiry', async () => {
-    const owner = await ensureOwnerUser(env.DB, undefined);
-    const group = await createGroup(env.DB, owner.id, 'past-expiry');
-    const invite = await createInvite(env.DB, owner.id, group.id, Date.now() - 1000);
-
-    const r = await createUserAndRedeemInvite(
-      env.DB,
-      `sub-exp-${crypto.randomUUID()}`,
-      null,
-      null,
-      invite.code,
-    );
-    expect(r).toEqual({ error: 'expired' });
-
-    // Phantom-account guard: no orphan user with that apple_sub.
-    const stranded = await env.DB
-      .prepare('SELECT id FROM users WHERE apple_sub LIKE ?1')
-      .bind(`sub-exp-%`)
-      .all();
-    // We expect zero stranded rows from this branch — the pre-check
-    // rejects BEFORE creating the user (expired is detected up-front).
-    expect(stranded.results.length).toBe(0);
-  });
-});
-
-// /auth/apple Path 4 was originally invite-only ("no code → 403"). We
-// opened it: a new Apple sub without an invite is created with ZERO
-// group memberships (open sign-in). Groups themselves remain invite-only
-// — the user can create a group or redeem an invite from the iOS Group
-// tab post-sign-in. This describe-block exercises the underlying
+// /auth/apple Path 4 is open sign-in: any new Apple sub creates an
+// account with zero group memberships. Groups themselves remain
+// invite-only — the user creates a group or redeems an invite from the
+// iOS Group tab post-sign-in (POST /api/groups, POST /api/groups/join).
+// This describe-block exercises the underlying
 // primitive `upsertUser` that Path 4 now calls on the no-code branch.
 describe('open sign-in path (Path 4 without invite_code)', () => {
   it('upsertUser INSERTs a fresh user with NO group memberships', async () => {
@@ -251,7 +133,8 @@ describe('bootstrap path: claimOrCreateOwner + countUsers', () => {
   // single 'mcp-owner' row exists) AND OWNER_APPLE_SUB is unset, the
   // FIRST iOS sign-in must still be able to claim that row. Path 3 in
   // /auth/apple used to require countUsers === 0 and locked the legit
-  // owner out — they hit "not_invited" 403 despite owning the install.
+  // owner out — they fall through to Path 4 (open sign-in) and create a
+  // SECOND user row, when claimOrCreateOwner is built to rebind the seed.
   // The fix is isBootstrapClaimEligible, which also accepts a sole row
   // matching the BOOTSTRAP_APPLE_SUB sentinel.
   it('claim-eligible when sole users row is the MCP bootstrap sentinel (countUsers=1)', async () => {
@@ -267,7 +150,8 @@ describe('bootstrap path: claimOrCreateOwner + countUsers', () => {
     expect(await countUsers(env.DB)).toBe(1);
 
     // The bug: under the old "countUsers === 0" gate, this would be
-    // false and the iOS sub would fall through to "not_invited" 403.
+    // false and the iOS sub would fall through to Path 4 (open sign-in)
+    // and create a phantom second user row alongside the bootstrap row.
     expect(await isBootstrapClaimEligible(env.DB)).toBe(true);
 
     // Sign-in path then calls claimOrCreateOwner(unlocked), which rebinds

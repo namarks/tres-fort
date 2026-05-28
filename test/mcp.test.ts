@@ -144,9 +144,11 @@ describe('mcp tools list', () => {
         'get_recent_activities',
         'update_day',
         'delete_exercise',
+        'log_activity',
+        'get_group_feed',
       ]),
     );
-    expect(names).toHaveLength(25);
+    expect(names).toHaveLength(27);
     for (const t of body.result.tools) expect(t.inputSchema.type).toBe('object');
   });
 });
@@ -325,5 +327,63 @@ describe('mcp tools read live D1', () => {
     expect(prompts.body.result.prompts[0].name).toBe('coach_brief');
     const got = await rpc('prompts/get', { name: 'coach_brief' });
     expect(got.body.result.messages[0].content.text).toContain('strength coach');
+  });
+
+  // M4: get_group_feed. The MCP user resolves to the bootstrap owner via
+  // ensureOwnerUser; seed() above already minted an owner via /auth/dev.
+  // The owner here creates a group with one logged session — the tool
+  // should surface it back and stamp is_me=true on the owner's items.
+  it('get_group_feed: returns the owner\'s feed for the first group when group_id omitted', async () => {
+    await seed(); // creates owner + a session on 2026-05-18 with a bench set
+    // Create a group under the owner via REST (using the same /auth/dev jwt).
+    const jwt = (
+      await (
+        await SELF.fetch(`${BASE}/auth/dev`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ secret: 'test-dev' }),
+        })
+      ).json<{ jwt: string }>()
+    ).jwt;
+    const H = { 'content-type': 'application/json', Authorization: `Bearer ${jwt}` };
+    const g = await (
+      await SELF.fetch(`${BASE}/api/groups`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ name: 'mcp-feed' }),
+      })
+    ).json<{ id: string }>();
+
+    const out = toolJson(
+      (await rpc('tools/call', { name: 'get_group_feed', arguments: { range: '14d' } })).body,
+    );
+    expect(out.group_id).toBe(g.id);
+    expect(out.group_name).toBe('mcp-feed');
+    expect(out.range).toBe('14d');
+    expect(Array.isArray(out.items)).toBe(true);
+    expect(Array.isArray(out.stats)).toBe(true);
+    // The seeded session shows up as a session-type feed item with is_me=true.
+    const sessionItem = out.items.find((it: any) => it.type === 'session');
+    expect(sessionItem).toBeTruthy();
+    expect(sessionItem.is_me).toBe(true);
+    expect(sessionItem.session.top_sets[0].exercise).toBe('Bench Press');
+    // stats include the owner with workout_count >= 0 (the seeded session
+    // is dated 2026-05-18 which may or may not be in the rolling 14d
+    // window depending on wall clock; the shape is what we lock here).
+    const me = out.stats.find((s: any) => s.is_me === true);
+    expect(me).toBeTruthy();
+    expect(typeof me.workout_count).toBe('number');
+    expect(typeof me.streak_days).toBe('number');
+  });
+
+  it('get_group_feed: empty-state when caller is in no groups', async () => {
+    // No /auth/dev call, no group creation → bootstrap owner exists from
+    // ensureOwnerUser but has no group_members rows.
+    const out = toolJson(
+      (await rpc('tools/call', { name: 'get_group_feed', arguments: {} })).body,
+    );
+    expect(out.items).toEqual([]);
+    expect(out.stats).toEqual([]);
+    expect(out.note).toMatch(/not in any groups/);
   });
 });

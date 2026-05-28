@@ -32,6 +32,14 @@ export interface User {
   created_at: number;
   /** Device-reported IANA timezone (e.g. America/Los_Angeles); null until first sync. */
   timezone: string | null;
+  /**
+   * Per-user intervals.icu API key (M1 multi-user foundation, 0016). Each
+   * user owns their own intervals.icu credentials; sync* loops per user.
+   * NULL → that user's cycling-awareness is dormant (no fetch, no error).
+   */
+  intervals_api_key: string | null;
+  /** Per-user intervals.icu athlete id (paired with intervals_api_key). */
+  intervals_athlete_id: string | null;
 }
 
 export interface PlanRow {
@@ -151,6 +159,8 @@ export interface ExternalEventRow {
 export interface PlannedEvent {
   external_id: string;
   date: string; // start_date_local YYYY-MM-DD verbatim
+  /** start_date_local parsed to epoch-ms (treated as UTC for ordering only). */
+  start_date_local_ms: number | null;
   kind: string; // ride|run|swim|other
   title: string | null;
   description: string | null;
@@ -197,6 +207,8 @@ export interface ExternalActivityRow {
 export interface CompletedActivity {
   external_id: string;
   date: string; // start_date_local YYYY-MM-DD verbatim
+  /** start_date_local parsed to epoch-ms (treated as UTC for ordering only). */
+  start_date_local_ms: number | null;
   kind: string; // ride|run|swim|other
   name: string | null;
   moving_time_sec: number | null;
@@ -211,6 +223,78 @@ export interface CompletedActivity {
   calories: number | null;
   elevation_gain_m: number | null;
   raw: string; // source JSON for this activity
+}
+
+// ---- user-authored generic activities (see migrations/0017) --------------
+
+/**
+ * Generic activity log: Pilates classes, jump rope, yoga, walks, anything
+ * outside strength sessions (set_logs) and intervals.icu actuals
+ * (external_activities). Append-only log class — `id` is the client-
+ * generated UUID idempotency key, rows are soft-deleted only, writes never
+ * bump plans.version. Powers the group/family accountability feed (M4).
+ */
+export interface ActivityRow {
+  id: string;
+  user_id: string;
+  date: string;            // 'YYYY-MM-DD' device-local, verbatim
+  type: string;            // lower-case freeform: pilates|cardio|yoga|walk|other|...
+  title: string | null;
+  duration_minutes: number | null;
+  notes: string | null;
+  logged_at: number;       // epoch ms; also the delta-sync cursor
+  source: string;          // 'ios' | 'mcp'
+  deleted_at: number | null;
+}
+
+// ---- groups + invites (see migrations/0018) ------------------------------
+
+/**
+ * A friends/family group. The creator is auto-added as a member at
+ * creation time (see `createGroup` in src/db.ts). Orphan groups (last
+ * member left) are allowed — cleanup is deferred. Group writes do NOT
+ * bump plans.version (groups live outside the versioned plan document).
+ */
+export interface Group {
+  id: string;
+  name: string;
+  created_by: string;       // user_id of the creator
+  created_at: number;       // epoch ms
+}
+
+/**
+ * A row in `group_members`. `display_name` is a per-group nickname
+ * override — NULL means "use users.display_name" (resolved at read time
+ * in listGroupsForUser / GET /api/groups/:id).
+ */
+export interface GroupMember {
+  group_id: string;
+  user_id: string;
+  display_name: string | null;
+  joined_at: number;
+}
+
+/** A member with the *resolved* display name baked in (override or fallback). */
+export interface ResolvedGroupMember extends GroupMember {
+  /** Per-group override if set, else the user's global display_name. */
+  effective_display_name: string | null;
+}
+
+/**
+ * A single-use group invite. `code` is the 6-char human-shareable key
+ * (32-char no-ambiguous alphabet — A-Z minus I/L/O, 2-9). `expires_at`
+ * NULL = never expires; default at creation is +30 days. `used_at` /
+ * `used_by` are NULL until the code is redeemed; once set, the code is
+ * dead and any further redemption attempt is rejected with `used`.
+ */
+export interface GroupInvite {
+  code: string;
+  group_id: string;
+  created_by: string;
+  created_at: number;
+  expires_at: number | null;
+  used_at: number | null;
+  used_by: string | null;
 }
 
 /** Per-date conflict between lift sessions/projections and external events. */

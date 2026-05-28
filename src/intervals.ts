@@ -2,9 +2,16 @@
 //
 // Behind an injectable `fetcher` so tests never hit the network
 // (vitest-pool-workers is offline). The cycling-awareness feature is
-// DORMANT when INTERVALS_ICU_API_KEY is unset: fetchPlannedEvents returns
-// a clean {ok:false, reason:'disabled'} with no network call and no throw.
-import type { CompletedActivity, Env, PlannedEvent } from './types';
+// DORMANT when no API key/athlete id is supplied: each function returns a
+// clean {ok:false, reason:'disabled'} with no network call and no throw.
+//
+// CREDENTIALS — M1 change. Per-user creds (multi-user backend foundation).
+// These functions used to read INTERVALS_ICU_API_KEY/ATHLETE_ID off `env`
+// directly; they now take the pair explicitly so callers in db.ts can
+// loop per-user (each user owns their own intervals.icu credentials in
+// the `users` row — see migrations/0016_user_intervals_creds.sql). Env
+// lookup is intentionally OUT of this module — pure I/O on injected creds.
+import type { CompletedActivity, PlannedEvent } from './types';
 
 /** Minimal fetch signature we depend on (URL or string + RequestInit). */
 export type Fetcher = (
@@ -61,6 +68,18 @@ function num(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 }
 
+/**
+ * Parse an intervals.icu `start_date_local` ("YYYY-MM-DDTHH:MM:SS") to
+ * epoch-ms by treating it as UTC. Used ONLY as an ordering key for the
+ * group feed — comparing the same civil-time strings across users in
+ * different timezones gives a stable, reproducible numeric order without
+ * needing a per-user timezone lookup. Returns null on any parse failure.
+ */
+function parseCivilToMs(startLocal: string): number | null {
+  const ms = Date.parse(startLocal + 'Z');
+  return Number.isFinite(ms) ? ms : null;
+}
+
 function str(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
@@ -75,11 +94,10 @@ function str(v: unknown): string | null {
  * `start_date_local` date part VERBATIM — no timezone math (the contract).
  */
 export async function fetchPlannedEvents(
-  env: Env,
+  apiKey: string | null | undefined,
+  athleteId: string | null | undefined,
   deps: FetchDeps = {},
 ): Promise<FetchResult> {
-  const apiKey = env.INTERVALS_ICU_API_KEY;
-  const athleteId = env.INTERVALS_ICU_ATHLETE_ID;
   // Dormant when unconfigured: a clean no-op, never an error/throw.
   if (!apiKey || !athleteId) return { ok: false, reason: 'disabled' };
 
@@ -137,6 +155,12 @@ export async function fetchPlannedEvents(
     events.push({
       external_id: externalId,
       date: startLocal.slice(0, 10), // verbatim civil date, no tz math
+      // start_date_local is "YYYY-MM-DDTHH:MM:SS" (civil time, no zone).
+      // Parse as UTC for an order-stable numeric — across users in different
+      // tzs, two events at the same civil time get the same numeric key,
+      // which is the correct ordering for a "what happened on each day"
+      // feed. Returns null on parse failure rather than NaN.
+      start_date_local_ms: parseCivilToMs(startLocal),
       kind: kindOf(raw.type),
       title: str(raw.name),
       description: str(raw.description),
@@ -182,11 +206,10 @@ export type ActivityFetchResult =
  * part VERBATIM — no timezone math (the contract).
  */
 export async function fetchCompletedActivities(
-  env: Env,
+  apiKey: string | null | undefined,
+  athleteId: string | null | undefined,
   deps: ActivityFetchDeps = {},
 ): Promise<ActivityFetchResult> {
-  const apiKey = env.INTERVALS_ICU_API_KEY;
-  const athleteId = env.INTERVALS_ICU_ATHLETE_ID;
   // Dormant when unconfigured: a clean no-op, never an error/throw.
   if (!apiKey || !athleteId) return { ok: false, reason: 'disabled' };
 
@@ -237,6 +260,8 @@ export async function fetchCompletedActivities(
     activities.push({
       external_id: externalId,
       date: startLocal.slice(0, 10), // verbatim civil date, no tz math
+      // See note on PlannedEvent.start_date_local_ms — same ordering proxy.
+      start_date_local_ms: parseCivilToMs(startLocal),
       kind: kindOf(raw.type),
       name: str(raw.name),
       moving_time_sec: num(raw.moving_time),
@@ -360,12 +385,11 @@ export function isTresFortExport(raw: {
  * create_event/get_events/update_event}.
  */
 export async function pushStrengthActivity(
-  env: Env,
+  apiKey: string | null | undefined,
+  athleteId: string | null | undefined,
   activity: StrengthActivity,
   deps: Pick<FetchDeps, 'fetcher' | 'timeoutMs'> = {},
 ): Promise<PushResult> {
-  const apiKey = env.INTERVALS_ICU_API_KEY;
-  const athleteId = env.INTERVALS_ICU_ATHLETE_ID;
   // Dormant when unconfigured: clean no-op, never an error/throw.
   if (!apiKey || !athleteId) return { ok: false, reason: 'disabled' };
 

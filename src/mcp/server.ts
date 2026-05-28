@@ -12,6 +12,8 @@ import {
   findRecentMatchingSet,
   getActivePlan,
   getExercises,
+  getGroupFeed,
+  getGroupStats,
   getHistory,
   getInProgressSession,
   getLastCompletedSession,
@@ -26,6 +28,9 @@ import {
   getUpcomingRides,
   getUserTimezone,
   getVolume,
+  isGroupMember,
+  listGroupsForUser,
+  logActivity,
   logSet,
   logWorkoutComplete,
   nextDayOrderIndex,
@@ -474,6 +479,61 @@ const TOOLS: Record<string, Tool> = {
         ? null
         : `Deleted set ${a.set_id} (${r.weight}x${r.reps}${r.is_warmup ? ' warmup' : ''}).`,
   },
+  log_activity: {
+    description:
+      'Log a non-strength activity — pilates, yoga, jump rope, walks, ' +
+      'cardio, "anything else" — to the generic activities log. This is ' +
+      'the bucket for movement OUTSIDE strength sessions (use log_set for ' +
+      'lifts) and OUTSIDE intervals.icu cycling/running (which syncs ' +
+      'automatically). `type` is free-form lower-case (e.g. "pilates", ' +
+      '"yoga", "walk", "cardio", "other"). `date` defaults to the user\'s ' +
+      'civil "today" in their device timezone if omitted. The activity ' +
+      "id is generated server-side; Claude isn't an outbox retrying like " +
+      'iOS, so client-side idempotency keys are unnecessary.',
+    inputSchema: obj(
+      {
+        type: { type: 'string', description: 'lower-case freeform: pilates|cardio|yoga|walk|other|...' },
+        title: { type: 'string', description: 'e.g. "Reformer class at Studio MDR"' },
+        duration_minutes: { type: 'integer', minimum: 0 },
+        date: { type: 'string', description: 'YYYY-MM-DD (default today in user tz)' },
+        notes: { type: 'string' },
+      },
+      ['type'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const today = await ownerToday(env, userId);
+      const date = typeof a.date === 'string' && a.date.length > 0 ? a.date : today;
+      const type = String(a.type).toLowerCase().trim();
+      if (!type) return { error: 'invalid_type' };
+      const row = await logActivity(
+        env.DB,
+        userId,
+        {
+          id: crypto.randomUUID(),
+          date,
+          type,
+          title: typeof a.title === 'string' ? a.title : null,
+          duration_minutes:
+            typeof a.duration_minutes === 'number' ? a.duration_minutes : null,
+          notes: typeof a.notes === 'string' ? a.notes : null,
+          logged_at: Date.now(),
+        },
+        'mcp',
+      );
+      const dur = row.duration_minutes != null ? `${row.duration_minutes}min ` : '';
+      const msg = `Logged ${dur}${row.type} on ${row.date}${row.title ? ` — ${row.title}` : ''}`;
+      return { ok: true, message: msg, activity: row };
+    },
+    // Audited like every write tool (dispatch loop calls writeAudit). The
+    // `note` hook persists a Claude-authored note row, matching the pattern
+    // used by delete_set / adjust_today so the activity has a visible
+    // coaching trail.
+    note: (_a, r) =>
+      r?.error || !r?.activity
+        ? null
+        : `Logged activity: ${r.message}.`,
+  },
   log_workout_complete: {
     description: 'Mark a session complete, optionally with perceived fatigue (1-10) and notes.',
     inputSchema: obj(
@@ -917,6 +977,53 @@ const TOOLS: Record<string, Tool> = {
           calories: x.calories,
           elevation_gain_m: x.elevation_gain_m,
         })),
+      };
+    },
+  },
+  get_group_feed: {
+    description:
+      'See the recent training activity of the people in a group — strength sessions (with top sets), intervals.icu rides, and free-form activities (pilates, yoga, walks) from every member, interleaved by recency. Pass `group_id` for a specific group or omit to default to the first group the user is in. `range` is "7d" | "14d" | "30d" (default 7d) and ALSO returns per-member workout_count + streak_days so you can compare. Use this to answer questions like "how is the group doing this week?" or "did Sarah lift yesterday?". Read-only; does not log anything. Privacy contract: a strength session here exposes the day name + top set per exercise but NEVER the session notes, perceived fatigue, set notes, or set-level RPE — those stay private to the lifter.',
+    inputSchema: obj(
+      {
+        group_id: { type: 'string', description: 'Group id (UUID). Omit to default to the first group the user belongs to.' },
+        range: { type: 'string', description: '7d | 14d | 30d (default 7d)' },
+        limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Max feed items (default 30)' },
+      },
+      [],
+    ),
+    handler: async (a, env, userId) => {
+      // Resolve target group: explicit `group_id` (and verify caller is in
+      // it — same 403/404 collapse the REST surface uses since MCP can't
+      // distinguish a stranger vs a stale id any better) OR the caller's
+      // first group via listGroupsForUser. The "no groups yet" empty-state
+      // is a normal return value, not an error.
+      const groups = await listGroupsForUser(env.DB, userId);
+      let groupId: string | undefined;
+      if (typeof a.group_id === 'string' && a.group_id.length > 0) {
+        groupId = a.group_id;
+        if (!(await isGroupMember(env.DB, userId, groupId))) {
+          return { error: 'forbidden_or_not_found', group_id: groupId };
+        }
+      } else if (groups.length > 0) {
+        groupId = groups[0]!.id;
+      } else {
+        return { groups: [], items: [], stats: [], note: 'You are not in any groups yet.' };
+      }
+      // range: same accepted set as the REST endpoint.
+      const rangeStr = typeof a.range === 'string' ? a.range : '7d';
+      const m = /^(\d+)d$/.exec(rangeStr);
+      const days = m ? Math.max(1, Math.min(365, Number(m[1]))) : 7;
+      const limit =
+        typeof a.limit === 'number' ? Math.max(1, Math.min(100, Math.floor(a.limit))) : 30;
+      const items = await getGroupFeed(env.DB, groupId, null, null, limit, userId);
+      const stats = await getGroupStats(env.DB, groupId, days, userId);
+      const groupName = groups.find((g) => g.id === groupId)?.name ?? null;
+      return {
+        group_id: groupId,
+        group_name: groupName,
+        range: `${days}d`,
+        items,
+        stats,
       };
     },
   },

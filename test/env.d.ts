@@ -8,5 +8,9 @@ declare module 'cloudflare:test' {
     OWNER_AUTH_PASSPHRASE: string;
     APPLE_BUNDLE_ID: string;
     OWNER_APPLE_SUB?: string;
+    /** intervals.icu key — wired in vitest.config.ts so tests are not dormant. */
+    INTERVALS_ICU_API_KEY?: string;
+    /** intervals.icu athlete id — paired with INTERVALS_ICU_API_KEY in tests. */
+    INTERVALS_ICU_ATHLETE_ID?: string;
   }
 }

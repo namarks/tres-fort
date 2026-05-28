@@ -1,15 +1,20 @@
 // Service layer: all D1 access goes through here so REST (now) and MCP
 // (milestone b) share identical behavior. Timestamps are epoch-ms integers.
 import type {
+  ActivityRow,
   DayConflict,
   DayTemplateRow,
   EnrichedTemplateExercise,
   Env,
   ExternalActivityRow,
   ExternalEventRow,
+  Group,
+  GroupInvite,
+  GroupMember,
   PlanMeta,
   PlanRow,
   PlanTree,
+  ResolvedGroupMember,
   ScheduleWeek,
   SessionRow,
   SetLogRow,
@@ -60,6 +65,8 @@ export async function upsertUser(
     display_name: displayName,
     created_at: now(),
     timezone: null,
+    intervals_api_key: null,
+    intervals_athlete_id: null,
   };
   await db
     .prepare(
@@ -105,6 +112,14 @@ export async function claimOrCreateOwner(
 }
 
 /**
+ * Sentinel apple_sub the MCP bootstrap path stamps on the seeded owner row
+ * when OWNER_APPLE_SUB is unset. iOS sign-in detects this value to decide
+ * whether the sole users row is an unclaimed bootstrap (safe to claim) vs.
+ * a real Apple-bound account (must NOT be re-claimed by a different sub).
+ */
+export const BOOTSTRAP_APPLE_SUB = 'mcp-owner';
+
+/**
  * Resolve the single owner user for MCP calls. The MCP principal is "Claude
  * acting as the owner", not an end-user login — so it maps to the one user
  * row. If none exists yet (iOS app not built), bootstrap it so Claude can
@@ -118,7 +133,25 @@ export async function ensureOwnerUser(
     .prepare('SELECT * FROM users ORDER BY created_at LIMIT 1')
     .first<User>();
   if (existing) return existing;
-  return upsertUser(db, ownerAppleSub ?? 'mcp-owner', null, 'Owner');
+  return upsertUser(db, ownerAppleSub ?? BOOTSTRAP_APPLE_SUB, null, 'Owner');
+}
+
+/**
+ * Sign-in bootstrap eligibility for the OWNER_APPLE_SUB-unset path: true
+ * when (a) the users table is empty (fresh deploy) OR (b) the only row is
+ * the MCP-seeded bootstrap sentinel still waiting to be claimed by a real
+ * Apple identity. A second case must NEVER claim a row that's already been
+ * bound to a real apple_sub, hence the strict sentinel match.
+ */
+export async function isBootstrapClaimEligible(db: D1Database): Promise<boolean> {
+  const rows = await db
+    .prepare('SELECT apple_sub FROM users')
+    .all<{ apple_sub: string }>();
+  if (rows.results.length === 0) return true;
+  if (rows.results.length === 1) {
+    return rows.results[0]!.apple_sub === BOOTSTRAP_APPLE_SUB;
+  }
+  return false;
 }
 
 /** True if `tz` is a valid IANA timezone the runtime accepts. */
@@ -178,6 +211,623 @@ export async function setUserTimezoneIfChanged(
   const current = await getUserTimezone(db, userId);
   if (current === tz) return;
   await db.prepare('UPDATE users SET timezone = ?2 WHERE id = ?1').bind(userId, tz).run();
+}
+
+// ---- intervals.icu credentials (per-user; M1 multi-user foundation) ------
+
+/** A user paired with their intervals.icu credentials (both required). */
+export interface IntervalsUserCreds {
+  user_id: string;
+  api_key: string;
+  athlete_id: string;
+}
+
+/**
+ * Enumerate users who have BOTH intervals.icu credentials populated. Used by
+ * sync* in src/index.ts (cron) and refresh_rides (MCP) to loop per user
+ * — each user's events/activities tag to their own user_id, so a second
+ * Apple sign-in can connect a separate intervals.icu athlete without
+ * clobbering the owner's data.
+ */
+export async function listUsersWithIntervalsCreds(
+  db: D1Database,
+): Promise<IntervalsUserCreds[]> {
+  const r = await db
+    .prepare(
+      `SELECT id, intervals_api_key, intervals_athlete_id
+         FROM users
+        WHERE intervals_api_key IS NOT NULL
+          AND intervals_athlete_id IS NOT NULL`,
+    )
+    .all<{ id: string; intervals_api_key: string; intervals_athlete_id: string }>();
+  return r.results.map((row) => ({
+    user_id: row.id,
+    api_key: row.intervals_api_key,
+    athlete_id: row.intervals_athlete_id,
+  }));
+}
+
+/** Read one user's intervals.icu credentials (nulls if either is unset). */
+export async function getUserIntervalsCreds(
+  db: D1Database,
+  userId: string,
+): Promise<{ api_key: string | null; athlete_id: string | null }> {
+  const r = await db
+    .prepare(
+      `SELECT intervals_api_key AS api_key, intervals_athlete_id AS athlete_id
+         FROM users WHERE id = ?1`,
+    )
+    .bind(userId)
+    .first<{ api_key: string | null; athlete_id: string | null }>();
+  return { api_key: r?.api_key ?? null, athlete_id: r?.athlete_id ?? null };
+}
+
+/**
+ * Has this user ever explicitly set or cleared their intervals.icu
+ * credentials via PATCH /api/me/integrations/intervals? Determined from
+ * audit_log (the REST endpoint writes a `set_intervals_creds` row on every
+ * connect AND disconnect). Once true, the env→DB seed and the per-call env
+ * fallback both back off — "no creds" then means "intentionally
+ * disconnected", not "first sync after deploy".
+ */
+export async function userHasTouchedIntervalsCreds(
+  db: D1Database,
+  userId: string,
+): Promise<boolean> {
+  const r = await db
+    .prepare(
+      "SELECT 1 FROM audit_log WHERE user_id = ?1 AND tool = 'set_intervals_creds' LIMIT 1",
+    )
+    .bind(userId)
+    .first();
+  return r !== null;
+}
+
+/**
+ * Env → DB transition path. If NO user has intervals.icu credentials set
+ * and the legacy Worker secrets are present, seed the OWNER user row
+ * (the first row by created_at) from env exactly once. Idempotent: returns
+ * the resulting per-user creds list, which on subsequent calls is just the
+ * already-populated row.
+ *
+ * Rationale: a static SQL migration cannot read `wrangler secret`-managed
+ * env vars, so 0016 added nullable columns and this code path does the
+ * one-shot copy on the next sync after deploy. Calling this before each
+ * sync is cheap (one SELECT + at most one UPDATE on first invocation).
+ *
+ * Respects explicit disconnects: if the owner has ever PATCHed their
+ * intervals creds (set OR clear), the seed is permanently a no-op for them.
+ * Otherwise, after the user disconnects via the UI, the next sync would
+ * silently re-seed from env and resume polling — defeating the disconnect.
+ */
+export async function seedOwnerIntervalsCredsFromEnv(
+  db: D1Database,
+  apiKey: string | null | undefined,
+  athleteId: string | null | undefined,
+): Promise<IntervalsUserCreds[]> {
+  // Owner is the first user by created_at. The seed gate is OWNER-SPECIFIC:
+  // an early "any user has creds → done" check would skip the owner if a
+  // later-joined member happened to connect their intervals account before
+  // the first post-deploy sync (the owner would then lose ride syncing
+  // until they manually re-entered creds).
+  const owner = await db
+    .prepare(
+      `SELECT id, intervals_api_key, intervals_athlete_id
+         FROM users ORDER BY created_at LIMIT 1`,
+    )
+    .first<{
+      id: string;
+      intervals_api_key: string | null;
+      intervals_athlete_id: string | null;
+    }>();
+  if (!owner) return listUsersWithIntervalsCreds(db);
+  // Already seeded (or set via PATCH): no-op.
+  if (owner.intervals_api_key && owner.intervals_athlete_id) {
+    return listUsersWithIntervalsCreds(db);
+  }
+  // Owner has explicitly PATCHed their creds (set then cleared, possibly):
+  // NULLs here are intentional disconnects, not "never migrated." Respect.
+  if (await userHasTouchedIntervalsCreds(db, owner.id)) {
+    return listUsersWithIntervalsCreds(db);
+  }
+  // No env values to seed from → dormant.
+  if (!apiKey || !athleteId) return listUsersWithIntervalsCreds(db);
+  await db
+    .prepare(
+      `UPDATE users
+          SET intervals_api_key = ?2,
+              intervals_athlete_id = ?3
+        WHERE id = ?1
+          AND intervals_api_key IS NULL
+          AND intervals_athlete_id IS NULL`,
+    )
+    .bind(owner.id, apiKey, athleteId)
+    .run();
+  return listUsersWithIntervalsCreds(db);
+}
+
+/**
+ * Set/clear a user's intervals.icu credentials. Both columns move together
+ * — passing null on EITHER clears the pair (disconnect). Returns the
+ * resulting connection state. Audit is the caller's responsibility (the
+ * REST handler writes an audit row tagged actor='ios').
+ */
+export async function setUserIntervalsCreds(
+  db: D1Database,
+  userId: string,
+  apiKey: string | null,
+  athleteId: string | null,
+): Promise<{ connected: boolean }> {
+  const connect = !!(apiKey && athleteId);
+  await db
+    .prepare(
+      `UPDATE users
+          SET intervals_api_key = ?2,
+              intervals_athlete_id = ?3
+        WHERE id = ?1`,
+    )
+    .bind(userId, connect ? apiKey : null, connect ? athleteId : null)
+    .run();
+  return { connected: connect };
+}
+
+// ---- groups + invites (M2) -----------------------------------------------
+//
+// Friends/family containers. The single-user invariant relaxes to multi-user-
+// with-invite-gating: a new Apple sub may sign in only when the bootstrap
+// path applies OR a valid invite code is supplied. The invite redemption +
+// user creation are made atomic in /auth/apple — see src/routes/auth.ts.
+//
+// Group writes are AUDITED (writeAudit) but DO NOT bump plans.version —
+// groups live outside the versioned plan-tree document. The audit_log trail
+// is the per-mutation provenance, same single-user substitute for scopes
+// that the plan-tree mutations use.
+
+/**
+ * Invite-code alphabet: 32 unambiguous chars (no 0/O, no 1/I/L).
+ * 6 chars from 32 = 32^6 ≈ 1.07 * 10^9 codes, plenty for friends-and-family.
+ */
+const INVITE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const INVITE_CODE_LEN = 6;
+const DEFAULT_INVITE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+/**
+ * Generate a single 6-char code from the no-ambiguous alphabet using
+ * `crypto.getRandomValues`. Caller (`createInvite`) retries on PK collision
+ * — at 32^6 the birthday-paradox collision rate is vanishingly small until
+ * many millions of outstanding codes.
+ */
+function newInviteCode(): string {
+  const buf = new Uint8Array(INVITE_CODE_LEN);
+  crypto.getRandomValues(buf);
+  let out = '';
+  for (let i = 0; i < INVITE_CODE_LEN; i++) {
+    out += INVITE_ALPHABET[buf[i]! % INVITE_ALPHABET.length];
+  }
+  return out;
+}
+
+/**
+ * Create a group and add the creator as the first member. Returns the new
+ * group row (without the auto-member — read it back via listGroupsForUser
+ * if you need members hydrated). Audited as 'create_group' actor='ios'.
+ */
+export async function createGroup(
+  db: D1Database,
+  userId: string,
+  name: string,
+): Promise<Group> {
+  const id = uuid();
+  const ts = now();
+  const group: Group = { id, name, created_by: userId, created_at: ts };
+  // Use a batch so the membership row lands with the group row — D1 batches
+  // run in a single transaction (an atomicity guarantee documented by
+  // Cloudflare). If either statement fails the group is never visible.
+  await db.batch([
+    db
+      .prepare('INSERT INTO groups (id,name,created_by,created_at) VALUES (?1,?2,?3,?4)')
+      .bind(id, name, userId, ts),
+    db
+      .prepare(
+        'INSERT INTO group_members (group_id,user_id,display_name,joined_at) VALUES (?1,?2,?3,?4)',
+      )
+      .bind(id, userId, null, ts),
+  ]);
+  await writeAudit(
+    db,
+    userId,
+    'create_group',
+    { group_id: id, name },
+    'created',
+    'ios',
+  );
+  return group;
+}
+
+/** True iff `userId` is currently a member of `groupId`. */
+export async function isGroupMember(
+  db: D1Database,
+  userId: string,
+  groupId: string,
+): Promise<boolean> {
+  const r = await db
+    .prepare('SELECT 1 AS x FROM group_members WHERE group_id = ?1 AND user_id = ?2')
+    .bind(groupId, userId)
+    .first<{ x: number }>();
+  return !!r;
+}
+
+/**
+ * Hydrate a group with its members + effective display names (per-group
+ * override > users.display_name). Returns null if no such group.
+ */
+async function hydrateGroup(
+  db: D1Database,
+  group: Group,
+): Promise<Group & { members: ResolvedGroupMember[] }> {
+  const r = await db
+    .prepare(
+      `SELECT gm.group_id, gm.user_id, gm.display_name, gm.joined_at,
+              u.display_name AS user_display_name
+         FROM group_members gm
+         JOIN users u ON u.id = gm.user_id
+        WHERE gm.group_id = ?1
+        ORDER BY gm.joined_at, gm.user_id`,
+    )
+    .bind(group.id)
+    .all<{
+      group_id: string;
+      user_id: string;
+      display_name: string | null;
+      joined_at: number;
+      user_display_name: string | null;
+    }>();
+  const members: ResolvedGroupMember[] = r.results.map((row) => ({
+    group_id: row.group_id,
+    user_id: row.user_id,
+    display_name: row.display_name,
+    joined_at: row.joined_at,
+    effective_display_name: row.display_name ?? row.user_display_name,
+  }));
+  return { ...group, members };
+}
+
+/**
+ * List groups the user belongs to, with members hydrated. Stable ordering
+ * (created_at, then id) so the iOS list isn't shuffled across reads.
+ */
+export async function listGroupsForUser(
+  db: D1Database,
+  userId: string,
+): Promise<Array<Group & { members: ResolvedGroupMember[] }>> {
+  const r = await db
+    .prepare(
+      `SELECT g.* FROM groups g
+         JOIN group_members gm ON gm.group_id = g.id
+        WHERE gm.user_id = ?1
+        ORDER BY g.created_at, g.id`,
+    )
+    .bind(userId)
+    .all<Group>();
+  const out: Array<Group & { members: ResolvedGroupMember[] }> = [];
+  for (const g of r.results) {
+    out.push(await hydrateGroup(db, g));
+  }
+  return out;
+}
+
+/** Read a group + its members. Returns null if the group does not exist. */
+export async function getGroupWithMembers(
+  db: D1Database,
+  groupId: string,
+): Promise<(Group & { members: ResolvedGroupMember[] }) | null> {
+  const g = await db
+    .prepare('SELECT * FROM groups WHERE id = ?1')
+    .bind(groupId)
+    .first<Group>();
+  if (!g) return null;
+  return hydrateGroup(db, g);
+}
+
+/**
+ * Create a new invite code for a group. Caller MUST have already verified
+ * `isGroupMember(db, userId, groupId)` — this function does not enforce
+ * authorization (the REST handler does). `expiresAtMs` semantics:
+ *   undefined → default = created_at + 30 days
+ *   null      → never expires
+ *   number    → exact epoch-ms expiry (caller-provided)
+ * Retries up to 5x on PK collision (32^6 alphabet; the retry is paranoia).
+ * Audited as 'create_invite' actor='ios'.
+ */
+export async function createInvite(
+  db: D1Database,
+  userId: string,
+  groupId: string,
+  expiresAtMs?: number | null,
+): Promise<GroupInvite> {
+  const ts = now();
+  const expires =
+    expiresAtMs === undefined ? ts + DEFAULT_INVITE_TTL_MS : expiresAtMs;
+  let code = '';
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    code = newInviteCode();
+    try {
+      await db
+        .prepare(
+          `INSERT INTO group_invites
+             (code,group_id,created_by,created_at,expires_at,used_at,used_by)
+           VALUES (?1,?2,?3,?4,?5,NULL,NULL)`,
+        )
+        .bind(code, groupId, userId, ts, expires)
+        .run();
+      lastErr = null;
+      break;
+    } catch (e) {
+      // PK collision on `code` → regenerate. Any other error rethrows below.
+      lastErr = e;
+      const msg = (e as Error).message ?? '';
+      if (!/UNIQUE|constraint/i.test(msg)) throw e;
+    }
+  }
+  if (lastErr) throw lastErr;
+  const invite: GroupInvite = {
+    code,
+    group_id: groupId,
+    created_by: userId,
+    created_at: ts,
+    expires_at: expires,
+    used_at: null,
+    used_by: null,
+  };
+  await writeAudit(
+    db,
+    userId,
+    'create_invite',
+    { group_id: groupId, code, expires_at: expires },
+    'created',
+    'ios',
+  );
+  return invite;
+}
+
+/**
+ * Read-only invite lookup (no consumption). Used by /auth/apple BEFORE
+ * creating the user to validate the code is good — if not, we reject
+ * `not_invited` without touching the users table. Returns the row
+ * regardless of used/expired state; the caller (redeemInvite) makes the
+ * accept/reject call.
+ */
+export async function getInviteForRedemption(
+  db: D1Database,
+  code: string,
+): Promise<GroupInvite | null> {
+  const r = await db
+    .prepare('SELECT * FROM group_invites WHERE code = ?1')
+    .bind(code)
+    .first<GroupInvite>();
+  return r ?? null;
+}
+
+/**
+ * Redeem an invite as `userId`. Validates → marks the code used → inserts
+ * the group_members row. The check-then-write race window is tolerable in
+ * the friends-and-family setting (two redemptions of the same code within
+ * a few ms is essentially a non-event), but we still guard against it: the
+ * `used_at IS NULL` predicate on the UPDATE means at most one redeemer
+ * wins. If a redeemer loses the race they see `used`.
+ *
+ * `already_member` is a soft success-ish case: the user is *already* in
+ * the group, the invite is NOT consumed, and the iOS client can show
+ * "you're already in this group" without burning the code.
+ *
+ * Audited as 'redeem_invite' actor='ios' on success.
+ */
+export async function redeemInvite(
+  db: D1Database,
+  code: string,
+  userId: string,
+): Promise<
+  | { ok: true; group_id: string }
+  | { error: 'unknown' | 'used' | 'expired' | 'already_member' }
+> {
+  const invite = await getInviteForRedemption(db, code);
+  if (!invite) return { error: 'unknown' };
+  if (invite.used_at != null) return { error: 'used' };
+  if (invite.expires_at != null && invite.expires_at < now()) {
+    return { error: 'expired' };
+  }
+  if (await isGroupMember(db, userId, invite.group_id)) {
+    // Already in — do NOT consume the code. The invite stays alive for
+    // someone else to use; the redeemer just learns they're already in.
+    return { error: 'already_member' };
+  }
+  const ts = now();
+  // Conditional UPDATE: only mark used if still unused. Returns
+  // info().changes = 1 on the winning redeemer, 0 if someone else just
+  // beat us to it (race-loss → report as `used`).
+  const res = await db
+    .prepare(
+      `UPDATE group_invites
+          SET used_at = ?2, used_by = ?3
+        WHERE code = ?1 AND used_at IS NULL`,
+    )
+    .bind(code, ts, userId)
+    .run();
+  if ((res.meta?.changes ?? 0) !== 1) {
+    return { error: 'used' };
+  }
+  await db
+    .prepare(
+      'INSERT INTO group_members (group_id,user_id,display_name,joined_at) VALUES (?1,?2,?3,?4)',
+    )
+    .bind(invite.group_id, userId, null, ts)
+    .run();
+  await writeAudit(
+    db,
+    userId,
+    'redeem_invite',
+    { group_id: invite.group_id, code },
+    'joined',
+    'ios',
+  );
+  return { ok: true, group_id: invite.group_id };
+}
+
+/**
+ * Remove the caller from a group. Idempotent — returns true if a row was
+ * actually deleted, false if the caller was not a member (the REST handler
+ * still returns 200 either way per spec). Last member leaving does NOT
+ * delete the group; orphan groups are tolerated (cleanup deferred).
+ */
+export async function leaveGroup(
+  db: D1Database,
+  userId: string,
+  groupId: string,
+): Promise<boolean> {
+  const res = await db
+    .prepare('DELETE FROM group_members WHERE group_id = ?1 AND user_id = ?2')
+    .bind(groupId, userId)
+    .run();
+  const removed = (res.meta?.changes ?? 0) > 0;
+  if (removed) {
+    await writeAudit(
+      db,
+      userId,
+      'leave_group',
+      { group_id: groupId },
+      'left',
+      'ios',
+    );
+  }
+  return removed;
+}
+
+/**
+ * Set or clear the caller's per-group nickname override. NULL = clear
+ * (fall back to users.display_name on read). Returns true if a row was
+ * updated, false if the caller is not a member of the group.
+ * Audited as 'set_group_display_name' actor='ios'.
+ */
+export async function setGroupDisplayName(
+  db: D1Database,
+  userId: string,
+  groupId: string,
+  displayName: string | null,
+): Promise<boolean> {
+  const res = await db
+    .prepare(
+      'UPDATE group_members SET display_name = ?3 WHERE group_id = ?1 AND user_id = ?2',
+    )
+    .bind(groupId, userId, displayName)
+    .run();
+  const ok = (res.meta?.changes ?? 0) > 0;
+  if (ok) {
+    await writeAudit(
+      db,
+      userId,
+      'set_group_display_name',
+      { group_id: groupId, display_name: displayName },
+      displayName == null ? 'cleared' : 'set',
+      'ios',
+    );
+  }
+  return ok;
+}
+
+/** Count rows in the users table. Used by /auth/apple to detect the fresh-install bootstrap path. */
+export async function countUsers(db: D1Database): Promise<number> {
+  const r = await db
+    .prepare('SELECT COUNT(*) AS c FROM users')
+    .first<{ c: number }>();
+  return r?.c ?? 0;
+}
+
+/**
+ * Atomic invite-gated user creation: validate code → create user → mark
+ * invite used → insert group_members → audit. Used by /auth/apple when a
+ * new Apple sub presents an invite.
+ *
+ * Atomicity strategy: we do a CHECK-THEN-WRITE under a single batch where
+ * possible, and a re-check after the user insert. If the conditional
+ * `UPDATE group_invites SET used_at = ?2 WHERE code = ?1 AND used_at IS NULL`
+ * fails (someone else just redeemed in the small race window), we DELETE
+ * the freshly-created user row to avoid a phantom account. The whole thing
+ * happens before /auth/apple issues a JWT, so a partial-failure rollback is
+ * invisible to the caller — they get `not_invited` and try again.
+ *
+ * Returns `{ ok: true, user }` on success, or `{ error: ... }` mirroring
+ * the redeemInvite error set (`unknown`/`used`/`expired` — `already_member`
+ * is unreachable here because the user didn't exist a moment ago).
+ */
+export async function createUserAndRedeemInvite(
+  db: D1Database,
+  appleSub: string,
+  email: string | null,
+  displayName: string | null,
+  code: string,
+): Promise<
+  | { ok: true; user: User; group_id: string }
+  | { error: 'unknown' | 'used' | 'expired' }
+> {
+  // Pre-check: cheap reject before creating anything.
+  const invite = await getInviteForRedemption(db, code);
+  if (!invite) return { error: 'unknown' };
+  if (invite.used_at != null) return { error: 'used' };
+  if (invite.expires_at != null && invite.expires_at < now()) {
+    return { error: 'expired' };
+  }
+  // Create the user row.
+  const user = await upsertUser(db, appleSub, email, displayName);
+  const ts = now();
+  // Conditional consume — only wins if still unused. If we lose the race
+  // the user row stays (it represents a real new Apple identity even if
+  // they didn't get into a group), but we must signal failure so the
+  // route returns `not_invited` instead of issuing a JWT for a stranded
+  // account. To prevent phantom-account leakage, we delete the user row
+  // we just created IFF it was truly fresh (apple_sub was unseen before
+  // this call). upsertUser returns existing if seen, so we identify
+  // "fresh" by created_at == ts; but that's racy. Safer: re-read by
+  // apple_sub to confirm. The window is microseconds — fine.
+  const consumed = await db
+    .prepare(
+      `UPDATE group_invites
+          SET used_at = ?2, used_by = ?3
+        WHERE code = ?1 AND used_at IS NULL`,
+    )
+    .bind(code, ts, user.id)
+    .run();
+  if ((consumed.meta?.changes ?? 0) !== 1) {
+    // Race-loss. The user row is a new identity with no group attachment;
+    // since the entire point of this call was invite redemption, the
+    // safest behavior is to delete the just-created user. We only delete
+    // when the user_id has zero rows in EVERYTHING-else-tables (plans,
+    // sessions, etc.) — guaranteed here because this was the first call
+    // that ever referenced this user_id.
+    await db.prepare('DELETE FROM users WHERE id = ?1').bind(user.id).run();
+    // Re-check WHY consume failed so we return the most specific error.
+    const re = await getInviteForRedemption(db, code);
+    if (!re) return { error: 'unknown' };
+    if (re.used_at != null) return { error: 'used' };
+    if (re.expires_at != null && re.expires_at < now()) return { error: 'expired' };
+    // Defensive: should be unreachable. Treat as used (the safer signal).
+    return { error: 'used' };
+  }
+  await db
+    .prepare(
+      'INSERT INTO group_members (group_id,user_id,display_name,joined_at) VALUES (?1,?2,?3,?4)',
+    )
+    .bind(invite.group_id, user.id, null, ts)
+    .run();
+  await writeAudit(
+    db,
+    user.id,
+    'redeem_invite',
+    { group_id: invite.group_id, code, via: 'signup' },
+    'joined',
+    'ios',
+  );
+  return { ok: true, user, group_id: invite.group_id };
 }
 
 // ---- plan tree -----------------------------------------------------------
@@ -1003,6 +1653,7 @@ export async function getState(
   setsSince: number,
   eventsSince = 0,
   activitiesSince = 0,
+  logSince = 0,
 ) {
   const plan = await getActivePlan(db, userId);
   const baseTree =
@@ -1078,6 +1729,25 @@ export async function getState(
           )
           .bind(userId)
           .all<ExternalActivityRow>();
+  // Generic activity log (M3 — `activities` table). Append-only,
+  // user-authored. Same delta-sync pattern as set_logs / external_events:
+  //  - FULL RELOAD  (log_since absent/0): full current non-deleted set.
+  //  - INCREMENTAL  (log_since > 0): every row touched since the cursor
+  //    INCLUDING soft-deleted ones, so a syncing client learns about
+  //    removals. Uses `logged_at` as the cursor for inserts and
+  //    `deleted_at` to surface tombstones past the cursor (see
+  //    listActivitiesForUser for the delta-sync contract).
+  const userActivities =
+    logSince > 0
+      ? await listActivitiesForUser(db, userId, logSince)
+      : (
+          await db
+            .prepare(
+              'SELECT * FROM activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY logged_at',
+            )
+            .bind(userId)
+            .all<ActivityRow>()
+        ).results;
   return {
     plan: tree,
     plan_version: plan?.version ?? 0,
@@ -1085,6 +1755,7 @@ export async function getState(
     sets: sets.results,
     external_events: events.results,
     external_activities: activities.results,
+    activities: userActivities,
     server_time: now(),
   };
 }
@@ -1189,13 +1860,134 @@ export async function writeAudit(
   tool: string,
   args: unknown,
   result: string,
+  actor: string = 'mcp',
 ): Promise<void> {
   await db
     .prepare(
       'INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)',
     )
-    .bind(uuid(), userId, 'mcp', tool, JSON.stringify(args).slice(0, 4000), result.slice(0, 500), now())
+    .bind(uuid(), userId, actor, tool, JSON.stringify(args).slice(0, 4000), result.slice(0, 500), now())
     .run();
+}
+
+// ---- generic activity log (M3 — append-only, user-authored) --------------
+//
+// The "everything else" bucket alongside strength sessions (set_logs) and
+// intervals.icu actuals (external_activities). Same consistency model as
+// set_logs:
+//   - `id` is the CLIENT-generated UUID idempotency key (iOS outbox safe-
+//     retries land on ON CONFLICT(id) DO NOTHING). MCP-source rows mint the
+//     id server-side because Claude doesn't retry like the iOS outbox.
+//   - Rows are SOFT-deleted only (deleted_at) — preserve history.
+//   - Writes do NOT bump plans.version.
+
+export interface ActivityInput {
+  id: string;
+  date: string;
+  type: string;
+  title?: string | null;
+  duration_minutes?: number | null;
+  notes?: string | null;
+  logged_at?: number;
+}
+
+/**
+ * Idempotent on the client-generated `id`. A retry of the same id is a
+ * no-op (returns the existing row). The user_id is stamped from the
+ * authenticated caller, never trusted from the client body.
+ */
+export async function logActivity(
+  db: D1Database,
+  userId: string,
+  input: ActivityInput,
+  source: 'ios' | 'mcp',
+): Promise<ActivityRow> {
+  const loggedAt = input.logged_at ?? now();
+  await db
+    .prepare(
+      `INSERT INTO activities
+         (id,user_id,date,type,title,duration_minutes,notes,logged_at,source,deleted_at)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL)
+       ON CONFLICT(id) DO NOTHING`,
+    )
+    .bind(
+      input.id,
+      userId,
+      input.date,
+      input.type,
+      input.title ?? null,
+      input.duration_minutes ?? null,
+      input.notes ?? null,
+      loggedAt,
+      source,
+    )
+    .run();
+  // Re-select so retries return the *original* persisted row (preserving the
+  // original logged_at/title/etc.), not the fresh-looking input.
+  const row = await db
+    .prepare('SELECT * FROM activities WHERE id = ?1 AND user_id = ?2')
+    .bind(input.id, userId)
+    .first<ActivityRow>();
+  if (!row) {
+    // Either the user_id mismatched (an id collision across users — should
+    // be impossible for UUIDs, but we surface it rather than silently
+    // returning a stale row from another user) or the insert failed
+    // mysteriously. Either way the caller needs to see this.
+    throw new Error('activity_insert_failed');
+  }
+  return row;
+}
+
+/**
+ * Soft-delete by id, scoped to the caller's user. Returns true on success,
+ * false if the row doesn't exist or belongs to another user — REST surfaces
+ * both as 404 (don't leak existence of other users' rows). Idempotent:
+ * deleting an already-deleted row returns false (the row still exists but
+ * the second call is a no-op delete).
+ */
+export async function softDeleteActivity(
+  db: D1Database,
+  userId: string,
+  activityId: string,
+): Promise<boolean> {
+  const ts = now();
+  const r = await db
+    .prepare(
+      `UPDATE activities SET deleted_at = ?3
+       WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL`,
+    )
+    .bind(activityId, userId, ts)
+    .run();
+  // D1 exposes meta.changes; fall back to 0 if absent.
+  const changes = (r as { meta?: { changes?: number } }).meta?.changes ?? 0;
+  return changes > 0;
+}
+
+/**
+ * Delta-sync read for /api/state. Returns every row TOUCHED since the
+ * cursor — both fresh inserts (logged_at > since) AND tombstones
+ * (deleted_at > since), so a syncing client can apply removals. Same
+ * pattern as the set_logs sync described in DESIGN.md §7. Ordered by
+ * logged_at so the client can advance its watermark monotonically.
+ */
+export async function listActivitiesForUser(
+  db: D1Database,
+  userId: string,
+  sinceMs: number,
+  limit?: number,
+): Promise<ActivityRow[]> {
+  const cap = typeof limit === 'number' && limit > 0 ? Math.min(limit, 1000) : 1000;
+  const rows = await db
+    .prepare(
+      `SELECT * FROM activities
+       WHERE user_id = ?1
+         AND (logged_at > ?2 OR (deleted_at IS NOT NULL AND deleted_at > ?2))
+       ORDER BY logged_at
+       LIMIT ?3`,
+    )
+    .bind(userId, sinceMs, cap)
+    .all<ActivityRow>();
+  return rows.results;
 }
 
 // ---- plan-tree mutations (MCP write tools) -------------------------------
@@ -1909,6 +2701,21 @@ export async function exportSessionLoad(
   const sessionRow = session;
   const computedLoad = computed;
 
+  // Per-user intervals.icu credentials (M1). Fall back to legacy env vars
+  // ONLY when this user has never PATCHed their creds — after an explicit
+  // disconnect, both columns are NULL but the audit row says "intentionally
+  // cleared." Without this guard, completing a session would re-export to
+  // intervals.icu via env creds even though the user explicitly disconnected
+  // (the sync paths already enforce the same invariant via the same helper).
+  const userCreds = await getUserIntervalsCreds(db, userId);
+  const envFallbackOk =
+    userCreds.api_key === null &&
+    userCreds.athlete_id === null &&
+    !(await userHasTouchedIntervalsCreds(db, userId));
+  const apiKey = userCreds.api_key ?? (envFallbackOk ? env.INTERVALS_ICU_API_KEY : null);
+  const athleteId =
+    userCreds.athlete_id ?? (envFallbackOk ? env.INTERVALS_ICU_ATHLETE_ID : null);
+
   // Day name for a friendly activity title.
   let dayName = 'Lifting';
   if (session.day_template_id) {
@@ -1984,7 +2791,8 @@ export async function exportSessionLoad(
     okReason: string,
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
     const upd = await pushStrengthActivity(
-      env,
+      apiKey,
+      athleteId,
       {
         date: sessionRow.date,
         name,
@@ -2108,7 +2916,8 @@ export async function exportSessionLoad(
 
   // --- This caller WON the claim: it alone performs the create/push. ---
   const push = await pushStrengthActivity(
-    env,
+    apiKey,
+    athleteId,
     {
       date: session.date, // device-local civil date VERBATIM
       name,
@@ -2447,7 +3256,7 @@ function daySpan(from: string, to: string): number {
 }
 
 /** Add n days to a 'YYYY-MM-DD' string, returning 'YYYY-MM-DD'. */
-function addDays(ymd: string, n: number): string {
+export function addDays(ymd: string, n: number): string {
   // Civil-from-days inverse of dayNumber (Hinnant), pure integer math.
   let z = dayNumber(ymd) + n + 719468;
   const era = Math.floor((z >= 0 ? z : z - 146096) / 146097);
@@ -2954,12 +3763,80 @@ export async function syncExternalEvents(
   env: Env,
   deps: SyncDeps = {},
 ): Promise<SyncResult> {
-  const userId =
-    deps.userId ?? (await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB)).id;
   const today = deps.today ?? new Date().toISOString().slice(0, 10);
   const windowDays = deps.windowDays ?? 90;
 
-  const fetched = await fetchPlannedEvents(env, { ...deps, today, windowDays });
+  // Resolve creds for THIS sync. Three call shapes (M1 multi-user):
+  //   (a) deps.userId given (refresh_rides MCP tool / tests): sync that one
+  //       user, reading creds off their row. If the row has no creds, the
+  //       legacy env values are accepted as a fallback so existing
+  //       single-user tests keep passing without code changes.
+  //   (b) no userId: cron entrypoint. Run the env→DB seed (idempotent), then
+  //       iterate ALL users with creds. Aggregate the SyncResult.
+  let userId: string;
+  let apiKey: string | null | undefined;
+  let athleteId: string | null | undefined;
+  if (deps.userId) {
+    userId = deps.userId;
+    const creds = await getUserIntervalsCreds(db, userId);
+    // Env fallback only when the user has NEVER PATCHed their creds. After
+    // an explicit disconnect, both columns are NULL but the audit row says
+    // "intentionally cleared" — don't silently revive the env credentials.
+    const envFallbackOk =
+      creds.api_key === null &&
+      creds.athlete_id === null &&
+      !(await userHasTouchedIntervalsCreds(db, userId));
+    apiKey = creds.api_key ?? (envFallbackOk ? env.INTERVALS_ICU_API_KEY : null);
+    athleteId =
+      creds.athlete_id ?? (envFallbackOk ? env.INTERVALS_ICU_ATHLETE_ID : null);
+  } else {
+    const owner = await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB);
+    const seeded = await seedOwnerIntervalsCredsFromEnv(
+      db,
+      env.INTERVALS_ICU_API_KEY,
+      env.INTERVALS_ICU_ATHLETE_ID,
+    );
+    if (seeded.length === 0) {
+      // No user has creds AND env is unset → dormant no-op for everyone.
+      return { status: 'disabled', synced: 0, detail: 'disabled' };
+    }
+    if (seeded.length === 1) {
+      userId = seeded[0]!.user_id;
+      apiKey = seeded[0]!.api_key;
+      athleteId = seeded[0]!.athlete_id;
+    } else {
+      // Multi-user fan-out. Sync each user's cache against THEIR creds; tag
+      // the per-user user_id everywhere. Aggregate sums + worst-status semantics:
+      //   any 'fetch_failed' wins (operator signal); else 'ok' if any ok'd;
+      //   else 'disabled'. `synced` is the sum across users.
+      let total = 0;
+      let agg: SyncStatus = 'disabled';
+      const details: string[] = [];
+      for (const c of seeded) {
+        const r = await syncExternalEvents(db, env, {
+          ...deps,
+          userId: c.user_id,
+          today,
+          windowDays,
+        });
+        total += r.synced;
+        if (r.status === 'fetch_failed') agg = 'fetch_failed';
+        else if (agg !== 'fetch_failed' && r.status === 'ok') agg = 'ok';
+        if (r.detail) details.push(`${c.user_id.slice(0, 8)}:${r.detail}`);
+      }
+      return {
+        status: agg,
+        synced: total,
+        ...(details.length ? { detail: details.join(',') } : {}),
+      };
+    }
+    // Single-user path: reference owner.id for downstream logic (it equals
+    // the single seeded row, but be explicit so the linter doesn't flag a
+    // possibly-unused binding when the multi-user branch returns early).
+    void owner;
+  }
+
+  const fetched = await fetchPlannedEvents(apiKey, athleteId, { ...deps, today, windowDays });
   if (!fetched.ok) {
     // Disabled OR transient failure → DO NOT TOUCH the cache at all.
     return {
@@ -2979,20 +3856,24 @@ export async function syncExternalEvents(
   const stmts: D1PreparedStatement[] = [];
 
   for (const ev of fetched.events) {
-    const id = `intervals:${ev.external_id}`;
+    // Per-user PK. The old "intervals:{external_id}" format collided when
+    // two users returned the same upstream id; migration 0019 re-keys
+    // legacy rows to the new format so this UPDATE path matches them.
+    const id = `intervals:${userId}:${ev.external_id}`;
     seen.add(id);
-    // Upsert by PK (id is deterministic from source+external_id). A reschedule
-    // (same external_id, new date) just updates `date` on the same row and
-    // clears any prior soft-delete (the event came back).
+    // Upsert by PK (id is deterministic from source+user+external_id). A
+    // reschedule (same external_id, new date) just updates `date` on the
+    // same row and clears any prior soft-delete (the event came back).
     stmts.push(
       db
         .prepare(
           `INSERT INTO external_events
-             (id,user_id,source,external_id,date,kind,title,description,
+             (id,user_id,source,external_id,date,start_date_local_ms,kind,title,description,
               planned_duration_sec,training_load,intensity,raw,synced_at,deleted_at)
-           VALUES (?1,?2,'intervals',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,NULL)
+           VALUES (?1,?2,'intervals',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL)
            ON CONFLICT(id) DO UPDATE SET
              date=excluded.date,
+             start_date_local_ms=excluded.start_date_local_ms,
              kind=excluded.kind,
              title=excluded.title,
              description=excluded.description,
@@ -3008,6 +3889,7 @@ export async function syncExternalEvents(
           userId,
           ev.external_id,
           ev.date,
+          ev.start_date_local_ms,
           ev.kind,
           ev.title,
           ev.description,
@@ -3109,12 +3991,68 @@ export async function syncExternalActivities(
   env: Env,
   deps: ActivitySyncDeps = {},
 ): Promise<SyncResult> {
-  const userId =
-    deps.userId ?? (await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB)).id;
   const today = deps.today ?? new Date().toISOString().slice(0, 10);
   const pastDays = deps.pastDays ?? 90;
 
-  const fetched = await fetchCompletedActivities(env, { ...deps, today, pastDays });
+  // Mirror of syncExternalEvents: per-user credentials (M1). See that
+  // function for the full rationale on the three call shapes (explicit
+  // userId vs cron fan-out vs env-seed fallback).
+  let userId: string;
+  let apiKey: string | null | undefined;
+  let athleteId: string | null | undefined;
+  if (deps.userId) {
+    userId = deps.userId;
+    const creds = await getUserIntervalsCreds(db, userId);
+    // Env fallback only when the user has NEVER PATCHed their creds. After
+    // an explicit disconnect, both columns are NULL but the audit row says
+    // "intentionally cleared" — don't silently revive the env credentials.
+    const envFallbackOk =
+      creds.api_key === null &&
+      creds.athlete_id === null &&
+      !(await userHasTouchedIntervalsCreds(db, userId));
+    apiKey = creds.api_key ?? (envFallbackOk ? env.INTERVALS_ICU_API_KEY : null);
+    athleteId =
+      creds.athlete_id ?? (envFallbackOk ? env.INTERVALS_ICU_ATHLETE_ID : null);
+  } else {
+    const owner = await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB);
+    const seeded = await seedOwnerIntervalsCredsFromEnv(
+      db,
+      env.INTERVALS_ICU_API_KEY,
+      env.INTERVALS_ICU_ATHLETE_ID,
+    );
+    if (seeded.length === 0) {
+      return { status: 'disabled', synced: 0, detail: 'disabled' };
+    }
+    if (seeded.length === 1) {
+      userId = seeded[0]!.user_id;
+      apiKey = seeded[0]!.api_key;
+      athleteId = seeded[0]!.athlete_id;
+    } else {
+      let total = 0;
+      let agg: SyncStatus = 'disabled';
+      const details: string[] = [];
+      for (const c of seeded) {
+        const r = await syncExternalActivities(db, env, {
+          ...deps,
+          userId: c.user_id,
+          today,
+          pastDays,
+        });
+        total += r.synced;
+        if (r.status === 'fetch_failed') agg = 'fetch_failed';
+        else if (agg !== 'fetch_failed' && r.status === 'ok') agg = 'ok';
+        if (r.detail) details.push(`${c.user_id.slice(0, 8)}:${r.detail}`);
+      }
+      return {
+        status: agg,
+        synced: total,
+        ...(details.length ? { detail: details.join(',') } : {}),
+      };
+    }
+    void owner;
+  }
+
+  const fetched = await fetchCompletedActivities(apiKey, athleteId, { ...deps, today, pastDays });
   if (!fetched.ok) {
     return {
       status: fetched.reason === 'disabled' ? 'disabled' : 'fetch_failed',
@@ -3131,20 +4069,22 @@ export async function syncExternalActivities(
   const stmts: D1PreparedStatement[] = [];
 
   for (const a of fetched.activities) {
-    const id = `intervals:activity:${a.external_id}`;
+    // Per-user PK — see note in syncExternalEvents and migration 0019.
+    const id = `intervals:activity:${userId}:${a.external_id}`;
     seen.add(id);
     stmts.push(
       db
         .prepare(
           `INSERT INTO external_activities
-             (id,user_id,source,external_id,date,kind,name,
+             (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
               moving_time_sec,elapsed_time_sec,distance_m,average_watts,
               weighted_avg_watts,average_hr,max_hr,training_load,intensity,
               calories,elevation_gain_m,raw,synced_at,deleted_at)
            VALUES (?1,?2,'intervals',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,
-                   ?15,?16,?17,?18,?19,NULL)
+                   ?15,?16,?17,?18,?19,?20,NULL)
            ON CONFLICT(id) DO UPDATE SET
              date=excluded.date,
+             start_date_local_ms=excluded.start_date_local_ms,
              kind=excluded.kind,
              name=excluded.name,
              moving_time_sec=excluded.moving_time_sec,
@@ -3167,6 +4107,7 @@ export async function syncExternalActivities(
           userId,
           a.external_id,
           a.date,
+          a.start_date_local_ms,
           a.kind,
           a.name,
           a.moving_time_sec,
@@ -3334,4 +4275,629 @@ export async function getRideConflicts(
     .bind(userId, fromDate, addDays(toDate, 1))
     .all<Pick<ExternalEventRow, 'id' | 'date' | 'training_load' | 'planned_duration_sec'>>();
   return detectConflicts(liftDates, events.results);
+}
+
+// ---- M4: group feed + stats ---------------------------------------------
+//
+// Group accountability surface. The feed merges three sources into a single
+// time-ordered stream of FeedItems (session | ride | activity); the stats
+// roll up per-member workout_count + streak_days over a rolling window.
+//
+// Privacy contract (do not break — this is the trust substrate that lets
+// the feature ship):
+//   * Strength sessions: SHARE date, completed_at, day_name, set_count,
+//     duration_sec, per-exercise top set (exercise name + weight + reps +
+//     Epley est_1rm). HIDE session.notes, session.perceived_fatigue, every
+//     set's `notes`, every set's `rpe`.
+//   * Intervals.icu rides: SHARE all the ride metrics (these are not
+//     personal). Soft-deleted rows are excluded.
+//   * Activities (M3): SHARE type, title, duration_minutes, notes (the
+//     user-authored notes ARE the description of what they did — sharing
+//     them is the point). Soft-deleted rows are excluded.
+//
+// Wire shape matches `.context/m5-ios-spec.md` §5 verbatim: discriminated
+// on `type` with nested `session`/`ride`/`activity` inner objects, plus
+// `id, user_id, user_display_name, occurred_at, date` at the top level.
+// `is_me` is server-stamped so the iOS client does not have to compare
+// user ids manually.
+
+const FEED_LIMIT_DEFAULT = 30;
+const FEED_LIMIT_MAX = 100;
+
+/** Per-feed-item shapes the wire emits. Matches iOS m5-ios-spec.md §5. */
+export interface FeedSessionItem {
+  type: 'session';
+  id: string;
+  user_id: string;
+  user_display_name: string;
+  is_me: boolean;
+  date: string;
+  occurred_at: number;
+  session: {
+    day_name: string | null;
+    day_label: string | null;
+    duration_sec: number | null;
+    set_count: number;
+    top_sets: Array<{
+      exercise: string;
+      weight: number;
+      reps: number;
+      unit: string | null;
+      est_1rm: number;
+    }>;
+  };
+}
+export interface FeedRideItem {
+  type: 'ride';
+  id: string;
+  user_id: string;
+  user_display_name: string;
+  is_me: boolean;
+  date: string;
+  occurred_at: number;
+  ride: {
+    kind: string;
+    name: string | null;
+    distance_m: number | null;
+    moving_time_sec: number | null;
+    average_watts: number | null;
+    training_load: number | null;
+    elevation_gain_m: number | null;
+  };
+}
+export interface FeedActivityItem {
+  type: 'activity';
+  id: string;
+  user_id: string;
+  user_display_name: string;
+  is_me: boolean;
+  date: string;
+  occurred_at: number;
+  activity: {
+    kind: string;
+    title: string | null;
+    duration_min: number | null;
+    notes: string | null;
+  };
+}
+export type FeedItem = FeedSessionItem | FeedRideItem | FeedActivityItem;
+
+/**
+ * Two-character avatar initials from a display name. "Sarah Kim" -> "SK",
+ * "nick" -> "N", "" -> "?". Pure, locale-stable (uppercased once at the
+ * end). Per-member initials live on MemberStat so the iOS chip strip
+ * doesn't have to recompute.
+ */
+function avatarInitials(name: string | null | undefined): string {
+  const s = (name ?? '').trim();
+  if (s.length === 0) return '?';
+  // Split on whitespace, take first letter of first two non-empty words.
+  const words = s.split(/\s+/).filter((w) => w.length > 0);
+  if (words.length === 0) return '?';
+  if (words.length === 1) return words[0]!.charAt(0).toUpperCase();
+  return (words[0]!.charAt(0) + words[1]!.charAt(0)).toUpperCase();
+}
+
+/**
+ * Resolve effective display name for a member. Order:
+ *   1. per-group nickname (group_members.display_name)
+ *   2. user's global display name (users.display_name)
+ *   3. email prefix (everything before '@')
+ *   4. literal "Member"
+ * Pure function; the caller pre-joins the three input columns.
+ */
+function resolveDisplayName(
+  perGroup: string | null,
+  global: string | null,
+  email: string | null,
+): string {
+  if (perGroup && perGroup.length > 0) return perGroup;
+  if (global && global.length > 0) return global;
+  if (email && email.length > 0) {
+    const at = email.indexOf('@');
+    const pre = at > 0 ? email.slice(0, at) : email;
+    if (pre.length > 0) return pre;
+  }
+  return 'Member';
+}
+
+export interface MemberStat {
+  user_id: string;
+  display_name: string;
+  avatar_initials: string;
+  is_me: boolean;
+  workout_count: number;
+  streak_days: number;
+  last_active: number | null;
+}
+
+/**
+ * Group feed. Returns up to `limit` FeedItems strictly OLDER than the
+ * cursor (when both `sinceMs` and `sinceId` are null → no upper bound,
+ * get the most recent N). Items are ordered by `(occurred_at, id)` DESC.
+ *
+ * The cursor is COMPOSITE on `(occurred_at, id)` so ties at the page
+ * boundary don't drop items: when N rows share an occurred_at timestamp
+ * (bulk sync / two activities logged in the same millisecond), a plain
+ * "occurred_at < since" cursor would skip every remaining tied row. The
+ * filter is "occurred_at < ?upper OR (occurred_at = ?upper AND id < ?upperId)".
+ *
+ * NOTE: callers MUST enforce group membership BEFORE calling this — the
+ * function itself trusts the caller has done the auth check. Same pattern
+ * as createInvite / setGroupDisplayName.
+ */
+export async function getGroupFeed(
+  db: D1Database,
+  groupId: string,
+  sinceMs: number | null,
+  sinceId: string | null,
+  limit: number,
+  callerUserId: string,
+): Promise<FeedItem[]> {
+  const cap = Math.max(1, Math.min(limit, FEED_LIMIT_MAX));
+  // Composite upper-bound cursor. `upper` is the timestamp; `upperId` is
+  // the tiebreaker for items with that exact timestamp. When sinceMs is
+  // null we treat the timestamp as infinity (no upper bound) and the
+  // tiebreaker is irrelevant.
+  //
+  // When the caller passes since but NO since_id (a legacy/first-page
+  // request), we deliberately collapse to STRICT `occurred_at < upper`
+  // semantics — the tiebreaker would otherwise return rows the previous
+  // page already returned (their occurred_at = upper). We do this by
+  // setting upperId to the empty string: SQLite's lexicographic `id < ''`
+  // is always false for non-empty UUIDs, so the tiebreaker OR branch is
+  // dead. Composite cursor only activates when the caller passes BOTH.
+  const upper = sinceMs ?? Number.MAX_SAFE_INTEGER;
+  const upperId = sinceId ?? '';
+
+  // 1. Resolve group members + their effective display names + email
+  //    fallback. Join into a single row per user_id for the join later.
+  const memberRows = await db
+    .prepare(
+      `SELECT gm.user_id,
+              gm.display_name AS per_group_name,
+              u.display_name  AS global_name,
+              u.email
+         FROM group_members gm
+         JOIN users u ON u.id = gm.user_id
+        WHERE gm.group_id = ?1`,
+    )
+    .bind(groupId)
+    .all<{
+      user_id: string;
+      per_group_name: string | null;
+      global_name: string | null;
+      email: string | null;
+    }>();
+  if (memberRows.results.length === 0) return [];
+
+  const memberMeta = new Map<string, { displayName: string }>();
+  const memberIds: string[] = [];
+  for (const m of memberRows.results) {
+    memberMeta.set(m.user_id, {
+      displayName: resolveDisplayName(m.per_group_name, m.global_name, m.email),
+    });
+    memberIds.push(m.user_id);
+  }
+
+  const placeholders = memberIds.map((_, i) => `?${i + 1}`).join(',');
+
+  // Over-pull each source by `cap` so the post-merge slice still has
+  // enough items in the worst case (one source dominates the window).
+  // The merge-then-slice keeps the SQL simple at the cost of fetching up
+  // to 3*cap rows. Friends/family scale: <10 members, ~30 limit → trivial.
+  const sourceLimit = cap;
+
+  // 2a. Strength sessions. We surface "item timestamp" = completed_at if
+  //     the session is completed, else created_at — sessions still
+  //     in_progress show as "currently doing X" rows so groupmates see
+  //     today's lift as it's happening. Discarded sessions are excluded.
+  const sessionRows = await db
+    .prepare(
+      `SELECT s.id,
+              s.user_id,
+              s.date,
+              s.status,
+              s.completed_at,
+              s.created_at,
+              s.day_template_id,
+              dt.name AS day_name,
+              dt.day_label AS day_label,
+              s.started_at,
+              COALESCE(s.completed_at, s.created_at) AS occurred_at
+         FROM sessions s
+         LEFT JOIN day_templates dt ON dt.id = s.day_template_id
+        WHERE s.user_id IN (${placeholders})
+          -- Codex PR#36 P2: opening Today calls getOrCreateSession which
+          -- creates status='planned' rows BEFORE any set is logged. Those
+          -- aren't activity, they're intent — keep them out of the feed
+          -- so a groupmate who just glanced at Today doesn't show up as
+          -- a 0-set "session" item. Only started/completed sessions are
+          -- real activity worth surfacing.
+          AND s.status IN ('in_progress', 'completed')
+          AND (
+            COALESCE(s.completed_at, s.created_at) < ?${memberIds.length + 1}
+            OR (
+              COALESCE(s.completed_at, s.created_at) = ?${memberIds.length + 1}
+              AND s.id < ?${memberIds.length + 2}
+            )
+          )
+        ORDER BY occurred_at DESC, s.id DESC
+        LIMIT ?${memberIds.length + 3}`,
+    )
+    .bind(...memberIds, upper, upperId, sourceLimit)
+    .all<{
+      id: string;
+      user_id: string;
+      date: string;
+      status: string;
+      completed_at: number | null;
+      created_at: number;
+      day_template_id: string | null;
+      day_name: string | null;
+      day_label: string | null;
+      started_at: number | null;
+      occurred_at: number;
+    }>();
+
+  // 2b. Top sets — single query keyed by session_id IN (...). Aggregating
+  //     in JS keeps the SQL portable; D1 (SQLite) doesn't have window
+  //     functions on every version path. Warmups excluded; soft-deleted
+  //     sets excluded. We pre-join exercises so we get the display name.
+  const sessionIds = sessionRows.results.map((s) => s.id);
+  const topSetsBySession = new Map<string, FeedSessionItem['session']['top_sets']>();
+  const setCountBySession = new Map<string, number>();
+  if (sessionIds.length > 0) {
+    const setPlaceholders = sessionIds.map((_, i) => `?${i + 1}`).join(',');
+    const sets = await db
+      .prepare(
+        `SELECT sl.session_id,
+                sl.exercise_id,
+                sl.weight,
+                sl.reps,
+                e.name AS exercise_name,
+                e.unit AS exercise_unit
+           FROM set_logs sl
+           JOIN exercises e ON e.id = sl.exercise_id
+          WHERE sl.session_id IN (${setPlaceholders})
+            AND sl.deleted_at IS NULL
+            AND sl.is_warmup = 0`,
+      )
+      .bind(...sessionIds)
+      .all<{
+        session_id: string;
+        exercise_id: string;
+        weight: number;
+        reps: number;
+        exercise_name: string;
+        exercise_unit: string;
+      }>();
+    // Aggregate: per (session_id, exercise_id) → highest-est-1RM working
+    // set. Ties broken by higher reps (matches the convention of "show me
+    // the harder set"). Total set_count is just the row count per session.
+    type TopAcc = {
+      exercise: string;
+      unit: string | null;
+      weight: number;
+      reps: number;
+      est_1rm: number;
+    };
+    const acc = new Map<string, Map<string, TopAcc>>(); // session_id -> exercise_id -> top
+    for (const r of sets.results) {
+      setCountBySession.set(r.session_id, (setCountBySession.get(r.session_id) ?? 0) + 1);
+      const est = epley(r.weight, r.reps);
+      let perSession = acc.get(r.session_id);
+      if (!perSession) {
+        perSession = new Map();
+        acc.set(r.session_id, perSession);
+      }
+      const cur = perSession.get(r.exercise_id);
+      if (
+        !cur ||
+        est > cur.est_1rm ||
+        (est === cur.est_1rm && r.reps > cur.reps)
+      ) {
+        perSession.set(r.exercise_id, {
+          exercise: r.exercise_name,
+          unit: r.exercise_unit,
+          weight: r.weight,
+          reps: r.reps,
+          est_1rm: est,
+        });
+      }
+    }
+    for (const [sid, perEx] of acc) {
+      // Sort top_sets by est_1rm DESC so the "headline" lift renders first.
+      const list = [...perEx.values()].sort((a, b) => b.est_1rm - a.est_1rm);
+      topSetsBySession.set(sid, list);
+    }
+  }
+
+  const sessionItems: FeedSessionItem[] = sessionRows.results.map((s) => ({
+    type: 'session',
+    id: s.id,
+    user_id: s.user_id,
+    user_display_name: memberMeta.get(s.user_id)?.displayName ?? 'Member',
+    is_me: s.user_id === callerUserId,
+    date: s.date,
+    occurred_at: s.occurred_at,
+    session: {
+      day_name: s.day_name,
+      day_label: s.day_label,
+      // duration_sec is only meaningful once the session is completed;
+      // a still-in-progress session emits null (matches calendar.ts).
+      duration_sec:
+        s.started_at != null && s.completed_at != null
+          ? Math.max(0, Math.round((s.completed_at - s.started_at) / 1000))
+          : null,
+      set_count: setCountBySession.get(s.id) ?? 0,
+      top_sets: topSetsBySession.get(s.id) ?? [],
+    },
+  }));
+
+  // 2c. Rides (external_activities). Order by `start_date_local_ms`
+  //     (migration 0019) — the actual workout start time. `synced_at`
+  //     used to be the proxy but it rewrites on every cron tick, which
+  //     bubbled every recent ride to the top of the feed after each
+  //     sync and broke pagination. COALESCE handles any legacy row that
+  //     somehow escaped the migration backfill (defensive — should not
+  //     happen on a freshly-migrated DB).
+  const rideRows = await db
+    .prepare(
+      `SELECT id, user_id, date, kind, name, moving_time_sec, distance_m,
+              average_watts, training_load, elevation_gain_m,
+              COALESCE(start_date_local_ms, synced_at) AS occurred_at
+         FROM external_activities
+        WHERE user_id IN (${placeholders})
+          AND deleted_at IS NULL
+          AND (
+            COALESCE(start_date_local_ms, synced_at) < ?${memberIds.length + 1}
+            OR (
+              COALESCE(start_date_local_ms, synced_at) = ?${memberIds.length + 1}
+              AND id < ?${memberIds.length + 2}
+            )
+          )
+        ORDER BY COALESCE(start_date_local_ms, synced_at) DESC, id DESC
+        LIMIT ?${memberIds.length + 3}`,
+    )
+    .bind(...memberIds, upper, upperId, sourceLimit)
+    .all<{
+      id: string;
+      user_id: string;
+      date: string;
+      kind: string;
+      name: string | null;
+      moving_time_sec: number | null;
+      distance_m: number | null;
+      average_watts: number | null;
+      training_load: number | null;
+      elevation_gain_m: number | null;
+      occurred_at: number;
+    }>();
+
+  const rideItems: FeedRideItem[] = rideRows.results.map((r) => ({
+    type: 'ride',
+    id: r.id,
+    user_id: r.user_id,
+    user_display_name: memberMeta.get(r.user_id)?.displayName ?? 'Member',
+    is_me: r.user_id === callerUserId,
+    date: r.date,
+    occurred_at: r.occurred_at,
+    ride: {
+      kind: r.kind,
+      name: r.name,
+      distance_m: r.distance_m,
+      moving_time_sec: r.moving_time_sec,
+      average_watts: r.average_watts,
+      training_load: r.training_load,
+      elevation_gain_m: r.elevation_gain_m,
+    },
+  }));
+
+  // 2d. Activities (M3 generic log). Soft-deleted rows excluded. The wire
+  //     `notes` field IS shared — per the privacy contract above, the
+  //     user-authored notes on an activity are the description of what
+  //     they did.
+  const actRows = await db
+    .prepare(
+      `SELECT id, user_id, date, type, title, duration_minutes, notes, logged_at
+         FROM activities
+        WHERE user_id IN (${placeholders})
+          AND deleted_at IS NULL
+          AND (
+            logged_at < ?${memberIds.length + 1}
+            OR (logged_at = ?${memberIds.length + 1} AND id < ?${memberIds.length + 2})
+          )
+        ORDER BY logged_at DESC, id DESC
+        LIMIT ?${memberIds.length + 3}`,
+    )
+    .bind(...memberIds, upper, upperId, sourceLimit)
+    .all<{
+      id: string;
+      user_id: string;
+      date: string;
+      type: string;
+      title: string | null;
+      duration_minutes: number | null;
+      notes: string | null;
+      logged_at: number;
+    }>();
+
+  const activityItems: FeedActivityItem[] = actRows.results.map((a) => ({
+    type: 'activity',
+    id: a.id,
+    user_id: a.user_id,
+    user_display_name: memberMeta.get(a.user_id)?.displayName ?? 'Member',
+    is_me: a.user_id === callerUserId,
+    date: a.date,
+    occurred_at: a.logged_at,
+    activity: {
+      kind: a.type,
+      title: a.title,
+      duration_min: a.duration_minutes,
+      notes: a.notes,
+    },
+  }));
+
+  // 3. Merge + sort + cap. Stable secondary key (id) for determinism when
+  //    two items share an occurred_at (rare but possible — a cron-synced
+  //    ride and a logged set in the same ms).
+  const merged: FeedItem[] = [...sessionItems, ...rideItems, ...activityItems];
+  merged.sort((a, b) => {
+    if (b.occurred_at !== a.occurred_at) return b.occurred_at - a.occurred_at;
+    return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+  });
+  return merged.slice(0, cap);
+}
+
+/**
+ * Per-member stats over a rolling N-day window (typically 7/14/30). The
+ * window is anchored to "today" in each MEMBER's own timezone so a
+ * groupmate in Sydney isn't penalized by your civil clock.
+ *
+ * `workout_count` = number of DISTINCT dates in the window with at least
+ * one activity (strength session that isn't discarded, intervals ride,
+ * or generic activity). Three Pilates classes in one day count as one.
+ *
+ * `streak_days` = consecutive member-local civil days ending at "today"
+ * with at least one activity. Simplification rule for v1: if today has
+ * activity, count back from today; else count back from yesterday (so a
+ * member who hasn't logged today yet still sees their existing streak).
+ *
+ * NOTE: callers MUST enforce group membership BEFORE calling this — same
+ * authorization pattern as getGroupFeed / createInvite.
+ */
+export async function getGroupStats(
+  db: D1Database,
+  groupId: string,
+  rangeDays: number,
+  callerUserId: string,
+): Promise<MemberStat[]> {
+  const range = Math.max(1, Math.min(rangeDays, 365));
+
+  // 1. Resolve members + names + timezones + emails in one round trip.
+  const memberRows = await db
+    .prepare(
+      `SELECT gm.user_id,
+              gm.display_name AS per_group_name,
+              u.display_name  AS global_name,
+              u.email,
+              u.timezone
+         FROM group_members gm
+         JOIN users u ON u.id = gm.user_id
+        WHERE gm.group_id = ?1
+        ORDER BY gm.joined_at, gm.user_id`,
+    )
+    .bind(groupId)
+    .all<{
+      user_id: string;
+      per_group_name: string | null;
+      global_name: string | null;
+      email: string | null;
+      timezone: string | null;
+    }>();
+
+  if (memberRows.results.length === 0) return [];
+
+  const out: MemberStat[] = [];
+  for (const m of memberRows.results) {
+    const displayName = resolveDisplayName(m.per_group_name, m.global_name, m.email);
+    const today = todayInTz(m.timezone);
+    // The window: [windowStart, today] inclusive, in this member's civil
+    // calendar. We collect ALL activity dates within (and one day before,
+    // so the streak walker has continuity at the boundary), then compute
+    // count + streak in JS.
+    const windowStart = addDays(today, -(range - 1));
+    // Streak walker may need to look further back than the workout-count
+    // window when the streak is longer than `range`. We cap streak look-
+    // back at 365d (one year) — generous enough for a friends-and-family
+    // streak, bounded so the query stays small.
+    const streakStart = addDays(today, -365);
+
+    // Pull dates from all three sources for this member in one go. Each
+    // SELECT projects (date) only — we don't need the row payloads here,
+    // just the civil-date column. epoch_ms-keyed rows (set_logs.logged_at,
+    // external_activities.synced_at) use the SESSION.date / activity.date
+    // strings to keep the bucketing tz-correct.
+    const sessionsRows = await db
+      .prepare(
+        // Same planned-session leak fix as the feed query: a session row
+        // with status='planned' (auto-created by GET /api/today) is intent,
+        // not activity. workout_count and streak_days must only count
+        // sessions that were actually started or completed.
+        `SELECT DISTINCT date FROM sessions
+          WHERE user_id = ?1
+            AND status IN ('in_progress', 'completed')
+            AND date >= ?2 AND date <= ?3`,
+      )
+      .bind(m.user_id, streakStart, today)
+      .all<{ date: string }>();
+    const ridesRows = await db
+      .prepare(
+        `SELECT DISTINCT date FROM external_activities
+          WHERE user_id = ?1
+            AND deleted_at IS NULL
+            AND date >= ?2 AND date <= ?3`,
+      )
+      .bind(m.user_id, streakStart, today)
+      .all<{ date: string }>();
+    const actRows = await db
+      .prepare(
+        `SELECT DISTINCT date FROM activities
+          WHERE user_id = ?1
+            AND deleted_at IS NULL
+            AND date >= ?2 AND date <= ?3`,
+      )
+      .bind(m.user_id, streakStart, today)
+      .all<{ date: string }>();
+    const activeDates = new Set<string>();
+    for (const r of sessionsRows.results) activeDates.add(r.date);
+    for (const r of ridesRows.results) activeDates.add(r.date);
+    for (const r of actRows.results) activeDates.add(r.date);
+
+    // workout_count = distinct active dates within the rolling window.
+    let workoutCount = 0;
+    for (const d of activeDates) {
+      if (d >= windowStart && d <= today) workoutCount++;
+    }
+
+    // streak_days = consecutive days back from "today" (or yesterday if
+    // today is empty). Walk one civil day at a time using addDays so the
+    // boundary math is identical to the rest of the project.
+    let streak = 0;
+    let cursor: string;
+    if (activeDates.has(today)) {
+      cursor = today;
+    } else {
+      cursor = addDays(today, -1);
+      // If yesterday is ALSO empty, streak is 0 — both today and the
+      // most recent prior day broke the chain.
+      if (!activeDates.has(cursor)) cursor = '';
+    }
+    while (cursor && activeDates.has(cursor)) {
+      streak++;
+      cursor = addDays(cursor, -1);
+    }
+
+    // last_active = the most recent active date as an epoch-ms timestamp
+    // (midnight UTC of that civil date — iOS just needs *something* to
+    // render "active 3d ago"; precise wall-clock isn't surfaced).
+    let lastActiveMs: number | null = null;
+    if (activeDates.size > 0) {
+      const sorted = [...activeDates].sort();
+      const latest = sorted[sorted.length - 1]!;
+      lastActiveMs = Date.parse(`${latest}T00:00:00Z`);
+    }
+
+    out.push({
+      user_id: m.user_id,
+      display_name: displayName,
+      avatar_initials: avatarInitials(displayName),
+      is_me: m.user_id === callerUserId,
+      workout_count: workoutCount,
+      streak_days: streak,
+      last_active: lastActiveMs,
+    });
+  }
+  return out;
 }

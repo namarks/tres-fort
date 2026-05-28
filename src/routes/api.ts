@@ -1,24 +1,39 @@
 import { Hono } from 'hono';
+import type { Context } from 'hono';
 import type { HonoEnv } from '../types';
 import { requireAppJwt } from '../auth';
 import {
   addDayTemplate,
   addTemplateExercise,
+  createGroup,
+  createInvite,
   createPlan,
   discardSession,
   getActivePlan,
   getExercises,
+  getGroupFeed,
+  getGroupStats,
+  getGroupWithMembers,
   getHistory,
   getOrCreateSession,
   getPlanTree,
   getState,
   getVolume,
+  isGroupMember,
+  leaveGroup,
+  listGroupsForUser,
+  logActivity,
   logSet,
   nextExerciseOrderIndex,
   patchDayTemplate,
   patchSession,
   patchSet,
+  redeemInvite,
   resolveExercise,
+  setGroupDisplayName,
+  setUserIntervalsCreds,
+  softDeleteActivity,
+  writeAudit,
 } from '../db';
 
 export const apiRoutes = new Hono<HonoEnv>();
@@ -36,8 +51,12 @@ apiRoutes.get('/state', async (c) => {
   const setsSince = Number(c.req.query('sets_since') ?? 0);
   const eventsSince = Number(c.req.query('events_since') ?? 0);
   const activitiesSince = Number(c.req.query('activities_since') ?? 0);
+  // log_since gates the M3 generic activity log delta (separate cursor —
+  // `activities_since` is already taken by the intervals.icu external
+  // actuals cache, see migration 0015 / getState).
+  const logSince = Number(c.req.query('log_since') ?? 0);
   return c.json(
-    await getState(c.env.DB, userId, since, setsSince, eventsSince, activitiesSince),
+    await getState(c.env.DB, userId, since, setsSince, eventsSince, activitiesSince, logSince),
   );
 });
 
@@ -232,4 +251,353 @@ apiRoutes.get('/volume', async (c) => {
   const from = Number(c.req.query('from') ?? 0);
   const to = Number(c.req.query('to') ?? Date.now());
   return c.json(await getVolume(c.env.DB, c.get('userId'), muscle, from, to));
+});
+
+// ---- generic activities (M3 — pilates / cardio / yoga / walks / …) -------
+//
+// Append-only log, client-UUID idempotent (same model as POST /sessions/:id/
+// sets). The iOS outbox can retry safely; the second POST with the same `id`
+// returns the existing row instead of duplicating.
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+apiRoutes.post('/activities', async (c) => {
+  const b = await c.req.json<{
+    id?: string;
+    date?: string;
+    type?: string;
+    title?: string | null;
+    duration_minutes?: number | null;
+    notes?: string | null;
+    logged_at?: number;
+  }>();
+  if (!b.id || typeof b.id !== 'string' || !UUID_RE.test(b.id)) {
+    return c.json({ error: 'invalid_id' }, 400);
+  }
+  if (typeof b.date !== 'string' || !ISO_DATE_RE.test(b.date)) {
+    return c.json({ error: 'invalid_date' }, 400);
+  }
+  if (typeof b.type !== 'string' || b.type.length === 0 || b.type !== b.type.toLowerCase()) {
+    return c.json({ error: 'invalid_type' }, 400);
+  }
+  if (typeof b.logged_at !== 'number' || !Number.isFinite(b.logged_at)) {
+    return c.json({ error: 'invalid_logged_at' }, 400);
+  }
+  const row = await logActivity(
+    c.env.DB,
+    c.get('userId'),
+    {
+      id: b.id,
+      date: b.date,
+      type: b.type,
+      title: b.title ?? null,
+      duration_minutes:
+        typeof b.duration_minutes === 'number' ? b.duration_minutes : null,
+      notes: b.notes ?? null,
+      logged_at: b.logged_at,
+    },
+    'ios',
+  );
+  return c.json(row, 201);
+});
+
+apiRoutes.delete('/activities/:id', async (c) => {
+  const ok = await softDeleteActivity(c.env.DB, c.get('userId'), c.req.param('id'));
+  if (!ok) return c.json({ error: 'not_found' }, 404);
+  return c.json({ ok: true });
+});
+
+// ---- integrations: intervals.icu credentials (M1 multi-user) ------------
+// Connect / disconnect THIS user's intervals.icu account. Each Apple sign-in
+// owns its own credentials so multiple users can each connect a separate
+// athlete without overwriting one another (the env-secret model could not).
+// Disconnect = pass null on either field; both columns clear together.
+apiRoutes.patch('/me/integrations/intervals', async (c) => {
+  const userId = c.get('userId');
+  let b: { api_key?: unknown; athlete_id?: unknown };
+  try {
+    b = await c.req.json<{ api_key?: unknown; athlete_id?: unknown }>();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  // Required keys (either value may be null = disconnect). Reject silently-
+  // missing keys so a typo doesn't accidentally clear a working connection.
+  if (!('api_key' in b) || !('athlete_id' in b)) {
+    return c.json({ error: 'missing_fields' }, 400);
+  }
+  const rawKey = b.api_key;
+  const rawId = b.athlete_id;
+  const okKey = rawKey === null || typeof rawKey === 'string';
+  const okId = rawId === null || typeof rawId === 'string';
+  if (!okKey || !okId) return c.json({ error: 'invalid_field_type' }, 400);
+  // Empty strings are treated as null (disconnect) — defensive against
+  // iOS form posting "" instead of null on the clear path.
+  const apiKey = typeof rawKey === 'string' && rawKey.length > 0 ? rawKey : null;
+  const athleteId = typeof rawId === 'string' && rawId.length > 0 ? rawId : null;
+  const result = await setUserIntervalsCreds(c.env.DB, userId, apiKey, athleteId);
+  // Audit the change without recording the API key itself (only the
+  // outcome). actor='ios' distinguishes this REST mutation from MCP audits.
+  await writeAudit(
+    c.env.DB,
+    userId,
+    'set_intervals_creds',
+    { connected: result.connected },
+    result.connected ? 'connected' : 'disconnected',
+    'ios',
+  );
+  return c.json(result);
+});
+
+// ---- groups (M2 — friends/family invite-gated containers) ----------------
+//
+// All routes require requireAppJwt (mounted at the top). Membership is the
+// authorization unit: non-members see 403 on group-scoped GET/PATCH/POST,
+// 200-or-404 on leave (idempotent), 404 on unknown group id. Mutations
+// audit via writeAudit inside the db.ts helpers (actor='ios').
+
+apiRoutes.post('/groups', async (c) => {
+  const userId = c.get('userId');
+  let b: { name?: unknown };
+  try {
+    b = await c.req.json<{ name?: unknown }>();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  if (typeof b.name !== 'string' || b.name.trim().length === 0) {
+    return c.json({ error: 'invalid_name' }, 400);
+  }
+  const group = await createGroup(c.env.DB, userId, b.name.trim());
+  // Hydrate so the iOS client gets the full shape (creator listed as the
+  // sole member) without a second roundtrip.
+  const full = await getGroupWithMembers(c.env.DB, group.id);
+  return c.json(full, 201);
+});
+
+apiRoutes.get('/groups', async (c) => {
+  const userId = c.get('userId');
+  return c.json({ groups: await listGroupsForUser(c.env.DB, userId) });
+});
+
+apiRoutes.get('/groups/:id', async (c) => {
+  const userId = c.get('userId');
+  const groupId = c.req.param('id');
+  // Non-member -> 403 (do not 404, which would silently leak nothing-vs-
+  // not-mine — but also do not list members of arbitrary groups). The
+  // 404 case is the truly-unknown group id below.
+  const exists = await c.env.DB
+    .prepare('SELECT 1 AS x FROM groups WHERE id = ?1')
+    .bind(groupId)
+    .first<{ x: number }>();
+  if (!exists) return c.json({ error: 'not_found' }, 404);
+  if (!(await isGroupMember(c.env.DB, userId, groupId))) {
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  const full = await getGroupWithMembers(c.env.DB, groupId);
+  return c.json(full);
+});
+
+apiRoutes.post('/groups/:id/invites', async (c) => {
+  const userId = c.get('userId');
+  const groupId = c.req.param('id');
+  if (!(await isGroupMember(c.env.DB, userId, groupId))) {
+    // 403 (rather than 404) when the group exists but caller isn't in it;
+    // 404 when the group truly doesn't exist (we treat the missing FK as
+    // the latter from a UX point of view — the iOS client can't tell the
+    // difference and shouldn't, since the only way to know a group id is
+    // membership).
+    const exists = await c.env.DB
+      .prepare('SELECT 1 AS x FROM groups WHERE id = ?1')
+      .bind(groupId)
+      .first<{ x: number }>();
+    if (!exists) return c.json({ error: 'not_found' }, 404);
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  let b: { expires_at?: unknown };
+  try {
+    b = await c.req.json<{ expires_at?: unknown }>().catch(() => ({}));
+  } catch {
+    b = {};
+  }
+  // expires_at semantics: undefined -> default +30d (db.ts), null ->
+  // never expires, number -> exact epoch ms. Anything else is rejected
+  // so a typo doesn't accidentally mint a never-expiring code.
+  let expiresAt: number | null | undefined = undefined;
+  if ('expires_at' in b) {
+    const v = b.expires_at;
+    if (v === null) expiresAt = null;
+    else if (typeof v === 'number' && Number.isFinite(v)) expiresAt = v;
+    else return c.json({ error: 'invalid_expires_at' }, 400);
+  }
+  const invite = await createInvite(c.env.DB, userId, groupId, expiresAt);
+  return c.json(
+    { code: invite.code, group_id: invite.group_id, expires_at: invite.expires_at },
+    201,
+  );
+});
+
+apiRoutes.post('/groups/join', async (c) => {
+  const userId = c.get('userId');
+  let b: { code?: unknown };
+  try {
+    b = await c.req.json<{ code?: unknown }>();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  if (typeof b.code !== 'string' || b.code.length === 0) {
+    return c.json({ error: 'invalid_code' }, 400);
+  }
+  const result = await redeemInvite(c.env.DB, b.code.trim(), userId);
+  if ('error' in result) {
+    // Map db.ts error tags to HTTP status per spec:
+    //   unknown  -> 404 (no such code)
+    //   used     -> 410 (code was consumed)
+    //   expired  -> 410 (code timed out)
+    //   already_member -> 409 (you're already in this group; code NOT consumed)
+    if (result.error === 'unknown') return c.json(result, 404);
+    if (result.error === 'already_member') return c.json(result, 409);
+    return c.json(result, 410);
+  }
+  // On success, hand back the freshly-joined group with members hydrated
+  // so the iOS client can render the group page without a follow-up GET.
+  const group = await getGroupWithMembers(c.env.DB, result.group_id);
+  return c.json({ ok: true, group });
+});
+
+apiRoutes.delete('/groups/:id/members/me', async (c) => {
+  const userId = c.get('userId');
+  const groupId = c.req.param('id');
+  // Idempotent: 200 whether or not the caller was a member. leaveGroup
+  // returns false when no rows changed (already gone / never joined),
+  // but per spec we still return 200 — the postcondition holds either way.
+  const removed = await leaveGroup(c.env.DB, userId, groupId);
+  return c.json({ ok: true, removed });
+});
+
+apiRoutes.patch('/groups/:id/members/me', async (c) => {
+  const userId = c.get('userId');
+  const groupId = c.req.param('id');
+  let b: { display_name?: unknown };
+  try {
+    b = await c.req.json<{ display_name?: unknown }>();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  if (!('display_name' in b)) {
+    return c.json({ error: 'missing_display_name' }, 400);
+  }
+  const raw = b.display_name;
+  if (raw !== null && typeof raw !== 'string') {
+    return c.json({ error: 'invalid_display_name' }, 400);
+  }
+  // Empty string is treated as null (clear). Mirrors the intervals creds
+  // route's empty-string-as-null convention so an iOS form posting "" on
+  // clear doesn't end up with an empty nickname.
+  const displayName = typeof raw === 'string' && raw.length > 0 ? raw : null;
+  const ok = await setGroupDisplayName(c.env.DB, userId, groupId, displayName);
+  if (!ok) return c.json({ error: 'forbidden' }, 403);
+  // Return the hydrated group so the iOS client can update its model.
+  const full = await getGroupWithMembers(c.env.DB, groupId);
+  return c.json(full);
+});
+
+// ---- M4: group feed + stats ---------------------------------------------
+//
+// Two read endpoints on top of the existing group-membership authz:
+// `/feed` (interleaved session/ride/activity stream) and `/stats` (per-
+// member workout_count + streak). Both 403 non-members, 404 unknown ids,
+// and stamp `is_me` so the iOS client doesn't compare user ids manually.
+//
+// Privacy contract enforced INSIDE the db.ts helpers (notes / RPE / set
+// notes / perceived_fatigue are never selected). See the long comment at
+// the top of the M4 section in db.ts for the full rules.
+
+/**
+ * Shared guard for /groups/:id/feed and /groups/:id/stats: 404 if the
+ * group doesn't exist, 403 if the caller isn't a member. Returns null on
+ * pass-through (call site continues), or a Response on reject (call site
+ * `return`s it). Mirrors the same 404-before-403 ordering POST
+ * /:id/invites uses.
+ */
+async function requireGroupMembership(
+  c: Context<HonoEnv>,
+  userId: string,
+  groupId: string,
+): Promise<Response | null> {
+  const exists = await c.env.DB
+    .prepare('SELECT 1 AS x FROM groups WHERE id = ?1')
+    .bind(groupId)
+    .first<{ x: number }>();
+  if (!exists) return c.json({ error: 'not_found' }, 404);
+  if (!(await isGroupMember(c.env.DB, userId, groupId))) {
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  return null;
+}
+
+apiRoutes.get('/groups/:id/feed', async (c) => {
+  const userId = c.get('userId');
+  const groupId = c.req.param('id');
+  const guard = await requireGroupMembership(c, userId, groupId);
+  if (guard) return guard;
+
+  // Composite pagination cursor on (occurred_at, id): when N rows share
+  // an occurred_at at the page boundary, a plain timestamp cursor would
+  // drop the rest of the tied rows on the next page. iOS passes BOTH
+  // `since` (epoch-ms upper bound) and `since_id` (the tail item's id);
+  // server filters strictly older on the composite. Both null → no upper
+  // bound (most-recent N).
+  const sinceRaw = c.req.query('since');
+  let sinceMs: number | null = null;
+  if (sinceRaw != null) {
+    const n = Number(sinceRaw);
+    if (!Number.isFinite(n)) return c.json({ error: 'invalid_since' }, 400);
+    sinceMs = n;
+  }
+  const sinceIdRaw = c.req.query('since_id');
+  const sinceId =
+    sinceIdRaw != null && sinceIdRaw.length > 0 ? sinceIdRaw : null;
+  // `limit`: default 30, capped at 100 (FEED_LIMIT_MAX in db.ts). Out-of-
+  // range values clamp rather than 400 — the iOS client's safer to keep
+  // moving on a typo than to surface a "what did you do wrong" error.
+  let limit = 30;
+  const limitRaw = c.req.query('limit');
+  if (limitRaw != null) {
+    const n = Number(limitRaw);
+    if (Number.isFinite(n) && n > 0) limit = Math.min(100, Math.floor(n));
+  }
+
+  const items = await getGroupFeed(c.env.DB, groupId, sinceMs, sinceId, limit, userId);
+  // Composite next cursor = the LAST returned item (smallest by
+  // (occurred_at, id) DESC). iOS passes both fields back as ?since= and
+  // ?since_id= to load the next page. null both when empty → end of stream.
+  const tail = items.length === 0 ? null : items[items.length - 1]!;
+  return c.json({
+    group_id: groupId,
+    items,
+    next_since: tail?.occurred_at ?? null,
+    next_since_id: tail?.id ?? null,
+    server_time: Date.now(),
+  });
+});
+
+apiRoutes.get('/groups/:id/stats', async (c) => {
+  const userId = c.get('userId');
+  const groupId = c.req.param('id');
+  const guard = await requireGroupMembership(c, userId, groupId);
+  if (guard) return guard;
+
+  // `range`: "7d" | "14d" | "30d" (default 7d). Other suffixes (weeks,
+  // months) are rejected so the iOS surface is honest about what it
+  // accepts — 5d would silently round, etc.
+  const rangeRaw = c.req.query('range') ?? '7d';
+  const m = /^(\d+)d$/.exec(rangeRaw);
+  if (!m) return c.json({ error: 'invalid_range' }, 400);
+  const days = Number(m[1]);
+  if (!Number.isFinite(days) || days < 1 || days > 365) {
+    return c.json({ error: 'invalid_range' }, 400);
+  }
+  const members = await getGroupStats(c.env.DB, groupId, days, userId);
+  return c.json({ group_id: groupId, range: rangeRaw, members });
 });

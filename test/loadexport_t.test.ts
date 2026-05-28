@@ -530,6 +530,55 @@ describe('exportSessionLoad — milestone t (post-review)', () => {
   });
 });
 
+// Codex PR #36 P1: exportSessionLoad fell back to env.INTERVALS_ICU_* even
+// when the user had explicitly disconnected via PATCH /api/me/integrations/
+// intervals. The sync paths already guard with userHasTouchedIntervalsCreds;
+// this is the equivalent guard for the export path. With the fix, an
+// explicit disconnect cleanly records a 'disabled' ledger row and NEVER
+// touches intervals.icu — completing or re-exporting a session after
+// disconnect must not silently keep posting to the old account.
+describe('PR#36 P1: exportSessionLoad respects explicit intervals disconnect', () => {
+  it('user with NULL creds + audit row (disconnect) -> status disabled, no remote write', async () => {
+    const { ownerId, sessionId } = await seedCompletedSession({ fatigue: 7 });
+
+    // Owner row has env-fed creds left over from prior tests. Explicitly
+    // clear them AND write the audit row that the PATCH endpoint emits on
+    // disconnect — that audit row is the durable "intentionally cleared"
+    // marker (userHasTouchedIntervalsCreds checks for it).
+    await env.DB.prepare(
+      'UPDATE users SET intervals_api_key=NULL, intervals_athlete_id=NULL WHERE id=?1',
+    )
+      .bind(ownerId)
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO audit_log (id, user_id, actor, tool, args, result, created_at)
+           VALUES (?1, ?2, 'ios', 'set_intervals_creds', '{"connected":false}', 'disconnected', ?3)`,
+      )
+      .bind(crypto.randomUUID(), ownerId, Date.now())
+      .run();
+
+    const api = fakeIntervals();
+    const res = await exportSessionLoad(env.DB, env as unknown as Env, ownerId, sessionId, {
+      fetcher: api.fetcher,
+    });
+    expect(res.status).toBe('disabled');
+    // Critically: no remote HTTP traffic AT ALL. Without the fix the env
+    // creds would have been used and api.events / api.calls would be non-
+    // empty (push would succeed and write a remote event).
+    expect(api.calls).toHaveLength(0);
+    expect(api.events).toHaveLength(0);
+
+    // Ledger row records the disabled state (caller can retry later if the
+    // user reconnects). audit_log carries the export tool entry.
+    const ledger = await env.DB
+      .prepare('SELECT status FROM session_load_exports WHERE session_id=?1')
+      .bind(sessionId)
+      .first<{ status: string }>();
+    expect(ledger!.status).toBe('disabled');
+  });
+});
+
 describe('BLOCKER-3: exported lift events never self-conflict', () => {
   it('export then syncExternalEvents over its window → not ingested, no conflict', async () => {
     const date = '2026-05-19';

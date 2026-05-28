@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import type { Env, HonoEnv } from './types';
 import { authRoutes } from './routes/auth';
 import { apiRoutes } from './routes/api';
+import { privacyRoutes } from './routes/privacy';
 import { mcpRoutes } from './mcp';
 import { oauthRoutes } from './oauth';
 import {
@@ -15,6 +16,7 @@ const app = new Hono<HonoEnv>();
 app.get('/health', (c) => c.json({ ok: true, service: 'tres-fort' }));
 
 app.route('/', oauthRoutes); // /.well-known/* + /oauth/*
+app.route('/', privacyRoutes); // GET /privacy (App Store Connect compliance)
 app.route('/auth', authRoutes);
 app.route('/api', apiRoutes);
 app.route('/mcp', mcpRoutes);

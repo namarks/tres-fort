@@ -243,6 +243,56 @@ export interface ActivityRow {
   deleted_at: number | null;
 }
 
+// ---- groups + invites (see migrations/0018) ------------------------------
+
+/**
+ * A friends/family group. The creator is auto-added as a member at
+ * creation time (see `createGroup` in src/db.ts). Orphan groups (last
+ * member left) are allowed — cleanup is deferred. Group writes do NOT
+ * bump plans.version (groups live outside the versioned plan document).
+ */
+export interface Group {
+  id: string;
+  name: string;
+  created_by: string;       // user_id of the creator
+  created_at: number;       // epoch ms
+}
+
+/**
+ * A row in `group_members`. `display_name` is a per-group nickname
+ * override — NULL means "use users.display_name" (resolved at read time
+ * in listGroupsForUser / GET /api/groups/:id).
+ */
+export interface GroupMember {
+  group_id: string;
+  user_id: string;
+  display_name: string | null;
+  joined_at: number;
+}
+
+/** A member with the *resolved* display name baked in (override or fallback). */
+export interface ResolvedGroupMember extends GroupMember {
+  /** Per-group override if set, else the user's global display_name. */
+  effective_display_name: string | null;
+}
+
+/**
+ * A single-use group invite. `code` is the 6-char human-shareable key
+ * (32-char no-ambiguous alphabet — A-Z minus I/L/O, 2-9). `expires_at`
+ * NULL = never expires; default at creation is +30 days. `used_at` /
+ * `used_by` are NULL until the code is redeemed; once set, the code is
+ * dead and any further redemption attempt is rejected with `used`.
+ */
+export interface GroupInvite {
+  code: string;
+  group_id: string;
+  created_by: string;
+  created_at: number;
+  expires_at: number | null;
+  used_at: number | null;
+  used_by: string | null;
+}
+
 /** Per-date conflict between lift sessions/projections and external events. */
 export interface DayConflict {
   date: string;

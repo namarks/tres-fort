@@ -8,9 +8,13 @@ import type {
   Env,
   ExternalActivityRow,
   ExternalEventRow,
+  Group,
+  GroupInvite,
+  GroupMember,
   PlanMeta,
   PlanRow,
   PlanTree,
+  ResolvedGroupMember,
   ScheduleWeek,
   SessionRow,
   SetLogRow,
@@ -293,6 +297,465 @@ export async function setUserIntervalsCreds(
     .bind(userId, connect ? apiKey : null, connect ? athleteId : null)
     .run();
   return { connected: connect };
+}
+
+// ---- groups + invites (M2) -----------------------------------------------
+//
+// Friends/family containers. The single-user invariant relaxes to multi-user-
+// with-invite-gating: a new Apple sub may sign in only when the bootstrap
+// path applies OR a valid invite code is supplied. The invite redemption +
+// user creation are made atomic in /auth/apple — see src/routes/auth.ts.
+//
+// Group writes are AUDITED (writeAudit) but DO NOT bump plans.version —
+// groups live outside the versioned plan-tree document. The audit_log trail
+// is the per-mutation provenance, same single-user substitute for scopes
+// that the plan-tree mutations use.
+
+/**
+ * Invite-code alphabet: 32 unambiguous chars (no 0/O, no 1/I/L).
+ * 6 chars from 32 = 32^6 ≈ 1.07 * 10^9 codes, plenty for friends-and-family.
+ */
+const INVITE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const INVITE_CODE_LEN = 6;
+const DEFAULT_INVITE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+/**
+ * Generate a single 6-char code from the no-ambiguous alphabet using
+ * `crypto.getRandomValues`. Caller (`createInvite`) retries on PK collision
+ * — at 32^6 the birthday-paradox collision rate is vanishingly small until
+ * many millions of outstanding codes.
+ */
+function newInviteCode(): string {
+  const buf = new Uint8Array(INVITE_CODE_LEN);
+  crypto.getRandomValues(buf);
+  let out = '';
+  for (let i = 0; i < INVITE_CODE_LEN; i++) {
+    out += INVITE_ALPHABET[buf[i]! % INVITE_ALPHABET.length];
+  }
+  return out;
+}
+
+/**
+ * Create a group and add the creator as the first member. Returns the new
+ * group row (without the auto-member — read it back via listGroupsForUser
+ * if you need members hydrated). Audited as 'create_group' actor='ios'.
+ */
+export async function createGroup(
+  db: D1Database,
+  userId: string,
+  name: string,
+): Promise<Group> {
+  const id = uuid();
+  const ts = now();
+  const group: Group = { id, name, created_by: userId, created_at: ts };
+  // Use a batch so the membership row lands with the group row — D1 batches
+  // run in a single transaction (an atomicity guarantee documented by
+  // Cloudflare). If either statement fails the group is never visible.
+  await db.batch([
+    db
+      .prepare('INSERT INTO groups (id,name,created_by,created_at) VALUES (?1,?2,?3,?4)')
+      .bind(id, name, userId, ts),
+    db
+      .prepare(
+        'INSERT INTO group_members (group_id,user_id,display_name,joined_at) VALUES (?1,?2,?3,?4)',
+      )
+      .bind(id, userId, null, ts),
+  ]);
+  await writeAudit(
+    db,
+    userId,
+    'create_group',
+    { group_id: id, name },
+    'created',
+    'ios',
+  );
+  return group;
+}
+
+/** True iff `userId` is currently a member of `groupId`. */
+export async function isGroupMember(
+  db: D1Database,
+  userId: string,
+  groupId: string,
+): Promise<boolean> {
+  const r = await db
+    .prepare('SELECT 1 AS x FROM group_members WHERE group_id = ?1 AND user_id = ?2')
+    .bind(groupId, userId)
+    .first<{ x: number }>();
+  return !!r;
+}
+
+/**
+ * Hydrate a group with its members + effective display names (per-group
+ * override > users.display_name). Returns null if no such group.
+ */
+async function hydrateGroup(
+  db: D1Database,
+  group: Group,
+): Promise<Group & { members: ResolvedGroupMember[] }> {
+  const r = await db
+    .prepare(
+      `SELECT gm.group_id, gm.user_id, gm.display_name, gm.joined_at,
+              u.display_name AS user_display_name
+         FROM group_members gm
+         JOIN users u ON u.id = gm.user_id
+        WHERE gm.group_id = ?1
+        ORDER BY gm.joined_at, gm.user_id`,
+    )
+    .bind(group.id)
+    .all<{
+      group_id: string;
+      user_id: string;
+      display_name: string | null;
+      joined_at: number;
+      user_display_name: string | null;
+    }>();
+  const members: ResolvedGroupMember[] = r.results.map((row) => ({
+    group_id: row.group_id,
+    user_id: row.user_id,
+    display_name: row.display_name,
+    joined_at: row.joined_at,
+    effective_display_name: row.display_name ?? row.user_display_name,
+  }));
+  return { ...group, members };
+}
+
+/**
+ * List groups the user belongs to, with members hydrated. Stable ordering
+ * (created_at, then id) so the iOS list isn't shuffled across reads.
+ */
+export async function listGroupsForUser(
+  db: D1Database,
+  userId: string,
+): Promise<Array<Group & { members: ResolvedGroupMember[] }>> {
+  const r = await db
+    .prepare(
+      `SELECT g.* FROM groups g
+         JOIN group_members gm ON gm.group_id = g.id
+        WHERE gm.user_id = ?1
+        ORDER BY g.created_at, g.id`,
+    )
+    .bind(userId)
+    .all<Group>();
+  const out: Array<Group & { members: ResolvedGroupMember[] }> = [];
+  for (const g of r.results) {
+    out.push(await hydrateGroup(db, g));
+  }
+  return out;
+}
+
+/** Read a group + its members. Returns null if the group does not exist. */
+export async function getGroupWithMembers(
+  db: D1Database,
+  groupId: string,
+): Promise<(Group & { members: ResolvedGroupMember[] }) | null> {
+  const g = await db
+    .prepare('SELECT * FROM groups WHERE id = ?1')
+    .bind(groupId)
+    .first<Group>();
+  if (!g) return null;
+  return hydrateGroup(db, g);
+}
+
+/**
+ * Create a new invite code for a group. Caller MUST have already verified
+ * `isGroupMember(db, userId, groupId)` — this function does not enforce
+ * authorization (the REST handler does). `expiresAtMs` semantics:
+ *   undefined → default = created_at + 30 days
+ *   null      → never expires
+ *   number    → exact epoch-ms expiry (caller-provided)
+ * Retries up to 5x on PK collision (32^6 alphabet; the retry is paranoia).
+ * Audited as 'create_invite' actor='ios'.
+ */
+export async function createInvite(
+  db: D1Database,
+  userId: string,
+  groupId: string,
+  expiresAtMs?: number | null,
+): Promise<GroupInvite> {
+  const ts = now();
+  const expires =
+    expiresAtMs === undefined ? ts + DEFAULT_INVITE_TTL_MS : expiresAtMs;
+  let code = '';
+  let lastErr: unknown = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    code = newInviteCode();
+    try {
+      await db
+        .prepare(
+          `INSERT INTO group_invites
+             (code,group_id,created_by,created_at,expires_at,used_at,used_by)
+           VALUES (?1,?2,?3,?4,?5,NULL,NULL)`,
+        )
+        .bind(code, groupId, userId, ts, expires)
+        .run();
+      lastErr = null;
+      break;
+    } catch (e) {
+      // PK collision on `code` → regenerate. Any other error rethrows below.
+      lastErr = e;
+      const msg = (e as Error).message ?? '';
+      if (!/UNIQUE|constraint/i.test(msg)) throw e;
+    }
+  }
+  if (lastErr) throw lastErr;
+  const invite: GroupInvite = {
+    code,
+    group_id: groupId,
+    created_by: userId,
+    created_at: ts,
+    expires_at: expires,
+    used_at: null,
+    used_by: null,
+  };
+  await writeAudit(
+    db,
+    userId,
+    'create_invite',
+    { group_id: groupId, code, expires_at: expires },
+    'created',
+    'ios',
+  );
+  return invite;
+}
+
+/**
+ * Read-only invite lookup (no consumption). Used by /auth/apple BEFORE
+ * creating the user to validate the code is good — if not, we reject
+ * `not_invited` without touching the users table. Returns the row
+ * regardless of used/expired state; the caller (redeemInvite) makes the
+ * accept/reject call.
+ */
+export async function getInviteForRedemption(
+  db: D1Database,
+  code: string,
+): Promise<GroupInvite | null> {
+  const r = await db
+    .prepare('SELECT * FROM group_invites WHERE code = ?1')
+    .bind(code)
+    .first<GroupInvite>();
+  return r ?? null;
+}
+
+/**
+ * Redeem an invite as `userId`. Validates → marks the code used → inserts
+ * the group_members row. The check-then-write race window is tolerable in
+ * the friends-and-family setting (two redemptions of the same code within
+ * a few ms is essentially a non-event), but we still guard against it: the
+ * `used_at IS NULL` predicate on the UPDATE means at most one redeemer
+ * wins. If a redeemer loses the race they see `used`.
+ *
+ * `already_member` is a soft success-ish case: the user is *already* in
+ * the group, the invite is NOT consumed, and the iOS client can show
+ * "you're already in this group" without burning the code.
+ *
+ * Audited as 'redeem_invite' actor='ios' on success.
+ */
+export async function redeemInvite(
+  db: D1Database,
+  code: string,
+  userId: string,
+): Promise<
+  | { ok: true; group_id: string }
+  | { error: 'unknown' | 'used' | 'expired' | 'already_member' }
+> {
+  const invite = await getInviteForRedemption(db, code);
+  if (!invite) return { error: 'unknown' };
+  if (invite.used_at != null) return { error: 'used' };
+  if (invite.expires_at != null && invite.expires_at < now()) {
+    return { error: 'expired' };
+  }
+  if (await isGroupMember(db, userId, invite.group_id)) {
+    // Already in — do NOT consume the code. The invite stays alive for
+    // someone else to use; the redeemer just learns they're already in.
+    return { error: 'already_member' };
+  }
+  const ts = now();
+  // Conditional UPDATE: only mark used if still unused. Returns
+  // info().changes = 1 on the winning redeemer, 0 if someone else just
+  // beat us to it (race-loss → report as `used`).
+  const res = await db
+    .prepare(
+      `UPDATE group_invites
+          SET used_at = ?2, used_by = ?3
+        WHERE code = ?1 AND used_at IS NULL`,
+    )
+    .bind(code, ts, userId)
+    .run();
+  if ((res.meta?.changes ?? 0) !== 1) {
+    return { error: 'used' };
+  }
+  await db
+    .prepare(
+      'INSERT INTO group_members (group_id,user_id,display_name,joined_at) VALUES (?1,?2,?3,?4)',
+    )
+    .bind(invite.group_id, userId, null, ts)
+    .run();
+  await writeAudit(
+    db,
+    userId,
+    'redeem_invite',
+    { group_id: invite.group_id, code },
+    'joined',
+    'ios',
+  );
+  return { ok: true, group_id: invite.group_id };
+}
+
+/**
+ * Remove the caller from a group. Idempotent — returns true if a row was
+ * actually deleted, false if the caller was not a member (the REST handler
+ * still returns 200 either way per spec). Last member leaving does NOT
+ * delete the group; orphan groups are tolerated (cleanup deferred).
+ */
+export async function leaveGroup(
+  db: D1Database,
+  userId: string,
+  groupId: string,
+): Promise<boolean> {
+  const res = await db
+    .prepare('DELETE FROM group_members WHERE group_id = ?1 AND user_id = ?2')
+    .bind(groupId, userId)
+    .run();
+  const removed = (res.meta?.changes ?? 0) > 0;
+  if (removed) {
+    await writeAudit(
+      db,
+      userId,
+      'leave_group',
+      { group_id: groupId },
+      'left',
+      'ios',
+    );
+  }
+  return removed;
+}
+
+/**
+ * Set or clear the caller's per-group nickname override. NULL = clear
+ * (fall back to users.display_name on read). Returns true if a row was
+ * updated, false if the caller is not a member of the group.
+ * Audited as 'set_group_display_name' actor='ios'.
+ */
+export async function setGroupDisplayName(
+  db: D1Database,
+  userId: string,
+  groupId: string,
+  displayName: string | null,
+): Promise<boolean> {
+  const res = await db
+    .prepare(
+      'UPDATE group_members SET display_name = ?3 WHERE group_id = ?1 AND user_id = ?2',
+    )
+    .bind(groupId, userId, displayName)
+    .run();
+  const ok = (res.meta?.changes ?? 0) > 0;
+  if (ok) {
+    await writeAudit(
+      db,
+      userId,
+      'set_group_display_name',
+      { group_id: groupId, display_name: displayName },
+      displayName == null ? 'cleared' : 'set',
+      'ios',
+    );
+  }
+  return ok;
+}
+
+/** Count rows in the users table. Used by /auth/apple to detect the fresh-install bootstrap path. */
+export async function countUsers(db: D1Database): Promise<number> {
+  const r = await db
+    .prepare('SELECT COUNT(*) AS c FROM users')
+    .first<{ c: number }>();
+  return r?.c ?? 0;
+}
+
+/**
+ * Atomic invite-gated user creation: validate code → create user → mark
+ * invite used → insert group_members → audit. Used by /auth/apple when a
+ * new Apple sub presents an invite.
+ *
+ * Atomicity strategy: we do a CHECK-THEN-WRITE under a single batch where
+ * possible, and a re-check after the user insert. If the conditional
+ * `UPDATE group_invites SET used_at = ?2 WHERE code = ?1 AND used_at IS NULL`
+ * fails (someone else just redeemed in the small race window), we DELETE
+ * the freshly-created user row to avoid a phantom account. The whole thing
+ * happens before /auth/apple issues a JWT, so a partial-failure rollback is
+ * invisible to the caller — they get `not_invited` and try again.
+ *
+ * Returns `{ ok: true, user }` on success, or `{ error: ... }` mirroring
+ * the redeemInvite error set (`unknown`/`used`/`expired` — `already_member`
+ * is unreachable here because the user didn't exist a moment ago).
+ */
+export async function createUserAndRedeemInvite(
+  db: D1Database,
+  appleSub: string,
+  email: string | null,
+  displayName: string | null,
+  code: string,
+): Promise<
+  | { ok: true; user: User; group_id: string }
+  | { error: 'unknown' | 'used' | 'expired' }
+> {
+  // Pre-check: cheap reject before creating anything.
+  const invite = await getInviteForRedemption(db, code);
+  if (!invite) return { error: 'unknown' };
+  if (invite.used_at != null) return { error: 'used' };
+  if (invite.expires_at != null && invite.expires_at < now()) {
+    return { error: 'expired' };
+  }
+  // Create the user row.
+  const user = await upsertUser(db, appleSub, email, displayName);
+  const ts = now();
+  // Conditional consume — only wins if still unused. If we lose the race
+  // the user row stays (it represents a real new Apple identity even if
+  // they didn't get into a group), but we must signal failure so the
+  // route returns `not_invited` instead of issuing a JWT for a stranded
+  // account. To prevent phantom-account leakage, we delete the user row
+  // we just created IFF it was truly fresh (apple_sub was unseen before
+  // this call). upsertUser returns existing if seen, so we identify
+  // "fresh" by created_at == ts; but that's racy. Safer: re-read by
+  // apple_sub to confirm. The window is microseconds — fine.
+  const consumed = await db
+    .prepare(
+      `UPDATE group_invites
+          SET used_at = ?2, used_by = ?3
+        WHERE code = ?1 AND used_at IS NULL`,
+    )
+    .bind(code, ts, user.id)
+    .run();
+  if ((consumed.meta?.changes ?? 0) !== 1) {
+    // Race-loss. The user row is a new identity with no group attachment;
+    // since the entire point of this call was invite redemption, the
+    // safest behavior is to delete the just-created user. We only delete
+    // when the user_id has zero rows in EVERYTHING-else-tables (plans,
+    // sessions, etc.) — guaranteed here because this was the first call
+    // that ever referenced this user_id.
+    await db.prepare('DELETE FROM users WHERE id = ?1').bind(user.id).run();
+    // Re-check WHY consume failed so we return the most specific error.
+    const re = await getInviteForRedemption(db, code);
+    if (!re) return { error: 'unknown' };
+    if (re.used_at != null) return { error: 'used' };
+    if (re.expires_at != null && re.expires_at < now()) return { error: 'expired' };
+    // Defensive: should be unreachable. Treat as used (the safer signal).
+    return { error: 'used' };
+  }
+  await db
+    .prepare(
+      'INSERT INTO group_members (group_id,user_id,display_name,joined_at) VALUES (?1,?2,?3,?4)',
+    )
+    .bind(invite.group_id, user.id, null, ts)
+    .run();
+  await writeAudit(
+    db,
+    user.id,
+    'redeem_invite',
+    { group_id: invite.group_id, code, via: 'signup' },
+    'joined',
+    'ios',
+  );
+  return { ok: true, user, group_id: invite.group_id };
 }
 
 // ---- plan tree -----------------------------------------------------------

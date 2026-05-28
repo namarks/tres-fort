@@ -61,7 +61,14 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
   await next();
 });
 
-/** Owner allowlist: if OWNER_APPLE_SUB is set, only that sub may sign in. */
+/**
+ * @deprecated M2: the single-owner allowlist is no longer the auth gate.
+ * `/auth/apple` now handles multi-user-with-invite-gating explicitly (see
+ * `src/routes/auth.ts`) and does NOT call this helper. Retained as a
+ * no-op-on-match / throw-on-mismatch utility for any future single-owner
+ * path (and to keep the export stable for older callers in tree). New
+ * code should not introduce uses.
+ */
 export function assertOwner(sub: string, ownerSub: string | undefined) {
   if (ownerSub && ownerSub !== sub) {
     throw new Error('not_owner');

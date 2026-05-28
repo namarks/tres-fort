@@ -4,22 +4,30 @@ import { requireAppJwt } from '../auth';
 import {
   addDayTemplate,
   addTemplateExercise,
+  createGroup,
+  createInvite,
   createPlan,
   discardSession,
   getActivePlan,
   getExercises,
+  getGroupWithMembers,
   getHistory,
   getOrCreateSession,
   getPlanTree,
   getState,
   getVolume,
+  isGroupMember,
+  leaveGroup,
+  listGroupsForUser,
   logActivity,
   logSet,
   nextExerciseOrderIndex,
   patchDayTemplate,
   patchSession,
   patchSet,
+  redeemInvite,
   resolveExercise,
+  setGroupDisplayName,
   setUserIntervalsCreds,
   softDeleteActivity,
   writeAudit,
@@ -337,4 +345,156 @@ apiRoutes.patch('/me/integrations/intervals', async (c) => {
     'ios',
   );
   return c.json(result);
+});
+
+// ---- groups (M2 — friends/family invite-gated containers) ----------------
+//
+// All routes require requireAppJwt (mounted at the top). Membership is the
+// authorization unit: non-members see 403 on group-scoped GET/PATCH/POST,
+// 200-or-404 on leave (idempotent), 404 on unknown group id. Mutations
+// audit via writeAudit inside the db.ts helpers (actor='ios').
+
+apiRoutes.post('/groups', async (c) => {
+  const userId = c.get('userId');
+  let b: { name?: unknown };
+  try {
+    b = await c.req.json<{ name?: unknown }>();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  if (typeof b.name !== 'string' || b.name.trim().length === 0) {
+    return c.json({ error: 'invalid_name' }, 400);
+  }
+  const group = await createGroup(c.env.DB, userId, b.name.trim());
+  // Hydrate so the iOS client gets the full shape (creator listed as the
+  // sole member) without a second roundtrip.
+  const full = await getGroupWithMembers(c.env.DB, group.id);
+  return c.json(full, 201);
+});
+
+apiRoutes.get('/groups', async (c) => {
+  const userId = c.get('userId');
+  return c.json({ groups: await listGroupsForUser(c.env.DB, userId) });
+});
+
+apiRoutes.get('/groups/:id', async (c) => {
+  const userId = c.get('userId');
+  const groupId = c.req.param('id');
+  // Non-member -> 403 (do not 404, which would silently leak nothing-vs-
+  // not-mine — but also do not list members of arbitrary groups). The
+  // 404 case is the truly-unknown group id below.
+  const exists = await c.env.DB
+    .prepare('SELECT 1 AS x FROM groups WHERE id = ?1')
+    .bind(groupId)
+    .first<{ x: number }>();
+  if (!exists) return c.json({ error: 'not_found' }, 404);
+  if (!(await isGroupMember(c.env.DB, userId, groupId))) {
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  const full = await getGroupWithMembers(c.env.DB, groupId);
+  return c.json(full);
+});
+
+apiRoutes.post('/groups/:id/invites', async (c) => {
+  const userId = c.get('userId');
+  const groupId = c.req.param('id');
+  if (!(await isGroupMember(c.env.DB, userId, groupId))) {
+    // 403 (rather than 404) when the group exists but caller isn't in it;
+    // 404 when the group truly doesn't exist (we treat the missing FK as
+    // the latter from a UX point of view — the iOS client can't tell the
+    // difference and shouldn't, since the only way to know a group id is
+    // membership).
+    const exists = await c.env.DB
+      .prepare('SELECT 1 AS x FROM groups WHERE id = ?1')
+      .bind(groupId)
+      .first<{ x: number }>();
+    if (!exists) return c.json({ error: 'not_found' }, 404);
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  let b: { expires_at?: unknown };
+  try {
+    b = await c.req.json<{ expires_at?: unknown }>().catch(() => ({}));
+  } catch {
+    b = {};
+  }
+  // expires_at semantics: undefined -> default +30d (db.ts), null ->
+  // never expires, number -> exact epoch ms. Anything else is rejected
+  // so a typo doesn't accidentally mint a never-expiring code.
+  let expiresAt: number | null | undefined = undefined;
+  if ('expires_at' in b) {
+    const v = b.expires_at;
+    if (v === null) expiresAt = null;
+    else if (typeof v === 'number' && Number.isFinite(v)) expiresAt = v;
+    else return c.json({ error: 'invalid_expires_at' }, 400);
+  }
+  const invite = await createInvite(c.env.DB, userId, groupId, expiresAt);
+  return c.json(
+    { code: invite.code, group_id: invite.group_id, expires_at: invite.expires_at },
+    201,
+  );
+});
+
+apiRoutes.post('/groups/join', async (c) => {
+  const userId = c.get('userId');
+  let b: { code?: unknown };
+  try {
+    b = await c.req.json<{ code?: unknown }>();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  if (typeof b.code !== 'string' || b.code.length === 0) {
+    return c.json({ error: 'invalid_code' }, 400);
+  }
+  const result = await redeemInvite(c.env.DB, b.code.trim(), userId);
+  if ('error' in result) {
+    // Map db.ts error tags to HTTP status per spec:
+    //   unknown  -> 404 (no such code)
+    //   used     -> 410 (code was consumed)
+    //   expired  -> 410 (code timed out)
+    //   already_member -> 409 (you're already in this group; code NOT consumed)
+    if (result.error === 'unknown') return c.json(result, 404);
+    if (result.error === 'already_member') return c.json(result, 409);
+    return c.json(result, 410);
+  }
+  // On success, hand back the freshly-joined group with members hydrated
+  // so the iOS client can render the group page without a follow-up GET.
+  const group = await getGroupWithMembers(c.env.DB, result.group_id);
+  return c.json({ ok: true, group });
+});
+
+apiRoutes.delete('/groups/:id/members/me', async (c) => {
+  const userId = c.get('userId');
+  const groupId = c.req.param('id');
+  // Idempotent: 200 whether or not the caller was a member. leaveGroup
+  // returns false when no rows changed (already gone / never joined),
+  // but per spec we still return 200 — the postcondition holds either way.
+  const removed = await leaveGroup(c.env.DB, userId, groupId);
+  return c.json({ ok: true, removed });
+});
+
+apiRoutes.patch('/groups/:id/members/me', async (c) => {
+  const userId = c.get('userId');
+  const groupId = c.req.param('id');
+  let b: { display_name?: unknown };
+  try {
+    b = await c.req.json<{ display_name?: unknown }>();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  if (!('display_name' in b)) {
+    return c.json({ error: 'missing_display_name' }, 400);
+  }
+  const raw = b.display_name;
+  if (raw !== null && typeof raw !== 'string') {
+    return c.json({ error: 'invalid_display_name' }, 400);
+  }
+  // Empty string is treated as null (clear). Mirrors the intervals creds
+  // route's empty-string-as-null convention so an iOS form posting "" on
+  // clear doesn't end up with an empty nickname.
+  const displayName = typeof raw === 'string' && raw.length > 0 ? raw : null;
+  const ok = await setGroupDisplayName(c.env.DB, userId, groupId, displayName);
+  if (!ok) return c.json({ error: 'forbidden' }, 403);
+  // Return the hydrated group so the iOS client can update its model.
+  const full = await getGroupWithMembers(c.env.DB, groupId);
+  return c.json(full);
 });

@@ -20,7 +20,9 @@ import {
   patchSession,
   patchSet,
   resolveExercise,
+  setUserIntervalsCreds,
   softDeleteActivity,
+  writeAudit,
 } from '../db';
 
 export const apiRoutes = new Hono<HonoEnv>();
@@ -294,4 +296,45 @@ apiRoutes.delete('/activities/:id', async (c) => {
   const ok = await softDeleteActivity(c.env.DB, c.get('userId'), c.req.param('id'));
   if (!ok) return c.json({ error: 'not_found' }, 404);
   return c.json({ ok: true });
+});
+
+// ---- integrations: intervals.icu credentials (M1 multi-user) ------------
+// Connect / disconnect THIS user's intervals.icu account. Each Apple sign-in
+// owns its own credentials so multiple users can each connect a separate
+// athlete without overwriting one another (the env-secret model could not).
+// Disconnect = pass null on either field; both columns clear together.
+apiRoutes.patch('/me/integrations/intervals', async (c) => {
+  const userId = c.get('userId');
+  let b: { api_key?: unknown; athlete_id?: unknown };
+  try {
+    b = await c.req.json<{ api_key?: unknown; athlete_id?: unknown }>();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  // Required keys (either value may be null = disconnect). Reject silently-
+  // missing keys so a typo doesn't accidentally clear a working connection.
+  if (!('api_key' in b) || !('athlete_id' in b)) {
+    return c.json({ error: 'missing_fields' }, 400);
+  }
+  const rawKey = b.api_key;
+  const rawId = b.athlete_id;
+  const okKey = rawKey === null || typeof rawKey === 'string';
+  const okId = rawId === null || typeof rawId === 'string';
+  if (!okKey || !okId) return c.json({ error: 'invalid_field_type' }, 400);
+  // Empty strings are treated as null (disconnect) — defensive against
+  // iOS form posting "" instead of null on the clear path.
+  const apiKey = typeof rawKey === 'string' && rawKey.length > 0 ? rawKey : null;
+  const athleteId = typeof rawId === 'string' && rawId.length > 0 ? rawId : null;
+  const result = await setUserIntervalsCreds(c.env.DB, userId, apiKey, athleteId);
+  // Audit the change without recording the API key itself (only the
+  // outcome). actor='ios' distinguishes this REST mutation from MCP audits.
+  await writeAudit(
+    c.env.DB,
+    userId,
+    'set_intervals_creds',
+    { connected: result.connected },
+    result.connected ? 'connected' : 'disconnected',
+    'ios',
+  );
+  return c.json(result);
 });

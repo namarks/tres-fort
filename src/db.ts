@@ -61,6 +61,8 @@ export async function upsertUser(
     display_name: displayName,
     created_at: now(),
     timezone: null,
+    intervals_api_key: null,
+    intervals_athlete_id: null,
   };
   await db
     .prepare(
@@ -179,6 +181,118 @@ export async function setUserTimezoneIfChanged(
   const current = await getUserTimezone(db, userId);
   if (current === tz) return;
   await db.prepare('UPDATE users SET timezone = ?2 WHERE id = ?1').bind(userId, tz).run();
+}
+
+// ---- intervals.icu credentials (per-user; M1 multi-user foundation) ------
+
+/** A user paired with their intervals.icu credentials (both required). */
+export interface IntervalsUserCreds {
+  user_id: string;
+  api_key: string;
+  athlete_id: string;
+}
+
+/**
+ * Enumerate users who have BOTH intervals.icu credentials populated. Used by
+ * sync* in src/index.ts (cron) and refresh_rides (MCP) to loop per user
+ * — each user's events/activities tag to their own user_id, so a second
+ * Apple sign-in can connect a separate intervals.icu athlete without
+ * clobbering the owner's data.
+ */
+export async function listUsersWithIntervalsCreds(
+  db: D1Database,
+): Promise<IntervalsUserCreds[]> {
+  const r = await db
+    .prepare(
+      `SELECT id, intervals_api_key, intervals_athlete_id
+         FROM users
+        WHERE intervals_api_key IS NOT NULL
+          AND intervals_athlete_id IS NOT NULL`,
+    )
+    .all<{ id: string; intervals_api_key: string; intervals_athlete_id: string }>();
+  return r.results.map((row) => ({
+    user_id: row.id,
+    api_key: row.intervals_api_key,
+    athlete_id: row.intervals_athlete_id,
+  }));
+}
+
+/** Read one user's intervals.icu credentials (nulls if either is unset). */
+export async function getUserIntervalsCreds(
+  db: D1Database,
+  userId: string,
+): Promise<{ api_key: string | null; athlete_id: string | null }> {
+  const r = await db
+    .prepare(
+      `SELECT intervals_api_key AS api_key, intervals_athlete_id AS athlete_id
+         FROM users WHERE id = ?1`,
+    )
+    .bind(userId)
+    .first<{ api_key: string | null; athlete_id: string | null }>();
+  return { api_key: r?.api_key ?? null, athlete_id: r?.athlete_id ?? null };
+}
+
+/**
+ * Env → DB transition path. If NO user has intervals.icu credentials set
+ * and the legacy Worker secrets are present, seed the OWNER user row
+ * (the first row by created_at) from env exactly once. Idempotent: returns
+ * the resulting per-user creds list, which on subsequent calls is just the
+ * already-populated row.
+ *
+ * Rationale: a static SQL migration cannot read `wrangler secret`-managed
+ * env vars, so 0016 added nullable columns and this code path does the
+ * one-shot copy on the next sync after deploy. Calling this before each
+ * sync is cheap (one SELECT + at most one UPDATE on first invocation).
+ */
+export async function seedOwnerIntervalsCredsFromEnv(
+  db: D1Database,
+  apiKey: string | null | undefined,
+  athleteId: string | null | undefined,
+): Promise<IntervalsUserCreds[]> {
+  const existing = await listUsersWithIntervalsCreds(db);
+  if (existing.length > 0) return existing;
+  if (!apiKey || !athleteId) return existing;
+  const owner = await db
+    .prepare('SELECT id FROM users ORDER BY created_at LIMIT 1')
+    .first<{ id: string }>();
+  if (!owner) return existing;
+  await db
+    .prepare(
+      `UPDATE users
+          SET intervals_api_key = ?2,
+              intervals_athlete_id = ?3
+        WHERE id = ?1
+          AND intervals_api_key IS NULL
+          AND intervals_athlete_id IS NULL`,
+    )
+    .bind(owner.id, apiKey, athleteId)
+    .run();
+  return listUsersWithIntervalsCreds(db);
+}
+
+/**
+ * Set/clear a user's intervals.icu credentials. Both columns move together
+ * — passing null on EITHER clears the pair (disconnect). Returns the
+ * resulting connection state. Audit is the caller's responsibility (the
+ * REST handler writes an audit row tagged actor='ios').
+ */
+export async function setUserIntervalsCreds(
+  db: D1Database,
+  userId: string,
+  apiKey: string | null,
+  athleteId: string | null,
+): Promise<{ connected: boolean }> {
+  const connect = !!(apiKey && athleteId);
+  await db
+    .prepare(
+      `UPDATE users
+          SET intervals_api_key = ?2,
+              intervals_athlete_id = ?3
+        WHERE id = ?1`,
+    )
+    .bind(userId, connect ? apiKey : null, connect ? athleteId : null)
+    .run();
+  return { connected: connect };
 }
 
 // ---- plan tree -----------------------------------------------------------
@@ -1211,12 +1325,13 @@ export async function writeAudit(
   tool: string,
   args: unknown,
   result: string,
+  actor: string = 'mcp',
 ): Promise<void> {
   await db
     .prepare(
       'INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)',
     )
-    .bind(uuid(), userId, 'mcp', tool, JSON.stringify(args).slice(0, 4000), result.slice(0, 500), now())
+    .bind(uuid(), userId, actor, tool, JSON.stringify(args).slice(0, 4000), result.slice(0, 500), now())
     .run();
 }
 
@@ -2051,6 +2166,13 @@ export async function exportSessionLoad(
   const sessionRow = session;
   const computedLoad = computed;
 
+  // Per-user intervals.icu credentials (M1). Fall back to legacy env vars so
+  // a not-yet-migrated owner row still exports; the first sync after deploy
+  // seeds the columns from env via seedOwnerIntervalsCredsFromEnv.
+  const userCreds = await getUserIntervalsCreds(db, userId);
+  const apiKey = userCreds.api_key ?? env.INTERVALS_ICU_API_KEY;
+  const athleteId = userCreds.athlete_id ?? env.INTERVALS_ICU_ATHLETE_ID;
+
   // Day name for a friendly activity title.
   let dayName = 'Lifting';
   if (session.day_template_id) {
@@ -2126,7 +2248,8 @@ export async function exportSessionLoad(
     okReason: string,
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
     const upd = await pushStrengthActivity(
-      env,
+      apiKey,
+      athleteId,
       {
         date: sessionRow.date,
         name,
@@ -2250,7 +2373,8 @@ export async function exportSessionLoad(
 
   // --- This caller WON the claim: it alone performs the create/push. ---
   const push = await pushStrengthActivity(
-    env,
+    apiKey,
+    athleteId,
     {
       date: session.date, // device-local civil date VERBATIM
       name,
@@ -3096,12 +3220,72 @@ export async function syncExternalEvents(
   env: Env,
   deps: SyncDeps = {},
 ): Promise<SyncResult> {
-  const userId =
-    deps.userId ?? (await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB)).id;
   const today = deps.today ?? new Date().toISOString().slice(0, 10);
   const windowDays = deps.windowDays ?? 90;
 
-  const fetched = await fetchPlannedEvents(env, { ...deps, today, windowDays });
+  // Resolve creds for THIS sync. Three call shapes (M1 multi-user):
+  //   (a) deps.userId given (refresh_rides MCP tool / tests): sync that one
+  //       user, reading creds off their row. If the row has no creds, the
+  //       legacy env values are accepted as a fallback so existing
+  //       single-user tests keep passing without code changes.
+  //   (b) no userId: cron entrypoint. Run the env→DB seed (idempotent), then
+  //       iterate ALL users with creds. Aggregate the SyncResult.
+  let userId: string;
+  let apiKey: string | null | undefined;
+  let athleteId: string | null | undefined;
+  if (deps.userId) {
+    userId = deps.userId;
+    const creds = await getUserIntervalsCreds(db, userId);
+    apiKey = creds.api_key ?? env.INTERVALS_ICU_API_KEY;
+    athleteId = creds.athlete_id ?? env.INTERVALS_ICU_ATHLETE_ID;
+  } else {
+    const owner = await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB);
+    const seeded = await seedOwnerIntervalsCredsFromEnv(
+      db,
+      env.INTERVALS_ICU_API_KEY,
+      env.INTERVALS_ICU_ATHLETE_ID,
+    );
+    if (seeded.length === 0) {
+      // No user has creds AND env is unset → dormant no-op for everyone.
+      return { status: 'disabled', synced: 0, detail: 'disabled' };
+    }
+    if (seeded.length === 1) {
+      userId = seeded[0]!.user_id;
+      apiKey = seeded[0]!.api_key;
+      athleteId = seeded[0]!.athlete_id;
+    } else {
+      // Multi-user fan-out. Sync each user's cache against THEIR creds; tag
+      // the per-user user_id everywhere. Aggregate sums + worst-status semantics:
+      //   any 'fetch_failed' wins (operator signal); else 'ok' if any ok'd;
+      //   else 'disabled'. `synced` is the sum across users.
+      let total = 0;
+      let agg: SyncStatus = 'disabled';
+      const details: string[] = [];
+      for (const c of seeded) {
+        const r = await syncExternalEvents(db, env, {
+          ...deps,
+          userId: c.user_id,
+          today,
+          windowDays,
+        });
+        total += r.synced;
+        if (r.status === 'fetch_failed') agg = 'fetch_failed';
+        else if (agg !== 'fetch_failed' && r.status === 'ok') agg = 'ok';
+        if (r.detail) details.push(`${c.user_id.slice(0, 8)}:${r.detail}`);
+      }
+      return {
+        status: agg,
+        synced: total,
+        ...(details.length ? { detail: details.join(',') } : {}),
+      };
+    }
+    // Single-user path: reference owner.id for downstream logic (it equals
+    // the single seeded row, but be explicit so the linter doesn't flag a
+    // possibly-unused binding when the multi-user branch returns early).
+    void owner;
+  }
+
+  const fetched = await fetchPlannedEvents(apiKey, athleteId, { ...deps, today, windowDays });
   if (!fetched.ok) {
     // Disabled OR transient failure → DO NOT TOUCH the cache at all.
     return {
@@ -3251,12 +3435,60 @@ export async function syncExternalActivities(
   env: Env,
   deps: ActivitySyncDeps = {},
 ): Promise<SyncResult> {
-  const userId =
-    deps.userId ?? (await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB)).id;
   const today = deps.today ?? new Date().toISOString().slice(0, 10);
   const pastDays = deps.pastDays ?? 90;
 
-  const fetched = await fetchCompletedActivities(env, { ...deps, today, pastDays });
+  // Mirror of syncExternalEvents: per-user credentials (M1). See that
+  // function for the full rationale on the three call shapes (explicit
+  // userId vs cron fan-out vs env-seed fallback).
+  let userId: string;
+  let apiKey: string | null | undefined;
+  let athleteId: string | null | undefined;
+  if (deps.userId) {
+    userId = deps.userId;
+    const creds = await getUserIntervalsCreds(db, userId);
+    apiKey = creds.api_key ?? env.INTERVALS_ICU_API_KEY;
+    athleteId = creds.athlete_id ?? env.INTERVALS_ICU_ATHLETE_ID;
+  } else {
+    const owner = await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB);
+    const seeded = await seedOwnerIntervalsCredsFromEnv(
+      db,
+      env.INTERVALS_ICU_API_KEY,
+      env.INTERVALS_ICU_ATHLETE_ID,
+    );
+    if (seeded.length === 0) {
+      return { status: 'disabled', synced: 0, detail: 'disabled' };
+    }
+    if (seeded.length === 1) {
+      userId = seeded[0]!.user_id;
+      apiKey = seeded[0]!.api_key;
+      athleteId = seeded[0]!.athlete_id;
+    } else {
+      let total = 0;
+      let agg: SyncStatus = 'disabled';
+      const details: string[] = [];
+      for (const c of seeded) {
+        const r = await syncExternalActivities(db, env, {
+          ...deps,
+          userId: c.user_id,
+          today,
+          pastDays,
+        });
+        total += r.synced;
+        if (r.status === 'fetch_failed') agg = 'fetch_failed';
+        else if (agg !== 'fetch_failed' && r.status === 'ok') agg = 'ok';
+        if (r.detail) details.push(`${c.user_id.slice(0, 8)}:${r.detail}`);
+      }
+      return {
+        status: agg,
+        synced: total,
+        ...(details.length ? { detail: details.join(',') } : {}),
+      };
+    }
+    void owner;
+  }
+
+  const fetched = await fetchCompletedActivities(apiKey, athleteId, { ...deps, today, pastDays });
   if (!fetched.ok) {
     return {
       status: fetched.reason === 'disabled' ? 'disabled' : 'fetch_failed',

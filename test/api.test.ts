@@ -944,3 +944,135 @@ describe('POST /api/sessions/:id/discard — the explicit escape hatch', () => {
 });
 
 // /mcp behavior is covered comprehensively in test/mcp.test.ts.
+
+// ---- PATCH /api/me/integrations/intervals (M1 multi-user creds) ----------
+describe('PATCH /api/me/integrations/intervals', () => {
+  async function userIdFromJwt(): Promise<string> {
+    // The dev JWT resolves to the single owner row; the bootstrap is
+    // idempotent so we just read it back.
+    const r = await env.DB.prepare(
+      'SELECT id, intervals_api_key, intervals_athlete_id FROM users ORDER BY created_at LIMIT 1',
+    ).first<{ id: string; intervals_api_key: string | null; intervals_athlete_id: string | null }>();
+    return r!.id;
+  }
+
+  it('sets both credentials and reports connected=true', async () => {
+    const H = auth(await devJwt());
+    const r = await SELF.fetch(`${BASE}/api/me/integrations/intervals`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ api_key: 'live-key-1', athlete_id: 'i-1' }),
+    });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ connected: true });
+    const userId = await userIdFromJwt();
+    const row = await env.DB.prepare(
+      'SELECT intervals_api_key, intervals_athlete_id FROM users WHERE id = ?1',
+    )
+      .bind(userId)
+      .first<{ intervals_api_key: string; intervals_athlete_id: string }>();
+    expect(row!.intervals_api_key).toBe('live-key-1');
+    expect(row!.intervals_athlete_id).toBe('i-1');
+    // Audit row recorded with actor='ios' (not 'mcp').
+    const audit = await env.DB.prepare(
+      "SELECT actor, result FROM audit_log WHERE tool='set_intervals_creds' AND user_id=?1 ORDER BY created_at DESC LIMIT 1",
+    )
+      .bind(userId)
+      .first<{ actor: string; result: string }>();
+    expect(audit!.actor).toBe('ios');
+    expect(audit!.result).toBe('connected');
+  });
+
+  it('null on either field disconnects (clears both columns together)', async () => {
+    const H = auth(await devJwt());
+    // First connect so there is something to clear.
+    await SELF.fetch(`${BASE}/api/me/integrations/intervals`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ api_key: 'k', athlete_id: 'a' }),
+    });
+    // Now null on api_key alone — both columns clear.
+    const r = await SELF.fetch(`${BASE}/api/me/integrations/intervals`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ api_key: null, athlete_id: 'a' }),
+    });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ connected: false });
+    const userId = await userIdFromJwt();
+    const row = await env.DB.prepare(
+      'SELECT intervals_api_key, intervals_athlete_id FROM users WHERE id = ?1',
+    )
+      .bind(userId)
+      .first<{ intervals_api_key: string | null; intervals_athlete_id: string | null }>();
+    expect(row!.intervals_api_key).toBeNull();
+    expect(row!.intervals_athlete_id).toBeNull();
+  });
+
+  it('empty string is treated as null (disconnect)', async () => {
+    const H = auth(await devJwt());
+    await SELF.fetch(`${BASE}/api/me/integrations/intervals`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ api_key: 'live', athlete_id: 'live-id' }),
+    });
+    const r = await SELF.fetch(`${BASE}/api/me/integrations/intervals`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ api_key: '', athlete_id: '' }),
+    });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ connected: false });
+  });
+
+  it('missing fields → 400 (typo guard, so a partial body cannot wipe creds silently)', async () => {
+    const H = auth(await devJwt());
+    const r1 = await SELF.fetch(`${BASE}/api/me/integrations/intervals`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ api_key: 'k' }), // athlete_id missing
+    });
+    expect(r1.status).toBe(400);
+    const r2 = await SELF.fetch(`${BASE}/api/me/integrations/intervals`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ athlete_id: 'a' }), // api_key missing
+    });
+    expect(r2.status).toBe(400);
+    const r3 = await SELF.fetch(`${BASE}/api/me/integrations/intervals`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({}),
+    });
+    expect(r3.status).toBe(400);
+  });
+
+  it('wrong field type → 400', async () => {
+    const H = auth(await devJwt());
+    const r = await SELF.fetch(`${BASE}/api/me/integrations/intervals`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ api_key: 42, athlete_id: 'a' }),
+    });
+    expect(r.status).toBe(400);
+  });
+
+  it('rejects unauthenticated', async () => {
+    const r = await SELF.fetch(`${BASE}/api/me/integrations/intervals`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ api_key: 'k', athlete_id: 'a' }),
+    });
+    expect(r.status).toBe(401);
+  });
+
+  it('malformed JSON body → 400', async () => {
+    const H = auth(await devJwt());
+    const r = await SELF.fetch(`${BASE}/api/me/integrations/intervals`, {
+      method: 'PATCH',
+      headers: H,
+      body: '{not valid',
+    });
+    expect(r.status).toBe(400);
+  });
+});

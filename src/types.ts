@@ -32,6 +32,14 @@ export interface User {
   created_at: number;
   /** Device-reported IANA timezone (e.g. America/Los_Angeles); null until first sync. */
   timezone: string | null;
+  /**
+   * Per-user intervals.icu API key (M1 multi-user foundation, 0016). Each
+   * user owns their own intervals.icu credentials; sync* loops per user.
+   * NULL → that user's cycling-awareness is dormant (no fetch, no error).
+   */
+  intervals_api_key: string | null;
+  /** Per-user intervals.icu athlete id (paired with intervals_api_key). */
+  intervals_athlete_id: string | null;
 }
 
 export interface PlanRow {

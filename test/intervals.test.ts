@@ -71,7 +71,8 @@ describe('fetchPlannedEvents — injected fetcher, never real network', () => {
       return { ok: true, status: 200, json: async () => [] };
     };
     const res = await fetchPlannedEvents(
-      { ...env, INTERVALS_ICU_API_KEY: undefined } as unknown as Env,
+      undefined,
+      env.INTERVALS_ICU_ATHLETE_ID,
       { fetcher: spy, today: TODAY },
     );
     expect(res).toEqual({ ok: false, reason: 'disabled' });
@@ -79,7 +80,7 @@ describe('fetchPlannedEvents — injected fetcher, never real network', () => {
   });
 
   it('parses 2xx, filters non-WORKOUT, uses start_date_local verbatim', async () => {
-    const res = await fetchPlannedEvents(env as unknown as Env, {
+    const res = await fetchPlannedEvents(env.INTERVALS_ICU_API_KEY, env.INTERVALS_ICU_ATHLETE_ID, {
       today: TODAY,
       fetcher: payload([
         ev({ id: 'e1' }),
@@ -101,10 +102,17 @@ describe('fetchPlannedEvents — injected fetcher, never real network', () => {
   });
 
   it('non-2xx → {ok:false, http}; thrown/timeout → {ok:false, timeout}', async () => {
-    expect(await fetchPlannedEvents(env as unknown as Env, { fetcher: httpErr(500), today: TODAY }))
-      .toEqual({ ok: false, reason: 'http', status: 500 });
     expect(
-      await fetchPlannedEvents(env as unknown as Env, { fetcher: timeoutFetcher, today: TODAY }),
+      await fetchPlannedEvents(env.INTERVALS_ICU_API_KEY, env.INTERVALS_ICU_ATHLETE_ID, {
+        fetcher: httpErr(500),
+        today: TODAY,
+      }),
+    ).toEqual({ ok: false, reason: 'http', status: 500 });
+    expect(
+      await fetchPlannedEvents(env.INTERVALS_ICU_API_KEY, env.INTERVALS_ICU_ATHLETE_ID, {
+        fetcher: timeoutFetcher,
+        today: TODAY,
+      }),
     ).toEqual({ ok: false, reason: 'timeout' });
   });
 });
@@ -349,7 +357,8 @@ describe('fetchCompletedActivities — injected fetcher, never real network', ()
       return { ok: true, status: 200, json: async () => [] };
     };
     const res = await fetchCompletedActivities(
-      { ...env, INTERVALS_ICU_API_KEY: undefined } as unknown as Env,
+      undefined,
+      env.INTERVALS_ICU_ATHLETE_ID,
       { fetcher: spy, today: TODAY },
     );
     expect(res).toEqual({ ok: false, reason: 'disabled' });
@@ -362,7 +371,7 @@ describe('fetchCompletedActivities — injected fetcher, never real network', ()
       seenUrl = url;
       return { ok: true, status: 200, json: async () => [] };
     };
-    await fetchCompletedActivities(env as unknown as Env, {
+    await fetchCompletedActivities(env.INTERVALS_ICU_API_KEY, env.INTERVALS_ICU_ATHLETE_ID, {
       fetcher: spy,
       today: TODAY,
       pastDays: 30,
@@ -373,7 +382,7 @@ describe('fetchCompletedActivities — injected fetcher, never real network', ()
   });
 
   it('parses 2xx, maps actuals, skips our own strength exports', async () => {
-    const res = await fetchCompletedActivities(env as unknown as Env, {
+    const res = await fetchCompletedActivities(env.INTERVALS_ICU_API_KEY, env.INTERVALS_ICU_ATHLETE_ID, {
       today: TODAY,
       fetcher: payload([
         act({ id: 'a1' }),
@@ -404,7 +413,7 @@ describe('fetchCompletedActivities — injected fetcher, never real network', ()
   });
 
   it('falls back to average_watts when icu_average_watts is absent', async () => {
-    const res = await fetchCompletedActivities(env as unknown as Env, {
+    const res = await fetchCompletedActivities(env.INTERVALS_ICU_API_KEY, env.INTERVALS_ICU_ATHLETE_ID, {
       today: TODAY,
       fetcher: payload([act({ id: 'a1', icu_average_watts: undefined, average_watts: 150 })]),
     });
@@ -415,10 +424,13 @@ describe('fetchCompletedActivities — injected fetcher, never real network', ()
 
   it('non-2xx → http; thrown → timeout', async () => {
     expect(
-      await fetchCompletedActivities(env as unknown as Env, { fetcher: httpErr(503), today: TODAY }),
+      await fetchCompletedActivities(env.INTERVALS_ICU_API_KEY, env.INTERVALS_ICU_ATHLETE_ID, {
+        fetcher: httpErr(503),
+        today: TODAY,
+      }),
     ).toEqual({ ok: false, reason: 'http', status: 503 });
     expect(
-      await fetchCompletedActivities(env as unknown as Env, {
+      await fetchCompletedActivities(env.INTERVALS_ICU_API_KEY, env.INTERVALS_ICU_ATHLETE_ID, {
         fetcher: timeoutFetcher,
         today: TODAY,
       }),
@@ -550,5 +562,179 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
     // Full reload now excludes the tombstoned activity.
     const after = await getState(env.DB, userId, 0, 0, 0, 0);
     expect(after.external_activities.some((a) => a.id === 'intervals:activity:a1')).toBe(false);
+  });
+});
+
+// ---- M1: per-user credentials (multi-user backend foundation) ------------
+
+/**
+ * Seed a user row with intervals.icu credentials. Used by the multi-user
+ * iteration tests below so each user has their own key/athlete pair the
+ * sync loop should consume independently.
+ */
+async function userWithCreds(
+  apiKey: string,
+  athleteId: string,
+): Promise<string> {
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO users (id,apple_sub,email,display_name,created_at,intervals_api_key,intervals_athlete_id)
+     VALUES (?1,?2,?3,?4,?5,?6,?7)`,
+  )
+    .bind(id, `sub-${id}`, null, 'Multi User', Date.now(), apiKey, athleteId)
+    .run();
+  return id;
+}
+
+describe('M1: per-user creds — multi-user fan-out in syncExternalEvents', () => {
+  it('cron path iterates EACH user with creds; each user gets only their own rows', async () => {
+    // Hermetic: prior tests in this suite seed users (with and without creds),
+    // and the cron path fans out across ALL credentialed users. Reset so the
+    // dispatch fetcher only has to know about the two we set up here.
+    await env.DB.prepare('DELETE FROM external_events').run();
+    await env.DB.prepare('DELETE FROM users').run();
+    // Two distinct users, each with their own credentials. The cron path
+    // (no deps.userId) must fetch once per user, with that user's creds.
+    const userA = await userWithCreds('key-A', 'athlete-A');
+    const userB = await userWithCreds('key-B', 'athlete-B');
+
+    // Per-call fetcher dispatches by the URL's athlete segment AND verifies
+    // the HTTP Basic header carries that user's API key — proves we are
+    // NOT using the legacy env values for either call.
+    const seenCalls: { athleteId: string; apiKey: string }[] = [];
+    const dispatchFetcher = (async (url: string, init?: { headers?: Record<string, string> }) => {
+      const m = /athlete\/([^/]+)\//.exec(url);
+      const athleteId = m ? m[1]! : '';
+      const auth = init?.headers?.Authorization ?? '';
+      const decoded = auth.startsWith('Basic ')
+        ? atob(auth.slice(6))
+        : '';
+      const apiKey = decoded.startsWith('API_KEY:') ? decoded.slice(8) : '';
+      seenCalls.push({ athleteId, apiKey });
+      const rows = athleteId === 'athlete-A' ? [ev({ id: 'A1' })] : [ev({ id: 'B1', start_date_local: '2026-05-22T06:00:00' })];
+      return { ok: true, status: 200, json: async () => rows };
+    }) as Fetcher;
+
+    // No userId → cron fan-out path. Aggregated result.
+    const r = await syncExternalEvents(env.DB, env as unknown as Env, {
+      today: TODAY,
+      fetcher: dispatchFetcher,
+    } as any);
+    expect(r.status).toBe('ok');
+    expect(r.synced).toBe(2); // one per user
+
+    // Each user got a fetch with their OWN creds, not env's.
+    const callA = seenCalls.find((c) => c.athleteId === 'athlete-A');
+    const callB = seenCalls.find((c) => c.athleteId === 'athlete-B');
+    expect(callA).toBeDefined();
+    expect(callA!.apiKey).toBe('key-A');
+    expect(callB).toBeDefined();
+    expect(callB!.apiKey).toBe('key-B');
+
+    // Each user's cache contains only their own external_id, tagged with
+    // their own user_id — no cross-contamination.
+    const aRows = await getUpcomingRides(env.DB, userA, { from: TODAY });
+    expect(aRows.map((x) => x.id)).toEqual(['intervals:A1']);
+    const bRows = await getUpcomingRides(env.DB, userB, { from: TODAY });
+    expect(bRows.map((x) => x.id)).toEqual(['intervals:B1']);
+  });
+
+  it('env-seed fallback: zero users with creds + env present → owner row seeded once', async () => {
+    // Fresh, hermetic database state: no user has creds. Cron path runs and
+    // observes that the env vars are set → seeds them onto the owner row,
+    // then proceeds to sync as that single-user case (the legacy behavior).
+    await env.DB.prepare('DELETE FROM users').run();
+    await env.DB.prepare('DELETE FROM external_events').run();
+    const ownerId = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,?3,?4,?5)',
+    )
+      .bind(ownerId, 'mcp-owner', null, 'Owner', Date.now())
+      .run();
+    // Sanity: columns start null.
+    const pre = await env.DB.prepare(
+      'SELECT intervals_api_key, intervals_athlete_id FROM users WHERE id = ?1',
+    )
+      .bind(ownerId)
+      .first<{ intervals_api_key: string | null; intervals_athlete_id: string | null }>();
+    expect(pre!.intervals_api_key).toBeNull();
+    expect(pre!.intervals_athlete_id).toBeNull();
+
+    const r = await syncExternalEvents(env.DB, env as unknown as Env, {
+      today: TODAY,
+      fetcher: payload([ev({ id: 'seed-1' })]),
+    } as any);
+    expect(r.status).toBe('ok');
+
+    // After: owner row has the env creds populated, idempotently.
+    const post = await env.DB.prepare(
+      'SELECT intervals_api_key, intervals_athlete_id FROM users WHERE id = ?1',
+    )
+      .bind(ownerId)
+      .first<{ intervals_api_key: string; intervals_athlete_id: string }>();
+    expect(post!.intervals_api_key).toBe(env.INTERVALS_ICU_API_KEY);
+    expect(post!.intervals_athlete_id).toBe(env.INTERVALS_ICU_ATHLETE_ID);
+
+    // And the synced row tags to the owner.
+    const rows = await getUpcomingRides(env.DB, ownerId, { from: TODAY });
+    expect(rows.map((x) => x.id)).toEqual(['intervals:seed-1']);
+  });
+
+  it('env-seed fallback: no users with creds AND env unset → disabled, NO touch', async () => {
+    await env.DB.prepare('DELETE FROM users').run();
+    await env.DB.prepare('DELETE FROM external_events').run();
+    const ownerId = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,?3,?4,?5)',
+    )
+      .bind(ownerId, 'mcp-owner', null, 'Owner', Date.now())
+      .run();
+
+    let fetcherCalled = false;
+    const spy: Fetcher = async () => {
+      fetcherCalled = true;
+      return { ok: true, status: 200, json: async () => [] };
+    };
+    const r = await syncExternalEvents(
+      env.DB,
+      { ...env, INTERVALS_ICU_API_KEY: undefined, INTERVALS_ICU_ATHLETE_ID: undefined } as unknown as Env,
+      { today: TODAY, fetcher: spy } as any,
+    );
+    expect(r.status).toBe('disabled');
+    expect(fetcherCalled).toBe(false);
+  });
+});
+
+describe('M1: per-user creds — multi-user fan-out in syncExternalActivities', () => {
+  it('cron path iterates EACH user with creds; activities tag per user', async () => {
+    await env.DB.prepare('DELETE FROM external_activities').run();
+    await env.DB.prepare('DELETE FROM users').run();
+    const userA = await userWithCreds('akey-A', 'aath-A');
+    const userB = await userWithCreds('akey-B', 'aath-B');
+    const seen: { athleteId: string; apiKey: string }[] = [];
+    const dispatchFetcher = (async (url: string, init?: { headers?: Record<string, string> }) => {
+      const m = /athlete\/([^/]+)\//.exec(url);
+      const athleteId = m ? m[1]! : '';
+      const auth = init?.headers?.Authorization ?? '';
+      const decoded = auth.startsWith('Basic ') ? atob(auth.slice(6)) : '';
+      const apiKey = decoded.startsWith('API_KEY:') ? decoded.slice(8) : '';
+      seen.push({ athleteId, apiKey });
+      const rows = athleteId === 'aath-A' ? [act({ id: 'aA1' })] : [act({ id: 'aB1', start_date_local: '2026-05-12T06:00:00' })];
+      return { ok: true, status: 200, json: async () => rows };
+    }) as Fetcher;
+
+    const r = await syncExternalActivities(env.DB, env as unknown as Env, {
+      today: TODAY,
+      fetcher: dispatchFetcher,
+    } as any);
+    expect(r.status).toBe('ok');
+    expect(r.synced).toBe(2);
+    expect(seen.find((c) => c.athleteId === 'aath-A')!.apiKey).toBe('akey-A');
+    expect(seen.find((c) => c.athleteId === 'aath-B')!.apiKey).toBe('akey-B');
+
+    const aRows = await getRecentActivities(env.DB, userA, { to: TODAY });
+    expect(aRows.map((x) => x.id)).toEqual(['intervals:activity:aA1']);
+    const bRows = await getRecentActivities(env.DB, userB, { to: TODAY });
+    expect(bRows.map((x) => x.id)).toEqual(['intervals:activity:aB1']);
   });
 });

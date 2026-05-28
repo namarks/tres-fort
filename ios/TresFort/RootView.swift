@@ -83,9 +83,14 @@ private struct SignedOutView: View {
                                       req.requestedScopes = [.fullName, .email]
                                       // Stash the code so handleAppleResult can
                                       // pick it up out-of-band (the callback
-                                      // doesn't take user data).
+                                      // doesn't take user data). Gate on the
+                                      // field being VISIBLE so a code the
+                                      // user typed and then hid via "Sign in
+                                      // without code" doesn't get sent — the
+                                      // visible field is the source of truth
+                                      // for "user intends to redeem a code."
                                       model.pendingInviteCode =
-                                          inviteCode.isEmpty ? nil : inviteCode
+                                          (showInviteField && !inviteCode.isEmpty) ? inviteCode : nil
                                   },
                                   onCompletion: model.handleAppleResult)
                 .signInWithAppleButtonStyle(.white)
@@ -93,7 +98,13 @@ private struct SignedOutView: View {
                 .cornerRadius(10)
 
             Button {
-                withAnimation { showInviteField.toggle() }
+                // Hiding the field implies "I don't want to use a code."
+                // Clear it so a previously-typed stale code can't leak
+                // through onRequest above.
+                withAnimation {
+                    if showInviteField { inviteCode = "" }
+                    showInviteField.toggle()
+                }
             } label: {
                 Text(showInviteField ? "Sign in without code" : "Have an invite code?")
                     .font(.footnote)

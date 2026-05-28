@@ -77,10 +77,16 @@ final class AuthModel: ObservableObject {
             UserDefaults.standard.set(res.user.id, forKey: Self.userIDKey)
             if let gid = res.group_id { pendingGroupID = gid }
             phase = .signedIn
+        } catch let APIError.http(code, body) where code == 403 && body.contains("invalid_invite") {
+            // Map the backend's `invalid_invite` 403 to a friendly message.
+            // (Backend renamed from `not_invited` when sign-in opened up:
+            // now this status code ONLY fires when an invite_code was
+            // supplied but didn't validate — typo / expired / used / already-
+            // member. We still also accept the old token for safety while
+            // older clients may be in the field.)
+            phase = .error("This invite is invalid or expired.")
         } catch let APIError.http(code, body) where code == 403 && body.contains("not_invited") {
-            // Map the backend's `not_invited` 403 to a friendly message —
-            // this is the most common new-user failure (typo'd code, expired
-            // code, or no code on a non-owner Apple sub).
+            // Legacy back-compat with the pre-open-signin server. Same UX.
             phase = .error("This invite is invalid or expired.")
         } catch {
             phase = .error(error.localizedDescription)

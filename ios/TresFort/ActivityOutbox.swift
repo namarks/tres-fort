@@ -49,4 +49,12 @@ enum ActivityOutboxStore {
         guard let data = try? JSONEncoder().encode(outbox) else { return }
         UserDefaults.standard.set(data, forKey: key)
     }
+
+    /// Drop the persisted outbox entirely. Called on sign-out so a future
+    /// sign-in (potentially a different Apple user) does not inherit the
+    /// previous account's pending activity POSTs — those would otherwise
+    /// drain through the next user's JWT and mis-attribute the rows.
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: key)
+    }
 }

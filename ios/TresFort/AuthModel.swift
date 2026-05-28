@@ -88,9 +88,13 @@ final class AuthModel: ObservableObject {
     }
 
     /// Called by the data layer on a 401 (stale JWT) → force re-auth.
+    /// Also clears the persisted activity outbox — outbox entries are
+    /// per-user-implicit (no user_id baked in), so on a different account
+    /// re-signing in they would mis-attribute to the new user's JWT.
     func invalidate() {
         Keychain.clear()
         UserDefaults.standard.removeObject(forKey: Self.userIDKey)
+        ActivityOutboxStore.clear()
         jwt = nil
         userID = nil
         pendingGroupID = nil

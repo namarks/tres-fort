@@ -680,6 +680,89 @@ describe('M1: per-user creds — multi-user fan-out in syncExternalEvents', () =
     expect(rows.map((x) => x.id)).toEqual(['intervals:seed-1']);
   });
 
+  it('env-seed fallback: respects explicit disconnect — once owner has PATCHed creds, env is not re-seeded', async () => {
+    // Reproduces Codex PR #36 P1 finding: a user who explicitly disconnects
+    // their intervals.icu account leaves both columns NULL. Without a marker,
+    // the next sync's env-seed would re-seed from the legacy Worker secrets
+    // and resume polling — undoing the disconnect. The audit_log row written
+    // by PATCH /api/me/integrations/intervals (tool='set_intervals_creds') is
+    // the durable marker.
+    await env.DB.prepare('DELETE FROM users').run();
+    await env.DB.prepare('DELETE FROM external_events').run();
+    await env.DB.prepare('DELETE FROM audit_log').run();
+    const ownerId = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,?3,?4,?5)',
+    )
+      .bind(ownerId, 'mcp-owner', null, 'Owner', Date.now())
+      .run();
+    // Simulate the user having previously PATCHed (set then cleared) their
+    // intervals creds — the disconnect audit row is what closes the seed
+    // window. Both columns are NULL just like a fresh deploy.
+    await env.DB.prepare(
+      `INSERT INTO audit_log (id, user_id, actor, tool, args, result, created_at)
+         VALUES (?1, ?2, 'ios', 'set_intervals_creds', '{"connected":false}', 'disconnected', ?3)`,
+    )
+      .bind(crypto.randomUUID(), ownerId, Date.now())
+      .run();
+
+    let fetcherCalled = false;
+    const spy: Fetcher = async () => {
+      fetcherCalled = true;
+      return { ok: true, status: 200, json: async () => [] };
+    };
+    const r = await syncExternalEvents(env.DB, env as unknown as Env, {
+      today: TODAY,
+      fetcher: spy,
+    } as any);
+    // No user has creds; the audit row blocks re-seeding from env → disabled.
+    expect(r.status).toBe('disabled');
+    expect(fetcherCalled).toBe(false);
+
+    // And the owner row stays NULL — disconnect held.
+    const post = await env.DB.prepare(
+      'SELECT intervals_api_key, intervals_athlete_id FROM users WHERE id = ?1',
+    )
+      .bind(ownerId)
+      .first<{ intervals_api_key: string | null; intervals_athlete_id: string | null }>();
+    expect(post!.intervals_api_key).toBeNull();
+    expect(post!.intervals_athlete_id).toBeNull();
+  });
+
+  it('explicit-userId path: respects disconnect — env fallback NOT used after PATCH', async () => {
+    // Sibling case for the MCP refresh_rides path (deps.userId given). Same
+    // invariant: once the user has touched their creds, NULL means
+    // "intentionally cleared", not "fall back to env".
+    await env.DB.prepare('DELETE FROM users').run();
+    await env.DB.prepare('DELETE FROM external_events').run();
+    await env.DB.prepare('DELETE FROM audit_log').run();
+    const ownerId = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,?3,?4,?5)',
+    )
+      .bind(ownerId, 'mcp-owner', null, 'Owner', Date.now())
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO audit_log (id, user_id, actor, tool, args, result, created_at)
+         VALUES (?1, ?2, 'ios', 'set_intervals_creds', '{"connected":false}', 'disconnected', ?3)`,
+    )
+      .bind(crypto.randomUUID(), ownerId, Date.now())
+      .run();
+
+    let fetcherCalled = false;
+    const spy: Fetcher = async () => {
+      fetcherCalled = true;
+      return { ok: true, status: 200, json: async () => [] };
+    };
+    const r = await syncExternalEvents(env.DB, env as unknown as Env, {
+      today: TODAY,
+      fetcher: spy,
+      userId: ownerId,
+    } as any);
+    expect(r.status).toBe('disabled');
+    expect(fetcherCalled).toBe(false);
+  });
+
   it('env-seed fallback: no users with creds AND env unset → disabled, NO touch', async () => {
     await env.DB.prepare('DELETE FROM users').run();
     await env.DB.prepare('DELETE FROM external_events').run();

@@ -237,6 +237,27 @@ export async function getUserIntervalsCreds(
 }
 
 /**
+ * Has this user ever explicitly set or cleared their intervals.icu
+ * credentials via PATCH /api/me/integrations/intervals? Determined from
+ * audit_log (the REST endpoint writes a `set_intervals_creds` row on every
+ * connect AND disconnect). Once true, the env→DB seed and the per-call env
+ * fallback both back off — "no creds" then means "intentionally
+ * disconnected", not "first sync after deploy".
+ */
+export async function userHasTouchedIntervalsCreds(
+  db: D1Database,
+  userId: string,
+): Promise<boolean> {
+  const r = await db
+    .prepare(
+      "SELECT 1 FROM audit_log WHERE user_id = ?1 AND tool = 'set_intervals_creds' LIMIT 1",
+    )
+    .bind(userId)
+    .first();
+  return r !== null;
+}
+
+/**
  * Env → DB transition path. If NO user has intervals.icu credentials set
  * and the legacy Worker secrets are present, seed the OWNER user row
  * (the first row by created_at) from env exactly once. Idempotent: returns
@@ -247,6 +268,11 @@ export async function getUserIntervalsCreds(
  * env vars, so 0016 added nullable columns and this code path does the
  * one-shot copy on the next sync after deploy. Calling this before each
  * sync is cheap (one SELECT + at most one UPDATE on first invocation).
+ *
+ * Respects explicit disconnects: if the owner has ever PATCHed their
+ * intervals creds (set OR clear), the seed is permanently a no-op for them.
+ * Otherwise, after the user disconnects via the UI, the next sync would
+ * silently re-seed from env and resume polling — defeating the disconnect.
  */
 export async function seedOwnerIntervalsCredsFromEnv(
   db: D1Database,
@@ -260,6 +286,7 @@ export async function seedOwnerIntervalsCredsFromEnv(
     .prepare('SELECT id FROM users ORDER BY created_at LIMIT 1')
     .first<{ id: string }>();
   if (!owner) return existing;
+  if (await userHasTouchedIntervalsCreds(db, owner.id)) return existing;
   await db
     .prepare(
       `UPDATE users
@@ -3699,8 +3726,16 @@ export async function syncExternalEvents(
   if (deps.userId) {
     userId = deps.userId;
     const creds = await getUserIntervalsCreds(db, userId);
-    apiKey = creds.api_key ?? env.INTERVALS_ICU_API_KEY;
-    athleteId = creds.athlete_id ?? env.INTERVALS_ICU_ATHLETE_ID;
+    // Env fallback only when the user has NEVER PATCHed their creds. After
+    // an explicit disconnect, both columns are NULL but the audit row says
+    // "intentionally cleared" — don't silently revive the env credentials.
+    const envFallbackOk =
+      creds.api_key === null &&
+      creds.athlete_id === null &&
+      !(await userHasTouchedIntervalsCreds(db, userId));
+    apiKey = creds.api_key ?? (envFallbackOk ? env.INTERVALS_ICU_API_KEY : null);
+    athleteId =
+      creds.athlete_id ?? (envFallbackOk ? env.INTERVALS_ICU_ATHLETE_ID : null);
   } else {
     const owner = await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB);
     const seeded = await seedOwnerIntervalsCredsFromEnv(
@@ -3910,8 +3945,16 @@ export async function syncExternalActivities(
   if (deps.userId) {
     userId = deps.userId;
     const creds = await getUserIntervalsCreds(db, userId);
-    apiKey = creds.api_key ?? env.INTERVALS_ICU_API_KEY;
-    athleteId = creds.athlete_id ?? env.INTERVALS_ICU_ATHLETE_ID;
+    // Env fallback only when the user has NEVER PATCHed their creds. After
+    // an explicit disconnect, both columns are NULL but the audit row says
+    // "intentionally cleared" — don't silently revive the env credentials.
+    const envFallbackOk =
+      creds.api_key === null &&
+      creds.athlete_id === null &&
+      !(await userHasTouchedIntervalsCreds(db, userId));
+    apiKey = creds.api_key ?? (envFallbackOk ? env.INTERVALS_ICU_API_KEY : null);
+    athleteId =
+      creds.athlete_id ?? (envFallbackOk ? env.INTERVALS_ICU_ATHLETE_ID : null);
   } else {
     const owner = await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB);
     const seeded = await seedOwnerIntervalsCredsFromEnv(

@@ -1,5 +1,5 @@
 {
-  "name": "lift-coach",
+  "name": "tres-fort",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -9,8 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "db:migrate:local": "wrangler d1 migrations apply lift-coach-db --local",
-    "db:migrate:remote": "wrangler d1 migrations apply lift-coach-db --remote",
+    "db:migrate:local": "wrangler d1 migrations apply tres-fort-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply tres-fort-db --remote",
     "release": "npm run db:migrate:remote && npm run deploy",
     "ios:testflight": "./scripts/upload-testflight.sh",
     "beta:feedback": "node scripts/beta-feedback-to-issues.mjs"

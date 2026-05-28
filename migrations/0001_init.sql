@@ -1,4 +1,4 @@
--- lift-coach initial schema. See docs/DESIGN.md §3.
+-- tres-fort initial schema. See docs/DESIGN.md §3.
 -- Plan-tree tables (plans/day_templates/template_exercises) are the versioned
 -- document; set_logs/notes/sessions are the append-only event log.
 

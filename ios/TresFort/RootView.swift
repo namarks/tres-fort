@@ -13,7 +13,7 @@ struct RootView: View {
                 ZStack {
                     Color.black.ignoresSafeArea()
                     VStack(spacing: 28) {
-                        Text("LIFT-COACH")
+                        Text("TRES FORTE")
                             .font(Theme.display(40)).tracking(2)
                             .foregroundStyle(.white)
                         if case let .working(msg) = model.phase {

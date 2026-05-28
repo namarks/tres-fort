@@ -34,9 +34,11 @@ struct RootView: View {
     }
 }
 
-/// M5 invite-gated sign-in. The owner / fresh-install paths still work
-/// without a code — the field is optional. New Apple subs MUST supply a
-/// valid invite code or the server 403s `not_invited`.
+/// Open sign-in with optional invite code. Anyone can sign in with
+/// Apple — supplying an invite code is a shortcut that auto-joins the
+/// caller to the inviter's group atomically with account creation.
+/// Without a code, the user signs in to an empty Group tab and can
+/// create / join groups later from there.
 private struct SignedOutView: View {
     @ObservedObject var model: AuthModel
     @State private var showInviteField = false
@@ -93,7 +95,7 @@ private struct SignedOutView: View {
             Button {
                 withAnimation { showInviteField.toggle() }
             } label: {
-                Text(showInviteField ? "Owner sign-in (no code)" : "Have an invite code?")
+                Text(showInviteField ? "Sign in without code" : "Have an invite code?")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .underline()

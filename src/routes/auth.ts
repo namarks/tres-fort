@@ -12,26 +12,30 @@ export const authRoutes = new Hono<HonoEnv>();
 
 // POST /auth/apple  { identityToken, fullName?, invite_code? } -> { jwt, user }
 //
-// M2 invite-gated sign-in. Four paths, evaluated in order:
+// Open sign-in. Four paths, evaluated in order:
 //
 //  1. Existing user (apple_sub already in users). Just re-issue a JWT —
-//     no invite needed, regardless of OWNER_APPLE_SUB.
+//     no invite needed.
 //  2. Bootstrap (OWNER_APPLE_SUB allowlist). If OWNER_APPLE_SUB is set
 //     AND the verified sub matches, claim/create the owner row (the
-//     original single-user behavior, preserved). Other subs are rejected
-//     here UNLESS they have a valid invite (path 4).
-//  3. Bootstrap (fresh install). If OWNER_APPLE_SUB is UNSET AND the
-//     users table is empty, the very first signer becomes the owner.
-//     This is the "I just deployed, no MCP bootstrap row exists" path.
-//  4. Invite. A new sub with a valid `invite_code` is created atomically
-//     alongside redemption — createUserAndRedeemInvite either fully
-//     succeeds (user + membership + audit) or rolls back the user row.
+//     original single-user behavior, preserved).
+//  3. Bootstrap (fresh install / unclaimed seed). If OWNER_APPLE_SUB is
+//     UNSET AND `isBootstrapClaimEligible` returns true (empty users
+//     table, or the sole row is the unclaimed MCP bootstrap sentinel),
+//     this signer becomes the owner.
+//  4. New sub. If an `invite_code` is supplied, atomically create the
+//     user AND join the group (createUserAndRedeemInvite either fully
+//     succeeds or rolls back the user row). Otherwise just create the
+//     user with no group memberships — they can browse the app, log
+//     their own workouts, and create/join groups later via the Group
+//     tab.
 //
-// Anything else → 403 not_invited. Critically: assertOwner is no longer
-// called here. With invites as the gate, a sub mismatching OWNER_APPLE_SUB
-// is not automatically forbidden — they just need a valid invite.
 // `assertOwner` is preserved in src/auth.ts for callers that still want
 // the single-owner allowlist semantic (none in tree today; see comment).
+//
+// GROUPS remain invite-only: a user can only join a group via a valid
+// invite code (POST /api/groups/join). Sign-in being open does NOT make
+// groups public.
 authRoutes.post('/apple', async (c) => {
   const body = await c.req.json<{
     identityToken?: string;
@@ -95,27 +99,34 @@ authRoutes.post('/apple', async (c) => {
     return c.json({ jwt, user });
   }
 
-  // Path 4: invite. New Apple sub presenting a code.
+  // Path 4: new Apple sub. Optional invite code auto-joins a group on
+  // creation; without one the user is created memberships-empty and can
+  // create / join groups from the iOS Group tab later.
   const code = typeof body.invite_code === 'string' ? body.invite_code.trim() : '';
-  if (!code) {
-    return c.json({ error: 'not_invited' }, 403);
+  if (code) {
+    const result = await createUserAndRedeemInvite(
+      c.env.DB,
+      claims.sub,
+      claims.email,
+      body.fullName ?? null,
+      code,
+    );
+    if ('error' in result) {
+      // Invite-validation failure with a code present: surface a distinct
+      // error so iOS can prompt for a fresh code, instead of silently
+      // dropping into the no-code path (which would create the user but
+      // not join the group the inviter expected them to land in).
+      return c.json({ error: 'invalid_invite' }, 403);
+    }
+    const jwt = await issueAppJwt(result.user.id, c.env.APP_JWT_SECRET);
+    return c.json({ jwt, user: result.user, group_id: result.group_id });
   }
-  const result = await createUserAndRedeemInvite(
-    c.env.DB,
-    claims.sub,
-    claims.email,
-    body.fullName ?? null,
-    code,
-  );
-  if ('error' in result) {
-    // Any invite-validation failure surfaces as not_invited at the auth
-    // layer — we never tell an unauthenticated caller WHICH way the code
-    // was bad (used vs expired vs unknown). The iOS client treats all
-    // three as "ask for a fresh code."
-    return c.json({ error: 'not_invited' }, 403);
-  }
-  const jwt = await issueAppJwt(result.user.id, c.env.APP_JWT_SECRET);
-  return c.json({ jwt, user: result.user, group_id: result.group_id });
+  // No invite — open sign-in. Plain user creation, no memberships.
+  // upsertUser is safe here because Path 1 already returned for known subs:
+  // we reach here only with an unknown apple_sub, so this INSERTs.
+  const user = await upsertUser(c.env.DB, claims.sub, claims.email, body.fullName ?? null);
+  const jwt = await issueAppJwt(user.id, c.env.APP_JWT_SECRET);
+  return c.json({ jwt, user });
 });
 
 // POST /auth/dev  { secret }  -> { jwt, user }

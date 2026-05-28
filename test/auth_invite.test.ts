@@ -21,6 +21,7 @@ import {
   ensureOwnerUser,
   isBootstrapClaimEligible,
   isGroupMember,
+  upsertUser,
 } from '../src/db';
 
 const BASE = 'https://lift-coach.test';
@@ -85,8 +86,10 @@ describe('invite-gated user creation (createUserAndRedeemInvite)', () => {
     expect(result).toEqual({ error: 'unknown' });
 
     // No user row was created — the unknown-code branch rejects BEFORE
-    // touching users (cheap pre-check). The /auth/apple route would
-    // surface this as `not_invited` 403.
+    // touching users (cheap pre-check). When the /auth/apple route hits
+    // this, it surfaces as `invalid_invite` 403 (a code was supplied but
+    // didn't validate — distinct from the open-signin path where NO code
+    // creates the user with zero memberships).
     const count = await countUsers(env.DB);
     // ensureOwnerUser may have seeded a row in a previous test; we just
     // assert the count didn't change relative to right-after-pre-check.
@@ -181,6 +184,45 @@ describe('invite-gated user creation (createUserAndRedeemInvite)', () => {
     // We expect zero stranded rows from this branch — the pre-check
     // rejects BEFORE creating the user (expired is detected up-front).
     expect(stranded.results.length).toBe(0);
+  });
+});
+
+// /auth/apple Path 4 was originally invite-only ("no code → 403"). We
+// opened it: a new Apple sub without an invite is created with ZERO
+// group memberships (open sign-in). Groups themselves remain invite-only
+// — the user can create a group or redeem an invite from the iOS Group
+// tab post-sign-in. This describe-block exercises the underlying
+// primitive `upsertUser` that Path 4 now calls on the no-code branch.
+describe('open sign-in path (Path 4 without invite_code)', () => {
+  it('upsertUser INSERTs a fresh user with NO group memberships', async () => {
+    await env.DB.prepare('DELETE FROM group_invites').run();
+    await env.DB.prepare('DELETE FROM group_members').run();
+    await env.DB.prepare('DELETE FROM groups').run();
+    await env.DB.prepare('DELETE FROM users').run();
+
+    const sub = `sub-open-${crypto.randomUUID()}`;
+    const user = await upsertUser(env.DB, sub, 'open@test', 'Open Signer');
+    expect(user.apple_sub).toBe(sub);
+    expect(user.id).toMatch(/^[0-9a-f-]{36}$/);
+
+    // Crucially: no memberships were created. Open sign-in does NOT
+    // auto-enroll a user in any group — that's the invariant that keeps
+    // groups invite-only even after we opened up account creation.
+    const memberships = await env.DB
+      .prepare('SELECT COUNT(*) AS c FROM group_members WHERE user_id = ?1')
+      .bind(user.id)
+      .first<{ c: number }>();
+    expect(memberships!.c).toBe(0);
+  });
+
+  it('upsertUser is idempotent on a re-seen apple_sub (matches Path 1)', async () => {
+    // Path 1 short-circuits known subs in the route; this exists as a
+    // belt-and-suspenders check that upsertUser would also be safe even
+    // if Path 1 were ever bypassed.
+    const sub = `sub-rep-${crypto.randomUUID()}`;
+    const first = await upsertUser(env.DB, sub, 'rep@test', 'Rep');
+    const second = await upsertUser(env.DB, sub, 'rep@test', 'Rep');
+    expect(second.id).toBe(first.id);
   });
 });
 

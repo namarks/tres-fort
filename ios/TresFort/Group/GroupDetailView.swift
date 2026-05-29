@@ -9,7 +9,6 @@ struct GroupDetailView: View {
     @ObservedObject var auth: AuthModel
 
     @State private var showActivity = false
-    @State private var showSettings = false
     @State private var selectedItem: FeedItem?
 
     /// Per-group settings are routed through the parent GroupTabView's
@@ -90,7 +89,11 @@ struct GroupDetailView: View {
 
     private var invitePlaceholderChip: some View {
         Button {
-            showSettings = true
+            // Route through the hoisted binding so this opens the SAME
+            // GroupSettingsView sheet as the "Group settings…" menu item.
+            // Pre-fix this wrote to a dead @State that nothing observed
+            // — Codex PR #41 P2.
+            showGroupSettings = true
         } label: {
             VStack(spacing: 6) {
                 ZStack {

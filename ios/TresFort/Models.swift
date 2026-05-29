@@ -33,6 +33,12 @@ struct TemplateExercise: Decodable, Identifiable, Equatable {
     /// "total" (default) | "per_hand". per_hand → weight is ONE dumbbell;
     /// display "X each hand". Optional so pre-0014 payloads still decode.
     let exercise_load_mode: String?
+    /// free-exercise-db slug (e.g. "Barbell_Squat"). Optional: null when the
+    /// catalog row has no upstream demo (planks/holds/band primitives), or
+    /// when the payload is pre-0020. Drives the demo sheet lookup against
+    /// the bundled asset catalog and the Worker /api/exercises/:id/demo
+    /// route — falls back to cue text when nil.
+    let exercise_demo_slug: String?
     /// Planned hold seconds for timed slots (planks, holds). Optional;
     /// when null, fall back to target_reps (the legacy timed convention).
     let target_duration_s: Int?
@@ -165,6 +171,9 @@ struct ExerciseCatalog: Decodable, Identifiable {
     /// "total" | "per_hand". per_hand two-dumbbell lifts log one dumbbell's
     /// weight; display "X each hand". Optional (pre-0014 payloads).
     let load_mode: String?
+    /// Demo slug — see TemplateExercise.exercise_demo_slug. Optional
+    /// (pre-0020 payloads).
+    let demo_slug: String?
 }
 
 /// An externally-sourced training event (e.g. an intervals.icu planned

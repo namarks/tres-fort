@@ -237,6 +237,43 @@ apiRoutes.get('/exercises', async (c) => {
   return c.json(await getExercises(c.env.DB));
 });
 
+// Demo image proxy. iOS first checks its bundled asset catalog for the
+// foundational lifts; misses fall through to here, which pulls the frame
+// from the R2 bucket and returns it with a long-immutable Cache-Control
+// (slug + frame are content-addressed: when an upstream image changes
+// it ships under a new slug). Stays inside /api/* so the existing JWT
+// gate covers it — these are public-domain assets, but routing them
+// through the same auth surface keeps the worker config simple. The
+// route 404s gracefully when the catalog row has no demo_slug, when
+// the frame is anything other than 0/1, or when R2 has no object.
+apiRoutes.get('/exercises/:id/demo/:frame', async (c) => {
+  const id = c.req.param('id');
+  const frame = c.req.param('frame');
+  if (frame !== '0' && frame !== '1') {
+    return c.json({ error: 'invalid_frame' }, 400);
+  }
+  const row = await c.env.DB.prepare(
+    'SELECT demo_slug FROM exercises WHERE id = ?1',
+  )
+    .bind(id)
+    .first<{ demo_slug: string | null }>();
+  if (!row) return c.json({ error: 'unknown_exercise' }, 404);
+  if (!row.demo_slug) return c.json({ error: 'no_demo' }, 404);
+  if (!c.env.DEMOS) return c.json({ error: 'demos_unconfigured' }, 503);
+  const key = `demos/${row.demo_slug}/${frame}.webp`;
+  const obj = await c.env.DEMOS.get(key);
+  if (!obj) return c.json({ error: 'demo_missing' }, 404);
+  return new Response(obj.body, {
+    headers: {
+      'Content-Type': 'image/webp',
+      // 1 year, immutable: slug+frame is the only address; we'd ship a new
+      // slug to invalidate.
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'ETag': obj.etag,
+    },
+  });
+});
+
 apiRoutes.get('/history', async (c) => {
   const exerciseId = c.req.query('exercise_id');
   if (!exerciseId) return c.json({ error: 'missing_exercise_id' }, 400);

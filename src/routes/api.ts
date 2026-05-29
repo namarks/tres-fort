@@ -11,6 +11,7 @@ import {
   discardSession,
   getActivePlan,
   getExercises,
+  getGroupActivitySeries,
   getGroupFeed,
   getGroupStats,
   getGroupWithMembers,
@@ -642,4 +643,27 @@ apiRoutes.get('/groups/:id/stats', async (c) => {
   }
   const members = await getGroupStats(c.env.DB, groupId, days, userId);
   return c.json({ group_id: groupId, range: rangeRaw, members });
+});
+
+// GET /groups/:id/activity?days=N — per-member DAILY activity series for
+// the week/month/year zoom. One generous pull (default 371d ≈ 53 weeks)
+// powers all three client zooms with no refetch on toggle. Same
+// 404-before-403 membership guard as /feed and /stats.
+apiRoutes.get('/groups/:id/activity', async (c) => {
+  const userId = c.get('userId');
+  const groupId = c.req.param('id');
+  const guard = await requireGroupMembership(c, userId, groupId);
+  if (guard) return guard;
+
+  // `days`: trailing civil-day window. Default 371 (covers the year
+  // view's 53 week-buckets); clamped 1..372 in db.ts. Out-of-range
+  // clamps rather than 400 — same forgiving stance as /feed's limit.
+  let days = 371;
+  const daysRaw = c.req.query('days');
+  if (daysRaw != null) {
+    const n = Number(daysRaw);
+    if (Number.isFinite(n) && n > 0) days = Math.floor(n);
+  }
+  const members = await getGroupActivitySeries(c.env.DB, groupId, days, userId);
+  return c.json({ group_id: groupId, days, server_time: Date.now(), members });
 });

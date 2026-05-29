@@ -32,6 +32,10 @@ final class GroupModel: ObservableObject {
 
     @Published var feed: [String: [FeedItem]] = [:]
     @Published var stats: [String: [MemberStat]] = [:]
+    /// Per-member daily activity series (keyed by group.id) for the
+    /// week/month/year zoom strip. Pulled once per refresh over a year
+    /// window so the range toggle is instant (no refetch).
+    @Published var activitySeries: [String: [MemberActivitySeries]] = [:]
     @Published var feedNextSince: [String: Int?] = [:]
     /// Tie-breaker companion to `feedNextSince`: server returns BOTH
     /// `next_since` and `next_since_id`, and the paginated call must echo
@@ -146,7 +150,8 @@ final class GroupModel: ObservableObject {
     func refreshGroup(groupID: String) async {
         async let feedTask: Void = refreshFeed(groupID: groupID)
         async let statsTask: Void = refreshStats(groupID: groupID)
-        _ = await (feedTask, statsTask)
+        async let seriesTask: Void = refreshActivitySeries(groupID: groupID)
+        _ = await (feedTask, statsTask, seriesTask)
     }
 
     func refreshFeed(groupID: String) async {
@@ -171,6 +176,20 @@ final class GroupModel: ObservableObject {
         do {
             let res = try await api.getGroupStats(groupID: groupID, range: "7d", jwt: jwt)
             stats[groupID] = res.members
+            lastError = nil
+        } catch {
+            handle(error)
+        }
+    }
+
+    /// Pull the per-member daily activity series (year window) that backs
+    /// the week/month/year zoom strip. Failure leaves the cached series in
+    /// place (same forgiving stance as feed/stats).
+    func refreshActivitySeries(groupID: String) async {
+        guard let jwt = auth.jwt else { return }
+        do {
+            let res = try await api.getGroupActivity(groupID: groupID, jwt: jwt)
+            activitySeries[groupID] = res.members
             lastError = nil
         } catch {
             handle(error)
@@ -228,6 +247,7 @@ final class GroupModel: ObservableObject {
         groups.removeAll { $0.id == id }
         feed[id] = nil
         stats[id] = nil
+        activitySeries[id] = nil
         feedNextSince[id] = nil
         feedNextSinceID[id] = nil
         ensureSelection()
@@ -312,9 +332,11 @@ final class GroupModel: ObservableObject {
             outbox.remove(id: pending.id)
             ActivityOutboxStore.save(outbox)
             // 5. Refresh so the optimistic row is replaced by the
-            // server-truth row (same id).
+            // server-truth row (same id). Refresh the zoom series too so
+            // the new activity lights up its day cell.
             if let gid = selectedGroupID {
                 await refreshFeed(groupID: gid)
+                await refreshActivitySeries(groupID: gid)
             }
             // Bridge to the personal calendar (SyncModel) — the activity
             // must surface on the day it happened regardless of group.
@@ -392,6 +414,11 @@ final class GroupModel: ObservableObject {
             // any of them).
             for gid in feed.keys {
                 feed[gid]?.removeAll { $0.id == id }
+            }
+            // Re-pull the zoom series for the visible group so the deleted
+            // day-cell updates (the series is server-derived, not spliced).
+            if let gid = selectedGroupID {
+                await refreshActivitySeries(groupID: gid)
             }
             // And drop it from the personal calendar.
             await onActivityPersisted?()

@@ -74,12 +74,21 @@ struct ProfileView: View {
                 }
                 Text("Ask Claude to review your training, explain your numbers, or adjust your plan — in the Claude app with the Très Fort connector.")
                     .font(.footnote).foregroundStyle(.secondary)
-            } else {
+            } else if groupModel.me?.claude.is_owner == true {
                 HStack(spacing: 10) {
                     Image(systemName: "exclamationmark.circle").foregroundStyle(.secondary)
                     Text("Not connected").font(.headline)
                 }
                 Text("Connect Claude to coach you: in the Claude app → Settings → Connectors, add “Très Fort”. Then you can ask Claude about your data and have it set up workouts.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else {
+                // Non-owner: Claude coaching is single-owner, so there's no
+                // connector for them to add — don't show a dead CTA.
+                HStack(spacing: 10) {
+                    Image(systemName: "person.fill.checkmark").foregroundStyle(.secondary)
+                    Text("Managed by the group owner").font(.headline)
+                }
+                Text("Claude coaching runs on the group owner's account. You'll still see everyone's activity in the Group tab.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         } header: {

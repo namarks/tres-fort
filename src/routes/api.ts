@@ -359,7 +359,7 @@ apiRoutes.delete('/activities/:id', async (c) => {
 // client otherwise has no way to see). Never returns the intervals api_key.
 apiRoutes.get('/me', async (c) => {
   const userId = c.get('userId');
-  return c.json(await getMeProfile(c.env.DB, userId));
+  return c.json(await getMeProfile(c.env.DB, userId, c.env.OWNER_APPLE_SUB));
 });
 
 // ---- integrations: intervals.icu credentials (M1 multi-user) ------------

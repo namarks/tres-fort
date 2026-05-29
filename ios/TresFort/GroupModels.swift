@@ -410,9 +410,11 @@ struct MeProfile: Decodable, Equatable {
         let athlete_id: String?
     }
 
-    /// `connected` = the claude.ai connector is authorized (a durable OAuth
-    /// grant exists). `last_active` = most recent MCP write (epoch ms).
+    /// Claude coaching is single-owner. `is_owner` = this account is the one
+    /// Claude operates on. `connected` = owner AND the claude.ai connector is
+    /// authorized. `last_active` = most recent MCP write (epoch ms).
     struct ClaudeStatus: Decodable, Equatable {
+        let is_owner: Bool
         let connected: Bool
         let last_active: Int?
     }

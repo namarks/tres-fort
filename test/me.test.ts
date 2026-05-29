@@ -5,8 +5,20 @@
 // last_active derived from MCP audit rows ONLY (REST actor='ios' excluded).
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { issueAppJwt } from '../src/auth';
 
 const BASE = 'https://lift-coach.test';
+
+// A non-owner user (not the OWNER_APPLE_SUB / earliest-created row).
+async function makeUser(label: string): Promise<{ id: string; jwt: string }> {
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,?3,?4,?5)',
+  )
+    .bind(id, `sub-${label}-${id}`, `${label}@test`, label, Date.now())
+    .run();
+  return { id, jwt: await issueAppJwt(id, 'test-secret') };
+}
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -46,6 +58,8 @@ describe('GET /api/me', () => {
     expect(me.email).toBe('dev@local');
     expect(me.intervals.connected).toBe(false);
     expect(me.intervals.athlete_id).toBeNull();
+    // The dev user is the owner (OWNER_APPLE_SUB / earliest row).
+    expect(me.claude.is_owner).toBe(true);
     expect(me.claude.connected).toBe(false);
     expect(me.claude.last_active).toBeNull();
     // never leak the api_key shape
@@ -76,7 +90,36 @@ describe('GET /api/me', () => {
       .run();
 
     me = await (await getMe(a.jwt)).json<any>();
+    expect(me.claude.is_owner).toBe(true);
     expect(me.claude.connected).toBe(true);
+  });
+
+  it('a non-owner never sees Claude connected — even with a grant present', async () => {
+    const owner = await devJwt();
+    const friend = await makeUser('me-friend');
+    // A durable grant exists globally (owner authorized the connector).
+    await env.DB.prepare(
+      'INSERT INTO oauth_tokens (access_token, refresh_token, client_id, scope, expires_at, created_at) VALUES (?1,?2,?3,?4,?5,?6)',
+    )
+      .bind(crypto.randomUUID(), crypto.randomUUID(), 'c', 'mcp', Date.now() + 3600_000, Date.now())
+      .run();
+    // Also give the friend an MCP audit row — last_active must still be null
+    // for them (Claude doesn't operate on their account).
+    await env.DB.prepare(
+      "INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at) VALUES (?1,?2,'mcp','x',NULL,NULL,?3)",
+    )
+      .bind(crypto.randomUUID(), friend.id, Date.now())
+      .run();
+
+    const friendMe = await (await getMe(friend.jwt)).json<any>();
+    expect(friendMe.claude.is_owner).toBe(false);
+    expect(friendMe.claude.connected).toBe(false);
+    expect(friendMe.claude.last_active).toBeNull();
+
+    // Sanity: the owner still sees it connected with the grant present.
+    const ownerMe = await (await getMe(owner.jwt)).json<any>();
+    expect(ownerMe.claude.is_owner).toBe(true);
+    expect(ownerMe.claude.connected).toBe(true);
   });
 
   it('claude.last_active uses MCP audit rows only (ios writes excluded)', async () => {

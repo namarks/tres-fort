@@ -27,6 +27,9 @@ final class GroupModel: ObservableObject {
     @Published var phase: Phase = .loading
     @Published var groups: [GroupSummary] = []
     @Published var selectedGroupID: String?
+    /// Account + setup snapshot (GET /api/me) for the Profile tab. Holds
+    /// server-derived intervals + Claude-connector status.
+    @Published var me: MeProfile?
 
     // MARK: Per-group caches (keyed by group.id)
 
@@ -139,6 +142,8 @@ final class GroupModel: ObservableObject {
             }
             // Drain any pending activity POSTs that survived a relaunch.
             await drainOutbox()
+            // Account/setup snapshot for the Profile tab.
+            await refreshMe()
         } catch {
             handle(error)
             phase = .error(error.localizedDescription)
@@ -194,6 +199,26 @@ final class GroupModel: ObservableObject {
         } catch {
             handle(error)
         }
+    }
+
+    /// Pull the account/setup snapshot (intervals + Claude status) for the
+    /// Profile tab. Failure leaves any cached `me` in place.
+    func refreshMe() async {
+        guard let jwt = auth.jwt else { return }
+        do {
+            me = try await api.getMe(jwt: jwt)
+            lastError = nil
+        } catch {
+            handle(error)
+        }
+    }
+
+    /// Make `id` the active group and refresh its feed/stats/series. Used by
+    /// the Group-tab title switcher and the Profile groups list.
+    func selectGroup(_ id: String) {
+        guard id != selectedGroupID else { return }
+        selectedGroupID = id
+        Task { await refreshGroup(groupID: id) }
     }
 
     // MARK: - Mutations
@@ -441,6 +466,7 @@ final class GroupModel: ObservableObject {
         intervalsConnection = IntervalsConnection(
             athlete_id: athleteID,
             connected_at: Int(Date().timeIntervalSince1970 * 1000))
+        await refreshMe()
     }
 
     func disconnectIntervals() async throws {
@@ -450,6 +476,7 @@ final class GroupModel: ObservableObject {
         _ = try await api.setIntervalsCredentials(
             apiKey: nil, athleteID: nil, jwt: jwt)
         intervalsConnection = nil
+        await refreshMe()
     }
 
     // MARK: - Helpers

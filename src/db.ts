@@ -434,6 +434,61 @@ function newInviteCode(): string {
 }
 
 /**
+ * Account/setup snapshot for the iOS Profile tab. Read-only; never returns
+ * the (write-only) intervals api_key. Connection state is derived from the
+ * SERVER, not a client mirror — so env/MCP-seeded intervals creds and the
+ * claude.ai connector both show up:
+ *   - intervals.connected = the user row has an athlete_id.
+ *   - claude.connected     = a durable OAuth grant exists (the claude.ai
+ *     connector has been authorized; single-user, so the tokens table isn't
+ *     user-scoped). last_active = most recent MCP write (audit_log
+ *     actor='mcp' — REST/iOS writes are actor='ios' and excluded).
+ */
+export interface MeProfile {
+  display_name: string | null;
+  email: string | null;
+  intervals: { connected: boolean; athlete_id: string | null };
+  claude: { connected: boolean; last_active: number | null };
+}
+
+export async function getMeProfile(db: D1Database, userId: string): Promise<MeProfile> {
+  const u = await db
+    .prepare('SELECT display_name, email, intervals_athlete_id FROM users WHERE id = ?1')
+    .bind(userId)
+    .first<{
+      display_name: string | null;
+      email: string | null;
+      intervals_athlete_id: string | null;
+    }>();
+
+  // A refresh_token is the durable grant claude.ai keeps — its presence
+  // means the connector is linked even after access tokens expire.
+  const grant = await db
+    .prepare('SELECT 1 AS x FROM oauth_tokens WHERE refresh_token IS NOT NULL LIMIT 1')
+    .first<{ x: number }>();
+
+  const lastMcp = await db
+    .prepare(
+      "SELECT MAX(created_at) AS t FROM audit_log WHERE user_id = ?1 AND actor = 'mcp'",
+    )
+    .bind(userId)
+    .first<{ t: number | null }>();
+
+  return {
+    display_name: u?.display_name ?? null,
+    email: u?.email ?? null,
+    intervals: {
+      connected: !!u?.intervals_athlete_id,
+      athlete_id: u?.intervals_athlete_id ?? null,
+    },
+    claude: {
+      connected: !!grant,
+      last_active: lastMcp?.t ?? null,
+    },
+  };
+}
+
+/**
  * Create a group and add the creator as the first member. Returns the new
  * group row (without the auto-member — read it back via listGroupsForUser
  * if you need members hydrated). Audited as 'create_group' actor='ios'.

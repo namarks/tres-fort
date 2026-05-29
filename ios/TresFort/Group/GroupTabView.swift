@@ -12,8 +12,6 @@ struct GroupTabView: View {
 
     @State private var showCreate = false
     @State private var showJoin = false
-    @State private var showAppSettings = false
-    @State private var showGroupPicker = false
     /// Manual-activity sheet for the no-group state. A user without a
     /// group can still log an off-plan activity (it lands on their
     /// personal calendar) — the affordance shouldn't require joining a
@@ -30,15 +28,12 @@ struct GroupTabView: View {
                 Theme.background
                 content
             }
-            .navigationTitle(navTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                // The title doubles as the group switcher (see titleSwitcher).
+                ToolbarItem(placement: .principal) { titleSwitcher }
                 ToolbarItem(placement: .topBarLeading) {
                     Menu {
-                        if groupModel.groups.count > 1 {
-                            Button("Switch group…") { showGroupPicker = true }
-                            Divider()
-                        }
                         Button {
                             showJoin = true
                         } label: {
@@ -49,10 +44,9 @@ struct GroupTabView: View {
                         } label: {
                             Label("Create group", systemImage: "plus.circle")
                         }
-                        // Per-group settings live here (rather than as a
-                        // second toolbar gear) so we don't render two
-                        // identical gear icons next to each other in the
-                        // nav bar — beta feedback #39.
+                        // Per-group settings (invite / rename / leave) for the
+                        // ACTIVE group. App-level settings moved to the Profile
+                        // tab, so there's no second nav-bar gear here.
                         if case .ready = groupModel.phase,
                            groupModel.selectedGroup != nil {
                             Divider()
@@ -67,14 +61,6 @@ struct GroupTabView: View {
                             .foregroundStyle(Theme.text)
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showAppSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
-                            .foregroundStyle(Theme.text)
-                    }
-                }
             }
             .toolbarColorScheme(.dark, for: .navigationBar)
             .sheet(isPresented: $showCreate) {
@@ -83,30 +69,49 @@ struct GroupTabView: View {
             .sheet(isPresented: $showJoin) {
                 JoinGroupSheet(groupModel: groupModel)
             }
-            .sheet(isPresented: $showAppSettings) {
-                AppSettingsView(groupModel: groupModel, auth: auth)
-            }
             .sheet(isPresented: $showLogActivity) {
                 ManualActivitySheet { pending in
                     await groupModel.logActivity(pending)
                 }
             }
-            .confirmationDialog(
-                "Switch group",
-                isPresented: $showGroupPicker,
-                titleVisibility: .visible
-            ) {
-                ForEach(groupModel.groups) { g in
-                    Button(g.name) {
-                        groupModel.selectedGroupID = g.id
-                        Task { await groupModel.refreshGroup(groupID: g.id) }
-                    }
-                }
-                Button("Cancel", role: .cancel) {}
-            }
             .task {
                 await groupModel.load()
             }
+        }
+    }
+
+    /// Nav-bar title that becomes a tap-to-switch menu when you're in 2+
+    /// groups. Replaces the old "Switch group…" item buried in the "+"
+    /// menu, which nobody could find. Single-group: a plain title.
+    @ViewBuilder
+    private var titleSwitcher: some View {
+        if case .ready = groupModel.phase, groupModel.groups.count > 1 {
+            Menu {
+                ForEach(groupModel.groups) { g in
+                    Button {
+                        groupModel.selectGroup(g.id)
+                    } label: {
+                        if g.id == groupModel.selectedGroupID {
+                            Label(g.name, systemImage: "checkmark")
+                        } else {
+                            Text(g.name)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(navTitle)
+                        .font(Theme.mono(15, .bold))
+                        .foregroundStyle(Theme.text)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(Theme.muted)
+                }
+            }
+        } else {
+            Text(navTitle)
+                .font(Theme.mono(15, .bold))
+                .foregroundStyle(Theme.text)
         }
     }
 
@@ -206,56 +211,5 @@ struct GroupTabView: View {
             .tint(Theme.accent)
         }
         .padding(32)
-    }
-}
-
-/// Umbrella "Settings" surface for the Group tab gear button. v1 has
-/// intervals.icu + sign out; future home for notifications, etc.
-struct AppSettingsView: View {
-    @ObservedObject var groupModel: GroupModel
-    @ObservedObject var auth: AuthModel
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Integrations") {
-                    NavigationLink {
-                        IntervalsSettingsView(groupModel: groupModel)
-                    } label: {
-                        HStack {
-                            Image(systemName: "bicycle")
-                                .foregroundStyle(Theme.muted)
-                            Text("Intervals.icu")
-                            Spacer()
-                            if let conn = groupModel.intervalsConnection {
-                                Text(conn.athlete_id)
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text("Not connected")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-                Section {
-                    Button(role: .destructive) {
-                        auth.signOut()
-                        dismiss()
-                    } label: {
-                        Text("Sign out")
-                    }
-                }
-            }
-            .navigationTitle("Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
     }
 }

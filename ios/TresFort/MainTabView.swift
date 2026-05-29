@@ -42,6 +42,8 @@ struct MainTabView: View {
                 .tabItem { Label("History", systemImage: "chart.xyaxis.line") }
             GroupTabView(groupModel: groupModel, auth: auth)
                 .tabItem { Label("Group", systemImage: "person.2.fill") }
+            ProfileView(groupModel: groupModel, auth: auth)
+                .tabItem { Label("Profile", systemImage: "person.crop.circle") }
         }
         .tint(Theme.accent)
         .task {

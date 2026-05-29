@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// Form for connecting/disconnecting the user's intervals.icu account
-/// (M1). PATCH /api/me/integrations/intervals is the only endpoint —
-/// there's no GET, so iOS shows "Connected" purely from the local mirror
-/// (athlete_id + last successful PATCH timestamp).
+/// (M1). Writes go through PATCH /api/me/integrations/intervals; the
+/// "Connected" state is read from the server snapshot (GET /api/me, via
+/// `groupModel.me`) OR the local post-PATCH mirror — so creds set
+/// elsewhere (env/MCP-seeded) still show as connected.
 struct IntervalsSettingsView: View {
     @ObservedObject var groupModel: GroupModel
 
@@ -12,22 +13,37 @@ struct IntervalsSettingsView: View {
     @State private var saving = false
     @State private var errorMessage: String?
 
+    /// "Connected" comes from the SERVER (GET /api/me) OR the local mirror
+    /// (set when you connect from this device). Server-truth is what fixes
+    /// the old false "Not connected" for env/MCP-seeded creds.
+    private var isConnected: Bool {
+        groupModel.intervalsConnection != nil || groupModel.me?.intervals.connected == true
+    }
+    private var athleteID_: String? {
+        groupModel.intervalsConnection?.athlete_id ?? groupModel.me?.intervals.athlete_id
+    }
+
     var body: some View {
         Form {
             Section {
-                if let conn = groupModel.intervalsConnection {
+                if isConnected {
                     HStack(spacing: 10) {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Connected").font(.headline)
-                            Text("Athlete \(conn.athlete_id)")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
+                            if let aid = athleteID_ {
+                                Text("Athlete \(aid)")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
-                    LabeledContent("Connected at",
-                                   value: relative(epochMs: conn.connected_at))
+                    // Only known when connected from THIS device.
+                    if let conn = groupModel.intervalsConnection {
+                        LabeledContent("Connected at",
+                                       value: relative(epochMs: conn.connected_at))
+                    }
                 } else {
                     HStack(spacing: 10) {
                         Image(systemName: "exclamationmark.circle")
@@ -42,7 +58,7 @@ struct IntervalsSettingsView: View {
             }
 
             Section {
-                SecureField(groupModel.intervalsConnection == nil ? "API key" : "New API key",
+                SecureField(isConnected ? "New API key" : "API key",
                             text: $apiKey)
                     .textInputAutocapitalization(.never)
                     .disableAutocorrection(true)
@@ -57,7 +73,7 @@ struct IntervalsSettingsView: View {
                         if saving {
                             ProgressView()
                         } else {
-                            Text(groupModel.intervalsConnection == nil ? "Connect" : "Reconnect")
+                            Text(isConnected ? "Reconnect" : "Connect")
                                 .bold()
                         }
                         Spacer()
@@ -75,7 +91,7 @@ struct IntervalsSettingsView: View {
                 Text("Generate an API key at intervals.icu → Settings → Developer. Your athlete ID is in the URL when you visit your athlete page.")
             }
 
-            if groupModel.intervalsConnection != nil {
+            if isConnected {
                 Section {
                     Button(role: .destructive) {
                         disconnect()

@@ -69,8 +69,10 @@ struct ExerciseDemoSheet: View {
                               demoSlug: demoSlug, jwt: jwt)
         }
         .task(id: loader.frames.compactMap { $0 }.count) {
-            // Start the cycle once at least one frame is available.
-            guard loader.frames.contains(where: { $0 != nil }) else { return }
+            // Only crossfade when BOTH frames loaded — single-frame demos
+            // render static (see demoFrame); ticking showSecondFrame on
+            // them would just spin the animation without a visible effect.
+            guard loader.frames.compactMap({ $0 }).count == 2 else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_400_000_000)
                 if !isPaused {
@@ -90,20 +92,25 @@ struct ExerciseDemoSheet: View {
         } else {
             let f0 = loader.frames.indices.contains(0) ? loader.frames[0] : nil
             let f1 = loader.frames.indices.contains(1) ? loader.frames[1] : nil
-            if f0 == nil && f1 == nil {
+            switch (f0, f1) {
+            case (nil, nil):
                 cueCardFallback
-            } else {
+            case (let img?, nil), (nil, let img?):
+                // Single frame available — show it static (no crossfade).
+                // Without this, `showSecondFrame` toggling every 1.4s would
+                // hide the only available frame on alternating cycles and
+                // flicker between image + blank, since `opacity(showSecondFrame ? 0 : 1)`
+                // assumes the other frame is there to replace it.
+                Image(uiImage: img)
+                    .resizable().scaledToFit()
+            case (let img0?, let img1?):
                 ZStack {
-                    if let f0 {
-                        Image(uiImage: f0)
-                            .resizable().scaledToFit()
-                            .opacity(showSecondFrame ? 0 : 1)
-                    }
-                    if let f1 {
-                        Image(uiImage: f1)
-                            .resizable().scaledToFit()
-                            .opacity(showSecondFrame ? 1 : 0)
-                    }
+                    Image(uiImage: img0)
+                        .resizable().scaledToFit()
+                        .opacity(showSecondFrame ? 0 : 1)
+                    Image(uiImage: img1)
+                        .resizable().scaledToFit()
+                        .opacity(showSecondFrame ? 1 : 0)
                 }
             }
         }

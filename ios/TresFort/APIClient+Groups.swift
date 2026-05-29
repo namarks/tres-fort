@@ -158,4 +158,13 @@ extension APIClient {
                        jwt: String) async throws -> GroupStatsResponse {
         try await get("api/groups/\(groupID)/stats?range=\(range)", jwt: jwt)
     }
+
+    /// GET /api/groups/:id/activity — per-member daily activity series for
+    /// the week/month/year zoom. Default window (371d ≈ 53 weeks) covers
+    /// the year view, so the client never refetches on a range toggle.
+    func getGroupActivity(groupID: String,
+                          days: Int = 371,
+                          jwt: String) async throws -> GroupActivityResponse {
+        try await get("api/groups/\(groupID)/activity?days=\(days)", jwt: jwt)
+    }
 }

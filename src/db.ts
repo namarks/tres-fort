@@ -4843,3 +4843,124 @@ export async function getGroupStats(
   }
   return out;
 }
+
+/**
+ * Per-member DAILY activity series over a trailing civil-day window —
+ * the data behind the iOS Group-tab week/month/year zoom. Where
+ * getGroupStats rolls every source up to a single count+streak, this
+ * returns the raw per-day breakdown so the client can re-bucket it into
+ * day cells (week/month) or week cells (year) WITHOUT a refetch per zoom.
+ *
+ * Counts are kept by SOURCE, not by display category: `sessions`
+ * (started/completed strength → "lift"), `rides` (external_activities,
+ * the intervals.icu endurance actuals → "endurance"), and `activities`
+ * (manual log, keyed by its freeform `type`). The client owns the
+ * type→category mapping (WorkoutCategory) so the rule lives in exactly
+ * one place — this endpoint stays a dumb aggregator.
+ *
+ * Window is per-member-tz-anchored (same as getGroupStats) and the rows
+ * are SPARSE: only dates with at least one item are returned. A
+ * 4-lifts-a-week athlete over a year is ~200 tiny rows — trivial wire.
+ *
+ * NOTE: callers MUST enforce group membership BEFORE calling this — same
+ * authorization pattern as getGroupFeed / getGroupStats.
+ */
+export interface DayActivityCount {
+  date: string; // YYYY-MM-DD civil (device-local; no UTC math)
+  sessions: number; // started/completed strength sessions that day
+  rides: number; // intervals.icu endurance activities that day
+  activities: Record<string, number>; // manual-log counts keyed by type
+}
+
+export interface MemberActivitySeries {
+  user_id: string;
+  days: DayActivityCount[];
+}
+
+export async function getGroupActivitySeries(
+  db: D1Database,
+  groupId: string,
+  windowDays: number,
+  callerUserId: string,
+): Promise<MemberActivitySeries[]> {
+  // Cap at 372 (53 weeks) — enough for the year view's week buckets,
+  // bounded so the per-member GROUP BY stays cheap. callerUserId is
+  // accepted for signature symmetry with getGroupStats/getGroupFeed (the
+  // series itself is identity-blind; is_me is resolved from /stats).
+  void callerUserId;
+  const days = Math.max(1, Math.min(Math.floor(windowDays), 372));
+
+  const memberRows = await db
+    .prepare(
+      `SELECT gm.user_id, u.timezone
+         FROM group_members gm
+         JOIN users u ON u.id = gm.user_id
+        WHERE gm.group_id = ?1
+        ORDER BY gm.joined_at, gm.user_id`,
+    )
+    .bind(groupId)
+    .all<{ user_id: string; timezone: string | null }>();
+  if (memberRows.results.length === 0) return [];
+
+  const out: MemberActivitySeries[] = [];
+  for (const m of memberRows.results) {
+    const today = todayInTz(m.timezone);
+    const start = addDays(today, -(days - 1));
+
+    const byDate = new Map<string, DayActivityCount>();
+    const ensure = (date: string): DayActivityCount => {
+      let d = byDate.get(date);
+      if (!d) {
+        d = { date, sessions: 0, rides: 0, activities: {} };
+        byDate.set(date, d);
+      }
+      return d;
+    };
+
+    // Same source filters as getGroupStats: planned (intent) sessions are
+    // excluded; rides/activities honor soft-delete. COUNT(*) per date is
+    // the cell intensity (two sessions on a day → 2), unlike stats which
+    // collapses to DISTINCT dates.
+    const sessRows = await db
+      .prepare(
+        `SELECT date, COUNT(*) AS n FROM sessions
+          WHERE user_id = ?1
+            AND status IN ('in_progress', 'completed')
+            AND date >= ?2 AND date <= ?3
+          GROUP BY date`,
+      )
+      .bind(m.user_id, start, today)
+      .all<{ date: string; n: number }>();
+    for (const r of sessRows.results) ensure(r.date).sessions = r.n;
+
+    const rideRows = await db
+      .prepare(
+        `SELECT date, COUNT(*) AS n FROM external_activities
+          WHERE user_id = ?1
+            AND deleted_at IS NULL
+            AND date >= ?2 AND date <= ?3
+          GROUP BY date`,
+      )
+      .bind(m.user_id, start, today)
+      .all<{ date: string; n: number }>();
+    for (const r of rideRows.results) ensure(r.date).rides = r.n;
+
+    const actRows = await db
+      .prepare(
+        `SELECT date, type, COUNT(*) AS n FROM activities
+          WHERE user_id = ?1
+            AND deleted_at IS NULL
+            AND date >= ?2 AND date <= ?3
+          GROUP BY date, type`,
+      )
+      .bind(m.user_id, start, today)
+      .all<{ date: string; type: string; n: number }>();
+    for (const r of actRows.results) ensure(r.date).activities[r.type] = r.n;
+
+    const daysArr = [...byDate.values()].sort((x, y) =>
+      x.date < y.date ? -1 : x.date > y.date ? 1 : 0,
+    );
+    out.push({ user_id: m.user_id, days: daysArr });
+  }
+  return out;
+}

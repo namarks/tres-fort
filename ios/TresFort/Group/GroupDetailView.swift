@@ -1,8 +1,9 @@
 import SwiftUI
 
-/// Motivational home for a single group: member-chip strip + feed list,
-/// with a "+" FAB to log a manual activity and a gear toolbar to open
-/// per-group settings.
+/// Motivational home for a single group: a "this week" strip of per-member
+/// activity-dot rows on top, the activity feed below, a "+" FAB to log a
+/// manual activity, and a gear (routed through the parent) for per-group
+/// settings.
 struct GroupDetailView: View {
     let group: GroupSummary
     @ObservedObject var groupModel: GroupModel
@@ -10,6 +11,9 @@ struct GroupDetailView: View {
 
     @State private var showActivity = false
     @State private var selectedItem: FeedItem?
+    /// Week / Month / Year zoom for the activity strip. Toggling is instant
+    /// — all three are bucketed client-side from one year-window pull.
+    @State private var range: ActivityRange = .week
 
     /// Per-group settings are routed through the parent GroupTabView's
     /// "+" menu (binding below). Surfacing a SECOND gear in the toolbar
@@ -18,36 +22,30 @@ struct GroupDetailView: View {
     @Binding var showGroupSettings: Bool
 
     var body: some View {
-        // ZStack(alignment: .top) — defends against the layout regression
-        // where the default .center alignment let the VStack collapse to
-        // its intrinsic height (strip + non-expanding feedContent) and
-        // get vertically centered inside the screen-tall ZStack, pushing
-        // the chip strip ~150pt off the nav bar so only the top of the
-        // avatar peeked out above the feed (beta feedback follow-up).
-        // The strip + feed must anchor to the top regardless of whether
-        // the feed has items, is in its empty state, or is mid-load.
-        ZStack(alignment: .top) {
+        // Single vertical scroll view (mirrors TodayView / HistoryView).
+        // The previous layout stacked a fixed-height HORIZONTAL member
+        // ScrollView above a GREEDY vertical feed ScrollView inside a
+        // top-anchored VStack — two scroll views fighting for height with
+        // `.refreshable` floating on the container. That never laid out
+        // reliably (#41 / #44 / #45 all chased the same drift, where the
+        // strip slid into the scroll bounce region: visible only while you
+        // pulled, gone on release). Collapsing to ONE scroll view removes
+        // the negotiation entirely — the member strip is now ordinary
+        // content (MemberActivityRow) inside it.
+        ZStack {
             Theme.background
-            VStack(spacing: 0) {
-                memberStrip
-                feedContent
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .overlay(alignment: .bottomTrailing) {
-                Button {
-                    showActivity = true
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundStyle(.black)
-                        .frame(width: 56, height: 56)
-                        .background(Theme.accent)
-                        .clipShape(Circle())
-                        .shadow(radius: 6, y: 2)
+            ScrollView {
+                LazyVStack(spacing: 14) {
+                    activitySection
+                    feedSection
                 }
-                .padding(20)
-                .accessibilityLabel("Log activity")
+                .padding(16)
+                .padding(.bottom, 96)   // clear the floating FAB
             }
+            .refreshable {
+                await groupModel.refreshGroup(groupID: group.id)
+            }
+            .overlay(alignment: .bottomTrailing) { logActivityButton }
         }
         .sheet(isPresented: $showActivity) {
             ManualActivitySheet { pending in
@@ -60,106 +58,133 @@ struct GroupDetailView: View {
         .sheet(item: $selectedItem) { item in
             FeedItemDetailSheet(item: item, groupModel: groupModel)
         }
-        .refreshable {
-            await groupModel.refreshGroup(groupID: group.id)
-        }
         .task(id: group.id) {
             await groupModel.refreshGroup(groupID: group.id)
         }
     }
 
-    // MARK: - Member strip
+    // MARK: - Activity section (week / month / year zoom)
 
-    /// Visible strip area. Holds the 110pt-tall MemberChip with 14pt of
-    /// breathing room top and bottom. Used by BOTH the inner HStack's
-    /// `.frame(height:)` (centers the chip via .center alignment on the
-    /// HStack) AND the outer ScrollView's `.frame(height:)` (locks the
-    /// strip's footprint in the parent VStack). Two-level frame is the
-    /// fix for the chip-clipping regression — the previous single-frame
-    /// approach allowed the chip to drift to the top edge of an
-    /// oversized strip area, leaving the avatar a sliver above the feed.
-    private static let stripHeight: CGFloat = 138
-
-    private var memberStrip: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .center, spacing: 14) {
-                let members = groupModel.stats[group.id] ?? []
-                ForEach(members) { m in
-                    MemberChip(stat: m)
-                }
-                if members.count < 2 {
-                    invitePlaceholderChip
-                }
+    /// One MemberActivityRow per member (you first), each a single aligned
+    /// lane for the selected zoom. Rendered only once stats have loaded —
+    /// they always include the caller, so this also covers the solo case;
+    /// an invite row trails when the group is just you. The roster comes
+    /// from /stats (avatar, name, streak); the per-day cells come from the
+    /// /activity series, joined by user_id.
+    @ViewBuilder
+    private var activitySection: some View {
+        let roster = groupModel.stats[group.id] ?? []
+        if !roster.isEmpty {
+            // "Me" first; everyone else keeps server order (stable).
+            let members = roster.filter(\.is_me) + roster.filter { !$0.is_me }
+            let series = groupModel.activitySeries[group.id] ?? []
+            let seriesByUser = Dictionary(
+                series.map { ($0.user_id, $0) }, uniquingKeysWith: { a, _ in a })
+            rangePicker
+            ForEach(members) { m in
+                MemberActivityRow(
+                    stat: m,
+                    lane: ActivityLanes.lane(range: range, series: seriesByUser[m.user_id]),
+                    range: range)
             }
-            .padding(.horizontal, 16)
-            // Match the strip height exactly so the HStack fills its
-            // ScrollView content area top-to-bottom. Combined with the
-            // outer .frame(height:) below, this guarantees the chip's
-            // 110pt content is centered within the visible strip — the
-            // previous .padding(.vertical, 14) approach relied on the
-            // HStack's intrinsic height matching the outer frame, which
-            // SwiftUI didn't always honor inside a horizontal ScrollView
-            // (chips drifted to the top edge, leaving a sliver visible
-            // above the feed).
-            .frame(height: Self.stripHeight)
+            if members.count < 2 {
+                inviteRow
+            }
         }
-        .frame(height: Self.stripHeight)
-        .background(Theme.surface.opacity(0.5))
     }
 
-    private var invitePlaceholderChip: some View {
+    private var rangePicker: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Range", selection: $range) {
+                ForEach(ActivityRange.allCases) { r in
+                    Text(r.label).tag(r)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text(range.caption)
+                .font(Theme.mono(10))
+                .foregroundStyle(Theme.muted)
+        }
+    }
+
+    private var inviteRow: some View {
         Button {
             // Route through the hoisted binding so this opens the SAME
-            // GroupSettingsView sheet as the "Group settings…" menu item.
-            // Pre-fix this wrote to a dead @State that nothing observed
-            // — Codex PR #41 P2.
+            // GroupSettingsView sheet as the "Group settings…" menu item
+            // (Codex PR #41 P2 — pre-fix this wrote to a dead @State).
             showGroupSettings = true
         } label: {
-            VStack(spacing: 6) {
+            HStack(spacing: 10) {
                 ZStack {
                     Circle()
                         .strokeBorder(Theme.muted,
                                       style: StrokeStyle(lineWidth: 1.5, dash: [3, 3]))
-                        .frame(width: 50, height: 50)
+                        .frame(width: 34, height: 34)
                     Image(systemName: "person.badge.plus")
-                        .font(.system(size: 18))
+                        .font(.system(size: 15))
                         .foregroundStyle(Theme.muted)
                 }
-                Text("Invite")
-                    .font(Theme.mono(11))
+                Text("Invite someone")
+                    .font(Theme.mono(12, .bold))
                     .foregroundStyle(Theme.muted)
-                Text(" ")
-                    .font(Theme.mono(10))
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.dim)
             }
-            .frame(width: 80, height: 110)
+            .frame(maxWidth: .infinity)
+            .padding(14)
+            .background(
+                RoundedRectangle(cornerRadius: 14).fill(Theme.surface.opacity(0.5)))
         }
         .buttonStyle(.plain)
     }
 
-    // MARK: - Feed
+    // MARK: - Feed section
 
     @ViewBuilder
-    private var feedContent: some View {
+    private var feedSection: some View {
         let items = groupModel.feed[group.id] ?? []
+        sectionHeader("ACTIVITY")
+            .padding(.top, 6)
         if items.isEmpty {
             EmptyFeedState()
-                .frame(maxHeight: .infinity)
+                .padding(.top, 12)
         } else {
-            ScrollView {
-                LazyVStack(spacing: 10) {
-                    ForEach(items) { item in
-                        Button {
-                            selectedItem = item
-                        } label: {
-                            FeedItemRow(item: item)
-                        }
-                        .buttonStyle(.plain)
-                    }
+            ForEach(items) { item in
+                Button {
+                    selectedItem = item
+                } label: {
+                    FeedItemRow(item: item)
                 }
-                .padding(16)
-                .padding(.bottom, 96)   // clear FAB
+                .buttonStyle(.plain)
             }
         }
+    }
+
+    private func sectionHeader(_ text: String) -> some View {
+        Text(text)
+            .font(Theme.mono(11, .bold)).tracking(2)
+            .foregroundStyle(Theme.muted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Floating action button
+
+    private var logActivityButton: some View {
+        Button {
+            showActivity = true
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(.black)
+                .frame(width: 56, height: 56)
+                .background(Theme.accent)
+                .clipShape(Circle())
+                .shadow(radius: 6, y: 2)
+        }
+        .padding(20)
+        .accessibilityLabel("Log activity")
     }
 }
 
@@ -180,5 +205,6 @@ struct EmptyFeedState: View {
                 .multilineTextAlignment(.center)
         }
         .padding(32)
+        .frame(maxWidth: .infinity)
     }
 }

@@ -291,6 +291,33 @@ struct MemberStat: Codable, Identifiable, Equatable {
     let last_active: Int?
 }
 
+// MARK: - Activity series (week/month/year zoom)
+
+/// Top-level shape of GET /api/groups/:id/activity. One generous pull
+/// (default ~371 days) feeds the week/month/year zoom with no refetch on
+/// toggle — the client re-buckets `members[].days` per selected range.
+struct GroupActivityResponse: Decodable {
+    let group_id: String
+    let days: Int
+    let server_time: Int
+    let members: [MemberActivitySeries]
+}
+
+/// One member's SPARSE per-day activity counts (only active dates present).
+struct MemberActivitySeries: Decodable, Equatable {
+    let user_id: String
+    let days: [DayActivity]
+}
+
+/// Per-day counts kept by SOURCE; the client maps these to WorkoutCategory
+/// (so the type→category rule lives in exactly one place — iOS).
+struct DayActivity: Decodable, Equatable {
+    let date: String                // YYYY-MM-DD civil
+    let sessions: Int               // strength → lift
+    let rides: Int                  // intervals endurance → endurance
+    let activities: [String: Int]   // manual log, keyed by type
+}
+
 // MARK: - Activities (M3)
 
 /// Server-returned row from POST /api/activities. The wire calls this

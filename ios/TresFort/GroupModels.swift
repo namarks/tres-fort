@@ -407,7 +407,16 @@ enum FeedDateFormat {
             f.dateFormat = "h:mm a"
             return "Yesterday · \(f.string(from: d))"
         }
-        let days = cal.dateComponents([.day], from: d, to: now).day ?? 0
+        // CALENDAR-day delta, not integer-day delta (issue #42). Anchoring to
+        // startOfDay on both ends matches how the today/yesterday checks
+        // above already reason. Without this, a session logged 2 calendar
+        // days ago in the EVENING gives `days == 1` (1d 23h truncates) and
+        // falls through to "MMM d" instead of the intended weekday format —
+        // visible in the issue #39 screenshot as "May 26" sitting between
+        // "Sun" and "Thu" in an otherwise-weekday-format column.
+        let dStart = cal.startOfDay(for: d)
+        let nStart = cal.startOfDay(for: now)
+        let days = cal.dateComponents([.day], from: dStart, to: nStart).day ?? 0
         if days >= 2 && days < 7 {
             f.dateFormat = "EEE"
             return f.string(from: d)

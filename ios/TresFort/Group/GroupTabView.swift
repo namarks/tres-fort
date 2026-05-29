@@ -14,6 +14,10 @@ struct GroupTabView: View {
     @State private var showJoin = false
     @State private var showAppSettings = false
     @State private var showGroupPicker = false
+    /// Per-group settings sheet (invite, leave, rename). Hoisted to the
+    /// parent so GroupDetailView doesn't add a second toolbar gear that
+    /// merges with the app-settings gear below — beta feedback #39.
+    @State private var showGroupSettings = false
 
     var body: some View {
         NavigationStack {
@@ -39,6 +43,19 @@ struct GroupTabView: View {
                             showCreate = true
                         } label: {
                             Label("Create group", systemImage: "plus.circle")
+                        }
+                        // Per-group settings live here (rather than as a
+                        // second toolbar gear) so we don't render two
+                        // identical gear icons next to each other in the
+                        // nav bar — beta feedback #39.
+                        if case .ready = groupModel.phase,
+                           groupModel.selectedGroup != nil {
+                            Divider()
+                            Button {
+                                showGroupSettings = true
+                            } label: {
+                                Label("Group settings…", systemImage: "person.2.gobackward")
+                            }
                         }
                     } label: {
                         Image(systemName: "plus")
@@ -103,7 +120,11 @@ struct GroupTabView: View {
             emptyState
         case .ready:
             if let g = groupModel.selectedGroup {
-                GroupDetailView(group: g, groupModel: groupModel, auth: auth)
+                GroupDetailView(
+                    group: g,
+                    groupModel: groupModel,
+                    auth: auth,
+                    showGroupSettings: $showGroupSettings)
             } else {
                 // Defensive: phase says ready but selection is missing.
                 // Should be unreachable (ensureSelection runs on load) but

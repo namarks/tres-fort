@@ -18,12 +18,21 @@ struct GroupDetailView: View {
     @Binding var showGroupSettings: Bool
 
     var body: some View {
-        ZStack {
+        // ZStack(alignment: .top) — defends against the layout regression
+        // where the default .center alignment let the VStack collapse to
+        // its intrinsic height (strip + non-expanding feedContent) and
+        // get vertically centered inside the screen-tall ZStack, pushing
+        // the chip strip ~150pt off the nav bar so only the top of the
+        // avatar peeked out above the feed (beta feedback follow-up).
+        // The strip + feed must anchor to the top regardless of whether
+        // the feed has items, is in its empty state, or is mid-load.
+        ZStack(alignment: .top) {
             Theme.background
             VStack(spacing: 0) {
                 memberStrip
                 feedContent
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .overlay(alignment: .bottomTrailing) {
                 Button {
                     showActivity = true
@@ -61,17 +70,19 @@ struct GroupDetailView: View {
 
     // MARK: - Member strip
 
-    /// Intrinsic height = MemberChip frame (110) + vert padding (14 × 2) = 138.
-    /// Locking it via `.frame(height:)` is the fix for beta feedback #39 —
-    /// without it, the VStack(spacing: 0) below gave the strip and the
-    /// feedContent ScrollView each half of the available vertical space,
-    /// which clipped the chip's avatar into a thin sliver at the bottom
-    /// of an oversized strip area.
+    /// Visible strip area. Holds the 110pt-tall MemberChip with 14pt of
+    /// breathing room top and bottom. Used by BOTH the inner HStack's
+    /// `.frame(height:)` (centers the chip via .center alignment on the
+    /// HStack) AND the outer ScrollView's `.frame(height:)` (locks the
+    /// strip's footprint in the parent VStack). Two-level frame is the
+    /// fix for the chip-clipping regression — the previous single-frame
+    /// approach allowed the chip to drift to the top edge of an
+    /// oversized strip area, leaving the avatar a sliver above the feed.
     private static let stripHeight: CGFloat = 138
 
     private var memberStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 14) {
+            HStack(alignment: .center, spacing: 14) {
                 let members = groupModel.stats[group.id] ?? []
                 ForEach(members) { m in
                     MemberChip(stat: m)
@@ -81,7 +92,16 @@ struct GroupDetailView: View {
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 14)
+            // Match the strip height exactly so the HStack fills its
+            // ScrollView content area top-to-bottom. Combined with the
+            // outer .frame(height:) below, this guarantees the chip's
+            // 110pt content is centered within the visible strip — the
+            // previous .padding(.vertical, 14) approach relied on the
+            // HStack's intrinsic height matching the outer frame, which
+            // SwiftUI didn't always honor inside a horizontal ScrollView
+            // (chips drifted to the top edge, leaving a sliver visible
+            // above the feed).
+            .frame(height: Self.stripHeight)
         }
         .frame(height: Self.stripHeight)
         .background(Theme.surface.opacity(0.5))

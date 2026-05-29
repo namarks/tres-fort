@@ -393,6 +393,33 @@ struct PendingActivity: Codable, Identifiable, Equatable {
     }
 }
 
+// MARK: - Account / profile
+
+/// Server-derived account + setup snapshot for the Profile tab
+/// (GET /api/me). Connection state comes from the SERVER (not a client
+/// mirror), so env/MCP-seeded intervals creds and the claude.ai connector
+/// both surface. The api_key is never sent (write-only).
+struct MeProfile: Decodable, Equatable {
+    let display_name: String?
+    let email: String?
+    let intervals: IntervalsStatus
+    let claude: ClaudeStatus
+
+    struct IntervalsStatus: Decodable, Equatable {
+        let connected: Bool
+        let athlete_id: String?
+    }
+
+    /// Claude coaching is single-owner. `is_owner` = this account is the one
+    /// Claude operates on. `connected` = owner AND the claude.ai connector is
+    /// authorized. `last_active` = most recent MCP write (epoch ms).
+    struct ClaudeStatus: Decodable, Equatable {
+        let is_owner: Bool
+        let connected: Bool
+        let last_active: Int?
+    }
+}
+
 // MARK: - Integrations (M1)
 
 /// Local mirror of the user's intervals.icu connection state. There's no

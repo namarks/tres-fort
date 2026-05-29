@@ -167,4 +167,11 @@ extension APIClient {
                           jwt: String) async throws -> GroupActivityResponse {
         try await get("api/groups/\(groupID)/activity?days=\(days)", jwt: jwt)
     }
+
+    /// GET /api/me — account + setup snapshot (intervals / Claude status)
+    /// for the Profile tab. Server-derived so it reflects creds the app
+    /// itself never set.
+    func getMe(jwt: String) async throws -> MeProfile {
+        try await get("api/me", jwt: jwt)
+    }
 }

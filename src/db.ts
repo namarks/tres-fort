@@ -434,6 +434,83 @@ function newInviteCode(): string {
 }
 
 /**
+ * Account/setup snapshot for the iOS Profile tab. Read-only; never returns
+ * the (write-only) intervals api_key. Connection state is derived from the
+ * SERVER, not a client mirror — so env/MCP-seeded intervals creds and the
+ * claude.ai connector both show up:
+ *   - intervals.connected = the user row has an athlete_id.
+ *   - claude: Claude coaching is SINGLE-OWNER — the MCP connector always
+ *     resolves to the owner account (ensureOwnerUser/findOwnerRow), so it
+ *     is only ever reported for the owner. The `oauth_tokens` table isn't
+ *     user-scoped, so a global "a grant exists" check would tell every
+ *     invited (non-owner) user the coach is connected the moment the owner
+ *     authorizes — while Claude never touches their data (Codex PR #50 P2).
+ *     Hence: `connected` = caller IS the owner AND a durable OAuth grant
+ *     (refresh_token) exists; `is_owner` lets the client phrase the
+ *     non-owner case ("managed by the owner") instead of a dead "connect"
+ *     CTA; `last_active` = the owner's most recent MCP write (audit_log
+ *     actor='mcp'; REST writes are actor='ios' and excluded).
+ */
+export interface MeProfile {
+  display_name: string | null;
+  email: string | null;
+  intervals: { connected: boolean; athlete_id: string | null };
+  claude: { is_owner: boolean; connected: boolean; last_active: number | null };
+}
+
+export async function getMeProfile(
+  db: D1Database,
+  userId: string,
+  ownerAppleSub: string | undefined,
+): Promise<MeProfile> {
+  const u = await db
+    .prepare('SELECT display_name, email, intervals_athlete_id FROM users WHERE id = ?1')
+    .bind(userId)
+    .first<{
+      display_name: string | null;
+      email: string | null;
+      intervals_athlete_id: string | null;
+    }>();
+
+  // Only the owner's account is coached by Claude (the connector resolves
+  // there), so Claude status is reported for the owner alone.
+  const owner = await findOwnerRow(db, ownerAppleSub);
+  const isOwner = !!owner && owner.id === userId;
+
+  let claudeConnected = false;
+  let lastActive: number | null = null;
+  if (isOwner) {
+    // A refresh_token is the durable grant claude.ai keeps — its presence
+    // means the connector is linked even after access tokens expire.
+    const grant = await db
+      .prepare('SELECT 1 AS x FROM oauth_tokens WHERE refresh_token IS NOT NULL LIMIT 1')
+      .first<{ x: number }>();
+    claudeConnected = !!grant;
+    const lastMcp = await db
+      .prepare(
+        "SELECT MAX(created_at) AS t FROM audit_log WHERE user_id = ?1 AND actor = 'mcp'",
+      )
+      .bind(userId)
+      .first<{ t: number | null }>();
+    lastActive = lastMcp?.t ?? null;
+  }
+
+  return {
+    display_name: u?.display_name ?? null,
+    email: u?.email ?? null,
+    intervals: {
+      connected: !!u?.intervals_athlete_id,
+      athlete_id: u?.intervals_athlete_id ?? null,
+    },
+    claude: {
+      is_owner: isOwner,
+      connected: claudeConnected,
+      last_active: lastActive,
+    },
+  };
+}
+
+/**
  * Create a group and add the creator as the first member. Returns the new
  * group row (without the auto-member — read it back via listGroupsForUser
  * if you need members hydrated). Audited as 'create_group' actor='ios'.

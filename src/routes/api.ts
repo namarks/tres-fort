@@ -14,6 +14,7 @@ import {
   getGroupActivitySeries,
   getGroupFeed,
   getGroupStats,
+  getMeProfile,
   getGroupWithMembers,
   getHistory,
   getOrCreateSession,
@@ -350,6 +351,15 @@ apiRoutes.delete('/activities/:id', async (c) => {
   const ok = await softDeleteActivity(c.env.DB, c.get('userId'), c.req.param('id'));
   if (!ok) return c.json({ error: 'not_found' }, 404);
   return c.json({ ok: true });
+});
+
+// GET /api/me — account/setup snapshot for the iOS Profile tab. Read-only;
+// derives intervals + Claude-connector status from the server so the app
+// reflects env/MCP-seeded creds and the claude.ai connector (which the
+// client otherwise has no way to see). Never returns the intervals api_key.
+apiRoutes.get('/me', async (c) => {
+  const userId = c.get('userId');
+  return c.json(await getMeProfile(c.env.DB, userId, c.env.OWNER_APPLE_SUB));
 });
 
 // ---- integrations: intervals.icu credentials (M1 multi-user) ------------

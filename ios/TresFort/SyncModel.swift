@@ -482,6 +482,29 @@ final class SyncModel: ObservableObject {
         return "Active"
     }
 
+    /// The headline noun for a NO-LIFT day — what the day "is" when no lift
+    /// is scheduled or logged. Endurance (Bike/Run/Swim/Active, from
+    /// intervals actuals + planned rides) wins; otherwise a user-logged
+    /// manual activity makes it a "<kind> day" (e.g. "Pilates"/"Walk"/
+    /// "Run", or "Active" for the generic/mixed cases); nil = a true rest
+    /// day. SEPARATE from `enduranceNoun` on purpose: enduranceNoun also
+    /// feeds the lift-day "+ BIKE" cross-training suffix, where folding a
+    /// Pilates log in would wrongly read "PUSH + ACTIVE". This helper is
+    /// only for the no-lift title/note/cell classification.
+    func noLiftDayNoun(on dateString: String) -> String? {
+        if let endurance = enduranceNoun(on: dateString) { return endurance }
+        let kinds = Set(manualActivities(on: dateString).map(\.type))
+        guard !kinds.isEmpty else { return nil }
+        // A single, nameable kind reads nicely as "PILATES DAY" / "WALK DAY".
+        // "other"/"lift" (→ "Lift (other)") and mixed kinds fall back to the
+        // generic "Active" — the activity card(s) below carry the specifics.
+        if kinds.count == 1, let only = kinds.first,
+           only != "other", only != "lift" {
+            return PendingActivity.label(for: only)
+        }
+        return "Active"
+    }
+
     /// Count of live (non-deleted) logged sets for the session on `ymd`, 0
     /// when there is no session or all its sets were deleted. An
     /// `in_progress` session with 0 here is a PHANTOM — sets were logged

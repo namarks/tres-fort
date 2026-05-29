@@ -220,9 +220,21 @@ struct CalendarView: View {
         let dayActivities = sync.activities(on: ymd)
         let hasActivity = !dayActivities.isEmpty
         let hasRide = !sync.rides(on: ymd).isEmpty
-        let hasEndurance = hasActivity || hasRide
-        let enduranceGlyph = hasActivity ? (dayActivities.first?.glyph ?? "figure.run") : "bicycle"
-        let enduranceColor: Color = hasActivity ? Theme.accent : Theme.muted
+        // User-logged manual activities (Pilates/walk/…) count as the day's
+        // identity too: a manual-only day is NOT a rest day. Precedence for
+        // the single primary glyph: completed intervals activity → logged
+        // manual activity → planned ride.
+        let dayManual = sync.manualActivities(on: ymd)
+        let hasManual = !dayManual.isEmpty
+        let hasEndurance = hasActivity || hasRide || hasManual
+        let enduranceGlyph = hasActivity
+            ? (dayActivities.first?.glyph ?? "figure.run")
+            : (hasManual
+                ? PendingActivity.glyph(for: dayManual.first?.type ?? "other")
+                : "bicycle")
+        // Completed work (intervals actual OR a logged manual activity) reads
+        // in accent; a bare planned ride stays muted.
+        let enduranceColor: Color = (hasActivity || hasManual) ? Theme.accent : Theme.muted
         // Endurance is a secondary corner badge ONLY when a lift or skip
         // already occupies the primary marker; on a no-lift day it becomes
         // the primary glyph below.
@@ -257,9 +269,10 @@ struct CalendarView: View {
                         .font(.system(size: 12))
                         .foregroundStyle(st.color)
                 } else if hasEndurance {
-                    // No lift, but a ride/run happened or is planned — this is
-                    // a BIKE (or run/swim) day, not a rest day. The endurance
-                    // glyph is the day's identity (replaces the rest moon).
+                    // No lift, but a ride/run happened or is planned, or the
+                    // user logged a manual activity (Pilates/walk/…) — this is
+                    // an active day, not a rest day. That activity's glyph is
+                    // the day's identity (replaces the rest moon).
                     Image(systemName: enduranceGlyph)
                         .font(.system(size: 13, weight: .bold))
                         .foregroundStyle(enduranceColor)

@@ -103,10 +103,11 @@ struct DayAgendaView: View {
         return "\(liftTitle) + \(noun.uppercased())"
     }
 
-    /// "BIKE DAY" / "RUN DAY" / … when this no-lift date carries endurance,
-    /// else "REST DAY". The single source for the no-lift title + note.
+    /// "BIKE DAY" / "PILATES DAY" / … when this no-lift date carries any
+    /// endurance OR a logged manual activity, else "REST DAY". The single
+    /// source for the no-lift title + note.
     private var restOrEnduranceTitle: String {
-        sync.enduranceNoun(on: dateString).map { "\($0.uppercased()) DAY" } ?? "REST DAY"
+        sync.noLiftDayNoun(on: dateString).map { "\($0.uppercased()) DAY" } ?? "REST DAY"
     }
 
     /// Live (non-deleted) logged-set count for this date's real session.
@@ -172,9 +173,10 @@ struct DayAgendaView: View {
                 note("Workout (template unavailable).")
             }
         case .rest, .none:
-            // A ride/run day reads "<noun> day — no lift scheduled" (the
-            // ride/activity cards render below); a bare rest day stays rest.
-            if let noun = sync.enduranceNoun(on: dateString) {
+            // A ride/run OR a logged manual activity reads "<noun> day — no
+            // lift scheduled" (the ride/activity cards render below); only a
+            // genuinely empty day stays "Rest day — nothing scheduled".
+            if let noun = sync.noLiftDayNoun(on: dateString) {
                 note("\(noun) day — no lift scheduled.")
             } else {
                 note("Rest day — nothing scheduled.")

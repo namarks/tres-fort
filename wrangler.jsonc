@@ -18,6 +18,17 @@
       "migrations_dir": "migrations"
     }
   ],
+  // R2 bucket fronts the exercise demo images (free-exercise-db frames,
+  // public domain). iOS first checks its bundled asset catalog for the
+  // foundational lifts; misses fall through to GET /api/exercises/:id/demo/:frame,
+  // which proxies from this bucket. Keys are `demos/{demo_slug}/{0|1}.webp`.
+  // Bucket must be created out-of-band: `wrangler r2 bucket create tres-fort-demos`.
+  "r2_buckets": [
+    {
+      "binding": "DEMOS",
+      "bucket_name": "tres-fort-demos"
+    }
+  ],
   // Cron: reconcile the intervals.icu planned-ride cache every 6 hours.
   // Invokes the `scheduled` handler in src/index.ts (syncExternalEvents).
   "triggers": { "crons": ["0 */6 * * *"] },

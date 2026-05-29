@@ -139,7 +139,7 @@ struct TodayView: View {
             // calendar uses), not a manual A/B default. in_progress
             // resumes into the runner via the existing start path.
             TodayWorkoutView(
-                sync: sync, day: day,
+                sync: sync, auth: auth, day: day,
                 onOverride: { showOverridePicker = true })
         } else {
             // Pure rest day (or skipped) — no primary START CTA.
@@ -387,8 +387,10 @@ private struct WorkoutDoneView: View {
 /// template), not a manual A/B default.
 private struct TodayWorkoutView: View {
     @ObservedObject var sync: SyncModel
+    @ObservedObject var auth: AuthModel
     let day: DayTemplate
     let onOverride: () -> Void
+    @State private var demoFor: TemplateExercise?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -398,9 +400,10 @@ private struct TodayWorkoutView: View {
                         .font(Theme.mono(11, .bold)).tracking(2)
                         .foregroundStyle(Theme.muted).padding(.bottom, 6)
                     ForEach(day.exercises) { ex in
-                        HStack {
+                        HStack(spacing: 8) {
                             Text(ex.exercise_name.uppercased())
                                 .font(Theme.display(22)).foregroundStyle(Theme.text)
+                            DemoInfoButton { demoFor = ex }
                             Spacer()
                             Text(ex.targetLabel)
                                 .font(Theme.mono(14)).foregroundStyle(Theme.muted)
@@ -429,6 +432,20 @@ private struct TodayWorkoutView: View {
             .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
             .disabled(day.exercises.isEmpty)
             .padding(16)
+        }
+        .sheet(item: $demoFor) { ex in
+            ExerciseDemoSheet(
+                exerciseID: ex.exercise_id,
+                name: ex.exercise_name,
+                primaryMuscle: sync.catalogRow(ex.exercise_id)?.primary_muscle
+                    ?? ex.exercise_modality,
+                secondaryMuscles: [],
+                modality: ex.exercise_modality,
+                laterality: ex.exercise_laterality ?? "bilateral",
+                loadMode: ex.exercise_load_mode ?? "total",
+                demoSlug: ex.exercise_demo_slug,
+                jwt: auth.jwt
+            )
         }
     }
 }

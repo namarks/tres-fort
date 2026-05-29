@@ -109,6 +109,13 @@ final class SyncModel: ObservableObject {
         catalog.first { $0.id == id }?.name ?? id
     }
 
+    /// Catalog row for an exercise id, or nil if unknown. Used by the demo
+    /// sheet to render the primary muscle/load-mode badges without a second
+    /// lookup table.
+    func catalogRow(_ id: String) -> ExerciseCatalog? {
+        catalog.first { $0.id == id }
+    }
+
     /// How many physical sides a logged set covers — 2 for unilateral
     /// exercises (Bulgarian split squat, lunge, one-arm row; reps logged
     /// per-side), 1 for everything else. Used by rollups to convert

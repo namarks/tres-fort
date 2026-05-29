@@ -17,6 +17,12 @@ export interface Env {
   INTERVALS_ICU_API_KEY?: string;
   /** intervals.icu athlete id (non-sensitive — lives in wrangler.jsonc vars). */
   INTERVALS_ICU_ATHLETE_ID?: string;
+  /**
+   * R2 bucket fronting exercise demo images (free-exercise-db frames,
+   * public domain). Optional so vitest envs without an R2 binding still
+   * type-check; the demo route 404s gracefully when unset.
+   */
+  DEMOS?: R2Bucket;
 }
 
 export type HonoEnv = {
@@ -126,6 +132,11 @@ export interface EnrichedTemplateExercise extends TemplateExerciseRow {
   exercise_laterality: string;
   /** 'total' | 'per_hand'. per_hand → weight is one dumbbell, shown "X each hand". */
   exercise_load_mode: string;
+  /** free-exercise-db slug (e.g. "Barbell_Squat") iOS uses to look up demo
+   * frames in the bundled asset catalog (foundational lifts) or fetch from
+   * the Worker-fronted R2 bucket. Null when no upstream demo exists
+   * (planks, holds, band/quadruped primitives) — sheet falls back to cues. */
+  exercise_demo_slug: string | null;
 }
 
 export interface PlanTree extends PlanRow {

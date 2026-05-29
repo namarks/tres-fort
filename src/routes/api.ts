@@ -269,7 +269,12 @@ apiRoutes.get('/exercises/:id/demo/:frame', async (c) => {
       // 1 year, immutable: slug+frame is the only address; we'd ship a new
       // slug to invalidate.
       'Cache-Control': 'public, max-age=31536000, immutable',
-      'ETag': obj.etag,
+      // httpEtag, not etag: R2's `etag` is the raw hex digest; `httpEtag`
+      // is the same value quoted per RFC 7232 (e.g. "\"abc123\""), which is
+      // what a conditional-request validator expects. Sending the raw form
+      // makes caches/intermediaries ignore the header on revalidation,
+      // undercutting the immutable caching this route is built for.
+      'ETag': obj.httpEtag,
     },
   });
 });

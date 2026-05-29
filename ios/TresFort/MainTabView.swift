@@ -14,8 +14,18 @@ struct MainTabView: View {
 
     init(auth: AuthModel) {
         self.auth = auth
-        _sync = StateObject(wrappedValue: SyncModel(auth: auth))
-        _groupModel = StateObject(wrappedValue: GroupModel(auth: auth))
+        let sync = SyncModel(auth: auth)
+        let groupModel = GroupModel(auth: auth)
+        // Bridge group-side activity writes to the personal calendar here in
+        // init — NOT in `.task` — so the closure is set before GroupTabView's
+        // own `.task { groupModel.load() }` can drain the outbox on launch.
+        // Setting it in a racing sibling task risked an early drain firing
+        // while the closure was still nil (calendar never refreshed for those
+        // rows). StateObject keeps the first instances, so the closure stays
+        // bound to the retained sync across re-inits.
+        groupModel.onActivityPersisted = { [weak sync] in await sync?.load() }
+        _sync = StateObject(wrappedValue: sync)
+        _groupModel = StateObject(wrappedValue: groupModel)
     }
 
     var body: some View {

@@ -11,6 +11,11 @@ final class SyncModel: ObservableObject {
     /// Read-only COMPLETED endurance activities (intervals.icu actuals),
     /// shown as "workouts completed". Already filtered to non-deleted.
     @Published var activities: [ExternalActivity] = []
+    /// User-authored manual activities (Pilates / walk / "lift elsewhere"
+    /// …) logged from the app or MCP. Personal log — surfaces on the
+    /// calendar regardless of group membership. Already filtered to
+    /// non-deleted at the cache boundary.
+    @Published var manualActivities: [ActivityRow] = []
     @Published var catalog: [ExerciseCatalog] = []
     @Published var todaySession: SessionRow?
     @Published var selectedDayID: String?
@@ -76,6 +81,9 @@ final class SyncModel: ObservableObject {
             rides = state.external_events.filter { !$0.isDeleted }
             // Same full-replace + tombstone-drop boundary as `rides`.
             activities = state.external_activities.filter { !$0.isDeleted }
+            // Manual activities: same full-replace, drop soft-deleted rows
+            // at the boundary so the calendar never renders a tombstone.
+            manualActivities = state.activities.filter { $0.deleted_at == nil }
             todaySession = state.sessions.first { $0.date == todayString }
             if selectedDayID == nil { selectedDayID = state.plan?.days.first?.id }
             if catalog.isEmpty {
@@ -449,6 +457,15 @@ final class SyncModel: ObservableObject {
         activities.filter { !$0.isDeleted && $0.date == dateString }
     }
 
+    /// Non-deleted manual activities (Pilates / walk / …) the user logged
+    /// for a `YYYY-MM-DD` date. Newest-logged first so the most recent
+    /// entry sits on top when several share a day.
+    func manualActivities(on dateString: String) -> [ActivityRow] {
+        manualActivities
+            .filter { $0.deleted_at == nil && $0.date == dateString }
+            .sorted { $0.logged_at > $1.logged_at }
+    }
+
     /// The endurance "noun" for a date — "Bike" / "Run" / "Swim" / "Active"
     /// — drawn from BOTH completed activities and planned rides, or nil when
     /// the date carries no cycling/endurance at all. A no-lift day with
@@ -462,6 +479,29 @@ final class SyncModel: ObservableObject {
         if kinds.contains("ride") { return "Bike" }
         if kinds.contains("run")  { return "Run" }
         if kinds.contains("swim") { return "Swim" }
+        return "Active"
+    }
+
+    /// The headline noun for a NO-LIFT day — what the day "is" when no lift
+    /// is scheduled or logged. Endurance (Bike/Run/Swim/Active, from
+    /// intervals actuals + planned rides) wins; otherwise a user-logged
+    /// manual activity makes it a "<kind> day" (e.g. "Pilates"/"Walk"/
+    /// "Run", or "Active" for the generic/mixed cases); nil = a true rest
+    /// day. SEPARATE from `enduranceNoun` on purpose: enduranceNoun also
+    /// feeds the lift-day "+ BIKE" cross-training suffix, where folding a
+    /// Pilates log in would wrongly read "PUSH + ACTIVE". This helper is
+    /// only for the no-lift title/note/cell classification.
+    func noLiftDayNoun(on dateString: String) -> String? {
+        if let endurance = enduranceNoun(on: dateString) { return endurance }
+        let kinds = Set(manualActivities(on: dateString).map(\.type))
+        guard !kinds.isEmpty else { return nil }
+        // A single, nameable kind reads nicely as "PILATES DAY" / "WALK DAY".
+        // "other"/"lift" (→ "Lift (other)") and mixed kinds fall back to the
+        // generic "Active" — the activity card(s) below carry the specifics.
+        if kinds.count == 1, let only = kinds.first,
+           only != "other", only != "lift" {
+            return PendingActivity.label(for: only)
+        }
         return "Active"
     }
 

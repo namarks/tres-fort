@@ -85,6 +85,15 @@ final class GroupModel: ObservableObject {
     private let api = APIClient()
     private unowned let auth: AuthModel
 
+    /// Fired after a manual activity is persisted, drained from the
+    /// outbox, or deleted. The owner (MainTabView) sets this to refresh
+    /// the SyncModel so the personal calendar reflects the change —
+    /// GroupModel and SyncModel are peers (no direct reference), so this
+    /// closure is the one-way bridge. A logged Pilates class must show on
+    /// the calendar whether it was logged from the Today tab, the group
+    /// FAB, or replayed from the offline outbox.
+    var onActivityPersisted: (() async -> Void)?
+
     init(auth: AuthModel) {
         self.auth = auth
         self.outbox = ActivityOutboxStore.load()
@@ -307,6 +316,9 @@ final class GroupModel: ObservableObject {
             if let gid = selectedGroupID {
                 await refreshFeed(groupID: gid)
             }
+            // Bridge to the personal calendar (SyncModel) — the activity
+            // must surface on the day it happened regardless of group.
+            await onActivityPersisted?()
         } catch let APIError.http(code, _) where (400..<500).contains(code) && code != 401 {
             // Validation failure → roll back the optimistic insert and
             // surface the error. 401 falls through to handle() → invalidate().
@@ -336,11 +348,13 @@ final class GroupModel: ObservableObject {
         // Snapshot the pending list so we can mutate `outbox` as we go
         // without invalidating the iteration.
         let pending = outbox.pending
+        var didPersist = false
         for entry in pending {
             do {
                 _ = try await api.logActivity(entry, jwt: jwt)
                 outbox.remove(id: entry.id)
                 ActivityOutboxStore.save(outbox)
+                didPersist = true
             } catch {
                 // Stop on the first network failure — no point hammering a
                 // dead network. Server-side 4xx is a permanent failure;
@@ -355,11 +369,18 @@ final class GroupModel: ObservableObject {
                 break
             }
         }
+        // Only refresh when something actually reached the server. If every
+        // item failed on a dead network (the `break` path), the feed +
+        // calendar are unchanged — kicking sync.load() here would just fire
+        // another doomed request and flash a transient load error on Today.
+        guard didPersist else { return }
         // Refresh the visible feed so any newly-sent rows surface from
         // the server (replacing the optimistic ones by id-match).
         if let gid = selectedGroupID {
             await refreshFeed(groupID: gid)
         }
+        // Newly-drained rows are now server-truth — refresh the calendar.
+        await onActivityPersisted?()
     }
 
     /// Delete a manual activity (my own row only — the server enforces).
@@ -372,6 +393,8 @@ final class GroupModel: ObservableObject {
             for gid in feed.keys {
                 feed[gid]?.removeAll { $0.id == id }
             }
+            // And drop it from the personal calendar.
+            await onActivityPersisted?()
         } catch {
             handle(error)
         }

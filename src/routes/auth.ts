@@ -3,35 +3,43 @@ import type { HonoEnv, User } from '../types';
 import { issueAppJwt, verifyAppleToken } from '../auth';
 import {
   claimOrCreateOwner,
-  createUserAndRedeemInvite,
   isBootstrapClaimEligible,
+  redeemInvite,
   upsertUser,
 } from '../db';
 
 export const authRoutes = new Hono<HonoEnv>();
 
-// POST /auth/apple  { identityToken, fullName?, invite_code? } -> { jwt, user }
+// POST /auth/apple  { identityToken, fullName?, invite_code? }
+//   -> { jwt, user, group_id? }
 //
-// M2 invite-gated sign-in. Four paths, evaluated in order:
+// Open sign-in. Four paths, evaluated in order:
 //
-//  1. Existing user (apple_sub already in users). Just re-issue a JWT —
-//     no invite needed, regardless of OWNER_APPLE_SUB.
-//  2. Bootstrap (OWNER_APPLE_SUB allowlist). If OWNER_APPLE_SUB is set
-//     AND the verified sub matches, claim/create the owner row (the
-//     original single-user behavior, preserved). Other subs are rejected
-//     here UNLESS they have a valid invite (path 4).
-//  3. Bootstrap (fresh install). If OWNER_APPLE_SUB is UNSET AND the
-//     users table is empty, the very first signer becomes the owner.
-//     This is the "I just deployed, no MCP bootstrap row exists" path.
-//  4. Invite. A new sub with a valid `invite_code` is created atomically
-//     alongside redemption — createUserAndRedeemInvite either fully
-//     succeeds (user + membership + audit) or rolls back the user row.
+//  1. Existing user (apple_sub already in users). Re-issue a JWT.
+//  2. OWNER_APPLE_SUB allowlist bootstrap. If OWNER_APPLE_SUB is set
+//     AND the verified sub matches, claim/create the owner row.
+//  3. Fresh-install / unclaimed-seed bootstrap. If OWNER_APPLE_SUB is
+//     UNSET AND `isBootstrapClaimEligible` returns true, this signer
+//     becomes the owner (claims the MCP bootstrap row if present).
+//  4. Any other new sub. Plain user creation, zero memberships. The user
+//     can create or join groups from the iOS Group tab later via
+//     POST /api/groups + POST /api/groups/join.
 //
-// Anything else → 403 not_invited. Critically: assertOwner is no longer
-// called here. With invites as the gate, a sub mismatching OWNER_APPLE_SUB
-// is not automatically forbidden — they just need a valid invite.
-// `assertOwner` is preserved in src/auth.ts for callers that still want
-// the single-owner allowlist semantic (none in tree today; see comment).
+// GROUPS REMAIN INVITE-ONLY: a user joins a group exclusively via a
+// valid invite code on POST /api/groups/join. Sign-in being open does
+// NOT make groups public.
+//
+// `invite_code` BACK-COMPAT (Codex PR#38 P2): the open-signin iOS UI
+// no longer renders an invite-code field on sign-in, but build 12 and
+// earlier (already shipped to TestFlight) still POST `invite_code`
+// from a "Have an invite code?" reveal. To avoid those clients landing
+// "signed in but never joined" after this Worker deploys, Path 4 will
+// also redeem a supplied code best-effort against the just-created
+// user. Success returns `group_id` (which legacy clients' AuthResponse
+// decoder picks up and uses to pre-select the group). Failure does
+// NOT block sign-in — the user is signed in normally and can paste a
+// fresh code from the in-app Group tab. New clients send no code and
+// the redemption step is a no-op for them.
 authRoutes.post('/apple', async (c) => {
   const body = await c.req.json<{
     identityToken?: string;
@@ -46,7 +54,7 @@ authRoutes.post('/apple', async (c) => {
     return c.json({ error: 'apple_verification_failed' }, 401);
   }
 
-  // Path 1: existing user — fast path, no invite required.
+  // Path 1: existing user — fast path.
   const existing = await c.env.DB
     .prepare('SELECT * FROM users WHERE apple_sub = ?1')
     .bind(claims.sub)
@@ -60,8 +68,7 @@ authRoutes.post('/apple', async (c) => {
   const ownerSubMatches = !!ownerSub && ownerSub === claims.sub;
   const ownerSubLocked = !!ownerSub;
 
-  // Path 2: OWNER_APPLE_SUB bootstrap (preserved). Claim the MCP-seeded
-  // bootstrap row if present, else create.
+  // Path 2: OWNER_APPLE_SUB bootstrap.
   if (ownerSubMatches) {
     const user = await claimOrCreateOwner(
       c.env.DB,
@@ -75,14 +82,9 @@ authRoutes.post('/apple', async (c) => {
   }
 
   // Path 3: bootstrap / claim. With OWNER_APPLE_SUB unset, the first
-  // Apple sub to sign in is the owner. Eligible when:
-  //   (a) users table is empty (fresh deploy), OR
-  //   (b) the only existing row is the MCP-seeded `mcp-owner` sentinel
-  //       that hasn't been bound to a real Apple identity yet — Claude's
-  //       MCP/OAuth path may have created that row before the first iOS
-  //       sign-in, and claimOrCreateOwner is built to rebind it.
-  // Without (b), the owner is silently locked out and falls through to
-  // not_invited even though they're entitled to the bootstrap row.
+  // Apple sub claims the owner row. Eligible when (a) users table is
+  // empty OR (b) the only existing row is the MCP-seeded bootstrap
+  // sentinel waiting to be bound to a real Apple identity.
   if (!ownerSubLocked && (await isBootstrapClaimEligible(c.env.DB))) {
     const user = await claimOrCreateOwner(
       c.env.DB,
@@ -95,27 +97,27 @@ authRoutes.post('/apple', async (c) => {
     return c.json({ jwt, user });
   }
 
-  // Path 4: invite. New Apple sub presenting a code.
+  // Path 4: any other new Apple sub. Open sign-in, zero memberships by
+  // default. upsertUser is safe here because Path 1 already returned for
+  // known subs: we reach here only with an unknown apple_sub, so this
+  // INSERTs.
+  const user = await upsertUser(c.env.DB, claims.sub, claims.email, body.fullName ?? null);
+  const jwt = await issueAppJwt(user.id, c.env.APP_JWT_SECRET);
+  // Back-compat shim for pre-open-signin clients (see file header). If
+  // a code was posted, best-effort redeem it against the just-created
+  // user. We do NOT fail sign-in on a bad code — the legacy UX was
+  // "type code → sign in → land in group"; failing the whole sign-in
+  // because the code was typo'd would be more hostile than the worst-
+  // case quiet success of "signed in but not in a group" (which the
+  // in-app Group tab's Join flow resolves).
   const code = typeof body.invite_code === 'string' ? body.invite_code.trim() : '';
-  if (!code) {
-    return c.json({ error: 'not_invited' }, 403);
+  if (code) {
+    const r = await redeemInvite(c.env.DB, code, user.id);
+    if ('ok' in r) {
+      return c.json({ jwt, user, group_id: r.group_id });
+    }
   }
-  const result = await createUserAndRedeemInvite(
-    c.env.DB,
-    claims.sub,
-    claims.email,
-    body.fullName ?? null,
-    code,
-  );
-  if ('error' in result) {
-    // Any invite-validation failure surfaces as not_invited at the auth
-    // layer — we never tell an unauthenticated caller WHICH way the code
-    // was bad (used vs expired vs unknown). The iOS client treats all
-    // three as "ask for a fresh code."
-    return c.json({ error: 'not_invited' }, 403);
-  }
-  const jwt = await issueAppJwt(result.user.id, c.env.APP_JWT_SECRET);
-  return c.json({ jwt, user: result.user, group_id: result.group_id });
+  return c.json({ jwt, user });
 });
 
 // POST /auth/dev  { secret }  -> { jwt, user }

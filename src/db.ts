@@ -129,11 +129,43 @@ export async function ensureOwnerUser(
   db: D1Database,
   ownerAppleSub: string | undefined,
 ): Promise<User> {
-  const existing = await db
-    .prepare('SELECT * FROM users ORDER BY created_at LIMIT 1')
-    .first<User>();
+  const existing = await findOwnerRow(db, ownerAppleSub);
   if (existing) return existing;
   return upsertUser(db, ownerAppleSub ?? BOOTSTRAP_APPLE_SUB, null, 'Owner');
+}
+
+/**
+ * Find the owner user row. Two semantics depending on whether the
+ * deployment has configured an OWNER_APPLE_SUB allowlist:
+ *
+ *  - ownerAppleSub SET → look up by apple_sub. The owner is specifically
+ *    the row whose apple_sub matches the configured allowlist; "earliest
+ *    user by created_at" would be wrong here because open sign-in (Path
+ *    4 in /auth/apple) can create non-owner accounts before the owner
+ *    ever signs in or MCP seeds the row. Treating a reviewer/new-user
+ *    row as the owner would attribute Claude's plan + sets + intervals
+ *    creds to the wrong user. (Codex PR #38 P1.)
+ *  - ownerAppleSub UNSET → fall back to "earliest by created_at." The
+ *    fresh-install/claim path (Path 3) ensures the earliest row is
+ *    always the rightful owner in this mode (no other path can create
+ *    a user before the owner has signed in or been bootstrap-seeded).
+ *
+ * Returns null when no matching row exists; the caller chooses whether
+ * to seed (ensureOwnerUser) or no-op (seedOwnerIntervalsCredsFromEnv).
+ */
+export async function findOwnerRow(
+  db: D1Database,
+  ownerAppleSub: string | undefined,
+): Promise<User | null> {
+  if (ownerAppleSub) {
+    return await db
+      .prepare('SELECT * FROM users WHERE apple_sub = ?1')
+      .bind(ownerAppleSub)
+      .first<User>();
+  }
+  return await db
+    .prepare('SELECT * FROM users ORDER BY created_at LIMIT 1')
+    .first<User>();
 }
 
 /**
@@ -304,22 +336,16 @@ export async function seedOwnerIntervalsCredsFromEnv(
   db: D1Database,
   apiKey: string | null | undefined,
   athleteId: string | null | undefined,
+  ownerAppleSub: string | undefined,
 ): Promise<IntervalsUserCreds[]> {
-  // Owner is the first user by created_at. The seed gate is OWNER-SPECIFIC:
-  // an early "any user has creds → done" check would skip the owner if a
-  // later-joined member happened to connect their intervals account before
-  // the first post-deploy sync (the owner would then lose ride syncing
-  // until they manually re-entered creds).
-  const owner = await db
-    .prepare(
-      `SELECT id, intervals_api_key, intervals_athlete_id
-         FROM users ORDER BY created_at LIMIT 1`,
-    )
-    .first<{
-      id: string;
-      intervals_api_key: string | null;
-      intervals_athlete_id: string | null;
-    }>();
+  // Resolve the owner row through findOwnerRow so OWNER_APPLE_SUB-set
+  // deployments don't accidentally seed env creds onto a non-owner row
+  // that happened to sign in first (Codex PR #38 P1). The seed gate is
+  // also OWNER-SPECIFIC: an early "any user has creds → done" check
+  // would skip the owner if a later-joined member happened to connect
+  // their intervals account before the first post-deploy sync (the
+  // owner would then lose ride syncing until they manually re-entered).
+  const owner = await findOwnerRow(db, ownerAppleSub);
   if (!owner) return listUsersWithIntervalsCreds(db);
   // Already seeded (or set via PATCH): no-op.
   if (owner.intervals_api_key && owner.intervals_athlete_id) {
@@ -592,10 +618,8 @@ export async function createInvite(
 }
 
 /**
- * Read-only invite lookup (no consumption). Used by /auth/apple BEFORE
- * creating the user to validate the code is good — if not, we reject
- * `not_invited` without touching the users table. Returns the row
- * regardless of used/expired state; the caller (redeemInvite) makes the
+ * Read-only invite lookup (no consumption). Returns the row regardless
+ * of used/expired state; the caller (redeemInvite) makes the
  * accept/reject call.
  */
 export async function getInviteForRedemption(
@@ -741,93 +765,6 @@ export async function countUsers(db: D1Database): Promise<number> {
     .prepare('SELECT COUNT(*) AS c FROM users')
     .first<{ c: number }>();
   return r?.c ?? 0;
-}
-
-/**
- * Atomic invite-gated user creation: validate code → create user → mark
- * invite used → insert group_members → audit. Used by /auth/apple when a
- * new Apple sub presents an invite.
- *
- * Atomicity strategy: we do a CHECK-THEN-WRITE under a single batch where
- * possible, and a re-check after the user insert. If the conditional
- * `UPDATE group_invites SET used_at = ?2 WHERE code = ?1 AND used_at IS NULL`
- * fails (someone else just redeemed in the small race window), we DELETE
- * the freshly-created user row to avoid a phantom account. The whole thing
- * happens before /auth/apple issues a JWT, so a partial-failure rollback is
- * invisible to the caller — they get `not_invited` and try again.
- *
- * Returns `{ ok: true, user }` on success, or `{ error: ... }` mirroring
- * the redeemInvite error set (`unknown`/`used`/`expired` — `already_member`
- * is unreachable here because the user didn't exist a moment ago).
- */
-export async function createUserAndRedeemInvite(
-  db: D1Database,
-  appleSub: string,
-  email: string | null,
-  displayName: string | null,
-  code: string,
-): Promise<
-  | { ok: true; user: User; group_id: string }
-  | { error: 'unknown' | 'used' | 'expired' }
-> {
-  // Pre-check: cheap reject before creating anything.
-  const invite = await getInviteForRedemption(db, code);
-  if (!invite) return { error: 'unknown' };
-  if (invite.used_at != null) return { error: 'used' };
-  if (invite.expires_at != null && invite.expires_at < now()) {
-    return { error: 'expired' };
-  }
-  // Create the user row.
-  const user = await upsertUser(db, appleSub, email, displayName);
-  const ts = now();
-  // Conditional consume — only wins if still unused. If we lose the race
-  // the user row stays (it represents a real new Apple identity even if
-  // they didn't get into a group), but we must signal failure so the
-  // route returns `not_invited` instead of issuing a JWT for a stranded
-  // account. To prevent phantom-account leakage, we delete the user row
-  // we just created IFF it was truly fresh (apple_sub was unseen before
-  // this call). upsertUser returns existing if seen, so we identify
-  // "fresh" by created_at == ts; but that's racy. Safer: re-read by
-  // apple_sub to confirm. The window is microseconds — fine.
-  const consumed = await db
-    .prepare(
-      `UPDATE group_invites
-          SET used_at = ?2, used_by = ?3
-        WHERE code = ?1 AND used_at IS NULL`,
-    )
-    .bind(code, ts, user.id)
-    .run();
-  if ((consumed.meta?.changes ?? 0) !== 1) {
-    // Race-loss. The user row is a new identity with no group attachment;
-    // since the entire point of this call was invite redemption, the
-    // safest behavior is to delete the just-created user. We only delete
-    // when the user_id has zero rows in EVERYTHING-else-tables (plans,
-    // sessions, etc.) — guaranteed here because this was the first call
-    // that ever referenced this user_id.
-    await db.prepare('DELETE FROM users WHERE id = ?1').bind(user.id).run();
-    // Re-check WHY consume failed so we return the most specific error.
-    const re = await getInviteForRedemption(db, code);
-    if (!re) return { error: 'unknown' };
-    if (re.used_at != null) return { error: 'used' };
-    if (re.expires_at != null && re.expires_at < now()) return { error: 'expired' };
-    // Defensive: should be unreachable. Treat as used (the safer signal).
-    return { error: 'used' };
-  }
-  await db
-    .prepare(
-      'INSERT INTO group_members (group_id,user_id,display_name,joined_at) VALUES (?1,?2,?3,?4)',
-    )
-    .bind(invite.group_id, user.id, null, ts)
-    .run();
-  await writeAudit(
-    db,
-    user.id,
-    'redeem_invite',
-    { group_id: invite.group_id, code, via: 'signup' },
-    'joined',
-    'ios',
-  );
-  return { ok: true, user, group_id: invite.group_id };
 }
 
 // ---- plan tree -----------------------------------------------------------
@@ -3795,6 +3732,7 @@ export async function syncExternalEvents(
       db,
       env.INTERVALS_ICU_API_KEY,
       env.INTERVALS_ICU_ATHLETE_ID,
+      deps.ownerSub ?? env.OWNER_APPLE_SUB,
     );
     if (seeded.length === 0) {
       // No user has creds AND env is unset → dormant no-op for everyone.
@@ -4019,6 +3957,7 @@ export async function syncExternalActivities(
       db,
       env.INTERVALS_ICU_API_KEY,
       env.INTERVALS_ICU_ATHLETE_ID,
+      deps.ownerSub ?? env.OWNER_APPLE_SUB,
     );
     if (seeded.length === 0) {
       return { status: 'disabled', synced: 0, detail: 'disabled' };

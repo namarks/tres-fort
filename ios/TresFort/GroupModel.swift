@@ -117,16 +117,7 @@ final class GroupModel: ObservableObject {
         do {
             let list = try await api.listGroups(jwt: jwt)
             groups = list
-            // Honor a fresh-after-redeem invite from /auth/apple — pre-
-            // select the group the user just joined so the tab opens to it
-            // instead of (potentially) some older group.
-            if let pending = auth.pendingGroupID,
-               list.contains(where: { $0.id == pending }) {
-                selectedGroupID = pending
-                auth.pendingGroupID = nil
-            } else {
-                ensureSelection()
-            }
+            ensureSelection()
             phase = list.isEmpty ? .none : .ready
             lastError = nil
             // Refresh the visible group's feed/stats so the tab is hot.

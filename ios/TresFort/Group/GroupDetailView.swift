@@ -12,6 +12,12 @@ struct GroupDetailView: View {
     @State private var showSettings = false
     @State private var selectedItem: FeedItem?
 
+    /// Per-group settings are routed through the parent GroupTabView's
+    /// "+" menu (binding below). Surfacing a SECOND gear in the toolbar
+    /// from here would merge with GroupTabView's app-settings gear and
+    /// show two identical icons — confusing UX, beta-feedback #39.
+    @Binding var showGroupSettings: Bool
+
     var body: some View {
         ZStack {
             Theme.background
@@ -35,23 +41,12 @@ struct GroupDetailView: View {
                 .accessibilityLabel("Log activity")
             }
         }
-        .navigationTitle(group.name.uppercased())
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { showSettings = true } label: {
-                    Image(systemName: "gearshape")
-                        .foregroundStyle(Theme.text)
-                }
-            }
-        }
-        .toolbarColorScheme(.dark, for: .navigationBar)
         .sheet(isPresented: $showActivity) {
             ManualActivitySheet { pending in
                 await groupModel.logActivity(pending)
             }
         }
-        .sheet(isPresented: $showSettings) {
+        .sheet(isPresented: $showGroupSettings) {
             GroupSettingsView(group: group, groupModel: groupModel, auth: auth)
         }
         .sheet(item: $selectedItem) { item in
@@ -67,6 +62,14 @@ struct GroupDetailView: View {
 
     // MARK: - Member strip
 
+    /// Intrinsic height = MemberChip frame (110) + vert padding (14 × 2) = 138.
+    /// Locking it via `.frame(height:)` is the fix for beta feedback #39 —
+    /// without it, the VStack(spacing: 0) below gave the strip and the
+    /// feedContent ScrollView each half of the available vertical space,
+    /// which clipped the chip's avatar into a thin sliver at the bottom
+    /// of an oversized strip area.
+    private static let stripHeight: CGFloat = 138
+
     private var memberStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 14) {
@@ -81,6 +84,7 @@ struct GroupDetailView: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 14)
         }
+        .frame(height: Self.stripHeight)
         .background(Theme.surface.opacity(0.5))
     }
 

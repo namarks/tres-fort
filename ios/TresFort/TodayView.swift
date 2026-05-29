@@ -57,20 +57,26 @@ struct TodayView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: 280)
                 }
+                // Dedicated "Log activity" affordance — promoted out of the
+                // overflow menu so logging an off-plan activity (Pilates,
+                // walk, "lifted elsewhere") is one tap from the Today tab and
+                // no longer feels tied to the Group tab. Same sheet the Group
+                // FAB opens; both call groupModel.logActivity, and the result
+                // now surfaces on the personal calendar regardless of groups.
+                if let onLogActivity {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            onLogActivity()
+                        } label: {
+                            Image(systemName: "plus.circle")
+                                .foregroundStyle(Theme.accent)
+                        }
+                        .accessibilityLabel("Log activity")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Refresh") { Task { await sync.load() } }
-                        if let onLogActivity {
-                            // M5: log Pilates/walk/etc. from the Today
-                            // toolbar — the natural moment-of-truth for "I
-                            // just did this". Same sheet as the Group tab's
-                            // FAB; both call groupModel.logActivity.
-                            Button {
-                                onLogActivity()
-                            } label: {
-                                Label("Log activity", systemImage: "plus.circle")
-                            }
-                        }
                         if sync.running {
                             Button("End workout", role: .destructive) {
                                 Task { await sync.finishWorkout() }

@@ -11,6 +11,11 @@ final class SyncModel: ObservableObject {
     /// Read-only COMPLETED endurance activities (intervals.icu actuals),
     /// shown as "workouts completed". Already filtered to non-deleted.
     @Published var activities: [ExternalActivity] = []
+    /// User-authored manual activities (Pilates / walk / "lift elsewhere"
+    /// …) logged from the app or MCP. Personal log — surfaces on the
+    /// calendar regardless of group membership. Already filtered to
+    /// non-deleted at the cache boundary.
+    @Published var manualActivities: [ActivityRow] = []
     @Published var catalog: [ExerciseCatalog] = []
     @Published var todaySession: SessionRow?
     @Published var selectedDayID: String?
@@ -76,6 +81,9 @@ final class SyncModel: ObservableObject {
             rides = state.external_events.filter { !$0.isDeleted }
             // Same full-replace + tombstone-drop boundary as `rides`.
             activities = state.external_activities.filter { !$0.isDeleted }
+            // Manual activities: same full-replace, drop soft-deleted rows
+            // at the boundary so the calendar never renders a tombstone.
+            manualActivities = state.activities.filter { $0.deleted_at == nil }
             todaySession = state.sessions.first { $0.date == todayString }
             if selectedDayID == nil { selectedDayID = state.plan?.days.first?.id }
             if catalog.isEmpty {
@@ -447,6 +455,15 @@ final class SyncModel: ObservableObject {
     /// Non-deleted COMPLETED activities for a `YYYY-MM-DD` date (read-only).
     func activities(on dateString: String) -> [ExternalActivity] {
         activities.filter { !$0.isDeleted && $0.date == dateString }
+    }
+
+    /// Non-deleted manual activities (Pilates / walk / …) the user logged
+    /// for a `YYYY-MM-DD` date. Newest-logged first so the most recent
+    /// entry sits on top when several share a day.
+    func manualActivities(on dateString: String) -> [ActivityRow] {
+        manualActivities
+            .filter { $0.deleted_at == nil && $0.date == dateString }
+            .sorted { $0.logged_at > $1.logged_at }
     }
 
     /// The endurance "noun" for a date — "Bike" / "Run" / "Swim" / "Active"

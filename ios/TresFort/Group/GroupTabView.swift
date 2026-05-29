@@ -14,6 +14,11 @@ struct GroupTabView: View {
     @State private var showJoin = false
     @State private var showAppSettings = false
     @State private var showGroupPicker = false
+    /// Manual-activity sheet for the no-group state. A user without a
+    /// group can still log an off-plan activity (it lands on their
+    /// personal calendar) — the affordance shouldn't require joining a
+    /// group first.
+    @State private var showLogActivity = false
     /// Per-group settings sheet (invite, leave, rename). Hoisted to the
     /// parent so GroupDetailView doesn't add a second toolbar gear that
     /// merges with the app-settings gear below — beta feedback #39.
@@ -80,6 +85,11 @@ struct GroupTabView: View {
             }
             .sheet(isPresented: $showAppSettings) {
                 AppSettingsView(groupModel: groupModel, auth: auth)
+            }
+            .sheet(isPresented: $showLogActivity) {
+                ManualActivitySheet { pending in
+                    await groupModel.logActivity(pending)
+                }
             }
             .confirmationDialog(
                 "Switch group",
@@ -163,6 +173,16 @@ struct GroupTabView: View {
                         .foregroundStyle(Theme.text)
                 }
             }
+            // Logging an activity doesn't require a group — it's a personal
+            // off-plan log that lands on your calendar. Offer it here so the
+            // no-group state isn't a dead end for someone who just wants to
+            // record a walk.
+            Button { showLogActivity = true } label: {
+                Label("Log an activity", systemImage: "plus.circle")
+                    .font(Theme.mono(12, .bold))
+                    .foregroundStyle(Theme.muted)
+            }
+            .padding(.top, 4)
         }
         .padding(32)
     }

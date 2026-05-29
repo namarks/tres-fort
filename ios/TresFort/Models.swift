@@ -345,11 +345,17 @@ struct StateResponse: Decodable {
     /// NEW (FROZEN CONTRACT): completed endurance activities (read-only
     /// "workouts completed"). Same defensive decode as external_events.
     let external_activities: [ExternalActivity]
+    /// User-authored manual activities (Pilates / walk / yoga / "lift
+    /// elsewhere" …) logged from the app or MCP. Keyed on user_id, NOT a
+    /// group — these render on the personal calendar regardless of group
+    /// membership. `/api/state` returns the full current non-deleted set
+    /// under `activities`. Same defensive decode: absent/null → [].
+    let activities: [ActivityRow]
     let server_time: Int
 
     private enum CodingKeys: String, CodingKey {
         case plan, plan_version, sessions, sets
-        case external_events, external_activities, server_time
+        case external_events, external_activities, activities, server_time
     }
 
     init(from decoder: Decoder) throws {
@@ -364,6 +370,9 @@ struct StateResponse: Decodable {
             .flatMap { $0 } ?? []
         external_activities =
             (try? c.decodeIfPresent([ExternalActivity].self, forKey: .external_activities))
+            .flatMap { $0 } ?? []
+        activities =
+            (try? c.decodeIfPresent([ActivityRow].self, forKey: .activities))
             .flatMap { $0 } ?? []
         server_time = try c.decode(Int.self, forKey: .server_time)
     }

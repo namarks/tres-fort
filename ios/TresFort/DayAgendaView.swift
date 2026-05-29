@@ -46,6 +46,7 @@ struct DayAgendaView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     header(proj, today: today)
                     content(proj, today: today)
+                    loggedActivitiesSection
                     completedActivitiesSection
                     ridesSection
                 }
@@ -275,6 +276,71 @@ struct DayAgendaView: View {
                 }
             }
         }
+    }
+
+    // MARK: user-logged manual activities (Pilates / walk / "lift elsewhere")
+    //
+    // Personal off-plan log — what the user did that wasn't on the schedule
+    // and didn't go through the workout runner. Authored from the app (Log
+    // activity) or MCP, keyed on the user, NOT a group: these render here
+    // regardless of group membership. Distinct from the intervals.icu
+    // actuals below (those are a server-reconciled cache with a frozen
+    // wire contract).
+
+    @ViewBuilder private var loggedActivitiesSection: some View {
+        let logged = sync.manualActivities(on: dateString)
+        if !logged.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Theme.accent)
+                    Text("LOGGED ACTIVITIES")
+                        .font(Theme.mono(11, .bold)).tracking(2)
+                        .foregroundStyle(Theme.muted)
+                }
+                ForEach(logged) { activity in
+                    loggedActivityCard(activity)
+                }
+            }
+        }
+    }
+
+    /// A manual activity row: kind glyph + title, then a compact line of
+    /// duration + kind label, then any notes. Mirrors the visual weight of
+    /// the completed-activity card below without the intervals stats grid.
+    private func loggedActivityCard(_ a: ActivityRow) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: PendingActivity.glyph(for: a.type))
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(Theme.accent)
+                Text((a.title?.isEmpty == false ? a.title! : PendingActivity.label(for: a.type))
+                    .uppercased())
+                    .font(Theme.display(20))
+                    .foregroundStyle(Theme.text)
+            }
+            HStack(spacing: 10) {
+                Text(PendingActivity.label(for: a.type))
+                    .font(Theme.mono(11, .bold)).tracking(1)
+                    .foregroundStyle(Theme.dim)
+                if let mins = a.duration_minutes, mins > 0 {
+                    Text("\(mins) MIN")
+                        .font(Theme.mono(11, .bold)).tracking(1)
+                        .foregroundStyle(Theme.dim)
+                }
+            }
+            if let notes = a.notes, !notes.trimmingCharacters(in: .whitespaces).isEmpty {
+                Text(notes)
+                    .font(Theme.mono(13))
+                    .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
     // MARK: read-only completed activities (intervals.icu actuals)

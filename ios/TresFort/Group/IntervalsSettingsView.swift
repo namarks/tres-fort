@@ -85,10 +85,13 @@ struct IntervalsSettingsView: View {
                         .foregroundStyle(.red)
                         .font(.footnote)
                 }
+                Link(destination: URL(string: "https://intervals.icu/settings")!) {
+                    Label("Open intervals.icu settings", systemImage: "arrow.up.right.square")
+                }
             } header: {
                 Text("Credentials")
             } footer: {
-                Text("Generate an API key at intervals.icu → Settings → Developer. Your athlete ID is in the URL when you visit your athlete page.")
+                Text("Find your API key under Settings → Developer. Your Athlete ID (like i123456) is in the address bar when you open your profile.")
             }
 
             if isConnected {

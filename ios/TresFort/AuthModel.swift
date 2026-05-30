@@ -19,15 +19,42 @@ final class AuthModel: ObservableObject {
     /// `is_me` — only /feed and /stats do).
     @Published var userID: String?
 
+    /// Drives whether RootView shows the first-run `OnboardingView` or the
+    /// main app. `false` ⇒ a brand-new sign-in that hasn't been guided
+    /// through setup yet. Persisted so it survives relaunch and never
+    /// re-fires once completed. See the grandfathering logic in `init`.
+    @Published var onboardingComplete: Bool
+
     private let api = APIClient()
     private static let userIDKey = "com.nmarkspdx.liftcoach.user-id.v1"
+    private static let onboardedKey = "com.nmarkspdx.liftcoach.onboarded.v1"
 
     init() {
-        if let token = Keychain.load() {
+        let token = Keychain.load()
+        if let token {
             jwt = token
             phase = .signedIn
         }
         userID = UserDefaults.standard.string(forKey: Self.userIDKey)
+        // First launch of a build that has onboarding: if the user is
+        // ALREADY signed in (an existing install updating in place), treat
+        // them as onboarded so the app update never drops a returning user
+        // back into the intro. Fresh installs (no keychain token) default to
+        // NOT onboarded → they get the guided setup right after their first
+        // sign-in. Sign-out does NOT reset this (invalidate leaves it), so a
+        // returning user re-signing in skips onboarding.
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: Self.onboardedKey) == nil {
+            defaults.set(token != nil, forKey: Self.onboardedKey)
+        }
+        onboardingComplete = defaults.bool(forKey: Self.onboardedKey)
+    }
+
+    /// Mark first-run setup done (finished or skipped through). Persists so
+    /// `OnboardingView` never shows again on this device.
+    func completeOnboarding() {
+        UserDefaults.standard.set(true, forKey: Self.onboardedKey)
+        onboardingComplete = true
     }
 
     func handleAppleResult(_ result: Result<ASAuthorization, Error>) {

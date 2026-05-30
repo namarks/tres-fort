@@ -67,6 +67,9 @@ export async function upsertUser(
     timezone: null,
     intervals_api_key: null,
     intervals_athlete_id: null,
+    intervals_oauth_access_token: null,
+    intervals_oauth_refresh_token: null,
+    intervals_oauth_expires_at: null,
   };
   await db
     .prepare(
@@ -247,10 +250,16 @@ export async function setUserTimezoneIfChanged(
 
 // ---- intervals.icu credentials (per-user; M1 multi-user foundation) ------
 
-/** A user paired with their intervals.icu credentials (both required). */
+/**
+ * A user paired with their intervals.icu credentials. `athlete_id` is always
+ * present; auth is EITHER `api_key` (HTTP Basic) OR `access_token` (OAuth
+ * Bearer) — for a connected user exactly one is non-null (intervals.ts
+ * prefers Bearer if both ever co-exist).
+ */
 export interface IntervalsUserCreds {
   user_id: string;
-  api_key: string;
+  api_key: string | null;
+  access_token: string | null;
   athlete_id: string;
 }
 
@@ -266,15 +275,22 @@ export async function listUsersWithIntervalsCreds(
 ): Promise<IntervalsUserCreds[]> {
   const r = await db
     .prepare(
-      `SELECT id, intervals_api_key, intervals_athlete_id
+      `SELECT id, intervals_api_key, intervals_oauth_access_token, intervals_athlete_id
          FROM users
-        WHERE intervals_api_key IS NOT NULL
-          AND intervals_athlete_id IS NOT NULL`,
+        WHERE intervals_athlete_id IS NOT NULL
+          AND (intervals_api_key IS NOT NULL
+               OR intervals_oauth_access_token IS NOT NULL)`,
     )
-    .all<{ id: string; intervals_api_key: string; intervals_athlete_id: string }>();
+    .all<{
+      id: string;
+      intervals_api_key: string | null;
+      intervals_oauth_access_token: string | null;
+      intervals_athlete_id: string;
+    }>();
   return r.results.map((row) => ({
     user_id: row.id,
     api_key: row.intervals_api_key,
+    access_token: row.intervals_oauth_access_token,
     athlete_id: row.intervals_athlete_id,
   }));
 }
@@ -283,15 +299,21 @@ export async function listUsersWithIntervalsCreds(
 export async function getUserIntervalsCreds(
   db: D1Database,
   userId: string,
-): Promise<{ api_key: string | null; athlete_id: string | null }> {
+): Promise<{ api_key: string | null; access_token: string | null; athlete_id: string | null }> {
   const r = await db
     .prepare(
-      `SELECT intervals_api_key AS api_key, intervals_athlete_id AS athlete_id
+      `SELECT intervals_api_key AS api_key,
+              intervals_oauth_access_token AS access_token,
+              intervals_athlete_id AS athlete_id
          FROM users WHERE id = ?1`,
     )
     .bind(userId)
-    .first<{ api_key: string | null; athlete_id: string | null }>();
-  return { api_key: r?.api_key ?? null, athlete_id: r?.athlete_id ?? null };
+    .first<{ api_key: string | null; access_token: string | null; athlete_id: string | null }>();
+  return {
+    api_key: r?.api_key ?? null,
+    access_token: r?.access_token ?? null,
+    athlete_id: r?.athlete_id ?? null,
+  };
 }
 
 /**
@@ -347,8 +369,10 @@ export async function seedOwnerIntervalsCredsFromEnv(
   // owner would then lose ride syncing until they manually re-entered).
   const owner = await findOwnerRow(db, ownerAppleSub);
   if (!owner) return listUsersWithIntervalsCreds(db);
-  // Already seeded (or set via PATCH): no-op.
-  if (owner.intervals_api_key && owner.intervals_athlete_id) {
+  // Already seeded (or set via PATCH / connected via OAuth): no-op. Checks
+  // BOTH auth schemes so an OAuth-connected owner (api_key NULL, token set)
+  // is recognised as already-connected and never env-seeded.
+  if ((owner.intervals_api_key || owner.intervals_oauth_access_token) && owner.intervals_athlete_id) {
     return listUsersWithIntervalsCreds(db);
   }
   // Owner has explicitly PATCHed their creds (set then cleared, possibly):
@@ -385,16 +409,103 @@ export async function setUserIntervalsCreds(
   athleteId: string | null,
 ): Promise<{ connected: boolean }> {
   const connect = !!(apiKey && athleteId);
+  // The API-key and OAuth schemes are mutually exclusive: writing an API key
+  // clears any OAuth token, and a disconnect (nulls) clears BOTH schemes'
+  // columns so "not connected" is unambiguous across the codebase.
   await db
     .prepare(
       `UPDATE users
           SET intervals_api_key = ?2,
-              intervals_athlete_id = ?3
+              intervals_athlete_id = ?3,
+              intervals_oauth_access_token = NULL,
+              intervals_oauth_refresh_token = NULL,
+              intervals_oauth_expires_at = NULL
         WHERE id = ?1`,
     )
     .bind(userId, connect ? apiKey : null, connect ? athleteId : null)
     .run();
   return { connected: connect };
+}
+
+/**
+ * Store a user's intervals.icu OAuth credentials — the /auth/intervals/callback
+ * success path. Sets the bearer token + the `athlete.id` the token exchange
+ * returned (into the shared `intervals_athlete_id` column) and CLEARS any
+ * prior API key (the two schemes are mutually exclusive; Bearer wins).
+ * `refreshToken` / `expiresAt` are stored when present — the documented
+ * intervals.icu token response carries neither (long-lived tokens), so both
+ * are typically null.
+ */
+export async function setUserIntervalsOAuth(
+  db: D1Database,
+  userId: string,
+  accessToken: string,
+  refreshToken: string | null,
+  expiresAt: number | null,
+  athleteId: string,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE users
+          SET intervals_oauth_access_token = ?2,
+              intervals_oauth_refresh_token = ?3,
+              intervals_oauth_expires_at = ?4,
+              intervals_athlete_id = ?5,
+              intervals_api_key = NULL
+        WHERE id = ?1`,
+    )
+    .bind(userId, accessToken, refreshToken, expiresAt, athleteId)
+    .run();
+}
+
+/**
+ * Mint a single-use OAuth `state` for the intervals.icu authorize→callback
+ * round-trip and map it to `userId`. The authenticated POST /auth/intervals/start
+ * calls this; the public GET /auth/intervals/callback resolves it back. The
+ * state doubles as CSRF protection (unguessable, single-use, short TTL).
+ */
+export async function createIntervalsOAuthState(
+  db: D1Database,
+  userId: string,
+  ttlMs = 10 * 60 * 1000,
+): Promise<string> {
+  const state =
+    crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+  const ts = now();
+  await db
+    .prepare(
+      `INSERT INTO intervals_oauth_states (state, user_id, created_at, expires_at)
+       VALUES (?1, ?2, ?3, ?4)`,
+    )
+    .bind(state, userId, ts, ts + ttlMs)
+    .run();
+  return state;
+}
+
+/**
+ * Resolve + CONSUME an intervals.icu OAuth `state` (single-use): returns the
+ * mapped user_id, or null if the state is unknown or expired. Deletes the row
+ * on lookup regardless of validity and opportunistically sweeps stale rows,
+ * so a replayed callback can't reuse a state.
+ */
+export async function consumeIntervalsOAuthState(
+  db: D1Database,
+  state: string,
+): Promise<string | null> {
+  const ts = now();
+  // ATOMIC single-use: DELETE … RETURNING removes the row and yields its value
+  // in one statement, so two concurrent callbacks (browser preload, double-tap,
+  // replay) can't both observe the same valid state — only one DELETE returns
+  // the row, the other gets nothing.
+  const row = await db
+    .prepare('DELETE FROM intervals_oauth_states WHERE state = ?1 RETURNING user_id, expires_at')
+    .bind(state)
+    .first<{ user_id: string; expires_at: number }>();
+  // Best-effort sweep of any OTHER now-expired rows (kept out of the atomic
+  // statement above so it never affects the single-use result).
+  await db.prepare('DELETE FROM intervals_oauth_states WHERE expires_at < ?1').bind(ts).run();
+  if (!row || row.expires_at < ts) return null;
+  return row.user_id;
 }
 
 // ---- groups + invites (M2) -----------------------------------------------
@@ -2732,6 +2843,9 @@ export async function exportSessionLoad(
   const apiKey = userCreds.api_key ?? (envFallbackOk ? env.INTERVALS_ICU_API_KEY : null);
   const athleteId =
     userCreds.athlete_id ?? (envFallbackOk ? env.INTERVALS_ICU_ATHLETE_ID : null);
+  // OAuth bearer token (no env fallback — env is the legacy API-key path).
+  // Passed to pushStrengthActivity so OAuth users export via Bearer.
+  const accessToken = userCreds.access_token;
 
   // Day name for a friendly activity title.
   let dayName = 'Lifting';
@@ -2818,7 +2932,7 @@ export async function exportSessionLoad(
         sessionId,
         ref,
       },
-      { fetcher: deps.fetcher, timeoutMs: deps.timeoutMs },
+      { fetcher: deps.fetcher, timeoutMs: deps.timeoutMs, accessToken },
     );
     if (upd.ok) {
       const ts2 = now();
@@ -3793,6 +3907,7 @@ export async function syncExternalEvents(
   let userId: string;
   let apiKey: string | null | undefined;
   let athleteId: string | null | undefined;
+  let accessToken: string | null | undefined;
   if (deps.userId) {
     userId = deps.userId;
     const creds = await getUserIntervalsCreds(db, userId);
@@ -3806,6 +3921,9 @@ export async function syncExternalEvents(
     apiKey = creds.api_key ?? (envFallbackOk ? env.INTERVALS_ICU_API_KEY : null);
     athleteId =
       creds.athlete_id ?? (envFallbackOk ? env.INTERVALS_ICU_ATHLETE_ID : null);
+    // OAuth bearer token rides alongside (no env fallback — env is the
+    // legacy API-key path only). intervals.ts prefers it over the API key.
+    accessToken = creds.access_token;
   } else {
     const owner = await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB);
     const seeded = await seedOwnerIntervalsCredsFromEnv(
@@ -3822,6 +3940,7 @@ export async function syncExternalEvents(
       userId = seeded[0]!.user_id;
       apiKey = seeded[0]!.api_key;
       athleteId = seeded[0]!.athlete_id;
+      accessToken = seeded[0]!.access_token;
     } else {
       // Multi-user fan-out. Sync each user's cache against THEIR creds; tag
       // the per-user user_id everywhere. Aggregate sums + worst-status semantics:
@@ -3854,7 +3973,12 @@ export async function syncExternalEvents(
     void owner;
   }
 
-  const fetched = await fetchPlannedEvents(apiKey, athleteId, { ...deps, today, windowDays });
+  const fetched = await fetchPlannedEvents(apiKey, athleteId, {
+    ...deps,
+    today,
+    windowDays,
+    accessToken,
+  });
   if (!fetched.ok) {
     // Disabled OR transient failure → DO NOT TOUCH the cache at all.
     return {
@@ -4018,6 +4142,7 @@ export async function syncExternalActivities(
   let userId: string;
   let apiKey: string | null | undefined;
   let athleteId: string | null | undefined;
+  let accessToken: string | null | undefined;
   if (deps.userId) {
     userId = deps.userId;
     const creds = await getUserIntervalsCreds(db, userId);
@@ -4031,6 +4156,9 @@ export async function syncExternalActivities(
     apiKey = creds.api_key ?? (envFallbackOk ? env.INTERVALS_ICU_API_KEY : null);
     athleteId =
       creds.athlete_id ?? (envFallbackOk ? env.INTERVALS_ICU_ATHLETE_ID : null);
+    // OAuth bearer token rides alongside (no env fallback — env is the
+    // legacy API-key path only). intervals.ts prefers it over the API key.
+    accessToken = creds.access_token;
   } else {
     const owner = await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB);
     const seeded = await seedOwnerIntervalsCredsFromEnv(
@@ -4046,6 +4174,7 @@ export async function syncExternalActivities(
       userId = seeded[0]!.user_id;
       apiKey = seeded[0]!.api_key;
       athleteId = seeded[0]!.athlete_id;
+      accessToken = seeded[0]!.access_token;
     } else {
       let total = 0;
       let agg: SyncStatus = 'disabled';
@@ -4071,7 +4200,12 @@ export async function syncExternalActivities(
     void owner;
   }
 
-  const fetched = await fetchCompletedActivities(apiKey, athleteId, { ...deps, today, pastDays });
+  const fetched = await fetchCompletedActivities(apiKey, athleteId, {
+    ...deps,
+    today,
+    pastDays,
+    accessToken,
+  });
   if (!fetched.ok) {
     return {
       status: fetched.reason === 'disabled' ? 'disabled' : 'fetch_failed',

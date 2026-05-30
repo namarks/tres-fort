@@ -36,7 +36,11 @@
   // measure pending push-based syncing (intervals.icu webhook).
   "triggers": { "crons": ["*/15 * * * *"] },
   "vars": {
-    "APPLE_BUNDLE_ID": "com.nmarkspdx.tresfort"
+    "APPLE_BUNDLE_ID": "com.nmarkspdx.tresfort",
+    // intervals.icu OAuth client id (non-sensitive — appears in authorize
+    // URLs). Issued by david@intervals.icu for app #431. The paired secret
+    // INTERVALS_OAUTH_CLIENT_SECRET is set via `wrangler secret put`.
+    "INTERVALS_OAUTH_CLIENT_ID": "431"
   }
   // Secrets (set via `wrangler secret put`, NOT committed):
   //   APP_JWT_SECRET        - HS256 signing key for app JWTs

@@ -18,6 +18,26 @@ export interface Env {
   /** intervals.icu athlete id (non-sensitive — lives in wrangler.jsonc vars). */
   INTERVALS_ICU_ATHLETE_ID?: string;
   /**
+   * intervals.icu OAuth client id (non-sensitive — lives in wrangler.jsonc
+   * vars). Issued by david@intervals.icu for the registered app. When unset,
+   * the OAuth "Connect with intervals.icu" flow is dormant (the start route
+   * 503s) and only the per-user API-key path is available.
+   */
+  INTERVALS_OAUTH_CLIENT_ID?: string;
+  /**
+   * intervals.icu OAuth client secret (a `wrangler secret put` secret — NEVER
+   * committed). Used server-side in the /auth/intervals/callback code→token
+   * exchange. Paired with INTERVALS_OAUTH_CLIENT_ID.
+   */
+  INTERVALS_OAUTH_CLIENT_SECRET?: string;
+  /**
+   * Optional canonical OAuth redirect URI. When set, used verbatim by BOTH
+   * /auth/intervals/start and /callback so a multi-hostname/proxy deployment
+   * can't derive mismatched origins (intervals.icu rejects a redirect_uri
+   * mismatch). Unset → derived from the request origin (fine single-host).
+   */
+  INTERVALS_OAUTH_REDIRECT_URI?: string;
+  /**
    * R2 bucket fronting exercise demo images (free-exercise-db frames,
    * public domain). Optional so vitest envs without an R2 binding still
    * type-check; the demo route 404s gracefully when unset.
@@ -44,8 +64,24 @@ export interface User {
    * NULL → that user's cycling-awareness is dormant (no fetch, no error).
    */
   intervals_api_key: string | null;
-  /** Per-user intervals.icu athlete id (paired with intervals_api_key). */
+  /**
+   * Per-user intervals.icu athlete id. Shared across BOTH auth schemes:
+   * the API-key path stores it directly; the OAuth callback stores the
+   * `athlete.id` returned by the token exchange into this same column. So
+   * `intervals_athlete_id != null` is the canonical "intervals connected"
+   * signal regardless of which auth backs it.
+   */
   intervals_athlete_id: string | null;
+  /**
+   * Per-user intervals.icu OAuth bearer token (0022). When set, intervals
+   * I/O uses `Authorization: Bearer <token>` and `intervals_api_key` is
+   * cleared. NULL → this user authenticates via the API key (or is dormant).
+   */
+  intervals_oauth_access_token: string | null;
+  /** OAuth refresh token, if the token response provided one (else NULL). */
+  intervals_oauth_refresh_token: string | null;
+  /** OAuth access-token expiry (epoch-ms), if known; NULL = no known expiry. */
+  intervals_oauth_expires_at: number | null;
 }
 
 export interface PlanRow {

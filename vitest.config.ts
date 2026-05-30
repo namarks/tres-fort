@@ -29,6 +29,12 @@ export default defineWorkersConfig(async () => {
               // stubbed — the suite makes ZERO real network calls.
               INTERVALS_ICU_API_KEY: 'test-intervals-key',
               INTERVALS_ICU_ATHLETE_ID: 'i12345',
+              // intervals.icu OAuth: test values so the /auth/intervals/start
+              // route is "configured" in tests. The /callback token exchange
+              // hits the network, so callback tests assert only the offline
+              // paths (bad/missing state, error param) — never the live POST.
+              INTERVALS_OAUTH_CLIENT_ID: '431',
+              INTERVALS_OAUTH_CLIENT_SECRET: 'test-oauth-secret',
             },
           },
         },

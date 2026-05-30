@@ -8,7 +8,11 @@ struct RootView: View {
         Group {
             switch model.phase {
             case .signedIn:
-                MainTabView(auth: model)
+                if model.onboardingComplete {
+                    MainTabView(auth: model)
+                } else {
+                    OnboardingView(auth: model)
+                }
             default:
                 ZStack {
                     Color.black.ignoresSafeArea()

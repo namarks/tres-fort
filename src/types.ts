@@ -31,6 +31,13 @@ export interface Env {
    */
   INTERVALS_OAUTH_CLIENT_SECRET?: string;
   /**
+   * Optional canonical OAuth redirect URI. When set, used verbatim by BOTH
+   * /auth/intervals/start and /callback so a multi-hostname/proxy deployment
+   * can't derive mismatched origins (intervals.icu rejects a redirect_uri
+   * mismatch). Unset → derived from the request origin (fine single-host).
+   */
+  INTERVALS_OAUTH_REDIRECT_URI?: string;
+  /**
    * R2 bucket fronting exercise demo images (free-exercise-db frames,
    * public domain). Optional so vitest envs without an R2 binding still
    * type-check; the demo route 404s gracefully when unset.

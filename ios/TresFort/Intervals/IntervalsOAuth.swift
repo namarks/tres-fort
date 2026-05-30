@@ -64,10 +64,15 @@ final class IntervalsWebAuth: NSObject, ASWebAuthenticationPresentationContextPr
                     }
                     return
                 }
-                let items =
-                    callbackURL
-                        .flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.queryItems }
-                        ?? []
+                guard let callbackURL else {
+                    // No error AND no callback URL → an interrupted/dismissed
+                    // session (a documented edge case). Treat it as a benign
+                    // cancel so the user can simply retry, not a hard failure.
+                    cont.resume(returning: false)
+                    return
+                }
+                let items = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?
+                    .queryItems ?? []
                 if items.first(where: { $0.name == "ok" })?.value == "1" {
                     cont.resume(returning: true)
                 } else {

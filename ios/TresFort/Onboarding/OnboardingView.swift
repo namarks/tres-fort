@@ -181,8 +181,11 @@ private struct ConnectIntervalsStep: View {
     @State private var error: String?
     @State private var showManual = false
 
-    private var canConnectManual: Bool { !apiKey.isEmpty && !athleteID.isEmpty && !saving }
     private var busy: Bool { saving || oauthRunning }
+    // Gate the manual connect on `busy` (not just `saving`) so it can't fire
+    // while the OAuth sheet is in flight — otherwise both success paths call
+    // onDone() and the step advances twice (skipping the coach step).
+    private var canConnectManual: Bool { !apiKey.isEmpty && !athleteID.isEmpty && !busy }
 
     var body: some View {
         VStack(spacing: 16) {

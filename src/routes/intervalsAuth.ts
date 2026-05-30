@@ -14,7 +14,7 @@
 // place it's used. The client ID is non-sensitive (it rides in authorize URLs)
 // and lives in wrangler.jsonc vars.
 import { Hono } from 'hono';
-import type { HonoEnv } from '../types';
+import type { Env, HonoEnv } from '../types';
 import { requireAppJwt } from '../auth';
 import {
   consumeIntervalsOAuthState,
@@ -31,9 +31,13 @@ export const intervalsAuthRoutes = new Hono<HonoEnv>();
 const SCOPES = 'ACTIVITY:READ,CALENDAR:WRITE';
 
 /** Where intervals.icu sends the browser back. MUST exactly match a redirect
- *  URI registered on the app's Manage App page (/oauth/client/<n>). */
-function callbackUrl(reqUrl: string): string {
-  return `${new URL(reqUrl).origin}/auth/intervals/callback`;
+ *  URI registered on the app's Manage App page (/oauth/client/<n>) AND be
+ *  byte-identical between /start and /callback (intervals rejects a mismatch).
+ *  Prefer an explicitly-configured value so a multi-hostname/proxy deployment
+ *  can't make the two requests derive different origins; fall back to the
+ *  request origin for the common single-host case. */
+function callbackUrl(env: Env, reqUrl: string): string {
+  return env.INTERVALS_OAUTH_REDIRECT_URI ?? `${new URL(reqUrl).origin}/auth/intervals/callback`;
 }
 
 /** Deep-link back into the iOS app; ASWebAuthenticationSession intercepts the
@@ -55,7 +59,7 @@ intervalsAuthRoutes.post('/start', requireAppJwt, async (c) => {
   const state = await createIntervalsOAuthState(c.env.DB, userId);
   const authorize = new URL('https://intervals.icu/oauth/authorize');
   authorize.searchParams.set('client_id', clientId);
-  authorize.searchParams.set('redirect_uri', callbackUrl(c.req.url));
+  authorize.searchParams.set('redirect_uri', callbackUrl(c.env, c.req.url));
   authorize.searchParams.set('scope', SCOPES);
   authorize.searchParams.set('state', state);
   authorize.searchParams.set('response_type', 'code');
@@ -65,8 +69,9 @@ intervalsAuthRoutes.post('/start', requireAppJwt, async (c) => {
 // GET /auth/intervals/callback — public browser redirect target.
 intervalsAuthRoutes.get('/callback', async (c) => {
   const q = c.req.query();
-  // User declined, or intervals returned an error.
-  if (q.error) return c.redirect(appReturn(false, q.error), 302);
+  // User declined, or intervals returned an error. Truncate the reflected
+  // value — it's attacker-influenceable and only needs to be a short hint.
+  if (q.error) return c.redirect(appReturn(false, q.error.slice(0, 64)), 302);
   const code = q.code;
   const state = q.state;
   if (!code || !state) return c.redirect(appReturn(false, 'missing_code'), 302);
@@ -97,7 +102,7 @@ intervalsAuthRoutes.get('/callback', async (c) => {
         // Sent for spec-compliance; intervals.icu's docs omit them but they
         // are harmless and match standard authorization_code exchanges.
         grant_type: 'authorization_code',
-        redirect_uri: callbackUrl(c.req.url),
+        redirect_uri: callbackUrl(c.env, c.req.url),
       }).toString(),
     });
   } catch {

@@ -369,8 +369,10 @@ export async function seedOwnerIntervalsCredsFromEnv(
   // owner would then lose ride syncing until they manually re-entered).
   const owner = await findOwnerRow(db, ownerAppleSub);
   if (!owner) return listUsersWithIntervalsCreds(db);
-  // Already seeded (or set via PATCH): no-op.
-  if (owner.intervals_api_key && owner.intervals_athlete_id) {
+  // Already seeded (or set via PATCH / connected via OAuth): no-op. Checks
+  // BOTH auth schemes so an OAuth-connected owner (api_key NULL, token set)
+  // is recognised as already-connected and never env-seeded.
+  if ((owner.intervals_api_key || owner.intervals_oauth_access_token) && owner.intervals_athlete_id) {
     return listUsersWithIntervalsCreds(db);
   }
   // Owner has explicitly PATCHed their creds (set then cleared, possibly):
@@ -490,15 +492,18 @@ export async function consumeIntervalsOAuthState(
   db: D1Database,
   state: string,
 ): Promise<string | null> {
+  const ts = now();
+  // ATOMIC single-use: DELETE … RETURNING removes the row and yields its value
+  // in one statement, so two concurrent callbacks (browser preload, double-tap,
+  // replay) can't both observe the same valid state — only one DELETE returns
+  // the row, the other gets nothing.
   const row = await db
-    .prepare('SELECT user_id, expires_at FROM intervals_oauth_states WHERE state = ?1')
+    .prepare('DELETE FROM intervals_oauth_states WHERE state = ?1 RETURNING user_id, expires_at')
     .bind(state)
     .first<{ user_id: string; expires_at: number }>();
-  const ts = now();
-  await db
-    .prepare('DELETE FROM intervals_oauth_states WHERE state = ?1 OR expires_at < ?2')
-    .bind(state, ts)
-    .run();
+  // Best-effort sweep of any OTHER now-expired rows (kept out of the atomic
+  // statement above so it never affects the single-use result).
+  await db.prepare('DELETE FROM intervals_oauth_states WHERE expires_at < ?1').bind(ts).run();
   if (!row || row.expires_at < ts) return null;
   return row.user_id;
 }

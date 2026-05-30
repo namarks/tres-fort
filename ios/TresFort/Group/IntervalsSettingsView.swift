@@ -107,7 +107,7 @@ struct IntervalsSettingsView: View {
                         Spacer()
                     }
                 }
-                .disabled(apiKey.isEmpty || athleteID.isEmpty || saving)
+                .disabled(apiKey.isEmpty || athleteID.isEmpty || saving || oauthRunning)
                 if let errorMessage {
                     Text(errorMessage)
                         .foregroundStyle(.red)

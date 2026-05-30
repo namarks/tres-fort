@@ -479,6 +479,24 @@ final class GroupModel: ObservableObject {
         await refreshMe()
     }
 
+    /// One-tap intervals.icu connect via OAuth: fetch the authorize URL, run
+    /// the ASWebAuthenticationSession sheet, and refresh the profile on a
+    /// connected callback. The bearer token is exchanged + stored server-side
+    /// (the app never sees it), so success is reflected purely by re-reading
+    /// `/api/me` (`me.intervals.connected`). Returns false when the user
+    /// dismissed the sheet — the caller treats that as a no-op, not an error.
+    @discardableResult
+    func connectIntervalsViaOAuth() async throws -> Bool {
+        guard let jwt = auth.jwt else {
+            throw APIError.http(401, "not_signed_in")
+        }
+        let url = try await api.startIntervalsOAuth(jwt: jwt)
+        let web = IntervalsWebAuth()
+        let connected = try await web.authorize(url)
+        if connected { await refreshMe() }
+        return connected
+    }
+
     // MARK: - Helpers
 
     /// The caller's effective display name in a given group — pull from

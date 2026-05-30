@@ -176,52 +176,87 @@ private struct ConnectIntervalsStep: View {
 
     @State private var apiKey = ""
     @State private var athleteID = ""
-    @State private var saving = false
+    @State private var saving = false        // manual (API-key) connect in flight
+    @State private var oauthRunning = false  // OAuth web-auth sheet in flight
     @State private var error: String?
+    @State private var showManual = false
 
-    private var canConnect: Bool { !apiKey.isEmpty && !athleteID.isEmpty && !saving }
+    private var canConnectManual: Bool { !apiKey.isEmpty && !athleteID.isEmpty && !saving }
+    private var busy: Bool { saving || oauthRunning }
 
     var body: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 16) {
             StepHeader(icon: "bicycle",
                        title: "Connect intervals.icu",
                        subtitle: "Ride or run? Connecting intervals.icu lets your coach see your cardio and balance it against your lifting. Only lift? Skip this.")
 
-            VStack(spacing: 12) {
-                SecureField("API key", text: $apiKey)
-                    .textContentType(.password)
-                    .textInputAutocapitalization(.never)
-                    .disableAutocorrection(true)
-                    .onboardingField()
-                TextField("Athlete ID (e.g. i123456)", text: $athleteID)
-                    .textInputAutocapitalization(.never)
-                    .disableAutocorrection(true)
-                    .onboardingField()
-            }
+            // Primary path: one-tap OAuth — log in to intervals.icu and approve.
+            OnboardingPrimaryButton(oauthRunning ? "Connecting…" : "Connect with intervals.icu",
+                                    enabled: !busy,
+                                    action: connectOAuth)
 
-            Link(destination: URL(string: "https://intervals.icu/settings")!) {
-                Label("Open intervals.icu settings", systemImage: "arrow.up.right.square")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Theme.accent)
+            if showManual {
+                VStack(spacing: 12) {
+                    SecureField("API key", text: $apiKey)
+                        .textContentType(.password)
+                        .textInputAutocapitalization(.never)
+                        .disableAutocorrection(true)
+                        .onboardingField()
+                    TextField("Athlete ID (e.g. i123456)", text: $athleteID)
+                        .textInputAutocapitalization(.never)
+                        .disableAutocorrection(true)
+                        .onboardingField()
+                    Link(destination: URL(string: "https://intervals.icu/settings")!) {
+                        Label("Open intervals.icu settings", systemImage: "arrow.up.right.square")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(Theme.accent)
+                    }
+                    Text("Find your API key under Settings → Developer. Your Athlete ID (like i123456) is in the address bar when you open your profile.")
+                        .font(.caption)
+                        .foregroundStyle(Theme.muted)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                    OnboardingPrimaryButton(saving ? "Connecting…" : "Connect with API key",
+                                            enabled: canConnectManual, action: connectManual)
+                }
+                .transition(.opacity)
+            } else {
+                Button {
+                    withAnimation(.snappy) { showManual = true }
+                } label: {
+                    Text("Use an API key instead")
+                        .font(.footnote)
+                        .foregroundStyle(Theme.muted)
+                }
             }
-            Text("Find your API key under Settings → Developer. Your Athlete ID (like i123456) is in the address bar when you open your profile.")
-                .font(.caption)
-                .foregroundStyle(Theme.muted)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
 
             if let error {
                 Text(error).font(.footnote).foregroundStyle(Theme.danger)
                     .multilineTextAlignment(.center)
             }
 
-            OnboardingPrimaryButton(saving ? "Connecting…" : "Connect",
-                                    enabled: canConnect, action: connect)
             OnboardingSkipButton("Skip for now", action: onSkip)
         }
     }
 
-    private func connect() {
+    private func connectOAuth() {
+        error = nil
+        oauthRunning = true
+        Task {
+            do {
+                let ok = try await groupModel.connectIntervalsViaOAuth()
+                oauthRunning = false
+                // `false` = the user dismissed the sheet → stay on the step so
+                // they can retry, fall back to a key, or skip.
+                if ok { onDone() }
+            } catch {
+                oauthRunning = false
+                self.error = "Couldn't connect to intervals.icu. Try again, or use an API key."
+            }
+        }
+    }
+
+    private func connectManual() {
         saving = true; error = nil
         let key = apiKey, id = athleteID
         Task {

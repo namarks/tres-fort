@@ -12,6 +12,8 @@ struct IntervalsSettingsView: View {
     @State private var athleteID: String = ""
     @State private var saving = false
     @State private var errorMessage: String?
+    @State private var oauthRunning = false
+    @State private var oauthError: String?
 
     /// "Connected" comes from the SERVER (GET /api/me) OR the local mirror
     /// (set when you connect from this device). Server-truth is what fixes
@@ -55,6 +57,32 @@ struct IntervalsSettingsView: View {
                 Text("intervals.icu")
             } footer: {
                 Text("We poll intervals.icu in the background for your planned rides and completed activities. Friends in your group see them in the feed.")
+            }
+
+            Section {
+                Button {
+                    connectOAuth()
+                } label: {
+                    HStack {
+                        Spacer()
+                        if oauthRunning {
+                            ProgressView()
+                        } else {
+                            Text(isConnected ? "Reconnect with intervals.icu"
+                                             : "Connect with intervals.icu")
+                                .bold()
+                        }
+                        Spacer()
+                    }
+                }
+                .disabled(oauthRunning || saving)
+                if let oauthError {
+                    Text(oauthError)
+                        .foregroundStyle(.red)
+                        .font(.footnote)
+                }
+            } footer: {
+                Text("One-tap: sign in to intervals.icu and approve. Or enter an API key below.")
             }
 
             Section {
@@ -106,6 +134,23 @@ struct IntervalsSettingsView: View {
         }
         .navigationTitle("Intervals.icu")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func connectOAuth() {
+        oauthRunning = true
+        oauthError = nil
+        Task {
+            do {
+                // On success, connectIntervalsViaOAuth refreshes /api/me, so
+                // `isConnected` flips via groupModel.me. A dismissed sheet
+                // returns false → no-op (stay put). Errors surface below.
+                _ = try await groupModel.connectIntervalsViaOAuth()
+                oauthRunning = false
+            } catch {
+                oauthError = "Couldn't connect to intervals.icu. Try again, or use an API key below."
+                oauthRunning = false
+            }
+        }
     }
 
     private func save() {

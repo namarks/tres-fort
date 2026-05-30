@@ -33,6 +33,13 @@ export interface FetchDeps {
   windowDays?: number;
   /** Per-request timeout in ms (default 10s). */
   timeoutMs?: number;
+  /**
+   * OAuth bearer access token. When present it takes precedence over the
+   * `apiKey` (Basic) argument — the request uses `Authorization: Bearer`.
+   * Lets the same fetchers serve both the legacy per-user API-key path and
+   * the OAuth path without changing their call signatures.
+   */
+  accessToken?: string | null;
 }
 
 export type FetchResult =
@@ -85,6 +92,22 @@ function str(v: unknown): string | null {
 }
 
 /**
+ * Resolve the `Authorization` header value for an intervals.icu request.
+ * Prefers OAuth (`Bearer <token>`) when an access token is supplied; falls
+ * back to the legacy HTTP Basic scheme (username "API_KEY", password = the
+ * key → base64("API_KEY:" + key)). Returns null when neither credential is
+ * present — callers treat that as the dormant "disabled" no-op (no fetch).
+ */
+function intervalsAuthHeader(
+  apiKey: string | null | undefined,
+  accessToken: string | null | undefined,
+): string | null {
+  if (accessToken) return `Bearer ${accessToken}`;
+  if (apiKey) return `Basic ${btoa(`API_KEY:${apiKey}`)}`;
+  return null;
+}
+
+/**
  * GET intervals.icu planned events in [today, today+windowDays]. Returns a
  * discriminated result:
  *   - {ok:true, events}     on 2xx + parseable body
@@ -98,8 +121,10 @@ export async function fetchPlannedEvents(
   athleteId: string | null | undefined,
   deps: FetchDeps = {},
 ): Promise<FetchResult> {
-  // Dormant when unconfigured: a clean no-op, never an error/throw.
-  if (!apiKey || !athleteId) return { ok: false, reason: 'disabled' };
+  // Dormant when unconfigured: a clean no-op, never an error/throw. Auth is
+  // OAuth Bearer when a token is supplied, else HTTP Basic with the API key.
+  const authHeader = intervalsAuthHeader(apiKey, deps.accessToken);
+  if (!authHeader || !athleteId) return { ok: false, reason: 'disabled' };
 
   const fetcher = deps.fetcher ?? (globalThis.fetch as unknown as Fetcher);
   const today = deps.today ?? todayLocal();
@@ -108,9 +133,6 @@ export async function fetchPlannedEvents(
   const url =
     `https://intervals.icu/api/v1/athlete/${encodeURIComponent(athleteId)}` +
     `/events?oldest=${today}&newest=${newest}`;
-  // intervals.icu uses HTTP Basic with username "API_KEY" and the key as
-  // the password: base64("API_KEY:" + key).
-  const authToken = btoa(`API_KEY:${apiKey}`);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 10_000);
@@ -118,7 +140,7 @@ export async function fetchPlannedEvents(
   try {
     res = await fetcher(url, {
       method: 'GET',
-      headers: { Authorization: `Basic ${authToken}`, Accept: 'application/json' },
+      headers: { Authorization: authHeader, Accept: 'application/json' },
       signal: controller.signal,
     });
   } catch {
@@ -192,6 +214,8 @@ export interface ActivityFetchDeps {
   pastDays?: number;
   /** Per-request timeout in ms (default 10s). */
   timeoutMs?: number;
+  /** OAuth bearer access token — see FetchDeps.accessToken. */
+  accessToken?: string | null;
 }
 
 export type ActivityFetchResult =
@@ -210,8 +234,10 @@ export async function fetchCompletedActivities(
   athleteId: string | null | undefined,
   deps: ActivityFetchDeps = {},
 ): Promise<ActivityFetchResult> {
-  // Dormant when unconfigured: a clean no-op, never an error/throw.
-  if (!apiKey || !athleteId) return { ok: false, reason: 'disabled' };
+  // Dormant when unconfigured: a clean no-op, never an error/throw. Auth is
+  // OAuth Bearer when a token is supplied, else HTTP Basic with the API key.
+  const authHeader = intervalsAuthHeader(apiKey, deps.accessToken);
+  if (!authHeader || !athleteId) return { ok: false, reason: 'disabled' };
 
   const fetcher = deps.fetcher ?? (globalThis.fetch as unknown as Fetcher);
   const today = deps.today ?? todayLocal();
@@ -220,8 +246,6 @@ export async function fetchCompletedActivities(
   const url =
     `https://intervals.icu/api/v1/athlete/${encodeURIComponent(athleteId)}` +
     `/activities?oldest=${oldest}&newest=${today}`;
-  // Same HTTP Basic scheme as the read/write paths.
-  const authToken = btoa(`API_KEY:${apiKey}`);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 10_000);
@@ -229,7 +253,7 @@ export async function fetchCompletedActivities(
   try {
     res = await fetcher(url, {
       method: 'GET',
-      headers: { Authorization: `Basic ${authToken}`, Accept: 'application/json' },
+      headers: { Authorization: authHeader, Accept: 'application/json' },
       signal: controller.signal,
     });
   } catch {
@@ -388,15 +412,20 @@ export async function pushStrengthActivity(
   apiKey: string | null | undefined,
   athleteId: string | null | undefined,
   activity: StrengthActivity,
-  deps: Pick<FetchDeps, 'fetcher' | 'timeoutMs'> = {},
+  deps: Pick<FetchDeps, 'fetcher' | 'timeoutMs' | 'accessToken'> = {},
 ): Promise<PushResult> {
-  // Dormant when unconfigured: clean no-op, never an error/throw.
-  if (!apiKey || !athleteId) return { ok: false, reason: 'disabled' };
+  // Dormant when unconfigured: clean no-op, never an error/throw. Auth is
+  // OAuth Bearer when a token is supplied, else HTTP Basic with the API key.
+  const authHeader = intervalsAuthHeader(apiKey, deps.accessToken);
+  if (!authHeader || !athleteId) return { ok: false, reason: 'disabled' };
+  // Capture the narrowed (non-null) header into a string-typed const so the
+  // nested `call` closure sees `string`, not `string | null` (TS doesn't
+  // propagate the guard's narrowing into nested function bodies).
+  const authValue: string = authHeader;
 
   const fetcher = deps.fetcher ?? (globalThis.fetch as unknown as Fetcher);
   const base =
     `https://intervals.icu/api/v1/athlete/${encodeURIComponent(athleteId)}/events`;
-  const authToken = btoa(`API_KEY:${apiKey}`);
   const marker = exportMarker(activity.sessionId);
   const timeoutMs = deps.timeoutMs ?? 10_000;
 
@@ -418,7 +447,7 @@ export async function pushStrengthActivity(
       res = await fetcher(url, {
         method,
         headers: {
-          Authorization: `Basic ${authToken}`,
+          Authorization: authValue,
           Accept: 'application/json',
           ...(jsonBody ? { 'Content-Type': 'application/json' } : {}),
         },

@@ -70,6 +70,7 @@ export async function upsertUser(
     intervals_oauth_access_token: null,
     intervals_oauth_refresh_token: null,
     intervals_oauth_expires_at: null,
+    intervals_auth_error_at: null,
   };
   await db
     .prepare(
@@ -299,20 +300,32 @@ export async function listUsersWithIntervalsCreds(
 export async function getUserIntervalsCreds(
   db: D1Database,
   userId: string,
-): Promise<{ api_key: string | null; access_token: string | null; athlete_id: string | null }> {
+): Promise<{
+  api_key: string | null;
+  access_token: string | null;
+  athlete_id: string | null;
+  auth_error_at: number | null;
+}> {
   const r = await db
     .prepare(
       `SELECT intervals_api_key AS api_key,
               intervals_oauth_access_token AS access_token,
-              intervals_athlete_id AS athlete_id
+              intervals_athlete_id AS athlete_id,
+              intervals_auth_error_at AS auth_error_at
          FROM users WHERE id = ?1`,
     )
     .bind(userId)
-    .first<{ api_key: string | null; access_token: string | null; athlete_id: string | null }>();
+    .first<{
+      api_key: string | null;
+      access_token: string | null;
+      athlete_id: string | null;
+      auth_error_at: number | null;
+    }>();
   return {
     api_key: r?.api_key ?? null,
     access_token: r?.access_token ?? null,
     athlete_id: r?.athlete_id ?? null,
+    auth_error_at: r?.auth_error_at ?? null,
   };
 }
 
@@ -380,6 +393,13 @@ export async function seedOwnerIntervalsCredsFromEnv(
   if (await userHasTouchedIntervalsCreds(db, owner.id)) {
     return listUsersWithIntervalsCreds(db);
   }
+  // A prior sync rejected the owner's credential (401/403 → markIntervalsAuthError
+  // cleared it and set this marker). Re-seeding the SAME dead env credential
+  // would just 401 again next tick — an infinite reconnect loop. Back off until
+  // the owner explicitly reconnects (which clears the marker).
+  if (owner.intervals_auth_error_at != null) {
+    return listUsersWithIntervalsCreds(db);
+  }
   // No env values to seed from → dormant.
   if (!apiKey || !athleteId) return listUsersWithIntervalsCreds(db);
   await db
@@ -419,7 +439,8 @@ export async function setUserIntervalsCreds(
               intervals_athlete_id = ?3,
               intervals_oauth_access_token = NULL,
               intervals_oauth_refresh_token = NULL,
-              intervals_oauth_expires_at = NULL
+              intervals_oauth_expires_at = NULL,
+              intervals_auth_error_at = NULL
         WHERE id = ?1`,
     )
     .bind(userId, connect ? apiKey : null, connect ? athleteId : null)
@@ -451,7 +472,8 @@ export async function setUserIntervalsOAuth(
               intervals_oauth_refresh_token = ?3,
               intervals_oauth_expires_at = ?4,
               intervals_athlete_id = ?5,
-              intervals_api_key = NULL
+              intervals_api_key = NULL,
+              intervals_auth_error_at = NULL
         WHERE id = ?1`,
     )
     .bind(userId, accessToken, refreshToken, expiresAt, athleteId)
@@ -565,7 +587,7 @@ function newInviteCode(): string {
 export interface MeProfile {
   display_name: string | null;
   email: string | null;
-  intervals: { connected: boolean; athlete_id: string | null };
+  intervals: { connected: boolean; athlete_id: string | null; needs_reauth: boolean };
   claude: { is_owner: boolean; connected: boolean; last_active: number | null };
 }
 
@@ -575,12 +597,15 @@ export async function getMeProfile(
   ownerAppleSub: string | undefined,
 ): Promise<MeProfile> {
   const u = await db
-    .prepare('SELECT display_name, email, intervals_athlete_id FROM users WHERE id = ?1')
+    .prepare(
+      'SELECT display_name, email, intervals_athlete_id, intervals_auth_error_at FROM users WHERE id = ?1',
+    )
     .bind(userId)
     .first<{
       display_name: string | null;
       email: string | null;
       intervals_athlete_id: string | null;
+      intervals_auth_error_at: number | null;
     }>();
 
   // Only the owner's account is coached by Claude (the connector resolves
@@ -612,6 +637,10 @@ export async function getMeProfile(
     intervals: {
       connected: !!u?.intervals_athlete_id,
       athlete_id: u?.intervals_athlete_id ?? null,
+      // A dead credential clears athlete_id (connected:false) AND sets the
+      // marker — so iOS can say "your intervals connection expired, reconnect"
+      // rather than the ambiguous "not connected".
+      needs_reauth: u?.intervals_auth_error_at != null,
     },
     claude: {
       is_owner: isOwner,
@@ -3870,6 +3899,155 @@ export interface SyncDeps extends FetchDeps {
   ownerSub?: string;
 }
 
+// ── intervals.icu auth-failure recovery ──────────────────────────────────
+// A 401/403 from intervals.icu means the credential is DEAD (expired or
+// revoked), not a transient outage — so it must NOT be swallowed as the
+// "leave the cache untouched and retry forever" fetch_failed (which is right
+// for a 5xx/timeout). Instead: try a token refresh once; if that is impossible
+// or also rejected, clear the credential and stamp `intervals_auth_error_at`
+// so the cron stops polling and iOS prompts a reconnect. The cache is still
+// left intact — we disconnect, we don't wipe ride history.
+
+/** True for a 401/403 auth rejection (vs disabled / 5xx / timeout / parse). */
+function isIntervalsAuthError(r: { ok: boolean; reason?: string; status?: number }): boolean {
+  return !r.ok && r.reason === 'http' && (r.status === 401 || r.status === 403);
+}
+
+/**
+ * Clear a user's intervals.icu credentials and stamp `intervals_auth_error_at`.
+ * Nulls BOTH auth schemes + the athlete id (canonical "disconnected") so the
+ * per-user sync enumeration drops them and getMeProfile reports needs_reauth.
+ * The cache rows are deliberately left intact.
+ *
+ * The credential clear and the system audit row go in ONE D1 batch (a
+ * transaction) so we can never end up disconnected-without-audit. This is the
+ * sole place the sync layer mutates user/audit state — a credential-lifecycle
+ * event (only a 401/403 reaches here; a 5xx/timeout never does), NOT a cache
+ * write, so the critical "leave the cache untouched on a failed fetch" guard is
+ * unaffected. actor='system' marks it as the auto-disconnect, distinct from a
+ * user PATCH.
+ */
+async function markIntervalsAuthError(db: D1Database, userId: string): Promise<void> {
+  const ts = now();
+  await db.batch([
+    db
+      .prepare(
+        `UPDATE users
+            SET intervals_api_key = NULL,
+                intervals_oauth_access_token = NULL,
+                intervals_oauth_refresh_token = NULL,
+                intervals_oauth_expires_at = NULL,
+                intervals_athlete_id = NULL,
+                intervals_auth_error_at = ?2
+          WHERE id = ?1`,
+      )
+      .bind(userId, ts),
+    db
+      .prepare(
+        `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+         VALUES (?1,?2,'system','intervals_auth_error',?3,'disconnected',?4)`,
+      )
+      .bind(
+        uuid(),
+        userId,
+        JSON.stringify({ disconnected: true, reason: 'auth_rejected' }),
+        ts,
+      ),
+  ]);
+}
+
+/**
+ * Best-effort OAuth refresh against intervals.icu's token endpoint. Returns a
+ * fresh access token on success, else null. DORMANT for current connections:
+ * intervals.icu's documented token response carries no refresh_token (tokens
+ * "appear long-lived" — intervalsAuth.ts), so a stored refresh_token is
+ * typically null and this returns null with NO network call. It activates only
+ * if a refresh_token was ever persisted — future-proofing against intervals
+ * adding token expiry. The fetcher is injectable so tests stay offline.
+ */
+async function tryRefreshIntervalsOAuth(
+  db: D1Database,
+  env: Env,
+  userId: string,
+  fetcher?: Fetcher,
+): Promise<string | null> {
+  const clientId = env.INTERVALS_OAUTH_CLIENT_ID;
+  const clientSecret = env.INTERVALS_OAUTH_CLIENT_SECRET;
+  if (!clientId || !clientSecret) return null;
+  const row = await db
+    .prepare(
+      `SELECT intervals_oauth_refresh_token AS rt, intervals_athlete_id AS aid
+         FROM users WHERE id = ?1`,
+    )
+    .bind(userId)
+    .first<{ rt: string | null; aid: string | null }>();
+  const refreshToken = row?.rt ?? null;
+  const athleteId = row?.aid ?? null;
+  if (!refreshToken || !athleteId) return null;
+
+  const f = fetcher ?? (globalThis.fetch as unknown as Fetcher);
+  let res: { ok: boolean; status: number; json: () => Promise<unknown> };
+  try {
+    res = await f('https://intervals.icu/api/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+      }).toString(),
+    });
+  } catch {
+    return null;
+  }
+  if (!res.ok) return null;
+  let body: { access_token?: unknown; refresh_token?: unknown; expires_in?: unknown };
+  try {
+    body = (await res.json()) as typeof body;
+  } catch {
+    return null;
+  }
+  const accessToken = typeof body.access_token === 'string' ? body.access_token : null;
+  if (!accessToken) return null;
+  // Keep the old refresh token if the response rotates none; honour expiry if given.
+  const newRefresh = typeof body.refresh_token === 'string' ? body.refresh_token : refreshToken;
+  const expiresAt =
+    typeof body.expires_in === 'number' && Number.isFinite(body.expires_in)
+      ? now() + body.expires_in * 1000
+      : null;
+  await setUserIntervalsOAuth(db, userId, accessToken, newRefresh, expiresAt, athleteId);
+  return accessToken;
+}
+
+/**
+ * Run an intervals.icu fetch with auth recovery. Runs `run(token)` once; on a
+ * 401/403 attempts ONE token refresh and retries; if still rejected (or no
+ * refresh possible) clears the credential and reports `reauthRequired`. Any
+ * other outcome (disabled / 5xx / timeout / success) passes straight through.
+ * Never throws into the sync path.
+ */
+async function fetchIntervalsWithAuthRecovery<
+  T extends { ok: boolean; reason?: string; status?: number },
+>(
+  db: D1Database,
+  env: Env,
+  userId: string,
+  accessToken: string | null | undefined,
+  fetcher: Fetcher | undefined,
+  run: (token: string | null | undefined) => Promise<T>,
+): Promise<{ result: T; reauthRequired: boolean }> {
+  let result = await run(accessToken);
+  if (!isIntervalsAuthError(result)) return { result, reauthRequired: false };
+  const refreshed = await tryRefreshIntervalsOAuth(db, env, userId, fetcher);
+  if (refreshed) {
+    result = await run(refreshed);
+    if (!isIntervalsAuthError(result)) return { result, reauthRequired: false };
+  }
+  await markIntervalsAuthError(db, userId);
+  return { result, reauthRequired: true };
+}
+
 /**
  * Pull intervals.icu planned events and reconcile the cache.
  *
@@ -3887,7 +4065,10 @@ export interface SyncDeps extends FetchDeps {
  *  - rows OUTSIDE the window are never touched (we didn't ask about them).
  *
  * Never bumps plans.version. Never writes a notes row. (The MCP action
- * wrapper writes the audit_log row — this layer stays pure data.)
+ * wrapper writes the audit_log row — this layer stays pure data.) The ONE
+ * exception is an upstream 401/403: that clears the dead credential and writes
+ * a system audit row via markIntervalsAuthError, because the cron has no MCP
+ * wrapper to record the auto-disconnect. The cache itself is still untouched.
  */
 export async function syncExternalEvents(
   db: D1Database,
@@ -3917,6 +4098,9 @@ export async function syncExternalEvents(
     const envFallbackOk =
       creds.api_key === null &&
       creds.athlete_id === null &&
+      // A dead-credential disconnect (401/403) also blocks the env fallback —
+      // otherwise we'd re-fall-back to the same env credential and 401 again.
+      creds.auth_error_at === null &&
       !(await userHasTouchedIntervalsCreds(db, userId));
     apiKey = creds.api_key ?? (envFallbackOk ? env.INTERVALS_ICU_API_KEY : null);
     athleteId =
@@ -3973,20 +4157,26 @@ export async function syncExternalEvents(
     void owner;
   }
 
-  const fetched = await fetchPlannedEvents(apiKey, athleteId, {
-    ...deps,
-    today,
-    windowDays,
+  const { result: fetched, reauthRequired } = await fetchIntervalsWithAuthRecovery(
+    db,
+    env,
+    userId,
     accessToken,
-  });
+    deps.fetcher,
+    (token) =>
+      fetchPlannedEvents(apiKey, athleteId, { ...deps, today, windowDays, accessToken: token }),
+  );
   if (!fetched.ok) {
-    // Disabled OR transient failure → DO NOT TOUCH the cache at all.
+    // Disabled OR transient failure → DO NOT TOUCH the cache at all. A dead
+    // credential (401/403) was just disconnected inside the recovery helper;
+    // `reauthRequired` tags the operator detail so the reconnect is visible.
     return {
       status: fetched.reason === 'disabled' ? 'disabled' : 'fetch_failed',
       synced: 0,
       detail:
         fetched.reason +
-        (fetched.reason === 'http' && 'status' in fetched ? `:${fetched.status}` : ''),
+        (fetched.reason === 'http' && 'status' in fetched ? `:${fetched.status}` : '') +
+        (reauthRequired ? ':reauth_required' : ''),
     };
   }
 
@@ -4152,6 +4342,9 @@ export async function syncExternalActivities(
     const envFallbackOk =
       creds.api_key === null &&
       creds.athlete_id === null &&
+      // A dead-credential disconnect (401/403) also blocks the env fallback —
+      // otherwise we'd re-fall-back to the same env credential and 401 again.
+      creds.auth_error_at === null &&
       !(await userHasTouchedIntervalsCreds(db, userId));
     apiKey = creds.api_key ?? (envFallbackOk ? env.INTERVALS_ICU_API_KEY : null);
     athleteId =
@@ -4200,19 +4393,25 @@ export async function syncExternalActivities(
     void owner;
   }
 
-  const fetched = await fetchCompletedActivities(apiKey, athleteId, {
-    ...deps,
-    today,
-    pastDays,
+  const { result: fetched, reauthRequired } = await fetchIntervalsWithAuthRecovery(
+    db,
+    env,
+    userId,
     accessToken,
-  });
+    deps.fetcher,
+    (token) =>
+      fetchCompletedActivities(apiKey, athleteId, { ...deps, today, pastDays, accessToken: token }),
+  );
   if (!fetched.ok) {
+    // Same guard as syncExternalEvents: transient/disabled leaves the cache
+    // untouched; a 401/403 was just disconnected inside the recovery helper.
     return {
       status: fetched.reason === 'disabled' ? 'disabled' : 'fetch_failed',
       synced: 0,
       detail:
         fetched.reason +
-        (fetched.reason === 'http' && 'status' in fetched ? `:${fetched.status}` : ''),
+        (fetched.reason === 'http' && 'status' in fetched ? `:${fetched.status}` : '') +
+        (reauthRequired ? ':reauth_required' : ''),
     };
   }
 

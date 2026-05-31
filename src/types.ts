@@ -82,6 +82,13 @@ export interface User {
   intervals_oauth_refresh_token: string | null;
   /** OAuth access-token expiry (epoch-ms), if known; NULL = no known expiry. */
   intervals_oauth_expires_at: number | null;
+  /**
+   * Epoch-ms when a sync last got 401/403 from intervals.icu and could not
+   * refresh — the credential is dead (expired/revoked). NULL = healthy. Set
+   * by the sync (markIntervalsAuthError), cleared on any (re)connect. Drives
+   * the env-seed/fallback back-off and the `needs_reauth` profile flag (0023).
+   */
+  intervals_auth_error_at: number | null;
 }
 
 export interface PlanRow {

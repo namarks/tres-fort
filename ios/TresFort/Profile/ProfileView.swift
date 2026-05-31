@@ -107,7 +107,10 @@ struct ProfileView: View {
                     Image(systemName: "bicycle").foregroundStyle(Theme.muted)
                     Text("intervals.icu")
                     Spacer()
-                    if groupModel.me?.intervals.connected == true {
+                    if groupModel.me?.intervals.needs_reauth == true {
+                        Text("Reconnect needed")
+                            .font(.footnote).foregroundStyle(.orange)
+                    } else if groupModel.me?.intervals.connected == true {
                         Text(groupModel.me?.intervals.athlete_id ?? "Connected")
                             .font(.footnote).foregroundStyle(.secondary)
                     } else {

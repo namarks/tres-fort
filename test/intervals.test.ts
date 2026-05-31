@@ -7,9 +7,11 @@ import {
 } from '../src/intervals';
 import {
   ensureOwnerUser,
+  getMeProfile,
   getRecentActivities,
   getState,
   getUpcomingRides,
+  setUserIntervalsCreds,
   syncExternalActivities,
   syncExternalEvents,
 } from '../src/db';
@@ -35,6 +37,27 @@ const httpErr = (status: number): Fetcher => async () => ({
   status,
   json: async () => ({}),
 });
+
+/** Seed a user authenticated via intervals OAuth (Bearer), optionally with a
+ *  refresh token. No refresh token = the current real-world case (intervals'
+ *  documented token response carries none), so a 401 goes straight to a
+ *  disconnect with no refresh attempt. */
+async function oauthUser(
+  accessToken: string,
+  athleteId: string,
+  refreshToken: string | null = null,
+): Promise<string> {
+  const id = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO users
+       (id,apple_sub,email,display_name,created_at,
+        intervals_oauth_access_token,intervals_oauth_refresh_token,intervals_athlete_id)
+     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)`,
+  )
+    .bind(id, `sub-${id}`, null, 'OAuth Rider', Date.now(), accessToken, refreshToken, athleteId)
+    .run();
+  return id;
+}
 const timeoutFetcher: Fetcher = async () => {
   throw new Error('network down');
 };
@@ -924,6 +947,178 @@ describe('M1: owner env-seed gate is owner-specific (not global)', () => {
       .first<{ intervals_api_key: string; intervals_athlete_id: string }>();
     expect(post!.intervals_api_key).toBe(env.INTERVALS_ICU_API_KEY);
     expect(post!.intervals_athlete_id).toBe(env.INTERVALS_ICU_ATHLETE_ID);
+  });
+});
+
+// ---- 0023: a 401/403 is a DEAD credential, not a transient outage --------
+//
+// Before this, a 401 collapsed into the generic fetch_failed (cache untouched,
+// retry forever) — so an expired/revoked token froze the cache silently for
+// weeks. Now a 401/403 attempts a refresh, then (failing that) clears the
+// credential + stamps intervals_auth_error_at so the cron stops polling and
+// the profile reports needs_reauth — WITHOUT wiping the cached history.
+describe('0023: intervals auth-failure recovery (401/403 → disconnect / refresh)', () => {
+  async function authErrorAt(userId: string): Promise<number | null> {
+    const r = await env.DB.prepare(
+      'SELECT intervals_auth_error_at AS e FROM users WHERE id = ?1',
+    )
+      .bind(userId)
+      .first<{ e: number | null }>();
+    return r?.e ?? null;
+  }
+
+  it('401 with no refresh token → disconnect: creds cleared, marker set, cache KEPT', async () => {
+    const userId = await oauthUser('dead-token', 'ath-x');
+    // A prior healthy sync seeded a cached ride.
+    await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([ev({ id: 'kept' })]),
+    } as any);
+
+    // Now intervals rejects the (expired/revoked) token.
+    const r = await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: httpErr(401),
+    } as any);
+    expect(r.status).toBe('fetch_failed');
+    expect(r.detail).toContain('reauth_required');
+
+    // Credential cleared + marker stamped (both auth schemes + athlete null).
+    const row = await env.DB.prepare(
+      `SELECT intervals_oauth_access_token AS tok, intervals_api_key AS key,
+              intervals_athlete_id AS aid, intervals_auth_error_at AS err
+         FROM users WHERE id = ?1`,
+    )
+      .bind(userId)
+      .first<{ tok: string | null; key: string | null; aid: string | null; err: number | null }>();
+    expect(row!.tok).toBeNull();
+    expect(row!.key).toBeNull();
+    expect(row!.aid).toBeNull();
+    expect(row!.err).not.toBeNull();
+
+    // The cached ride is UNTOUCHED — disconnect must not wipe history.
+    const live = await getUpcomingRides(env.DB, userId, { from: TODAY });
+    expect(live.map((x) => x.id)).toEqual([`intervals:${userId}:kept`]);
+
+    // A visible, system-attributed audit row records the auto-disconnect.
+    const audit = await env.DB.prepare(
+      "SELECT actor, result FROM audit_log WHERE user_id = ?1 AND tool = 'intervals_auth_error'",
+    )
+      .bind(userId)
+      .first<{ actor: string; result: string }>();
+    expect(audit).not.toBeNull();
+    expect(audit!.actor).toBe('system');
+    expect(audit!.result).toBe('disconnected');
+  });
+
+  it('getMeProfile surfaces needs_reauth after a 401 disconnect', async () => {
+    const userId = await oauthUser('dead-token', 'ath-y');
+    const before = await getMeProfile(env.DB, userId, undefined);
+    expect(before.intervals.connected).toBe(true);
+    expect(before.intervals.needs_reauth).toBe(false);
+
+    await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: httpErr(401),
+    } as any);
+
+    const after = await getMeProfile(env.DB, userId, undefined);
+    expect(after.intervals.connected).toBe(false);
+    expect(after.intervals.needs_reauth).toBe(true);
+  });
+
+  it('a 401 disconnect persists: the next sync is a dormant no-op (stops polling)', async () => {
+    const userId = await oauthUser('dead-token', 'ath-z');
+    await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: httpErr(403), // 403 is treated the same as 401
+    } as any);
+    expect(await authErrorAt(userId)).not.toBeNull();
+
+    // Even a fetcher that WOULD succeed is never called — creds are gone, so
+    // the per-user path is disabled until the user reconnects.
+    let called = false;
+    const spy: Fetcher = async () => {
+      called = true;
+      return { ok: true, status: 200, json: async () => [] };
+    };
+    const r = await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: spy,
+    } as any);
+    expect(r.status).toBe('disabled');
+    expect(called).toBe(false);
+  });
+
+  it('401 then a successful refresh recovers in-place (no disconnect)', async () => {
+    const userId = await oauthUser('old-token', 'ath-r', 'refresh-1');
+    let eventsCalls = 0;
+    let retriedAuthHeader = '';
+    // One stateful fetcher serves BOTH the /events call and the token refresh.
+    const fetcher: Fetcher = async (url, init) => {
+      if (url.includes('/oauth/token')) {
+        return { ok: true, status: 200, json: async () => ({ access_token: 'fresh-token' }) };
+      }
+      eventsCalls += 1;
+      if (eventsCalls === 1) {
+        return { ok: false, status: 401, json: async () => ({}) }; // old token rejected
+      }
+      retriedAuthHeader = init?.headers?.Authorization ?? '';
+      return { ok: true, status: 200, json: async () => [ev({ id: 'after-refresh' })] };
+    };
+
+    const r = await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher,
+    } as any);
+    expect(r.status).toBe('ok');
+    expect(r.synced).toBe(1);
+    // The retry used the refreshed bearer token, and the token was persisted.
+    expect(retriedAuthHeader).toBe('Bearer fresh-token');
+    const row = await env.DB.prepare(
+      'SELECT intervals_oauth_access_token AS tok, intervals_auth_error_at AS err FROM users WHERE id = ?1',
+    )
+      .bind(userId)
+      .first<{ tok: string | null; err: number | null }>();
+    expect(row!.tok).toBe('fresh-token');
+    expect(row!.err).toBeNull(); // recovered → no auth-error marker
+  });
+
+  it('completed-activities sync applies the same 401 disconnect', async () => {
+    const userId = await oauthUser('dead-token', 'ath-act');
+    const r = await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: httpErr(401),
+    } as any);
+    expect(r.status).toBe('fetch_failed');
+    expect(r.detail).toContain('reauth_required');
+    expect(await authErrorAt(userId)).not.toBeNull();
+  });
+
+  it('reconnect after a 401 clears the marker → needs_reauth flips back to false', async () => {
+    const userId = await oauthUser('dead-token', 'ath-reconnect');
+    await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: httpErr(401),
+    } as any);
+    expect((await getMeProfile(env.DB, userId, undefined)).intervals.needs_reauth).toBe(true);
+
+    // Reconnecting (PATCH /api/me/integrations/intervals → setUserIntervalsCreds)
+    // must clear the stale auth-error marker, else the user is stuck showing
+    // "reconnect needed" forever despite a fresh, working credential.
+    await setUserIntervalsCreds(env.DB, userId, 'fresh-key', 'ath-reconnect');
+    const me = await getMeProfile(env.DB, userId, undefined);
+    expect(me.intervals.connected).toBe(true);
+    expect(me.intervals.needs_reauth).toBe(false);
+    expect(await authErrorAt(userId)).toBeNull();
   });
 });
 

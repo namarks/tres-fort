@@ -461,10 +461,16 @@ final class GroupModel: ObservableObject {
         guard let jwt = auth.jwt else {
             throw APIError.http(401, "not_signed_in")
         }
+        // intervals.icu supports athlete id "0" = the athlete that owns the
+        // API key, so a blank Athlete ID is valid (#1094). Send "0" and the
+        // backend's .../athlete/{id}/... path resolves to the key's owner.
+        let resolvedAthlete =
+            athleteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "0" : athleteID
         _ = try await api.setIntervalsCredentials(
-            apiKey: apiKey, athleteID: athleteID, jwt: jwt)
+            apiKey: apiKey, athleteID: resolvedAthlete, jwt: jwt)
         intervalsConnection = IntervalsConnection(
-            athlete_id: athleteID,
+            athlete_id: resolvedAthlete,
             connected_at: Int(Date().timeIntervalSince1970 * 1000))
         await refreshMe()
     }

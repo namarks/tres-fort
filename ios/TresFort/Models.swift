@@ -43,7 +43,11 @@ struct TemplateExercise: Decodable, Identifiable, Equatable {
     /// when null, fall back to target_reps (the legacy timed convention).
     let target_duration_s: Int?
 
-    var isTimed: Bool { exercise_modality == "timed" }
+    // Timed when the catalog modality says so OR the slot carries an explicit
+    // target_duration_s (#952): a coach pinning a hold duration makes the slot
+    // timed regardless of modality — honor the explicit field over the
+    // heuristic, same spirit as the backend's day_template_id handling.
+    var isTimed: Bool { exercise_modality == "timed" || target_duration_s != nil }
     // Key off MODALITY, not unit: bw exercises (Pull-Up, Dead Bug) are
     // seeded with unit "lb" in the catalog, so checking the unit left the
     // weight field showing for them (bug #2). Modality is the truth.

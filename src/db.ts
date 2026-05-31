@@ -1341,7 +1341,28 @@ export async function getOrCreateSession(
     .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at LIMIT 1')
     .bind(userId, date)
     .first<SessionRow>();
-  if (existing && existing.status !== 'discarded') return existing;
+  if (existing && existing.status !== 'discarded') {
+    // #926: honor an EXPLICITLY-provided day_template_id on a row that
+    // doesn't have one yet. Most creators (GET /today, MCP log_set,
+    // logWorkoutComplete) pass null and let the weekly schedule resolve the
+    // template at display time — that's the "calendar is computed, not
+    // stored" design, so we must NOT auto-resolve from the schedule here
+    // (that would freeze a stale template if the schedule later changes).
+    // But when a caller (POST /api/sessions / iOS createSession) explicitly
+    // says "this date is day X", silently dropping it on an existing
+    // null-template row is the Today/session impedance mismatch the iOS UX
+    // had to paper over. Backfill ONLY a NULL slot; never clobber an
+    // existing pin.
+    if (dayTemplateId != null && existing.day_template_id == null) {
+      const ts = now();
+      await db
+        .prepare('UPDATE sessions SET day_template_id = ?2, updated_at = ?3 WHERE id = ?1')
+        .bind(existing.id, dayTemplateId, ts)
+        .run();
+      return { ...existing, day_template_id: dayTemplateId, updated_at: ts };
+    }
+    return existing;
+  }
   if (existing) {
     // The (user,date) row exists but was DISCARDED. "Discarded" means
     // "this never happened" — so a fresh get/start for the same date must

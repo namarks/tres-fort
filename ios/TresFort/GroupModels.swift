@@ -408,6 +408,10 @@ struct MeProfile: Decodable, Equatable {
     struct IntervalsStatus: Decodable, Equatable {
         let connected: Bool
         let athlete_id: String?
+        /// Server stamped an auth failure (token expired/revoked): the
+        /// connection is gone and the user must reconnect. Optional so an app
+        /// built before the server field shipped still decodes; nil == false.
+        let needs_reauth: Bool?
     }
 
     /// Claude coaching is single-owner. `is_owner` = this account is the one

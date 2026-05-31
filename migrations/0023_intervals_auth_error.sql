@@ -1,0 +1,24 @@
+-- 0023: surface intervals.icu auth failures so a dead token stops silently
+-- freezing the sync.
+--
+-- Before this, a 401/403 from intervals.icu collapsed into the same generic
+-- `fetch_failed` as a 5xx/timeout (syncExternalEvents/Activities in db.ts),
+-- whose contract is "DO NOT TOUCH the cache." Correct for a transient blip —
+-- but for an EXPIRED or REVOKED credential it meant the 15-min cron recorded
+-- the failure forever, the endurance cache stayed frozen at last-good, and the
+-- app kept confidently showing stale data for weeks with zero user-facing
+-- signal. (No OAuth token refresh existed either: intervalsAuth.ts only does
+-- grant_type=authorization_code; the stored refresh_token was never exchanged.)
+--
+-- `intervals_auth_error_at` (epoch-ms, NULL = healthy) is set when a sync gets
+-- 401/403 AND a token refresh is impossible or also fails. While set:
+--   * the cache is left intact (we disconnect, we don't wipe history);
+--   * the per-user sync drops out (tokens are cleared alongside the marker);
+--   * the env→DB seed and the env fallback back off, so a bad env credential
+--     is NOT re-seeded into an infinite 401 loop;
+--   * GET /api/me reports intervals.needs_reauth so iOS can prompt a reconnect.
+-- The connect paths (setUserIntervalsOAuth / setUserIntervalsCreds) clear it.
+--
+-- Additive + idempotent under D1's applyD1Migrations (the file runs once; the
+-- column is guaranteed absent on the prior schema). Matches 0016/0022.
+ALTER TABLE users ADD COLUMN intervals_auth_error_at INTEGER;

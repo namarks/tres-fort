@@ -43,16 +43,14 @@ struct TemplateExercise: Decodable, Identifiable, Equatable {
     /// when null, fall back to target_reps (the legacy timed convention).
     let target_duration_s: Int?
 
-    // Timed-ness keys off MODALITY only — and must stay that way for
-    // cross-view consistency: Today, DayAgendaView.setLine, and HistoryView
-    // all decide timed-ness from the catalog (the latter two via
-    // SyncModel.isTimedExercise). Do NOT also key off target_duration_s here:
-    // that field is only meaningful on timed-modality exercises, and
-    // broadening isTimed in this one path makes a non-timed slot render as a
-    // countdown in Today but a weighted rep set (e.g. "0 × 45") in history
-    // (Codex P2 on #58). The real #952 ask — use target_duration_s as the
-    // hold countdown — is already satisfied by holdSeconds below.
-    var isTimed: Bool { exercise_modality == "timed" }
+    // Timed when the catalog modality is "timed" OR the slot pins an explicit
+    // target_duration_s. Safe to honor target_duration_s now that LOGGED sets
+    // carry an authoritative per-set is_timed flag (backend migration 0024):
+    // the runner declares is_timed when logging (= this property), and
+    // history/agenda render off set.is_timed (SyncModel.isTimedSet), so a
+    // duration-pinned hold reads as "Ns" everywhere — no longer the cross-view
+    // "0 × 45" inconsistency (Codex P2 on #58) that forced modality-only.
+    var isTimed: Bool { exercise_modality == "timed" || target_duration_s != nil }
     // Key off MODALITY, not unit: bw exercises (Pull-Up, Dead Bug) are
     // seeded with unit "lb" in the catalog, so checking the unit left the
     // weight field showing for them (bug #2). Modality is the truth.
@@ -146,6 +144,11 @@ struct SetLog: Decodable, Identifiable {
     let is_warmup: Int
     let logged_at: Int
     let duration_s: Int?
+    /// 1 = a deliberate timed hold (render as "Ns"); 0/absent = a rep set.
+    /// Backend migration 0024. Optional so sets from a pre-0024 server still
+    /// decode — callers fall back to catalog modality when nil (see
+    /// SyncModel.isTimedSet).
+    let is_timed: Int?
     let deleted_at: Int?
 }
 

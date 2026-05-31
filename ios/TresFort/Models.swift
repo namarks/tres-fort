@@ -43,6 +43,15 @@ struct TemplateExercise: Decodable, Identifiable, Equatable {
     /// when null, fall back to target_reps (the legacy timed convention).
     let target_duration_s: Int?
 
+    // Timed-ness keys off MODALITY only — and must stay that way for
+    // cross-view consistency: Today, DayAgendaView.setLine, and HistoryView
+    // all decide timed-ness from the catalog (the latter two via
+    // SyncModel.isTimedExercise). Do NOT also key off target_duration_s here:
+    // that field is only meaningful on timed-modality exercises, and
+    // broadening isTimed in this one path makes a non-timed slot render as a
+    // countdown in Today but a weighted rep set (e.g. "0 × 45") in history
+    // (Codex P2 on #58). The real #952 ask — use target_duration_s as the
+    // hold countdown — is already satisfied by holdSeconds below.
     var isTimed: Bool { exercise_modality == "timed" }
     // Key off MODALITY, not unit: bw exercises (Pull-Up, Dead Bug) are
     // seeded with unit "lb" in the catalog, so checking the unit left the

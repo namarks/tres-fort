@@ -90,7 +90,7 @@ struct IntervalsSettingsView: View {
                             text: $apiKey)
                     .textInputAutocapitalization(.never)
                     .disableAutocorrection(true)
-                TextField("Athlete ID (e.g. i12345)", text: $athleteID)
+                TextField("Athlete ID (optional)", text: $athleteID)
                     .textInputAutocapitalization(.never)
                     .disableAutocorrection(true)
                 Button {
@@ -107,7 +107,8 @@ struct IntervalsSettingsView: View {
                         Spacer()
                     }
                 }
-                .disabled(apiKey.isEmpty || athleteID.isEmpty || saving || oauthRunning)
+                // Athlete ID optional (#1094): only the API key is required.
+                .disabled(apiKey.isEmpty || saving || oauthRunning)
                 if let errorMessage {
                     Text(errorMessage)
                         .foregroundStyle(.red)

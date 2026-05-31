@@ -185,7 +185,9 @@ private struct ConnectIntervalsStep: View {
     // Gate the manual connect on `busy` (not just `saving`) so it can't fire
     // while the OAuth sheet is in flight — otherwise both success paths call
     // onDone() and the step advances twice (skipping the coach step).
-    private var canConnectManual: Bool { !apiKey.isEmpty && !athleteID.isEmpty && !busy }
+    // Athlete ID is OPTIONAL (#1094): blank → "0" (the athlete owning the
+    // key), so only the API key is required to connect.
+    private var canConnectManual: Bool { !apiKey.isEmpty && !busy }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -205,7 +207,7 @@ private struct ConnectIntervalsStep: View {
                         .textInputAutocapitalization(.never)
                         .disableAutocorrection(true)
                         .onboardingField()
-                    TextField("Athlete ID (e.g. i123456)", text: $athleteID)
+                    TextField("Athlete ID (optional)", text: $athleteID)
                         .textInputAutocapitalization(.never)
                         .disableAutocorrection(true)
                         .onboardingField()
@@ -214,7 +216,7 @@ private struct ConnectIntervalsStep: View {
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(Theme.accent)
                     }
-                    Text("Find your API key under Settings → Developer. Your Athlete ID (like i123456) is in the address bar when you open your profile.")
+                    Text("Find your API key under Settings → Developer. Athlete ID is optional — leave it blank and we'll use the athlete tied to your key.")
                         .font(.caption)
                         .foregroundStyle(Theme.muted)
                         .multilineTextAlignment(.center)

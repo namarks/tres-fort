@@ -1355,11 +1355,27 @@ export async function getOrCreateSession(
     // existing pin.
     if (dayTemplateId != null && existing.day_template_id == null) {
       const ts = now();
-      await db
-        .prepare('UPDATE sessions SET day_template_id = ?2, updated_at = ?3 WHERE id = ?1')
+      // Conditional UPDATE guards a read-then-write race: two explicit POSTs
+      // for the same null-template date can both read day_template_id == null,
+      // so an unconditional write would let the second clobber the first pin.
+      // `WHERE … AND day_template_id IS NULL` means only the FIRST writer's
+      // update affects a row; a racing second writer matches 0 rows and falls
+      // through to re-read the winning pin. (Codex P2 on #58.)
+      const res = await db
+        .prepare(
+          'UPDATE sessions SET day_template_id = ?2, updated_at = ?3 WHERE id = ?1 AND day_template_id IS NULL',
+        )
         .bind(existing.id, dayTemplateId, ts)
         .run();
-      return { ...existing, day_template_id: dayTemplateId, updated_at: ts };
+      if (res.meta.changes > 0) {
+        return { ...existing, day_template_id: dayTemplateId, updated_at: ts };
+      }
+      // Lost the race — another writer pinned it first. Return the winner.
+      const fresh = await db
+        .prepare('SELECT * FROM sessions WHERE id = ?1')
+        .bind(existing.id)
+        .first<SessionRow>();
+      return fresh ?? existing;
     }
     return existing;
   }

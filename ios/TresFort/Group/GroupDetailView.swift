@@ -35,9 +35,18 @@ struct GroupDetailView: View {
         ZStack {
             Theme.background
             ScrollView {
-                LazyVStack(spacing: 14) {
+                VStack(spacing: 14) {
+                    // The member strip is FIXED top content (a handful of
+                    // member rows). Keep it in an EAGER VStack — inside the
+                    // LazyVStack its height was estimated lazily at the top
+                    // of the scroll, leaving a tall empty gap with just the
+                    // avatar peeking (the "top section looks cut off" report,
+                    // #46/#47; the same strip-vs-scroll fight as #41/#44/#45).
+                    // Only the open-ended feed needs laziness.
                     activitySection
-                    feedSection
+                    LazyVStack(spacing: 14) {
+                        feedSection
+                    }
                 }
                 .padding(16)
                 .padding(.bottom, 96)   // clear the floating FAB
@@ -80,6 +89,10 @@ struct GroupDetailView: View {
             let series = groupModel.activitySeries[group.id] ?? []
             let seriesByUser = Dictionary(
                 series.map { ($0.user_id, $0) }, uniquingKeysWith: { a, _ in a })
+            // Name the section so its purpose reads at a glance — each row
+            // is a member's training consistency for the selected range
+            // ("I don't get the point of the section", #46).
+            sectionHeader("WHO'S TRAINING")
             rangePicker
             ForEach(members) { m in
                 MemberActivityRow(

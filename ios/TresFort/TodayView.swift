@@ -124,7 +124,7 @@ struct TodayView: View {
         } else if sync.finished {
             FinishedView(sync: sync)
         } else if sync.running {
-            RunnerView(sync: sync)
+            RunnerView(sync: sync, auth: auth)
         } else if sync.plan == nil {
             VStack(spacing: 8) {
                 Text("NO PLAN YET").font(Theme.display(28)).foregroundStyle(Theme.text)
@@ -529,6 +529,7 @@ private struct ProgressBar: View {
 
 private struct RunnerView: View {
     @ObservedObject var sync: SyncModel
+    @ObservedObject var auth: AuthModel
 
     /// Tap-to-edit on the big weight number → decimal-pad sheet. Persists
     /// the in-flight edit string (`""` while the sheet is open and the user
@@ -536,6 +537,9 @@ private struct RunnerView: View {
     /// value) so a partially-typed entry isn't lost on a re-render.
     @State private var editingWeight = false
     @State private var weightDraft = ""
+    /// Exercise demo sheet, openable mid-workout — not just from the
+    /// pre-start preview (#54).
+    @State private var demoFor: TemplateExercise?
 
     var body: some View {
         if let ex = sync.currentExercise {
@@ -556,12 +560,19 @@ private struct RunnerView: View {
                         .padding(.bottom, 22)
 
                     // Fixed-height single line so switching exercises with
-                    // longer names never reflows the layout below.
-                    Text(ex.exercise_name.uppercased())
-                        .font(Theme.display(52)).foregroundStyle(Theme.text)
-                        .lineLimit(1).minimumScaleFactor(0.4)
-                        .frame(height: 56, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    // longer names never reflows the layout below. The demo
+                    // (i) sits inline so "what does this look like?" is one
+                    // tap mid-workout, not only from the pre-start preview
+                    // (#54).
+                    HStack(alignment: .center, spacing: 10) {
+                        Text(ex.exercise_name.uppercased())
+                            .font(Theme.display(52)).foregroundStyle(Theme.text)
+                            .lineLimit(1).minimumScaleFactor(0.4)
+                        DemoInfoButton { demoFor = ex }
+                        Spacer(minLength: 0)
+                    }
+                    .frame(height: 56)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                     HStack {
                         let complete = sync.isComplete(ex)
@@ -623,6 +634,11 @@ private struct RunnerView: View {
                     .padding(.top, 24)
                 }
                 .padding(20)
+                // When a rest is running the floating RestPill sits at the
+                // top-centre; reserve space so it never lands on the WORKOUT
+                // timer + progress bar (#53). Invisible when the full rest
+                // overlay is up (it covers the runner anyway).
+                .padding(.top, sync.restEndDate != nil ? 52 : 0)
             }
             .sheet(isPresented: $editingWeight) {
                 WeightEditorSheet(
@@ -636,6 +652,20 @@ private struct RunnerView: View {
                         editingWeight = false
                     },
                     onCancel: { editingWeight = false }
+                )
+            }
+            .sheet(item: $demoFor) { ex in
+                ExerciseDemoSheet(
+                    exerciseID: ex.exercise_id,
+                    name: ex.exercise_name,
+                    primaryMuscle: sync.catalogRow(ex.exercise_id)?.primary_muscle
+                        ?? ex.exercise_modality,
+                    secondaryMuscles: [],
+                    modality: ex.exercise_modality,
+                    laterality: ex.exercise_laterality ?? "bilateral",
+                    loadMode: ex.exercise_load_mode ?? "total",
+                    demoSlug: ex.exercise_demo_slug,
+                    jwt: auth.jwt
                 )
             }
         }
@@ -865,12 +895,7 @@ private struct TimedSetView: View {
 
             if sync.timedActive {
                 Button {
-                    let held: Int = {
-                        guard let end = sync.timedEndDate else { return ex.holdSeconds }
-                        let left = max(0, Int(ceil(end.timeIntervalSince(Date()))))
-                        return max(1, ex.holdSeconds - left)
-                    }()
-                    Task { await sync.finishTimedSet(held: held) }
+                    Task { await sync.stopTimedSet() }
                 } label: {
                     Text("STOP & LOG").font(Theme.display(24)).tracking(1.2)
                         .frame(maxWidth: .infinity).padding(.vertical, 16)
@@ -892,12 +917,18 @@ private struct TimedSetView: View {
         .padding(20)
         .background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 14))
         .padding(.top, 16)
-        // Auto-log when the prescribed hold elapses (cancelled if STOPped).
+        // Auto-log when the prescribed hold elapses. Poll the real clock
+        // (re-checked every 0.2s) instead of a single long sleep so the
+        // countdown reliably logs "at the end" even if one sleep is
+        // suspended/cancelled — the #55 complaint. Cancelled (STOP / set
+        // logged) when `timedActive` flips false.
         .task(id: sync.timedActive) {
-            guard sync.timedActive else { return }
-            let secs = ex.holdSeconds
-            try? await Task.sleep(nanoseconds: UInt64(max(0, secs)) * 1_000_000_000)
-            if sync.timedActive { await sync.finishTimedSet(held: secs) }
+            guard sync.timedActive, let end = sync.timedEndDate else { return }
+            while sync.timedActive && Date() < end {
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                if Task.isCancelled { return }
+            }
+            if sync.timedActive { await sync.finishTimedSetAuto() }
         }
     }
 }

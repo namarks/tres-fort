@@ -163,6 +163,66 @@ describe('projectCalendar — truth table', () => {
     expect(cells).toEqual([]);
   });
 
+  // ── past 'planned' carve-out — VANISHES (#48, mirrored byte-for-byte in
+  // CalendarProjection.swift). A still-'planned' past session never
+  // executed (logging flips it to in_progress/completed), so the past
+  // calendar — which shows only what happened — must not render it as a
+  // workout. ("Why does it show a workout yesterday with no content?")
+  it('a past planned session VANISHES — produces no cell (#48)', () => {
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [sess('2026-05-15', 'planned', 'd_legs')], // before today, never done
+      '2026-05-15',
+      '2026-05-15',
+      today,
+      LIVE,
+    );
+    expect(cells).toEqual([]);
+  });
+
+  it('a past planned session with a null template also VANISHES (#48 repro)', () => {
+    // The exact shape of the filed bug: planned, no template, no sets.
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [sess('2026-05-15', 'planned', null)],
+      '2026-05-14',
+      '2026-05-16',
+      today,
+      LIVE,
+    );
+    // 14th/15th/16th are all past → no fabricated cells, and the planned
+    // 15th vanishes too.
+    expect(cells).toEqual([]);
+  });
+
+  it('a FUTURE planned session still WINS over the schedule projection (#48 guard)', () => {
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [sess('2026-05-22', 'planned', 'd_legs')], // Fri, after today
+      '2026-05-22',
+      '2026-05-22',
+      today,
+      LIVE,
+    );
+    expect(cells[0]).toMatchObject({ status: 'planned', real: true, day_template_id: 'd_legs' });
+  });
+
+  it('a past completed session is still shown (only planned vanishes)', () => {
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [sess('2026-05-15', 'completed', 'd_legs')],
+      '2026-05-15',
+      '2026-05-15',
+      today,
+      LIVE,
+    );
+    expect(cells[0]).toMatchObject({ status: 'completed', real: true });
+  });
+
   it('today with a real in_progress session uses the real status', () => {
     const cells = projectCalendar(
       { id: 'p' },

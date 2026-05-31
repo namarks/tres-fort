@@ -3757,7 +3757,16 @@ export function projectCalendar(
     const date = addDays(fromDate, i);
     const real = byDate.get(date);
     const isPast = daySpan(today, date) < 0;
-    if (real) {
+    // A PAST 'planned' session was never executed: logging a set flips a
+    // session to in_progress/completed, so a still-'planned' row in the
+    // past is a workout that did NOT happen (Claude pre-planned the day,
+    // the user did something else). The past calendar shows only what
+    // happened, so it VANISHES — same spirit as the 'discarded' carve-out
+    // above (#48: "a workout yesterday with no content"). A FUTURE 'planned'
+    // (set_planned_session) still wins over the schedule projection. This
+    // is mirrored byte-for-byte in CalendarProjection.swift; calendar.test.ts
+    // is the contract.
+    if (real && !(isPast && real.status === 'planned')) {
       cells.push({
         date,
         status: real.status as CalendarCell['status'],
@@ -3766,7 +3775,7 @@ export function projectCalendar(
       });
       continue;
     }
-    if (isPast) continue; // no fabricated past cells
+    if (isPast) continue; // no fabricated past cells (incl. a vanished past-planned)
     const tid = schedule.week[weekdayOf(date)];
     if (tid && resolvable.has(tid)) {
       cells.push({ date, status: 'projected', day_template_id: tid, real: false });

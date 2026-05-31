@@ -163,6 +163,10 @@ export interface SetLogRow {
   logged_at: number;
   source: string;
   duration_s: number | null;
+  /** 1 = a deliberate timed hold (render as "Ns"); 0 = a rep set. Stored
+   *  per-set because duration_s alone is unreliable (legacy rep sets carry an
+   *  incidental wall-clock duration). Added in migration 0024. */
+  is_timed: number;
   deleted_at: number | null;
 }
 

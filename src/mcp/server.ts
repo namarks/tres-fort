@@ -361,6 +361,11 @@ const TOOLS: Record<string, Tool> = {
         set_index: { type: 'integer' },
         session_date: { type: 'string', description: 'YYYY-MM-DD (default today)' },
         duration_s: { type: 'integer', description: 'seconds the set took / was held' },
+        is_timed: {
+          type: 'boolean',
+          description:
+            'true if this set is a timed hold (renders as "Ns"). Defaults to the exercise modality; pass true when logging a duration-pinned hold on a non-timed exercise.',
+        },
         notes: { type: 'string' },
       },
       ['exercise', 'weight', 'reps'],
@@ -422,6 +427,7 @@ const TOOLS: Record<string, Tool> = {
         is_warmup: a.is_warmup === true,
         notes: typeof a.notes === 'string' ? a.notes : null,
         duration_s: a.duration_s == null ? null : Number(a.duration_s),
+        is_timed: typeof a.is_timed === 'boolean' ? a.is_timed : undefined,
         source: 'mcp',
       });
       // Surface the resolved exercise + per-side accounting so the agent

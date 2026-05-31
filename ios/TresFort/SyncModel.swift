@@ -285,9 +285,12 @@ final class SyncModel: ObservableObject {
     }
 
     /// Whole seconds held so far in the running timed set (0 when idle).
+    /// FLOORED, not rounded: a tap at 1.6s is a 1s hold, so it must stay
+    /// below the `>= 2` STOP guard (rounding would bump it to 2 and log a
+    /// junk set — the exact thing the guard exists to prevent).
     var timedElapsed: Int {
         guard let start = timedStartDate else { return 0 }
-        return max(0, Int(Date().timeIntervalSince(start).rounded()))
+        return max(0, Int(Date().timeIntervalSince(start)))
     }
 
     /// The prescribed hold completed (countdown reached the end) — logs the

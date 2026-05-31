@@ -1584,6 +1584,11 @@ export async function logSet(
     notes?: string | null;
     logged_at?: number;
     duration_s?: number | null;
+    /** Explicit timed-hold flag. When omitted, defaults to the exercise's
+     *  catalog modality (=== 'timed'). A client that rendered a timed
+     *  countdown (e.g. a target_duration_s slot) passes true so the set is
+     *  stored as timed regardless of modality. */
+    is_timed?: boolean;
     source: 'ios' | 'mcp';
   },
 ): Promise<{ set: SetLogRow; deduped: boolean }> {
@@ -1628,6 +1633,20 @@ export async function logSet(
     setIndex = (max?.m ?? 0) + 1;
   }
 
+  // Timed-ness is stored per-set (never inferred from duration_s, which rep
+  // sets carry incidentally): an explicit flag wins; otherwise default to the
+  // exercise's catalog modality.
+  let isTimedInt: number;
+  if (typeof input.is_timed === 'boolean') {
+    isTimedInt = input.is_timed ? 1 : 0;
+  } else {
+    const exRow = await db
+      .prepare('SELECT modality FROM exercises WHERE id = ?1')
+      .bind(input.exercise_id)
+      .first<{ modality: string | null }>();
+    isTimedInt = exRow?.modality === 'timed' ? 1 : 0;
+  }
+
   const row: SetLogRow = {
     id: input.id,
     session_id: input.session_id,
@@ -1642,6 +1661,7 @@ export async function logSet(
     logged_at: input.logged_at ?? now(),
     source: input.source,
     duration_s: input.duration_s ?? null,
+    is_timed: isTimedInt,
     deleted_at: null,
   };
   // The pre-check above resolves the common collision, but two concurrent
@@ -1654,14 +1674,14 @@ export async function logSet(
     db
       .prepare(
         `INSERT INTO set_logs
-         (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,deleted_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL)
+         (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL)
          ON CONFLICT(id) DO NOTHING`,
       )
       .bind(
         row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
         row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
-        row.duration_s,
+        row.duration_s, row.is_timed,
       )
       .run();
   for (let attempt = 0; ; attempt++) {

@@ -204,6 +204,7 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
     notes?: string | null;
     logged_at?: number;
     duration_s?: number | null;
+    is_timed?: boolean;
   }>();
   if (!b.id) return c.json({ error: 'missing_set_id' }, 400);
   try {

@@ -142,6 +142,15 @@ final class SyncModel: ObservableObject {
         catalog.first { $0.id == exerciseID }?.modality == "timed"
     }
 
+    /// Whether a LOGGED set is a timed hold. Prefers the set's own
+    /// authoritative is_timed flag (backend migration 0024) so a
+    /// duration-pinned hold on a non-timed exercise still renders as "Ns";
+    /// falls back to catalog modality for sets from a pre-0024 server (nil).
+    func isTimedSet(_ s: SetLog) -> Bool {
+        if let t = s.is_timed { return t == 1 }
+        return isTimedExercise(s.exercise_id)
+    }
+
     /// True when the catalog row is a bodyweight modality — these render
     /// "BW × reps". Keyed off modality (not weight == 0) so a weighted lift
     /// logged at 0 load isn't mislabeled as bodyweight. Defaults to false
@@ -227,6 +236,10 @@ final class SyncModel: ObservableObject {
             // which then rendered as the set's value for bodyweight lifts, so
             // pull-ups read "31s" instead of reps. #30
             if let durationOverride { body["duration_s"] = durationOverride }
+            // Declare the slot's timed-ness so the backend stores an
+            // authoritative per-set flag (migration 0024); history/agenda
+            // render off it rather than re-deriving from catalog modality.
+            body["is_timed"] = ex.isTimed
             let res = try await api.logSet(sessionId: session.id, body: body, jwt: jwt)
             if !sets.contains(where: { $0.id == res.set.id }) { sets.append(res.set) }
             startRest(seconds: ex.rest_seconds, name: ex.exercise_name)

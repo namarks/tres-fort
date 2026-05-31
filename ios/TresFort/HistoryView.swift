@@ -103,7 +103,7 @@ private struct ExerciseDetailView: View {
                         ForEach(lastSessionSets(last.id)) { s in
                             HStack {
                                 Text(s.valueLabel(
-                                    timed: sync.isTimedExercise(exerciseID),
+                                    timed: sync.isTimedSet(s),
                                     bodyweight: sync.isBodyweightExercise(exerciseID)))
                                     .font(Theme.mono(14)).foregroundStyle(Theme.text)
                                 Spacer()

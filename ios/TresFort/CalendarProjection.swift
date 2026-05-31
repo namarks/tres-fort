@@ -16,7 +16,10 @@ import Foundation
 //   backend byte-for-byte (test/calendar.test.ts is the contract).
 //
 //   date < today  → show a cell ONLY if a real cached session exists,
-//                    using that session's status.
+//                    using that session's status — EXCEPT a past 'planned'
+//                    session, which never executed (logging flips it to
+//                    in_progress/completed) and so VANISHES like 'discarded'
+//                    (#48). A FUTURE 'planned' still wins.
 //   date >= today  → a real session WINS (planned / in_progress /
 //                     completed / skipped). Otherwise:
 //                       weekday(date) → schedule.week → day_template_id
@@ -139,8 +142,13 @@ enum CalendarProjection {
         }
 
         if dateString < today {
-            // Past: only a real session is ever shown.
-            if let real { return .session(status: real.status) }
+            // Past: only a real session is ever shown — EXCEPT a 'planned'
+            // one, which never executed (logging a set flips it to
+            // in_progress/completed), so a past 'planned' is a workout that
+            // did NOT happen and VANISHES, the same spirit as 'discarded'
+            // (#48). Byte-for-byte mirror of projectCalendar's
+            // `!(isPast && status === 'planned')` guard.
+            if let real, real.status != "planned" { return .session(status: real.status) }
             return .none
         }
 

@@ -43,6 +43,7 @@ final class SyncModel: ObservableObject {
     @Published var workoutStart: Date?      // whole-session stopwatch
     @Published var timedActive = false      // a timed exercise is running
     @Published var timedEndDate: Date?
+    @Published var timedStartDate: Date?    // wall-clock start of the hold
 
     private let api = APIClient()
     private unowned let auth: AuthModel
@@ -259,6 +260,7 @@ final class SyncModel: ObservableObject {
     private func seedInputs() {
         timedActive = false
         timedEndDate = nil
+        timedStartDate = nil
         guard let ex = currentExercise else { return }
         let last = lastWorkingSet(ex.exercise_id)
         // Bodyweight exercises have no weight input (#2); the field is
@@ -274,20 +276,54 @@ final class SyncModel: ObservableObject {
     func startTimedSet() {
         guard let ex = currentExercise, ex.isTimed else { return }
         timedActive = true
+        let now = Date()
+        timedStartDate = now
         // Count down the prescribed hold (target_duration_s, fallback
         // target_reps) — not target_reps directly, which was 1s for slots
         // that never set a duration (the "plank ended instantly" bug).
-        timedEndDate = Date().addingTimeInterval(TimeInterval(ex.holdSeconds))
+        timedEndDate = now.addingTimeInterval(TimeInterval(ex.holdSeconds))
     }
 
-    /// End a timed set — `held` seconds actually performed (auto at 0, or
-    /// early via STOP). Logs reps=held, duration=held.
-    func finishTimedSet(held: Int) async {
+    /// Whole seconds held so far in the running timed set (0 when idle).
+    /// FLOORED, not rounded: a tap at 1.6s is a 1s hold, so it must stay
+    /// below the `>= 2` STOP guard (rounding would bump it to 2 and log a
+    /// junk set — the exact thing the guard exists to prevent).
+    var timedElapsed: Int {
+        guard let start = timedStartDate else { return 0 }
+        return max(0, Int(Date().timeIntervalSince(start)))
+    }
+
+    /// The prescribed hold completed (countdown reached the end) — logs the
+    /// FULL target hold. Driven by the runner's poll loop so it fires
+    /// reliably "at the end of a timed exercise" (#55), even if a single
+    /// long sleep was suspended/cancelled.
+    func finishTimedSetAuto() async {
+        guard let ex = currentExercise else { return }
+        await commitTimedSet(held: ex.holdSeconds)
+    }
+
+    /// Manual STOP — logs the ACTUAL elapsed hold (capped at the prescribed
+    /// target, which the auto-log would otherwise own). A reflexive tap in
+    /// the first 2s — STOP sits where START just was — is NOT a real hold:
+    /// it's ignored (the timer keeps running) so it can't log a junk "1s"
+    /// set, the symptom in #55.
+    func stopTimedSet() async {
+        guard let ex = currentExercise else { return }
+        let elapsed = timedElapsed
+        guard elapsed >= 2 else { return }
+        await commitTimedSet(held: min(elapsed, ex.holdSeconds))
+    }
+
+    /// Single commit path for a timed set — logs reps=held, duration=held
+    /// (≥1s) and advances. Both auto and manual completion route here.
+    private func commitTimedSet(held: Int) async {
         guard let ex = currentExercise, timedActive else { return }
         timedActive = false
         timedEndDate = nil
+        timedStartDate = nil
         skipped.remove(ex.exercise_id)   // logging work un-skips it
-        await logSet(ex, weight: 0, reps: held, durationOverride: held)
+        let secs = max(1, held)
+        await logSet(ex, weight: 0, reps: secs, durationOverride: secs)
         if isComplete(ex) {
             if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
         }
@@ -361,6 +397,7 @@ final class SyncModel: ObservableObject {
         workoutStart = nil
         timedActive = false
         timedEndDate = nil
+        timedStartDate = nil
         skipRest()
         await load()
     }
@@ -381,6 +418,7 @@ final class SyncModel: ObservableObject {
         workoutStart = nil
         timedActive = false
         timedEndDate = nil
+        timedStartDate = nil
         skipRest()
         await load()
     }

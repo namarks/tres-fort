@@ -718,28 +718,28 @@ export async function getMeProfile(
       intervals_auth_error_at: number | null;
     }>();
 
-  // Only the owner's account is coached by Claude (the connector resolves
-  // there), so Claude status is reported for the owner alone.
+  // Claude connection is PER-USER (M3): a token bound to THIS user means their
+  // connector is linked (a refresh_token is the durable grant claude.ai keeps,
+  // so it survives access-token expiry). The owner additionally matches legacy
+  // tokens with a NULL user_id — issued before M3, when /mcp always resolved to
+  // the owner. (Codex #64 P2: non-owner grants must surface in their Profile.)
   const owner = await findOwnerRow(db, ownerAppleSub);
   const isOwner = !!owner && owner.id === userId;
 
-  let claudeConnected = false;
-  let lastActive: number | null = null;
-  if (isOwner) {
-    // A refresh_token is the durable grant claude.ai keeps — its presence
-    // means the connector is linked even after access tokens expire.
-    const grant = await db
-      .prepare('SELECT 1 AS x FROM oauth_tokens WHERE refresh_token IS NOT NULL LIMIT 1')
-      .first<{ x: number }>();
-    claudeConnected = !!grant;
-    const lastMcp = await db
-      .prepare(
-        "SELECT MAX(created_at) AS t FROM audit_log WHERE user_id = ?1 AND actor = 'mcp'",
-      )
-      .bind(userId)
-      .first<{ t: number | null }>();
-    lastActive = lastMcp?.t ?? null;
-  }
+  const grant = await db
+    .prepare(
+      'SELECT 1 AS x FROM oauth_tokens WHERE refresh_token IS NOT NULL AND (user_id = ?1' +
+        (isOwner ? ' OR user_id IS NULL' : '') +
+        ') LIMIT 1',
+    )
+    .bind(userId)
+    .first<{ x: number }>();
+  const claudeConnected = !!grant;
+  const lastMcp = await db
+    .prepare("SELECT MAX(created_at) AS t FROM audit_log WHERE user_id = ?1 AND actor = 'mcp'")
+    .bind(userId)
+    .first<{ t: number | null }>();
+  const lastActive = lastMcp?.t ?? null;
 
   return {
     display_name: u?.display_name ?? null,
@@ -3794,6 +3794,10 @@ export async function addTrip(
   expectedVersion?: number | null,
 ) {
   if (!YMD.test(trip.start) || !YMD.test(trip.end)) return { error: 'invalid_date' as const };
+  // YYYY-MM-DD sorts chronologically, so an inverted range (start > end) would
+  // store a trip the projection (date >= start && date <= end) can NEVER cover
+  // — a silent no-op. Reject it. (Codex #64 P2.)
+  if (trip.start > trip.end) return { error: 'invalid_range' as const };
   const id = uuid();
   const res = await writePlanMeta(db, userId, expectedVersion, (meta) => {
     const trips = meta.trips ?? [];
@@ -3827,6 +3831,9 @@ export async function updateTrip(
     if (patch.type !== undefined) merged.type = patch.type;
     if (patch.can_train_light !== undefined) merged.can_train_light = patch.can_train_light;
     if (patch.note !== undefined) merged.note = patch.note;
+    // Validate the RESULTING range (a patch may move only start or only end)
+    // — an inverted range covers no dates (Codex #64 P2).
+    if (merged.start > merged.end) return 'invalid_range';
     trips[i] = merged;
     meta.trips = trips;
   });

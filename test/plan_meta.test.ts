@@ -107,6 +107,13 @@ describe('plan meta: race / periodization / trips / stress_model (M2)', () => {
     const missing = await call('update_trip', { id: 'not-a-real-id', note: 'x' });
     expect(missing).toMatchObject({ error: 'trip_not_found' });
 
+    // Inverted range (start > end) covers no dates → rejected (Codex #64 P2),
+    // on both add and update.
+    const inverted = await call('add_trip', { start: '2026-09-10', end: '2026-09-01' });
+    expect(inverted).toMatchObject({ error: 'invalid_range' });
+    const invertUpdate = await call('update_trip', { id: tripId, start: '2026-08-30' }); // > existing end 08-25
+    expect(invertUpdate).toMatchObject({ error: 'invalid_range' });
+
     // stress model: freeform dimensions pass through
     const sm = await call('set_stress_model', {
       discipline_weights: { run: { aerobic: 1, neuromuscular: 0.4, impact: 1 }, swim: { aerobic: 1, impact: 0 } },

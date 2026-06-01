@@ -38,6 +38,22 @@ export interface Env {
    */
   INTERVALS_OAUTH_REDIRECT_URI?: string;
   /**
+   * Shared secret for the intervals.icu push webhook (`POST /webhooks/intervals`,
+   * a `wrangler secret put` secret — NEVER committed). MUST equal the
+   * "Webhook Secret" configured on the intervals.icu Manage App page. Every
+   * delivery carries this in its JSON body; the receiver matches it to
+   * authenticate. UNSET → the webhook receiver is dormant (it 401s every
+   * request) and the 15-min polling cron remains the only sync path.
+   */
+  INTERVALS_WEBHOOK_SECRET?: string;
+  /**
+   * Optional second factor for the webhook (a `wrangler secret put` secret).
+   * The Manage App page can set a "Webhook Authorization Header"; when this is
+   * configured, the receiver ALSO requires the request's `Authorization`
+   * header to match it verbatim. UNSET → only the body secret is checked.
+   */
+  INTERVALS_WEBHOOK_AUTH_HEADER?: string;
+  /**
    * R2 bucket fronting exercise demo images (free-exercise-db frames,
    * public domain). Optional so vitest envs without an R2 binding still
    * type-check; the demo route 404s gracefully when unset.

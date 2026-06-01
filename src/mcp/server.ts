@@ -6,6 +6,7 @@ import type { Env } from '../types';
 import {
   addDayTemplate,
   addTemplateExercise,
+  addTrip,
   adjustToday,
   deleteTemplateExercise,
   ensureOwnerUser,
@@ -39,8 +40,12 @@ import {
   patchSet,
   tryExportSessionLoad,
   resolveExercise,
+  removeTrip,
+  setPeriodization,
   setPlanSchedule,
   setPlannedSession,
+  setRace,
+  setStressModel,
   skipPlannedSession,
   todayInTz,
   swapExercise,
@@ -48,10 +53,19 @@ import {
   syncExternalEvents,
   updateExercise,
   updatePlanTree,
+  updateTrip,
   writeAudit,
   writeNote,
 } from '../db';
-import type { Weekday } from '../types';
+import { parsePlanMeta } from '../types';
+import type {
+  PeriodizationPhase,
+  RaceGoal,
+  StressModel,
+  Trip,
+  TripType,
+  Weekday,
+} from '../types';
 
 const SERVER_INFO = { name: 'tres-fort', version: '0.1.0' };
 // Host-injected system instructions (MCP `initialize.instructions`). Shapes
@@ -168,7 +182,18 @@ const TOOLS: Record<string, Tool> = {
         addDaysIso(today, 28),
         today,
       );
-      return { ...tree, schedule, ride_conflicts };
+      // Authored multisport intent rides along so the coach can reason over
+      // the goal/phases/trips/stress model in one read (docs/MULTISPORT.md §9).
+      const meta = parsePlanMeta(tree.meta);
+      return {
+        ...tree,
+        schedule,
+        ride_conflicts,
+        race: meta.race ?? null,
+        periodization: meta.periodization ?? [],
+        trips: meta.trips ?? [],
+        stress_model: meta.stress_model ?? null,
+      };
     },
   },
   get_today_workout: {
@@ -928,6 +953,204 @@ const TOOLS: Record<string, Tool> = {
     write: true,
     handler: async (a, env, userId) => skipPlannedSession(env.DB, userId, String(a.date)),
     note: (a, r) => (r?.ok ? `Skipped ${a.date} (one-off rest, no plan change).` : null),
+  },
+  set_race: {
+    description:
+      'Set the goal A-race the whole plan builds toward — the anchor for periodization, taper, and race-week logic. Pass name, date (YYYY-MM-DD), and discipline (e.g. triathlon, running, cycling); optionally distance (e.g. "70.3"), priority (A|B|C), and location. Replaces any existing race. Versioned: optionally pass expected_version for optimistic concurrency (mismatch → conflict, refetch get_current_plan and reapply). Bumps the plan version.',
+    inputSchema: obj(
+      {
+        name: { type: 'string' },
+        date: { type: 'string', description: 'YYYY-MM-DD civil date' },
+        discipline: { type: 'string', description: 'triathlon | running | cycling | ...' },
+        distance: { type: 'string', description: 'e.g. "70.3", "marathon"' },
+        priority: { type: 'string', enum: ['A', 'B', 'C'] },
+        location: { type: 'string' },
+        expected_version: { type: 'integer' },
+      },
+      ['name', 'date', 'discipline'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const race: RaceGoal = {
+        name: String(a.name),
+        date: String(a.date),
+        discipline: String(a.discipline),
+      };
+      if (typeof a.distance === 'string') race.distance = a.distance;
+      if (a.priority === 'A' || a.priority === 'B' || a.priority === 'C') race.priority = a.priority;
+      if (typeof a.location === 'string') race.location = a.location;
+      return setRace(
+        env.DB,
+        userId,
+        race,
+        typeof a.expected_version === 'number' ? a.expected_version : null,
+      );
+    },
+    note: (a, r) =>
+      r?.ok
+        ? `Set A-race: ${a.name} — ${a.discipline}${a.distance ? ` ${a.distance}` : ''} on ${a.date}${a.location ? ` (${a.location})` : ''}.`
+        : null,
+  },
+  set_periodization: {
+    description:
+      'Set the periodization plan — the ordered training phases (base|build|peak|taper|race|recovery) with date ranges and intent. This is the macrocycle STRUCTURE the coach reasons over, not a per-day calendar. Pass `phases` as a full ordered array; it REPLACES any existing periodization. Each phase: phase, start (YYYY-MM-DD), end (YYYY-MM-DD); optional focus, weekly_load_target, strength_emphasis. Versioned (expected_version optional). Bumps the plan version.',
+    inputSchema: obj(
+      {
+        phases: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              phase: {
+                type: 'string',
+                enum: ['base', 'build', 'peak', 'taper', 'race', 'recovery'],
+              },
+              start: { type: 'string', description: 'YYYY-MM-DD' },
+              end: { type: 'string', description: 'YYYY-MM-DD' },
+              focus: { type: 'string' },
+              weekly_load_target: { type: 'number' },
+              strength_emphasis: { type: 'string' },
+            },
+            required: ['phase', 'start', 'end'],
+            additionalProperties: false,
+          },
+        },
+        expected_version: { type: 'integer' },
+      },
+      ['phases'],
+    ),
+    write: true,
+    handler: async (a, env, userId) =>
+      setPeriodization(
+        env.DB,
+        userId,
+        (a.phases as PeriodizationPhase[]) ?? [],
+        typeof a.expected_version === 'number' ? a.expected_version : null,
+      ),
+    note: (a, r) =>
+      r?.ok
+        ? `Set periodization: ${((a.phases as Array<{ phase: string; start: string; end: string }>) ?? []).map((p) => `${p.phase}(${p.start}→${p.end})`).join(', ')}.`
+        : null,
+  },
+  add_trip: {
+    description:
+      'Add a trip / availability blackout range (travel, planned rest, injury) so the plan knows when training is limited or off. Pass start + end (YYYY-MM-DD) and type (travel|rest|injury|other); optionally can_train_light (pool/run access while away?) and a note. Returns the new trip id. This stores the AVAILABILITY fact only — it does NOT itself blank the calendar; re-plan affected days with set_planned_session / skip_planned_session. Versioned (expected_version optional); bumps the plan version.',
+    inputSchema: obj(
+      {
+        start: { type: 'string', description: 'YYYY-MM-DD' },
+        end: { type: 'string', description: 'YYYY-MM-DD' },
+        type: { type: 'string', enum: ['travel', 'rest', 'injury', 'other'] },
+        can_train_light: { type: 'boolean' },
+        note: { type: 'string' },
+        expected_version: { type: 'integer' },
+      },
+      ['start', 'end'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const trip: Omit<Trip, 'id'> = {
+        start: String(a.start),
+        end: String(a.end),
+        type: (['travel', 'rest', 'injury', 'other'].includes(a.type as string)
+          ? a.type
+          : 'travel') as TripType,
+      };
+      if (typeof a.can_train_light === 'boolean') trip.can_train_light = a.can_train_light;
+      if (typeof a.note === 'string') trip.note = a.note;
+      return addTrip(
+        env.DB,
+        userId,
+        trip,
+        typeof a.expected_version === 'number' ? a.expected_version : null,
+      );
+    },
+    note: (a, r) =>
+      r?.ok
+        ? `Added ${a.type ?? 'travel'} trip ${a.start}→${a.end}${a.note ? `: ${a.note}` : ''}.`
+        : null,
+  },
+  update_trip: {
+    description:
+      'Edit an existing trip by id (dates, type, can_train_light, note). Pass the trip id (from add_trip or get_current_plan) plus the fields to change; omitted fields are left unchanged. Versioned (expected_version optional); bumps the plan version.',
+    inputSchema: obj(
+      {
+        id: { type: 'string' },
+        start: { type: 'string', description: 'YYYY-MM-DD' },
+        end: { type: 'string', description: 'YYYY-MM-DD' },
+        type: { type: 'string', enum: ['travel', 'rest', 'injury', 'other'] },
+        can_train_light: { type: 'boolean' },
+        note: { type: 'string' },
+        expected_version: { type: 'integer' },
+      },
+      ['id'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const patch: Partial<Omit<Trip, 'id'>> = {};
+      if (typeof a.start === 'string') patch.start = a.start;
+      if (typeof a.end === 'string') patch.end = a.end;
+      if (['travel', 'rest', 'injury', 'other'].includes(a.type as string)) patch.type = a.type as TripType;
+      if (typeof a.can_train_light === 'boolean') patch.can_train_light = a.can_train_light;
+      if (typeof a.note === 'string') patch.note = a.note;
+      return updateTrip(
+        env.DB,
+        userId,
+        String(a.id),
+        patch,
+        typeof a.expected_version === 'number' ? a.expected_version : null,
+      );
+    },
+    note: (a, r) => (r?.ok ? `Updated trip ${a.id}.` : null),
+  },
+  remove_trip: {
+    description:
+      'Remove a trip by id. Versioned (expected_version optional); bumps the plan version.',
+    inputSchema: obj(
+      { id: { type: 'string' }, expected_version: { type: 'integer' } },
+      ['id'],
+    ),
+    write: true,
+    handler: async (a, env, userId) =>
+      removeTrip(
+        env.DB,
+        userId,
+        String(a.id),
+        typeof a.expected_version === 'number' ? a.expected_version : null,
+      ),
+    note: (a, r) => (r?.ok ? `Removed trip ${a.id}.` : null),
+  },
+  set_stress_model: {
+    description:
+      'Set the planning stress model — the multi-dimensional load/recovery rules the coach reasons over so training stress is NEVER reduced to one number (docs/MULTISPORT.md §7). Pass discipline_weights (per-discipline system loads, e.g. {run:{aerobic:1,impact:1}}), interference_rules (prose constraints like "heavy_lower 48h from key_run"), and age_modifiers (e.g. {athlete_age:75, recovery_multiplier:1.4}). Replaces the existing model. Versioned (expected_version optional); bumps the plan version.',
+    inputSchema: obj(
+      {
+        discipline_weights: { type: 'object', additionalProperties: true },
+        interference_rules: { type: 'array', items: { type: 'string' } },
+        age_modifiers: { type: 'object', additionalProperties: true },
+        expected_version: { type: 'integer' },
+      },
+      [],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const model: StressModel = {};
+      if (a.discipline_weights && typeof a.discipline_weights === 'object') {
+        model.discipline_weights = a.discipline_weights as StressModel['discipline_weights'];
+      }
+      if (Array.isArray(a.interference_rules)) {
+        model.interference_rules = a.interference_rules as string[];
+      }
+      if (a.age_modifiers && typeof a.age_modifiers === 'object') {
+        model.age_modifiers = a.age_modifiers as StressModel['age_modifiers'];
+      }
+      return setStressModel(
+        env.DB,
+        userId,
+        model,
+        typeof a.expected_version === 'number' ? a.expected_version : null,
+      );
+    },
+    note: (_a, r) => (r?.ok ? `Updated planning stress model.` : null),
   },
   refresh_rides: {
     description:

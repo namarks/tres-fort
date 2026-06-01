@@ -385,9 +385,74 @@ export const WEEKDAYS: readonly Weekday[] = [
   'sun',
 ];
 
-/** Parsed shape of plans.meta. Schedule is always present after migration. */
+// ---- multisport plan meta (authored intent — see docs/MULTISPORT.md §4) ----
+// race / periodization / trips / stress_model all live in plans.meta JSON
+// ALONGSIDE `schedule`: versioned document, optimistic concurrency, audit+note
+// on write (DESIGN.md §3). They are AUTHORED TRUTH the coach reasons over, NOT a
+// materialized calendar — the projection DERIVES days from them (store truth,
+// derive views). The backend stores and projects; it never computes training
+// science. Absent fields are simply omitted from the JSON.
+
+export type RacePriority = 'A' | 'B' | 'C';
+
+/** The goal event the plan builds toward. §4.1. */
+export interface RaceGoal {
+  name: string;
+  date: string; // YYYY-MM-DD civil date (the periodization anchor)
+  discipline: string; // triathlon | running | cycling | ...
+  distance?: string; // "70.3", "marathon", ...
+  priority?: RacePriority;
+  location?: string;
+}
+
+export type TrainingPhase =
+  | 'base'
+  | 'build'
+  | 'peak'
+  | 'taper'
+  | 'race'
+  | 'recovery';
+
+/** One periodization block — phase INTENT, not per-day rows. §4.2. */
+export interface PeriodizationPhase {
+  phase: TrainingPhase;
+  start: string; // YYYY-MM-DD
+  end: string; // YYYY-MM-DD
+  focus?: string;
+  weekly_load_target?: number;
+  strength_emphasis?: string; // hypertrophy | maintenance | minimal | ...
+}
+
+export type TripType = 'travel' | 'rest' | 'injury' | 'other';
+
+/** An availability / blackout range. §4.3. The EFFECT (which days become rest)
+ * is NOT stored here — the coach re-plans via set_planned_session/skip. */
+export interface Trip {
+  id: string; // uuid
+  start: string; // YYYY-MM-DD
+  end: string; // YYYY-MM-DD
+  type: TripType;
+  can_train_light?: boolean;
+  note?: string;
+}
+
+/** The planning load model. §4.4. Intentionally LOOSE — the coach reasons over
+ * these dimensions/rules; the backend only stores them, never interprets. */
+export interface StressModel {
+  discipline_weights?: Record<string, Record<string, number>>;
+  interference_rules?: string[];
+  age_modifiers?: Record<string, number>;
+  [k: string]: unknown;
+}
+
+/** Parsed shape of plans.meta. Schedule is always present after migration;
+ * the multisport fields are optional (omitted until authored). */
 export interface PlanMeta {
   schedule: WeeklySchedule;
+  race?: RaceGoal;
+  periodization?: PeriodizationPhase[];
+  trips?: Trip[];
+  stress_model?: StressModel;
   [k: string]: unknown;
 }
 
@@ -399,10 +464,75 @@ export function emptySchedule(): WeeklySchedule {
   return { version: 1, week: emptyWeek() };
 }
 
+const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+
+// Envelope-validators for the authored-intent meta fields. Each drops a
+// malformed entry rather than throwing (same tolerance as the schedule parse)
+// and returns `undefined` when there is nothing valid, so JSON.stringify omits
+// the key. Known fields are coerced; freeform content passes through.
+function normalizeRace(v: unknown): RaceGoal | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const r = v as Record<string, unknown>;
+  if (!isStr(r.name) || !isStr(r.date) || !isStr(r.discipline)) return undefined;
+  const out: RaceGoal = { name: r.name, date: r.date, discipline: r.discipline };
+  if (isStr(r.distance)) out.distance = r.distance;
+  if (r.priority === 'A' || r.priority === 'B' || r.priority === 'C') out.priority = r.priority;
+  if (isStr(r.location)) out.location = r.location;
+  return out;
+}
+
+const TRAINING_PHASES = new Set(['base', 'build', 'peak', 'taper', 'race', 'recovery']);
+function normalizePeriodization(v: unknown): PeriodizationPhase[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const phases: PeriodizationPhase[] = [];
+  for (const item of v) {
+    if (!item || typeof item !== 'object') continue;
+    const p = item as Record<string, unknown>;
+    if (!TRAINING_PHASES.has(p.phase as string) || !isStr(p.start) || !isStr(p.end)) continue;
+    const phase: PeriodizationPhase = {
+      phase: p.phase as TrainingPhase,
+      start: p.start,
+      end: p.end,
+    };
+    if (isStr(p.focus)) phase.focus = p.focus;
+    if (typeof p.weekly_load_target === 'number') phase.weekly_load_target = p.weekly_load_target;
+    if (isStr(p.strength_emphasis)) phase.strength_emphasis = p.strength_emphasis;
+    phases.push(phase);
+  }
+  return phases.length ? phases : undefined;
+}
+
+const TRIP_TYPES = new Set(['travel', 'rest', 'injury', 'other']);
+function normalizeTrips(v: unknown): Trip[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const trips: Trip[] = [];
+  for (const item of v) {
+    if (!item || typeof item !== 'object') continue;
+    const t = item as Record<string, unknown>;
+    if (!isStr(t.id) || !isStr(t.start) || !isStr(t.end)) continue;
+    const trip: Trip = {
+      id: t.id,
+      start: t.start,
+      end: t.end,
+      type: TRIP_TYPES.has(t.type as string) ? (t.type as TripType) : 'other',
+    };
+    if (typeof t.can_train_light === 'boolean') trip.can_train_light = t.can_train_light;
+    if (isStr(t.note)) trip.note = t.note;
+    trips.push(trip);
+  }
+  return trips.length ? trips : undefined;
+}
+
+function normalizeStressModel(v: unknown): StressModel | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  return v as StressModel; // freeform — the coach owns the semantics
+}
+
 /**
  * The ONLY place plan.meta is parsed. Never hand-parse meta elsewhere.
  * Tolerates null / invalid JSON / missing or malformed schedule and always
- * returns a well-formed PlanMeta with a complete weekday map.
+ * returns a well-formed PlanMeta with a complete weekday map. The authored
+ * multisport fields are envelope-validated and omitted when absent/malformed.
  */
 export function parsePlanMeta(raw: string | null): PlanMeta {
   let obj: Record<string, unknown> = {};
@@ -430,6 +560,10 @@ export function parsePlanMeta(raw: string | null): PlanMeta {
       version: typeof sched?.version === 'number' ? sched.version : 1,
       week,
     },
+    race: normalizeRace(obj.race),
+    periodization: normalizePeriodization(obj.periodization),
+    trips: normalizeTrips(obj.trips),
+    stress_model: normalizeStressModel(obj.stress_model),
   };
 }
 

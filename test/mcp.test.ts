@@ -146,9 +146,15 @@ describe('mcp tools list', () => {
         'delete_exercise',
         'log_activity',
         'get_group_feed',
+        'set_race',
+        'set_periodization',
+        'add_trip',
+        'update_trip',
+        'remove_trip',
+        'set_stress_model',
       ]),
     );
-    expect(names).toHaveLength(27);
+    expect(names).toHaveLength(33);
     for (const t of body.result.tools) expect(t.inputSchema.type).toBe('object');
   });
 });

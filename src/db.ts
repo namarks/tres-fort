@@ -11,14 +11,19 @@ import type {
   Group,
   GroupInvite,
   GroupMember,
+  PeriodizationPhase,
   PlanMeta,
   PlanRow,
   PlanTree,
+  RaceGoal,
   ResolvedGroupMember,
   ScheduleWeek,
   SessionRow,
   SetLogRow,
+  StressModel,
   TemplateExerciseRow,
+  Trip,
+  TripType,
   User,
   Weekday,
   WeeklySchedule,
@@ -1876,9 +1881,21 @@ export async function getState(
   // returned when the tree is (i.e. when plans.version advanced past the
   // client cursor). Parsed via the single meta accessor so iOS never
   // hand-parses meta. Null when nothing changed — no new endpoint.
-  const tree = baseTree
-    ? { ...baseTree, schedule: parsePlanMeta(baseTree.meta).schedule }
-    : null;
+  // Parsed via the single meta accessor so iOS never hand-parses meta. The
+  // authored multisport intent (race/periodization/trips/stress_model) rides
+  // the same plan-tree sync as the schedule — surfaced here pre-parsed.
+  const baseMeta = baseTree ? parsePlanMeta(baseTree.meta) : null;
+  const tree =
+    baseTree && baseMeta
+      ? {
+          ...baseTree,
+          schedule: baseMeta.schedule,
+          race: baseMeta.race ?? null,
+          periodization: baseMeta.periodization ?? [],
+          trips: baseMeta.trips ?? [],
+          stress_model: baseMeta.stress_model ?? null,
+        }
+      : null;
   const sessions = await db
     .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND updated_at > ?2 ORDER BY date')
     .bind(userId, setsSince)
@@ -3569,6 +3586,165 @@ export async function setPlanSchedule(
     schedule,
     version: row?.version ?? plan.version + 1,
   };
+}
+
+// ---- authored-intent plan meta (race / periodization / trips / stress) ----
+// These ride the SAME versioned-document path as the weekly schedule
+// (docs/MULTISPORT.md §3-4): optimistic concurrency on plans.version, a single
+// UPDATE that bumps the version, and audit+note written by the MCP dispatch
+// layer. No new tables, no projection change — store authored truth in
+// plans.meta; the calendar derives from it later.
+
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+
+type PlanMetaWrite =
+  | { conflict: true; current_version: number }
+  | { error: string }
+  | { ok: true; version: number; meta: PlanMeta };
+
+/**
+ * Shared optimistic-concurrency writer for the authored-intent fields in
+ * plans.meta. Mirrors setPlanSchedule exactly. `mutate` edits the parsed meta
+ * in place; returning a string aborts the write with that error code (no
+ * partial write, no version bump).
+ */
+async function writePlanMeta(
+  db: D1Database,
+  userId: string,
+  expectedVersion: number | null | undefined,
+  mutate: (meta: PlanMeta) => string | void,
+): Promise<PlanMetaWrite> {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return { error: 'no_active_plan' };
+  if (expectedVersion != null && expectedVersion !== plan.version) {
+    return { conflict: true, current_version: plan.version };
+  }
+  const meta = parsePlanMeta(plan.meta);
+  const err = mutate(meta);
+  if (typeof err === 'string') return { error: err };
+  const ts = now();
+  const row = await db
+    .prepare(
+      'UPDATE plans SET meta = ?2, version = version + 1, updated_at = ?3 WHERE id = ?1 RETURNING version',
+    )
+    .bind(plan.id, serializePlanMeta(meta, meta.schedule), ts)
+    .first<{ version: number }>();
+  return { ok: true, version: row?.version ?? plan.version + 1, meta };
+}
+
+/** Set the goal A-race. Replaces any existing race. */
+export async function setRace(
+  db: D1Database,
+  userId: string,
+  race: RaceGoal,
+  expectedVersion?: number | null,
+) {
+  if (!YMD.test(race.date)) return { error: 'invalid_date' as const };
+  const res = await writePlanMeta(db, userId, expectedVersion, (meta) => {
+    meta.race = race;
+  });
+  return 'ok' in res
+    ? { ok: true as const, version: res.version, race: res.meta.race ?? null }
+    : res;
+}
+
+/** Replace the periodization plan (full ordered phase array). */
+export async function setPeriodization(
+  db: D1Database,
+  userId: string,
+  phases: PeriodizationPhase[],
+  expectedVersion?: number | null,
+) {
+  for (const p of phases) {
+    if (!YMD.test(p.start) || !YMD.test(p.end)) return { error: 'invalid_date' as const };
+  }
+  const res = await writePlanMeta(db, userId, expectedVersion, (meta) => {
+    meta.periodization = phases;
+  });
+  return 'ok' in res
+    ? { ok: true as const, version: res.version, periodization: res.meta.periodization ?? [] }
+    : res;
+}
+
+/** Append a trip/blackout range; mints and returns its id. */
+export async function addTrip(
+  db: D1Database,
+  userId: string,
+  trip: Omit<Trip, 'id'>,
+  expectedVersion?: number | null,
+) {
+  if (!YMD.test(trip.start) || !YMD.test(trip.end)) return { error: 'invalid_date' as const };
+  const id = uuid();
+  const res = await writePlanMeta(db, userId, expectedVersion, (meta) => {
+    const trips = meta.trips ?? [];
+    trips.push({ ...trip, id });
+    meta.trips = trips;
+  });
+  return 'ok' in res
+    ? { ok: true as const, version: res.version, id, trips: res.meta.trips ?? [] }
+    : res;
+}
+
+/** Patch one trip by id. Errors `trip_not_found` if absent. */
+export async function updateTrip(
+  db: D1Database,
+  userId: string,
+  tripId: string,
+  patch: Partial<Omit<Trip, 'id'>>,
+  expectedVersion?: number | null,
+) {
+  if (patch.start && !YMD.test(patch.start)) return { error: 'invalid_date' as const };
+  if (patch.end && !YMD.test(patch.end)) return { error: 'invalid_date' as const };
+  const res = await writePlanMeta(db, userId, expectedVersion, (meta) => {
+    const trips = meta.trips ?? [];
+    const i = trips.findIndex((t) => t.id === tripId);
+    const existing = i < 0 ? undefined : trips[i];
+    if (!existing) return 'trip_not_found';
+    // Merge only the fields actually present — never clobber with undefined.
+    const merged: Trip = { ...existing, id: tripId };
+    if (patch.start !== undefined) merged.start = patch.start;
+    if (patch.end !== undefined) merged.end = patch.end;
+    if (patch.type !== undefined) merged.type = patch.type;
+    if (patch.can_train_light !== undefined) merged.can_train_light = patch.can_train_light;
+    if (patch.note !== undefined) merged.note = patch.note;
+    trips[i] = merged;
+    meta.trips = trips;
+  });
+  return 'ok' in res
+    ? { ok: true as const, version: res.version, trips: res.meta.trips ?? [] }
+    : res;
+}
+
+/** Remove one trip by id. Errors `trip_not_found` if absent. */
+export async function removeTrip(
+  db: D1Database,
+  userId: string,
+  tripId: string,
+  expectedVersion?: number | null,
+) {
+  const res = await writePlanMeta(db, userId, expectedVersion, (meta) => {
+    const trips = meta.trips ?? [];
+    if (!trips.some((t) => t.id === tripId)) return 'trip_not_found';
+    meta.trips = trips.filter((t) => t.id !== tripId);
+  });
+  return 'ok' in res
+    ? { ok: true as const, version: res.version, trips: res.meta.trips ?? [] }
+    : res;
+}
+
+/** Replace the planning stress model. */
+export async function setStressModel(
+  db: D1Database,
+  userId: string,
+  model: StressModel,
+  expectedVersion?: number | null,
+) {
+  const res = await writePlanMeta(db, userId, expectedVersion, (meta) => {
+    meta.stress_model = model;
+  });
+  return 'ok' in res
+    ? { ok: true as const, version: res.version, stress_model: res.meta.stress_model ?? null }
+    : res;
 }
 
 /**

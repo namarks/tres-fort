@@ -236,7 +236,11 @@ struct CalendarView: View {
         // manual activity → planned ride.
         let dayManual = sync.manualActivities(on: ymd)
         let hasManual = !dayManual.isEmpty
-        let hasEndurance = hasActivity || hasRide || hasManual
+        // A can_train_light=false blackout suppresses endurance in the grid too:
+        // the backend projects items: [] and the agenda hides the cards, so the
+        // cell must render the "Away" state — not fall through to a bike/activity
+        // glyph (Codex #64 P2). `.light` is unaffected — endurance coexists there.
+        let hasEndurance = (hasActivity || hasRide || hasManual) && proj.kind != .unavailable
         let enduranceGlyph = hasActivity
             ? (dayActivities.first?.glyph ?? "figure.run")
             : (hasManual

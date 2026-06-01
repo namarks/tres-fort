@@ -231,16 +231,22 @@ function safeEq(a: string, b: string): boolean {
 
 /**
  * Set (or replace) a user's MCP passphrase. Hash + fresh per-user salt.
- * REJECTS a passphrase already in use by ANOTHER user: /oauth/authorize
- * resolves a token's user solely by passphrase, so a collision would bind the
- * second user's MCP session to the first user's account (silent cross-user
- * access). Re-setting your OWN passphrase is allowed.
+ * REJECTS a passphrase that would bind this user's Claude session to a DIFFERENT
+ * account at /oauth/authorize, because authorize resolves a token's user solely
+ * by passphrase:
+ *   - one already in use by another user (silent cross-user access), and
+ *   - the env `OWNER_AUTH_PASSPHRASE` (`ownerPassphrase`), which authorize checks
+ *     FIRST and maps to the owner — the per-user hash check can't see the env
+ *     secret, so this collision must be caught here (Codex #64 P2).
+ * Re-setting your OWN passphrase is allowed.
  */
 export async function setUserMcpPassphrase(
   db: D1Database,
   userId: string,
   passphrase: string,
+  ownerPassphrase?: string,
 ): Promise<{ ok: true } | { error: 'passphrase_taken' }> {
+  if (ownerPassphrase && passphrase === ownerPassphrase) return { error: 'passphrase_taken' };
   const owner = await findUserByMcpPassphrase(db, passphrase);
   if (owner && owner !== userId) return { error: 'passphrase_taken' };
   const saltBytes = crypto.getRandomValues(new Uint8Array(16));

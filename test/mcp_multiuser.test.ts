@@ -193,5 +193,11 @@ describe('mcp multi-tenant auth (M3)', () => {
     // B keeps its own distinct passphrase fine.
     expect(await setUserMcpPassphrase(D, bId, 'b-distinct-secret')).toEqual({ ok: true });
     expect(await findUserByMcpPassphrase(D, 'b-distinct-secret')).toBe(bId);
+
+    // The env OWNER_AUTH_PASSPHRASE is reserved: a personal passphrase equal to
+    // it would resolve to the owner at /authorize (which checks the env secret
+    // first), so set-time must reject it (Codex #64 P2).
+    expect(await setUserMcpPassphrase(D, bId, 'owner-env-secret', 'owner-env-secret'))
+      .toEqual({ error: 'passphrase_taken' });
   });
 });

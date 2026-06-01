@@ -5,6 +5,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env, HonoEnv } from './types';
+import { ensureOwnerUser, findUserByMcpPassphrase } from './db';
 
 const ACCESS_TTL = 60 * 60 * 24 * 30; // 30 days
 const CODE_TTL_MS = 10 * 60 * 1000; // 10 min
@@ -23,16 +24,24 @@ async function s256(verifier: string): Promise<string> {
     .replace(/=+$/, '');
 }
 
-/** Accept the static bearer OR a live OAuth access token. Used by /mcp. */
-export async function validateBearer(env: Env, token: string): Promise<boolean> {
-  if (!token) return false;
-  if (env.MCP_STATIC_TOKEN && token === env.MCP_STATIC_TOKEN) return true;
+/**
+ * Resolve the MCP principal for a bearer token to a user id, or null if the
+ * token is invalid/expired. The static bearer (Claude Code / curl) maps to the
+ * owner. An OAuth access token maps to the user bound at /authorize; tokens
+ * issued before M3 carry no user_id and resolve to the owner (back-compat).
+ */
+export async function validateBearer(env: Env, token: string): Promise<string | null> {
+  if (!token) return null;
+  if (env.MCP_STATIC_TOKEN && token === env.MCP_STATIC_TOKEN) {
+    return (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB)).id;
+  }
   const row = await env.DB.prepare(
-    'SELECT expires_at FROM oauth_tokens WHERE access_token = ?1',
+    'SELECT user_id, expires_at FROM oauth_tokens WHERE access_token = ?1',
   )
     .bind(token)
-    .first<{ expires_at: number }>();
-  return !!row && row.expires_at > Math.floor(Date.now() / 1000);
+    .first<{ user_id: string | null; expires_at: number }>();
+  if (!row || row.expires_at <= Math.floor(Date.now() / 1000)) return null;
+  return row.user_id ?? (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB)).id;
 }
 
 export const oauthRoutes = new Hono<HonoEnv>();
@@ -121,8 +130,8 @@ button{width:100%;margin-top:14px;padding:12px;background:#fff;color:#000;border
 border-radius:8px;font-weight:600;font-size:15px;cursor:pointer}
 .err{color:#ff6b6b;font-size:13px;margin-top:10px}</style></head>
 <body><form method="POST" action="/oauth/authorize">${hidden}
-<h1>Connect tres-fort</h1><p>Enter the owner passphrase to let Claude coach you.</p>
-<input type="password" name="passphrase" placeholder="Owner passphrase" autofocus>
+<h1>Connect tres-fort</h1><p>Enter your tres-fort passphrase to let Claude coach you.</p>
+<input type="password" name="passphrase" placeholder="Passphrase" autofocus>
 ${error ? `<div class="err">${error}</div>` : ''}
 <button type="submit">Authorize</button></form></body></html>`;
 }
@@ -175,13 +184,23 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
     scope: f('scope'),
     resource: f('resource'),
   };
-  if (!c.env.OWNER_AUTH_PASSPHRASE || f('passphrase') !== c.env.OWNER_AUTH_PASSPHRASE) {
+  // Resolve WHICH user is connecting: the owner via OWNER_AUTH_PASSPHRASE, or
+  // any user via their personal MCP passphrase. No match → re-prompt. The
+  // resolved user id is bound to the code so the issued token is scoped to them.
+  const pass = f('passphrase');
+  let userId: string | null = null;
+  if (c.env.OWNER_AUTH_PASSPHRASE && pass === c.env.OWNER_AUTH_PASSPHRASE) {
+    userId = (await ensureOwnerUser(c.env.DB, c.env.OWNER_APPLE_SUB)).id;
+  } else if (pass) {
+    userId = await findUserByMcpPassphrase(c.env.DB, pass);
+  }
+  if (!userId) {
     return c.html(consentPage(params, 'Incorrect passphrase.'), 401);
   }
 
   const code = rand();
   await c.env.DB.prepare(
-    'INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, code_challenge_method, scope, resource, expires_at, created_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)',
+    'INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, code_challenge_method, scope, resource, expires_at, created_at, user_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)',
   )
     .bind(
       code,
@@ -193,6 +212,7 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
       params.resource || null,
       Date.now() + CODE_TTL_MS,
       Date.now(),
+      userId,
     )
     .run();
   const url = new URL(params.redirect_uri);
@@ -203,14 +223,14 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
 
 // ---- token ---------------------------------------------------------------
 
-async function issueTokens(env: Env, clientId: string, scope: string) {
+async function issueTokens(env: Env, clientId: string, scope: string, userId: string | null) {
   const access = rand();
   const refresh = rand();
   const nowSec = Math.floor(Date.now() / 1000);
   await env.DB.prepare(
-    'INSERT INTO oauth_tokens (access_token, refresh_token, client_id, scope, expires_at, created_at) VALUES (?1,?2,?3,?4,?5,?6)',
+    'INSERT INTO oauth_tokens (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id) VALUES (?1,?2,?3,?4,?5,?6,?7)',
   )
-    .bind(access, refresh, clientId, scope, nowSec + ACCESS_TTL, nowSec)
+    .bind(access, refresh, clientId, scope, nowSec + ACCESS_TTL, nowSec, userId)
     .run();
   return {
     access_token: access,
@@ -240,7 +260,7 @@ oauthRoutes.post('/oauth/token', async (c) => {
     if ((await s256(f('code_verifier'))) !== code.code_challenge) {
       return c.json({ error: 'invalid_grant', detail: 'pkce' }, 400);
     }
-    return c.json(await issueTokens(c.env, code.client_id, code.scope ?? 'mcp'));
+    return c.json(await issueTokens(c.env, code.client_id, code.scope ?? 'mcp', code.user_id ?? null));
   }
 
   if (grant === 'refresh_token') {
@@ -253,7 +273,7 @@ oauthRoutes.post('/oauth/token', async (c) => {
     await c.env.DB.prepare('DELETE FROM oauth_tokens WHERE refresh_token = ?1')
       .bind(f('refresh_token'))
       .run();
-    return c.json(await issueTokens(c.env, row.client_id, row.scope ?? 'mcp'));
+    return c.json(await issueTokens(c.env, row.client_id, row.scope ?? 'mcp', row.user_id ?? null));
   }
 
   return c.json({ error: 'unsupported_grant_type' }, 400);

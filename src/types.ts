@@ -105,6 +105,14 @@ export interface User {
    * the env-seed/fallback back-off and the `needs_reauth` profile flag (0023).
    */
   intervals_auth_error_at: number | null;
+  /**
+   * Per-user MCP passphrase (M3 multi-tenant, 0025). PBKDF2-SHA256 hash +
+   * per-user salt; never plaintext. NULL → no passphrase set, so this user
+   * cannot open a Claude MCP session via OAuth (the owner also has the
+   * OWNER_AUTH_PASSPHRASE env path). Set via POST /api/me/mcp-passphrase.
+   */
+  mcp_passphrase_hash: string | null;
+  mcp_passphrase_salt: string | null;
 }
 
 export interface PlanRow {

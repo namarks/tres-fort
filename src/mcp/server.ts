@@ -9,7 +9,6 @@ import {
   addTrip,
   adjustToday,
   deleteTemplateExercise,
-  ensureOwnerUser,
   findRecentMatchingSet,
   getActivePlan,
   getExercises,
@@ -1460,14 +1459,16 @@ async function dispatch(
 export async function handleMcp(
   body: unknown,
   env: Env,
+  userId: string,
   bg?: BgScheduler,
 ): Promise<{ status: number; json?: unknown }> {
   const req = body as RpcRequest;
   if (!req || req.jsonrpc !== '2.0' || typeof req.method !== 'string') {
     return { status: 400, json: err(null, -32600, 'invalid request') };
   }
-  const userId = (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB)).id;
-  // Notifications (no id) get a bare 202 with no body, per spec.
+  // `userId` is resolved by the /mcp route from the bearer (static token →
+  // owner; OAuth → the token's bound user). Multi-tenant: every tool scopes
+  // to it. Notifications (no id) get a bare 202 with no body, per spec.
   if (req.id === undefined || req.id === null) {
     if (req.method.startsWith('notifications/')) return { status: 202 };
   }

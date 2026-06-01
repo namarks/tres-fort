@@ -34,6 +34,7 @@ import {
   resolveExercise,
   setGroupDisplayName,
   setUserIntervalsCreds,
+  setUserMcpPassphrase,
   softDeleteActivity,
   writeAudit,
 } from '../db';
@@ -402,6 +403,25 @@ apiRoutes.patch('/me/integrations/intervals', async (c) => {
     'ios',
   );
   return c.json(result);
+});
+
+// ---- MCP passphrase (M3 multi-tenant) -----------------------------------
+// Set THIS user's personal passphrase used to connect a Claude MCP session
+// via OAuth (/oauth/authorize). Self-service: a signed-in user provisions
+// their own passphrase; it is PBKDF2-hashed and never returned. The owner can
+// also use the OWNER_AUTH_PASSPHRASE env path and does not need this.
+apiRoutes.post('/me/mcp-passphrase', async (c) => {
+  let b: { passphrase?: unknown };
+  try {
+    b = await c.req.json<{ passphrase?: unknown }>();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  const passphrase = typeof b.passphrase === 'string' ? b.passphrase : '';
+  if (passphrase.length < 8) return c.json({ error: 'passphrase_too_short' }, 400);
+  await setUserMcpPassphrase(c.env.DB, c.get('userId'), passphrase);
+  await writeAudit(c.env.DB, c.get('userId'), 'set_mcp_passphrase', {}, 'ok', 'ios');
+  return c.json({ ok: true });
 });
 
 // ---- groups (M2 — friends/family invite-gated containers) ----------------

@@ -40,7 +40,8 @@ mcpRoutes.get('*', (c) => c.json({ error: 'method_not_allowed' }, 405));
 
 mcpRoutes.post('*', async (c) => {
   const token = bearer(c);
-  if (!(await validateBearer(c.env, token))) {
+  const userId = await validateBearer(c.env, token);
+  if (!userId) {
     return unauthorized(c);
   }
   let body: unknown;
@@ -62,7 +63,7 @@ mcpRoutes.post('*', async (c) => {
   } catch {
     bg = undefined;
   }
-  const { status, json } = await handleMcp(body, c.env, bg);
+  const { status, json } = await handleMcp(body, c.env, userId, bg);
   if (json === undefined) return c.body(null, status as any);
   return c.json(json as object, status as any);
 });

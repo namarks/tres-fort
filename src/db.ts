@@ -71,6 +71,8 @@ export async function upsertUser(
     intervals_oauth_refresh_token: null,
     intervals_oauth_expires_at: null,
     intervals_auth_error_at: null,
+    mcp_passphrase_hash: null,
+    mcp_passphrase_salt: null,
   };
   await db
     .prepare(
@@ -188,6 +190,75 @@ export async function isBootstrapClaimEligible(db: D1Database): Promise<boolean>
     return rows.results[0]!.apple_sub === BOOTSTRAP_APPLE_SUB;
   }
   return false;
+}
+
+// ---- per-user MCP passphrase (M3 multi-tenant auth) -----------------------
+// Non-owner users authenticate the OAuth /authorize step with a personal
+// passphrase (the owner also has the OWNER_AUTH_PASSPHRASE env path). Stored
+// PBKDF2-SHA256 with a per-user random salt — never in plaintext.
+
+const PBKDF2_ITERS = 100_000;
+
+async function pbkdf2(passphrase: string, saltB64: string): Promise<string> {
+  const salt = Uint8Array.from(atob(saltB64), (ch) => ch.charCodeAt(0));
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(passphrase),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERS, hash: 'SHA-256' },
+    key,
+    256,
+  );
+  return btoa(String.fromCharCode(...new Uint8Array(bits)));
+}
+
+/** Constant-time equality over two base64 strings (avoids early-exit leak). */
+function safeEq(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/** Set (or replace) a user's MCP passphrase. Hash + fresh per-user salt. */
+export async function setUserMcpPassphrase(
+  db: D1Database,
+  userId: string,
+  passphrase: string,
+): Promise<void> {
+  const saltBytes = crypto.getRandomValues(new Uint8Array(16));
+  const salt = btoa(String.fromCharCode(...saltBytes));
+  const hash = await pbkdf2(passphrase, salt);
+  await db
+    .prepare('UPDATE users SET mcp_passphrase_hash = ?2, mcp_passphrase_salt = ?3 WHERE id = ?1')
+    .bind(userId, hash, salt)
+    .run();
+}
+
+/**
+ * Resolve a user id by their MCP passphrase, or null if none match. Iterates
+ * the (small) set of users who have a passphrase set and PBKDF2-verifies each
+ * — fine for a household-scale deployment; revisit if user count grows large.
+ */
+export async function findUserByMcpPassphrase(
+  db: D1Database,
+  passphrase: string,
+): Promise<string | null> {
+  if (!passphrase) return null;
+  const rows = await db
+    .prepare(
+      'SELECT id, mcp_passphrase_hash, mcp_passphrase_salt FROM users WHERE mcp_passphrase_hash IS NOT NULL AND mcp_passphrase_salt IS NOT NULL',
+    )
+    .all<{ id: string; mcp_passphrase_hash: string; mcp_passphrase_salt: string }>();
+  for (const r of rows.results) {
+    const h = await pbkdf2(passphrase, r.mcp_passphrase_salt);
+    if (safeEq(h, r.mcp_passphrase_hash)) return r.id;
+  }
+  return null;
 }
 
 /** True if `tz` is a valid IANA timezone the runtime accepts. */

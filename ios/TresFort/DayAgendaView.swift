@@ -92,6 +92,14 @@ struct DayAgendaView: View {
         // day is not a rest day); nothing at all is a true rest day.
         case .rest, .none:
             return restOrEnduranceTitle
+        // M4 (multisport) — trip days. Minimal titles so the file builds;
+        // the lead should refine copy and decide how a `.light` day reads
+        // when it still carries endurance. tripType is available for richer
+        // wording ("ITALY — TRAVEL"). For now a plain marker.
+        case .unavailable:
+            return "AWAY"
+        case .light:
+            return restOrEnduranceTitle == "REST DAY" ? "LIGHT — AWAY" : restOrEnduranceTitle
         }
     }
 
@@ -180,6 +188,17 @@ struct DayAgendaView: View {
                 note("\(noun) day — no lift scheduled.")
             } else {
                 note("Rest day — nothing scheduled.")
+            }
+        // M4 (multisport) — trip days. Minimal notes so the file builds; any
+        // endurance cards for the date still render below this note. The lead
+        // should refine copy (e.g. surface the trip note/type).
+        case .unavailable:
+            note("Away — training unavailable on this trip.")
+        case .light:
+            if let noun = sync.noLiftDayNoun(on: dateString) {
+                note("Away — light training. \(noun) scheduled.")
+            } else {
+                note("Away — light training only.")
             }
         }
     }
@@ -505,11 +524,13 @@ struct DayAgendaView: View {
 
     /// Static, read-only conflict explanation (NO action / button —
     /// adjustments happen in the Claude app, mirroring no-in-app-chat).
-    /// `.clash` (same-day) keeps the original single line; `.heavyNextDay`
-    /// adds the triggering next-day hard ride's context (named, with
-    /// duration/TSS when available, graceful when it can't be found).
+    /// `.clash` (same-day HARD) keeps the original single line;
+    /// `.heavyNextDay` adds the triggering next-day hard ride's context
+    /// (named, with duration/TSS when available, graceful when it can't be
+    /// found). `.brick` (M4: a benign same-day EASY pairing) and `.none`
+    /// render NOTHING — an intended brick is not a warning.
     @ViewBuilder private func conflictMessage(_ conflict: RideConflict.Severity) -> some View {
-        if conflict != .none {
+        if conflict == .clash || conflict == .heavyNextDay {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")

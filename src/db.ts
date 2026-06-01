@@ -3959,27 +3959,119 @@ export async function skipPlannedSession(
   return { ok: true, session: s };
 }
 
+/**
+ * An endurance item on a calendar day (MULTISPORT.md §6.1). These COEXIST
+ * with the strength side (`day_template_id`) — a brick is a lift + a ride on
+ * the same day — so they live in their own array rather than replacing the
+ * strength cell. Read-only (endurance executes on the watch); on today+ days
+ * these are planned `external_events`, on past days completed
+ * `external_activities`. iOS renders them as read-only cards.
+ */
+export interface EnduranceItem {
+  /** external_event / external_activity id (e.g. "intervals:{external_id}"). */
+  id: string;
+  /** ride | run | swim | other. */
+  kind: string;
+  title: string | null;
+  /** Planned (future) duration; null for completed-actual items. */
+  planned_duration_sec: number | null;
+  /** TSS-like load (planned or actual). */
+  training_load: number | null;
+  /** true → a completed actual (past), false → a planned event (today+). */
+  completed: boolean;
+}
+
 export interface CalendarCell {
   date: string;
-  /** projected: from the weekly pattern. rest: no template that weekday.
-   *  Otherwise the real sessions.status (planned|in_progress|completed|skipped). */
-  status: 'projected' | 'rest' | 'planned' | 'in_progress' | 'completed' | 'skipped';
+  /**
+   * The day's coarse status. Strength + endurance + trips collapse into one:
+   *   - 'unavailable' — a trip covers the date with can_train_light=false:
+   *     items is []. (status carries the trip type via `trip_type`.)
+   *   - 'light'       — a trip covers the date with can_train_light=true:
+   *     training is possible but constrained; items reflect what's planned.
+   *   - real session status (planned|in_progress|completed|skipped) — a real
+   *     strength sessions row drives it.
+   *   - 'projected'   — no real session; the weekly pattern projects a lift.
+   *   - 'rest'        — no template that weekday and no items.
+   * NOTE: a day with ONLY endurance (no strength) and no trip reports
+   * 'projected' (it has planned training) so existing lift-or-not consumers
+   * keep working; inspect `items` to distinguish a pure-endurance day.
+   */
+  status:
+    | 'projected'
+    | 'rest'
+    | 'planned'
+    | 'in_progress'
+    | 'completed'
+    | 'skipped'
+    | 'unavailable'
+    | 'light';
   /** Set when a template resolves (projected or a real session w/ day). */
   day_template_id: string | null;
   /** True iff this cell came from a real sessions row. */
   real: boolean;
+  /**
+   * Endurance items for the day (bricks / doubles). Empty array when there is
+   * no endurance. ADDITIVE — existing single-item strength consumers ignore
+   * this and keep reading `status`/`day_template_id`/`real` unchanged.
+   */
+  items: EnduranceItem[];
+  /** When status is a trip status ('unavailable'/'light'), the trip.type. */
+  trip_type?: string;
 }
 
 /**
- * Pure projection. Given the plan, its schedule, the real sessions in range,
- * and an inclusive [fromDate,toDate] window (capped at 90 days span), emit a
- * calendar cell per date:
+ * A planned endurance event for the projection (future days). Mirror-shape of
+ * the relevant ExternalEventRow columns; `date` is the civil YYYY-MM-DD.
+ */
+export type ProjectionEvent = Pick<
+  ExternalEventRow,
+  'id' | 'date' | 'kind' | 'title' | 'planned_duration_sec' | 'training_load'
+>;
+
+/**
+ * A completed endurance actual for the projection (past days). Mirror-shape of
+ * the relevant ExternalActivityRow columns.
+ */
+export type ProjectionActivity = Pick<
+  ExternalActivityRow,
+  'id' | 'date' | 'kind' | 'name' | 'moving_time_sec' | 'training_load'
+>;
+
+/** Index a list by its civil `date` into a Map<date, T[]>. */
+function groupByDate<T extends { date: string }>(rows: Iterable<T>): Map<string, T[]> {
+  const m = new Map<string, T[]>();
+  for (const r of rows) {
+    const arr = m.get(r.date);
+    if (arr) arr.push(r);
+    else m.set(r.date, [r]);
+  }
+  return m;
+}
+
+/**
+ * Pure COMPOSITE projection (MULTISPORT.md §6.1). Given the plan, schedule,
+ * real sessions, trips, and the endurance feeds (planned events for today+,
+ * completed actuals for the past), emit a calendar cell per date. A
+ * today-or-future day is a COMPOSITE: a strength side (status/day_template_id)
+ * PLUS an `items` array of coexisting endurance (bricks/doubles), PLUS a trip
+ * status. It stays COMPUTED — no materialized rows.
  *
- *  - date < today: emit ONLY if a real sessions row exists (use its status).
- *    Never fabricate past rest/missed days.
- *  - date >= today: a real sessions row wins; otherwise weekday(date) ->
- *    schedule.week -> template id. Resolvable id -> 'projected'; null /
- *    missing / dangling id -> 'rest'.
+ * Per civil date:
+ *  - date < today (PAST): emit ONLY if there is real history — a real
+ *    sessions row (NOT a vanished discarded/planned one) OR a completed
+ *    endurance actual. Never fabricate past rest/missed days. items =
+ *    completed actuals on the date.
+ *  - date >= today (TODAY+):
+ *      trip covering date with can_train_light=false → status 'unavailable'
+ *        (trip_type = trip.type), items = [] (the day is blacked out).
+ *      else:
+ *        strength: a real sessions row wins; else schedule[weekday] template
+ *          (cleared if a trip covers the date — a trip blanks the schedule
+ *          projection but keeps explicitly-pinned sessions).
+ *        endurance: planned external_events on the date COEXIST (items).
+ *        status: trip (can_train_light=true) → 'light'; else any strength or
+ *          items → its lift/'projected' status; else 'rest'.
  *
  * Weekday is derived from the 'YYYY-MM-DD' string via weekdayOf() (calendar
  * rule, NOT a UTC offset) — iOS must mirror weekdayOf byte-for-byte.
@@ -3994,6 +4086,12 @@ export function projectCalendar(
   /** Day-template ids that still exist; a schedule id not here is dangling
    *  and degrades to 'rest'. Pass [] only if you have no plan tree. */
   liveDayIds: Iterable<string> = [],
+  /** Availability ranges (meta.trips). A covering trip drives the status. */
+  trips: Trip[] = [],
+  /** Planned endurance events (future days) — the coexisting brick/double. */
+  plannedEvents: ProjectionEvent[] = [],
+  /** Completed endurance actuals (past days) — what actually happened. */
+  completedActivities: ProjectionActivity[] = [],
 ): CalendarCell[] {
   void plan;
   const resolvable = new Set(liveDayIds);
@@ -4014,36 +4112,133 @@ export function projectCalendar(
     if (s.status === 'discarded') continue;
     if (!byDate.has(s.date)) byDate.set(s.date, s);
   }
+  const eventsByDate = groupByDate(plannedEvents);
+  const actsByDate = groupByDate(completedActivities);
+
+  // Returns the trip covering `date` (first match), or null. A trip range is
+  // [start, end] inclusive, compared on the civil YYYY-MM-DD string (the same
+  // tz-free rule as weekdayOf/addDays). String compare is valid because the
+  // format is zero-padded and sortable.
+  const tripFor = (date: string): Trip | null => {
+    for (const t of trips) {
+      if (date >= t.start && date <= t.end) return t;
+    }
+    return null;
+  };
+
+  const eventItem = (e: ProjectionEvent): EnduranceItem => ({
+    id: e.id,
+    kind: e.kind,
+    title: e.title,
+    planned_duration_sec: e.planned_duration_sec,
+    training_load: e.training_load,
+    completed: false,
+  });
+  const actItem = (a: ProjectionActivity): EnduranceItem => ({
+    id: a.id,
+    kind: a.kind,
+    title: a.name,
+    planned_duration_sec: a.moving_time_sec,
+    training_load: a.training_load,
+    completed: true,
+  });
+
   const cells: CalendarCell[] = [];
   for (let i = 0; i <= span; i++) {
     const date = addDays(fromDate, i);
     const real = byDate.get(date);
     const isPast = daySpan(today, date) < 0;
-    // A PAST 'planned' session was never executed: logging a set flips a
-    // session to in_progress/completed, so a still-'planned' row in the
-    // past is a workout that did NOT happen (Claude pre-planned the day,
-    // the user did something else). The past calendar shows only what
-    // happened, so it VANISHES — same spirit as the 'discarded' carve-out
-    // above (#48: "a workout yesterday with no content"). A FUTURE 'planned'
-    // (set_planned_session) still wins over the schedule projection. This
-    // is mirrored byte-for-byte in CalendarProjection.swift; calendar.test.ts
-    // is the contract.
-    if (real && !(isPast && real.status === 'planned')) {
+
+    if (isPast) {
+      // PAST — show only real history: a real (non-vanished) session and/or
+      // completed endurance actuals. A still-'planned' past session never
+      // executed (logging flips it to in_progress/completed), so it VANISHES
+      // like 'discarded' (#48). Mirrored byte-for-byte in
+      // CalendarProjection.swift; calendar.test.ts is the contract.
+      const items = (actsByDate.get(date) ?? []).map(actItem);
+      if (real && real.status !== 'planned') {
+        cells.push({
+          date,
+          status: real.status as CalendarCell['status'],
+          day_template_id: real.day_template_id,
+          real: true,
+          items,
+        });
+      } else if (items.length) {
+        // Endurance-only past day: completed actuals with no strength session.
+        cells.push({
+          date,
+          status: 'completed',
+          day_template_id: null,
+          real: false,
+          items,
+        });
+      }
+      // else: no real history → no fabricated past cell.
+      continue;
+    }
+
+    // TODAY or FUTURE.
+    const trip = tripFor(date);
+    if (trip && trip.can_train_light === false) {
+      // Blacked out: the day is unavailable, no items projected.
       cells.push({
         date,
-        status: real.status as CalendarCell['status'],
-        day_template_id: real.day_template_id,
-        real: true,
+        status: 'unavailable',
+        day_template_id: null,
+        real: false,
+        items: [],
+        trip_type: trip.type,
       });
       continue;
     }
-    if (isPast) continue; // no fabricated past cells (incl. a vanished past-planned)
-    const tid = schedule.week[weekdayOf(date)];
-    if (tid && resolvable.has(tid)) {
-      cells.push({ date, status: 'projected', day_template_id: tid, real: false });
+
+    // Strength side: a real session wins; else the schedule projection,
+    // UNLESS a trip covers the date (a trip blanks the recurring pattern —
+    // Claude re-plans the week as explicit sessions). An explicitly-pinned
+    // real session always survives a trip.
+    let status: CalendarCell['status'];
+    let dayTemplateId: string | null;
+    let real_ = false;
+    if (real) {
+      status = real.status as CalendarCell['status'];
+      dayTemplateId = real.day_template_id;
+      real_ = true;
     } else {
-      cells.push({ date, status: 'rest', day_template_id: null, real: false });
+      const tid = trip ? null : schedule.week[weekdayOf(date)];
+      if (tid && resolvable.has(tid)) {
+        status = 'projected';
+        dayTemplateId = tid;
+      } else {
+        status = 'rest';
+        dayTemplateId = null;
+      }
     }
+
+    // Endurance side coexists (brick / double).
+    const items = (eventsByDate.get(date) ?? []).map(eventItem);
+
+    // Resolve the composite status.
+    let finalStatus = status;
+    if (trip) {
+      // can_train_light=true → constrained but possible. A pinned real
+      // session keeps its own status; otherwise the day is 'light'.
+      finalStatus = real_ ? status : 'light';
+    } else if (status === 'rest' && items.length) {
+      // Pure-endurance day (no strength) → report 'projected' so existing
+      // lift-or-not consumers see planned training; items disambiguate.
+      finalStatus = 'projected';
+    }
+
+    const cell: CalendarCell = {
+      date,
+      status: finalStatus,
+      day_template_id: dayTemplateId,
+      real: real_,
+      items,
+    };
+    if (trip) cell.trip_type = trip.type;
+    cells.push(cell);
   }
   return cells;
 }
@@ -4062,11 +4257,35 @@ export async function getProjectedCalendar(
 ): Promise<CalendarCell[]> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return [];
-  const schedule = parsePlanMeta(plan.meta).schedule;
+  const meta = parsePlanMeta(plan.meta);
+  const schedule = meta.schedule;
+  const trips = meta.trips ?? [];
   const liveDays = await db
     .prepare('SELECT id FROM day_templates WHERE plan_id = ?1')
     .bind(plan.id)
     .all<{ id: string }>();
+  // Endurance feeds for the composite projection. Planned events drive
+  // today+ bricks/doubles; completed actuals drive past endurance items.
+  // Both are soft-deleted caches — exclude tombstones. The window matches
+  // the sessions window (the projection clamps the span itself).
+  const plannedEvents = await db
+    .prepare(
+      `SELECT id, date, kind, title, planned_duration_sec, training_load
+         FROM external_events
+        WHERE user_id = ?1 AND deleted_at IS NULL
+          AND date >= ?2 AND date <= ?3`,
+    )
+    .bind(userId, fromDate, toDate)
+    .all<ProjectionEvent>();
+  const completedActivities = await db
+    .prepare(
+      `SELECT id, date, kind, name, moving_time_sec, training_load
+         FROM external_activities
+        WHERE user_id = ?1 AND deleted_at IS NULL
+          AND date >= ?2 AND date <= ?3`,
+    )
+    .bind(userId, fromDate, toDate)
+    .all<ProjectionActivity>();
   // NOTE: the `sessions` table has NO soft-delete column (only set_logs and
   // external_events carry deleted_at — see migrations 0001/0006). A session
   // is never soft-deleted; a cancelled/rest day is modelled as a real row
@@ -4092,6 +4311,9 @@ export async function getProjectedCalendar(
     toDate,
     today,
     liveDays.results.map((r) => r.id),
+    trips,
+    plannedEvents.results,
+    completedActivities.results,
   );
 }
 
@@ -4782,24 +5004,46 @@ export async function getRecentActivities(
 /**
  * CONFLICT RULE — authoritative. iOS mirrors this BYTE-FOR-BYTE.
  *
+ * INTERFERENCE-AWARE (MULTISPORT.md §6.1/§7). The old rule flagged EVERY
+ * same-day lift+endurance as a 'clash' — which means every intended brick
+ * read as a conflict (the M0-spike bug, `db.ts` §5/#5). The fix keys the
+ * same-day severity off whether the endurance side is HARD — the same
+ * `isHard` proxy the day-before branch already uses — so a key/long endurance
+ * session on a lift day is a real clash, while an easy/short one is a benign,
+ * intended brick.
+ *
  * Inputs: the set of dates that hold a lift (a real lift session OR a
  * projected/scheduled lift day) and the non-deleted external_events.
  * Soft-deleted events are excluded by the caller and ignored here.
  *
+ * "Hard" endurance = training_load >= 150 OR planned_duration_sec >= 9000
+ * (≈2h30m) — the key/long-session proxy.
+ *
  * For each lift date D, in priority order (first match wins; a date emits at
  * most one DayConflict):
  *
- *  (a) SAME-DAY  → severity "clash":
+ *  (a) SAME-DAY:
  *      there exists a non-deleted external_event whose `date` == D.
- *      `conflicts` = the ids of ALL such same-day events.
+ *        - if ANY same-day event is HARD → severity "clash" (real
+ *          interference: a heavy/key endurance session on a strength day).
+ *        - else (all same-day endurance is easy/short) → severity "brick"
+ *          (a benign, intended same-day pairing — NOT a problem; surfaced
+ *          informationally so a UI can label the brick).
+ *      `conflicts` = the ids of ALL same-day events either way.
  *
  *  (b) DAY-BEFORE-HARD  → severity "heavy-next-day":
  *      D itself has no same-day event, AND there exists a non-deleted
  *      external_event E on the immediately following calendar day
- *      (date == D + 1 civil day) that is "hard", where hard means
- *      training_load >= 150 OR planned_duration_sec >= 9000.
+ *      (date == D + 1 civil day) that is HARD.
  *      `conflicts` = the ids of ALL such hard next-day events.
  *      (Sub-threshold next-day events do NOT flag.)
+ *
+ * NOTE ON "heavy LOWER-BODY": the §7 ideal keys a clash off a heavy/lower-
+ * body strength day. `detectConflicts` has no per-day strength load/muscle
+ * metadata in its inputs today (lift dates are bare strings), so M4 uses the
+ * conservative, available proxy — the endurance side's hardness — exactly as
+ * the day-before branch does. Tightening to lower-body-aware clashes needs
+ * strength-day metadata plumbed in; left for a later milestone.
  *
  * "Calendar day before/after" uses the YYYY-MM-DD civil date (the same
  * tz-free rule as weekdayOf/addDays) — never a UTC offset. Output is
@@ -4824,7 +5068,10 @@ export function detectConflicts(
   for (const d of dates) {
     const sameDay = byDate.get(d);
     if (sameDay && sameDay.length) {
-      out.push({ date: d, conflicts: sameDay.map((e) => e.id), severity: 'clash' });
+      // A same-day pairing is a real 'clash' only when the endurance side is
+      // hard (key/long); otherwise it is an intended 'brick'.
+      const severity: DayConflict['severity'] = sameDay.some(isHard) ? 'clash' : 'brick';
+      out.push({ date: d, conflicts: sameDay.map((e) => e.id), severity });
       continue;
     }
     const next = byDate.get(addDays(d, 1));
@@ -4850,13 +5097,18 @@ export async function getRideConflicts(
   today: string,
 ): Promise<DayConflict[]> {
   const cal = await getProjectedCalendar(db, userId, fromDate, toDate, today);
+  // A LIFT date carries actual STRENGTH (the conflict subject) — NOT a pure
+  // endurance day. The composite projection now also reports 'projected'/
+  // 'completed' for endurance-only days, distinguishable by the absence of a
+  // strength template/session: a real strength session (planned|in_progress|
+  // completed) OR a projected strength template (day_template_id != null).
+  // 'skipped' lifts and pure-endurance cells (day_template_id == null and
+  // !real) are excluded, keeping the prior contract intact.
   const liftDates = cal
     .filter(
       (c) =>
-        c.status === 'projected' ||
-        c.status === 'planned' ||
-        c.status === 'in_progress' ||
-        c.status === 'completed',
+        (c.real && (c.status === 'planned' || c.status === 'in_progress' || c.status === 'completed')) ||
+        (c.status === 'projected' && c.day_template_id != null),
     )
     .map((c) => c.date);
   const events = await db

@@ -355,11 +355,23 @@ export interface GroupInvite {
   used_by: string | null;
 }
 
-/** Per-date conflict between lift sessions/projections and external events. */
+/**
+ * Per-date conflict between lift sessions/projections and external events.
+ *
+ * Severities (least → most concerning), interference-aware per MULTISPORT.md
+ * §6.1/§7 — NOT "any same-day pairing is a clash":
+ *   - 'brick'          — a benign, intended same-day pairing: a strength day
+ *     alongside an EASY/short endurance session (sub-`isHard` threshold). This
+ *     is the deliberate brick/double, NOT a problem. Informational only.
+ *   - 'heavy-next-day' — a lift the civil day BEFORE a hard endurance session
+ *     (training_load >= 150 OR planned_duration_sec >= 9000). Unchanged.
+ *   - 'clash'          — a real interference: a strength day SAME-DAY as a
+ *     KEY/long (hard) endurance session. The case worth flagging.
+ */
 export interface DayConflict {
   date: string;
   conflicts: string[]; // external_event ids
-  severity: 'clash' | 'heavy-next-day';
+  severity: 'brick' | 'clash' | 'heavy-next-day';
 }
 
 // ---- weekly schedule (frozen contract — see migrations/0005) -------------
@@ -391,7 +403,8 @@ export const WEEKDAYS: readonly Weekday[] = [
 // on write (DESIGN.md §3). They are AUTHORED TRUTH the coach reasons over, NOT a
 // materialized calendar — the projection DERIVES days from them (store truth,
 // derive views). The backend stores and projects; it never computes training
-// science. Absent fields are simply omitted from the JSON.
+// science. Absent fields are simply omitted from the JSON. M2 authors them via
+// the `set_*` tools; M4's calendar projection READS them.
 
 export type RacePriority = 'A' | 'B' | 'C';
 
@@ -432,6 +445,8 @@ export interface Trip {
   start: string; // YYYY-MM-DD
   end: string; // YYYY-MM-DD
   type: TripType;
+  /** Pool/run access while away? Defaults true; only an explicit false marks
+   *  the range `unavailable` in the calendar projection (M4). */
   can_train_light?: boolean;
   note?: string;
 }
@@ -465,6 +480,7 @@ export function emptySchedule(): WeeklySchedule {
 }
 
 const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
 
 // Envelope-validators for the authored-intent meta fields. Each drops a
 // malformed entry rather than throwing (same tolerance as the schedule parse)
@@ -510,13 +526,16 @@ function normalizeTrips(v: unknown): Trip[] | undefined {
     if (!item || typeof item !== 'object') continue;
     const t = item as Record<string, unknown>;
     if (!isStr(t.id) || !isStr(t.start) || !isStr(t.end)) continue;
+    if (!YMD.test(t.start) || !YMD.test(t.end)) continue; // drop malformed dates
     const trip: Trip = {
       id: t.id,
       start: t.start,
       end: t.end,
       type: TRIP_TYPES.has(t.type as string) ? (t.type as TripType) : 'other',
     };
-    if (typeof t.can_train_light === 'boolean') trip.can_train_light = t.can_train_light;
+    // Default true: only an explicit `false` marks the range unavailable in
+    // the M4 calendar projection (the conservative "they may still train" read).
+    trip.can_train_light = t.can_train_light === false ? false : true;
     if (isStr(t.note)) trip.note = t.note;
     trips.push(trip);
   }
@@ -527,6 +546,7 @@ function normalizeStressModel(v: unknown): StressModel | undefined {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
   return v as StressModel; // freeform — the coach owns the semantics
 }
+
 
 /**
  * The ONLY place plan.meta is parsed. Never hand-parse meta elsewhere.

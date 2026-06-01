@@ -1,5 +1,6 @@
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import type { ProjectionActivity, ProjectionEvent } from '../src/db';
 import {
   deleteDayTemplate,
   detectConflicts,
@@ -11,7 +12,7 @@ import {
   skipPlannedSession,
   weekdayOf,
 } from '../src/db';
-import type { ExternalEventRow, SessionRow, WeeklySchedule } from '../src/types';
+import type { ExternalEventRow, SessionRow, Trip, WeeklySchedule } from '../src/types';
 import { parsePlanMeta } from '../src/types';
 
 beforeAll(async () => {
@@ -282,6 +283,305 @@ describe('projectCalendar — truth table', () => {
     expect(projectCalendar({ id: 'p' }, SCHED, [], '2026-05-20', '2026-05-18', today, LIVE)).toEqual(
       [],
     );
+  });
+});
+
+// ── M4 — composite calendar (multi-item days, trips). The pure
+// projection is the parity contract; CalendarProjection.swift mirrors the
+// trip truth table byte-for-byte. MULTISPORT.md §6.1.
+describe('projectCalendar — composite (bricks / trips / endurance)', () => {
+  const today = '2026-05-18'; // Monday
+
+  const ev = (
+    id: string,
+    date: string,
+    over: Partial<ProjectionEvent> = {},
+  ): ProjectionEvent => ({
+    id,
+    date,
+    kind: over.kind ?? 'ride',
+    title: over.title ?? 'Ride',
+    planned_duration_sec: over.planned_duration_sec ?? null,
+    training_load: over.training_load ?? null,
+  });
+
+  const act = (
+    id: string,
+    date: string,
+    over: Partial<ProjectionActivity> = {},
+  ): ProjectionActivity => ({
+    id,
+    date,
+    kind: over.kind ?? 'run',
+    name: over.name ?? 'Run',
+    moving_time_sec: over.moving_time_sec ?? null,
+    training_load: over.training_load ?? null,
+  });
+
+  const trip = (over: Partial<Trip> = {}): Trip => ({
+    id: over.id ?? 't1',
+    start: over.start ?? '2026-05-20',
+    end: over.end ?? '2026-05-24',
+    type: over.type ?? 'travel',
+    can_train_light: over.can_train_light,
+    note: over.note,
+  });
+
+  it('BRICK DAY: strength (schedule) + endurance same day coexist — NOT a conflict', () => {
+    // Mon projects d_push; a same-day easy ride coexists as an item. The
+    // strength side is unchanged ('projected'/d_push); the day is composite.
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [],
+      '2026-05-18', // Mon = d_push
+      '2026-05-18',
+      today,
+      LIVE,
+      [], // trips
+      [ev('intervals:spin', '2026-05-18', { training_load: 60 })],
+    );
+    expect(cells).toHaveLength(1);
+    expect(cells[0]).toMatchObject({
+      date: '2026-05-18',
+      status: 'projected', // strength side intact
+      day_template_id: 'd_push',
+      real: false,
+    });
+    expect(cells[0]!.items).toEqual([
+      {
+        id: 'intervals:spin',
+        kind: 'ride',
+        title: 'Ride',
+        planned_duration_sec: null,
+        training_load: 60,
+        completed: false,
+      },
+    ]);
+    // A brick is NOT a clash: detectConflicts over this lift date sees only
+    // an easy same-day ride → 'brick', never 'clash'.
+    const conflicts = detectConflicts(['2026-05-18'], [
+      { id: 'intervals:spin', date: '2026-05-18', training_load: 60, planned_duration_sec: null },
+    ]);
+    expect(conflicts).toEqual([
+      { date: '2026-05-18', conflicts: ['intervals:spin'], severity: 'brick' },
+    ]);
+  });
+
+  it('REAL CLASH: heavy strength day + key/long endurance same day → clash', () => {
+    // Fri projects d_legs (heavy lower); a long key ride sits the same day.
+    // The day is still composite (strength + item); detectConflicts flags it.
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [],
+      '2026-05-22', // Fri = d_legs
+      '2026-05-22',
+      today,
+      LIVE,
+      [],
+      [ev('intervals:longride', '2026-05-22', { training_load: 220, planned_duration_sec: 12600 })],
+    );
+    expect(cells[0]).toMatchObject({ status: 'projected', day_template_id: 'd_legs' });
+    expect(cells[0]!.items.map((i) => i.id)).toEqual(['intervals:longride']);
+    const conflicts = detectConflicts(['2026-05-22'], [
+      { id: 'intervals:longride', date: '2026-05-22', training_load: 220, planned_duration_sec: 12600 },
+    ]);
+    expect(conflicts).toEqual([
+      { date: '2026-05-22', conflicts: ['intervals:longride'], severity: 'clash' },
+    ]);
+  });
+
+  it('TRAVEL WEEK (can_train_light=false): the range is unavailable, no items, schedule blanked', () => {
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [],
+      '2026-05-18',
+      '2026-05-24',
+      today,
+      LIVE,
+      [trip({ start: '2026-05-20', end: '2026-05-24', can_train_light: false, type: 'travel' })],
+      // An event synced inside the blackout is suppressed (day is unavailable).
+      [ev('intervals:x', '2026-05-22', { training_load: 50 })],
+    );
+    const byDate = Object.fromEntries(cells.map((c) => [c.date, c]));
+    // Before the trip: Mon still projects d_push (with no items).
+    expect(byDate['2026-05-18']).toMatchObject({ status: 'projected', day_template_id: 'd_push' });
+    // Inside the trip: every covered day is unavailable, schedule blanked,
+    // no items — even the d_pull Wed (05-20) and d_legs Fri (05-22).
+    for (const d of ['2026-05-20', '2026-05-22', '2026-05-24']) {
+      expect(byDate[d]).toMatchObject({
+        status: 'unavailable',
+        trip_type: 'travel',
+        day_template_id: null,
+        real: false,
+      });
+      expect(byDate[d]!.items).toEqual([]);
+    }
+  });
+
+  it('TRAVEL WEEK (can_train_light=true): days are light; endurance items still ride along', () => {
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [],
+      '2026-05-20', // Wed = d_pull, but inside a light trip
+      '2026-05-22', // Fri = d_legs
+      today,
+      LIVE,
+      [trip({ start: '2026-05-20', end: '2026-05-24', can_train_light: true, type: 'travel' })],
+      [ev('intervals:poolrun', '2026-05-21', { kind: 'run', training_load: 40 })],
+    );
+    const byDate = Object.fromEntries(cells.map((c) => [c.date, c]));
+    // Schedule is blanked (no d_pull/d_legs projection) but the day is light.
+    expect(byDate['2026-05-20']).toMatchObject({
+      status: 'light',
+      trip_type: 'travel',
+      day_template_id: null,
+    });
+    expect(byDate['2026-05-20']!.items).toEqual([]);
+    // A light day with a synced endurance item still carries it.
+    expect(byDate['2026-05-21']).toMatchObject({ status: 'light', trip_type: 'travel' });
+    expect(byDate['2026-05-21']!.items.map((i) => i.id)).toEqual(['intervals:poolrun']);
+  });
+
+  it('a pinned real session SURVIVES a light trip (keeps its own status)', () => {
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [sess('2026-05-21', 'planned', 'd_push')], // explicit pinned session
+      '2026-05-21',
+      '2026-05-21',
+      today,
+      LIVE,
+      [trip({ start: '2026-05-20', end: '2026-05-24', can_train_light: true })],
+    );
+    expect(cells[0]).toMatchObject({
+      status: 'planned', // NOT 'light' — the pin wins
+      day_template_id: 'd_push',
+      real: true,
+      trip_type: 'travel',
+    });
+  });
+
+  it('PURE-ENDURANCE future day (no strength) → projected with the item', () => {
+    // Tue is rest in SCHED; an endurance item alone makes the day projected
+    // (so lift-or-not consumers see planned training), items disambiguate.
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [],
+      '2026-05-19', // Tue = rest
+      '2026-05-19',
+      today,
+      LIVE,
+      [],
+      [ev('intervals:swim', '2026-05-19', { kind: 'swim', training_load: 30 })],
+    );
+    expect(cells[0]).toMatchObject({
+      status: 'projected',
+      day_template_id: null, // no strength template → not a real lift date
+      real: false,
+    });
+    expect(cells[0]!.items.map((i) => i.id)).toEqual(['intervals:swim']);
+  });
+
+  it('PAST day with a completed endurance actual is shown as an item', () => {
+    // 2026-05-15 is before today; no strength session, one completed run.
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [],
+      '2026-05-15',
+      '2026-05-15',
+      today,
+      LIVE,
+      [],
+      [],
+      [act('intervals:activity:run1', '2026-05-15', { moving_time_sec: 3600, training_load: 70 })],
+    );
+    expect(cells).toHaveLength(1);
+    expect(cells[0]).toMatchObject({
+      date: '2026-05-15',
+      status: 'completed',
+      day_template_id: null,
+      real: false,
+    });
+    expect(cells[0]!.items).toEqual([
+      {
+        id: 'intervals:activity:run1',
+        kind: 'run',
+        title: 'Run',
+        planned_duration_sec: 3600, // moving_time_sec surfaced here
+        training_load: 70,
+        completed: true,
+      },
+    ]);
+  });
+
+  it('PAST completed strength session + completed endurance actual = composite past day', () => {
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      [sess('2026-05-15', 'completed', 'd_legs')],
+      '2026-05-15',
+      '2026-05-15',
+      today,
+      LIVE,
+      [],
+      [],
+      [act('intervals:activity:ride1', '2026-05-15', { kind: 'ride', moving_time_sec: 5400 })],
+    );
+    expect(cells[0]).toMatchObject({
+      status: 'completed',
+      day_template_id: 'd_legs',
+      real: true,
+    });
+    expect(cells[0]!.items.map((i) => i.id)).toEqual(['intervals:activity:ride1']);
+  });
+
+  it('malformed trips are dropped by parsePlanMeta (never crash the projection)', () => {
+    const meta = parsePlanMeta(
+      JSON.stringify({
+        trips: [
+          { id: 'ok', start: '2026-05-20', end: '2026-05-24', type: 'travel', can_train_light: false },
+          { id: 'no-dates' }, // dropped
+          { start: '2026-05-20', end: '2026-05-24' }, // no id → dropped
+          { id: 'bad-date', start: 'nope', end: '2026-05-24' }, // dropped
+          'garbage', // dropped
+        ],
+      }),
+    );
+    expect(meta.trips).toHaveLength(1);
+    expect(meta.trips![0]).toMatchObject({ id: 'ok', can_train_light: false });
+  });
+
+  it('a trip covering the date drives status via getProjectedCalendar (D1 round-trip)', async () => {
+    // Seed a plan whose meta carries a real trip, then project across it.
+    const userId = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,?3,?4,?5)',
+    )
+      .bind(userId, `sub-${userId}`, null, 'Tripper', Date.now())
+      .run();
+    const planId = crypto.randomUUID();
+    const meta = JSON.stringify({
+      schedule: { version: 1, week: { mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null } },
+      trips: [{ id: 'tr', start: '2027-03-02', end: '2027-03-05', type: 'travel', can_train_light: false }],
+    });
+    await env.DB.prepare(
+      "INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at) VALUES (?1,?2,'Trip Plan','active',1,?3,?4,?4)",
+    )
+      .bind(planId, userId, meta, Date.now())
+      .run();
+    const cal = await getProjectedCalendar(env.DB, userId, '2027-03-01', '2027-03-06', '2027-03-01');
+    const m = Object.fromEntries(cal.map((c) => [c.date, c]));
+    expect(m['2027-03-01']).toMatchObject({ status: 'rest' });
+    for (const d of ['2027-03-02', '2027-03-03', '2027-03-05']) {
+      expect(m[d]).toMatchObject({ status: 'unavailable', trip_type: 'travel' });
+    }
+    expect(m['2027-03-06']).toMatchObject({ status: 'rest' });
   });
 });
 
@@ -569,13 +869,41 @@ describe('detectConflicts — truth table (iOS mirrors this byte-for-byte)', () 
     planned_duration_sec: over.planned_duration_sec ?? null,
   });
 
-  it('same-day lift + ride → clash, lists every same-day event', () => {
+  it('same-day lift + EASY ride → brick (benign), lists every same-day event', () => {
+    // Neither same-day event is hard (null load/duration) → an intended
+    // brick/double, NOT a clash. Lists every same-day event id.
     const out = detectConflicts(
       ['2026-05-20'],
       [evt('intervals:a', '2026-05-20'), evt('intervals:b', '2026-05-20')],
     );
     expect(out).toEqual([
-      { date: '2026-05-20', conflicts: ['intervals:a', 'intervals:b'], severity: 'clash' },
+      { date: '2026-05-20', conflicts: ['intervals:a', 'intervals:b'], severity: 'brick' },
+    ]);
+  });
+
+  it('same-day lift + HARD ride → clash (real interference)', () => {
+    // A key/long endurance session (>=150 TSS) on a lift day is a real
+    // clash. Mixed easy+hard same-day still escalates to clash, and lists
+    // every same-day event id.
+    const out = detectConflicts(
+      ['2026-05-20'],
+      [
+        evt('intervals:easy', '2026-05-20'),
+        evt('intervals:key', '2026-05-20', { training_load: 200 }),
+      ],
+    );
+    expect(out).toEqual([
+      { date: '2026-05-20', conflicts: ['intervals:easy', 'intervals:key'], severity: 'clash' },
+    ]);
+  });
+
+  it('same-day lift + LONG ride (>=9000s) → clash (duration threshold)', () => {
+    const out = detectConflicts(
+      ['2026-05-20'],
+      [evt('intervals:long', '2026-05-20', { planned_duration_sec: 9000 })],
+    );
+    expect(out).toEqual([
+      { date: '2026-05-20', conflicts: ['intervals:long'], severity: 'clash' },
     ]);
   });
 
@@ -629,9 +957,11 @@ describe('detectConflicts — truth table (iOS mirrors this byte-for-byte)', () 
         evt('intervals:tomorrowBig', '2026-05-21', { training_load: 200 }),
       ],
     );
-    // Only the clash is emitted for 2026-05-20 (first match wins).
+    // Same-day wins over the day-before-hard branch (first match wins). The
+    // same-day event is easy → 'brick' (the next-day hard ride is NOT also
+    // emitted for this date).
     expect(out).toEqual([
-      { date: '2026-05-20', conflicts: ['intervals:today'], severity: 'clash' },
+      { date: '2026-05-20', conflicts: ['intervals:today'], severity: 'brick' },
     ]);
   });
 
@@ -685,19 +1015,21 @@ describe('getRideConflicts — cancelled (skipped) sessions produce no conflict'
       .bind(`sess-${date}-${status}`, userId, planId, date, status, Date.now())
       .run();
 
-  const insertRide = (userId: string, id: string, date: string) =>
+  // `load` defaults to a HARD value (>=150 TSS) so a same-day completed
+  // session produces a real 'clash' under the interference-aware rule.
+  const insertRide = (userId: string, id: string, date: string, load = 200) =>
     env.DB.prepare(
       `INSERT INTO external_events
          (id,user_id,source,external_id,date,kind,title,description,
           planned_duration_sec,training_load,intensity,raw,synced_at,deleted_at)
-       VALUES (?1,?2,'intervals',?3,?4,'ride','Ride',NULL,7200,120,0.7,'{}',?5,NULL)`,
+       VALUES (?1,?2,'intervals',?3,?4,'ride','Ride',NULL,7200,?6,0.7,'{}',?5,NULL)`,
     )
-      .bind(id, userId, id.replace('intervals:', ''), date, Date.now())
+      .bind(id, userId, id.replace('intervals:', ''), date, Date.now(), load)
       .run();
 
-  it('skipped session + same-day ride → NO conflict; completed → clash', async () => {
+  it('skipped session + same-day ride → NO conflict; completed + hard ride → clash', async () => {
     const { userId, planId } = await freshUserAndPlan();
-    // 2026-06-10 skipped, 2026-06-12 completed; rides on both days.
+    // 2026-06-10 skipped, 2026-06-12 completed; hard rides on both days.
     await insertSession(userId, planId, '2026-06-10', 'skipped');
     await insertSession(userId, planId, '2026-06-12', 'completed');
     await insertRide(userId, 'intervals:r-skip', '2026-06-10');
@@ -714,7 +1046,7 @@ describe('getRideConflicts — cancelled (skipped) sessions produce no conflict'
     expect(dates).not.toContain('2026-06-10'); // skipped → ignored
     const done = conflicts.find((c) => c.date === '2026-06-12');
     expect(done).toBeTruthy();
-    expect(done!.severity).toBe('clash');
+    expect(done!.severity).toBe('clash'); // hard same-day ride → real clash
     expect(done!.conflicts).toContain('intervals:r-done');
   });
 

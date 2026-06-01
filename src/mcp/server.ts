@@ -312,7 +312,7 @@ const TOOLS: Record<string, Tool> = {
 
   get_upcoming_rides: {
     description:
-      "Get planned cycling/endurance events (from intervals.icu) and where they conflict with the lift calendar. `range` is a day count from today (default 30, max 90). Conflicts: severity 'clash' = a lift and a ride on the SAME day; 'heavy-next-day' = a lift the calendar day BEFORE a hard ride (training_load >= 150 or planned_duration_sec >= 9000). Use this to coordinate lifting around riding.",
+      "Get planned cycling/endurance events (from intervals.icu) and where they conflict with the lift calendar. `range` is a day count from today (default 30, max 90). Conflicts are interference-aware: severity 'clash' = a lift the SAME day as a HARD/key endurance session (training_load >= 150 or planned_duration_sec >= 9000) — real interference worth resolving; 'heavy-next-day' = a lift the calendar day BEFORE such a hard ride; 'brick' = a lift the same day as an EASY/short endurance session — a benign, intended brick/double, NOT a problem (informational only). Use this to coordinate lifting around riding.",
     inputSchema: obj(
       { range: { type: 'integer', minimum: 1, maximum: 90, description: 'days ahead (default 30)' } },
       [],

@@ -692,7 +692,9 @@ final class SyncModel: ObservableObject {
         switch proj {
         case .projected:      isWorkout = true
         case .session(let s): isWorkout = Self.isWorkoutStatus(s)
-        case .rest, .none:    isWorkout = false
+        // M4 (multisport) — a trip day is not a scheduled strength workout
+        // (unavailable = blacked out; light = unstructured travel training).
+        case .rest, .none, .unavailable, .light: isWorkout = false
         }
         guard isWorkout else { return nil }
         switch proj {
@@ -712,7 +714,7 @@ final class SyncModel: ObservableObject {
             return sessionDisplayTemplate(forDateString: today,
                                           allowScheduleInference: true)
                 ?? selectedDay ?? plan?.days.first
-        case .rest, .none:
+        case .rest, .none, .unavailable, .light:
             return nil   // unreachable (guarded by isWorkout)
         }
     }
@@ -824,7 +826,9 @@ final class SyncModel: ObservableObject {
                 // "next workout" means the next thing left to DO. Skipped
                 // is likewise not upcoming.
                 continue
-            case .rest, .none:
+            // M4 (multisport) — trip days are not the next strength workout
+            // (unavailable = blacked out; light = unstructured travel). Skip.
+            case .rest, .none, .unavailable, .light:
                 continue
             }
         }

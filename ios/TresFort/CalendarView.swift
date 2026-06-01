@@ -41,6 +41,16 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
     case .rest:
         return .init(color: Theme.dim, glyph: "moon.zzz.fill",
                      label: "Rest", isWorkout: false)
+    // M4 (multisport) — trip-aware statuses. Minimal placeholder styling so
+    // the file builds; the lead should refine the glyph/label/color for a
+    // travel/blackout day (and decide whether `.light` should still read as
+    // an available training day). NOT a workout for the grid's purposes.
+    case .unavailable:
+        return .init(color: Theme.dim, glyph: "airplane",
+                     label: "Away", isWorkout: false)
+    case .light:
+        return .init(color: Theme.dim, glyph: "airplane",
+                     label: "Light", isWorkout: false)
     case .none:
         return nil
     }

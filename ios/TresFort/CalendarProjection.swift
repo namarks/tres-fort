@@ -30,9 +30,31 @@ import Foundation
 // calendar rule, NOT a UTC offset).
 // ────────────────────────────────────────────────────────────────────────
 
+/// An availability / blackout range from `plans.meta.trips` (MULTISPORT.md
+/// §4.3). Byte-for-byte mirror of the backend `Trip` (src/types.ts) for the
+/// fields the composite projection consumes. `canTrainLight == false` blacks
+/// the range out (`.unavailable`); `true`/absent → `.light` (constrained).
+struct TripRange: Equatable {
+    let id: String
+    let start: String          // YYYY-MM-DD inclusive
+    let end: String            // YYYY-MM-DD inclusive
+    let type: String           // travel | rest | injury | other
+    let canTrainLight: Bool     // false → unavailable; default true
+
+    /// Inclusive civil-date containment (same zero-padded string compare the
+    /// backend `tripFor` uses — valid because YYYY-MM-DD sorts lexically).
+    func covers(_ ymd: String) -> Bool { ymd >= start && ymd <= end }
+}
+
 /// What a single day resolves to. `session` carries the real cached
 /// session when one exists; `template` carries the plan day for a
 /// planned/projected workout (so the agenda can show targets).
+///
+/// NOTE (M4): trip statuses are NEW. Endurance items (bricks/doubles) are
+/// NOT carried here — the day cell composes the strength projection with
+/// `SyncModel.rides(on:)`/`activities(on:)` to render the composite day, so
+/// `project` stays focused on the strength + trip status (the parity-critical
+/// truth table). See projectCalendar's CalendarCell.items on the backend.
 enum DayProjection: Equatable {
     /// A real session exists for this date. `status` is its raw status
     /// (`planned` / `in_progress` / `completed` / `skipped` / other).
@@ -43,11 +65,17 @@ enum DayProjection: Equatable {
     /// Rest day — today/future with no session and no resolvable
     /// schedule entry (null / missing / dangling id).
     case rest
+    /// A trip covers this date with can_train_light=false — blacked out.
+    /// `tripType` is the trip.type. (today/future only)
+    case unavailable(tripType: String)
+    /// A trip covers this date with can_train_light=true — training is
+    /// possible but constrained. `tripType` is the trip.type. (today/future)
+    case light(tripType: String)
     /// Nothing to show (a past day with no real session).
     case none
 
     /// Coarse visual/semantic bucket used by the grid + agenda.
-    enum Kind { case completed, inProgress, planned, projected, skipped, rest, none }
+    enum Kind { case completed, inProgress, planned, projected, skipped, rest, unavailable, light, none }
 
     var kind: Kind {
         switch self {
@@ -59,9 +87,11 @@ enum DayProjection: Equatable {
             case "skipped":     return .skipped
             default:            return .planned   // unknown → treat as planned
             }
-        case .projected: return .projected
-        case .rest:      return .rest
-        case .none:      return .none
+        case .projected:   return .projected
+        case .rest:        return .rest
+        case .unavailable: return .unavailable
+        case .light:       return .light
+        case .none:        return .none
         }
     }
 }
@@ -124,12 +154,15 @@ enum CalendarProjection {
     ///   - schedule: parsed `meta.schedule`, or nil.
     ///   - templateIDs: set of day_template ids that exist in the plan
     ///     (used to detect dangling schedule references).
+    ///   - trips: parsed `meta.trips` availability ranges (default []).
+    ///     A covering trip drives the today+ status (MULTISPORT.md §6.1).
     static func project(
         dateString: String,
         today: String,
         sessionByDate: [String: SessionRow],
         schedule: PlanSchedule?,
-        templateIDs: Set<String>
+        templateIDs: Set<String>,
+        trips: [TripRange] = []
     ) -> DayProjection {
         // A 'discarded' session is treated as if it never existed — the
         // user explicitly threw it away (set_logs soft-deleted server
@@ -147,15 +180,29 @@ enum CalendarProjection {
             // in_progress/completed), so a past 'planned' is a workout that
             // did NOT happen and VANISHES, the same spirit as 'discarded'
             // (#48). Byte-for-byte mirror of projectCalendar's
-            // `!(isPast && status === 'planned')` guard.
+            // `!(isPast && status === 'planned')` guard. (Past endurance
+            // actuals are composed at the view layer, not here.)
             if let real, real.status != "planned" { return .session(status: real.status) }
             return .none
         }
 
-        // today or future: a real session always wins.
+        // TODAY or FUTURE. A covering trip is consulted first.
+        let trip = trips.first { $0.covers(dateString) }
+
+        // can_train_light=false → blacked out, regardless of schedule.
+        if let trip, trip.canTrainLight == false {
+            return .unavailable(tripType: trip.type)
+        }
+
+        // A real session always wins (even during a light trip — a pinned
+        // session keeps its own status). Mirror of `if (real) status = ...`.
         if let real { return .session(status: real.status) }
 
-        // No session → consult the weekly schedule.
+        // No real session. Under a (light) trip the recurring schedule is
+        // blanked — Claude re-plans the week as explicit sessions — so the
+        // day is `.light`; otherwise consult the weekly schedule.
+        if let trip { return .light(tripType: trip.type) }
+
         guard
             let schedule,
             let key = weekdayKey(forDateString: dateString),
@@ -174,6 +221,12 @@ enum CalendarProjection {
 // diff this single function against the server. The app is READ-ONLY for
 // rides: this only classifies, it never writes anything.
 //
+// INTERFERENCE-AWARE (MULTISPORT.md §6.1/§7). A same-day lift+endurance is
+// only a real `.clash` when the endurance side is HARD (key/long); an
+// easy/short same-day pairing is a benign, intended `.brick`. This mirrors
+// the backend `detectConflicts` `isHard`-keyed same-day branch byte-for-byte
+// (the M0-spike "every brick reads as a clash" fix).
+//
 // Inputs (all already tombstone-filtered upstream — `deleted_at != null`
 // events are NEVER passed here):
 //   - a calendar date that carries a LIFT (a real cached session OR a
@@ -182,27 +235,30 @@ enum CalendarProjection {
 //   - the external events on a given date.
 //
 // Rule (evaluated for a LIFT date `L`):
-//   (a) SAME-DAY  → if ANY non-deleted external_event falls on `L` itself,
-//                    severity = .clash.
+//   (a) SAME-DAY  → if ANY non-deleted external_event falls on `L` itself:
+//                    severity = .clash  if any same-day event isHard,
+//                    severity = .brick  otherwise (benign intended brick).
 //   (b) DAY-BEFORE-HARD → else if `L` is the calendar day immediately
 //                    BEFORE a date that has a non-deleted external_event
 //                    with training_load >= 150 OR
 //                    planned_duration_sec >= 9000, severity = .heavyNextDay.
 //   (else)        → .none.
 //
-// same-day takes precedence over day-before-hard (a date that is both gets
-// `.clash`). "The day before" is L + 1 calendar day, computed with the
-// same Gregorian/POSIX/device-tz Calendar used everywhere else (civil
-// date, NOT a UTC offset) — identical rule to CalendarProjection.
+// same-day takes precedence over day-before-hard. "The day before" is L + 1
+// calendar day, computed with the same Gregorian/POSIX/device-tz Calendar
+// used everywhere else (civil date, NOT a UTC offset) — identical rule to
+// CalendarProjection.
 // ────────────────────────────────────────────────────────────────────────
 
 enum RideConflict {
 
     /// Conflict severity for a lift date. Ordered least→most severe; the
     /// raw values are stable identifiers for cross-checking with the
-    /// backend ("none" / "heavy-next-day" / "clash").
+    /// backend ("none" / "brick" / "heavy-next-day" / "clash").
     enum Severity: String {
         case none          = "none"
+        /// A benign, intended same-day lift + EASY endurance pairing.
+        case brick         = "brick"
         case heavyNextDay  = "heavy-next-day"
         case clash         = "clash"
     }
@@ -263,9 +319,13 @@ enum RideConflict {
         // Conflicts only attach to LIFT dates. No lift → no conflict.
         guard hasLift(liftDateString) else { return .none }
 
-        // (a) SAME-DAY — any non-deleted event on the lift date itself.
-        if !ridesOn(liftDateString).isEmpty {
-            return .clash
+        // (a) SAME-DAY — any non-deleted event on the lift date itself. A
+        // real .clash only when the endurance side is HARD (key/long);
+        // otherwise it is a benign, intended .brick. Mirrors the backend
+        // `sameDay.some(isHard) ? 'clash' : 'brick'`.
+        let sameDay = ridesOn(liftDateString)
+        if !sameDay.isEmpty {
+            return sameDay.contains(where: isHard) ? .clash : .brick
         }
 
         // (b) DAY-BEFORE-HARD — the lift is the day before a hard event.

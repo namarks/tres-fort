@@ -89,6 +89,12 @@ describe('plan meta: race / periodization / trips / stress_model (M2)', () => {
     expect(per.periodization[0]).toMatchObject({ phase: 'base', weekly_load_target: 350 });
     v = per.version;
 
+    // An inverted phase (start > end) covers no dates → rejected (Codex #64 P2).
+    const invertedPhase = await call('set_periodization', {
+      phases: [{ phase: 'base', start: '2026-10-31', end: '2026-06-01' }],
+    });
+    expect(invertedPhase).toMatchObject({ error: 'invalid_range' });
+
     // trips: add → update → (reject missing) → later remove
     const t1 = await call('add_trip', { start: '2026-08-15', end: '2026-08-25', type: 'travel', can_train_light: true, note: 'Italy' });
     expect(t1.ok).toBe(true);

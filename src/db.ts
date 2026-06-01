@@ -3777,6 +3777,10 @@ export async function setPeriodization(
 ) {
   for (const p of phases) {
     if (!YMD.test(p.start) || !YMD.test(p.end)) return { error: 'invalid_date' as const };
+    // An inverted phase (start > end) covers no dates but would be stored as
+    // authored truth for Claude to reason over — reject it, same as trips
+    // (Codex #64 P2).
+    if (p.start > p.end) return { error: 'invalid_range' as const };
   }
   const res = await writePlanMeta(db, userId, expectedVersion, (meta) => {
     meta.periodization = phases;

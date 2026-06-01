@@ -281,7 +281,10 @@ enum RideConflict {
         switch proj.kind {
         case .completed, .inProgress, .planned, .projected:
             return true
-        case .skipped, .rest, .none:
+        // .unavailable/.light are trip days, not lifts (a real session on a
+        // light day projects as .session, not .light) — exhaustive over Kind so
+        // the iOS target compiles (Codex #64 P1; -parse can't catch this).
+        case .skipped, .rest, .none, .unavailable, .light:
             return false
         }
     }

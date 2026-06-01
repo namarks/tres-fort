@@ -594,7 +594,8 @@ final class SyncModel: ObservableObject {
             today: today,
             sessionByDate: sessionsByDate,
             schedule: plan?.schedule,
-            templateIDs: planTemplateIDs)
+            templateIDs: planTemplateIDs,
+            trips: plan?.trips ?? [])
     }
 
     /// Resolve one calendar day via the frozen projection algorithm

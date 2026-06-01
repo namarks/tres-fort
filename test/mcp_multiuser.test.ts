@@ -1,6 +1,6 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { createPlan, setUserMcpPassphrase } from '../src/db';
+import { createPlan, findUserByMcpPassphrase, setUserMcpPassphrase } from '../src/db';
 import type { Env } from '../src/types';
 
 // M3 (multi-tenant MCP): the /mcp bearer resolves to a SPECIFIC user.
@@ -169,5 +169,29 @@ describe('mcp multi-tenant auth (M3)', () => {
     const res = await mcp(legacy, 'get_current_plan');
     expect(res.status).toBe(200);
     expect(res.json.name).toBe('Owner Plan');
+  });
+
+  // Codex P1 (#63): a passphrase shared by two users would let the second
+  // user's OAuth token resolve to the FIRST user's account at /authorize.
+  it('rejects an MCP passphrase already used by another user (no cross-user binding)', async () => {
+    const D = env.DB as unknown as D1Database;
+    const aId = crypto.randomUUID();
+    const bId = crypto.randomUUID();
+    await env.DB.prepare('INSERT INTO users (id, apple_sub, display_name, created_at) VALUES (?1,?2,?3,?4)')
+      .bind(aId, 'apple-a', 'A', Date.now()).run();
+    await env.DB.prepare('INSERT INTO users (id, apple_sub, display_name, created_at) VALUES (?1,?2,?3,?4)')
+      .bind(bId, 'apple-b', 'B', Date.now() + 1000).run();
+
+    // A claims it.
+    expect(await setUserMcpPassphrase(D, aId, 'shared-secret-x')).toEqual({ ok: true });
+    // B cannot take the same passphrase.
+    expect(await setUserMcpPassphrase(D, bId, 'shared-secret-x')).toEqual({ error: 'passphrase_taken' });
+    // The resolver maps it to A only — B never gets bound to A.
+    expect(await findUserByMcpPassphrase(D, 'shared-secret-x')).toBe(aId);
+    // A may re-set its OWN passphrase to the same value.
+    expect(await setUserMcpPassphrase(D, aId, 'shared-secret-x')).toEqual({ ok: true });
+    // B keeps its own distinct passphrase fine.
+    expect(await setUserMcpPassphrase(D, bId, 'b-distinct-secret')).toEqual({ ok: true });
+    expect(await findUserByMcpPassphrase(D, 'b-distinct-secret')).toBe(bId);
   });
 });

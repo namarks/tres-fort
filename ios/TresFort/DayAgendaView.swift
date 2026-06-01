@@ -46,9 +46,14 @@ struct DayAgendaView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     header(proj, today: today)
                     content(proj, today: today)
-                    loggedActivitiesSection
-                    completedActivitiesSection
-                    ridesSection
+                    // On a can_train_light=false blackout the backend projects
+                    // items: [] — so suppress the endurance cards here too, or a
+                    // blackout day would still show training to do (Codex #61 P2).
+                    if proj.kind != .unavailable {
+                        loggedActivitiesSection
+                        completedActivitiesSection
+                        ridesSection
+                    }
                 }
                 .padding(22)
                 .frame(maxWidth: .infinity, alignment: .leading)

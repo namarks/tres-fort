@@ -419,7 +419,13 @@ apiRoutes.post('/me/mcp-passphrase', async (c) => {
   }
   const passphrase = typeof b.passphrase === 'string' ? b.passphrase : '';
   if (passphrase.length < 8) return c.json({ error: 'passphrase_too_short' }, 400);
-  await setUserMcpPassphrase(c.env.DB, c.get('userId'), passphrase);
+  const res = await setUserMcpPassphrase(c.env.DB, c.get('userId'), passphrase);
+  if ('error' in res) {
+    // Already in use by another user — accepting it would bind their MCP
+    // session to that account (cross-user access). 409, no audit-as-ok.
+    await writeAudit(c.env.DB, c.get('userId'), 'set_mcp_passphrase', {}, res.error, 'ios');
+    return c.json({ error: res.error }, 409);
+  }
   await writeAudit(c.env.DB, c.get('userId'), 'set_mcp_passphrase', {}, 'ok', 'ios');
   return c.json({ ok: true });
 });

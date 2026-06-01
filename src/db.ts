@@ -229,12 +229,20 @@ function safeEq(a: string, b: string): boolean {
   return diff === 0;
 }
 
-/** Set (or replace) a user's MCP passphrase. Hash + fresh per-user salt. */
+/**
+ * Set (or replace) a user's MCP passphrase. Hash + fresh per-user salt.
+ * REJECTS a passphrase already in use by ANOTHER user: /oauth/authorize
+ * resolves a token's user solely by passphrase, so a collision would bind the
+ * second user's MCP session to the first user's account (silent cross-user
+ * access). Re-setting your OWN passphrase is allowed.
+ */
 export async function setUserMcpPassphrase(
   db: D1Database,
   userId: string,
   passphrase: string,
-): Promise<void> {
+): Promise<{ ok: true } | { error: 'passphrase_taken' }> {
+  const owner = await findUserByMcpPassphrase(db, passphrase);
+  if (owner && owner !== userId) return { error: 'passphrase_taken' };
   const saltBytes = crypto.getRandomValues(new Uint8Array(16));
   const salt = btoa(String.fromCharCode(...saltBytes));
   const hash = await pbkdf2(passphrase, salt);
@@ -242,6 +250,7 @@ export async function setUserMcpPassphrase(
     .prepare('UPDATE users SET mcp_passphrase_hash = ?2, mcp_passphrase_salt = ?3 WHERE id = ?1')
     .bind(userId, hash, salt)
     .run();
+  return { ok: true };
 }
 
 /**
@@ -259,11 +268,18 @@ export async function findUserByMcpPassphrase(
       'SELECT id, mcp_passphrase_hash, mcp_passphrase_salt FROM users WHERE mcp_passphrase_hash IS NOT NULL AND mcp_passphrase_salt IS NOT NULL',
     )
     .all<{ id: string; mcp_passphrase_hash: string; mcp_passphrase_salt: string }>();
+  // Defense in depth: if more than one user matches (legacy data predating the
+  // set-time collision check), REFUSE to resolve — an ambiguous match must
+  // never bind a token to an arbitrary account.
+  let match: string | null = null;
   for (const r of rows.results) {
     const h = await pbkdf2(passphrase, r.mcp_passphrase_salt);
-    if (safeEq(h, r.mcp_passphrase_hash)) return r.id;
+    if (safeEq(h, r.mcp_passphrase_hash)) {
+      if (match) return null;
+      match = r.id;
+    }
   }
-  return null;
+  return match;
 }
 
 /** True if `tz` is a valid IANA timezone the runtime accepts. */
@@ -3663,17 +3679,23 @@ export async function setPlanSchedule(
     week: resolved,
   };
   const ts = now();
+  // Gate on the read version (write-time optimistic concurrency) — same as
+  // writePlanMeta; a concurrent plan write → no row updated → 409.
   const row = await db
     .prepare(
-      'UPDATE plans SET meta = ?2, version = version + 1, updated_at = ?3 WHERE id = ?1 RETURNING version',
+      'UPDATE plans SET meta = ?2, version = version + 1, updated_at = ?3 WHERE id = ?1 AND version = ?4 RETURNING version',
     )
-    .bind(plan.id, serializePlanMeta(meta, schedule), ts)
+    .bind(plan.id, serializePlanMeta(meta, schedule), ts, plan.version)
     .first<{ version: number }>();
+  if (!row) {
+    const cur = await getActivePlan(db, userId);
+    return { conflict: true, current_version: cur?.version ?? plan.version };
+  }
   return {
     ok: true,
-    plan: { ...plan, version: row?.version ?? plan.version + 1, updated_at: ts },
+    plan: { ...plan, version: row.version, updated_at: ts },
     schedule,
-    version: row?.version ?? plan.version + 1,
+    version: row.version,
   };
 }
 
@@ -3712,13 +3734,22 @@ async function writePlanMeta(
   const err = mutate(meta);
   if (typeof err === 'string') return { error: err };
   const ts = now();
+  // Enforce optimistic concurrency at WRITE time, not just the pre-check: gate
+  // the UPDATE on the version we read, so two concurrent meta writes off the
+  // same get_current_plan (e.g. set_race + add_trip) can't both pass and let
+  // the later one serialize a stale copy, silently dropping the other's
+  // changes. No row updated → another writer won → 409 (caller refetches).
   const row = await db
     .prepare(
-      'UPDATE plans SET meta = ?2, version = version + 1, updated_at = ?3 WHERE id = ?1 RETURNING version',
+      'UPDATE plans SET meta = ?2, version = version + 1, updated_at = ?3 WHERE id = ?1 AND version = ?4 RETURNING version',
     )
-    .bind(plan.id, serializePlanMeta(meta, meta.schedule), ts)
+    .bind(plan.id, serializePlanMeta(meta, meta.schedule), ts, plan.version)
     .first<{ version: number }>();
-  return { ok: true, version: row?.version ?? plan.version + 1, meta };
+  if (!row) {
+    const cur = await getActivePlan(db, userId);
+    return { conflict: true, current_version: cur?.version ?? plan.version };
+  }
+  return { ok: true, version: row.version, meta };
 }
 
 /** Set the goal A-race. Replaces any existing race. */

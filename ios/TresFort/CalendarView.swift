@@ -314,9 +314,11 @@ struct CalendarView: View {
                             lineWidth: isToday ? 1.5 : 1)
             )
             // Amber clash badge: a lift date that conflicts with a ride.
-            // Corner triangle-ish dot, distinct from every lift glyph.
+            // Corner triangle-ish dot, distinct from every lift glyph. Only a
+            // real .clash / .heavyNextDay warrants the warning — a benign
+            // same-day .brick must NOT flag (matches DayAgendaView; Codex #64 P2).
             .overlay(alignment: .topTrailing) {
-                if conflict != .none {
+                if conflict == .clash || conflict == .heavyNextDay {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(Theme.accent)

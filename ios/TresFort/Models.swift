@@ -121,6 +121,29 @@ struct PlanTree: Decodable {
         struct MetaEnvelope: Decodable { let schedule: PlanSchedule? }
         return try? JSONDecoder().decode(MetaEnvelope.self, from: data).schedule
     }
+
+    /// Parsed availability/blackout ranges from `meta.trips` (M4), or [] when
+    /// absent/malformed. Mirrors the backend `Trip` → `CalendarProjection.TripRange`
+    /// so the composite projection can mark trip days `.unavailable`/`.light`.
+    /// The backend already validates these (normalizeTrips), so defaults rarely
+    /// fire; `can_train_light` defaults to true (only an explicit false blacks out).
+    var trips: [TripRange] {
+        guard let meta, let data = meta.data(using: .utf8) else { return [] }
+        struct WireTrip: Decodable {
+            let id: String
+            let start: String
+            let end: String
+            let type: String?
+            let can_train_light: Bool?
+        }
+        struct MetaEnvelope: Decodable { let trips: [WireTrip]? }
+        guard let wire = try? JSONDecoder().decode(MetaEnvelope.self, from: data).trips else { return [] }
+        return wire.map {
+            TripRange(id: $0.id, start: $0.start, end: $0.end,
+                      type: $0.type ?? "other",
+                      canTrainLight: $0.can_train_light ?? true)
+        }
+    }
 }
 
 struct SessionRow: Decodable, Identifiable {

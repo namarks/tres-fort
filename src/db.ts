@@ -330,6 +330,24 @@ export async function getUserIntervalsCreds(
 }
 
 /**
+ * Resolve the user row owning a given intervals.icu `athlete_id`. Used by the
+ * webhook receiver (`POST /webhooks/intervals`) to route a pushed event to the
+ * right user before kicking the relevant sync. `intervals_athlete_id` is the
+ * canonical "intervals connected" column shared by both auth schemes (API key
+ * and OAuth), so a single lookup covers both. Returns null when no user has
+ * connected that athlete (an unknown/disconnected athlete → graceful no-op).
+ */
+export async function getUserByIntervalsAthleteId(
+  db: D1Database,
+  athleteId: string,
+): Promise<User | null> {
+  return await db
+    .prepare('SELECT * FROM users WHERE intervals_athlete_id = ?1')
+    .bind(athleteId)
+    .first<User>();
+}
+
+/**
  * Has this user ever explicitly set or cleared their intervals.icu
  * credentials via PATCH /api/me/integrations/intervals? Determined from
  * audit_log (the REST endpoint writes a `set_intervals_creds` row on every

@@ -54,4 +54,13 @@
   //                              a personal id should not live in git history.
   //                              env.INTERVALS_ICU_ATHLETE_ID resolves to it
   //                              identically whether secret or var.
+  //   INTERVALS_WEBHOOK_SECRET - shared secret for POST /webhooks/intervals;
+  //                              MUST equal the "Webhook Secret" on the
+  //                              intervals.icu Manage App page. Unset → the
+  //                              webhook receiver 401s every request (dormant)
+  //                              and the 15-min cron is the only sync path.
+  //   INTERVALS_WEBHOOK_AUTH_HEADER - optional second factor; when set, the
+  //                              webhook request's Authorization header must
+  //                              also match the page's "Webhook Authorization
+  //                              Header". Unset → only the body secret checked.
 }

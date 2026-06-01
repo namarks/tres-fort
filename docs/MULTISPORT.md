@@ -434,7 +434,49 @@ webhook"). Plan:
 | **Write-through** (§5.2) | Claude-initiated changes are instantly mirrored | Primary — kills most latency without webhooks |
 | **On-demand refresh** | Sync when iOS foregrounds / when Claude is asked to plan; `refresh_rides` already does this | Add foreground trigger |
 | **15-min cron** | Backstop for externally-originated changes (watch-recorded actuals, edits in intervals' own UI) | Keep, lower urgency |
-| **Webhooks** | True push for actuals | **Verify-then-maybe** — confirm intervals.icu exposes outbound third-party webhooks with david@intervals.icu (issuer of OAuth client #431). intervals is primarily a *pull* API; do not assume. |
+| **Webhooks** | True push for actuals | **Implemented** — `POST /webhooks/intervals` (`src/routes/webhooks.ts`). intervals.icu DOES expose outbound third-party webhooks via the Manage App page; the receiver reconciles the same idempotent caches the cron does, so it never replaces the cron — it just front-runs it. |
+
+### 8.1 Webhook receiver (`POST /webhooks/intervals`) — shipped
+
+intervals.icu POSTs a batch `{ secret, events: [{ athlete_id, type, … }] }`
+whenever an athlete's data changes. The receiver:
+
+- **Authenticates by body `secret`** (`== INTERVALS_WEBHOOK_SECRET`) — it is
+  PUBLIC, NOT behind app-JWT / the MCP bearer. An unset secret makes it dormant
+  (401s every request). An optional `INTERVALS_WEBHOOK_AUTH_HEADER` adds a
+  second factor matching the page's "Webhook Authorization Header".
+- **Always returns HTTP 200** on a valid secret (never 204 — intervals
+  historically retried 204), with a tiny `{ ok: true }` body. Unknown
+  athlete / type / empty batch are accepted gracefully.
+- **Routes type → sync:** `CALENDAR_UPDATED` → `syncExternalEvents` +
+  `syncExternalActivities`; `ACTIVITY_*` → `syncExternalActivities`;
+  `WELLNESS_UPDATED` / `FITNESS_UPDATED` → accepted no-op (no fitness store
+  yet — TODO). The work runs in `executionCtx.waitUntil` so the 200 returns
+  fast.
+- **Strava nuance:** intervals does NOT fire `ACTIVITY_*` for Strava-sourced
+  activities — `CALENDAR_UPDATED` is the catch-all — so `CALENDAR_UPDATED`
+  triggers BOTH syncs (the activities sync catches a Strava-routed completed
+  ride).
+- **Idempotent:** intervals can duplicate `CALENDAR_UPDATED` and delays
+  `ACTIVITY_ANALYZED` ~60s. The (athlete, sync-kind) work is deduped per batch,
+  and the underlying syncs are reconciled-cache writes — re-triggering is safe.
+
+**Self-serve registration (Nick — one-time, on the intervals.icu side):**
+
+1. Pick a strong secret and set it on the Worker:
+   `wrangler secret put INTERVALS_WEBHOOK_SECRET` (paste the same value you'll
+   enter on the page below).
+2. On the intervals.icu **Manage App** page (`/oauth/client/431`), set the
+   **Webhook URL** to `https://tres-fort.nmarkspdx.workers.dev/webhooks/intervals`
+   and the **Webhook Secret** to the value from step 1.
+3. Tick the event types: **CALENDAR_UPDATED**, **ACTIVITY_ANALYZED**,
+   **WELLNESS_UPDATED**, **FITNESS_UPDATED** (the last two are accepted no-ops
+   today but future-proof the registration).
+4. (Optional) set a "Webhook Authorization Header" on the page and mirror it
+   with `wrangler secret put INTERVALS_WEBHOOK_AUTH_HEADER`.
+
+Once registered, the 15-min cron stays as a backstop but most actuals land in
+seconds instead of up to 15 minutes.
 
 **Token-expiry risk (R3).** `intervalsAuth.ts:92` notes refresh/expiry are
 "not documented — tokens appear long-lived." If they *do* expire, the per-user

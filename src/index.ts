@@ -4,6 +4,7 @@ import { authRoutes } from './routes/auth';
 import { apiRoutes } from './routes/api';
 import { intervalsAuthRoutes } from './routes/intervalsAuth';
 import { privacyRoutes } from './routes/privacy';
+import { webhookRoutes } from './routes/webhooks';
 import { mcpRoutes } from './mcp';
 import { oauthRoutes } from './oauth';
 import {
@@ -21,6 +22,9 @@ app.route('/', privacyRoutes); // GET /privacy (App Store Connect compliance)
 app.route('/auth', authRoutes);
 app.route('/auth/intervals', intervalsAuthRoutes); // OAuth connect (start + callback)
 app.route('/api', apiRoutes);
+// PUBLIC — authenticated by the body `secret`, NOT app-JWT/MCP bearer. See
+// src/routes/webhooks.ts. Must NOT sit behind requireAppJwt.
+app.route('/webhooks', webhookRoutes); // POST /webhooks/intervals (intervals.icu push)
 app.route('/mcp', mcpRoutes);
 
 app.onError((err, c) => {

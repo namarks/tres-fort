@@ -26,6 +26,66 @@ the `type` enum changes). But nothing forces building it now, two findings argue
 for sequencing it behind cheaper work, and **the athlete isn't on intervals.icu
 yet (R0)** — so M5's value is currently zero regardless of build risk.
 
+## ✅ Spike RESULTS — executed live 2026-05-31
+
+Run against athlete `i468646` (nmarks28) via the intervals REST API. **All test
+events created and then deleted — account verified clean, zero residue.**
+
+| Question | Result |
+|---|---|
+| **`POST /events` run & swim shape** | HTTP 200. `category:"WORKOUT"` + `type:"Run"`/`"Swim"` accepted and stored **verbatim** (echoed back exactly). Same endpoint/auth as the verified `WeightTraining` export. |
+| **Planned duration** | `moving_time` (seconds) — **honored** ✅ |
+| **Planned load** | `icu_training_load` — **honored, NOT overwritten** ✅ (run: sent 50 → read back 50). Claude's prescribed load survives in the mirror. |
+| **Intensity** | `icu_intensity` is **derived, not honored** — sent `0.70`, read back `70.71` (= the TSS-implied IF `√(load/hours/100)·100`, a 0–100 scale). **Don't send it.** |
+| **Planned distance** | ⚠️ **Use `distance_target`, not `distance`.** `distance` alone was zeroed (it's the *actual*, 0 until completed); `distance_target` round-trips reliably (2000 → 2000). `icu_distance` ignored. |
+| **Prose `description`** | Stored **verbatim**, newlines preserved ✅ (prose-only plan is fine). |
+| **PUT update** | In-place by id, idempotent — same id, `moving_time` 3600→4200 ✅ (covers `update_endurance`). |
+| **`external_id` lookup** | Window GET returns `external_id` → the pre-POST dedup lookup `pushStrengthActivity` relies on works ✅. |
+| **DELETE** | HTTP 200, event gone ✅ (covers `cancel_endurance`). |
+| **🔴 CTL contribution** | **REFUTED — confirmed live.** A `WeightTraining` event with `icu_training_load:80` on a past date (2026-05-30) left `ctl` at `21.34891` → `21.34891` (atl/ctlLoad/atlLoad all unchanged). A calendar event does **not** move actual CTL. The §4.4 `stress_model` is the planning substrate. |
+
+### Confirmed M5 planned-endurance payload (build test-first against this)
+```json
+{
+  "start_date_local": "<YYYY-MM-DD>T00:00:00",
+  "category": "WORKOUT",
+  "type": "Run | Swim | Ride",
+  "name": "...",
+  "moving_time": 3600,
+  "distance_target": 10000,
+  "icu_training_load": 50,
+  "description": "<prose, e.g. 6x100 @ 2:30, 20s rest>",
+  "external_id": "tresfort:planned:<localId>"
+}
+```
+Omit `icu_intensity` (derived). POST→200 echoes a numeric `id` — key the mirror on
+that (`intervals:{id}`), never the Claude marker. `external_id` is your dedup key.
+
+### What still needs david (the spike couldn't settle these)
+- **Webhook provisioning** for app #431 + the **Strava-sourced-activity exclusion** (the big sync unknown).
+- The **per-sport "counts toward Fitness" setting** for WeightTraining (sport-settings didn't expose it via a self-serve field; confirm the default with him).
+
+### → Tightened David reply (send this; the full draft below is the pre-spike version)
+> Hi David — quick follow-up on the Très Fort integration (app #431). I've been
+> prototyping planned-endurance writes and confirmed the `POST /events` shape
+> works great (`WORKOUT` + `type:Run/Swim`, `moving_time`, `distance_target`,
+> `icu_training_load` all honored, prose `description` preserved). Three things I
+> couldn't settle myself:
+>
+> 1. **Webhooks** — can you enable outbound webhooks for app #431 (or is there a
+>    self-serve "Manage App" panel)? I'd subscribe to `ACTIVITY_ANALYZED` and
+>    `CALENDAR_UPDATED` to replace my 15-min poll. How do I verify authenticity
+>    (body `secret` vs a signature header), and what's the retry window?
+> 2. **Strava caveat** — your cookbook notes activity webhooks aren't delivered
+>    for Strava activities. If a user's rides arrive via Strava sync, do I get no
+>    `ACTIVITY_*` event at all? Anything that does fire for Strava-sourced data?
+> 3. **Fitness/CTL** — to confirm: a `WeightTraining` *calendar event* with
+>    `icu_training_load` doesn't contribute to CTL (I verified it doesn't move
+>    actual CTL), and `WeightTraining` is excluded from Fitness by default unless
+>    the athlete flips a per-sport setting — is that right?
+>
+> Thanks! — Nick
+
 ## The three findings
 
 | Thread | Verdict | What it means |

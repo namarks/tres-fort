@@ -75,8 +75,9 @@ Status: **design / not yet built.** This is the spec to implement against.
 >   pillar in §1 / §5.3 / §7 / §13 ("intervals owns the unified aggregate load,
 >   fed by the strength export") is **false today.** Consequence: the planner
 >   must own its own combined-load model — the §4.4 `stress_model` is now the
->   **primary** planning substrate, not a fallback. (A ~10-min live check still
->   needs running per the runbook to confirm against the per-sport setting.)
+>   **primary** planning substrate, not a fallback. **Confirmed live 2026-05-31:**
+>   a `WeightTraining` event (load 80) on a past date left CTL unchanged
+>   (21.34891 → 21.34891). See the spike RESULTS in `MULTISPORT-M0-spike.md`.
 > - **🟢 Webhooks confirmed.** intervals fires `ACTIVITY_UPLOADED`,
 >   `ACTIVITY_ANALYZED`, `CALENDAR_UPDATED`, `SPORT_SETTINGS_UPDATED` to a
 >   callback on OAuth app #431 — replaces the §8 poll. Caveat: **not delivered

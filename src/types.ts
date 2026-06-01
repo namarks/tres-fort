@@ -38,6 +38,22 @@ export interface Env {
    */
   INTERVALS_OAUTH_REDIRECT_URI?: string;
   /**
+   * Shared secret for the intervals.icu push webhook (`POST /webhooks/intervals`,
+   * a `wrangler secret put` secret — NEVER committed). MUST equal the
+   * "Webhook Secret" configured on the intervals.icu Manage App page. Every
+   * delivery carries this in its JSON body; the receiver matches it to
+   * authenticate. UNSET → the webhook receiver is dormant (it 401s every
+   * request) and the 15-min polling cron remains the only sync path.
+   */
+  INTERVALS_WEBHOOK_SECRET?: string;
+  /**
+   * Optional second factor for the webhook (a `wrangler secret put` secret).
+   * The Manage App page can set a "Webhook Authorization Header"; when this is
+   * configured, the receiver ALSO requires the request's `Authorization`
+   * header to match it verbatim. UNSET → only the body secret is checked.
+   */
+  INTERVALS_WEBHOOK_AUTH_HEADER?: string;
+  /**
    * R2 bucket fronting exercise demo images (free-exercise-db frames,
    * public domain). Optional so vitest envs without an R2 binding still
    * type-check; the demo route 404s gracefully when unset.
@@ -89,6 +105,14 @@ export interface User {
    * the env-seed/fallback back-off and the `needs_reauth` profile flag (0023).
    */
   intervals_auth_error_at: number | null;
+  /**
+   * Per-user MCP passphrase (M3 multi-tenant, 0025). PBKDF2-SHA256 hash +
+   * per-user salt; never plaintext. NULL → no passphrase set, so this user
+   * cannot open a Claude MCP session via OAuth (the owner also has the
+   * OWNER_AUTH_PASSPHRASE env path). Set via POST /api/me/mcp-passphrase.
+   */
+  mcp_passphrase_hash: string | null;
+  mcp_passphrase_salt: string | null;
 }
 
 export interface PlanRow {
@@ -355,11 +379,23 @@ export interface GroupInvite {
   used_by: string | null;
 }
 
-/** Per-date conflict between lift sessions/projections and external events. */
+/**
+ * Per-date conflict between lift sessions/projections and external events.
+ *
+ * Severities (least → most concerning), interference-aware per MULTISPORT.md
+ * §6.1/§7 — NOT "any same-day pairing is a clash":
+ *   - 'brick'          — a benign, intended same-day pairing: a strength day
+ *     alongside an EASY/short endurance session (sub-`isHard` threshold). This
+ *     is the deliberate brick/double, NOT a problem. Informational only.
+ *   - 'heavy-next-day' — a lift the civil day BEFORE a hard endurance session
+ *     (training_load >= 150 OR planned_duration_sec >= 9000). Unchanged.
+ *   - 'clash'          — a real interference: a strength day SAME-DAY as a
+ *     KEY/long (hard) endurance session. The case worth flagging.
+ */
 export interface DayConflict {
   date: string;
   conflicts: string[]; // external_event ids
-  severity: 'clash' | 'heavy-next-day';
+  severity: 'brick' | 'clash' | 'heavy-next-day';
 }
 
 // ---- weekly schedule (frozen contract — see migrations/0005) -------------
@@ -385,9 +421,77 @@ export const WEEKDAYS: readonly Weekday[] = [
   'sun',
 ];
 
-/** Parsed shape of plans.meta. Schedule is always present after migration. */
+// ---- multisport plan meta (authored intent — see docs/MULTISPORT.md §4) ----
+// race / periodization / trips / stress_model all live in plans.meta JSON
+// ALONGSIDE `schedule`: versioned document, optimistic concurrency, audit+note
+// on write (DESIGN.md §3). They are AUTHORED TRUTH the coach reasons over, NOT a
+// materialized calendar — the projection DERIVES days from them (store truth,
+// derive views). The backend stores and projects; it never computes training
+// science. Absent fields are simply omitted from the JSON. M2 authors them via
+// the `set_*` tools; M4's calendar projection READS them.
+
+export type RacePriority = 'A' | 'B' | 'C';
+
+/** The goal event the plan builds toward. §4.1. */
+export interface RaceGoal {
+  name: string;
+  date: string; // YYYY-MM-DD civil date (the periodization anchor)
+  discipline: string; // triathlon | running | cycling | ...
+  distance?: string; // "70.3", "marathon", ...
+  priority?: RacePriority;
+  location?: string;
+}
+
+export type TrainingPhase =
+  | 'base'
+  | 'build'
+  | 'peak'
+  | 'taper'
+  | 'race'
+  | 'recovery';
+
+/** One periodization block — phase INTENT, not per-day rows. §4.2. */
+export interface PeriodizationPhase {
+  phase: TrainingPhase;
+  start: string; // YYYY-MM-DD
+  end: string; // YYYY-MM-DD
+  focus?: string;
+  weekly_load_target?: number;
+  strength_emphasis?: string; // hypertrophy | maintenance | minimal | ...
+}
+
+export type TripType = 'travel' | 'rest' | 'injury' | 'other';
+
+/** An availability / blackout range. §4.3. The EFFECT (which days become rest)
+ * is NOT stored here — the coach re-plans via set_planned_session/skip. */
+export interface Trip {
+  id: string; // uuid
+  start: string; // YYYY-MM-DD
+  end: string; // YYYY-MM-DD
+  type: TripType;
+  /** Pool/run access while away? Defaults true; only an explicit false marks
+   *  the range `unavailable` in the calendar projection (M4). */
+  can_train_light?: boolean;
+  note?: string;
+}
+
+/** The planning load model. §4.4. Intentionally LOOSE — the coach reasons over
+ * these dimensions/rules; the backend only stores them, never interprets. */
+export interface StressModel {
+  discipline_weights?: Record<string, Record<string, number>>;
+  interference_rules?: string[];
+  age_modifiers?: Record<string, number>;
+  [k: string]: unknown;
+}
+
+/** Parsed shape of plans.meta. Schedule is always present after migration;
+ * the multisport fields are optional (omitted until authored). */
 export interface PlanMeta {
   schedule: WeeklySchedule;
+  race?: RaceGoal;
+  periodization?: PeriodizationPhase[];
+  trips?: Trip[];
+  stress_model?: StressModel;
   [k: string]: unknown;
 }
 
@@ -399,10 +503,80 @@ export function emptySchedule(): WeeklySchedule {
   return { version: 1, week: emptyWeek() };
 }
 
+const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+
+// Envelope-validators for the authored-intent meta fields. Each drops a
+// malformed entry rather than throwing (same tolerance as the schedule parse)
+// and returns `undefined` when there is nothing valid, so JSON.stringify omits
+// the key. Known fields are coerced; freeform content passes through.
+function normalizeRace(v: unknown): RaceGoal | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  const r = v as Record<string, unknown>;
+  if (!isStr(r.name) || !isStr(r.date) || !isStr(r.discipline)) return undefined;
+  const out: RaceGoal = { name: r.name, date: r.date, discipline: r.discipline };
+  if (isStr(r.distance)) out.distance = r.distance;
+  if (r.priority === 'A' || r.priority === 'B' || r.priority === 'C') out.priority = r.priority;
+  if (isStr(r.location)) out.location = r.location;
+  return out;
+}
+
+const TRAINING_PHASES = new Set(['base', 'build', 'peak', 'taper', 'race', 'recovery']);
+function normalizePeriodization(v: unknown): PeriodizationPhase[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const phases: PeriodizationPhase[] = [];
+  for (const item of v) {
+    if (!item || typeof item !== 'object') continue;
+    const p = item as Record<string, unknown>;
+    if (!TRAINING_PHASES.has(p.phase as string) || !isStr(p.start) || !isStr(p.end)) continue;
+    const phase: PeriodizationPhase = {
+      phase: p.phase as TrainingPhase,
+      start: p.start,
+      end: p.end,
+    };
+    if (isStr(p.focus)) phase.focus = p.focus;
+    if (typeof p.weekly_load_target === 'number') phase.weekly_load_target = p.weekly_load_target;
+    if (isStr(p.strength_emphasis)) phase.strength_emphasis = p.strength_emphasis;
+    phases.push(phase);
+  }
+  return phases.length ? phases : undefined;
+}
+
+const TRIP_TYPES = new Set(['travel', 'rest', 'injury', 'other']);
+function normalizeTrips(v: unknown): Trip[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const trips: Trip[] = [];
+  for (const item of v) {
+    if (!item || typeof item !== 'object') continue;
+    const t = item as Record<string, unknown>;
+    if (!isStr(t.id) || !isStr(t.start) || !isStr(t.end)) continue;
+    if (!YMD.test(t.start) || !YMD.test(t.end)) continue; // drop malformed dates
+    const trip: Trip = {
+      id: t.id,
+      start: t.start,
+      end: t.end,
+      type: TRIP_TYPES.has(t.type as string) ? (t.type as TripType) : 'other',
+    };
+    // Default true: only an explicit `false` marks the range unavailable in
+    // the M4 calendar projection (the conservative "they may still train" read).
+    trip.can_train_light = t.can_train_light === false ? false : true;
+    if (isStr(t.note)) trip.note = t.note;
+    trips.push(trip);
+  }
+  return trips.length ? trips : undefined;
+}
+
+function normalizeStressModel(v: unknown): StressModel | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined;
+  return v as StressModel; // freeform — the coach owns the semantics
+}
+
+
 /**
  * The ONLY place plan.meta is parsed. Never hand-parse meta elsewhere.
  * Tolerates null / invalid JSON / missing or malformed schedule and always
- * returns a well-formed PlanMeta with a complete weekday map.
+ * returns a well-formed PlanMeta with a complete weekday map. The authored
+ * multisport fields are envelope-validated and omitted when absent/malformed.
  */
 export function parsePlanMeta(raw: string | null): PlanMeta {
   let obj: Record<string, unknown> = {};
@@ -430,6 +604,10 @@ export function parsePlanMeta(raw: string | null): PlanMeta {
       version: typeof sched?.version === 'number' ? sched.version : 1,
       week,
     },
+    race: normalizeRace(obj.race),
+    periodization: normalizePeriodization(obj.periodization),
+    trips: normalizeTrips(obj.trips),
+    stress_model: normalizeStressModel(obj.stress_model),
   };
 }
 

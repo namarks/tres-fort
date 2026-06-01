@@ -41,6 +41,16 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
     case .rest:
         return .init(color: Theme.dim, glyph: "moon.zzz.fill",
                      label: "Rest", isWorkout: false)
+    // M4 (multisport) — trip-aware statuses. Minimal placeholder styling so
+    // the file builds; the lead should refine the glyph/label/color for a
+    // travel/blackout day (and decide whether `.light` should still read as
+    // an available training day). NOT a workout for the grid's purposes.
+    case .unavailable:
+        return .init(color: Theme.dim, glyph: "airplane",
+                     label: "Away", isWorkout: false)
+    case .light:
+        return .init(color: Theme.dim, glyph: "airplane",
+                     label: "Light", isWorkout: false)
     case .none:
         return nil
     }
@@ -226,7 +236,11 @@ struct CalendarView: View {
         // manual activity → planned ride.
         let dayManual = sync.manualActivities(on: ymd)
         let hasManual = !dayManual.isEmpty
-        let hasEndurance = hasActivity || hasRide || hasManual
+        // A can_train_light=false blackout suppresses endurance in the grid too:
+        // the backend projects items: [] and the agenda hides the cards, so the
+        // cell must render the "Away" state — not fall through to a bike/activity
+        // glyph (Codex #64 P2). `.light` is unaffected — endurance coexists there.
+        let hasEndurance = (hasActivity || hasRide || hasManual) && proj.kind != .unavailable
         let enduranceGlyph = hasActivity
             ? (dayActivities.first?.glyph ?? "figure.run")
             : (hasManual
@@ -304,9 +318,11 @@ struct CalendarView: View {
                             lineWidth: isToday ? 1.5 : 1)
             )
             // Amber clash badge: a lift date that conflicts with a ride.
-            // Corner triangle-ish dot, distinct from every lift glyph.
+            // Corner triangle-ish dot, distinct from every lift glyph. Only a
+            // real .clash / .heavyNextDay warrants the warning — a benign
+            // same-day .brick must NOT flag (matches DayAgendaView; Codex #64 P2).
             .overlay(alignment: .topTrailing) {
-                if conflict != .none {
+                if conflict == .clash || conflict == .heavyNextDay {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(Theme.accent)

@@ -680,6 +680,7 @@ describe('BLOCKER-2: log_workout_complete must not be blocked by the export', ()
         params: { name: 'log_workout_complete', arguments: { session_date: date, perceived_fatigue: 8 } },
       },
       env as unknown as Env,
+      (await ensureOwnerUser(env.DB, undefined)).id,
       bg,
     );
     const elapsed = Date.now() - t0;
@@ -789,6 +790,7 @@ describe('BLOCKER-2: log_workout_complete must not be blocked by the export', ()
         params: { name: 'log_workout_complete', arguments: { session_date: date, perceived_fatigue: 7 } },
       },
       env as unknown as Env,
+      (await ensureOwnerUser(env.DB, undefined)).id,
       bg,
     );
     const result = (resp.json as any).result;

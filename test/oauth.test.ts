@@ -59,7 +59,7 @@ describe('oauth full PKCE flow', () => {
     // 2a. consent page renders
     const page = await SELF.fetch(authUrl);
     expect(page.status).toBe(200);
-    expect(await page.text()).toContain('Owner passphrase');
+    expect(await page.text()).toContain('passphrase');
 
     // 2b. wrong passphrase is rejected
     const bad = new FormData();
@@ -114,7 +114,7 @@ describe('oauth full PKCE flow', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
     expect(mcp.status).toBe(200);
-    expect((await mcp.json<any>()).result.tools.length).toBe(27);
+    expect((await mcp.json<any>()).result.tools.length).toBe(33);
 
     // 5. refresh rotates the token
     const rf = new FormData();

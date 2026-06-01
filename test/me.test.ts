@@ -94,29 +94,42 @@ describe('GET /api/me', () => {
     expect(me.claude.connected).toBe(true);
   });
 
-  it('a non-owner never sees Claude connected — even with a grant present', async () => {
+  // M3 makes Claude per-user: a non-owner sees THEIR OWN grant, never the
+  // owner's, and their own MCP activity surfaces in last_active.
+  it('Claude status is per-user (M3): a non-owner sees only their own grant', async () => {
     const owner = await devJwt();
     const friend = await makeUser('me-friend');
-    // A durable grant exists globally (owner authorized the connector).
+    // The owner's durable grant (legacy NULL user_id, as pre-M3 issued).
     await env.DB.prepare(
       'INSERT INTO oauth_tokens (access_token, refresh_token, client_id, scope, expires_at, created_at) VALUES (?1,?2,?3,?4,?5,?6)',
     )
       .bind(crypto.randomUUID(), crypto.randomUUID(), 'c', 'mcp', Date.now() + 3600_000, Date.now())
       .run();
-    // Also give the friend an MCP audit row — last_active must still be null
-    // for them (Claude doesn't operate on their account).
+    // The friend has used MCP as themselves but has NOT bound their own grant.
     await env.DB.prepare(
       "INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at) VALUES (?1,?2,'mcp','x',NULL,NULL,?3)",
     )
       .bind(crypto.randomUUID(), friend.id, Date.now())
       .run();
 
-    const friendMe = await (await getMe(friend.jwt)).json<any>();
+    let friendMe = await (await getMe(friend.jwt)).json<any>();
     expect(friendMe.claude.is_owner).toBe(false);
+    // Isolation: the owner's grant is NOT the friend's → still not connected.
     expect(friendMe.claude.connected).toBe(false);
-    expect(friendMe.claude.last_active).toBeNull();
+    // …but last_active IS per-user now: the friend's own MCP activity shows.
+    expect(friendMe.claude.last_active).not.toBeNull();
 
-    // Sanity: the owner still sees it connected with the grant present.
+    // The friend binds their OWN grant (a token scoped to them, M3) → their
+    // Profile now reports connected, without ever seeing the owner's.
+    await env.DB.prepare(
+      'INSERT INTO oauth_tokens (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id) VALUES (?1,?2,?3,?4,?5,?6,?7)',
+    )
+      .bind(crypto.randomUUID(), crypto.randomUUID(), 'c', 'mcp', Date.now() + 3600_000, Date.now(), friend.id)
+      .run();
+    friendMe = await (await getMe(friend.jwt)).json<any>();
+    expect(friendMe.claude.connected).toBe(true);
+
+    // The owner still sees their own (NULL-user_id) grant connected.
     const ownerMe = await (await getMe(owner.jwt)).json<any>();
     expect(ownerMe.claude.is_owner).toBe(true);
     expect(ownerMe.claude.connected).toBe(true);

@@ -35,6 +35,11 @@ export default defineWorkersConfig(async () => {
               // paths (bad/missing state, error param) — never the live POST.
               INTERVALS_OAUTH_CLIENT_ID: '431',
               INTERVALS_OAUTH_CLIENT_SECRET: 'test-oauth-secret',
+              // intervals.icu push webhook (POST /webhooks/intervals): a test
+              // value so the receiver is "configured" and secret-matching can
+              // be exercised. The triggered syncs no-op gracefully in tests
+              // (the reconciled-cache fetch is the injected/dormant path).
+              INTERVALS_WEBHOOK_SECRET: 'test-webhook-secret',
             },
           },
         },

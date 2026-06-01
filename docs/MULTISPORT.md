@@ -64,6 +64,37 @@ Status: **design / not yet built.** This is the spec to implement against.
 >
 > **Resequenced build order: see the revised §10.**
 
+> **M0 verification outcome (live-checked + code-grounded). See
+> [`MULTISPORT-M0-spike.md`](MULTISPORT-M0-spike.md) for the full runbook.**
+> This block is authoritative where it conflicts with the body.
+>
+> - **🔴 The "unified load gauge" is REFUTED as built.** intervals computes
+>   actual CTL/Fitness from **completed activities only** — a planned event
+>   projects the future curve but never moves actual CTL, and completed
+>   `WeightTraining` is excluded from Fitness by default (Fatigue only). So the
+>   pillar in §1 / §5.3 / §7 / §13 ("intervals owns the unified aggregate load,
+>   fed by the strength export") is **false today.** Consequence: the planner
+>   must own its own combined-load model — the §4.4 `stress_model` is now the
+>   **primary** planning substrate, not a fallback. **Confirmed live 2026-05-31:**
+>   a `WeightTraining` event (load 80) on a past date left CTL unchanged
+>   (21.34891 → 21.34891). See the spike RESULTS in `MULTISPORT-M0-spike.md`.
+> - **🟢 Webhooks confirmed.** intervals fires `ACTIVITY_UPLOADED`,
+>   `ACTIVITY_ANALYZED`, `CALENDAR_UPDATED`, `SPORT_SETTINGS_UPDATED` to a
+>   callback on OAuth app #431 — replaces the §8 poll. Caveat: **not delivered
+>   for Strava-sourced activities**; keep the poll as fallback. (§8 row →
+>   "Available — provisioning + Strava caveat pending david.")
+> - **✅ M1 is already shipped in-tree** (`grant_type=refresh_token` exchange +
+>   401/403 disconnect+reauth, `db.ts`, commit `6bc3264`). §10 M1 / §12 R3
+>   downgrade from "NOT HANDLED / HIGH" to "shipped — verify in the spike."
+> - **M5 write bridge → CONDITIONAL NO-GO.** The run/swim `POST /events` shape
+>   is the same as the verified `WeightTraining` export (only `type` changes), so
+>   the primitive is cheap — but build it only after (1) the live spike passes,
+>   (2) M2+M4 ship, and (3) a real pain point appears. The athlete isn't on
+>   intervals yet (R0), so M5's value is currently zero. Build M2/M4 first.
+> - **✅ M2 is shipped** (this work): `set_race` / `set_periodization` /
+>   `add_trip` / `update_trip` / `remove_trip` / `set_stress_model` write
+>   `plans.meta.*` on the versioned path; ride `/api/state`; audited + noted.
+
 ---
 
 ## 0. Motivating case
@@ -111,7 +142,7 @@ a system built for it (intervals.icu); tres-fort becomes the strength executor
 | Planning / coaching intelligence | **Claude** (via MCP) | Backend stays AI-free per `DESIGN.md` §1 |
 | Endurance plan, actuals, structured detail | **intervals.icu** | Multi-sport; the watch executes it; built for this |
 | Strength plan, actuals, structured detail | **tres-fort** | First-class today; iOS is the gym executor |
-| Unified aggregate load (Fitness/Fatigue/Form) | **intervals.icu** | Strength sRPE already exports there (§5.3) |
+| Unified aggregate load (Fitness/Fatigue/Form) | **intervals.icu** (design intent) | ⚠️ **Refuted as built** — planned events don't move actual CTL; `WeightTraining` is excluded from Fitness by default (Fatigue only). The §4.4 `stress_model` is the primary planning load model. See the M0 block above. |
 | Periodization intent, races, trips, stress model | **tres-fort** (plan `meta` JSON) | Authored truth; versioned; rides `/api/state` |
 | The holistic weekly/most-of-plan calendar | **tres-fort — computed projection** | A *view*, not a stored table (§6) |
 
@@ -302,10 +333,12 @@ idempotent-by-marker lookup, different `category/type` payload.
 ### 5.3 Unchanged: strength load still exports out
 
 `session_load_exports` keeps pushing completed strength sRPE → intervals as a
-`WeightTraining` activity. That's what lets intervals' Fitness/Fatigue/Form
-include strength, making it the **unified aggregate** load store. Critically,
-this export is a **reporting** concern only — the *planning* brain does not
-consume that scalar back as gospel (§7).
+`WeightTraining` event. ⚠️ **Corrected (M0):** this does **not** make intervals
+a unified aggregate-load store — a planned/calendar event does not move actual
+CTL (computed from completed activities only), and `WeightTraining` is excluded
+from Fitness by default. The export gives a *calendar/visibility* record in
+intervals, not a fed Fitness curve. The export is a **reporting** concern only;
+the *planning* brain reasons over the §4.4 `stress_model`, not a TSS scalar (§7).
 
 ---
 
@@ -434,7 +467,49 @@ webhook"). Plan:
 | **Write-through** (§5.2) | Claude-initiated changes are instantly mirrored | Primary — kills most latency without webhooks |
 | **On-demand refresh** | Sync when iOS foregrounds / when Claude is asked to plan; `refresh_rides` already does this | Add foreground trigger |
 | **15-min cron** | Backstop for externally-originated changes (watch-recorded actuals, edits in intervals' own UI) | Keep, lower urgency |
-| **Webhooks** | True push for actuals | **Verify-then-maybe** — confirm intervals.icu exposes outbound third-party webhooks with david@intervals.icu (issuer of OAuth client #431). intervals is primarily a *pull* API; do not assume. |
+| **Webhooks** | True push for actuals | **Implemented** — `POST /webhooks/intervals` (`src/routes/webhooks.ts`). intervals.icu DOES expose outbound third-party webhooks via the Manage App page; the receiver reconciles the same idempotent caches the cron does, so it never replaces the cron — it just front-runs it. |
+
+### 8.1 Webhook receiver (`POST /webhooks/intervals`) — shipped
+
+intervals.icu POSTs a batch `{ secret, events: [{ athlete_id, type, … }] }`
+whenever an athlete's data changes. The receiver:
+
+- **Authenticates by body `secret`** (`== INTERVALS_WEBHOOK_SECRET`) — it is
+  PUBLIC, NOT behind app-JWT / the MCP bearer. An unset secret makes it dormant
+  (401s every request). An optional `INTERVALS_WEBHOOK_AUTH_HEADER` adds a
+  second factor matching the page's "Webhook Authorization Header".
+- **Always returns HTTP 200** on a valid secret (never 204 — intervals
+  historically retried 204), with a tiny `{ ok: true }` body. Unknown
+  athlete / type / empty batch are accepted gracefully.
+- **Routes type → sync:** `CALENDAR_UPDATED` → `syncExternalEvents` +
+  `syncExternalActivities`; `ACTIVITY_*` → `syncExternalActivities`;
+  `WELLNESS_UPDATED` / `FITNESS_UPDATED` → accepted no-op (no fitness store
+  yet — TODO). The work runs in `executionCtx.waitUntil` so the 200 returns
+  fast.
+- **Strava nuance:** intervals does NOT fire `ACTIVITY_*` for Strava-sourced
+  activities — `CALENDAR_UPDATED` is the catch-all — so `CALENDAR_UPDATED`
+  triggers BOTH syncs (the activities sync catches a Strava-routed completed
+  ride).
+- **Idempotent:** intervals can duplicate `CALENDAR_UPDATED` and delays
+  `ACTIVITY_ANALYZED` ~60s. The (athlete, sync-kind) work is deduped per batch,
+  and the underlying syncs are reconciled-cache writes — re-triggering is safe.
+
+**Self-serve registration (Nick — one-time, on the intervals.icu side):**
+
+1. Pick a strong secret and set it on the Worker:
+   `wrangler secret put INTERVALS_WEBHOOK_SECRET` (paste the same value you'll
+   enter on the page below).
+2. On the intervals.icu **Manage App** page (`/oauth/client/431`), set the
+   **Webhook URL** to `https://tres-fort.nmarkspdx.workers.dev/webhooks/intervals`
+   and the **Webhook Secret** to the value from step 1.
+3. Tick the event types: **CALENDAR_UPDATED**, **ACTIVITY_ANALYZED**,
+   **WELLNESS_UPDATED**, **FITNESS_UPDATED** (the last two are accepted no-ops
+   today but future-proof the registration).
+4. (Optional) set a "Webhook Authorization Header" on the page and mirror it
+   with `wrangler secret put INTERVALS_WEBHOOK_AUTH_HEADER`.
+
+Once registered, the 15-min cron stays as a backstop but most actuals land in
+seconds instead of up to 15 minutes.
 
 **Token-expiry risk (R3).** `intervalsAuth.ts:92` notes refresh/expiry are
 "not documented — tokens appear long-lived." If they *do* expire, the per-user

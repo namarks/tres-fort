@@ -83,11 +83,15 @@ date) and the truth table must stay byte-for-byte in parity across both;
 and remaps the schedule by day name/label; days removed in the rebuild have
 their schedule entry cleared.
 
-**Single-user invariant.** Exactly one user row. MCP calls resolve the owner
-via `ensureOwnerUser` (bootstrap row if none); Sign in with Apple later
-*claims* that bootstrap row (`claimOrCreateOwner`) so MCP-seeded data and iOS
-share one `user_id`. `OWNER_APPLE_SUB`, when set, locks sign-in to that Apple
-`sub` and disables row-claiming.
+**Owner anchor + multi-tenant MCP.** There is always a distinguished **owner**:
+the bootstrap row (`ensureOwnerUser`), which Sign in with Apple later *claims*
+(`claimOrCreateOwner`) so MCP-seeded data and iOS share one `user_id`;
+`OWNER_APPLE_SUB`, when set, locks sign-in to that Apple `sub` and disables
+row-claiming. Other users exist too (group members), so "exactly one user row"
+is **no longer** true. As of M3 (migration `0025`) the `/mcp` bearer resolves
+to a *specific* user: the static token (`MCP_STATIC_TOKEN`) always maps to the
+owner; an OAuth access token maps to the user it was bound to at
+`/oauth/authorize` (pre-M3 tokens carry no `user_id` → owner, for back-compat).
 
 **Auth.**
 - `/api/*` — app JWT (HS256, `APP_JWT_SECRET`), issued by `/auth/apple` after
@@ -95,15 +99,18 @@ share one `user_id`. `OWNER_APPLE_SUB`, when set, locks sign-in to that Apple
   `requireAppJwt` sets `userId` on the Hono context.
 - `/mcp` — dual: static bearer (`MCP_STATIC_TOKEN`, for Claude Code/curl)
   **and** OAuth 2.1 (claude.ai/desktop connectors). Both flow through
-  `validateBearer` in `src/oauth.ts` and resolve to the one owner. The 401
-  always advertises RFC 9728 metadata so the OAuth path is non-breaking.
+  `validateBearer` in `src/oauth.ts`. Static bearer → owner; OAuth token → the
+  user bound at `/oauth/authorize` (the owner via `OWNER_AUTH_PASSPHRASE`, or
+  any user via their personal MCP passphrase — PBKDF2, per-user salt — set
+  through `POST /api/me/mcp-passphrase`; pre-M3 tokens → owner). The 401 always
+  advertises RFC 9728 metadata so the OAuth path is non-breaking.
 - `POST /auth/dev` exists **only** when `DEV_AUTH_SECRET` is set (local + the
   vitest config) — never enabled in production.
 
 **Every MCP write** records an `audit_log` row and (for plan changes) a
 Claude-authored `notes` row. This visible/reversible trail is the
-single-user substitute for per-tool scopes — preserve it when adding write
-tools.
+substitute for per-tool scopes (now recorded per user) — preserve it when
+adding write tools.
 
 **MCP transport** (`src/mcp/server.ts`): stateless JSON-RPC 2.0 over
 Streamable HTTP, single `application/json` responses (no server-initiated

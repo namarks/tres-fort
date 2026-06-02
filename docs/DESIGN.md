@@ -247,10 +247,10 @@ models, lifecycles, and revocation paths → decoupled on purpose.
 4. Refresh: near expiry, app silently re-runs SIWA → new JWT. No refresh-token store in v1.
 
 **MCP → dual acceptance on `/mcp`** (resolves your "one token? scopes? rate limits?")
-- (a) **OAuth 2.1** for claude.ai/desktop custom connectors — implement via Cloudflare `@cloudflare/workers-oauth-provider` (or the `agents` `McpAgent`). Single user → authorize endpoint gated by a one-time passphrase you set, then auto-approves; issues short-lived access tokens the Worker validates.
+- (a) **OAuth 2.1** for claude.ai/desktop custom connectors — a minimal in-Worker provider (`src/oauth.ts`). The `/oauth/authorize` step is gated by a passphrase: the **owner** uses `OWNER_AUTH_PASSPHRASE`, any other user a personal MCP passphrase (PBKDF2-SHA256, per-user salt) set via `POST /api/me/mcp-passphrase`. On match it binds that `user_id` into the auth code and issues short-lived access tokens (also carrying the `user_id`) the Worker validates.
 - (b) **Static bearer** for Claude Code / curl / milestone-b testing — `Authorization: Bearer <MCP_STATIC_TOKEN>` (Worker secret).
-- Both resolve to the single `user_id`.
-- **No per-tool scopes in v1.** One user, one principal → scopes add complexity with zero security gain. The trust substitute is `audit_log` + Claude-written notes (visible, reversible).
+- **Resolution (M3, migration `0025`).** Static bearer → the owner. OAuth token → the user it was bound to at `/oauth/authorize`. Tokens issued before M3 carry no `user_id` and resolve to the owner (back-compat), so already-connected claude.ai sessions keep working as the owner without re-auth.
+- **No per-tool scopes.** Per connected user there is one principal → scopes would add complexity with little security gain at this scale. The trust substitute is the per-user `audit_log` + Claude-written notes (visible, reversible).
 - **Rate limit:** soft cap (~600 req/min) via a Cloudflare rate-limit rule on `/mcp` or a KV counter — a runaway-loop guard, not a security boundary. Optional-but-recommended for v1.
 
 Risk R1: claude.ai/desktop connector auth specifics may differ at build

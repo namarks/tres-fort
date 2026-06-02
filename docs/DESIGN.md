@@ -4,7 +4,9 @@
 > You execute and log in a native iOS app. A Cloudflare backend is the
 > single source of truth that both Claude (via MCP) and the app read/write.
 
-Status: **DESIGN — awaiting approval before scaffolding (milestone a).**
+Status: **IMPLEMENTED** — all milestones (a–i) shipped; intervals.icu
+integration, groups/invites (M1/M2), and multisport (endurance) coaching
+added post-milestone.
 Date: 2026-05-18 · Owner: Nick · Apple Developer Program: **Active** ·
 Claude surface: all (auth designed OAuth-capable with static-bearer fallback).
 

@@ -43,11 +43,13 @@ The `.xcodeproj` is generated; treat `project.yml` as the source of truth.
 ## Architecture
 
 **One Worker, route groups, one service layer.** `src/index.ts` mounts
-`/auth`, `/api` (iOS REST, app-JWT), `/mcp` (Claude), and OAuth discovery
-under one Hono app. **All D1 access goes through `src/db.ts`** — REST routes
-(`src/routes/`) and MCP tools (`src/mcp/server.ts`) are thin wrappers over the
-same functions, so behavior stays identical across clients. Add data logic in
-`db.ts`, not in route/tool handlers.
+`/auth`, `/auth/intervals` (intervals.icu OAuth connect), `/api` (iOS REST,
+app-JWT), `/mcp` (Claude), and OAuth discovery under one Hono app. **All D1
+access goes through `src/db.ts`** — REST routes (`src/routes/`) and MCP tools
+(`src/mcp/server.ts`) are thin wrappers over the same functions, so behavior
+stays identical across clients. Add data logic in `db.ts`, not in route/tool
+handlers. intervals.icu I/O is isolated in `src/intervals.ts` (injectable
+fetcher, dormant when no credentials are set).
 
 **Two data classes, two consistency strategies** — this split is the core
 design and dictates how you mutate things:
@@ -104,6 +106,14 @@ owner; an OAuth access token maps to the user it was bound to at
   any user via their personal MCP passphrase — PBKDF2, per-user salt — set
   through `POST /api/me/mcp-passphrase`; pre-M3 tokens → owner). The 401 always
   advertises RFC 9728 metadata so the OAuth path is non-breaking.
+- `/auth/intervals` — OAuth 2.0 authorization-code connect flow for
+  intervals.icu (`src/routes/intervalsAuth.ts`). CSRF is a single-use,
+  expiring `state` param (server-minted, resolved back to the connecting
+  user on callback); the code is exchanged server-side with the
+  `client_secret` — **not** PKCE (no `code_challenge`/`code_verifier`).
+  Stores per-user credentials in the `users` row; `src/intervals.ts` is
+  dormant (returns `{ok:false, reason:'disabled'}`) when no credentials are
+  set.
 - `POST /auth/dev` exists **only** when `DEV_AUTH_SECRET` is set (local + the
   vitest config) — never enabled in production.
 
@@ -115,7 +125,16 @@ adding write tools.
 **MCP transport** (`src/mcp/server.ts`): stateless JSON-RPC 2.0 over
 Streamable HTTP, single `application/json` responses (no server-initiated
 streams). Natural-language exercise arguments are run through an alias
-resolver (`resolveExercise`) before hitting the catalog.
+resolver (`resolveExercise`) before hitting the catalog. Current tools:
+`get_current_plan`, `get_today_workout`, `get_current_session`,
+`get_session_log`, `get_history`, `get_volume_trend`, `list_exercises`,
+`get_upcoming_rides`, `get_recent_activities`, `get_group_feed`, `log_set`,
+`delete_set`, `log_activity`, `log_workout_complete`, `add_note`,
+`update_plan`, `update_exercise`, `swap_exercise`, `add_exercise`, `add_day`,
+`update_day`, `delete_exercise`, `adjust_today`, `set_schedule`,
+`set_planned_session`, `skip_planned_session`, `set_race`,
+`set_periodization`, `add_trip`, `update_trip`, `remove_trip`,
+`set_stress_model`, `refresh_rides`.
 
 ## Conventions
 
@@ -133,4 +152,5 @@ resolver (`resolveExercise`) before hitting the catalog.
 - Tests run against a real D1 in the Workers runtime via
   `@cloudflare/vitest-pool-workers`; each suite applies `migrations/` with
   `applyD1Migrations(env.DB, env.TEST_MIGRATIONS)` and authenticates through
-  `/auth/dev`. Schema changes mean a new numbered file in `migrations/`.
+  `/auth/dev`. 31 test suites cover the full surface. Schema changes mean a
+  new numbered file in `migrations/`.

@@ -24,7 +24,9 @@ and analyze training; the app just reflects the current plan and logs work.
 ### 1. Backend — Cloudflare Worker + D1
 One Worker (Hono) over a D1 (SQLite) database. Tables: users, exercises,
 plans, day_templates, template_exercises, sessions, set_logs, notes,
-audit_log, oauth_*. Plan tree is a **versioned document** (optimistic
+audit_log, oauth_*, intervals_oauth_states, groups, group_members,
+group_invites, external_activities, activities, external_events,
+session_load_exports. Plan tree is a **versioned document** (optimistic
 concurrency); sets/notes are an **append-only event log** (client-UUID
 idempotent, offline-safe) — so two writers never need merge logic.
 
@@ -37,10 +39,15 @@ idempotent, offline-safe) — so two writers never need merge logic.
 A Streamable-HTTP MCP server at `/mcp` exposing the same service layer:
 
 - **Read:** `get_current_plan`, `get_today_workout`, `get_current_session`,
-  `get_session_log`, `get_history`, `get_volume_trend`
-- **Write:** `log_set`, `log_workout_complete`, `add_note`, `update_plan`
-  (transactional, `expected_version` → 409 on conflict), `update_exercise`,
-  `swap_exercise`, `add_exercise`, `add_day`, `adjust_today`
+  `get_session_log`, `get_history`, `get_volume_trend`, `list_exercises`,
+  `get_upcoming_rides`, `get_recent_activities`, `get_group_feed`
+- **Write:** `log_set`, `delete_set`, `log_activity`, `log_workout_complete`,
+  `add_note`, `update_plan` (transactional, `expected_version` → 409 on
+  conflict), `update_exercise`, `swap_exercise`, `add_exercise`, `add_day`,
+  `update_day`, `delete_exercise`, `adjust_today`, `set_schedule`,
+  `set_planned_session`, `skip_planned_session`, `set_race`,
+  `set_periodization`, `add_trip`, `update_trip`, `remove_trip`,
+  `set_stress_model`, `refresh_rides`
 - **Resource:** `coach://state/current` — a compact brief Claude can read at
   chat start. Plus a `coach_brief` prompt.
 
@@ -79,7 +86,7 @@ docs/DESIGN.md       system design doc
 
 ```bash
 npm install
-npm test                              # 25 integration tests vs real D1
+npm test                              # integration tests vs real D1 (31 suites)
 npm run typecheck
 
 npx wrangler d1 create tres-fort-db  # first time; paste id into wrangler.jsonc
@@ -171,6 +178,18 @@ TestFlight (internal).
 All design milestones (a–i) built: backend + D1, MCP read/write tools, iOS
 Sign in with Apple, guided runner, History/charts, Live Activity, font
 polish, and a TestFlight-ready signed archive.
+
+Post-milestone additions:
+- **intervals.icu integration** — per-user credentials (API key or OAuth),
+  ride/activity sync (`/auth/intervals` OAuth flow, webhook-driven via
+  `external_events`), upcoming-ride awareness baked into workout planning.
+- **Groups & invites** — friend/family containers with invite-code sign-up;
+  group activity feed (`get_group_feed`) visible to Claude.
+- **Multisport (endurance) coaching** — one adaptive plan spans strength +
+  endurance: race goals (`set_race`), periodization phases
+  (`set_periodization`), travel/rest/injury blackouts (`add_trip`), and a
+  multi-dimensional stress model (`set_stress_model`) so training load is
+  never collapsed to a single number. See `docs/MULTISPORT.md`.
 
 ## License
 

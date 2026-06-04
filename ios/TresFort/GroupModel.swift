@@ -503,6 +503,37 @@ final class GroupModel: ObservableObject {
         return connected
     }
 
+    // MARK: - Claude connect code (M3)
+
+    /// Generate a fresh MCP connect code, store it server-side, and return the
+    /// plaintext for one-time display. The user copies it into Claude's custom
+    /// connector to bind their own AI coach to this account. The server keeps
+    /// only a PBKDF2 hash, so the plaintext lives only here and on the user's
+    /// screen — regenerating just rotates it (existing linked Claude sessions
+    /// keep working, since their token was already bound at authorize time).
+    func generateClaudeConnectCode() async throws -> String {
+        guard let jwt = auth.jwt else {
+            throw APIError.http(401, "not_signed_in")
+        }
+        let code = Self.makeConnectCode()
+        try await api.setMcpConnectCode(code, jwt: jwt)
+        await refreshMe()
+        return code
+    }
+
+    /// 16 chars of an unambiguous base-32 alphabet (no I/L/O/0/1), grouped
+    /// 4×4 with dashes for legibility — e.g. `K7M4-PQ2R-9XTW-6NBV`. ~78 bits of
+    /// entropy: far above the server's 8-char minimum and collision-safe
+    /// against other users' codes. Copy-paste preserves the dashes, which are
+    /// part of the stored code.
+    private static func makeConnectCode() -> String {
+        let alphabet = Array("ABCDEFGHJKMNPQRSTUVWXYZ23456789")
+        let groups = (0..<4).map { _ in
+            String((0..<4).map { _ in alphabet.randomElement()! })
+        }
+        return groups.joined(separator: "-")
+    }
+
     // MARK: - Helpers
 
     /// The caller's effective display name in a given group — pull from

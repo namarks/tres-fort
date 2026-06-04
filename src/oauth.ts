@@ -130,8 +130,8 @@ button{width:100%;margin-top:14px;padding:12px;background:#fff;color:#000;border
 border-radius:8px;font-weight:600;font-size:15px;cursor:pointer}
 .err{color:#ff6b6b;font-size:13px;margin-top:10px}</style></head>
 <body><form method="POST" action="/oauth/authorize">${hidden}
-<h1>Connect tres-fort</h1><p>Enter your tres-fort passphrase to let Claude coach you.</p>
-<input type="password" name="passphrase" placeholder="Passphrase" autofocus>
+<h1>Connect Très Fort</h1><p>Paste your connect code to link Claude to your training. Get it in the Très Fort app under Profile → Coach.</p>
+<input type="password" name="passphrase" placeholder="Connect code" autofocus>
 ${error ? `<div class="err">${error}</div>` : ''}
 <button type="submit">Authorize</button></form></body></html>`;
 }
@@ -187,7 +187,10 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
   // Resolve WHICH user is connecting: the owner via OWNER_AUTH_PASSPHRASE, or
   // any user via their personal MCP passphrase. No match → re-prompt. The
   // resolved user id is bound to the code so the issued token is scoped to them.
-  const pass = f('passphrase');
+  // Trim so a connect code pasted with a stray trailing space/newline (common
+  // on mobile paste) still matches — the app stores codes without surrounding
+  // whitespace, and env passphrases don't carry any either.
+  const pass = f('passphrase').trim();
   let userId: string | null = null;
   if (c.env.OWNER_AUTH_PASSPHRASE && pass === c.env.OWNER_AUTH_PASSPHRASE) {
     userId = (await ensureOwnerUser(c.env.DB, c.env.OWNER_APPLE_SUB)).id;
@@ -195,7 +198,10 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
     userId = await findUserByMcpPassphrase(c.env.DB, pass);
   }
   if (!userId) {
-    return c.html(consentPage(params, 'Incorrect passphrase.'), 401);
+    return c.html(
+      consentPage(params, 'That code did not match — open Très Fort → Profile → Coach to copy the current one.'),
+      401,
+    );
   }
 
   const code = rand();

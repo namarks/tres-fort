@@ -3,9 +3,11 @@ import SwiftUI
 /// Per-group settings: members list, edit-display-name, generate invite,
 /// leave group.
 ///
-/// Invite UX is the v1 "manual code" experience (per M5 Q2 decision) —
-/// generate a code, show it big, copy + ShareLink as plain text. No
-/// deep-link URLs.
+/// Invite UX: generate a code, show it big, Copy the code, and Share a
+/// Universal Link (https://…/join/<code>) that opens straight to the
+/// join-confirm screen on a phone with the app — falling back to a web
+/// landing page (with the code) otherwise. Manual code entry on the Join
+/// screen remains as the always-works fallback.
 struct GroupSettingsView: View {
     let group: GroupSummary
     @ObservedObject var groupModel: GroupModel
@@ -83,7 +85,14 @@ struct GroupSettingsView: View {
                                     Label("Copy", systemImage: "doc.on.doc")
                                 }
                                 .buttonStyle(.bordered)
-                                ShareLink(item: shareText(invite.code, groupName: group.name)) {
+                                // Share the BARE Universal Link (no extra text/
+                                // subject/message): a URL-only message is what
+                                // makes Messages/Mail expand it into a rich
+                                // preview card from the page's og: tags. Adding
+                                // surrounding text would demote it to an inline
+                                // link (and a `message:` re-introduces the
+                                // serialized-blob bug).
+                                ShareLink(item: inviteURL(invite.code)) {
                                     Label("Share", systemImage: "square.and.arrow.up")
                                 }
                                 .buttonStyle(.bordered)
@@ -203,11 +212,14 @@ struct GroupSettingsView: View {
         }
     }
 
-    private func shareText(_ code: String, groupName: String) -> String {
-        // M5 chose plain text (no URL) per Q2 — Universal Links + deep
-        // links are M6. Receivers paste the code into the Join screen.
-        "Join \"\(groupName)\" on Très Fort with invite code: \(code)"
+    /// The Universal Link that opens the invite straight in the app (or a web
+    /// landing page carrying the code if the app isn't installed). Same host
+    /// as the API so it matches the Associated Domains entitlement + the AASA
+    /// the Worker serves at that domain.
+    private func inviteURL(_ code: String) -> URL {
+        Config.apiBaseURL.appendingPathComponent("join").appendingPathComponent(code)
     }
+
 
     private func absoluteDate(epochMs: Int) -> String {
         let d = Date(timeIntervalSince1970: TimeInterval(epochMs) / 1000)

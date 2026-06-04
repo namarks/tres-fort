@@ -4,6 +4,7 @@ import { authRoutes } from './routes/auth';
 import { apiRoutes } from './routes/api';
 import { intervalsAuthRoutes } from './routes/intervalsAuth';
 import { privacyRoutes } from './routes/privacy';
+import { inviteLinkRoutes } from './routes/invites';
 import { webhookRoutes } from './routes/webhooks';
 import { mcpRoutes } from './mcp';
 import { oauthRoutes } from './oauth';
@@ -19,6 +20,7 @@ app.get('/health', (c) => c.json({ ok: true, service: 'tres-fort' }));
 
 app.route('/', oauthRoutes); // /.well-known/* + /oauth/*
 app.route('/', privacyRoutes); // GET /privacy (App Store Connect compliance)
+app.route('/', inviteLinkRoutes); // AASA + GET /join/:code (Universal Link invites)
 app.route('/auth', authRoutes);
 app.route('/auth/intervals', intervalsAuthRoutes); // OAuth connect (start + callback)
 app.route('/api', apiRoutes);

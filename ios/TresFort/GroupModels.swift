@@ -83,6 +83,16 @@ struct GroupInviteCode: Decodable, Equatable {
     let expires_at: Int?
 }
 
+/// GET /api/groups/invite/:code response — previews an invite (without
+/// consuming it) so the deep-link join-confirm sheet can show "Join <name>?".
+struct InvitePreview: Decodable, Equatable {
+    /// "valid" | "used" | "expired" | "unknown". Decoded as a raw String so a
+    /// future backend status can't fail decoding — GroupModel maps it.
+    let status: String
+    /// The group's name, or nil when the code is unknown/the group is gone.
+    let group_name: String?
+}
+
 /// Top-level shape of GET /api/groups.
 struct GroupsListResponse: Decodable {
     let groups: [GroupSummary]

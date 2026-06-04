@@ -9,5 +9,15 @@
   <array>
     <string>Default</string>
   </array>
+  <!-- Universal Links for group invites. iOS fetches
+       https://tres-fort.nmarkspdx.workers.dev/.well-known/apple-app-site-association
+       (served by the Worker, src/routes/invites.ts) and, when the appID matches,
+       opens https://…/join/<code> directly in the app instead of Safari.
+       Automatic signing adds the "Associated Domains" capability to the App ID
+       on the next device build. -->
+  <key>com.apple.developer.associated-domains</key>
+  <array>
+    <string>applinks:tres-fort.nmarkspdx.workers.dev</string>
+  </array>
 </dict>
 </plist>

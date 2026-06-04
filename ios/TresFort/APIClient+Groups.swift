@@ -34,6 +34,18 @@ extension APIClient {
         let connected: Bool
     }
 
+    // MARK: - M3: Claude MCP connect code
+
+    /// POST /api/me/mcp-passphrase — store THIS user's personal MCP connect
+    /// code. The server PBKDF2-hashes it and never returns it; it's matched at
+    /// `/oauth/authorize` to bind a Claude session to this account. We send an
+    /// app-generated random code (not a user-chosen passphrase). 409 = the
+    /// code is already in use by another account (caller regenerates).
+    func setMcpConnectCode(_ code: String, jwt: String) async throws {
+        let _: EmptyResponse = try await post(
+            "api/me/mcp-passphrase", body: ["passphrase": code], jwt: jwt)
+    }
+
     // MARK: - M2: Groups CRUD
 
     /// POST /api/groups — create a new group, auto-add the creator as the

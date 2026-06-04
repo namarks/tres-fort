@@ -25,6 +25,14 @@ final class AuthModel: ObservableObject {
     /// re-fires once completed. See the grandfathering logic in `init`.
     @Published var onboardingComplete: Bool
 
+    /// A group invite code captured from a Universal Link
+    /// (https://…/join/<code>) that hasn't been acted on yet. MainTabView
+    /// observes this and presents the join-confirm sheet once the signed-in
+    /// surface is on screen — so a link tapped while signed out or mid-
+    /// onboarding is honored right after the user finishes signing in. Set by
+    /// `handleDeepLink`, cleared when the sheet is dismissed.
+    @Published var pendingInviteCode: String?
+
     private let api = APIClient()
     private static let userIDKey = "com.nmarkspdx.liftcoach.user-id.v1"
     private static let onboardedKey = "com.nmarkspdx.liftcoach.onboarded.v1"
@@ -116,4 +124,37 @@ final class AuthModel: ObservableObject {
     }
 
     func signOut() { invalidate() }
+
+    // MARK: - Universal Link invites
+
+    /// Handle an inbound Universal Link. If it carries a well-formed group
+    /// invite code, stash it in `pendingInviteCode` for the signed-in surface
+    /// to present. Anything else (including the intervals.icu OAuth callback,
+    /// which never reaches here — `ASWebAuthenticationSession` consumes it) is
+    /// ignored. Deliberately does NOT clear on a different sign-in: whoever
+    /// signs in after tapping the link is the one who gets to join.
+    func handleDeepLink(_ url: URL) {
+        guard let code = Self.inviteCode(from: url) else { return }
+        pendingInviteCode = code
+    }
+
+    /// Pure parser (no side effects, so the rule is obvious and testable):
+    /// the host must match the API host and the path must be exactly
+    /// `/join/<code>`, where <code> normalizes to 6 chars of the invite
+    /// alphabet. Returns nil otherwise.
+    static func inviteCode(from url: URL) -> String? {
+        guard let host = url.host, host == Config.apiBaseURL.host else { return nil }
+        let parts = url.pathComponents.filter { $0 != "/" } // ["join", "ABC123"]
+        guard parts.count == 2, parts[0] == "join" else { return nil }
+        return normalizedInviteCode(parts[1])
+    }
+
+    /// Uppercase, strip to the 6-char base-32 invite alphabet (no I/L/O/0/1),
+    /// require exactly 6. Mirrors the server's `normalizeInviteCode`
+    /// (src/routes/invites.ts) and the in-app code fields.
+    static func normalizedInviteCode(_ raw: String) -> String? {
+        let alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+        let cleaned = raw.uppercased().filter { alphabet.contains($0) }
+        return cleaned.count == 6 ? cleaned : nil
+    }
 }

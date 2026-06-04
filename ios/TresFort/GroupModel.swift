@@ -264,6 +264,33 @@ final class GroupModel: ObservableObject {
         return res.group
     }
 
+    /// Result of previewing a deep-linked invite code for the confirm sheet.
+    enum InvitePreviewResult: Equatable {
+        case valid(groupName: String)
+        case used
+        case expired
+        case unknown
+        case failed // network / decode / no-JWT — distinct from a known-bad code
+    }
+
+    /// Preview an invite (group name + state) WITHOUT consuming it, for the
+    /// Universal-Link join-confirm sheet. Never throws — the sheet renders
+    /// each case directly; `failed` (vs `unknown`) lets the UI offer a retry.
+    func invitePreview(code: String) async -> InvitePreviewResult {
+        guard let jwt = auth.jwt else { return .failed }
+        do {
+            let p = try await api.getInvitePreview(code: code, jwt: jwt)
+            switch p.status {
+            case "valid": return .valid(groupName: p.group_name ?? "this group")
+            case "used": return .used
+            case "expired": return .expired
+            default: return .unknown
+            }
+        } catch {
+            return .failed
+        }
+    }
+
     /// Leave a group. Drops local cache; the server doesn't 404 on
     /// already-gone so this is idempotent.
     func leaveGroup(id: String) async throws {

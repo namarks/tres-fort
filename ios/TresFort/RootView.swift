@@ -1,4 +1,5 @@
 import AuthenticationServices
+import Foundation
 import SwiftUI
 
 struct RootView: View {
@@ -30,6 +31,15 @@ struct RootView: View {
                 }
                 .preferredColorScheme(.dark)
             }
+        }
+        // Universal Link entry: a tapped https://…/join/<code> routes here
+        // (onOpenURL on iOS 14+, plus the canonical web-browsing activity
+        // hook for belt-and-suspenders). Both funnel into AuthModel, which
+        // validates + stashes the code for MainTabView to present — so it
+        // works whether or not we're signed in yet.
+        .onOpenURL { model.handleDeepLink($0) }
+        .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+            if let url = activity.webpageURL { model.handleDeepLink(url) }
         }
     }
 

@@ -14,6 +14,7 @@ import {
   getGroupActivitySeries,
   getGroupFeed,
   getGroupStats,
+  getInvitePreview,
   getMeProfile,
   getGroupWithMembers,
   getHistory,
@@ -458,6 +459,18 @@ apiRoutes.post('/groups', async (c) => {
 apiRoutes.get('/groups', async (c) => {
   const userId = c.get('userId');
   return c.json({ groups: await listGroupsForUser(c.env.DB, userId) });
+});
+
+// Preview an invite by code (group name + state) so the in-app join-confirm
+// sheet can show "Join <name>?" BEFORE redeeming. Any signed-in user may
+// call it — the code is the join capability, so this exposes nothing they
+// couldn't get by redeeming. Read-only: does NOT consume the code. Registered
+// before `/groups/:id` so the literal "invite" segment can never be read as a
+// group id (group ids are UUIDs, so they never collide, but order makes it
+// unambiguous). `code` is normalized inside getInvitePreview's lookup.
+apiRoutes.get('/groups/invite/:code', async (c) => {
+  const code = c.req.param('code').trim();
+  return c.json(await getInvitePreview(c.env.DB, code));
 });
 
 apiRoutes.get('/groups/:id', async (c) => {

@@ -967,6 +967,42 @@ export async function getInviteForRedemption(
 }
 
 /**
+ * Public, read-only preview of an invite code — the data behind both the
+ * Universal-Link landing page (`GET /join/:code`) and the in-app join-confirm
+ * sheet (`GET /api/groups/invite/:code`). Returns the group NAME so the
+ * invitee sees *what* they're joining, plus a status the caller renders:
+ *   valid   — joinable now
+ *   used    — already redeemed (codes are single-use)
+ *   expired — past expires_at
+ *   unknown — no such code, or the group is gone
+ *
+ * Leaks nothing privileged: the only data exposed is the group name, keyed by
+ * a code the caller already holds. The code IS the join capability, so anyone
+ * who can call this could already redeem it. Does NOT consume the code.
+ */
+export async function getInvitePreview(
+  db: D1Database,
+  code: string,
+): Promise<{ status: 'valid' | 'used' | 'expired' | 'unknown'; group_name: string | null }> {
+  // Normalize to the stored form (codes are always uppercase) so preview is
+  // case-insensitive and identical across both callers — the public /join
+  // landing page and the authenticated /api/groups/invite/:code route.
+  const invite = await getInviteForRedemption(db, code.trim().toUpperCase());
+  if (!invite) return { status: 'unknown', group_name: null };
+  const group = await db
+    .prepare('SELECT name FROM groups WHERE id = ?1')
+    .bind(invite.group_id)
+    .first<{ name: string }>();
+  const group_name = group?.name ?? null;
+  if (group_name == null) return { status: 'unknown', group_name: null };
+  if (invite.used_at != null) return { status: 'used', group_name };
+  if (invite.expires_at != null && invite.expires_at < now()) {
+    return { status: 'expired', group_name };
+  }
+  return { status: 'valid', group_name };
+}
+
+/**
  * Redeem an invite as `userId`. Validates → marks the code used → inserts
  * the group_members row. The check-then-write race window is tolerable in
  * the friends-and-family setting (two redemptions of the same code within

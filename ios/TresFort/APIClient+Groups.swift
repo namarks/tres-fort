@@ -89,6 +89,13 @@ extension APIClient {
         try await post("api/groups/join", body: ["code": code], jwt: jwt)
     }
 
+    /// GET /api/groups/invite/:code — preview an invite (group name + state)
+    /// for the deep-link join-confirm sheet. Read-only; does NOT consume the
+    /// code. Any signed-in user may call it (the code is the capability).
+    func getInvitePreview(code: String, jwt: String) async throws -> InvitePreview {
+        try await get("api/groups/invite/\(code)", jwt: jwt)
+    }
+
     /// DELETE /api/groups/:id/members/me — leave a group. Idempotent: 200
     /// regardless of prior membership status (don't surface "not a member"
     /// as an error to the UI).

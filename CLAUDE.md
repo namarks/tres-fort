@@ -152,5 +152,5 @@ resolver (`resolveExercise`) before hitting the catalog. Current tools:
 - Tests run against a real D1 in the Workers runtime via
   `@cloudflare/vitest-pool-workers`; each suite applies `migrations/` with
   `applyD1Migrations(env.DB, env.TEST_MIGRATIONS)` and authenticates through
-  `/auth/dev`. 31 test suites cover the full surface. Schema changes mean a
+  `/auth/dev`. 32 test suites cover the full surface. Schema changes mean a
   new numbered file in `migrations/`.

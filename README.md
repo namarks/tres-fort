@@ -86,7 +86,7 @@ docs/DESIGN.md       system design doc
 
 ```bash
 npm install
-npm test                              # integration tests vs real D1 (31 suites)
+npm test                              # integration tests vs real D1 (32 suites)
 npm run typecheck
 
 npx wrangler d1 create tres-fort-db  # first time; paste id into wrangler.jsonc

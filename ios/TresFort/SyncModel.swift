@@ -127,10 +127,22 @@ final class SyncModel: ObservableObject {
     func todaySlotSets(_ ex: TemplateExercise) -> [SetLog] {
         guard let sid = todaySession?.id else { return [] }
         let warm = ex.isWarmup ? 1 : 0
+        // The exercise_id + warm-up fallback (for sets with no
+        // template_exercise_id — Claude/MCP- or pre-this-build-logged) is only
+        // safe when this is the *only* slot for that movement+warm-up today.
+        // With duplicate slots a null-te_id set is ambiguous: e.g. deleting an
+        // already-logged duplicate slot detaches its sets (deleteTemplateExercise
+        // nulls template_exercise_id), and attributing them would make the
+        // surviving sibling look complete and mis-seed it. When duplicates
+        // exist, count only sets explicitly keyed to this slot — the iOS logger
+        // always sends template_exercise_id now, so real logged sets still match.
+        let unique = exercises.filter {
+            $0.exercise_id == ex.exercise_id && ($0.isWarmup ? 1 : 0) == warm
+        }.count == 1
         return sets.filter { s in
             guard s.session_id == sid, s.deleted_at == nil else { return false }
             if let teid = s.template_exercise_id { return teid == ex.id }
-            return s.exercise_id == ex.exercise_id && s.is_warmup == warm
+            return unique && s.exercise_id == ex.exercise_id && s.is_warmup == warm
         }
         .sorted { $0.set_index < $1.set_index }
     }

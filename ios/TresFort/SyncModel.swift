@@ -33,10 +33,12 @@ final class SyncModel: ObservableObject {
     @Published var exerciseIndex = 0
     @Published var weight: Double = 0
     @Published var reps: Int = 0
-    /// Exercise ids the user explicitly skipped this session. A skip is
-    /// honored for the rest of the workout — the exercise is NOT requeued
-    /// (#3). In-memory + per-session: cleared on startWorkout; logging a set
-    /// for a skipped exercise un-skips it (you came back and did it).
+    /// PLAN SLOT ids (template_exercise_id) the user explicitly skipped this
+    /// session. Keyed by slot, not exercise_id, to match the slot-keyed
+    /// completion path: the same movement in two slots skips independently
+    /// (#3). A skip is honored for the rest of the workout — the slot is NOT
+    /// requeued. In-memory + per-session: cleared on startWorkout; logging a
+    /// set for a skipped slot un-skips it (you came back and did it).
     @Published var skipped: Set<String> = []
 
     // Timers.
@@ -365,7 +367,7 @@ final class SyncModel: ObservableObject {
         timedActive = false
         timedEndDate = nil
         timedStartDate = nil
-        skipped.remove(ex.exercise_id)   // logging work un-skips it
+        skipped.remove(ex.id)   // logging work un-skips this slot
         let secs = max(1, held)
         await logSet(ex, weight: 0, reps: secs, durationOverride: secs)
         if isComplete(ex) {
@@ -383,7 +385,7 @@ final class SyncModel: ObservableObject {
 
     func setsDone(_ ex: TemplateExercise) -> Int { todaySlotSets(ex).count }
     func isComplete(_ ex: TemplateExercise) -> Bool { setsDone(ex) >= ex.target_sets }
-    func isSkipped(_ ex: TemplateExercise) -> Bool { skipped.contains(ex.exercise_id) }
+    func isSkipped(_ ex: TemplateExercise) -> Bool { skipped.contains(ex.id) }
     /// "Resolved" = nothing left to do here: either completed or skipped.
     /// Drives requeue/finish so a skipped exercise is never auto-represented.
     func isResolved(_ ex: TemplateExercise) -> Bool { isComplete(ex) || isSkipped(ex) }
@@ -410,7 +412,7 @@ final class SyncModel: ObservableObject {
 
     func logCurrentSet() async {
         guard let ex = currentExercise else { return }
-        skipped.remove(ex.exercise_id)   // logging work un-skips it
+        skipped.remove(ex.id)   // logging work un-skips this slot
         await logSet(ex, weight: weight, reps: reps)   // also starts rest timer
         if isComplete(ex) {
             if let next = nextIncompleteIndex { jump(to: next) }
@@ -422,7 +424,7 @@ final class SyncModel: ObservableObject {
     /// session (so it is NOT requeued, #3) and advances to the next
     /// unresolved exercise; ends the workout if none remain.
     func skip() {
-        if let ex = currentExercise { skipped.insert(ex.exercise_id) }
+        if let ex = currentExercise { skipped.insert(ex.id) }
         if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
     }
 

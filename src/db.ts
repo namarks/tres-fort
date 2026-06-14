@@ -1804,7 +1804,9 @@ export async function logSet(
 
   // Timed-ness is stored per-set (never inferred from duration_s, which rep
   // sets carry incidentally): an explicit flag wins; otherwise default to the
-  // exercise's catalog modality.
+  // exercise's catalog modality. Both 'timed' (planks/holds) and 'cardio'
+  // (erg/treadmill, migration 0026) are duration-driven, so a caller that
+  // omits is_timed while logging a cardio effort still stores it as timed.
   let isTimedInt: number;
   if (typeof input.is_timed === 'boolean') {
     isTimedInt = input.is_timed ? 1 : 0;
@@ -1813,7 +1815,7 @@ export async function logSet(
       .prepare('SELECT modality FROM exercises WHERE id = ?1')
       .bind(input.exercise_id)
       .first<{ modality: string | null }>();
-    isTimedInt = exRow?.modality === 'timed' ? 1 : 0;
+    isTimedInt = exRow?.modality === 'timed' || exRow?.modality === 'cardio' ? 1 : 0;
   }
 
   const row: SetLogRow = {

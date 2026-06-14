@@ -288,4 +288,43 @@ describe('logging a set against a warm-up slot inherits is_warmup', () => {
       set: { is_warmup: 1 },
     });
   });
+
+  it('defaults a cardio set to is_timed even when the caller omits the flag', async () => {
+    // Codex P2: cardio (erg/treadmill) is duration-driven, so a caller that
+    // logs duration_s without an explicit is_timed must still persist a timed
+    // set — otherwise clients render the effort as reps.
+    const jwt = await devJwt();
+    const H = auth(jwt);
+    await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Cardio timed default' }),
+    });
+    const session = await (
+      await SELF.fetch(`${BASE}/api/sessions`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ date: '2026-06-03' }),
+      })
+    ).json<{ id: string }>();
+
+    const setId = crypto.randomUUID();
+    const r = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        id: setId,
+        exercise_id: 'ex_row_erg',
+        set_index: 1,
+        weight: 0,
+        reps: 300,
+        duration_s: 300,
+        // NO is_timed — the cardio modality must supply the default.
+      }),
+    });
+    expect(r.status).toBe(201);
+    expect(await r.json<{ set: { is_timed: number } }>()).toMatchObject({
+      set: { is_timed: 1 },
+    });
+  });
 });

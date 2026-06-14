@@ -52,15 +52,19 @@ enum RestCue {
     /// rest elapses even if the app is suspended. Lazily requests permission
     /// (a no-op after the first decision); silently does nothing if denied —
     /// the foreground `play()` path still covers the app-open case.
-    static func scheduleNotification(at end: Date, upNext: String) {
+    static func scheduleNotification(at end: Date) {
         guard enabled else { return }
         let center = UNUserNotificationCenter.current()
         center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
             guard granted else { return }
             let content = UNMutableNotificationContent()
             content.title = "Rest's up"
-            content.body = upNext.isEmpty || upNext.uppercased() == "DONE"
-                ? "Workout complete." : "Up next, \(upNext)."
+            // Deliberately generic: the next lift isn't reliably known when the
+            // rest is scheduled (the runner's slot index advances only after the
+            // set is logged), so naming it here risks the wrong exercise. The
+            // rich foreground cue speaks the correct "up next" name, and the
+            // runner already shows it on screen.
+            content.body = "Time for your next set."
             content.sound = .default
             // A gym rest timer genuinely is time-sensitive; degrades to a
             // normal alert if the Time Sensitive entitlement isn't present.

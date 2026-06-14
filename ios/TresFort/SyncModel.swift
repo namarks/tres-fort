@@ -128,24 +128,27 @@ final class SyncModel: ObservableObject {
         guard let sid = todaySession?.id else { return [] }
         let warm = ex.isWarmup ? 1 : 0
         // Sets carrying a template_exercise_id attribute to that slot exactly.
-        // The exercise_id + warm-up *fallback* (for slot-less sets) is fenced
-        // two ways so a detached/ambiguous set never bleeds into the wrong slot:
-        //   1. source != "ios" — only genuine MCP / pre-this-build logs lack a
-        //      slot id legitimately. A *detached* iOS set keeps source='ios'
-        //      after deleteTemplateExercise nulls its template_exercise_id, so
-        //      deleting a logged slot (and even re-adding the same movement)
-        //      can't make a fresh/sibling slot look complete or mis-seed it.
-        //   2. unique — even a real MCP log is only claimed when this is the
-        //      sole slot for that movement+warm-up today; with duplicates the
-        //      attribution is ambiguous, so require an explicit slot id.
+        // The exercise_id + warm-up *fallback* (for slot-less sets — MCP-,
+        // pre-this-build-, or detached-by-delete-logged) only fires when this
+        // is the sole slot for that movement+warm-up today; with duplicates a
+        // slot-less set is ambiguous, so an explicit slot id is required.
+        //
+        // KNOWN LIMITATION: deleting an already-logged slot detaches its sets
+        // (deleteTemplateExercise nulls template_exercise_id); if the same
+        // movement is then re-added as the only such slot in the same session,
+        // those detached sets attribute to the fresh slot. Telling a detached
+        // set apart from a legitimate slot-less MCP/legacy log needs a backend
+        // discriminator we've deliberately not added — gating on source='ios'
+        // instead wrongly dropped legacy iOS sets that never had a slot id. The
+        // iOS logger always sends a slot id now, so this only affects that
+        // specific delete-then-re-add edit path.
         let unique = exercises.filter {
             $0.exercise_id == ex.exercise_id && ($0.isWarmup ? 1 : 0) == warm
         }.count == 1
         return sets.filter { s in
             guard s.session_id == sid, s.deleted_at == nil else { return false }
             if let teid = s.template_exercise_id { return teid == ex.id }
-            return s.source != "ios" && unique
-                && s.exercise_id == ex.exercise_id && s.is_warmup == warm
+            return unique && s.exercise_id == ex.exercise_id && s.is_warmup == warm
         }
         .sorted { $0.set_index < $1.set_index }
     }
@@ -606,7 +609,7 @@ final class SyncModel: ObservableObject {
         restEndDate = end
         RestLiveActivity.start(exercise: name, endDate: end, upNext: upNextName)
         scheduleRestCue(for: end)
-        RestCue.scheduleNotification(at: end, upNext: restCueLift)
+        RestCue.scheduleNotification(at: end)
     }
     func addRest(_ seconds: Int) {
         guard let end = restEndDate else { return }
@@ -614,7 +617,7 @@ final class SyncModel: ObservableObject {
         restEndDate = newEnd
         RestLiveActivity.update(endDate: newEnd, upNext: upNextName)
         scheduleRestCue(for: newEnd)
-        RestCue.scheduleNotification(at: newEnd, upNext: restCueLift)
+        RestCue.scheduleNotification(at: newEnd)
     }
     func skipRest() {
         restEndDate = nil

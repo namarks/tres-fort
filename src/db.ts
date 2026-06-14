@@ -2575,25 +2575,32 @@ export async function updatePlanTree(
       `SELECT te.id, te.day_template_id, te.exercise_id, te.is_warmup
          FROM template_exercises te
          JOIN day_templates d ON d.id = te.day_template_id
-        WHERE d.plan_id = ?1`,
+        WHERE d.plan_id = ?1
+        ORDER BY te.day_template_id, te.order_index, te.created_at, te.id`,
     )
     .bind(plan.id)
     .all<{ id: string; day_template_id: string; exercise_id: string; is_warmup: number }>();
   // Preserve the existing warm-up flag for slots a caller leaves unspecified:
   // a full update_plan rebuild from an older client / tool-schema payload that
   // omits the optional is_warmup must not silently demote prescribed warm-ups
-  // to working slots. Keyed by (newDayId, exercise_id) — the same matching the
-  // remap uses — with first-occurrence-wins to mirror newTeIdByDayAndEx.
-  const oldIsWarmupByDayEx = new Map<string, number>();
+  // to working slots. Keyed by (newDayId, exercise_id, occurrence) so a day with
+  // the SAME exercise twice (e.g. a warm-up ramp slot + working sets) keeps each
+  // occurrence's flag instead of smearing the first across both — the n-th old
+  // slot of an exercise in a day pairs to the n-th new one (rows ordered by
+  // order_index above; the inserter counts occurrences in the same order).
+  const oldIsWarmupByDayExOcc = new Map<string, number>();
+  const oldOccByDayEx = new Map<string, number>();
   const oldToNewTe = new Map<string, string | null>();
   for (const ot of oldTeRows.results) {
     const newDayId = oldToNewDay.get(ot.day_template_id) ?? null;
     if (newDayId == null) {
       oldToNewTe.set(ot.id, null);
     } else {
-      const key = `${newDayId}:${ot.exercise_id}`;
-      if (!oldIsWarmupByDayEx.has(key)) oldIsWarmupByDayEx.set(key, ot.is_warmup);
-      const newTeId = newTeIdByDayAndEx.get(key) ?? null;
+      const exKey = `${newDayId}:${ot.exercise_id}`;
+      const occ = oldOccByDayEx.get(exKey) ?? 0;
+      oldOccByDayEx.set(exKey, occ + 1);
+      oldIsWarmupByDayExOcc.set(`${exKey}:${occ}`, ot.is_warmup);
+      const newTeId = newTeIdByDayAndEx.get(exKey) ?? null;
       oldToNewTe.set(ot.id, newTeId);
     }
   }
@@ -2617,15 +2624,20 @@ export async function updatePlanTree(
     );
   });
   // 2) INSERT new template_exercises (children of step 1's parents).
+  const newOccByDayEx = new Map<string, number>();
   input.days.forEach((d, di) => {
     const dayId = newDayIds[di]!;
     (d.exercises ?? []).forEach((e, ei) => {
       const exId = resolved.get(e.exercise)!;
-      // Explicit is_warmup wins; when omitted, keep the matched old slot's flag
-      // (default 0 only for genuinely new slots) so an older caller can't strip
-      // a prescribed warm-up just by not echoing the field back.
+      const exKey = `${dayId}:${exId}`;
+      const occ = newOccByDayEx.get(exKey) ?? 0;
+      newOccByDayEx.set(exKey, occ + 1);
+      // Explicit is_warmup wins; when omitted, inherit the matched old slot's
+      // flag for THIS occurrence (default 0 only for genuinely new slots) so an
+      // older caller can't strip a prescribed warm-up just by not echoing the
+      // field back.
       const isWarmup =
-        e.is_warmup === undefined ? oldIsWarmupByDayEx.get(`${dayId}:${exId}`) ?? 0 : e.is_warmup ? 1 : 0;
+        e.is_warmup === undefined ? oldIsWarmupByDayExOcc.get(`${exKey}:${occ}`) ?? 0 : e.is_warmup ? 1 : 0;
       stmts.push(
         db
           .prepare(

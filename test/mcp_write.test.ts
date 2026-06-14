@@ -1175,4 +1175,47 @@ describe('update_plan preserves warm-up flags', () => {
     const slot = cleared.plan.days[0].exercises.find((e: any) => e.exercise_id === warmId);
     expect(slot.is_warmup).toBe(0);
   });
+
+  it('preserves per-occurrence flags when the same exercise appears twice', async () => {
+    // A day with the same movement twice: a prescribed warm-up ramp, then
+    // working sets. Both resolve to the same exercise_id.
+    const built = await call('update_plan', {
+      name: 'Dup occurrence',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Ramp Day',
+          exercises: [
+            { exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300, is_warmup: true },
+            { exercise: 'erg', target_sets: 3, target_reps: 10, target_duration_s: 600, is_warmup: false },
+          ],
+        },
+      ],
+    });
+    let ex = built.plan.days[0].exercises;
+    expect(ex).toHaveLength(2);
+    expect(ex[0].is_warmup).toBe(1);
+    expect(ex[1].is_warmup).toBe(0);
+
+    // Older caller omits is_warmup on both occurrences during a rebuild.
+    const rebuilt = await call('update_plan', {
+      name: 'Dup occurrence',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Ramp Day',
+          exercises: [
+            { exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300 },
+            { exercise: 'erg', target_sets: 3, target_reps: 10, target_duration_s: 600 },
+          ],
+        },
+      ],
+    });
+    ex = rebuilt.plan.days[0].exercises;
+    expect(ex).toHaveLength(2);
+    // Each occurrence keeps its own flag — the warm-up isn't smeared onto the
+    // working slot, nor the working flag onto the warm-up.
+    expect(ex[0].is_warmup).toBe(1);
+    expect(ex[1].is_warmup).toBe(0);
+  });
 });

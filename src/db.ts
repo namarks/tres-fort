@@ -1758,21 +1758,39 @@ export async function logSet(
     .first<SetLogRow>();
   if (existing) return { set: existing, deduped: true };
 
-  // Warm-up resolution: an explicit flag wins; otherwise, when the set is
-  // tied to a plan slot, inherit the slot's is_warmup so a set logged against
-  // a prescribed warm-up slot (erg, mobility) is correctly a warm-up without
-  // the client having to restate it (migration 0026).
+  // Resolve the plan slot (if a link was provided) ONCE — it drives both the
+  // dangling-link guard and the warm-up default.
+  //
+  // Dangling-link guard: template_exercise_id is an enforced FK into
+  // template_exercises. A stale client can send a slot id that a plan rebuild
+  // (update_plan deletes + re-creates rows with new ids) has since removed —
+  // a real edit/sync race during an in-flight workout. Inserting it unchanged
+  // would 500 and BLOCK logging until the user reloads. Set logs key on
+  // exercise_id anyway, so treat a missing slot as "no link": store
+  // template_exercise_id = null (an exercise-only log) and keep the set.
+  //
+  // Warm-up default: an explicit flag wins; otherwise inherit the slot's
+  // is_warmup so a set logged against a prescribed warm-up slot (erg, mobility)
+  // is correctly a warm-up without the client restating it (migration 0026).
+  let templateExerciseId: string | null = input.template_exercise_id ?? null;
+  let slotIsWarmup: number | null = null;
+  if (templateExerciseId) {
+    const slot = await db
+      .prepare('SELECT is_warmup FROM template_exercises WHERE id = ?1')
+      .bind(templateExerciseId)
+      .first<{ is_warmup: number }>();
+    if (!slot) {
+      templateExerciseId = null; // dangling after a rebuild → exercise-only log
+    } else {
+      slotIsWarmup = slot.is_warmup === 1 ? 1 : 0;
+    }
+  }
+
   let isWarmupInt: number;
   if (typeof input.is_warmup === 'boolean') {
     isWarmupInt = input.is_warmup ? 1 : 0;
-  } else if (input.template_exercise_id) {
-    const slot = await db
-      .prepare('SELECT is_warmup FROM template_exercises WHERE id = ?1')
-      .bind(input.template_exercise_id)
-      .first<{ is_warmup: number }>();
-    isWarmupInt = slot?.is_warmup === 1 ? 1 : 0;
   } else {
-    isWarmupInt = 0;
+    isWarmupInt = slotIsWarmup ?? 0;
   }
 
   // Collision-safe set_index. MCP and iOS each compute set_index
@@ -1822,7 +1840,7 @@ export async function logSet(
     id: input.id,
     session_id: input.session_id,
     exercise_id: input.exercise_id,
-    template_exercise_id: input.template_exercise_id ?? null,
+    template_exercise_id: templateExerciseId,
     set_index: setIndex,
     weight: input.weight,
     reps: input.reps,

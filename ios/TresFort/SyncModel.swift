@@ -593,7 +593,14 @@ final class SyncModel: ObservableObject {
             }
             if Task.isCancelled { return }
             guard let self, self.restEndDate == end else { return }
-            RestCue.play(upNext: self.upNextName)
+            // Announce the exercise the runner is actually ON when rest ends —
+            // NOT upNextName, which returns the next DIFFERENT exercise. By the
+            // time rest ends the index has already advanced (logCurrentSet jumps
+            // only when the slot completed), so currentExercise is the next set's
+            // lift: the SAME exercise mid-sets, the next one when it's done.
+            // Empty when the workout finished → RestCue says "workout complete".
+            let nextLift = self.finished ? "" : (self.currentExercise?.exercise_name ?? "")
+            RestCue.play(upNext: nextLift)
         }
     }
 

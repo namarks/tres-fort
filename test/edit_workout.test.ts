@@ -327,4 +327,49 @@ describe('logging a set against a warm-up slot inherits is_warmup', () => {
       set: { is_timed: 1 },
     });
   });
+
+  it('drops a dangling template_exercise_id instead of failing the insert', async () => {
+    // Plan-rebuild race: a stale client sends a slot id update_plan has since
+    // deleted. template_exercise_id is an enforced FK, so inserting it would
+    // 500 and block logging. The set must still land as an exercise-only log.
+    const jwt = await devJwt();
+    const H = auth(jwt);
+    await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Dangling slot' }),
+    });
+    const session = await (
+      await SELF.fetch(`${BASE}/api/sessions`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ date: '2026-06-04' }),
+      })
+    ).json<{ id: string }>();
+
+    const setId = crypto.randomUUID();
+    const r = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        id: setId,
+        exercise_id: 'ex_bench',
+        template_exercise_id: 'te_does_not_exist',
+        set_index: 1,
+        weight: 135,
+        reps: 5,
+      }),
+    });
+    expect(r.status).toBe(201);
+    // Link nulled (not the bogus id), set preserved.
+    expect(await r.json<{ set: { template_exercise_id: string | null } }>()).toMatchObject({
+      set: { template_exercise_id: null },
+    });
+    const row = await env.DB.prepare(
+      'SELECT template_exercise_id FROM set_logs WHERE id = ?1',
+    )
+      .bind(setId)
+      .first<{ template_exercise_id: string | null }>();
+    expect(row?.template_exercise_id).toBeNull();
+  });
 });

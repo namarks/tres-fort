@@ -154,6 +154,11 @@ export interface TemplateExerciseRow {
   target_duration_s: number | null;
   progression: string | null;
   cues: string | null;
+  /** 1 = this slot is a PRESCRIBED warm-up (erg, mobility, ramp-up): renders
+   *  in a warm-up section, its logged sets default to is_warmup=1, and it is
+   *  excluded from working-set rollups / session RPE. 0 = working slot. The
+   *  *planned* counterpart to set_logs.is_warmup. Added in migration 0026. */
+  is_warmup: number;
   created_at: number;
   updated_at: number;
 }

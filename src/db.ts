@@ -1390,13 +1390,14 @@ export async function addTemplateExercise(
   await db
     .prepare(
       `INSERT INTO template_exercises
-       (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,created_at,updated_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)`,
+       (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)`,
     )
     .bind(
       row.id, row.day_template_id, row.exercise_id, row.order_index, row.target_sets,
       row.target_reps, row.target_reps_max, row.target_rpe, row.rest_seconds,
-      row.target_weight, row.target_duration_s, row.progression, row.cues, row.created_at, row.updated_at,
+      row.target_weight, row.target_duration_s, row.progression, row.cues, row.is_warmup ? 1 : 0,
+      row.created_at, row.updated_at,
     )
     .run();
   // An explicit order_index can collide with a sibling; densify so the day
@@ -1757,13 +1758,29 @@ export async function logSet(
     .first<SetLogRow>();
   if (existing) return { set: existing, deduped: true };
 
+  // Warm-up resolution: an explicit flag wins; otherwise, when the set is
+  // tied to a plan slot, inherit the slot's is_warmup so a set logged against
+  // a prescribed warm-up slot (erg, mobility) is correctly a warm-up without
+  // the client having to restate it (migration 0026).
+  let isWarmupInt: number;
+  if (typeof input.is_warmup === 'boolean') {
+    isWarmupInt = input.is_warmup ? 1 : 0;
+  } else if (input.template_exercise_id) {
+    const slot = await db
+      .prepare('SELECT is_warmup FROM template_exercises WHERE id = ?1')
+      .bind(input.template_exercise_id)
+      .first<{ is_warmup: number }>();
+    isWarmupInt = slot?.is_warmup === 1 ? 1 : 0;
+  } else {
+    isWarmupInt = 0;
+  }
+
   // Collision-safe set_index. MCP and iOS each compute set_index
   // independently, so two writers could pick the same index for the same
   // (session, exercise, is_warmup) — the bug that produced two set_index=3
   // squat sets. Renumber on collision: keep the provided index unless a live
   // row already holds it, in which case bump to max+1. The partial unique
   // index ux_set_slot (migration 0013) is the hard backstop for races.
-  const isWarmupInt = input.is_warmup ? 1 : 0;
   let setIndex = input.set_index;
   const clash = await db
     .prepare(
@@ -2384,6 +2401,10 @@ interface ExerciseInput {
   target_duration_s?: number | null;
   progression?: unknown;
   cues?: string | null;
+  /** 1 = prescribed warm-up slot (erg, mobility). Omitted/0 = working slot.
+   *  Preserved across a full-tree rebuild so update_plan never silently
+   *  strips a warm-up flag set via the REST editor. */
+  is_warmup?: number | boolean;
 }
 
 async function resolveOrThrow(db: D1Database, name: string): Promise<string> {
@@ -2575,15 +2596,15 @@ export async function updatePlanTree(
         db
           .prepare(
             `INSERT INTO template_exercises
-             (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,created_at,updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)`,
+             (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)`,
           )
           .bind(
             teIdPerExerciseOccurrence[di]![ei]!, dayId, resolved.get(e.exercise)!, e.order_index ?? ei, e.target_sets,
             e.target_reps, e.target_reps_max ?? null, e.target_rpe ?? null, e.rest_seconds ?? 120,
             e.target_weight ?? null, e.target_duration_s ?? null,
             e.progression == null ? null : JSON.stringify(e.progression),
-            e.cues ?? null, ts, ts,
+            e.cues ?? null, e.is_warmup ? 1 : 0, ts, ts,
           ),
       );
     });
@@ -2742,6 +2763,7 @@ const TEMPLATE_EXERCISE_PATCH_KEYS = new Set<string>([
   'cues',
   'progression',
   'order_index',
+  'is_warmup',
 ]);
 
 export async function updateExercise(
@@ -2760,6 +2782,7 @@ export async function updateExercise(
       | 'target_duration_s'
       | 'cues'
       | 'order_index'
+      | 'is_warmup'
     >
   > & { progression?: unknown },
 ): Promise<TemplateExerciseRow | { error: 'unknown_fields'; fields: string[] } | null> {
@@ -2784,6 +2807,8 @@ export async function updateExercise(
       patch.target_duration_s === undefined ? slot.target_duration_s : patch.target_duration_s,
     cues: patch.cues === undefined ? slot.cues : patch.cues,
     order_index: patch.order_index === undefined ? slot.order_index : patch.order_index,
+    is_warmup:
+      patch.is_warmup === undefined ? slot.is_warmup : patch.is_warmup ? 1 : 0,
     progression:
       patch.progression === undefined
         ? slot.progression
@@ -2795,12 +2820,12 @@ export async function updateExercise(
   await db
     .prepare(
       `UPDATE template_exercises SET target_sets=?2,target_reps=?3,target_reps_max=?4,
-       target_rpe=?5,rest_seconds=?6,target_weight=?7,target_duration_s=?8,cues=?9,progression=?10,order_index=?11,updated_at=?12
+       target_rpe=?5,rest_seconds=?6,target_weight=?7,target_duration_s=?8,cues=?9,progression=?10,order_index=?11,is_warmup=?12,updated_at=?13
        WHERE id=?1`,
     )
     .bind(
       slot.id, m.target_sets, m.target_reps, m.target_reps_max, m.target_rpe,
-      m.rest_seconds, m.target_weight, m.target_duration_s, m.cues, m.progression, m.order_index, m.updated_at,
+      m.rest_seconds, m.target_weight, m.target_duration_s, m.cues, m.progression, m.order_index, m.is_warmup, m.updated_at,
     )
     .run();
   // Patching order_index can collide with a sibling; densify the day so the

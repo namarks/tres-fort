@@ -114,6 +114,25 @@ final class SyncModel: ObservableObject {
             .sorted { $0.set_index < $1.set_index }
     }
 
+    /// Live sets logged for a specific PLAN SLOT in today's session — the
+    /// completion unit for the runner. Keys on template_exercise_id (the slot)
+    /// so the SAME movement in two slots, or sets logged out of order, never
+    /// cross-attribute completion (#3). A warm-up slot's sets ARE is_warmup, so
+    /// this does NOT filter on is_warmup — it includes whatever was logged for
+    /// the slot, letting warm-up slots complete too. Sets with no slot link
+    /// (Claude/MCP, or pre-this-build) fall back to matching exercise_id +
+    /// warm-up parity so they still count toward the right slot.
+    func todaySlotSets(_ ex: TemplateExercise) -> [SetLog] {
+        guard let sid = todaySession?.id else { return [] }
+        let warm = ex.isWarmup ? 1 : 0
+        return sets.filter { s in
+            guard s.session_id == sid, s.deleted_at == nil else { return false }
+            if let teid = s.template_exercise_id { return teid == ex.id }
+            return s.exercise_id == ex.exercise_id && s.is_warmup == warm
+        }
+        .sorted { $0.set_index < $1.set_index }
+    }
+
     func exerciseName(_ id: String) -> String {
         catalog.first { $0.id == id }?.name ?? id
     }
@@ -223,14 +242,26 @@ final class SyncModel: ObservableObject {
                     jwt: jwt)
             }
             guard let session = todaySession else { return }
-            let nextIndex = todaySets(ex.exercise_id).count + 1
+            // Index per SLOT, not per exercise_id, so two slots of the same
+            // movement number independently (#3). The backend re-numbers on a
+            // (session, exercise_id, set_index, is_warmup) collision, so a
+            // shared exercise_id can't drop a set.
+            let nextIndex = todaySlotSets(ex).count + 1
             var body: [String: Any] = [
                 "id": UUID().uuidString,
                 "exercise_id": ex.exercise_id,
+                // Link the set to its plan slot so completion/chips key on the
+                // slot (the #3 fix) and a warm-up slot's set inherits is_warmup
+                // server-side.
+                "template_exercise_id": ex.id,
                 "set_index": nextIndex,
                 "weight": weight,
                 "reps": reps,
             ]
+            // A warm-up slot's sets are warm-ups: kept out of working-set
+            // rollups / session RPE. (The backend also infers this from the
+            // slot, but stating it keeps the local cache correct pre-reload.)
+            if ex.isWarmup { body["is_warmup"] = true }
             // Only timed holds (planks) record a duration. Rep sets must NOT —
             // previously every set stored wall-clock seconds since it began,
             // which then rendered as the set's value for bodyweight lifts, so
@@ -257,7 +288,7 @@ final class SyncModel: ObservableObject {
     /// 1-based number of the set about to be performed for the current exercise.
     var currentSetNumber: Int {
         guard let ex = currentExercise else { return 1 }
-        return todaySets(ex.exercise_id).count + 1
+        return todaySlotSets(ex).count + 1
     }
 
     func startWorkout() {
@@ -350,7 +381,7 @@ final class SyncModel: ObservableObject {
     func setWeight(_ value: Double) { weight = max(0, value) }
     func adjustReps(_ delta: Int) { reps = max(0, reps + delta) }
 
-    func setsDone(_ ex: TemplateExercise) -> Int { todaySets(ex.exercise_id).count }
+    func setsDone(_ ex: TemplateExercise) -> Int { todaySlotSets(ex).count }
     func isComplete(_ ex: TemplateExercise) -> Bool { setsDone(ex) >= ex.target_sets }
     func isSkipped(_ ex: TemplateExercise) -> Bool { skipped.contains(ex.exercise_id) }
     /// "Resolved" = nothing left to do here: either completed or skipped.
@@ -401,6 +432,17 @@ final class SyncModel: ObservableObject {
         seedInputs()
     }
 
+    /// Non-destructive forward navigation — move to the next exercise in order
+    /// WITHOUT marking the current one skipped. Going "out of order" (stepping
+    /// ahead to a later lift you'll come back to) must never strike out the
+    /// ones you pass; only an explicit Skip does that (#3). Pairs with
+    /// `previous()`; the jump strip still allows arbitrary jumps.
+    func next() {
+        guard exerciseIndex < exercises.count - 1 else { return }
+        exerciseIndex += 1
+        seedInputs()
+    }
+
     func finishWorkout() async {
         if let jwt = auth.jwt, let sid = todaySession?.id {
             todaySession = try? await api.completeSession(sessionId: sid, jwt: jwt)
@@ -436,6 +478,62 @@ final class SyncModel: ObservableObject {
         await load()
     }
 
+    // MARK: in-app workout editing
+    //
+    // Direct edits to the active plan's day template from the app — the
+    // "Claude is the brain, the app is the executor, but I can still tweak
+    // today's workout" loop (#1/#2). These mutate the versioned plan tree via
+    // the REST editor endpoints (thin wrappers over the same updateExercise /
+    // deleteTemplateExercise the MCP tools use) and reload so the change is
+    // reflected immediately. Editing the DAY TEMPLATE (not a per-session
+    // override) keeps one source of truth and mirrors how Claude edits — an
+    // added erg warm-up recurs on that day, which is what you want for a
+    // warm-up. After a reload, clamp exerciseIndex so a mid-workout delete
+    // can't strand the runner past the end of the list.
+
+    func addExerciseToDay(_ dayID: String, exercise: String, isWarmup: Bool,
+                          targetSets: Int, targetReps: Int, restSeconds: Int,
+                          targetDurationS: Int?) async {
+        guard let jwt = auth.jwt else { return }
+        do {
+            _ = try await api.addExercise(
+                dayID: dayID, exercise: exercise, isWarmup: isWarmup,
+                targetSets: targetSets, targetReps: targetReps,
+                restSeconds: restSeconds, targetDurationS: targetDurationS, jwt: jwt)
+            await load()
+            clampExerciseIndex()
+        } catch { handle(error) }
+    }
+
+    func deleteSlot(dayID: String, teID: String) async {
+        guard let jwt = auth.jwt else { return }
+        do {
+            try await api.deleteExerciseSlot(dayID: dayID, teID: teID, jwt: jwt)
+            await load()
+            clampExerciseIndex()
+        } catch { handle(error) }
+    }
+
+    /// Move a slot to a new position. The backend densifies sibling
+    /// order_index values around the requested destination.
+    func moveSlot(dayID: String, teID: String, toIndex: Int) async {
+        guard let jwt = auth.jwt else { return }
+        do {
+            _ = try await api.updateExerciseSlot(
+                dayID: dayID, teID: teID, fields: ["order_index": toIndex], jwt: jwt)
+            await load()
+        } catch { handle(error) }
+    }
+
+    private func clampExerciseIndex() {
+        guard running else { return }
+        if exercises.isEmpty { exerciseIndex = 0; return }
+        if exerciseIndex >= exercises.count {
+            exerciseIndex = exercises.count - 1
+        }
+        seedInputs()
+    }
+
     // MARK: rest timer
 
     /// Name of the next not-complete exercise (for the rest screen's UP NEXT).
@@ -452,22 +550,49 @@ final class SyncModel: ObservableObject {
         } catch { handle(error) }
     }
 
+    /// Fires the "rest's up" audio cue exactly when the current rest elapses.
+    /// Cancelled/rescheduled whenever the rest changes (+15 / −15 / DONE / a
+    /// new set's rest), so it never double-fires or fires for a stale timer.
+    private var restCueTask: Task<Void, Never>?
+
     func startRest(seconds: Int, name: String) {
         restExercise = name
         restTotal = seconds
         let end = Date().addingTimeInterval(TimeInterval(seconds))
         restEndDate = end
         RestLiveActivity.start(exercise: name, endDate: end, upNext: upNextName)
+        scheduleRestCue(for: end)
     }
     func addRest(_ seconds: Int) {
         guard let end = restEndDate else { return }
         let newEnd = end.addingTimeInterval(TimeInterval(seconds))
         restEndDate = newEnd
         RestLiveActivity.update(endDate: newEnd, upNext: upNextName)
+        scheduleRestCue(for: newEnd)
     }
     func skipRest() {
         restEndDate = nil
+        restCueTask?.cancel()
+        restCueTask = nil
         RestLiveActivity.endNow()
+    }
+
+    /// Poll-to-fire (250ms ticks) rather than one long sleep so the cue lands
+    /// reliably "at the end of rest" even if a single sleep is suspended — the
+    /// same robustness the timed-set runner needed (#55). The cue only sounds
+    /// if this is still the same, still-active rest when the deadline arrives.
+    private func scheduleRestCue(for end: Date) {
+        restCueTask?.cancel()
+        restCueTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.restEndDate == end else { return }
+                if Date() >= end { break }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+            if Task.isCancelled { return }
+            guard let self, self.restEndDate == end else { return }
+            RestCue.play(upNext: self.upNextName)
+        }
     }
 
     // MARK: calendar projection (read-only future calendar)

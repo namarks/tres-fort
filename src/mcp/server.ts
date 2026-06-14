@@ -658,7 +658,7 @@ const TOOLS: Record<string, Tool> = {
   },
   update_exercise: {
     description:
-      'Patch one plan slot. Identify it by template_exercise_id, or by day (label/name) + exercise. Patchable keys: target_sets, target_reps, target_reps_max, target_rpe, rest_seconds, target_weight, cues, progression, order_index. Unknown keys are rejected with {error:"unknown_fields", fields:[...]} — no silent drop.',
+      'Patch one plan slot. Identify it by template_exercise_id, or by day (label/name) + exercise. Patchable keys: target_sets, target_reps, target_reps_max, target_rpe, rest_seconds, target_weight, target_duration_s, cues, progression, order_index, is_warmup. Unknown keys are rejected with {error:"unknown_fields", fields:[...]} — no silent drop.',
     inputSchema: obj(
       {
         template_exercise_id: { type: 'string' },
@@ -710,7 +710,7 @@ const TOOLS: Record<string, Tool> = {
       r?.error ? null : `Swapped ${a.from_exercise} → ${a.to_exercise} on ${a.day}.`,
   },
   add_exercise: {
-    description: 'Add an exercise to a day in the active plan. `exercise` must match the closed catalog — use list_exercises to discover valid names. order_index defaults to max(existing)+1 (append dense), not the old 99 sentinel.',
+    description: 'Add an exercise to a day in the active plan. `exercise` must match the closed catalog — use list_exercises to discover valid names. order_index defaults to max(existing)+1 (append dense), not the old 99 sentinel. Set is_warmup:true for a prescribed warm-up (erg, mobility) — its logged sets stay out of working-set rollups / session RPE. For a duration-based warm-up (e.g. 5-min row), use a cardio exercise and set target_duration_s.',
     inputSchema: obj(
       {
         day: { type: 'string', description: 'day label or name' },
@@ -721,9 +721,10 @@ const TOOLS: Record<string, Tool> = {
         target_rpe: { type: 'number' },
         rest_seconds: { type: 'integer' },
         target_weight: { type: 'number' },
-        target_duration_s: { type: 'integer', description: 'Planned hold seconds for timed exercises (planks, holds); leave unset for conventional reps slots.' },
+        target_duration_s: { type: 'integer', description: 'Planned hold/effort seconds for timed or cardio slots (planks, erg warm-ups); leave unset for conventional reps slots.' },
         progression: { type: 'object' },
         order_index: { type: 'integer' },
+        is_warmup: { type: 'boolean', description: 'Mark this slot a prescribed warm-up (excluded from working-set rollups / session RPE).' },
       },
       ['day', 'exercise', 'target_sets', 'target_reps'],
     ),
@@ -760,6 +761,7 @@ const TOOLS: Record<string, Tool> = {
           a.target_duration_s == null ? null : Number(a.target_duration_s),
         progression: a.progression == null ? null : JSON.stringify(a.progression),
         cues: null,
+        is_warmup: a.is_warmup === true ? 1 : 0,
       });
     },
     note: (a, r) => (r?.error ? null : `Added ${a.exercise} to ${a.day}.`),

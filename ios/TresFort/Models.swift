@@ -42,29 +42,57 @@ struct TemplateExercise: Decodable, Identifiable, Equatable {
     /// Planned hold seconds for timed slots (planks, holds). Optional;
     /// when null, fall back to target_reps (the legacy timed convention).
     let target_duration_s: Int?
+    /// 1 = this slot is a PRESCRIBED warm-up (erg, mobility, ramp-up). Its
+    /// logged sets stay out of working-set rollups / session RPE. Optional so
+    /// pre-0026 payloads decode → defaults to a working slot. (Migration 0026.)
+    let is_warmup: Int?
 
-    // Timed when the catalog modality is "timed" OR the slot pins an explicit
-    // target_duration_s. Safe to honor target_duration_s now that LOGGED sets
-    // carry an authoritative per-set is_timed flag (backend migration 0024):
-    // the runner declares is_timed when logging (= this property), and
-    // history/agenda render off set.is_timed (SyncModel.isTimedSet), so a
-    // duration-pinned hold reads as "Ns" everywhere — no longer the cross-view
-    // "0 × 45" inconsistency (Codex P2 on #58) that forced modality-only.
-    var isTimed: Bool { exercise_modality == "timed" || target_duration_s != nil }
+    /// A prescribed warm-up slot (erg, mobility). Renders in a warm-up style
+    /// and its logged sets are flagged is_warmup.
+    var isWarmup: Bool { is_warmup == 1 }
+
+    // Timed when the catalog modality is "timed"/"cardio" OR the slot pins an
+    // explicit target_duration_s. Cardio ergs (rowing/bike/ski, treadmill) are
+    // duration-driven like holds, so they use the same countdown runner.
+    // Safe to honor target_duration_s now that LOGGED sets carry an
+    // authoritative per-set is_timed flag (backend migration 0024): the runner
+    // declares is_timed when logging (= this property), and history/agenda
+    // render off set.is_timed (SyncModel.isTimedSet), so a duration-pinned hold
+    // reads as "Ns" everywhere — no longer the cross-view "0 × 45"
+    // inconsistency (Codex P2 on #58) that forced modality-only.
+    var isTimed: Bool {
+        exercise_modality == "timed" || exercise_modality == "cardio"
+            || target_duration_s != nil
+    }
     // Key off MODALITY, not unit: bw exercises (Pull-Up, Dead Bug) are
     // seeded with unit "lb" in the catalog, so checking the unit left the
     // weight field showing for them (bug #2). Modality is the truth.
     var isBodyweight: Bool { exercise_modality == "bw" }
     var isUnilateral: Bool { exercise_laterality == "unilateral" }
     var isPerHand: Bool { exercise_load_mode == "per_hand" }
-    /// Prescribed hold for a timed set, in seconds. Uses target_duration_s
-    /// (the real field) and falls back to target_reps for older slots that
-    /// stored the hold there. Min 1s so the timer is never zero-length.
+    /// Prescribed hold/effort for a timed or cardio set, in seconds. Uses
+    /// target_duration_s (the real field) and falls back to target_reps for
+    /// older slots that stored the hold there. Min 1s so the timer is never
+    /// zero-length.
     var holdSeconds: Int { max(1, target_duration_s ?? target_reps) }
 
-    /// "3×5" / "3×5–8" / "3×45s" (timed).
+    /// Human duration for a timed/cardio slot: "45s" for short holds, "5 min"
+    /// for a whole-minute effort, "1:30" otherwise. Keeps a 5-min erg from
+    /// reading "300s".
+    var holdLabel: String {
+        let s = holdSeconds
+        if s >= 60 && s % 60 == 0 { return "\(s / 60) min" }
+        if s >= 60 { return String(format: "%d:%02d", s / 60, s % 60) }
+        return "\(s)s"
+    }
+
+    /// "3×5" / "3×5–8" / "3×45s" (hold) / "5 min" (single-set warm-up erg).
     var targetLabel: String {
-        if isTimed { return "\(target_sets)×\(holdSeconds)s" }
+        if isTimed {
+            // A single-set timed effort (a warm-up erg, one plank) reads
+            // cleaner as just the duration than "1×5 min".
+            return target_sets <= 1 ? holdLabel : "\(target_sets)×\(holdLabel)"
+        }
         if let hi = target_reps_max, hi != target_reps {
             return "\(target_sets)×\(target_reps)–\(hi)"
         }
@@ -160,6 +188,13 @@ struct SetLog: Decodable, Identifiable {
     let id: String
     let session_id: String
     let exercise_id: String
+    /// The plan slot this set was logged against, when known. Completion and
+    /// the "completed sets" chips key on THIS (the slot) rather than
+    /// exercise_id, so the same movement appearing in two slots — or sets
+    /// logged out of order — never cross-attribute completion (#3). Null for
+    /// sets logged by Claude/MCP or before this build → callers fall back to
+    /// exercise_id matching.
+    let template_exercise_id: String?
     let set_index: Int
     let weight: Double
     let reps: Int

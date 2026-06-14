@@ -100,12 +100,14 @@ describe('0020 demo_slug backfill', () => {
 });
 
 describe('0021 catalog v2 (bodyweight + unilateral expansion)', () => {
-  it('catalog grows by 108 net-new rows (138 + 108 = 246)', async () => {
+  it('catalog grows by 108 net-new rows (138 + 108 = 246, +8 cardio in 0026 = 254)', async () => {
     const { count } = (await env.DB.prepare(
       'SELECT COUNT(*) AS count FROM exercises',
     ).first<{ count: number }>())!;
-    // ex_kb_swing re-listed as INSERT OR IGNORE no-op — net 108 new.
-    expect(count).toBe(246);
+    // ex_kb_swing re-listed as INSERT OR IGNORE no-op — net 108 new at 0021.
+    // Migrations apply cumulatively, so the absolute total also includes the
+    // 8 erg/cardio rows seeded by 0026.
+    expect(count).toBe(254);
   });
 
   it('adds priority bodyweight at-home rows', async () => {

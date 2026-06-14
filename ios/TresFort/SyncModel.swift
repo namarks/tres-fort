@@ -556,7 +556,20 @@ final class SyncModel: ObservableObject {
     /// on the slot that followed the deletion — and clamp it into bounds.
     private func restoreActiveSlot(_ previousID: String?) {
         guard running else { return }
-        if exercises.isEmpty { exerciseIndex = 0; return }
+        // The editor just removed the last slot mid-workout — nothing left to
+        // run. Stop the runner non-destructively (logged sets are kept; no
+        // completeSession) so the user lands back on Today instead of a blank
+        // RunnerView (currentExercise nil); re-entering the day resumes. Mirror
+        // finishWorkout's local teardown so the rest cue / Live Activity don't
+        // linger.
+        if exercises.isEmpty {
+            exerciseIndex = 0
+            running = false
+            finished = false
+            workoutStart = nil
+            skipRest()
+            return
+        }
         if let previousID, let i = exercises.firstIndex(where: { $0.id == previousID }) {
             exerciseIndex = i
         } else if exerciseIndex >= exercises.count {
@@ -641,9 +654,17 @@ final class SyncModel: ObservableObject {
             // only when the slot completed), so currentExercise is the next set's
             // lift: the SAME exercise mid-sets, the next one when it's done.
             // Empty when the workout finished → RestCue says "workout complete".
-            RestCue.play(upNext: self.restCueLift)
-            // App is foreground (this Task only runs unsuspended) — drop the
-            // scheduled notification so the user isn't cued twice.
+            // Fire the rich cue ONLY if the deadline was just reached in the
+            // foreground. If the app was backgrounded across `end`, this Task
+            // was suspended and resumes late — by then the scheduled local
+            // notification has already cued the user, so replaying here would
+            // double-cue. The 250ms poll cadence means a genuine foreground
+            // tick is always <1s late; a background-resume is seconds-to-
+            // minutes late, so a 3s guard cleanly separates them. Either way,
+            // clear the (now-redundant or already-delivered) notification.
+            if Date().timeIntervalSince(end) < 3 {
+                RestCue.play(upNext: self.restCueLift)
+            }
             RestCue.cancelNotification()
         }
     }

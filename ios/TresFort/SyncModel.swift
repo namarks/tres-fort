@@ -490,29 +490,33 @@ final class SyncModel: ObservableObject {
     // reflected immediately. Editing the DAY TEMPLATE (not a per-session
     // override) keeps one source of truth and mirrors how Claude edits — an
     // added erg warm-up recurs on that day, which is what you want for a
-    // warm-up. After a reload, clamp exerciseIndex so a mid-workout delete
-    // can't strand the runner past the end of the list.
+    // warm-up. Any edit can shift slot indices (add/delete/reorder before the
+    // current one) or remove the active slot itself, so after a reload we pin
+    // the runner back to the same physical slot by id — capture it before
+    // load(), restore it after.
 
     func addExerciseToDay(_ dayID: String, exercise: String, isWarmup: Bool,
                           targetSets: Int, targetReps: Int, restSeconds: Int,
                           targetDurationS: Int?) async {
         guard let jwt = auth.jwt else { return }
+        let activeSlotID = currentExercise?.id
         do {
             _ = try await api.addExercise(
                 dayID: dayID, exercise: exercise, isWarmup: isWarmup,
                 targetSets: targetSets, targetReps: targetReps,
                 restSeconds: restSeconds, targetDurationS: targetDurationS, jwt: jwt)
             await load()
-            clampExerciseIndex()
+            restoreActiveSlot(activeSlotID)
         } catch { handle(error) }
     }
 
     func deleteSlot(dayID: String, teID: String) async {
         guard let jwt = auth.jwt else { return }
+        let activeSlotID = currentExercise?.id
         do {
             try await api.deleteExerciseSlot(dayID: dayID, teID: teID, jwt: jwt)
             await load()
-            clampExerciseIndex()
+            restoreActiveSlot(activeSlotID)
         } catch { handle(error) }
     }
 
@@ -520,17 +524,27 @@ final class SyncModel: ObservableObject {
     /// order_index values around the requested destination.
     func moveSlot(dayID: String, teID: String, toIndex: Int) async {
         guard let jwt = auth.jwt else { return }
+        let activeSlotID = currentExercise?.id
         do {
             _ = try await api.updateExerciseSlot(
                 dayID: dayID, teID: teID, fields: ["order_index": toIndex], jwt: jwt)
             await load()
+            restoreActiveSlot(activeSlotID)
         } catch { handle(error) }
     }
 
-    private func clampExerciseIndex() {
+    /// After an edit reloads the plan, keep the runner on the same physical
+    /// slot it was executing. Re-find the slot by its stable
+    /// TemplateExercise.id, since a numeric exerciseIndex silently points at a
+    /// different lift once a slot before it is added/removed/reordered. If the
+    /// active slot itself was deleted (id gone), keep the index — it now lands
+    /// on the slot that followed the deletion — and clamp it into bounds.
+    private func restoreActiveSlot(_ previousID: String?) {
         guard running else { return }
         if exercises.isEmpty { exerciseIndex = 0; return }
-        if exerciseIndex >= exercises.count {
+        if let previousID, let i = exercises.firstIndex(where: { $0.id == previousID }) {
+            exerciseIndex = i
+        } else if exerciseIndex >= exercises.count {
             exerciseIndex = exercises.count - 1
         }
         seedInputs()

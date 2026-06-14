@@ -127,22 +127,25 @@ final class SyncModel: ObservableObject {
     func todaySlotSets(_ ex: TemplateExercise) -> [SetLog] {
         guard let sid = todaySession?.id else { return [] }
         let warm = ex.isWarmup ? 1 : 0
-        // The exercise_id + warm-up fallback (for sets with no
-        // template_exercise_id — Claude/MCP- or pre-this-build-logged) is only
-        // safe when this is the *only* slot for that movement+warm-up today.
-        // With duplicate slots a null-te_id set is ambiguous: e.g. deleting an
-        // already-logged duplicate slot detaches its sets (deleteTemplateExercise
-        // nulls template_exercise_id), and attributing them would make the
-        // surviving sibling look complete and mis-seed it. When duplicates
-        // exist, count only sets explicitly keyed to this slot — the iOS logger
-        // always sends template_exercise_id now, so real logged sets still match.
+        // Sets carrying a template_exercise_id attribute to that slot exactly.
+        // The exercise_id + warm-up *fallback* (for slot-less sets) is fenced
+        // two ways so a detached/ambiguous set never bleeds into the wrong slot:
+        //   1. source != "ios" — only genuine MCP / pre-this-build logs lack a
+        //      slot id legitimately. A *detached* iOS set keeps source='ios'
+        //      after deleteTemplateExercise nulls its template_exercise_id, so
+        //      deleting a logged slot (and even re-adding the same movement)
+        //      can't make a fresh/sibling slot look complete or mis-seed it.
+        //   2. unique — even a real MCP log is only claimed when this is the
+        //      sole slot for that movement+warm-up today; with duplicates the
+        //      attribution is ambiguous, so require an explicit slot id.
         let unique = exercises.filter {
             $0.exercise_id == ex.exercise_id && ($0.isWarmup ? 1 : 0) == warm
         }.count == 1
         return sets.filter { s in
             guard s.session_id == sid, s.deleted_at == nil else { return false }
             if let teid = s.template_exercise_id { return teid == ex.id }
-            return unique && s.exercise_id == ex.exercise_id && s.is_warmup == warm
+            return s.source != "ios" && unique
+                && s.exercise_id == ex.exercise_id && s.is_warmup == warm
         }
         .sorted { $0.set_index < $1.set_index }
     }
@@ -590,6 +593,7 @@ final class SyncModel: ObservableObject {
         restEndDate = end
         RestLiveActivity.start(exercise: name, endDate: end, upNext: upNextName)
         scheduleRestCue(for: end)
+        RestCue.scheduleNotification(at: end, upNext: restCueLift)
     }
     func addRest(_ seconds: Int) {
         guard let end = restEndDate else { return }
@@ -597,12 +601,24 @@ final class SyncModel: ObservableObject {
         restEndDate = newEnd
         RestLiveActivity.update(endDate: newEnd, upNext: upNextName)
         scheduleRestCue(for: newEnd)
+        RestCue.scheduleNotification(at: newEnd, upNext: restCueLift)
     }
     func skipRest() {
         restEndDate = nil
         restCueTask?.cancel()
         restCueTask = nil
         RestLiveActivity.endNow()
+        RestCue.cancelNotification()
+    }
+
+    /// The lift to name in the rest cue: the one the runner is ON when rest
+    /// ends — same value the foreground cue computes at fire time, but resolved
+    /// up front for the scheduled notification. The index has already advanced
+    /// by the time rest starts (logCurrentSet jumps only when the slot
+    /// completed), so currentExercise is the SAME exercise mid-sets, the next
+    /// one when it's done, and empty ("workout complete") when finished.
+    private var restCueLift: String {
+        finished ? "" : (currentExercise?.exercise_name ?? "")
     }
 
     /// Poll-to-fire (250ms ticks) rather than one long sleep so the cue lands
@@ -625,8 +641,10 @@ final class SyncModel: ObservableObject {
             // only when the slot completed), so currentExercise is the next set's
             // lift: the SAME exercise mid-sets, the next one when it's done.
             // Empty when the workout finished → RestCue says "workout complete".
-            let nextLift = self.finished ? "" : (self.currentExercise?.exercise_name ?? "")
-            RestCue.play(upNext: nextLift)
+            RestCue.play(upNext: self.restCueLift)
+            // App is foreground (this Task only runs unsuspended) — drop the
+            // scheduled notification so the user isn't cued twice.
+            RestCue.cancelNotification()
         }
     }
 

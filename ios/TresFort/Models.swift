@@ -195,6 +195,11 @@ struct SetLog: Decodable, Identifiable {
     /// sets logged by Claude/MCP or before this build → callers fall back to
     /// exercise_id matching.
     let template_exercise_id: String?
+    /// 'ios' | 'mcp'. Distinguishes a *detached* iOS set (slot deleted →
+    /// template_exercise_id nulled, but still source='ios') from a genuine
+    /// slot-less MCP/pre-build log, so the exercise_id fallback only reclaims
+    /// the latter. Optional for forward-compat with a source-less server.
+    let source: String?
     let set_index: Int
     let weight: Double
     let reps: Int

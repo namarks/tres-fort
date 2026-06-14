@@ -1218,4 +1218,58 @@ describe('update_plan preserves warm-up flags', () => {
     expect(ex[0].is_warmup).toBe(1);
     expect(ex[1].is_warmup).toBe(0);
   });
+
+  it('remaps a logged set to the same occurrence across a rebuild', async () => {
+    // Day with the same exercise twice: warm-up ramp (occ0) + working (occ1).
+    const planBody = {
+      name: 'Dup remap',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Remap Day',
+          exercises: [
+            { exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300, is_warmup: true },
+            { exercise: 'erg', target_sets: 3, target_reps: 10, target_duration_s: 600, is_warmup: false },
+          ],
+        },
+      ],
+    };
+    const built = await call('update_plan', planBody);
+    const slots0 = built.plan.days[0].exercises;
+    expect(slots0).toHaveLength(2);
+    const workingOldId = slots0[1].id; // occ1 — the working slot
+    expect(slots0[1].is_warmup).toBe(0);
+
+    // Seed a session with a set logged against the WORKING slot (occ1) — the
+    // case the first-occurrence remap mis-pointed onto the warm-up slot.
+    const userId = (await env.DB.prepare('SELECT id FROM users ORDER BY created_at LIMIT 1').first<{ id: string }>())!.id;
+    const planId = (
+      await env.DB.prepare("SELECT id FROM plans WHERE user_id=?1 AND status='active'").bind(userId).first<{ id: string }>()
+    )!.id;
+    const sid = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,NULL,NULL,NULL,?7,?7)',
+    )
+      .bind(sid, userId, planId, '2026-09-01', 'in_progress', Date.now(), Date.now())
+      .run();
+    const setId = crypto.randomUUID();
+    await env.DB.prepare(
+      "INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,deleted_at) VALUES (?1,?2,?3,?4,1,150,10,8,0,NULL,?5,'ios',NULL)",
+    )
+      .bind(setId, sid, slots0[1].exercise_id, workingOldId, Date.now())
+      .run();
+
+    // Rebuild with both occurrences intact (new slot ids minted).
+    const rebuilt = await call('update_plan', planBody);
+    const slots1 = rebuilt.plan.days[0].exercises;
+    const newWarmupId = slots1[0].id; // new occ0
+    const newWorkingId = slots1[1].id; // new occ1
+
+    // The set followed the working occurrence — not collapsed onto occ0.
+    const set = await env.DB.prepare('SELECT template_exercise_id FROM set_logs WHERE id=?1')
+      .bind(setId)
+      .first<{ template_exercise_id: string }>();
+    expect(set!.template_exercise_id).toBe(newWorkingId);
+    expect(set!.template_exercise_id).not.toBe(newWarmupId);
+  });
 });

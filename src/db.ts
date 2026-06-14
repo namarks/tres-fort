@@ -2548,6 +2548,12 @@ export async function updatePlanTree(
   // first occurrence's id for remap purposes (the inserted rows still get
   // distinct ids per occurrence — see the inserter below).
   const newTeIdByDayAndEx = new Map<string, string>();
+  // Same ids, but keyed by (dayId, exId, occurrence) so a day with the same
+  // exercise twice (warm-up ramp + working slot) remaps each old occurrence to
+  // the matching new one — not collapsing both onto the first, which would
+  // repoint the working slot's logged sets under the warm-up slot.
+  const newTeIdByDayExOcc = new Map<string, string>();
+  const newOccForRemap = new Map<string, number>();
   const teIdPerExerciseOccurrence: string[][] = input.days.map((d) =>
     (d.exercises ?? []).map(() => uuid()),
   );
@@ -2559,6 +2565,9 @@ export async function updatePlanTree(
       if (!newTeIdByDayAndEx.has(key)) {
         newTeIdByDayAndEx.set(key, teIdPerExerciseOccurrence[di]![ei]!);
       }
+      const occ = newOccForRemap.get(key) ?? 0;
+      newOccForRemap.set(key, occ + 1);
+      newTeIdByDayExOcc.set(`${key}:${occ}`, teIdPerExerciseOccurrence[di]![ei]!);
     });
   });
 
@@ -2600,7 +2609,10 @@ export async function updatePlanTree(
       const occ = oldOccByDayEx.get(exKey) ?? 0;
       oldOccByDayEx.set(exKey, occ + 1);
       oldIsWarmupByDayExOcc.set(`${exKey}:${occ}`, ot.is_warmup);
-      const newTeId = newTeIdByDayAndEx.get(exKey) ?? null;
+      // Match this old occurrence to the same new occurrence; fall back to the
+      // first new slot when the rebuild has fewer occurrences (don't orphan the
+      // logged sets), or null when the exercise/day is gone entirely.
+      const newTeId = newTeIdByDayExOcc.get(`${exKey}:${occ}`) ?? newTeIdByDayAndEx.get(exKey) ?? null;
       oldToNewTe.set(ot.id, newTeId);
     }
   }

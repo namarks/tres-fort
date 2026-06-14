@@ -1101,3 +1101,78 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     expect(miss.error).toBe('not_found');
   });
 });
+
+describe('update_plan preserves warm-up flags', () => {
+  it('keeps is_warmup on a slot when a rebuild omits the field', async () => {
+    // Build a day with a prescribed warm-up slot + a working slot.
+    const built = await call('update_plan', {
+      name: 'Warmup preservation',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Warmup Day',
+          exercises: [
+            { exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300, is_warmup: true },
+            { exercise: 'bench', target_sets: 3, target_reps: 5 },
+          ],
+        },
+      ],
+    });
+    expect(built.conflict).toBe(false);
+    const day0 = built.plan.days[0];
+    const warm = day0.exercises.find((e: any) => e.is_warmup === 1);
+    const work = day0.exercises.find((e: any) => e.is_warmup === 0);
+    expect(warm).toBeTruthy();
+    expect(work).toBeTruthy();
+
+    // Rebuild the SAME tree as an older caller would: omit is_warmup entirely.
+    const rebuilt = await call('update_plan', {
+      name: 'Warmup preservation',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Warmup Day',
+          exercises: [
+            { exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300 },
+            { exercise: 'bench', target_sets: 3, target_reps: 5 },
+          ],
+        },
+      ],
+    });
+    expect(rebuilt.conflict).toBe(false);
+
+    // The warm-up flag survived — not silently demoted to a working slot.
+    const rday = rebuilt.plan.days[0];
+    const rerg = rday.exercises.find((e: any) => e.exercise_id === warm.exercise_id);
+    const rbench = rday.exercises.find((e: any) => e.exercise_id === work.exercise_id);
+    expect(rerg.is_warmup).toBe(1);
+    expect(rbench.is_warmup).toBe(0);
+  });
+
+  it('honors an explicit is_warmup:false over the preserved value', async () => {
+    const built = await call('update_plan', {
+      name: 'Explicit clear',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Clear Day',
+          exercises: [{ exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300, is_warmup: true }],
+        },
+      ],
+    });
+    const warmId = built.plan.days[0].exercises[0].exercise_id;
+
+    const cleared = await call('update_plan', {
+      name: 'Explicit clear',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Clear Day',
+          exercises: [{ exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300, is_warmup: false }],
+        },
+      ],
+    });
+    const slot = cleared.plan.days[0].exercises.find((e: any) => e.exercise_id === warmId);
+    expect(slot.is_warmup).toBe(0);
+  });
+});

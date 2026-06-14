@@ -2572,20 +2572,28 @@ export async function updatePlanTree(
   }
   const oldTeRows = await db
     .prepare(
-      `SELECT te.id, te.day_template_id, te.exercise_id
+      `SELECT te.id, te.day_template_id, te.exercise_id, te.is_warmup
          FROM template_exercises te
          JOIN day_templates d ON d.id = te.day_template_id
         WHERE d.plan_id = ?1`,
     )
     .bind(plan.id)
-    .all<{ id: string; day_template_id: string; exercise_id: string }>();
+    .all<{ id: string; day_template_id: string; exercise_id: string; is_warmup: number }>();
+  // Preserve the existing warm-up flag for slots a caller leaves unspecified:
+  // a full update_plan rebuild from an older client / tool-schema payload that
+  // omits the optional is_warmup must not silently demote prescribed warm-ups
+  // to working slots. Keyed by (newDayId, exercise_id) — the same matching the
+  // remap uses — with first-occurrence-wins to mirror newTeIdByDayAndEx.
+  const oldIsWarmupByDayEx = new Map<string, number>();
   const oldToNewTe = new Map<string, string | null>();
   for (const ot of oldTeRows.results) {
     const newDayId = oldToNewDay.get(ot.day_template_id) ?? null;
     if (newDayId == null) {
       oldToNewTe.set(ot.id, null);
     } else {
-      const newTeId = newTeIdByDayAndEx.get(`${newDayId}:${ot.exercise_id}`) ?? null;
+      const key = `${newDayId}:${ot.exercise_id}`;
+      if (!oldIsWarmupByDayEx.has(key)) oldIsWarmupByDayEx.set(key, ot.is_warmup);
+      const newTeId = newTeIdByDayAndEx.get(key) ?? null;
       oldToNewTe.set(ot.id, newTeId);
     }
   }
@@ -2612,6 +2620,12 @@ export async function updatePlanTree(
   input.days.forEach((d, di) => {
     const dayId = newDayIds[di]!;
     (d.exercises ?? []).forEach((e, ei) => {
+      const exId = resolved.get(e.exercise)!;
+      // Explicit is_warmup wins; when omitted, keep the matched old slot's flag
+      // (default 0 only for genuinely new slots) so an older caller can't strip
+      // a prescribed warm-up just by not echoing the field back.
+      const isWarmup =
+        e.is_warmup === undefined ? oldIsWarmupByDayEx.get(`${dayId}:${exId}`) ?? 0 : e.is_warmup ? 1 : 0;
       stmts.push(
         db
           .prepare(
@@ -2620,11 +2634,11 @@ export async function updatePlanTree(
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)`,
           )
           .bind(
-            teIdPerExerciseOccurrence[di]![ei]!, dayId, resolved.get(e.exercise)!, e.order_index ?? ei, e.target_sets,
+            teIdPerExerciseOccurrence[di]![ei]!, dayId, exId, e.order_index ?? ei, e.target_sets,
             e.target_reps, e.target_reps_max ?? null, e.target_rpe ?? null, e.rest_seconds ?? 120,
             e.target_weight ?? null, e.target_duration_s ?? null,
             e.progression == null ? null : JSON.stringify(e.progression),
-            e.cues ?? null, e.is_warmup ? 1 : 0, ts, ts,
+            e.cues ?? null, isWarmup, ts, ts,
           ),
       );
     });

@@ -420,3 +420,66 @@ describe('logging a set against a warm-up slot inherits is_warmup', () => {
     expect(row?.template_exercise_id).toBeNull();
   });
 });
+
+describe('slot PATCH/DELETE are scoped to the URL day', () => {
+  // The nested /days/:id/exercises/:teId routes claim a day in their path. A
+  // stale edit sheet or mixed-up client must not mutate/delete a slot that
+  // lives in a DIFFERENT day just because teId is globally unique.
+  async function planWithTwoDays(H: Record<string, string>) {
+    const dayA = await freshDay(H, 'Two day plan'); // creates plan + Day A
+    const dayB = await (
+      await SELF.fetch(`${BASE}/api/days`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ name: 'Day B', day_label: 'B', order_index: 1 }),
+      })
+    ).json<{ id: string }>();
+    const slotB = await (
+      await addExercise(H, dayB.id, { exercise: 'bench', target_sets: 3, target_reps: 5 })
+    ).json<{ id: string; target_sets: number }>();
+    return { dayA, dayB: dayB.id, slotB };
+  }
+
+  it('PATCH via the wrong day 404s and leaves the slot unchanged', async () => {
+    const H = auth(await devJwt());
+    const { dayA, slotB } = await planWithTwoDays(H);
+
+    const r = await SELF.fetch(`${BASE}/api/days/${dayA}/exercises/${slotB.id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ target_sets: 99 }),
+    });
+    expect(r.status).toBe(404);
+
+    const row = await env.DB.prepare('SELECT target_sets FROM template_exercises WHERE id = ?1')
+      .bind(slotB.id)
+      .first<{ target_sets: number }>();
+    expect(row?.target_sets).toBe(3); // untouched
+  });
+
+  it('DELETE via the wrong day 404s and leaves the slot intact; the right day succeeds', async () => {
+    const H = auth(await devJwt());
+    const { dayA, dayB, slotB } = await planWithTwoDays(H);
+
+    const wrong = await SELF.fetch(`${BASE}/api/days/${dayA}/exercises/${slotB.id}`, {
+      method: 'DELETE',
+      headers: H,
+    });
+    expect(wrong.status).toBe(404);
+    const stillThere = await env.DB.prepare('SELECT id FROM template_exercises WHERE id = ?1')
+      .bind(slotB.id)
+      .first<{ id: string }>();
+    expect(stillThere?.id).toBe(slotB.id);
+
+    // The correct day path deletes it.
+    const right = await SELF.fetch(`${BASE}/api/days/${dayB}/exercises/${slotB.id}`, {
+      method: 'DELETE',
+      headers: H,
+    });
+    expect(right.status).toBe(200);
+    const gone = await env.DB.prepare('SELECT id FROM template_exercises WHERE id = ?1')
+      .bind(slotB.id)
+      .first<{ id: string }>();
+    expect(gone).toBeNull();
+  });
+});

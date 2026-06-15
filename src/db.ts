@@ -2782,11 +2782,17 @@ export async function updatePlanTree(
   return { conflict: false, plan: (await getPlanTree(db, userId))! };
 }
 
-/** Find a template_exercise slot by id, or by (day + exercise name/id). */
+/** Find a template_exercise slot by id, or by (day + exercise name/id).
+ *  When `day_template_id` is supplied alongside `template_exercise_id`, the
+ *  slot must live in THAT day: the nested REST route /days/:id/exercises/:teId
+ *  claims a day in its path, so a /days/<dayA>/exercises/<slot-from-dayB>
+ *  request must resolve to null (→ 404) rather than mutating day B's slot by
+ *  the globally-unique teId alone. Day-less callers (the MCP tools, which have
+ *  no URL day) omit it and resolve by teId + user as before. */
 async function findSlot(
   db: D1Database,
   userId: string,
-  ref: { template_exercise_id?: string; day?: string; exercise?: string },
+  ref: { template_exercise_id?: string; day_template_id?: string; day?: string; exercise?: string },
 ): Promise<TemplateExerciseRow | null> {
   if (ref.template_exercise_id) {
     return db
@@ -2794,9 +2800,10 @@ async function findSlot(
         `SELECT te.* FROM template_exercises te
          JOIN day_templates d ON d.id = te.day_template_id
          JOIN plans p ON p.id = d.plan_id
-         WHERE te.id = ?1 AND p.user_id = ?2`,
+         WHERE te.id = ?1 AND p.user_id = ?2
+           AND (?3 IS NULL OR te.day_template_id = ?3)`,
       )
-      .bind(ref.template_exercise_id, userId)
+      .bind(ref.template_exercise_id, userId, ref.day_template_id ?? null)
       .first<TemplateExerciseRow>();
   }
   if (!ref.day || !ref.exercise) return null;
@@ -2834,7 +2841,7 @@ const TEMPLATE_EXERCISE_PATCH_KEYS = new Set<string>([
 export async function updateExercise(
   db: D1Database,
   userId: string,
-  ref: { template_exercise_id?: string; day?: string; exercise?: string },
+  ref: { template_exercise_id?: string; day_template_id?: string; day?: string; exercise?: string },
   patch: Partial<
     Pick<
       TemplateExerciseRow,
@@ -2917,7 +2924,7 @@ export async function updateExercise(
 export async function deleteTemplateExercise(
   db: D1Database,
   userId: string,
-  ref: { template_exercise_id?: string; day?: string; exercise?: string },
+  ref: { template_exercise_id?: string; day_template_id?: string; day?: string; exercise?: string },
 ): Promise<TemplateExerciseRow | null> {
   const slot = await findSlot(db, userId, ref);
   if (!slot) return null;

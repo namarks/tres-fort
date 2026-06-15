@@ -159,11 +159,13 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
 
 // Edit one exercise slot in place (targets / rest / warm-up flag / order).
 // Thin wrapper over the same updateExercise the MCP `update_exercise` tool
-// uses, scoped to this user via the template_exercise_id ref. Version-bumped
-// + audited (actor='ios'). The :id day segment is kept for URL symmetry with
-// the add route; the slot is resolved by its globally-unique :teId.
+// uses, scoped to this user. Version-bumped + audited (actor='ios'). The slot
+// is scoped to the URL :id day: a stale/mismatched client patching
+// /days/<dayA>/exercises/<slot-from-dayB> resolves to null → 404 instead of
+// mutating the wrong day's workout.
 apiRoutes.patch('/days/:id/exercises/:teId', async (c) => {
   const userId = c.get('userId');
+  const dayId = c.req.param('id');
   const teId = c.req.param('teId');
   const b = await c.req.json<{
     target_sets?: number;
@@ -180,7 +182,7 @@ apiRoutes.patch('/days/:id/exercises/:teId', async (c) => {
   }>();
   const patch: Record<string, unknown> = { ...b };
   if (typeof b.is_warmup === 'boolean') patch.is_warmup = b.is_warmup ? 1 : 0;
-  const row = await updateExercise(c.env.DB, userId, { template_exercise_id: teId }, patch);
+  const row = await updateExercise(c.env.DB, userId, { template_exercise_id: teId, day_template_id: dayId }, patch);
   if (!row) return c.json({ error: 'not_found' }, 404);
   if ('error' in row) return c.json(row, 400);
   await writeAudit(c.env.DB, userId, 'update_exercise', { template_exercise_id: teId, patch: b }, row.id, 'ios');
@@ -189,11 +191,13 @@ apiRoutes.patch('/days/:id/exercises/:teId', async (c) => {
 
 // Remove one exercise slot from a day. Detaches (NULLs) any historical
 // set_logs.template_exercise_id rather than deleting logged work. Version-
-// bumped + audited.
+// bumped + audited. Scoped to the URL :id day (see the PATCH above): a slot
+// from another day resolves to null → 404, never deleting the wrong exercise.
 apiRoutes.delete('/days/:id/exercises/:teId', async (c) => {
   const userId = c.get('userId');
+  const dayId = c.req.param('id');
   const teId = c.req.param('teId');
-  const row = await deleteTemplateExercise(c.env.DB, userId, { template_exercise_id: teId });
+  const row = await deleteTemplateExercise(c.env.DB, userId, { template_exercise_id: teId, day_template_id: dayId });
   if (!row) return c.json({ error: 'not_found' }, 404);
   await writeAudit(c.env.DB, userId, 'delete_exercise', { template_exercise_id: teId }, row.id, 'ios');
   return c.json(row);

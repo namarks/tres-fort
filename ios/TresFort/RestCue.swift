@@ -38,6 +38,14 @@ enum RestCue {
     /// Single in-flight rest cue — scheduling a new one replaces the old.
     private static let notificationID = "rest-cue"
 
+    /// Monotonic token bumped on every schedule and cancel. The async
+    /// `requestAuthorization` completion (especially the first-run permission
+    /// prompt, which can resolve long after the rest was skipped or rescheduled)
+    /// only proceeds if its captured token is still current — so a stale or
+    /// superseded callback can't resurrect a cancelled cue or overwrite a newer
+    /// one with an old deadline.
+    private static var generation = 0
+
     /// Honors the @AppStorage toggle (absent key → default ON).
     static var enabled: Bool {
         UserDefaults.standard.object(forKey: defaultsKey) == nil
@@ -54,9 +62,14 @@ enum RestCue {
     /// the foreground `play()` path still covers the app-open case.
     static func scheduleNotification(at end: Date) {
         guard enabled else { return }
+        generation += 1
+        let token = generation
         let center = UNUserNotificationCenter.current()
         center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
             guard granted else { return }
+            // Bail if a skip/reschedule (or another schedule) superseded this
+            // request while the authorization prompt was outstanding.
+            guard token == generation else { return }
             let content = UNMutableNotificationContent()
             content.title = "Rest's up"
             // Deliberately generic: the next lift isn't reliably known when the
@@ -82,6 +95,9 @@ enum RestCue {
     /// Cancel any pending/delivered rest-cue notification — on skip, and right
     /// after the foreground cue fires so a foregrounded user isn't double-cued.
     static func cancelNotification() {
+        // Invalidate any in-flight authorization callback so it can't add a
+        // request after we've cancelled.
+        generation += 1
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: [notificationID])
         center.removeDeliveredNotifications(withIdentifiers: [notificationID])

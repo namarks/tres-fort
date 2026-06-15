@@ -372,4 +372,51 @@ describe('logging a set against a warm-up slot inherits is_warmup', () => {
       .first<{ template_exercise_id: string | null }>();
     expect(row?.template_exercise_id).toBeNull();
   });
+
+  it('drops a template_exercise_id whose slot now holds a different exercise', async () => {
+    // Stale-swap race: the slot still EXISTS but was swapped to another movement
+    // mid-workout while iOS cached the old slot id. Keeping the link would file
+    // this set under the swapped-in slot and todaySlotSets would mark the wrong
+    // slot complete. The link must drop to null (exercise-only log), set kept.
+    const jwt = await devJwt();
+    const H = auth(jwt);
+    const dayId = await freshDay(H, 'Stale swap');
+    // A real bench slot — exists, but holds ex_bench, not the squat we log.
+    const slot = await (
+      await addExercise(H, dayId, { exercise: 'bench', target_sets: 3, target_reps: 5 })
+    ).json<{ id: string; exercise_id: string }>();
+    expect(slot.exercise_id).toBe('ex_bench');
+
+    const session = await (
+      await SELF.fetch(`${BASE}/api/sessions`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ date: '2026-06-05', day_template_id: dayId }),
+      })
+    ).json<{ id: string }>();
+
+    const setId = crypto.randomUUID();
+    const r = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        id: setId,
+        exercise_id: 'ex_back_squat', // mismatched: slot holds ex_bench
+        template_exercise_id: slot.id,
+        set_index: 1,
+        weight: 225,
+        reps: 5,
+      }),
+    });
+    expect(r.status).toBe(201);
+    expect(await r.json<{ set: { template_exercise_id: string | null } }>()).toMatchObject({
+      set: { template_exercise_id: null },
+    });
+    const row = await env.DB.prepare(
+      'SELECT template_exercise_id FROM set_logs WHERE id = ?1',
+    )
+      .bind(setId)
+      .first<{ template_exercise_id: string | null }>();
+    expect(row?.template_exercise_id).toBeNull();
+  });
 });

@@ -1769,6 +1769,16 @@ export async function logSet(
   // exercise_id anyway, so treat a missing slot as "no link": store
   // template_exercise_id = null (an exercise-only log) and keep the set.
   //
+  // Stale-swap guard: the slot may still EXIST but now hold a different
+  // exercise (a swap_exercise / update_exercise edit landed mid-workout while
+  // iOS still cached the old slot id). Keeping the link would file this set's
+  // movement under the swapped-in slot, and todaySlotSets attributes any
+  // non-null slot id before checking exercise_id — silently marking the wrong
+  // slot complete. So only retain the link when the slot's exercise_id matches
+  // the submitted set; otherwise drop it like the dangling path. (Ownership is
+  // already covered: the session is user-scoped above, and a foreign-day slot
+  // never appears in today's slot set regardless.)
+  //
   // Warm-up default: an explicit flag wins; otherwise inherit the slot's
   // is_warmup so a set logged against a prescribed warm-up slot (erg, mobility)
   // is correctly a warm-up without the client restating it (migration 0026).
@@ -1776,11 +1786,11 @@ export async function logSet(
   let slotIsWarmup: number | null = null;
   if (templateExerciseId) {
     const slot = await db
-      .prepare('SELECT is_warmup FROM template_exercises WHERE id = ?1')
+      .prepare('SELECT is_warmup, exercise_id FROM template_exercises WHERE id = ?1')
       .bind(templateExerciseId)
-      .first<{ is_warmup: number }>();
-    if (!slot) {
-      templateExerciseId = null; // dangling after a rebuild → exercise-only log
+      .first<{ is_warmup: number; exercise_id: string }>();
+    if (!slot || slot.exercise_id !== input.exercise_id) {
+      templateExerciseId = null; // dangling or swapped slot → exercise-only log
     } else {
       slotIsWarmup = slot.is_warmup === 1 ? 1 : 0;
     }

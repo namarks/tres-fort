@@ -92,6 +92,19 @@ enum RestCue {
         }
     }
 
+    /// Whether the OS has already *delivered* our rest-cue notification — i.e.
+    /// the background path fired while the app was suspended/locked. The
+    /// foreground poll uses this to stay exactly-once: if the user was already
+    /// alerted by the notification, it must not replay the in-app chime on
+    /// resume. This is authoritative rather than timing-based — with no
+    /// foreground-presentation delegate, iOS suppresses this notification while
+    /// the app is active, so a delivered one means we were genuinely
+    /// backgrounded across the deadline.
+    static func notificationWasDelivered() async -> Bool {
+        let delivered = await UNUserNotificationCenter.current().deliveredNotifications()
+        return delivered.contains { $0.request.identifier == notificationID }
+    }
+
     /// Cancel any pending/delivered rest-cue notification — on skip, and right
     /// after the foreground cue fires so a foregrounded user isn't double-cued.
     static func cancelNotification() {

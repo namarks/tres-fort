@@ -669,15 +669,18 @@ final class SyncModel: ObservableObject {
             // only when the slot completed), so currentExercise is the next set's
             // lift: the SAME exercise mid-sets, the next one when it's done.
             // Empty when the workout finished → RestCue says "workout complete".
-            // Fire the rich cue ONLY if the deadline was just reached in the
-            // foreground. If the app was backgrounded across `end`, this Task
-            // was suspended and resumes late — by then the scheduled local
-            // notification has already cued the user, so replaying here would
-            // double-cue. The 250ms poll cadence means a genuine foreground
-            // tick is always <1s late; a background-resume is seconds-to-
-            // minutes late, so a 3s guard cleanly separates them. Either way,
-            // clear the (now-redundant or already-delivered) notification.
-            if Date().timeIntervalSince(end) < 3 {
+            //
+            // Exactly-once across the foreground/background boundary: if the app
+            // was locked/backgrounded across `end`, this Task was suspended and
+            // the scheduled local notification already cued the user. Detect that
+            // authoritatively via the OS delivered list (iOS suppresses the
+            // notification while we're foreground, so a delivered one means we
+            // were genuinely backgrounded) and skip the in-app replay — rather
+            // than guessing from how late this resumed tick is, which double-cues
+            // when the user taps the notification within the lateness window.
+            let alreadyCued = await RestCue.notificationWasDelivered()
+            if Task.isCancelled || self.restEndDate != end { return }
+            if !alreadyCued {
                 RestCue.play(upNext: self.restCueLift)
             }
             RestCue.cancelNotification()

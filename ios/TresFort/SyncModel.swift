@@ -118,7 +118,8 @@ final class SyncModel: ObservableObject {
 
     /// Live sets logged for a specific PLAN SLOT in today's session — the
     /// completion unit for the runner. Keys on template_exercise_id (the slot)
-    /// so the SAME movement in two slots, or sets logged out of order, never
+    /// AND exercise_id (the movement) so the SAME movement in two slots, sets
+    /// logged out of order, or a stale link to a since-swapped slot never
     /// cross-attribute completion (#3). A warm-up slot's sets ARE is_warmup, so
     /// this does NOT filter on is_warmup — it includes whatever was logged for
     /// the slot, letting warm-up slots complete too. Sets with no slot link
@@ -147,7 +148,15 @@ final class SyncModel: ObservableObject {
         }.count == 1
         return sets.filter { s in
             guard s.session_id == sid, s.deleted_at == nil else { return false }
-            if let teid = s.template_exercise_id { return teid == ex.id }
+            // Slot-linked set: attribute to this slot ONLY when the movement
+            // also matches. The slot id alone is not trusted — a stale/swapped
+            // link (the slot since changed to a different exercise) must never
+            // count toward, or complete, this slot. This single exercise_id
+            // cross-check is the completion invariant; the backend write-guards
+            // (log_set, update_plan remap) are belt-and-suspenders over it.
+            if let teid = s.template_exercise_id {
+                return teid == ex.id && s.exercise_id == ex.exercise_id
+            }
             return unique && s.exercise_id == ex.exercise_id && s.is_warmup == warm
         }
         .sorted { $0.set_index < $1.set_index }

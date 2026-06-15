@@ -2552,29 +2552,7 @@ export async function updatePlanTree(
   // (history preserved, plan-tree pointer detached). All in the same D1
   // batch so it's atomic with the rebuild.
 
-  // Pre-generate new template_exercise ids so the remap can target them
-  // (the old code uuid()'d inline during INSERT — replaced below). Keyed by
-  // (dayId, exId, occurrence) so a day with the same exercise twice (warm-up
-  // ramp + working slot) remaps each old occurrence to the matching new one —
-  // not collapsing both onto the first, which would repoint the working slot's
-  // logged sets under the warm-up slot.
-  const newTeIdByDayExOcc = new Map<string, string>();
-  const newOccForRemap = new Map<string, number>();
-  const teIdPerExerciseOccurrence: string[][] = input.days.map((d) =>
-    (d.exercises ?? []).map(() => uuid()),
-  );
-  input.days.forEach((d, di) => {
-    const dayId = newDayIds[di]!;
-    (d.exercises ?? []).forEach((e, ei) => {
-      const exId = resolved.get(e.exercise)!;
-      const key = `${dayId}:${exId}`;
-      const occ = newOccForRemap.get(key) ?? 0;
-      newOccForRemap.set(key, occ + 1);
-      newTeIdByDayExOcc.set(`${key}:${occ}`, teIdPerExerciseOccurrence[di]![ei]!);
-    });
-  });
-
-  // Build old → new remaps (null = removed; reference must NULL out).
+  // Build old → new day map first (matched by day_label, then name).
   const oldToNewDay = new Map<string, string | null>();
   for (const od of oldDays.results) {
     const lk = od.day_label?.toLowerCase();
@@ -2592,35 +2570,86 @@ export async function updatePlanTree(
     )
     .bind(plan.id)
     .all<{ id: string; day_template_id: string; exercise_id: string; is_warmup: number }>();
-  // Preserve the existing warm-up flag for slots a caller leaves unspecified:
-  // a full update_plan rebuild from an older client / tool-schema payload that
-  // omits the optional is_warmup must not silently demote prescribed warm-ups
-  // to working slots. Keyed by (newDayId, exercise_id, occurrence) so a day with
-  // the SAME exercise twice (e.g. a warm-up ramp slot + working sets) keeps each
-  // occurrence's flag instead of smearing the first across both — the n-th old
-  // slot of an exercise in a day pairs to the n-th new one (rows ordered by
-  // order_index above; the inserter counts occurrences in the same order).
+
+  // is_warmup INHERITANCE map — positional by (newDayId, exercise_id) occurrence.
+  // Recovers the existing warm-up flag for a slot a caller leaves unspecified so
+  // a rebuild from an older client / tool-schema payload that omits is_warmup
+  // doesn't silently demote a prescribed warm-up. This MUST stay positional: the
+  // new slot's flag isn't known until we apply this very inheritance, so it can't
+  // key on is_warmup itself. The n-th old slot of an exercise pairs to the n-th
+  // new one (old rows ordered by order_index above).
   const oldIsWarmupByDayExOcc = new Map<string, number>();
-  const oldOccByDayEx = new Map<string, number>();
-  const oldToNewTe = new Map<string, string | null>();
-  for (const ot of oldTeRows.results) {
-    const newDayId = oldToNewDay.get(ot.day_template_id) ?? null;
-    if (newDayId == null) {
-      oldToNewTe.set(ot.id, null);
-    } else {
+  {
+    const occ = new Map<string, number>();
+    for (const ot of oldTeRows.results) {
+      const newDayId = oldToNewDay.get(ot.day_template_id) ?? null;
+      if (newDayId == null) continue;
       const exKey = `${newDayId}:${ot.exercise_id}`;
-      const occ = oldOccByDayEx.get(exKey) ?? 0;
-      oldOccByDayEx.set(exKey, occ + 1);
-      oldIsWarmupByDayExOcc.set(`${exKey}:${occ}`, ot.is_warmup);
-      // Match this old occurrence to the same new occurrence. When the rebuild
-      // has fewer occurrences of this exercise, the surplus old slot detaches
-      // to null rather than falling back to another occurrence: reattaching a
-      // removed working slot's sets to a surviving warm-up slot of the same
-      // movement would silently corrupt that slot's completion/history
-      // (todaySlotSets counts any matching template id before the warm-up
-      // parity check). null is the same path a fully-removed exercise/day takes.
-      const newTeId = newTeIdByDayExOcc.get(`${exKey}:${occ}`) ?? null;
-      oldToNewTe.set(ot.id, newTeId);
+      const o = occ.get(exKey) ?? 0;
+      occ.set(exKey, o + 1);
+      oldIsWarmupByDayExOcc.set(`${exKey}:${o}`, ot.is_warmup);
+    }
+  }
+
+  // Pre-generate new template_exercise ids AND each new slot's FINAL is_warmup
+  // (the inserter below reuses both), then index the new slots by
+  // (dayId, exId, is_warmup, occurrence-WITHIN-that-class). The set-log remap
+  // pairs warm-up→warm-up and working→working within an exercise, so removing a
+  // duplicate slot from ANY position — front, middle, or end of the duplicate
+  // run — detaches that class member's logged sets to null instead of sliding
+  // them onto a surviving slot of the OTHER class (e.g. a removed warm-up erg's
+  // sets must not land on the surviving working erg). A purely positional index
+  // only handled end removals. (A slot whose warm-up flag is genuinely flipped
+  // by the rebuild changes class, so its old sets detach rather than mis-count —
+  // the safe direction, consistent with the dangling/swap guards.)
+  const teIdPerExerciseOccurrence: string[][] = input.days.map((d) =>
+    (d.exercises ?? []).map(() => uuid()),
+  );
+  const isWarmupPerOccurrence: number[][] = input.days.map((d) =>
+    (d.exercises ?? []).map(() => 0),
+  );
+  const newTeIdByClassOcc = new Map<string, string>();
+  {
+    const posOcc = new Map<string, number>(); // positional (exId) — inheritance lookup
+    const classOcc = new Map<string, number>(); // (exId, is_warmup) — remap pairing
+    input.days.forEach((d, di) => {
+      const dayId = newDayIds[di]!;
+      (d.exercises ?? []).forEach((e, ei) => {
+        const exId = resolved.get(e.exercise)!;
+        const exKey = `${dayId}:${exId}`;
+        const p = posOcc.get(exKey) ?? 0;
+        posOcc.set(exKey, p + 1);
+        const isWarmup =
+          e.is_warmup === undefined
+            ? oldIsWarmupByDayExOcc.get(`${exKey}:${p}`) ?? 0
+            : e.is_warmup
+              ? 1
+              : 0;
+        isWarmupPerOccurrence[di]![ei] = isWarmup;
+        const classKey = `${exKey}:${isWarmup}`;
+        const c = classOcc.get(classKey) ?? 0;
+        classOcc.set(classKey, c + 1);
+        newTeIdByClassOcc.set(`${classKey}:${c}`, teIdPerExerciseOccurrence[di]![ei]!);
+      });
+    });
+  }
+
+  // Old → new set-log remap, paired within (exId, is_warmup) class; a surplus
+  // old slot with no matching new class member detaches to null (history kept,
+  // pointer cleared) — the same path a fully-removed exercise/day takes.
+  const oldToNewTe = new Map<string, string | null>();
+  {
+    const classOcc = new Map<string, number>();
+    for (const ot of oldTeRows.results) {
+      const newDayId = oldToNewDay.get(ot.day_template_id) ?? null;
+      if (newDayId == null) {
+        oldToNewTe.set(ot.id, null);
+        continue;
+      }
+      const classKey = `${newDayId}:${ot.exercise_id}:${ot.is_warmup}`;
+      const c = classOcc.get(classKey) ?? 0;
+      classOcc.set(classKey, c + 1);
+      oldToNewTe.set(ot.id, newTeIdByClassOcc.get(`${classKey}:${c}`) ?? null);
     }
   }
 
@@ -2642,21 +2671,15 @@ export async function updatePlanTree(
         .bind(dayId, plan!.id, d.name, d.day_label ?? null, d.order_index ?? di, d.notes ?? null, ts, ts),
     );
   });
-  // 2) INSERT new template_exercises (children of step 1's parents).
-  const newOccByDayEx = new Map<string, number>();
+  // 2) INSERT new template_exercises (children of step 1's parents). is_warmup
+  // was resolved above (explicit wins; else inherit the matched old slot's flag)
+  // into isWarmupPerOccurrence so the inserted flag and the remap's class keys
+  // are guaranteed identical.
   input.days.forEach((d, di) => {
     const dayId = newDayIds[di]!;
     (d.exercises ?? []).forEach((e, ei) => {
       const exId = resolved.get(e.exercise)!;
-      const exKey = `${dayId}:${exId}`;
-      const occ = newOccByDayEx.get(exKey) ?? 0;
-      newOccByDayEx.set(exKey, occ + 1);
-      // Explicit is_warmup wins; when omitted, inherit the matched old slot's
-      // flag for THIS occurrence (default 0 only for genuinely new slots) so an
-      // older caller can't strip a prescribed warm-up just by not echoing the
-      // field back.
-      const isWarmup =
-        e.is_warmup === undefined ? oldIsWarmupByDayExOcc.get(`${exKey}:${occ}`) ?? 0 : e.is_warmup ? 1 : 0;
+      const isWarmup = isWarmupPerOccurrence[di]![ei]!;
       stmts.push(
         db
           .prepare(

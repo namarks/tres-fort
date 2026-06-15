@@ -117,14 +117,16 @@ final class SyncModel: ObservableObject {
     }
 
     /// Live sets logged for a specific PLAN SLOT in today's session — the
-    /// completion unit for the runner. Keys on template_exercise_id (the slot)
-    /// AND exercise_id (the movement) so the SAME movement in two slots, sets
-    /// logged out of order, or a stale link to a since-swapped slot never
-    /// cross-attribute completion (#3). A warm-up slot's sets ARE is_warmup, so
-    /// this does NOT filter on is_warmup — it includes whatever was logged for
-    /// the slot, letting warm-up slots complete too. Sets with no slot link
-    /// (Claude/MCP, or pre-this-build) fall back to matching exercise_id +
-    /// warm-up parity so they still count toward the right slot.
+    /// completion unit for the runner. Keys on template_exercise_id (the slot),
+    /// exercise_id (the movement), AND is_warmup (the slot's class) so the SAME
+    /// movement in two slots, sets logged out of order, a stale link to a
+    /// since-swapped slot, or a warm-up set mis-pointed at a working slot of the
+    /// same movement never cross-attribute completion (#3). A warm-up slot's
+    /// sets ARE is_warmup (the backend inherits the flag from the slot), so the
+    /// parity check still lets a warm-up slot complete from its own sets — it
+    /// only excludes a set whose class disagrees with the slot's. Sets with no
+    /// slot link (Claude/MCP, or pre-this-build) fall back to matching
+    /// exercise_id + warm-up parity so they still count toward the right slot.
     func todaySlotSets(_ ex: TemplateExercise) -> [SetLog] {
         guard let sid = todaySession?.id else { return [] }
         let warm = ex.isWarmup ? 1 : 0
@@ -148,14 +150,15 @@ final class SyncModel: ObservableObject {
         }.count == 1
         return sets.filter { s in
             guard s.session_id == sid, s.deleted_at == nil else { return false }
-            // Slot-linked set: attribute to this slot ONLY when the movement
-            // also matches. The slot id alone is not trusted — a stale/swapped
-            // link (the slot since changed to a different exercise) must never
-            // count toward, or complete, this slot. This single exercise_id
-            // cross-check is the completion invariant; the backend write-guards
-            // (log_set, update_plan remap) are belt-and-suspenders over it.
+            // Slot-linked set: attribute to this slot ONLY when the movement AND
+            // the warm-up class also match. The slot id alone is not trusted — a
+            // stale/swapped link (slot since changed to a different exercise) or
+            // a warm-up set mis-pointed at a working slot of the same movement
+            // must never count toward, or complete, this slot. This cross-check
+            // is the completion invariant; the backend write-guards (log_set,
+            // update_plan remap) are belt-and-suspenders over it.
             if let teid = s.template_exercise_id {
-                return teid == ex.id && s.exercise_id == ex.exercise_id
+                return teid == ex.id && s.exercise_id == ex.exercise_id && s.is_warmup == warm
             }
             return unique && s.exercise_id == ex.exercise_id && s.is_warmup == warm
         }

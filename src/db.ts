@@ -2543,15 +2543,11 @@ export async function updatePlanTree(
   // batch so it's atomic with the rebuild.
 
   // Pre-generate new template_exercise ids so the remap can target them
-  // (the old code uuid()'d inline during INSERT — replaced below). Keyed
-  // by (newDayId, exercise_id); a duplicate-within-day collapses to the
-  // first occurrence's id for remap purposes (the inserted rows still get
-  // distinct ids per occurrence — see the inserter below).
-  const newTeIdByDayAndEx = new Map<string, string>();
-  // Same ids, but keyed by (dayId, exId, occurrence) so a day with the same
-  // exercise twice (warm-up ramp + working slot) remaps each old occurrence to
-  // the matching new one — not collapsing both onto the first, which would
-  // repoint the working slot's logged sets under the warm-up slot.
+  // (the old code uuid()'d inline during INSERT — replaced below). Keyed by
+  // (dayId, exId, occurrence) so a day with the same exercise twice (warm-up
+  // ramp + working slot) remaps each old occurrence to the matching new one —
+  // not collapsing both onto the first, which would repoint the working slot's
+  // logged sets under the warm-up slot.
   const newTeIdByDayExOcc = new Map<string, string>();
   const newOccForRemap = new Map<string, number>();
   const teIdPerExerciseOccurrence: string[][] = input.days.map((d) =>
@@ -2562,9 +2558,6 @@ export async function updatePlanTree(
     (d.exercises ?? []).forEach((e, ei) => {
       const exId = resolved.get(e.exercise)!;
       const key = `${dayId}:${exId}`;
-      if (!newTeIdByDayAndEx.has(key)) {
-        newTeIdByDayAndEx.set(key, teIdPerExerciseOccurrence[di]![ei]!);
-      }
       const occ = newOccForRemap.get(key) ?? 0;
       newOccForRemap.set(key, occ + 1);
       newTeIdByDayExOcc.set(`${key}:${occ}`, teIdPerExerciseOccurrence[di]![ei]!);
@@ -2609,10 +2602,14 @@ export async function updatePlanTree(
       const occ = oldOccByDayEx.get(exKey) ?? 0;
       oldOccByDayEx.set(exKey, occ + 1);
       oldIsWarmupByDayExOcc.set(`${exKey}:${occ}`, ot.is_warmup);
-      // Match this old occurrence to the same new occurrence; fall back to the
-      // first new slot when the rebuild has fewer occurrences (don't orphan the
-      // logged sets), or null when the exercise/day is gone entirely.
-      const newTeId = newTeIdByDayExOcc.get(`${exKey}:${occ}`) ?? newTeIdByDayAndEx.get(exKey) ?? null;
+      // Match this old occurrence to the same new occurrence. When the rebuild
+      // has fewer occurrences of this exercise, the surplus old slot detaches
+      // to null rather than falling back to another occurrence: reattaching a
+      // removed working slot's sets to a surviving warm-up slot of the same
+      // movement would silently corrupt that slot's completion/history
+      // (todaySlotSets counts any matching template id before the warm-up
+      // parity check). null is the same path a fully-removed exercise/day takes.
+      const newTeId = newTeIdByDayExOcc.get(`${exKey}:${occ}`) ?? null;
       oldToNewTe.set(ot.id, newTeId);
     }
   }

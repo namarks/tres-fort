@@ -134,7 +134,9 @@ resolver (`resolveExercise`) before hitting the catalog. Current tools:
 `update_day`, `delete_exercise`, `adjust_today`, `set_schedule`,
 `set_planned_session`, `skip_planned_session`, `set_race`,
 `set_periodization`, `add_trip`, `update_trip`, `remove_trip`,
-`set_stress_model`, `refresh_rides`.
+`set_stress_model`, `refresh_rides`. Also exposes a
+**resource** (`coach://state/current` — compact coaching brief readable at
+chat start) and a **prompt** (`coach_brief`).
 
 ## Conventions
 

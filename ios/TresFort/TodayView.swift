@@ -7,6 +7,9 @@ private func clock(_ s: Int) -> String {
     s <= 0 ? "GO" : String(format: "%d:%02d", s / 60, s % 60)
 }
 
+/// Identifies the day whose workout the editor sheet is editing.
+private struct EditDayTarget: Identifiable { let id: String }
+
 struct TodayView: View {
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
@@ -25,6 +28,9 @@ struct TodayView: View {
     /// without ending the rest timer. Reset whenever `restEndDate` clears so
     /// the next rest starts in the expanded state.
     @State private var restMinimized = false
+    /// Presents the in-app workout editor (add/remove/reorder exercises +
+    /// warm-ups) for the resolved day.
+    @State private var editTarget: EditDayTarget?
 
     var body: some View {
         NavigationStack {
@@ -77,6 +83,11 @@ struct TodayView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Refresh") { Task { await sync.load() } }
+                        if let id = sync.running ? sync.selectedDay?.id : sync.todayResolvedDay?.id {
+                            Button {
+                                editTarget = EditDayTarget(id: id)
+                            } label: { Label("Edit exercises", systemImage: "slider.horizontal.3") }
+                        }
                         if sync.running {
                             Button("End workout", role: .destructive) {
                                 Task { await sync.finishWorkout() }
@@ -114,6 +125,9 @@ struct TodayView: View {
             } message: {
                 Text("The sets you logged will be deleted and this session won't count. The day goes back to its normal schedule. This can't be undone.")
             }
+            .sheet(item: $editTarget) { t in
+                EditWorkoutSheet(sync: sync, dayID: t.id)
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -146,7 +160,8 @@ struct TodayView: View {
             // resumes into the runner via the existing start path.
             TodayWorkoutView(
                 sync: sync, auth: auth, day: day,
-                onOverride: { showOverridePicker = true })
+                onOverride: { showOverridePicker = true },
+                onEdit: { editTarget = EditDayTarget(id: day.id) })
         } else {
             // Pure rest day (or skipped) — no primary START CTA.
             RestDayView(
@@ -396,6 +411,7 @@ private struct TodayWorkoutView: View {
     @ObservedObject var auth: AuthModel
     let day: DayTemplate
     let onOverride: () -> Void
+    let onEdit: () -> Void
     @State private var demoFor: TemplateExercise?
 
     var body: some View {
@@ -410,6 +426,7 @@ private struct TodayWorkoutView: View {
                             Text(ex.exercise_name.uppercased())
                                 .font(Theme.display(22)).foregroundStyle(Theme.text)
                             DemoInfoButton { demoFor = ex }
+                            if ex.isWarmup { WarmupTag() }
                             Spacer()
                             Text(ex.targetLabel)
                                 .font(Theme.mono(14)).foregroundStyle(Theme.muted)
@@ -422,7 +439,8 @@ private struct TodayWorkoutView: View {
                     if let err = sync.loadError {
                         Text(err).font(Theme.mono(12)).foregroundStyle(Theme.danger)
                     }
-                    OverrideButton(onOverride: onOverride).padding(.top, 6)
+                    EditWorkoutButton(onEdit: onEdit).padding(.top, 6)
+                    OverrideButton(onOverride: onOverride)
                 }
                 .padding(16)
             }
@@ -486,6 +504,26 @@ private struct OverrideButton: View {
                 Text("Train a different day")
                     .font(Theme.mono(13, .bold))
                 Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold))
+            }
+            .foregroundStyle(Theme.muted)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(Theme.surface.opacity(0.6))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+    }
+}
+
+/// Demoted secondary affordance: opens the in-app workout editor to tweak
+/// today's exercises (add one, drop one, add an erg warm-up) without Claude.
+private struct EditWorkoutButton: View {
+    let onEdit: () -> Void
+    var body: some View {
+        Button(action: onEdit) {
+            HStack(spacing: 6) {
+                Image(systemName: "slider.horizontal.3").font(.system(size: 11, weight: .bold))
+                Text("Edit workout")
+                    .font(Theme.mono(13, .bold))
             }
             .foregroundStyle(Theme.muted)
             .frame(maxWidth: .infinity)
@@ -569,6 +607,7 @@ private struct RunnerView: View {
                             .font(Theme.display(52)).foregroundStyle(Theme.text)
                             .lineLimit(1).minimumScaleFactor(0.4)
                         DemoInfoButton { demoFor = ex }
+                        if ex.isWarmup { WarmupTag() }
                         Spacer(minLength: 0)
                     }
                     .frame(height: 56)
@@ -629,9 +668,25 @@ private struct RunnerView: View {
                         Text("\(sync.exerciseIndex + 1) / \(sync.exercises.count)")
                             .font(Theme.mono(11)).tracking(1.5).foregroundStyle(Theme.muted)
                             .frame(maxWidth: .infinity)
-                        navBtn("SKIP →") { sync.skip() }
+                        // Non-destructive: just move to the next exercise. Going
+                        // out of order no longer strikes out the ones you pass (#3).
+                        navBtn("NEXT →") { sync.next() }
+                            .disabled(sync.exerciseIndex >= sync.exercises.count - 1)
                     }
                     .padding(.top, 24)
+
+                    // Explicit, lower-emphasis "I'm not doing this one" — strikes
+                    // the exercise out and drops it from the queue so the workout
+                    // can finish without it. Kept SEPARATE from NEXT so plain
+                    // forward navigation never marks anything skipped (#3).
+                    Button { sync.skip() } label: {
+                        Text("Skip this exercise")
+                            .font(Theme.mono(11, .bold)).tracking(1)
+                            .foregroundStyle(Theme.dim)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    .padding(.top, 8)
                 }
                 .padding(20)
                 // When a rest is running the floating RestPill sits at the
@@ -763,7 +818,7 @@ private struct RunnerView: View {
     }
 
     private func completedChips(ex: TemplateExercise) -> some View {
-        let done = sync.todaySets(ex.exercise_id)
+        let done = sync.todaySlotSets(ex)
         return VStack(alignment: .leading, spacing: 10) {
             Text("COMPLETED SETS").font(Theme.mono(10, .bold)).tracking(2)
                 .foregroundStyle(Theme.muted)
@@ -1073,8 +1128,14 @@ private struct RestPill: View {
 private struct FinishedView: View {
     @ObservedObject var sync: SyncModel
 
+    /// All live WORKING sets in today's session (warm-ups excluded), taken
+    /// straight from the session rather than per-slot so the same movement in
+    /// two slots can't double-count the summary.
     private var todaysSets: [SetLog] {
-        sync.exercises.flatMap { sync.todaySets($0.exercise_id) }
+        guard let sid = sync.todaySession?.id else { return [] }
+        return sync.sets.filter {
+            $0.session_id == sid && $0.deleted_at == nil && $0.is_warmup == 0
+        }
     }
 
     var body: some View {

@@ -33,10 +33,12 @@ final class SyncModel: ObservableObject {
     @Published var exerciseIndex = 0
     @Published var weight: Double = 0
     @Published var reps: Int = 0
-    /// Exercise ids the user explicitly skipped this session. A skip is
-    /// honored for the rest of the workout — the exercise is NOT requeued
-    /// (#3). In-memory + per-session: cleared on startWorkout; logging a set
-    /// for a skipped exercise un-skips it (you came back and did it).
+    /// PLAN SLOT ids (template_exercise_id) the user explicitly skipped this
+    /// session. Keyed by slot, not exercise_id, to match the slot-keyed
+    /// completion path: the same movement in two slots skips independently
+    /// (#3). A skip is honored for the rest of the workout — the slot is NOT
+    /// requeued. In-memory + per-session: cleared on startWorkout; logging a
+    /// set for a skipped slot un-skips it (you came back and did it).
     @Published var skipped: Set<String> = []
 
     // Timers.
@@ -112,6 +114,55 @@ final class SyncModel: ObservableObject {
         return live(exerciseID)
             .filter { $0.session_id == sid }
             .sorted { $0.set_index < $1.set_index }
+    }
+
+    /// Live sets logged for a specific PLAN SLOT in today's session — the
+    /// completion unit for the runner. Keys on template_exercise_id (the slot),
+    /// exercise_id (the movement), AND is_warmup (the slot's class) so the SAME
+    /// movement in two slots, sets logged out of order, a stale link to a
+    /// since-swapped slot, or a warm-up set mis-pointed at a working slot of the
+    /// same movement never cross-attribute completion (#3). A warm-up slot's
+    /// sets ARE is_warmup (the backend inherits the flag from the slot), so the
+    /// parity check still lets a warm-up slot complete from its own sets — it
+    /// only excludes a set whose class disagrees with the slot's. Sets with no
+    /// slot link (Claude/MCP, or pre-this-build) fall back to matching
+    /// exercise_id + warm-up parity so they still count toward the right slot.
+    func todaySlotSets(_ ex: TemplateExercise) -> [SetLog] {
+        guard let sid = todaySession?.id else { return [] }
+        let warm = ex.isWarmup ? 1 : 0
+        // Sets carrying a template_exercise_id attribute to that slot exactly.
+        // The exercise_id + warm-up *fallback* (for slot-less sets — MCP-,
+        // pre-this-build-, or detached-by-delete-logged) only fires when this
+        // is the sole slot for that movement+warm-up today; with duplicates a
+        // slot-less set is ambiguous, so an explicit slot id is required.
+        //
+        // KNOWN LIMITATION: deleting an already-logged slot detaches its sets
+        // (deleteTemplateExercise nulls template_exercise_id); if the same
+        // movement is then re-added as the only such slot in the same session,
+        // those detached sets attribute to the fresh slot. Telling a detached
+        // set apart from a legitimate slot-less MCP/legacy log needs a backend
+        // discriminator we've deliberately not added — gating on source='ios'
+        // instead wrongly dropped legacy iOS sets that never had a slot id. The
+        // iOS logger always sends a slot id now, so this only affects that
+        // specific delete-then-re-add edit path.
+        let unique = exercises.filter {
+            $0.exercise_id == ex.exercise_id && ($0.isWarmup ? 1 : 0) == warm
+        }.count == 1
+        return sets.filter { s in
+            guard s.session_id == sid, s.deleted_at == nil else { return false }
+            // Slot-linked set: attribute to this slot ONLY when the movement AND
+            // the warm-up class also match. The slot id alone is not trusted — a
+            // stale/swapped link (slot since changed to a different exercise) or
+            // a warm-up set mis-pointed at a working slot of the same movement
+            // must never count toward, or complete, this slot. This cross-check
+            // is the completion invariant; the backend write-guards (log_set,
+            // update_plan remap) are belt-and-suspenders over it.
+            if let teid = s.template_exercise_id {
+                return teid == ex.id && s.exercise_id == ex.exercise_id && s.is_warmup == warm
+            }
+            return unique && s.exercise_id == ex.exercise_id && s.is_warmup == warm
+        }
+        .sorted { $0.set_index < $1.set_index }
     }
 
     func exerciseName(_ id: String) -> String {
@@ -223,14 +274,26 @@ final class SyncModel: ObservableObject {
                     jwt: jwt)
             }
             guard let session = todaySession else { return }
-            let nextIndex = todaySets(ex.exercise_id).count + 1
+            // Index per SLOT, not per exercise_id, so two slots of the same
+            // movement number independently (#3). The backend re-numbers on a
+            // (session, exercise_id, set_index, is_warmup) collision, so a
+            // shared exercise_id can't drop a set.
+            let nextIndex = todaySlotSets(ex).count + 1
             var body: [String: Any] = [
                 "id": UUID().uuidString,
                 "exercise_id": ex.exercise_id,
+                // Link the set to its plan slot so completion/chips key on the
+                // slot (the #3 fix) and a warm-up slot's set inherits is_warmup
+                // server-side.
+                "template_exercise_id": ex.id,
                 "set_index": nextIndex,
                 "weight": weight,
                 "reps": reps,
             ]
+            // A warm-up slot's sets are warm-ups: kept out of working-set
+            // rollups / session RPE. (The backend also infers this from the
+            // slot, but stating it keeps the local cache correct pre-reload.)
+            if ex.isWarmup { body["is_warmup"] = true }
             // Only timed holds (planks) record a duration. Rep sets must NOT —
             // previously every set stored wall-clock seconds since it began,
             // which then rendered as the set's value for bodyweight lifts, so
@@ -257,7 +320,7 @@ final class SyncModel: ObservableObject {
     /// 1-based number of the set about to be performed for the current exercise.
     var currentSetNumber: Int {
         guard let ex = currentExercise else { return 1 }
-        return todaySets(ex.exercise_id).count + 1
+        return todaySlotSets(ex).count + 1
     }
 
     func startWorkout() {
@@ -334,7 +397,7 @@ final class SyncModel: ObservableObject {
         timedActive = false
         timedEndDate = nil
         timedStartDate = nil
-        skipped.remove(ex.exercise_id)   // logging work un-skips it
+        skipped.remove(ex.id)   // logging work un-skips this slot
         let secs = max(1, held)
         await logSet(ex, weight: 0, reps: secs, durationOverride: secs)
         if isComplete(ex) {
@@ -350,9 +413,9 @@ final class SyncModel: ObservableObject {
     func setWeight(_ value: Double) { weight = max(0, value) }
     func adjustReps(_ delta: Int) { reps = max(0, reps + delta) }
 
-    func setsDone(_ ex: TemplateExercise) -> Int { todaySets(ex.exercise_id).count }
+    func setsDone(_ ex: TemplateExercise) -> Int { todaySlotSets(ex).count }
     func isComplete(_ ex: TemplateExercise) -> Bool { setsDone(ex) >= ex.target_sets }
-    func isSkipped(_ ex: TemplateExercise) -> Bool { skipped.contains(ex.exercise_id) }
+    func isSkipped(_ ex: TemplateExercise) -> Bool { skipped.contains(ex.id) }
     /// "Resolved" = nothing left to do here: either completed or skipped.
     /// Drives requeue/finish so a skipped exercise is never auto-represented.
     func isResolved(_ ex: TemplateExercise) -> Bool { isComplete(ex) || isSkipped(ex) }
@@ -379,7 +442,7 @@ final class SyncModel: ObservableObject {
 
     func logCurrentSet() async {
         guard let ex = currentExercise else { return }
-        skipped.remove(ex.exercise_id)   // logging work un-skips it
+        skipped.remove(ex.id)   // logging work un-skips this slot
         await logSet(ex, weight: weight, reps: reps)   // also starts rest timer
         if isComplete(ex) {
             if let next = nextIncompleteIndex { jump(to: next) }
@@ -391,13 +454,24 @@ final class SyncModel: ObservableObject {
     /// session (so it is NOT requeued, #3) and advances to the next
     /// unresolved exercise; ends the workout if none remain.
     func skip() {
-        if let ex = currentExercise { skipped.insert(ex.exercise_id) }
+        if let ex = currentExercise { skipped.insert(ex.id) }
         if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
     }
 
     func previous() {
         guard exerciseIndex > 0 else { return }
         exerciseIndex -= 1
+        seedInputs()
+    }
+
+    /// Non-destructive forward navigation — move to the next exercise in order
+    /// WITHOUT marking the current one skipped. Going "out of order" (stepping
+    /// ahead to a later lift you'll come back to) must never strike out the
+    /// ones you pass; only an explicit Skip does that (#3). Pairs with
+    /// `previous()`; the jump strip still allows arbitrary jumps.
+    func next() {
+        guard exerciseIndex < exercises.count - 1 else { return }
+        exerciseIndex += 1
         seedInputs()
     }
 
@@ -436,6 +510,89 @@ final class SyncModel: ObservableObject {
         await load()
     }
 
+    // MARK: in-app workout editing
+    //
+    // Direct edits to the active plan's day template from the app — the
+    // "Claude is the brain, the app is the executor, but I can still tweak
+    // today's workout" loop (#1/#2). These mutate the versioned plan tree via
+    // the REST editor endpoints (thin wrappers over the same updateExercise /
+    // deleteTemplateExercise the MCP tools use) and reload so the change is
+    // reflected immediately. Editing the DAY TEMPLATE (not a per-session
+    // override) keeps one source of truth and mirrors how Claude edits — an
+    // added erg warm-up recurs on that day, which is what you want for a
+    // warm-up. Any edit can shift slot indices (add/delete/reorder before the
+    // current one) or remove the active slot itself, so after a reload we pin
+    // the runner back to the same physical slot by id — capture it before
+    // load(), restore it after.
+
+    func addExerciseToDay(_ dayID: String, exercise: String, isWarmup: Bool,
+                          targetSets: Int, targetReps: Int, restSeconds: Int,
+                          targetDurationS: Int?) async {
+        guard let jwt = auth.jwt else { return }
+        let activeSlotID = currentExercise?.id
+        do {
+            _ = try await api.addExercise(
+                dayID: dayID, exercise: exercise, isWarmup: isWarmup,
+                targetSets: targetSets, targetReps: targetReps,
+                restSeconds: restSeconds, targetDurationS: targetDurationS, jwt: jwt)
+            await load()
+            restoreActiveSlot(activeSlotID)
+        } catch { handle(error) }
+    }
+
+    func deleteSlot(dayID: String, teID: String) async {
+        guard let jwt = auth.jwt else { return }
+        let activeSlotID = currentExercise?.id
+        do {
+            try await api.deleteExerciseSlot(dayID: dayID, teID: teID, jwt: jwt)
+            await load()
+            restoreActiveSlot(activeSlotID)
+        } catch { handle(error) }
+    }
+
+    /// Move a slot to a new position. The backend densifies sibling
+    /// order_index values around the requested destination.
+    func moveSlot(dayID: String, teID: String, toIndex: Int) async {
+        guard let jwt = auth.jwt else { return }
+        let activeSlotID = currentExercise?.id
+        do {
+            _ = try await api.updateExerciseSlot(
+                dayID: dayID, teID: teID, fields: ["order_index": toIndex], jwt: jwt)
+            await load()
+            restoreActiveSlot(activeSlotID)
+        } catch { handle(error) }
+    }
+
+    /// After an edit reloads the plan, keep the runner on the same physical
+    /// slot it was executing. Re-find the slot by its stable
+    /// TemplateExercise.id, since a numeric exerciseIndex silently points at a
+    /// different lift once a slot before it is added/removed/reordered. If the
+    /// active slot itself was deleted (id gone), keep the index — it now lands
+    /// on the slot that followed the deletion — and clamp it into bounds.
+    private func restoreActiveSlot(_ previousID: String?) {
+        guard running else { return }
+        // The editor just removed the last slot mid-workout — nothing left to
+        // run. Stop the runner non-destructively (logged sets are kept; no
+        // completeSession) so the user lands back on Today instead of a blank
+        // RunnerView (currentExercise nil); re-entering the day resumes. Mirror
+        // finishWorkout's local teardown so the rest cue / Live Activity don't
+        // linger.
+        if exercises.isEmpty {
+            exerciseIndex = 0
+            running = false
+            finished = false
+            workoutStart = nil
+            skipRest()
+            return
+        }
+        if let previousID, let i = exercises.firstIndex(where: { $0.id == previousID }) {
+            exerciseIndex = i
+        } else if exerciseIndex >= exercises.count {
+            exerciseIndex = exercises.count - 1
+        }
+        seedInputs()
+    }
+
     // MARK: rest timer
 
     /// Name of the next not-complete exercise (for the rest screen's UP NEXT).
@@ -452,22 +609,82 @@ final class SyncModel: ObservableObject {
         } catch { handle(error) }
     }
 
+    /// Fires the "rest's up" audio cue exactly when the current rest elapses.
+    /// Cancelled/rescheduled whenever the rest changes (+15 / −15 / DONE / a
+    /// new set's rest), so it never double-fires or fires for a stale timer.
+    private var restCueTask: Task<Void, Never>?
+
     func startRest(seconds: Int, name: String) {
         restExercise = name
         restTotal = seconds
         let end = Date().addingTimeInterval(TimeInterval(seconds))
         restEndDate = end
         RestLiveActivity.start(exercise: name, endDate: end, upNext: upNextName)
+        scheduleRestCue(for: end)
+        RestCue.scheduleNotification(at: end)
     }
     func addRest(_ seconds: Int) {
         guard let end = restEndDate else { return }
         let newEnd = end.addingTimeInterval(TimeInterval(seconds))
         restEndDate = newEnd
         RestLiveActivity.update(endDate: newEnd, upNext: upNextName)
+        scheduleRestCue(for: newEnd)
+        RestCue.scheduleNotification(at: newEnd)
     }
     func skipRest() {
         restEndDate = nil
+        restCueTask?.cancel()
+        restCueTask = nil
         RestLiveActivity.endNow()
+        RestCue.cancelNotification()
+    }
+
+    /// The lift to name in the rest cue: the one the runner is ON when rest
+    /// ends — same value the foreground cue computes at fire time, but resolved
+    /// up front for the scheduled notification. The index has already advanced
+    /// by the time rest starts (logCurrentSet jumps only when the slot
+    /// completed), so currentExercise is the SAME exercise mid-sets, the next
+    /// one when it's done, and empty ("workout complete") when finished.
+    private var restCueLift: String {
+        finished ? "" : (currentExercise?.exercise_name ?? "")
+    }
+
+    /// Poll-to-fire (250ms ticks) rather than one long sleep so the cue lands
+    /// reliably "at the end of rest" even if a single sleep is suspended — the
+    /// same robustness the timed-set runner needed (#55). The cue only sounds
+    /// if this is still the same, still-active rest when the deadline arrives.
+    private func scheduleRestCue(for end: Date) {
+        restCueTask?.cancel()
+        restCueTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.restEndDate == end else { return }
+                if Date() >= end { break }
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            }
+            if Task.isCancelled { return }
+            guard let self, self.restEndDate == end else { return }
+            // Announce the exercise the runner is actually ON when rest ends —
+            // NOT upNextName, which returns the next DIFFERENT exercise. By the
+            // time rest ends the index has already advanced (logCurrentSet jumps
+            // only when the slot completed), so currentExercise is the next set's
+            // lift: the SAME exercise mid-sets, the next one when it's done.
+            // Empty when the workout finished → RestCue says "workout complete".
+            //
+            // Exactly-once across the foreground/background boundary: if the app
+            // was locked/backgrounded across `end`, this Task was suspended and
+            // the scheduled local notification already cued the user. Detect that
+            // authoritatively via the OS delivered list (iOS suppresses the
+            // notification while we're foreground, so a delivered one means we
+            // were genuinely backgrounded) and skip the in-app replay — rather
+            // than guessing from how late this resumed tick is, which double-cues
+            // when the user taps the notification within the lateness window.
+            let alreadyCued = await RestCue.notificationWasDelivered()
+            if Task.isCancelled || self.restEndDate != end { return }
+            if !alreadyCued {
+                RestCue.play(upNext: self.restCueLift)
+            }
+            RestCue.cancelNotification()
+        }
     }
 
     // MARK: calendar projection (read-only future calendar)

@@ -1101,3 +1101,307 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     expect(miss.error).toBe('not_found');
   });
 });
+
+describe('update_plan preserves warm-up flags', () => {
+  it('keeps is_warmup on a slot when a rebuild omits the field', async () => {
+    // Build a day with a prescribed warm-up slot + a working slot.
+    const built = await call('update_plan', {
+      name: 'Warmup preservation',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Warmup Day',
+          exercises: [
+            { exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300, is_warmup: true },
+            { exercise: 'bench', target_sets: 3, target_reps: 5 },
+          ],
+        },
+      ],
+    });
+    expect(built.conflict).toBe(false);
+    const day0 = built.plan.days[0];
+    const warm = day0.exercises.find((e: any) => e.is_warmup === 1);
+    const work = day0.exercises.find((e: any) => e.is_warmup === 0);
+    expect(warm).toBeTruthy();
+    expect(work).toBeTruthy();
+
+    // Rebuild the SAME tree as an older caller would: omit is_warmup entirely.
+    const rebuilt = await call('update_plan', {
+      name: 'Warmup preservation',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Warmup Day',
+          exercises: [
+            { exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300 },
+            { exercise: 'bench', target_sets: 3, target_reps: 5 },
+          ],
+        },
+      ],
+    });
+    expect(rebuilt.conflict).toBe(false);
+
+    // The warm-up flag survived — not silently demoted to a working slot.
+    const rday = rebuilt.plan.days[0];
+    const rerg = rday.exercises.find((e: any) => e.exercise_id === warm.exercise_id);
+    const rbench = rday.exercises.find((e: any) => e.exercise_id === work.exercise_id);
+    expect(rerg.is_warmup).toBe(1);
+    expect(rbench.is_warmup).toBe(0);
+  });
+
+  it('honors an explicit is_warmup:false over the preserved value', async () => {
+    const built = await call('update_plan', {
+      name: 'Explicit clear',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Clear Day',
+          exercises: [{ exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300, is_warmup: true }],
+        },
+      ],
+    });
+    const warmId = built.plan.days[0].exercises[0].exercise_id;
+
+    const cleared = await call('update_plan', {
+      name: 'Explicit clear',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Clear Day',
+          exercises: [{ exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300, is_warmup: false }],
+        },
+      ],
+    });
+    const slot = cleared.plan.days[0].exercises.find((e: any) => e.exercise_id === warmId);
+    expect(slot.is_warmup).toBe(0);
+  });
+
+  it('preserves per-occurrence flags when the same exercise appears twice', async () => {
+    // A day with the same movement twice: a prescribed warm-up ramp, then
+    // working sets. Both resolve to the same exercise_id.
+    const built = await call('update_plan', {
+      name: 'Dup occurrence',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Ramp Day',
+          exercises: [
+            { exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300, is_warmup: true },
+            { exercise: 'erg', target_sets: 3, target_reps: 10, target_duration_s: 600, is_warmup: false },
+          ],
+        },
+      ],
+    });
+    let ex = built.plan.days[0].exercises;
+    expect(ex).toHaveLength(2);
+    expect(ex[0].is_warmup).toBe(1);
+    expect(ex[1].is_warmup).toBe(0);
+
+    // Older caller omits is_warmup on both occurrences during a rebuild.
+    const rebuilt = await call('update_plan', {
+      name: 'Dup occurrence',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Ramp Day',
+          exercises: [
+            { exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300 },
+            { exercise: 'erg', target_sets: 3, target_reps: 10, target_duration_s: 600 },
+          ],
+        },
+      ],
+    });
+    ex = rebuilt.plan.days[0].exercises;
+    expect(ex).toHaveLength(2);
+    // Each occurrence keeps its own flag — the warm-up isn't smeared onto the
+    // working slot, nor the working flag onto the warm-up.
+    expect(ex[0].is_warmup).toBe(1);
+    expect(ex[1].is_warmup).toBe(0);
+  });
+
+  it('remaps a logged set to the same occurrence across a rebuild', async () => {
+    // Day with the same exercise twice: warm-up ramp (occ0) + working (occ1).
+    const planBody = {
+      name: 'Dup remap',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Remap Day',
+          exercises: [
+            { exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300, is_warmup: true },
+            { exercise: 'erg', target_sets: 3, target_reps: 10, target_duration_s: 600, is_warmup: false },
+          ],
+        },
+      ],
+    };
+    const built = await call('update_plan', planBody);
+    const slots0 = built.plan.days[0].exercises;
+    expect(slots0).toHaveLength(2);
+    const workingOldId = slots0[1].id; // occ1 — the working slot
+    expect(slots0[1].is_warmup).toBe(0);
+
+    // Seed a session with a set logged against the WORKING slot (occ1) — the
+    // case the first-occurrence remap mis-pointed onto the warm-up slot.
+    const userId = (await env.DB.prepare('SELECT id FROM users ORDER BY created_at LIMIT 1').first<{ id: string }>())!.id;
+    const planId = (
+      await env.DB.prepare("SELECT id FROM plans WHERE user_id=?1 AND status='active'").bind(userId).first<{ id: string }>()
+    )!.id;
+    const sid = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,NULL,NULL,NULL,?7,?7)',
+    )
+      .bind(sid, userId, planId, '2026-09-01', 'in_progress', Date.now(), Date.now())
+      .run();
+    const setId = crypto.randomUUID();
+    await env.DB.prepare(
+      "INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,deleted_at) VALUES (?1,?2,?3,?4,1,150,10,8,0,NULL,?5,'ios',NULL)",
+    )
+      .bind(setId, sid, slots0[1].exercise_id, workingOldId, Date.now())
+      .run();
+
+    // Rebuild with both occurrences intact (new slot ids minted).
+    const rebuilt = await call('update_plan', planBody);
+    const slots1 = rebuilt.plan.days[0].exercises;
+    const newWarmupId = slots1[0].id; // new occ0
+    const newWorkingId = slots1[1].id; // new occ1
+
+    // The set followed the working occurrence — not collapsed onto occ0.
+    const set = await env.DB.prepare('SELECT template_exercise_id FROM set_logs WHERE id=?1')
+      .bind(setId)
+      .first<{ template_exercise_id: string }>();
+    expect(set!.template_exercise_id).toBe(newWorkingId);
+    expect(set!.template_exercise_id).not.toBe(newWarmupId);
+  });
+
+  it('detaches (nulls) a logged set when its occurrence is dropped, never falling back to a surviving slot', async () => {
+    // Same warm-up (occ0) + working (occ1) day; the working slot's sets must
+    // NOT reattach to the surviving warm-up slot when the rebuild drops occ1.
+    const dupBody = {
+      name: 'Dup detach',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Detach Day',
+          exercises: [
+            { exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300, is_warmup: true },
+            { exercise: 'erg', target_sets: 3, target_reps: 10, target_duration_s: 600, is_warmup: false },
+          ],
+        },
+      ],
+    };
+    const built = await call('update_plan', dupBody);
+    const slots0 = built.plan.days[0].exercises;
+    expect(slots0).toHaveLength(2);
+    const workingOldId = slots0[1].id; // occ1 — the working slot
+
+    const userId = (await env.DB.prepare('SELECT id FROM users ORDER BY created_at LIMIT 1').first<{ id: string }>())!.id;
+    const planId = (
+      await env.DB.prepare("SELECT id FROM plans WHERE user_id=?1 AND status='active'").bind(userId).first<{ id: string }>()
+    )!.id;
+    const sid = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,NULL,NULL,NULL,?7,?7)',
+    )
+      .bind(sid, userId, planId, '2026-09-02', 'in_progress', Date.now(), Date.now())
+      .run();
+    const setId = crypto.randomUUID();
+    await env.DB.prepare(
+      "INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,deleted_at) VALUES (?1,?2,?3,?4,1,150,10,8,0,NULL,?5,'ios',NULL)",
+    )
+      .bind(setId, sid, slots0[1].exercise_id, workingOldId, Date.now())
+      .run();
+
+    // Rebuild dropping the working slot, keeping ONLY the warm-up occurrence.
+    const rebuilt = await call('update_plan', {
+      name: 'Dup detach',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Detach Day',
+          exercises: [
+            { exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300, is_warmup: true },
+          ],
+        },
+      ],
+    });
+    const slots1 = rebuilt.plan.days[0].exercises;
+    expect(slots1).toHaveLength(1);
+    const survivingWarmupId = slots1[0].id;
+
+    // The orphaned working set detaches to null — it does NOT land on the
+    // surviving warm-up slot (which would corrupt that slot's completion).
+    const set = await env.DB.prepare('SELECT template_exercise_id FROM set_logs WHERE id=?1')
+      .bind(setId)
+      .first<{ template_exercise_id: string | null }>();
+    expect(set!.template_exercise_id).toBeNull();
+    expect(set!.template_exercise_id).not.toBe(survivingWarmupId);
+  });
+
+  it('detaches a LEADING dropped duplicate (warm-up) instead of sliding it onto the working slot', async () => {
+    // Warm-up erg (occ0) + working erg (occ1); dropping the FRONT occurrence
+    // (the warm-up) must detach the warm-up's logged sets, NOT remap them onto
+    // the surviving working slot. The pre-class-keying positional remap paired
+    // old-occ0 → new-occ0 and slid warm-up sets onto the working erg.
+    const dupBody = {
+      name: 'Lead detach',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Lead Day',
+          exercises: [
+            { exercise: 'erg', target_sets: 1, target_reps: 1, target_duration_s: 300, is_warmup: true },
+            { exercise: 'erg', target_sets: 3, target_reps: 10, target_duration_s: 600, is_warmup: false },
+          ],
+        },
+      ],
+    };
+    const built = await call('update_plan', dupBody);
+    const slots0 = built.plan.days[0].exercises;
+    expect(slots0).toHaveLength(2);
+    const warmupOldId = slots0[0].id; // occ0 — the warm-up slot
+    expect(slots0[0].is_warmup).toBe(1);
+
+    const userId = (await env.DB.prepare('SELECT id FROM users ORDER BY created_at LIMIT 1').first<{ id: string }>())!.id;
+    const planId = (
+      await env.DB.prepare("SELECT id FROM plans WHERE user_id=?1 AND status='active'").bind(userId).first<{ id: string }>()
+    )!.id;
+    const sid = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,NULL,NULL,NULL,?7,?7)',
+    )
+      .bind(sid, userId, planId, '2026-09-03', 'in_progress', Date.now(), Date.now())
+      .run();
+    // A warm-up set (is_warmup=1) logged against the WARM-UP slot.
+    const setId = crypto.randomUUID();
+    await env.DB.prepare(
+      "INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,deleted_at) VALUES (?1,?2,?3,?4,1,0,300,NULL,1,NULL,?5,'ios',NULL)",
+    )
+      .bind(setId, sid, slots0[0].exercise_id, warmupOldId, Date.now())
+      .run();
+
+    // Rebuild dropping the warm-up, keeping ONLY the working erg.
+    const rebuilt = await call('update_plan', {
+      name: 'Lead detach',
+      days: [
+        {
+          day_label: 'A',
+          name: 'Lead Day',
+          exercises: [
+            { exercise: 'erg', target_sets: 3, target_reps: 10, target_duration_s: 600, is_warmup: false },
+          ],
+        },
+      ],
+    });
+    const slots1 = rebuilt.plan.days[0].exercises;
+    expect(slots1).toHaveLength(1);
+    const survivingWorkingId = slots1[0].id;
+    expect(slots1[0].is_warmup).toBe(0);
+
+    // The warm-up set detaches — it does NOT slide onto the working slot.
+    const set = await env.DB.prepare('SELECT template_exercise_id FROM set_logs WHERE id=?1')
+      .bind(setId)
+      .first<{ template_exercise_id: string | null }>();
+    expect(set!.template_exercise_id).toBeNull();
+    expect(set!.template_exercise_id).not.toBe(survivingWorkingId);
+  });
+});

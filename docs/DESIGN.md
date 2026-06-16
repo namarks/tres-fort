@@ -111,6 +111,7 @@ CREATE TABLE template_exercises (
   target_weight    REAL,                        -- current working weight; Claude advances this
   progression      TEXT,                        -- JSON, see below
   cues             TEXT,                        -- form-cue reminders Claude sets
+  is_warmup        INTEGER NOT NULL DEFAULT 0,  -- 1 = prescribed warm-up slot (erg, mobility); migration 0026
   created_at       INTEGER NOT NULL,
   updated_at       INTEGER NOT NULL
 );
@@ -195,9 +196,16 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `PATCH /api/sets/{id}` | Edit / soft-delete a set. |
 | `GET /api/history?exercise_id=&from=&to=` | Set history + est-1RM (Epley) + top set/session. |
 | `GET /api/volume?muscle=&from=&to=` | Tonnage & hard sets per week bucket. |
-| `PATCH /api/day_templates/{id}` | `{name?, order_index?}` — app's only plan write (inline rename/reorder), version-checked. |
+| `PATCH /api/days/{id}` | `{name?, day_label?, order_index?, notes?}` — inline day rename/reorder. |
+| `POST /api/days/{id}/exercises` | Add an exercise slot (incl. `is_warmup`, `target_duration_s`). |
+| `PATCH /api/days/{id}/exercises/{teId}` | Edit one slot in place (targets / rest / warm-up flag / order). |
+| `DELETE /api/days/{id}/exercises/{teId}` | Remove a slot; detaches (NULLs) historical `set_logs.template_exercise_id`. |
 
-Any write touching the plan tree bumps `plans.version`.
+In-app workout editing (add/remove/reorder exercises + warm-ups, migration
+0026) goes through the three `/api/days/{id}/exercises…` routes — thin wrappers
+over the same `updateExercise`/`deleteTemplateExercise` the MCP tools use,
+audited as `actor='ios'`. Any write touching the plan tree bumps
+`plans.version`.
 
 ---
 
@@ -323,9 +331,16 @@ SwiftUI, iOS 17+, SwiftData as a cache mirroring the server tree. A
 `SyncService` actor owns networking + reconcile; views use `@Query`.
 
 - **Today:** exercise list, big weight/reps steppers, log-set button, rest
-  timer overlay + Live Activity trigger, last-time chips per exercise.
+  timer overlay + Live Activity trigger + **audio cue when rest ends** (RestCue:
+  chime/haptic/speech, headphone-aware), last-time chips per exercise. Per-set
+  completion keys on `template_exercise_id` (the slot), not `exercise_id`, so the
+  same movement in two slots / out-of-order logging never mis-completes.
+- **Edit workout:** in-app add/remove/reorder of exercises + warm-ups
+  (`EditWorkoutSheet`), editing the active plan's day template via the REST
+  editor endpoints. Claude still owns programming/analysis; this is the executor
+  letting you tweak the session in front of you.
 - **History:** per-exercise Swift Charts trend, last-session preview.
-- **Plan:** read-mostly tree; inline rename/reorder only (PATCH).
+- **Plan:** read-mostly tree; inline rename/reorder (PATCH) + the editor above.
 - **Auth:** Sign in with Apple → Keychain JWT; 401 → re-auth.
 - **No in-app chat** (by design — you chat in the Claude app; this reflects state).
 - UI per the React artifact (dark scoreboard, condensed display type, mono

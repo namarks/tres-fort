@@ -76,6 +76,43 @@ struct APIClient {
         let _: SetLog = try await patch("api/sets/\(setId)", body: ["deleted": true], jwt: jwt)
     }
 
+    // MARK: - in-app plan editing
+    //
+    // Add / edit / remove an exercise slot in the active plan's day template.
+    // Thin wrappers over the REST editor endpoints (POST/PATCH/DELETE
+    // /api/days/:dayId/exercises[/:teId]) — the app-side counterpart to the
+    // MCP add_exercise / update_exercise / delete_exercise tools. The caller
+    // reloads /api/state afterwards, so these return just the slot id.
+
+    /// Minimal decode of an edited slot row (the response carries the full
+    /// template_exercises row; the caller only needs the id and reloads).
+    struct SlotIDRow: Decodable { let id: String }
+
+    @discardableResult
+    func addExercise(dayID: String, exercise: String, isWarmup: Bool,
+                     targetSets: Int, targetReps: Int, restSeconds: Int,
+                     targetDurationS: Int?, jwt: String) async throws -> SlotIDRow {
+        var body: [String: Any] = [
+            "exercise": exercise,
+            "target_sets": targetSets,
+            "target_reps": targetReps,
+            "rest_seconds": restSeconds,
+            "is_warmup": isWarmup,
+        ]
+        if let targetDurationS { body["target_duration_s"] = targetDurationS }
+        return try await post("api/days/\(dayID)/exercises", body: body, jwt: jwt)
+    }
+
+    @discardableResult
+    func updateExerciseSlot(dayID: String, teID: String,
+                            fields: [String: Any], jwt: String) async throws -> SlotIDRow {
+        try await patch("api/days/\(dayID)/exercises/\(teID)", body: fields, jwt: jwt)
+    }
+
+    func deleteExerciseSlot(dayID: String, teID: String, jwt: String) async throws {
+        let _: SlotIDRow = try await delete("api/days/\(dayID)/exercises/\(teID)", jwt: jwt)
+    }
+
     // MARK: - transport
     //
     // INTERNAL (not private) so extension files (APIClient+Groups.swift,

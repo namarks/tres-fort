@@ -8,6 +8,7 @@ import {
   createGroup,
   createInvite,
   createPlan,
+  deleteTemplateExercise,
   discardSession,
   getActivePlan,
   getExercises,
@@ -37,6 +38,7 @@ import {
   setUserIntervalsCreds,
   setUserMcpPassphrase,
   softDeleteActivity,
+  updateExercise,
   writeAudit,
 } from '../db';
 
@@ -103,7 +105,8 @@ apiRoutes.patch('/days/:id', async (c) => {
 });
 
 apiRoutes.post('/days/:id/exercises', async (c) => {
-  const plan = await getActivePlan(c.env.DB, c.get('userId'));
+  const userId = c.get('userId');
+  const plan = await getActivePlan(c.env.DB, userId);
   if (!plan) return c.json({ error: 'no_active_plan' }, 400);
   const b = await c.req.json<{
     exercise: string;
@@ -117,6 +120,7 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
     target_duration_s?: number | null;
     progression?: unknown;
     cues?: string | null;
+    is_warmup?: boolean;
   }>();
   const ex = await resolveExercise(c.env.DB, b.exercise);
   if (!ex) return c.json({ error: 'unknown_exercise', query: b.exercise }, 400);
@@ -138,8 +142,65 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
     target_duration_s: b.target_duration_s ?? null,
     progression: b.progression == null ? null : JSON.stringify(b.progression),
     cues: b.cues ?? null,
+    is_warmup: b.is_warmup ? 1 : 0,
   });
+  // Audit the in-app plan edit (actor='ios') so the trust/undo trail covers
+  // app-side mutations the same as MCP ones (DESIGN §5).
+  await writeAudit(
+    c.env.DB,
+    userId,
+    'add_exercise',
+    { day_template_id: dayId, exercise: b.exercise, is_warmup: !!b.is_warmup },
+    row.id,
+    'ios',
+  );
   return c.json(row, 201);
+});
+
+// Edit one exercise slot in place (targets / rest / warm-up flag / order).
+// Thin wrapper over the same updateExercise the MCP `update_exercise` tool
+// uses, scoped to this user. Version-bumped + audited (actor='ios'). The slot
+// is scoped to the URL :id day: a stale/mismatched client patching
+// /days/<dayA>/exercises/<slot-from-dayB> resolves to null → 404 instead of
+// mutating the wrong day's workout.
+apiRoutes.patch('/days/:id/exercises/:teId', async (c) => {
+  const userId = c.get('userId');
+  const dayId = c.req.param('id');
+  const teId = c.req.param('teId');
+  const b = await c.req.json<{
+    target_sets?: number;
+    target_reps?: number;
+    target_reps_max?: number | null;
+    target_rpe?: number | null;
+    rest_seconds?: number;
+    target_weight?: number | null;
+    target_duration_s?: number | null;
+    cues?: string | null;
+    progression?: unknown;
+    order_index?: number;
+    is_warmup?: boolean;
+  }>();
+  const patch: Record<string, unknown> = { ...b };
+  if (typeof b.is_warmup === 'boolean') patch.is_warmup = b.is_warmup ? 1 : 0;
+  const row = await updateExercise(c.env.DB, userId, { template_exercise_id: teId, day_template_id: dayId }, patch);
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  if ('error' in row) return c.json(row, 400);
+  await writeAudit(c.env.DB, userId, 'update_exercise', { template_exercise_id: teId, patch: b }, row.id, 'ios');
+  return c.json(row);
+});
+
+// Remove one exercise slot from a day. Detaches (NULLs) any historical
+// set_logs.template_exercise_id rather than deleting logged work. Version-
+// bumped + audited. Scoped to the URL :id day (see the PATCH above): a slot
+// from another day resolves to null → 404, never deleting the wrong exercise.
+apiRoutes.delete('/days/:id/exercises/:teId', async (c) => {
+  const userId = c.get('userId');
+  const dayId = c.req.param('id');
+  const teId = c.req.param('teId');
+  const row = await deleteTemplateExercise(c.env.DB, userId, { template_exercise_id: teId, day_template_id: dayId });
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  await writeAudit(c.env.DB, userId, 'delete_exercise', { template_exercise_id: teId }, row.id, 'ios');
+  return c.json(row);
 });
 
 // ---- sessions + sets -----------------------------------------------------

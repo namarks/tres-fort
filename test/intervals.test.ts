@@ -572,6 +572,43 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
     expect(live.map((x) => x.id)).toContain(hkId);
   });
 
+  it('cross-source dedup: an intervals sync retires a HealthKit row it duplicates (Codex P2)', async () => {
+    const userId = await freshUser();
+    // HealthKit pushed FIRST, before intervals has the activity.
+    const hkId = `healthkit:activity:${userId}:hkdup`;
+    const start = Date.parse('2026-05-10T08:00:00Z');
+    await env.DB.prepare(
+      `INSERT INTO external_activities
+         (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
+          synced_at,deleted_at,canonical,duplicate_of)
+       VALUES (?1,?2,'healthkit','hkdup','2026-05-10','ride','Zwift',?3,1000,NULL,1,NULL)`,
+    )
+      .bind(hkId, userId, start)
+      .run();
+
+    // intervals sync brings in the same ride 30s off — within tolerance.
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'ivdup', type: 'Ride', start_date_local: '2026-05-10T08:00:30' })]),
+    } as any);
+
+    const ivId = `intervals:activity:${userId}:ivdup`;
+    const hk = await env.DB.prepare(
+      'SELECT deleted_at, canonical, duplicate_of FROM external_activities WHERE id=?1',
+    )
+      .bind(hkId)
+      .first<{ deleted_at: number | null; canonical: number; duplicate_of: string | null }>();
+    expect(hk!.deleted_at).not.toBeNull();
+    expect(hk!.canonical).toBe(0);
+    expect(hk!.duplicate_of).toBe(ivId);
+
+    const live = await getRecentActivities(env.DB, userId, { to: TODAY });
+    const ids = live.map((x) => x.id);
+    expect(ids).toContain(ivId);
+    expect(ids).not.toContain(hkId);
+  });
+
   it('CRITICAL GUARD: a 500 leaves the completed cache COMPLETELY untouched', async () => {
     const userId = await freshUser();
     await syncExternalActivities(env.DB, env as unknown as Env, {

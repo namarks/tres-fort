@@ -5290,6 +5290,11 @@ export async function syncExternalActivities(
 
   await db.batch(stmts);
 
+  // Cross-source dedup (Codex P2): intervals rows just changed, so retire any
+  // HealthKit copies that now duplicate one — handles the ordering where the
+  // HealthKit push arrived BEFORE the intervals activity synced in.
+  await dedupeHealthKitAgainstIntervals(db, userId);
+
   const cnt = await db
     .prepare(
       `SELECT COUNT(*) AS c FROM external_activities
@@ -5420,12 +5425,103 @@ export async function upsertHealthKitActivity(
       ts,
     )
     .run();
+  // Cross-source dedup (Codex P2): if this workout also exists from
+  // intervals.icu, retire the HealthKit copy so it isn't shown/counted twice.
+  // Runs AFTER the upsert so a re-push (which clears deleted_at via ON CONFLICT)
+  // is immediately re-deduped rather than resurrecting the duplicate.
+  await dedupeHealthKitAgainstIntervals(db, userId);
   const row = await db
     .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
     .bind(id, userId)
     .first<ExternalActivityRow>();
   if (!row) throw new Error('healthkit_activity_insert_failed');
   return row;
+}
+
+/** Start-time tolerance for treating two activities as the same workout. Two
+ *  same-kind sessions starting within 2 minutes of each other are, in practice,
+ *  the same physical activity arriving from two sources — never two distinct
+ *  workouts. Tunable. */
+export const ACTIVITY_DEDUP_TOLERANCE_MS = 2 * 60 * 1000;
+
+/**
+ * Cross-source dedup: retire HealthKit activities that duplicate an
+ * intervals.icu activity for the same user. The same physical workout can
+ * arrive from BOTH sources (e.g. a Zwift ride synced into intervals AND mirrored
+ * into Apple Health); without this it would be shown and counted twice.
+ *
+ * Rule (deterministic, order-independent — so it's correct whichever source
+ * lands first): a non-deleted `healthkit` row is a duplicate of a non-deleted
+ * `intervals` row when they share the same `kind` and start within
+ * ACTIVITY_DEDUP_TOLERANCE_MS. **intervals always wins** (richer data — power,
+ * native TSS), so the HealthKit copy is the one retired.
+ *
+ * "Retire" = soft-delete the loser (set deleted_at) + record provenance
+ * (canonical=0, duplicate_of=<intervals id>). Using deleted_at as the exclusion
+ * mechanism means every existing read path (getRecentActivities, projectCalendar,
+ * group feed/stats/series — all already filter deleted_at) and the /api/state
+ * tombstone delta Just Work with no new filters and no iOS change. synced_at is
+ * advanced so the tombstone reaches incremental sync clients.
+ *
+ * Idempotent: already-retired rows are skipped (they're deleted). Called from
+ * BOTH write paths — the HealthKit push and the intervals sync — so it converges
+ * regardless of arrival order. Surfacing the duplicate's provenance in the UI
+ * ("also from Apple Health") is a future enhancement (needs an iOS field).
+ */
+export async function dedupeHealthKitAgainstIntervals(
+  db: D1Database,
+  userId: string,
+): Promise<number> {
+  const hk = (
+    await db
+      .prepare(
+        `SELECT id, kind, start_date_local_ms FROM external_activities
+          WHERE user_id = ?1 AND source = 'healthkit' AND deleted_at IS NULL
+            AND start_date_local_ms IS NOT NULL`,
+      )
+      .bind(userId)
+      .all<{ id: string; kind: string; start_date_local_ms: number }>()
+  ).results;
+  if (hk.length === 0) return 0;
+  const iv = (
+    await db
+      .prepare(
+        `SELECT id, kind, start_date_local_ms FROM external_activities
+          WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
+            AND start_date_local_ms IS NOT NULL`,
+      )
+      .bind(userId)
+      .all<{ id: string; kind: string; start_date_local_ms: number }>()
+  ).results;
+  if (iv.length === 0) return 0;
+
+  const ts = now();
+  const stmts: D1PreparedStatement[] = [];
+  for (const h of hk) {
+    let best: { id: string } | null = null;
+    let bestDelta = Infinity;
+    for (const v of iv) {
+      if (v.kind !== h.kind) continue;
+      const delta = Math.abs(v.start_date_local_ms - h.start_date_local_ms);
+      if (delta <= ACTIVITY_DEDUP_TOLERANCE_MS && delta < bestDelta) {
+        bestDelta = delta;
+        best = { id: v.id };
+      }
+    }
+    if (best) {
+      stmts.push(
+        db
+          .prepare(
+            `UPDATE external_activities
+                SET deleted_at = ?2, synced_at = ?2, canonical = 0, duplicate_of = ?3
+              WHERE id = ?1`,
+          )
+          .bind(h.id, ts, best.id),
+      );
+    }
+  }
+  if (stmts.length) await db.batch(stmts);
+  return stmts.length;
 }
 
 /**

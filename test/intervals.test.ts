@@ -449,6 +449,35 @@ describe('fetchCompletedActivities — injected fetcher, never real network', ()
     expect(res.activities[1]).toMatchObject({ external_id: 'a2', kind: 'run' });
   });
 
+  it('maps non-endurance intervals types to specific kinds (not all "other")', async () => {
+    const res = await fetchCompletedActivities(env.INTERVALS_ICU_API_KEY, env.INTERVALS_ICU_ATHLETE_ID, {
+      today: TODAY,
+      fetcher: payload([
+        act({ id: 'walk', type: 'Walk' }),
+        act({ id: 'hike', type: 'Hike' }),
+        act({ id: 'row', type: 'Rowing' }),
+        act({ id: 'ski', type: 'NordicSki' }),
+        act({ id: 'yoga', type: 'Yoga' }),
+        act({ id: 'ell', type: 'Elliptical' }),
+        act({ id: 'str', type: 'WeightLifting' }),
+        act({ id: 'misc', type: 'StandUpPaddling' }),
+      ]),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const byId = Object.fromEntries(res.activities.map((a) => [a.external_id, a.kind]));
+    expect(byId).toEqual({
+      walk: 'walk',
+      hike: 'hike',
+      row: 'row',
+      ski: 'ski',
+      yoga: 'yoga',
+      ell: 'elliptical',
+      str: 'strength',
+      misc: 'other', // genuinely unrecognised types still fall through
+    });
+  });
+
   it('falls back to average_watts when icu_average_watts is absent', async () => {
     const res = await fetchCompletedActivities(env.INTERVALS_ICU_API_KEY, env.INTERVALS_ICU_ATHLETE_ID, {
       today: TODAY,

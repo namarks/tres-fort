@@ -61,13 +61,28 @@ function addDays(ymd: string, n: number): string {
 
 /**
  * Map an intervals.icu `type` to our coarse kind. intervals uses values
- * like "Ride","VirtualRide","Run","Swim","Workout","Weight Training", ...
+ * like "Ride","VirtualRide","Run","TrailRun","Swim","OpenWaterSwim",
+ * "Walk","Hike","Rowing","Elliptical","AlpineSki","Yoga","Workout",
+ * "WeightTraining", ... We match on substrings so the many intervals
+ * spelling variants collapse to a handful of kinds the clients have
+ * glyphs for; anything we don't recognise still falls through to 'other'.
+ * NOTE: "WeightTraining" never reaches here — isTresFortExport() filters
+ * it upstream — but "Strength"/"WeightLifting" do, hence the 'strength'
+ * branch. Keep the kinds emitted here in sync with the glyph maps in
+ * ios FeedItemRow.rideGlyph and Models.ExternalActivity.glyph.
  */
 function kindOf(type: unknown): string {
   const t = String(type ?? '').toLowerCase();
   if (t.includes('ride') || t.includes('bike') || t.includes('cycl')) return 'ride';
   if (t.includes('run')) return 'run';
   if (t.includes('swim')) return 'swim';
+  if (t.includes('walk')) return 'walk';
+  if (t.includes('hike')) return 'hike';
+  if (t.includes('row')) return 'row';
+  if (t.includes('ski')) return 'ski';
+  if (t.includes('yoga')) return 'yoga';
+  if (t.includes('elliptical')) return 'elliptical';
+  if (t.includes('weight') || t.includes('strength')) return 'strength';
   return 'other';
 }
 

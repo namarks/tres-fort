@@ -705,6 +705,9 @@ export interface MeProfile {
   email: string | null;
   intervals: { connected: boolean; athlete_id: string | null; needs_reauth: boolean };
   claude: { is_owner: boolean; connected: boolean; last_active: number | null };
+  // Apple Health group-feed opt-in (migration 0028). Off by default; the iOS
+  // Apple Health detail toggle flips it via PATCH /api/me/health-sharing.
+  health: { sharing_in_group: boolean };
 }
 
 export async function getMeProfile(
@@ -714,7 +717,7 @@ export async function getMeProfile(
 ): Promise<MeProfile> {
   const u = await db
     .prepare(
-      'SELECT display_name, email, intervals_athlete_id, intervals_auth_error_at FROM users WHERE id = ?1',
+      'SELECT display_name, email, intervals_athlete_id, intervals_auth_error_at, share_health_activities FROM users WHERE id = ?1',
     )
     .bind(userId)
     .first<{
@@ -722,6 +725,7 @@ export async function getMeProfile(
       email: string | null;
       intervals_athlete_id: string | null;
       intervals_auth_error_at: number | null;
+      share_health_activities: number | null;
     }>();
 
   // Claude connection is PER-USER (M3): a token bound to THIS user means their
@@ -763,7 +767,31 @@ export async function getMeProfile(
       connected: claudeConnected,
       last_active: lastActive,
     },
+    health: {
+      // Whether THIS user's Apple Health activities are shared into the group
+      // feed (opt-in, default off — migration 0028). Drives the iOS detail
+      // toggle; the gate itself lives in the group-surface queries.
+      sharing_in_group: !!u?.share_health_activities,
+    },
   };
+}
+
+/**
+ * Set this user's "share my Apple Health activities in the group feed" opt-in
+ * (migration 0028). Off by default; the iOS Apple Health detail toggle calls
+ * PATCH /api/me/health-sharing to flip it. When off, the group feed/stats/series
+ * queries exclude this user's source='healthkit' rows.
+ */
+export async function setHealthActivitySharing(
+  db: D1Database,
+  userId: string,
+  enabled: boolean,
+): Promise<{ sharing_in_group: boolean }> {
+  await db
+    .prepare('UPDATE users SET share_health_activities = ?2 WHERE id = ?1')
+    .bind(userId, enabled ? 1 : 0)
+    .run();
+  return { sharing_in_group: enabled };
 }
 
 /**
@@ -5238,7 +5266,11 @@ export async function syncExternalActivities(
 
   // Soft-delete in-window rows not seen this sync (advancing synced_at so the
   // tombstone reaches incremental clients). Rows outside [oldest,today] are
-  // left alone (we didn't query them).
+  // left alone (we didn't query them). SOURCE-SCOPED to 'intervals' (Phase 0,
+  // migration 0027): external_activities is now multi-source, so this reconcile
+  // must only tombstone rows IT owns — without the source filter an Apple-Health
+  // (or Polar/Wahoo) row would be wiped on every intervals cron tick because it
+  // is never in `seen`.
   const seenIds = [...seen];
   const placeholders = seenIds.map((_, i) => `?${i + 4}`).join(',');
   const notInSeen = seenIds.length ? `AND id NOT IN (${placeholders})` : '';
@@ -5248,6 +5280,7 @@ export async function syncExternalActivities(
         `UPDATE external_activities
             SET deleted_at = ?3, synced_at = ?3
           WHERE user_id = ?1
+            AND source = 'intervals'
             AND deleted_at IS NULL
             AND date >= ?2 AND date <= ?${seenIds.length ? seenIds.length + 4 : 4}
             ${notInSeen}`,
@@ -5257,10 +5290,15 @@ export async function syncExternalActivities(
 
   await db.batch(stmts);
 
+  // Cross-source dedup (Codex P2): intervals rows just changed, so retire any
+  // HealthKit copies that now duplicate one — handles the ordering where the
+  // HealthKit push arrived BEFORE the intervals activity synced in.
+  await dedupeHealthKitAgainstIntervals(db, userId);
+
   const cnt = await db
     .prepare(
       `SELECT COUNT(*) AS c FROM external_activities
-        WHERE user_id = ?1 AND deleted_at IS NULL
+        WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
           AND date >= ?2 AND date <= ?3`,
     )
     .bind(userId, oldest, today)
@@ -5292,6 +5330,237 @@ export async function getRecentActivities(
     .bind(userId, from, to, limit)
     .all<ExternalActivityRow>();
   return r.results;
+}
+
+/** A completed activity pushed from the iOS app's HealthKit reader. Mirrors
+ *  the intervals-derived CompletedActivity shape but `id` is the CLIENT-supplied
+ *  idempotency key (the HKWorkout UUID), not a provider-side external id. */
+export interface HealthKitActivityInput {
+  id: string; // client UUID = HKWorkout.uuid = idempotency key
+  date: string; // device-local YYYY-MM-DD (workout start), verbatim
+  start_date_local_ms: number | null;
+  kind: string; // normalized lowercase (run|ride|walk|…)
+  name: string | null;
+  moving_time_sec: number | null;
+  elapsed_time_sec: number | null;
+  distance_m: number | null;
+  average_watts: number | null;
+  average_hr: number | null;
+  max_hr: number | null;
+  calories: number | null;
+  elevation_gain_m: number | null;
+  raw: string | null;
+}
+
+/**
+ * Upsert an Apple Health (HealthKit) workout PUSHED from the iOS app into the
+ * external_activities cache. Apple Health is ON-DEVICE only — the Worker can
+ * never read HealthKit — so unlike the intervals PULL path this is a client
+ * push: the phone reads HKWorkout and POSTs it here (POST /api/activities/healthkit).
+ *
+ * source='healthkit'. The PK embeds the user + the client id (the HKWorkout
+ * UUID), making it the idempotency key: a re-push (iOS outbox retry, or a later
+ * anchored sync that re-sees the same workout) lands on ON CONFLICT and UPDATEs
+ * the stats in place (HealthKit can revise a workout's totals) rather than
+ * duplicating. PUSH rows are NEVER reconcile-soft-deleted — the intervals sync's
+ * windowed tombstoning is source-scoped to 'intervals' (migration 0027), and a
+ * HealthKit deletion is an explicit future delete path, not a windowed reconcile.
+ *
+ * training_load / intensity are intentionally left NULL: HealthKit carries no
+ * native TSS and we have no per-user HR anchor (LTHR/max-HR) to derive hrTSS
+ * yet, so we do NOT fabricate a load number — the coach reads average_hr +
+ * duration directly. A per-user HR-anchor setting that unlocks hrTSS is a
+ * tracked follow-up (docs/MULTISOURCE-INGESTION.md).
+ */
+export async function upsertHealthKitActivity(
+  db: D1Database,
+  userId: string,
+  input: HealthKitActivityInput,
+): Promise<ExternalActivityRow> {
+  const id = `healthkit:activity:${userId}:${input.id}`;
+  const ts = now();
+  await db
+    .prepare(
+      `INSERT INTO external_activities
+         (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
+          moving_time_sec,elapsed_time_sec,distance_m,average_watts,
+          weighted_avg_watts,average_hr,max_hr,training_load,intensity,
+          calories,elevation_gain_m,raw,synced_at,deleted_at,canonical,duplicate_of)
+       VALUES (?1,?2,'healthkit',?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,?13,NULL,NULL,
+               ?14,?15,?16,?17,NULL,1,NULL)
+       ON CONFLICT(id) DO UPDATE SET
+         date=excluded.date,
+         start_date_local_ms=excluded.start_date_local_ms,
+         kind=excluded.kind,
+         name=excluded.name,
+         moving_time_sec=excluded.moving_time_sec,
+         elapsed_time_sec=excluded.elapsed_time_sec,
+         distance_m=excluded.distance_m,
+         average_watts=excluded.average_watts,
+         average_hr=excluded.average_hr,
+         max_hr=excluded.max_hr,
+         calories=excluded.calories,
+         elevation_gain_m=excluded.elevation_gain_m,
+         raw=excluded.raw,
+         synced_at=excluded.synced_at,
+         deleted_at=NULL,
+         canonical=1,
+         duplicate_of=NULL`,
+    )
+    .bind(
+      id,
+      userId,
+      input.id,
+      input.date,
+      input.start_date_local_ms,
+      input.kind,
+      input.name,
+      input.moving_time_sec,
+      input.elapsed_time_sec,
+      input.distance_m,
+      input.average_watts,
+      input.average_hr,
+      input.max_hr,
+      input.calories,
+      input.elevation_gain_m,
+      input.raw,
+      ts,
+    )
+    .run();
+  // Cross-source dedup (Codex P2): if this workout also exists from
+  // intervals.icu, retire the HealthKit copy so it isn't shown/counted twice.
+  // Runs AFTER the upsert so a re-push (which clears deleted_at via ON CONFLICT)
+  // is immediately re-deduped rather than resurrecting the duplicate.
+  await dedupeHealthKitAgainstIntervals(db, userId);
+  const row = await db
+    .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
+    .bind(id, userId)
+    .first<ExternalActivityRow>();
+  if (!row) throw new Error('healthkit_activity_insert_failed');
+  return row;
+}
+
+/** Start-time tolerance for treating two activities as the same workout. Two
+ *  same-kind sessions starting within 2 minutes of each other are, in practice,
+ *  the same physical activity arriving from two sources — never two distinct
+ *  workouts. Tunable. */
+export const ACTIVITY_DEDUP_TOLERANCE_MS = 2 * 60 * 1000;
+
+/**
+ * Cross-source dedup: retire HealthKit activities that duplicate an
+ * intervals.icu activity for the same user. The same physical workout can
+ * arrive from BOTH sources (e.g. a Zwift ride synced into intervals AND mirrored
+ * into Apple Health); without this it would be shown and counted twice.
+ *
+ * Rule (deterministic, order-independent — so it's correct whichever source
+ * lands first): a non-deleted `healthkit` row is a duplicate of a non-deleted
+ * `intervals` row when they share the same `kind` and start within
+ * ACTIVITY_DEDUP_TOLERANCE_MS. **intervals always wins** (richer data — power,
+ * native TSS), so the HealthKit copy is the one retired.
+ *
+ * "Retire" = soft-delete the loser (set deleted_at) + record provenance
+ * (canonical=0, duplicate_of=<intervals id>). Using deleted_at as the exclusion
+ * mechanism means every existing read path (getRecentActivities, projectCalendar,
+ * group feed/stats/series — all already filter deleted_at) and the /api/state
+ * tombstone delta Just Work with no new filters and no iOS change. synced_at is
+ * advanced so the change reaches incremental sync clients.
+ *
+ * BIDIRECTIONAL (Codex P2 follow-up): this is a full reconciliation, not a
+ * one-way retire. It also RESTORES a previously-retired HealthKit row when its
+ * intervals winner later disappears (the activity is removed upstream → the
+ * intervals sync soft-deletes the canonical row, then calls this). Without the
+ * restore, both copies would stay hidden and the workout would vanish until the
+ * phone re-pushed it. A HealthKit row soft-deleted for any OTHER reason
+ * (duplicate_of IS NULL) is left untouched — we only manage rows WE retired.
+ *
+ * Idempotent: only state CHANGES emit a write (no synced_at churn in steady
+ * state). Deterministic + order-independent — called from BOTH write paths (the
+ * HealthKit push and the intervals sync) so it converges whichever source lands
+ * (or leaves) first. Surfacing the duplicate's provenance in the UI ("also from
+ * Apple Health") is a future enhancement (needs an iOS field).
+ */
+export async function dedupeHealthKitAgainstIntervals(
+  db: D1Database,
+  userId: string,
+): Promise<number> {
+  // HealthKit rows we manage: currently live (candidates to retire) OR
+  // previously retired BY US as a dup (deleted_at + duplicate_of set →
+  // candidates to RESTORE if their winner is gone).
+  const hk = (
+    await db
+      .prepare(
+        `SELECT id, kind, start_date_local_ms, deleted_at, duplicate_of
+           FROM external_activities
+          WHERE user_id = ?1 AND source = 'healthkit'
+            AND start_date_local_ms IS NOT NULL
+            AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)`,
+      )
+      .bind(userId)
+      .all<{
+        id: string;
+        kind: string;
+        start_date_local_ms: number;
+        deleted_at: number | null;
+        duplicate_of: string | null;
+      }>()
+  ).results;
+  if (hk.length === 0) return 0;
+  // Live intervals winners (NOT early-returned on empty: with no live winner,
+  // any retired dup must be RESTORED).
+  const iv = (
+    await db
+      .prepare(
+        `SELECT id, kind, start_date_local_ms FROM external_activities
+          WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
+            AND start_date_local_ms IS NOT NULL`,
+      )
+      .bind(userId)
+      .all<{ id: string; kind: string; start_date_local_ms: number }>()
+  ).results;
+
+  const ts = now();
+  const stmts: D1PreparedStatement[] = [];
+  for (const h of hk) {
+    let best: { id: string } | null = null;
+    let bestDelta = Infinity;
+    for (const v of iv) {
+      if (v.kind !== h.kind) continue;
+      const delta = Math.abs(v.start_date_local_ms - h.start_date_local_ms);
+      if (delta <= ACTIVITY_DEDUP_TOLERANCE_MS && delta < bestDelta) {
+        bestDelta = delta;
+        best = { id: v.id };
+      }
+    }
+    const isRetiredDup = h.deleted_at != null && h.duplicate_of != null;
+    if (best && !isRetiredDup) {
+      // Live HealthKit row duplicating a live intervals activity → retire it.
+      stmts.push(
+        db
+          .prepare(
+            `UPDATE external_activities
+                SET deleted_at = ?2, synced_at = ?2, canonical = 0, duplicate_of = ?3
+              WHERE id = ?1`,
+          )
+          .bind(h.id, ts, best.id),
+      );
+    } else if (!best && isRetiredDup) {
+      // We retired this as a dup but its intervals winner is gone → restore it
+      // as the surviving copy so the workout doesn't vanish.
+      stmts.push(
+        db
+          .prepare(
+            `UPDATE external_activities
+                SET deleted_at = NULL, synced_at = ?2, canonical = 1, duplicate_of = NULL
+              WHERE id = ?1`,
+          )
+          .bind(h.id, ts),
+      );
+    }
+    // else: already correct (live with no match, or retired with winner still
+    // present) → no-op, so steady-state syncs don't churn synced_at.
+  }
+  if (stmts.length) await db.batch(stmts);
+  return stmts.length;
 }
 
 /**
@@ -5789,6 +6058,12 @@ export async function getGroupFeed(
          FROM external_activities
         WHERE user_id IN (${placeholders})
           AND deleted_at IS NULL
+          -- Codex P1 / migration 0028: a member's HealthKit activities are
+          -- private until they opt into group sharing. intervals rows are
+          -- unaffected (its terms permit cross-user display).
+          AND (source <> 'healthkit'
+               OR (SELECT share_health_activities FROM users
+                     WHERE id = external_activities.user_id) = 1)
           AND (
             COALESCE(start_date_local_ms, synced_at) < ?${memberIds.length + 1}
             OR (
@@ -5973,9 +6248,15 @@ export async function getGroupStats(
       .all<{ date: string }>();
     const ridesRows = await db
       .prepare(
+        // HealthKit rows are gated behind the per-user opt-in (0028) so an
+        // un-shared member's private health activity never inflates the
+        // group streak/count surfaced to others.
         `SELECT DISTINCT date FROM external_activities
           WHERE user_id = ?1
             AND deleted_at IS NULL
+            AND (source <> 'healthkit'
+                 OR (SELECT share_health_activities FROM users
+                       WHERE id = external_activities.user_id) = 1)
             AND date >= ?2 AND date <= ?3`,
       )
       .bind(m.user_id, streakStart, today)
@@ -6132,9 +6413,13 @@ export async function getGroupActivitySeries(
 
     const rideRows = await db
       .prepare(
+        // HealthKit rows gated behind the opt-in (0028), same as the feed/stats.
         `SELECT date, COUNT(*) AS n FROM external_activities
           WHERE user_id = ?1
             AND deleted_at IS NULL
+            AND (source <> 'healthkit'
+                 OR (SELECT share_health_activities FROM users
+                       WHERE id = external_activities.user_id) = 1)
             AND date >= ?2 AND date <= ?3
           GROUP BY date`,
       )

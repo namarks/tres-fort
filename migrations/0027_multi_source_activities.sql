@@ -1,0 +1,34 @@
+-- 0027_multi_source_activities.sql
+--
+-- Phase 0 of direct multi-source activity ingestion (docs/MULTISOURCE-INGESTION.md).
+-- Make external_activities a genuinely MULTI-SOURCE cache instead of an
+-- intervals-only one, so a later adapter (Apple Health push, Polar/Wahoo pull)
+-- can write rows alongside intervals without the two clobbering each other.
+--
+-- The `source` column already exists (migration 0015) and is multi-source-ready
+-- in the schema, but the CODE was intervals-only:
+--   * the reconcile soft-delete (syncExternalActivities) tombstoned ANY in-window
+--     row not seen in the intervals fetch — which would silently delete every
+--     Apple-Health-pushed row on the next cron tick. That guard is now
+--     source-scoped to `source='intervals'` in db.ts; this migration carries the
+--     companion DEDUP columns the next phase needs.
+--
+-- DEDUP (cross-source). The same ride can arrive from two connected sources
+-- (e.g. a Zwift ride via intervals AND the same workout via Apple Health). This
+-- is the problem intervals quietly solved for us; once we ingest from several
+-- sources we own it. These columns let a dedup pass mark one row canonical and
+-- point the loser at it, without deleting either (provenance is preserved):
+--   * canonical    = 1 → surface this row; 0 → a deduped duplicate, hidden from
+--                    feeds/calendar but kept for provenance.
+--   * duplicate_of = id of the canonical row this one duplicates (NULL when
+--                    canonical, or when not yet deduped).
+--
+-- Additive + behaviour-preserving: every existing row defaults to canonical=1
+-- (exactly today's behaviour), so nothing changes until a second source exists.
+-- NOT NULL DEFAULT 1 keeps the column non-nullable for simple `canonical=1`
+-- filters. ALTER ADD COLUMN like 0026 — the migration runner tracks applied
+-- files, so this is never re-run (and the vitest applyD1Migrations path applies
+-- it the same way).
+
+ALTER TABLE external_activities ADD COLUMN canonical INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE external_activities ADD COLUMN duplicate_of TEXT;

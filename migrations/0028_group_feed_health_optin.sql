@@ -1,0 +1,24 @@
+-- 0028_group_feed_health_optin.sql
+--
+-- Codex P1 (PR #80): pushed Apple Health workouts must NOT surface to other
+-- group members without consent. external_activities is read by three group
+-- surfaces — getGroupFeed, getGroupStats, getGroupActivitySeries — with no
+-- source/consent filter, so a healthkit row would be visible to the whole
+-- group the moment it is pushed. Apple's own guidance (App Store 5.1.3) wants
+-- explicit opt-in before sharing health data with other people, and the
+-- multi-source design specifies cross-user display as opt-in / default-off for
+-- non-intervals sources.
+--
+-- This adds a per-user opt-in flag, DEFAULT 0 (off). The three group queries
+-- gate `source='healthkit'` rows behind it: a member's HealthKit activities
+-- only appear to others once they flip this on (the iOS detail-screen toggle
+-- writes it via PATCH /api/me/health-sharing). intervals-sourced rows are
+-- unaffected (intervals' terms permit cross-user display) — only the new,
+-- privacy-sensitive on-device source is gated.
+--
+-- Additive + behaviour-preserving for existing data: every user defaults to 0,
+-- and there are no healthkit rows in production yet, so no current feed/stat
+-- output changes. ALTER ADD COLUMN like 0026/0027 — the migration runner
+-- tracks applied files (vitest applyD1Migrations applies it the same way).
+
+ALTER TABLE users ADD COLUMN share_health_activities INTEGER NOT NULL DEFAULT 0;

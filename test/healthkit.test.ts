@@ -1,0 +1,240 @@
+import { env, applyD1Migrations, SELF } from 'cloudflare:test';
+import { beforeAll, describe, expect, it } from 'vitest';
+
+// Phase 1 — Apple Health (HealthKit) on-device push ingest.
+// HealthKit lives only on the phone; the iOS app reads HKWorkout and POSTs to
+// POST /api/activities/healthkit, which upserts into the SAME external_activities
+// cache the intervals pull writes (source='healthkit'), client-UUID idempotent.
+
+const BASE = 'https://tres-fort.test';
+
+beforeAll(async () => {
+  await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+});
+
+async function devJwt(): Promise<string> {
+  const r = await SELF.fetch(`${BASE}/auth/dev`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ secret: 'test-dev' }),
+  });
+  expect(r.status).toBe(200);
+  return (await r.json<{ jwt: string }>()).jwt;
+}
+
+async function devAuth(): Promise<{ jwt: string; id: string }> {
+  const r = await SELF.fetch(`${BASE}/auth/dev`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ secret: 'test-dev' }),
+  });
+  expect(r.status).toBe(200);
+  const b = await r.json<{ jwt: string; user: { id: string } }>();
+  return { jwt: b.jwt, id: b.user.id };
+}
+
+const auth = (jwt: string) => ({
+  'content-type': 'application/json',
+  Authorization: `Bearer ${jwt}`,
+});
+
+const uuid = () => crypto.randomUUID();
+
+const workout = (over: Record<string, unknown> = {}) => ({
+  id: uuid(),
+  date: '2026-06-18',
+  start_date_local_ms: Date.parse('2026-06-18T10:00:00Z'),
+  kind: 'run',
+  name: 'Treadmill Run',
+  moving_time_sec: 1800,
+  elapsed_time_sec: 1850,
+  distance_m: 5000,
+  average_hr: 145,
+  max_hr: 168,
+  calories: 320,
+  ...over,
+});
+
+describe('POST /api/activities/healthkit — Apple Health push ingest', () => {
+  it('requires auth', async () => {
+    const r = await SELF.fetch(`${BASE}/api/activities/healthkit`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(workout()),
+    });
+    expect(r.status).toBe(401);
+  });
+
+  it('ingests a workout into external_activities with source=healthkit', async () => {
+    const jwt = await devJwt();
+    const w = workout();
+    const r = await SELF.fetch(`${BASE}/api/activities/healthkit`, {
+      method: 'POST',
+      headers: auth(jwt),
+      body: JSON.stringify(w),
+    });
+    expect(r.status).toBe(201);
+    const row = await r.json<{
+      id: string;
+      source: string;
+      kind: string;
+      average_hr: number | null;
+      training_load: number | null;
+      canonical: number;
+    }>();
+    expect(row.source).toBe('healthkit');
+    expect(row.id).toMatch(/^healthkit:activity:.+:/);
+    expect(row.id.endsWith(w.id)).toBe(true);
+    expect(row.kind).toBe('run');
+    expect(row.average_hr).toBe(145);
+    // We do not fabricate a load number without per-user HR anchors.
+    expect(row.training_load).toBeNull();
+    expect(row.canonical).toBe(1);
+
+    // It rides the normal sync surface (activities_since watermark).
+    const state = await SELF.fetch(`${BASE}/api/state?activities_since=0`, { headers: auth(jwt) });
+    const body = await state.json<{ external_activities: { id: string; source: string }[] }>();
+    expect(body.external_activities.some((a) => a.id === row.id && a.source === 'healthkit')).toBe(true);
+  });
+
+  it('is idempotent on the client id; a re-push updates in place (no duplicate)', async () => {
+    const jwt = await devJwt();
+    const w = workout({ average_hr: 140 });
+    const first = await SELF.fetch(`${BASE}/api/activities/healthkit`, {
+      method: 'POST',
+      headers: auth(jwt),
+      body: JSON.stringify(w),
+    });
+    const firstRow = await first.json<{ id: string }>();
+    // Same id, revised stats (HealthKit can re-summarise a workout).
+    const second = await SELF.fetch(`${BASE}/api/activities/healthkit`, {
+      method: 'POST',
+      headers: auth(jwt),
+      body: JSON.stringify({ ...w, average_hr: 152, distance_m: 5200 }),
+    });
+    expect(second.status).toBe(201);
+    const secondRow = await second.json<{ id: string; average_hr: number; distance_m: number }>();
+    expect(secondRow.id).toBe(firstRow.id);
+    expect(secondRow.average_hr).toBe(152);
+    expect(secondRow.distance_m).toBe(5200);
+
+    const cnt = await env.DB.prepare(
+      "SELECT COUNT(*) AS c FROM external_activities WHERE id = ?1",
+    )
+      .bind(firstRow.id)
+      .first<{ c: number }>();
+    expect(cnt!.c).toBe(1);
+  });
+
+  it('rejects a bad id / date / kind', async () => {
+    const jwt = await devJwt();
+    const bad = async (over: Record<string, unknown>) =>
+      (
+        await SELF.fetch(`${BASE}/api/activities/healthkit`, {
+          method: 'POST',
+          headers: auth(jwt),
+          body: JSON.stringify(workout(over)),
+        })
+      ).status;
+    expect(await bad({ id: 'not-a-uuid' })).toBe(400);
+    expect(await bad({ date: '06/18/2026' })).toBe(400);
+    expect(await bad({ kind: 'Run' })).toBe(400); // must be lowercase
+    expect(await bad({ kind: '' })).toBe(400);
+  });
+
+  it('rounds integer-typed fields so iOS Int? decode never sees a decimal (Codex P2)', async () => {
+    const jwt = await devJwt();
+    // HealthKit yields Double (TimeInterval / HKQuantity). The INTEGER columns
+    // iOS decodes as Int? must be rounded; the REAL columns keep their decimals.
+    const r = await SELF.fetch(`${BASE}/api/activities/healthkit`, {
+      method: 'POST',
+      headers: auth(jwt),
+      body: JSON.stringify(
+        workout({
+          moving_time_sec: 1800.5,
+          elapsed_time_sec: 1850.4,
+          max_hr: 168.9,
+          calories: 320.7,
+          start_date_local_ms: 1750243200000.6,
+          distance_m: 5000.5, // REAL — keeps the decimal
+          average_hr: 145.4, // REAL — keeps the decimal
+        }),
+      ),
+    });
+    expect(r.status).toBe(201);
+    const row = await r.json<Record<string, number>>();
+    expect(row.moving_time_sec).toBe(1801);
+    expect(row.elapsed_time_sec).toBe(1850);
+    expect(row.max_hr).toBe(169);
+    expect(row.calories).toBe(321);
+    expect(Number.isInteger(row.start_date_local_ms)).toBe(true);
+    expect(row.distance_m).toBe(5000.5);
+    expect(row.average_hr).toBe(145.4);
+  });
+
+  it('coerces non-finite numeric fields to null rather than persisting junk', async () => {
+    const jwt = await devJwt();
+    const r = await SELF.fetch(`${BASE}/api/activities/healthkit`, {
+      method: 'POST',
+      headers: auth(jwt),
+      body: JSON.stringify(workout({ distance_m: null, average_watts: undefined, max_hr: 'oops' })),
+    });
+    expect(r.status).toBe(201);
+    const row = await r.json<{ distance_m: number | null; average_watts: number | null; max_hr: number | null }>();
+    expect(row.distance_m).toBeNull();
+    expect(row.average_watts).toBeNull();
+    expect(row.max_hr).toBeNull();
+  });
+});
+
+describe('cross-source dedup (Codex P2): intervals wins over HealthKit', () => {
+  // Distinct day/kind from the ingest tests above so the shared-owner DB can't
+  // cross-match accidentally.
+  const RIDE_START = Date.parse('2026-05-01T07:00:00Z');
+
+  it('retires a HealthKit workout that duplicates an existing intervals activity', async () => {
+    const { jwt, id: userId } = await devAuth();
+    const ivId = `intervals:activity:${userId}:dedup-iv1`;
+    await env.DB.prepare(
+      `INSERT INTO external_activities
+         (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
+          synced_at,deleted_at,canonical,duplicate_of)
+       VALUES (?1,?2,'intervals','dedup-iv1','2026-05-01','ride','Garmin Ride',?3,1000,NULL,1,NULL)`,
+    )
+      .bind(ivId, userId, RIDE_START)
+      .run();
+
+    // Same workout from HealthKit, 30s off — within the 2-min tolerance.
+    const r = await SELF.fetch(`${BASE}/api/activities/healthkit`, {
+      method: 'POST',
+      headers: auth(jwt),
+      body: JSON.stringify(workout({ kind: 'ride', date: '2026-05-01', start_date_local_ms: RIDE_START + 30_000 })),
+    });
+    expect(r.status).toBe(201);
+    const row = await r.json<{ id: string; deleted_at: number | null; canonical: number; duplicate_of: string | null }>();
+    // The HealthKit copy is retired and points at the intervals winner.
+    expect(row.deleted_at).not.toBeNull();
+    expect(row.canonical).toBe(0);
+    expect(row.duplicate_of).toBe(ivId);
+
+    // Sync surface shows the intervals row, not the retired HealthKit dup.
+    const state = await SELF.fetch(`${BASE}/api/state?activities_since=0`, { headers: auth(jwt) });
+    const ids = (await state.json<{ external_activities: { id: string }[] }>()).external_activities.map((a) => a.id);
+    expect(ids).toContain(ivId);
+    expect(ids).not.toContain(row.id);
+  });
+
+  it('keeps a HealthKit workout that does NOT match (outside tolerance)', async () => {
+    const { jwt } = await devAuth();
+    // 10 minutes off the intervals ride above → not the same workout.
+    const r = await SELF.fetch(`${BASE}/api/activities/healthkit`, {
+      method: 'POST',
+      headers: auth(jwt),
+      body: JSON.stringify(workout({ kind: 'ride', date: '2026-05-01', start_date_local_ms: RIDE_START + 10 * 60_000 })),
+    });
+    expect(r.status).toBe(201);
+    const row = await r.json<{ deleted_at: number | null; canonical: number }>();
+    expect(row.deleted_at).toBeNull();
+    expect(row.canonical).toBe(1);
+  });
+});

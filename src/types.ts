@@ -267,9 +267,9 @@ export interface PlannedEvent {
  * Soft-deleted only; a sync never bumps plans.version.
  */
 export interface ExternalActivityRow {
-  id: string; // "intervals:activity:{external_id}"
+  id: string; // "{source}:activity:{user_id}:{external_id}" (source-prefixed PK)
   user_id: string;
-  source: string; // 'intervals'
+  source: string; // 'intervals' | 'healthkit' | … (migration 0027: multi-source)
   external_id: string;
   date: string; // YYYY-MM-DD from start_date_local, verbatim
   kind: string; // ride|run|swim|other
@@ -288,6 +288,11 @@ export interface ExternalActivityRow {
   raw: string | null;
   synced_at: number; // epoch-ms
   deleted_at: number | null;
+  // Cross-source dedup (migration 0027). canonical=1 → surface this row;
+  // 0 → a deduped duplicate kept for provenance. duplicate_of points a
+  // non-canonical row at the canonical one it duplicates.
+  canonical: number; // 0 | 1
+  duplicate_of: string | null;
 }
 
 /** A normalized completed activity as returned by the intervals.icu fetcher. */

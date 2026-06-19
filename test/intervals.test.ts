@@ -455,6 +455,7 @@ describe('fetchCompletedActivities — injected fetcher, never real network', ()
       fetcher: payload([
         act({ id: 'walk', type: 'Walk' }),
         act({ id: 'hike', type: 'Hike' }),
+        act({ id: 'hiking', type: 'Hiking' }), // alias form — must not fall through to "other"
         act({ id: 'row', type: 'Rowing' }),
         act({ id: 'ski', type: 'NordicSki' }),
         act({ id: 'yoga', type: 'Yoga' }),
@@ -469,6 +470,7 @@ describe('fetchCompletedActivities — injected fetcher, never real network', ()
     expect(byId).toEqual({
       walk: 'walk',
       hike: 'hike',
+      hiking: 'hike',
       row: 'row',
       ski: 'ski',
       yoga: 'yoga',

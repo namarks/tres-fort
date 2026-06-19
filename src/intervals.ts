@@ -77,7 +77,7 @@ function kindOf(type: unknown): string {
   if (t.includes('run')) return 'run';
   if (t.includes('swim')) return 'swim';
   if (t.includes('walk')) return 'walk';
-  if (t.includes('hike')) return 'hike';
+  if (t.includes('hik')) return 'hike'; // matches "Hike" and the alias "Hiking"
   if (t.includes('row')) return 'row';
   if (t.includes('ski')) return 'ski';
   if (t.includes('yoga')) return 'yoga';

@@ -424,8 +424,15 @@ describe('fetchCompletedActivities — injected fetcher, never real network', ()
       fetcher: payload([
         act({ id: 'a1' }),
         act({ id: 'a2', type: 'Run', start_date_local: '2026-05-16T05:30:00' }),
-        // our own exported lift — must be filtered out
-        { id: 'x', type: 'WeightTraining', start_date_local: '2026-05-14T18:00:00' },
+        // our own exported lift — identified by the marker external_id, must
+        // be filtered out. (The type alone is NOT enough on the activities
+        // path — see the "keeps a member's own WeightTraining" test below.)
+        {
+          id: 'x',
+          external_id: 'liftcoach:session:abc',
+          type: 'WeightTraining',
+          start_date_local: '2026-05-14T18:00:00',
+        },
       ]),
     });
     expect(res.ok).toBe(true);
@@ -447,6 +454,28 @@ describe('fetchCompletedActivities — injected fetcher, never real network', ()
       elevation_gain_m: 430,
     });
     expect(res.activities[1]).toMatchObject({ external_id: 'a2', kind: 'run' });
+  });
+
+  it('keeps a member\'s own WeightTraining activity (only marked exports are dropped)', async () => {
+    const res = await fetchCompletedActivities(env.INTERVALS_ICU_API_KEY, env.INTERVALS_ICU_ATHLETE_ID, {
+      today: TODAY,
+      fetcher: payload([
+        // genuine watch-recorded strength (no marker) — must be KEPT and
+        // classified as 'strength', not silently dropped.
+        { id: 'gym', type: 'WeightTraining', start_date_local: '2026-05-15T18:00:00', name: 'Push day' },
+        // our own export (marker present) — must be dropped.
+        {
+          id: 'mine',
+          external_id: 'liftcoach:session:xyz',
+          type: 'WeightTraining',
+          start_date_local: '2026-05-15T19:00:00',
+        },
+      ]),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.activities).toHaveLength(1);
+    expect(res.activities[0]).toMatchObject({ external_id: 'gym', kind: 'strength', name: 'Push day' });
   });
 
   it('maps non-endurance intervals types to specific kinds (not all "other")', async () => {

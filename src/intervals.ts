@@ -66,10 +66,12 @@ function addDays(ymd: string, n: number): string {
  * "WeightTraining", ... We match on substrings so the many intervals
  * spelling variants collapse to a handful of kinds the clients have
  * glyphs for; anything we don't recognise still falls through to 'other'.
- * NOTE: "WeightTraining" never reaches here — isTresFortExport() filters
- * it upstream — but "Strength"/"WeightLifting" do, hence the 'strength'
- * branch. Keep the kinds emitted here in sync with the glyph maps in
- * ios FeedItemRow.rideGlyph and Models.ExternalActivity.glyph.
+ * NOTE: on the EVENTS path "WeightTraining" never reaches here —
+ * isTresFortExport() filters it upstream — but on the ACTIVITIES path only
+ * our marker-stamped exports are filtered (isOwnExportMarker), so a
+ * member's genuine "WeightTraining"/"Strength"/"WeightLifting" lands on the
+ * 'strength' branch. Keep the kinds emitted here in sync with the glyph maps
+ * in ios FeedItemRow.rideGlyph and Models.ExternalActivity.glyph.
  */
 function kindOf(type: unknown): string {
   const t = String(type ?? '').toLowerCase();
@@ -239,10 +241,11 @@ export type ActivityFetchResult =
 
 /**
  * GET intervals.icu completed activities in [today-pastDays, today]. Returns
- * the same discriminated result shape as fetchPlannedEvents. Our own
- * exported strength rows are skipped (isTresFortExport) so the completed
- * cache stays endurance-actuals-only. `date` is the `start_date_local` date
- * part VERBATIM — no timezone math (the contract).
+ * the same discriminated result shape as fetchPlannedEvents. Only our own
+ * marker-stamped exports are skipped (isOwnExportMarker) — a member's
+ * genuine recorded strength (`WeightTraining`) is KEPT and classified, since
+ * this cache feeds display only. `date` is the `start_date_local` date part
+ * VERBATIM — no timezone math (the contract).
  */
 export async function fetchCompletedActivities(
   apiKey: string | null | undefined,
@@ -290,9 +293,12 @@ export async function fetchCompletedActivities(
   const activities: CompletedActivity[] = [];
   for (const raw of body as Record<string, unknown>[]) {
     if (!raw || typeof raw !== 'object') continue;
-    // Never ingest our OWN exported lift activities back in (symmetry with
-    // the planned-event read path) — keeps this cache endurance-only.
-    if (isTresFortExport(raw)) continue;
+    // Skip ONLY our own marker-stamped exports — NOT every WeightTraining
+    // row. Unlike the planned-event path, dropping all weight-training here
+    // would hide a member's genuine watch-recorded strength activity from
+    // the feed/calendar (this cache feeds display only, never the conflict/
+    // load math). Marker-only detection keeps real strength, drops exports.
+    if (isOwnExportMarker(raw)) continue;
     const externalId = raw.id != null ? String(raw.id) : null;
     const startLocal = str(raw.start_date_local);
     if (!externalId || !startLocal) continue;
@@ -372,15 +378,33 @@ export function exportMarker(sessionId: string): string {
 
 /** Recognises our own exported lift events (used to keep them OUT of the
  *  endurance `external_events` cache — no self-conflict). Matches either
- *  the deterministic external_id marker or the strength `type`. */
+ *  the deterministic external_id marker or the strength `type`.
+ *
+ *  USE ON THE EVENTS PATH ONLY. The `type === 'weighttraining'` clause is
+ *  belt-and-suspenders for the planned-events read-back, where ingesting
+ *  our own export would make detectConflicts flag a self-conflict
+ *  (BLOCKER-3). The completed-activities path must NOT use this — a
+ *  member's genuine watch-recorded `WeightTraining` would be dropped
+ *  entirely — so it uses isOwnExportMarker (marker-only) instead. */
 export function isTresFortExport(raw: {
   external_id?: unknown;
   type?: unknown;
 }): boolean {
-  const ext = typeof raw.external_id === 'string' ? raw.external_id : '';
-  if (ext.startsWith('liftcoach:session:')) return true;
+  if (isOwnExportMarker(raw)) return true;
   const t = String(raw.type ?? '').toLowerCase();
   return t === 'weighttraining';
+}
+
+/** Marker-only variant of isTresFortExport. Matches ONLY our deterministic
+ *  `liftcoach:session:` external_id, never the generic `WeightTraining`
+ *  type. Used on the completed-activities read path: our exports are
+ *  planned EVENTS that don't surface in the /activities feed, and
+ *  `external_activities` feeds only the display feed/calendar (never the
+ *  conflict/load math, which reads `external_events`), so a member's real
+ *  strength activity is safe to keep and classify. */
+export function isOwnExportMarker(raw: { external_id?: unknown }): boolean {
+  const ext = typeof raw.external_id === 'string' ? raw.external_id : '';
+  return ext.startsWith('liftcoach:session:');
 }
 
 /**

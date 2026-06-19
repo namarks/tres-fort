@@ -5403,7 +5403,9 @@ export async function upsertHealthKitActivity(
          elevation_gain_m=excluded.elevation_gain_m,
          raw=excluded.raw,
          synced_at=excluded.synced_at,
-         deleted_at=NULL`,
+         deleted_at=NULL,
+         canonical=1,
+         duplicate_of=NULL`,
     )
     .bind(
       id,
@@ -5461,28 +5463,50 @@ export const ACTIVITY_DEDUP_TOLERANCE_MS = 2 * 60 * 1000;
  * mechanism means every existing read path (getRecentActivities, projectCalendar,
  * group feed/stats/series — all already filter deleted_at) and the /api/state
  * tombstone delta Just Work with no new filters and no iOS change. synced_at is
- * advanced so the tombstone reaches incremental sync clients.
+ * advanced so the change reaches incremental sync clients.
  *
- * Idempotent: already-retired rows are skipped (they're deleted). Called from
- * BOTH write paths — the HealthKit push and the intervals sync — so it converges
- * regardless of arrival order. Surfacing the duplicate's provenance in the UI
- * ("also from Apple Health") is a future enhancement (needs an iOS field).
+ * BIDIRECTIONAL (Codex P2 follow-up): this is a full reconciliation, not a
+ * one-way retire. It also RESTORES a previously-retired HealthKit row when its
+ * intervals winner later disappears (the activity is removed upstream → the
+ * intervals sync soft-deletes the canonical row, then calls this). Without the
+ * restore, both copies would stay hidden and the workout would vanish until the
+ * phone re-pushed it. A HealthKit row soft-deleted for any OTHER reason
+ * (duplicate_of IS NULL) is left untouched — we only manage rows WE retired.
+ *
+ * Idempotent: only state CHANGES emit a write (no synced_at churn in steady
+ * state). Deterministic + order-independent — called from BOTH write paths (the
+ * HealthKit push and the intervals sync) so it converges whichever source lands
+ * (or leaves) first. Surfacing the duplicate's provenance in the UI ("also from
+ * Apple Health") is a future enhancement (needs an iOS field).
  */
 export async function dedupeHealthKitAgainstIntervals(
   db: D1Database,
   userId: string,
 ): Promise<number> {
+  // HealthKit rows we manage: currently live (candidates to retire) OR
+  // previously retired BY US as a dup (deleted_at + duplicate_of set →
+  // candidates to RESTORE if their winner is gone).
   const hk = (
     await db
       .prepare(
-        `SELECT id, kind, start_date_local_ms FROM external_activities
-          WHERE user_id = ?1 AND source = 'healthkit' AND deleted_at IS NULL
-            AND start_date_local_ms IS NOT NULL`,
+        `SELECT id, kind, start_date_local_ms, deleted_at, duplicate_of
+           FROM external_activities
+          WHERE user_id = ?1 AND source = 'healthkit'
+            AND start_date_local_ms IS NOT NULL
+            AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)`,
       )
       .bind(userId)
-      .all<{ id: string; kind: string; start_date_local_ms: number }>()
+      .all<{
+        id: string;
+        kind: string;
+        start_date_local_ms: number;
+        deleted_at: number | null;
+        duplicate_of: string | null;
+      }>()
   ).results;
   if (hk.length === 0) return 0;
+  // Live intervals winners (NOT early-returned on empty: with no live winner,
+  // any retired dup must be RESTORED).
   const iv = (
     await db
       .prepare(
@@ -5493,7 +5517,6 @@ export async function dedupeHealthKitAgainstIntervals(
       .bind(userId)
       .all<{ id: string; kind: string; start_date_local_ms: number }>()
   ).results;
-  if (iv.length === 0) return 0;
 
   const ts = now();
   const stmts: D1PreparedStatement[] = [];
@@ -5508,7 +5531,9 @@ export async function dedupeHealthKitAgainstIntervals(
         best = { id: v.id };
       }
     }
-    if (best) {
+    const isRetiredDup = h.deleted_at != null && h.duplicate_of != null;
+    if (best && !isRetiredDup) {
+      // Live HealthKit row duplicating a live intervals activity → retire it.
       stmts.push(
         db
           .prepare(
@@ -5518,7 +5543,21 @@ export async function dedupeHealthKitAgainstIntervals(
           )
           .bind(h.id, ts, best.id),
       );
+    } else if (!best && isRetiredDup) {
+      // We retired this as a dup but its intervals winner is gone → restore it
+      // as the surviving copy so the workout doesn't vanish.
+      stmts.push(
+        db
+          .prepare(
+            `UPDATE external_activities
+                SET deleted_at = NULL, synced_at = ?2, canonical = 1, duplicate_of = NULL
+              WHERE id = ?1`,
+          )
+          .bind(h.id, ts),
+      );
     }
+    // else: already correct (live with no match, or retired with winner still
+    // present) → no-op, so steady-state syncs don't churn synced_at.
   }
   if (stmts.length) await db.batch(stmts);
   return stmts.length;

@@ -609,6 +609,53 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
     expect(ids).not.toContain(hkId);
   });
 
+  it('cross-source dedup: restores the HealthKit row when its intervals winner disappears (Codex P2)', async () => {
+    const userId = await freshUser();
+    const hkId = `healthkit:activity:${userId}:hkrestore`;
+    const start = Date.parse('2026-05-11T08:00:00Z');
+    await env.DB.prepare(
+      `INSERT INTO external_activities
+         (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
+          synced_at,deleted_at,canonical,duplicate_of)
+       VALUES (?1,?2,'healthkit','hkrestore','2026-05-11','ride','Zwift',?3,1000,NULL,1,NULL)`,
+    )
+      .bind(hkId, userId, start)
+      .run();
+
+    // 1) intervals sync brings the matching ride → HealthKit copy retired.
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'ivr', type: 'Ride', start_date_local: '2026-05-11T08:00:20' })]),
+    } as any);
+    let hk = await env.DB.prepare(
+      'SELECT deleted_at, canonical, duplicate_of FROM external_activities WHERE id=?1',
+    )
+      .bind(hkId)
+      .first<{ deleted_at: number | null; canonical: number; duplicate_of: string | null }>();
+    expect(hk!.deleted_at).not.toBeNull();
+    expect(hk!.duplicate_of).toBe(`intervals:activity:${userId}:ivr`);
+
+    // 2) the activity is removed upstream → empty successful sync soft-deletes
+    //    the intervals winner, and dedup must RESTORE the HealthKit copy.
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([]),
+    } as any);
+
+    hk = await env.DB.prepare(
+      'SELECT deleted_at, canonical, duplicate_of FROM external_activities WHERE id=?1',
+    )
+      .bind(hkId)
+      .first<{ deleted_at: number | null; canonical: number; duplicate_of: string | null }>();
+    expect(hk!.deleted_at).toBeNull();
+    expect(hk!.canonical).toBe(1);
+    expect(hk!.duplicate_of).toBeNull();
+    const live = await getRecentActivities(env.DB, userId, { to: TODAY });
+    expect(live.map((x) => x.id)).toContain(hkId);
+  });
+
   it('CRITICAL GUARD: a 500 leaves the completed cache COMPLETELY untouched', async () => {
     const userId = await freshUser();
     await syncExternalActivities(env.DB, env as unknown as Env, {

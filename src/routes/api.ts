@@ -39,6 +39,7 @@ import {
   setUserMcpPassphrase,
   softDeleteActivity,
   updateExercise,
+  upsertHealthKitActivity,
   writeAudit,
 } from '../db';
 
@@ -415,6 +416,62 @@ apiRoutes.delete('/activities/:id', async (c) => {
   const ok = await softDeleteActivity(c.env.DB, c.get('userId'), c.req.param('id'));
   if (!ok) return c.json({ error: 'not_found' }, 404);
   return c.json({ ok: true });
+});
+
+// ---- Apple Health (HealthKit) workout push — iOS on-device → backend ------
+//
+// HealthKit lives ONLY on the phone; the Worker can never read it. The iOS app
+// reads HKWorkout and PUSHes each workout here, landing in the SAME
+// external_activities cache the intervals pull writes (source='healthkit').
+// Client-UUID idempotent (the HKWorkout uuid) — the iOS outbox / a re-anchored
+// sync re-POSTing the same workout lands on ON CONFLICT and updates in place.
+// The intervals reconcile is source-scoped (migration 0027), so it never
+// tombstones these pushed rows.
+apiRoutes.post('/activities/healthkit', async (c) => {
+  const b = await c.req.json<{
+    id?: string;
+    date?: string;
+    start_date_local_ms?: number | null;
+    kind?: string;
+    name?: string | null;
+    moving_time_sec?: number | null;
+    elapsed_time_sec?: number | null;
+    distance_m?: number | null;
+    average_watts?: number | null;
+    average_hr?: number | null;
+    max_hr?: number | null;
+    calories?: number | null;
+    elevation_gain_m?: number | null;
+    raw?: string | null;
+  }>();
+  if (!b.id || typeof b.id !== 'string' || !UUID_RE.test(b.id)) {
+    return c.json({ error: 'invalid_id' }, 400);
+  }
+  if (typeof b.date !== 'string' || !ISO_DATE_RE.test(b.date)) {
+    return c.json({ error: 'invalid_date' }, 400);
+  }
+  if (typeof b.kind !== 'string' || b.kind.length === 0 || b.kind !== b.kind.toLowerCase()) {
+    return c.json({ error: 'invalid_kind' }, 400);
+  }
+  const numOrNull = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? v : null;
+  const row = await upsertHealthKitActivity(c.env.DB, c.get('userId'), {
+    id: b.id,
+    date: b.date,
+    start_date_local_ms: numOrNull(b.start_date_local_ms),
+    kind: b.kind,
+    name: typeof b.name === 'string' && b.name.length > 0 ? b.name : null,
+    moving_time_sec: numOrNull(b.moving_time_sec),
+    elapsed_time_sec: numOrNull(b.elapsed_time_sec),
+    distance_m: numOrNull(b.distance_m),
+    average_watts: numOrNull(b.average_watts),
+    average_hr: numOrNull(b.average_hr),
+    max_hr: numOrNull(b.max_hr),
+    calories: numOrNull(b.calories),
+    elevation_gain_m: numOrNull(b.elevation_gain_m),
+    raw: typeof b.raw === 'string' ? b.raw : null,
+  });
+  return c.json(row, 201);
 });
 
 // GET /api/me — account/setup snapshot for the iOS Profile tab. Read-only;

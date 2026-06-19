@@ -533,6 +533,45 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
     expect(dead!.deleted_at).not.toBeNull();
   });
 
+  it('MULTI-SOURCE GUARD: an intervals reconcile never tombstones another source (0027)', async () => {
+    const userId = await freshUser();
+    // Seed an intervals ride plus a non-intervals (Apple Health) row for the
+    // SAME user, both in-window. The healthkit row is not produced by the
+    // intervals fetch, so a non-source-scoped reconcile would soft-delete it.
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'a1' })]),
+    } as any);
+    const hkId = `healthkit:activity:${userId}:hk1`;
+    await env.DB.prepare(
+      `INSERT INTO external_activities
+         (id,user_id,source,external_id,date,kind,name,synced_at,deleted_at)
+       VALUES (?1,?2,'healthkit',?3,?4,'run','Treadmill',?5,NULL)`,
+    )
+      .bind(hkId, userId, 'hk1', TODAY, 1000)
+      .run();
+
+    // A fresh intervals sync that no longer returns a1 → a1 is tombstoned…
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([]),
+    } as any);
+    const intv = await env.DB.prepare('SELECT deleted_at FROM external_activities WHERE id=?1')
+      .bind(`intervals:activity:${userId}:a1`)
+      .first<{ deleted_at: number | null }>();
+    expect(intv!.deleted_at).not.toBeNull();
+
+    // …but the Apple Health row is UNTOUCHED.
+    const hk = await env.DB.prepare('SELECT deleted_at FROM external_activities WHERE id=?1')
+      .bind(hkId)
+      .first<{ deleted_at: number | null }>();
+    expect(hk!.deleted_at).toBeNull();
+    const live = await getRecentActivities(env.DB, userId, { to: TODAY });
+    expect(live.map((x) => x.id)).toContain(hkId);
+  });
+
   it('CRITICAL GUARD: a 500 leaves the completed cache COMPLETELY untouched', async () => {
     const userId = await freshUser();
     await syncExternalActivities(env.DB, env as unknown as Env, {

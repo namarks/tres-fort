@@ -5238,7 +5238,11 @@ export async function syncExternalActivities(
 
   // Soft-delete in-window rows not seen this sync (advancing synced_at so the
   // tombstone reaches incremental clients). Rows outside [oldest,today] are
-  // left alone (we didn't query them).
+  // left alone (we didn't query them). SOURCE-SCOPED to 'intervals' (Phase 0,
+  // migration 0027): external_activities is now multi-source, so this reconcile
+  // must only tombstone rows IT owns — without the source filter an Apple-Health
+  // (or Polar/Wahoo) row would be wiped on every intervals cron tick because it
+  // is never in `seen`.
   const seenIds = [...seen];
   const placeholders = seenIds.map((_, i) => `?${i + 4}`).join(',');
   const notInSeen = seenIds.length ? `AND id NOT IN (${placeholders})` : '';
@@ -5248,6 +5252,7 @@ export async function syncExternalActivities(
         `UPDATE external_activities
             SET deleted_at = ?3, synced_at = ?3
           WHERE user_id = ?1
+            AND source = 'intervals'
             AND deleted_at IS NULL
             AND date >= ?2 AND date <= ?${seenIds.length ? seenIds.length + 4 : 4}
             ${notInSeen}`,
@@ -5260,7 +5265,7 @@ export async function syncExternalActivities(
   const cnt = await db
     .prepare(
       `SELECT COUNT(*) AS c FROM external_activities
-        WHERE user_id = ?1 AND deleted_at IS NULL
+        WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
           AND date >= ?2 AND date <= ?3`,
     )
     .bind(userId, oldest, today)
@@ -5292,6 +5297,107 @@ export async function getRecentActivities(
     .bind(userId, from, to, limit)
     .all<ExternalActivityRow>();
   return r.results;
+}
+
+/** A completed activity pushed from the iOS app's HealthKit reader. Mirrors
+ *  the intervals-derived CompletedActivity shape but `id` is the CLIENT-supplied
+ *  idempotency key (the HKWorkout UUID), not a provider-side external id. */
+export interface HealthKitActivityInput {
+  id: string; // client UUID = HKWorkout.uuid = idempotency key
+  date: string; // device-local YYYY-MM-DD (workout start), verbatim
+  start_date_local_ms: number | null;
+  kind: string; // normalized lowercase (run|ride|walk|…)
+  name: string | null;
+  moving_time_sec: number | null;
+  elapsed_time_sec: number | null;
+  distance_m: number | null;
+  average_watts: number | null;
+  average_hr: number | null;
+  max_hr: number | null;
+  calories: number | null;
+  elevation_gain_m: number | null;
+  raw: string | null;
+}
+
+/**
+ * Upsert an Apple Health (HealthKit) workout PUSHED from the iOS app into the
+ * external_activities cache. Apple Health is ON-DEVICE only — the Worker can
+ * never read HealthKit — so unlike the intervals PULL path this is a client
+ * push: the phone reads HKWorkout and POSTs it here (POST /api/activities/healthkit).
+ *
+ * source='healthkit'. The PK embeds the user + the client id (the HKWorkout
+ * UUID), making it the idempotency key: a re-push (iOS outbox retry, or a later
+ * anchored sync that re-sees the same workout) lands on ON CONFLICT and UPDATEs
+ * the stats in place (HealthKit can revise a workout's totals) rather than
+ * duplicating. PUSH rows are NEVER reconcile-soft-deleted — the intervals sync's
+ * windowed tombstoning is source-scoped to 'intervals' (migration 0027), and a
+ * HealthKit deletion is an explicit future delete path, not a windowed reconcile.
+ *
+ * training_load / intensity are intentionally left NULL: HealthKit carries no
+ * native TSS and we have no per-user HR anchor (LTHR/max-HR) to derive hrTSS
+ * yet, so we do NOT fabricate a load number — the coach reads average_hr +
+ * duration directly. A per-user HR-anchor setting that unlocks hrTSS is a
+ * tracked follow-up (docs/MULTISOURCE-INGESTION.md).
+ */
+export async function upsertHealthKitActivity(
+  db: D1Database,
+  userId: string,
+  input: HealthKitActivityInput,
+): Promise<ExternalActivityRow> {
+  const id = `healthkit:activity:${userId}:${input.id}`;
+  const ts = now();
+  await db
+    .prepare(
+      `INSERT INTO external_activities
+         (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
+          moving_time_sec,elapsed_time_sec,distance_m,average_watts,
+          weighted_avg_watts,average_hr,max_hr,training_load,intensity,
+          calories,elevation_gain_m,raw,synced_at,deleted_at,canonical,duplicate_of)
+       VALUES (?1,?2,'healthkit',?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,?13,NULL,NULL,
+               ?14,?15,?16,?17,NULL,1,NULL)
+       ON CONFLICT(id) DO UPDATE SET
+         date=excluded.date,
+         start_date_local_ms=excluded.start_date_local_ms,
+         kind=excluded.kind,
+         name=excluded.name,
+         moving_time_sec=excluded.moving_time_sec,
+         elapsed_time_sec=excluded.elapsed_time_sec,
+         distance_m=excluded.distance_m,
+         average_watts=excluded.average_watts,
+         average_hr=excluded.average_hr,
+         max_hr=excluded.max_hr,
+         calories=excluded.calories,
+         elevation_gain_m=excluded.elevation_gain_m,
+         raw=excluded.raw,
+         synced_at=excluded.synced_at,
+         deleted_at=NULL`,
+    )
+    .bind(
+      id,
+      userId,
+      input.id,
+      input.date,
+      input.start_date_local_ms,
+      input.kind,
+      input.name,
+      input.moving_time_sec,
+      input.elapsed_time_sec,
+      input.distance_m,
+      input.average_watts,
+      input.average_hr,
+      input.max_hr,
+      input.calories,
+      input.elevation_gain_m,
+      input.raw,
+      ts,
+    )
+    .run();
+  const row = await db
+    .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
+    .bind(id, userId)
+    .first<ExternalActivityRow>();
+  if (!row) throw new Error('healthkit_activity_insert_failed');
+  return row;
 }
 
 /**

@@ -131,6 +131,36 @@ describe('POST /api/activities/healthkit — Apple Health push ingest', () => {
     expect(await bad({ kind: '' })).toBe(400);
   });
 
+  it('rounds integer-typed fields so iOS Int? decode never sees a decimal (Codex P2)', async () => {
+    const jwt = await devJwt();
+    // HealthKit yields Double (TimeInterval / HKQuantity). The INTEGER columns
+    // iOS decodes as Int? must be rounded; the REAL columns keep their decimals.
+    const r = await SELF.fetch(`${BASE}/api/activities/healthkit`, {
+      method: 'POST',
+      headers: auth(jwt),
+      body: JSON.stringify(
+        workout({
+          moving_time_sec: 1800.5,
+          elapsed_time_sec: 1850.4,
+          max_hr: 168.9,
+          calories: 320.7,
+          start_date_local_ms: 1750243200000.6,
+          distance_m: 5000.5, // REAL — keeps the decimal
+          average_hr: 145.4, // REAL — keeps the decimal
+        }),
+      ),
+    });
+    expect(r.status).toBe(201);
+    const row = await r.json<Record<string, number>>();
+    expect(row.moving_time_sec).toBe(1801);
+    expect(row.elapsed_time_sec).toBe(1850);
+    expect(row.max_hr).toBe(169);
+    expect(row.calories).toBe(321);
+    expect(Number.isInteger(row.start_date_local_ms)).toBe(true);
+    expect(row.distance_m).toBe(5000.5);
+    expect(row.average_hr).toBe(145.4);
+  });
+
   it('coerces non-finite numeric fields to null rather than persisting junk', async () => {
     const jwt = await devJwt();
     const r = await SELF.fetch(`${BASE}/api/activities/healthkit`, {

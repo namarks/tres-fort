@@ -723,3 +723,68 @@ describe('group feed: display name resolution', () => {
     expect(byUser.get(c.id)?.user_display_name).toBe('peer-c');
   });
 });
+
+describe('group feed: Apple Health opt-in gating (Codex P1 / migration 0028)', () => {
+  it("hides a member's healthkit activity until they opt in; intervals always shows", async () => {
+    const owner = await devJwt();
+    const member = await makeUser('hkmember');
+    const groupId = await createGroup(owner.jwt, 'Fam');
+    await inviteAndJoin(owner.jwt, member.jwt, groupId);
+
+    // The member has an intervals ride (permissive terms — always visible) and
+    // a pushed Apple Health workout (private — opt-in gated), same day.
+    const rideId = await seedRide(member.id, {
+      date: '2026-06-18',
+      syncedAt: Date.parse('2026-06-18T10:00:00Z'),
+    });
+    const hkId = `healthkit:activity:${member.id}:${crypto.randomUUID()}`;
+    await env.DB.prepare(
+      `INSERT INTO external_activities
+         (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
+          synced_at,deleted_at,canonical,duplicate_of)
+       VALUES (?1,?2,'healthkit',?3,?4,'run','Treadmill',?5,?5,NULL,1,NULL)`,
+    )
+      .bind(hkId, member.id, 'hk1', '2026-06-18', Date.parse('2026-06-18T11:00:00Z'))
+      .run();
+
+    const feedIds = async (): Promise<string[]> => {
+      const r = await SELF.fetch(`${BASE}/api/groups/${groupId}/feed`, {
+        headers: headers(owner.jwt),
+      });
+      expect(r.status).toBe(200);
+      const body = await r.json<{ items: { id: string }[] }>();
+      return body.items.map((i) => i.id);
+    };
+
+    // Default off: intervals visible to the owner, healthkit hidden.
+    let ids = await feedIds();
+    expect(ids).toContain(rideId);
+    expect(ids).not.toContain(hkId);
+
+    // Member opts in.
+    const patch = await SELF.fetch(`${BASE}/api/me/health-sharing`, {
+      method: 'PATCH',
+      headers: headers(member.jwt),
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(patch.status).toBe(200);
+    expect(await patch.json()).toMatchObject({ sharing_in_group: true });
+
+    // Now the healthkit row surfaces to the group.
+    ids = await feedIds();
+    expect(ids).toContain(hkId);
+
+    // /api/me reflects the flag for the member's own toggle state.
+    const me = await SELF.fetch(`${BASE}/api/me`, { headers: headers(member.jwt) });
+    expect(await me.json()).toMatchObject({ health: { sharing_in_group: true } });
+
+    // Opting back off hides it again.
+    await SELF.fetch(`${BASE}/api/me/health-sharing`, {
+      method: 'PATCH',
+      headers: headers(member.jwt),
+      body: JSON.stringify({ enabled: false }),
+    });
+    ids = await feedIds();
+    expect(ids).not.toContain(hkId);
+  });
+});

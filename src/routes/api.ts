@@ -37,6 +37,7 @@ import {
   setGroupDisplayName,
   setUserIntervalsCreds,
   setUserMcpPassphrase,
+  setHealthActivitySharing,
   softDeleteActivity,
   updateExercise,
   upsertHealthKitActivity,
@@ -453,25 +454,42 @@ apiRoutes.post('/activities/healthkit', async (c) => {
   if (typeof b.kind !== 'string' || b.kind.length === 0 || b.kind !== b.kind.toLowerCase()) {
     return c.json({ error: 'invalid_kind' }, 400);
   }
+  // REAL (floating) columns: keep any finite value.
   const numOrNull = (v: unknown): number | null =>
     typeof v === 'number' && Number.isFinite(v) ? v : null;
+  // INTEGER columns. Codex P2: HealthKit yields Double (TimeInterval / HKQuantity),
+  // so e.g. moving_time_sec=1800.5 would persist as a SQLite decimal and break
+  // iOS's Int? decode of external_activities (dropping the whole feed). Round to
+  // an int before persisting. Applies to the columns iOS decodes as Int:
+  // start_date_local_ms, moving_time_sec, elapsed_time_sec, max_hr, calories.
+  const intOrNull = (v: unknown): number | null =>
+    typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null;
   const row = await upsertHealthKitActivity(c.env.DB, c.get('userId'), {
     id: b.id,
     date: b.date,
-    start_date_local_ms: numOrNull(b.start_date_local_ms),
+    start_date_local_ms: intOrNull(b.start_date_local_ms),
     kind: b.kind,
     name: typeof b.name === 'string' && b.name.length > 0 ? b.name : null,
-    moving_time_sec: numOrNull(b.moving_time_sec),
-    elapsed_time_sec: numOrNull(b.elapsed_time_sec),
+    moving_time_sec: intOrNull(b.moving_time_sec),
+    elapsed_time_sec: intOrNull(b.elapsed_time_sec),
     distance_m: numOrNull(b.distance_m),
     average_watts: numOrNull(b.average_watts),
     average_hr: numOrNull(b.average_hr),
-    max_hr: numOrNull(b.max_hr),
-    calories: numOrNull(b.calories),
+    max_hr: intOrNull(b.max_hr),
+    calories: intOrNull(b.calories),
     elevation_gain_m: numOrNull(b.elevation_gain_m),
     raw: typeof b.raw === 'string' ? b.raw : null,
   });
   return c.json(row, 201);
+});
+
+// PATCH /api/me/health-sharing — flip the Apple Health group-feed opt-in
+// (migration 0028). Off by default; the iOS Apple Health detail toggle calls
+// this. When off, the group feed/stats/series exclude this user's HealthKit rows.
+apiRoutes.patch('/me/health-sharing', async (c) => {
+  const b = await c.req.json<{ enabled?: unknown }>();
+  if (typeof b.enabled !== 'boolean') return c.json({ error: 'invalid_enabled' }, 400);
+  return c.json(await setHealthActivitySharing(c.env.DB, c.get('userId'), b.enabled));
 });
 
 // GET /api/me — account/setup snapshot for the iOS Profile tab. Read-only;

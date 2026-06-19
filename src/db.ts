@@ -705,6 +705,9 @@ export interface MeProfile {
   email: string | null;
   intervals: { connected: boolean; athlete_id: string | null; needs_reauth: boolean };
   claude: { is_owner: boolean; connected: boolean; last_active: number | null };
+  // Apple Health group-feed opt-in (migration 0028). Off by default; the iOS
+  // Apple Health detail toggle flips it via PATCH /api/me/health-sharing.
+  health: { sharing_in_group: boolean };
 }
 
 export async function getMeProfile(
@@ -714,7 +717,7 @@ export async function getMeProfile(
 ): Promise<MeProfile> {
   const u = await db
     .prepare(
-      'SELECT display_name, email, intervals_athlete_id, intervals_auth_error_at FROM users WHERE id = ?1',
+      'SELECT display_name, email, intervals_athlete_id, intervals_auth_error_at, share_health_activities FROM users WHERE id = ?1',
     )
     .bind(userId)
     .first<{
@@ -722,6 +725,7 @@ export async function getMeProfile(
       email: string | null;
       intervals_athlete_id: string | null;
       intervals_auth_error_at: number | null;
+      share_health_activities: number | null;
     }>();
 
   // Claude connection is PER-USER (M3): a token bound to THIS user means their
@@ -763,7 +767,31 @@ export async function getMeProfile(
       connected: claudeConnected,
       last_active: lastActive,
     },
+    health: {
+      // Whether THIS user's Apple Health activities are shared into the group
+      // feed (opt-in, default off — migration 0028). Drives the iOS detail
+      // toggle; the gate itself lives in the group-surface queries.
+      sharing_in_group: !!u?.share_health_activities,
+    },
   };
+}
+
+/**
+ * Set this user's "share my Apple Health activities in the group feed" opt-in
+ * (migration 0028). Off by default; the iOS Apple Health detail toggle calls
+ * PATCH /api/me/health-sharing to flip it. When off, the group feed/stats/series
+ * queries exclude this user's source='healthkit' rows.
+ */
+export async function setHealthActivitySharing(
+  db: D1Database,
+  userId: string,
+  enabled: boolean,
+): Promise<{ sharing_in_group: boolean }> {
+  await db
+    .prepare('UPDATE users SET share_health_activities = ?2 WHERE id = ?1')
+    .bind(userId, enabled ? 1 : 0)
+    .run();
+  return { sharing_in_group: enabled };
 }
 
 /**
@@ -5895,6 +5923,12 @@ export async function getGroupFeed(
          FROM external_activities
         WHERE user_id IN (${placeholders})
           AND deleted_at IS NULL
+          -- Codex P1 / migration 0028: a member's HealthKit activities are
+          -- private until they opt into group sharing. intervals rows are
+          -- unaffected (its terms permit cross-user display).
+          AND (source <> 'healthkit'
+               OR (SELECT share_health_activities FROM users
+                     WHERE id = external_activities.user_id) = 1)
           AND (
             COALESCE(start_date_local_ms, synced_at) < ?${memberIds.length + 1}
             OR (
@@ -6079,9 +6113,15 @@ export async function getGroupStats(
       .all<{ date: string }>();
     const ridesRows = await db
       .prepare(
+        // HealthKit rows are gated behind the per-user opt-in (0028) so an
+        // un-shared member's private health activity never inflates the
+        // group streak/count surfaced to others.
         `SELECT DISTINCT date FROM external_activities
           WHERE user_id = ?1
             AND deleted_at IS NULL
+            AND (source <> 'healthkit'
+                 OR (SELECT share_health_activities FROM users
+                       WHERE id = external_activities.user_id) = 1)
             AND date >= ?2 AND date <= ?3`,
       )
       .bind(m.user_id, streakStart, today)
@@ -6238,9 +6278,13 @@ export async function getGroupActivitySeries(
 
     const rideRows = await db
       .prepare(
+        // HealthKit rows gated behind the opt-in (0028), same as the feed/stats.
         `SELECT date, COUNT(*) AS n FROM external_activities
           WHERE user_id = ?1
             AND deleted_at IS NULL
+            AND (source <> 'healthkit'
+                 OR (SELECT share_health_activities FROM users
+                       WHERE id = external_activities.user_id) = 1)
             AND date >= ?2 AND date <= ?3
           GROUP BY date`,
       )

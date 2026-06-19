@@ -109,11 +109,11 @@ struct ProfileView: View {
     private var integrationsSection: some View {
         Section("Integrations") {
             NavigationLink {
-                IntervalsSettingsView(groupModel: groupModel)
+                ConnectionsView(groupModel: groupModel)
             } label: {
                 HStack {
-                    Image(systemName: "bicycle").foregroundStyle(Theme.muted)
-                    Text("intervals.icu")
+                    Image(systemName: "link").foregroundStyle(Theme.muted)
+                    Text("Connections")
                     Spacer()
                     if groupModel.me?.intervals.needs_reauth == true {
                         Text("Reconnect needed")

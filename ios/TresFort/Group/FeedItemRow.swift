@@ -86,12 +86,21 @@ struct FeedItemRow: View {
         }
     }
 
+    /// Glyph for an intervals.icu activity kind. Mirrors the kinds emitted
+    /// by `kindOf` in the backend's src/intervals.ts — keep them in sync.
     private func rideGlyph(kind: String) -> String {
         switch kind {
-        case "run":   return "figure.run"
-        case "swim":  return "figure.pool.swim"
-        case "ride":  return "bicycle"
-        default:      return "figure.mixed.cardio"
+        case "run":        return "figure.run"
+        case "swim":       return "figure.pool.swim"
+        case "ride":       return "bicycle"
+        case "walk":       return "figure.walk"
+        case "hike":       return "figure.hiking"
+        case "row":        return "figure.rower"
+        case "ski":        return "figure.skiing.downhill"
+        case "yoga":       return "figure.mind.and.body"
+        case "elliptical": return "figure.elliptical"
+        case "strength":   return "dumbbell.fill"
+        default:           return "figure.mixed.cardio"
         }
     }
 }

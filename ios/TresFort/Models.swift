@@ -341,12 +341,21 @@ struct ExternalActivity: Decodable, Identifiable, Equatable {
     }
 
     /// SF Symbol per activity kind (calendar glyph + agenda header).
+    /// Mirrors the kinds emitted by `kindOf` in the backend's
+    /// src/intervals.ts and FeedItemRow.rideGlyph — keep them in sync.
     var glyph: String {
         switch kind {
-        case "ride": return "bicycle"
-        case "run":  return "figure.run"
-        case "swim": return "figure.pool.swim"
-        default:     return "figure.mixed.cardio"
+        case "ride":       return "bicycle"
+        case "run":        return "figure.run"
+        case "swim":       return "figure.pool.swim"
+        case "walk":       return "figure.walk"
+        case "hike":       return "figure.hiking"
+        case "row":        return "figure.rower"
+        case "ski":        return "figure.skiing.downhill"
+        case "yoga":       return "figure.mind.and.body"
+        case "elliptical": return "figure.elliptical"
+        case "strength":   return "dumbbell.fill"
+        default:           return "figure.mixed.cardio"
         }
     }
 

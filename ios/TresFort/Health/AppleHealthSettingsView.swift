@@ -22,8 +22,15 @@ struct AppleHealthSettingsView: View {
             statusSection
             if health.isAvailable {
                 actionSection
-                if health.enabled {
+                // Sharing stays reachable while connected OR while the server
+                // still has it ON — so a user who disconnects Apple Health with
+                // sharing left on can still turn off group visibility for their
+                // already-pushed rows (disconnect stops syncing but doesn't flip
+                // the server-side opt-in or delete those rows).
+                if health.enabled || sharing {
                     sharingSection
+                }
+                if health.enabled {
                     disconnectSection
                 }
             }

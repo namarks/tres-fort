@@ -156,14 +156,23 @@ final class HealthKitSyncModel: ObservableObject {
         isSyncing = true
         defer { isSyncing = false }
         var anchor = loadAnchor()
+        let hadStoredAnchor = anchor != nil
         var pushedAny = false
         do {
             while true {
                 let (workouts, newAnchor) =
                     try await fetchNewWorkouts(anchor: anchor, limit: Self.pageLimit)
                 if workouts.isEmpty {
-                    // Nothing (more) new — advance past the empty delta cursor.
-                    if let newAnchor { saveAnchor(newAnchor); anchor = newAnchor }
+                    // Only checkpoint an empty result once we KNOW reads work —
+                    // i.e. we already had a stored anchor, or we've pushed a page
+                    // this run. On the very FIRST sync HealthKit reports a DENIED
+                    // workout read as an empty set (not an error), so persisting
+                    // that anchor would skip the historical backfill if the user
+                    // later grants permission in Settings. Leaving it unset means
+                    // the next sync retries from scratch and backfills.
+                    if (hadStoredAnchor || pushedAny), let newAnchor {
+                        saveAnchor(newAnchor); anchor = newAnchor
+                    }
                     break
                 }
                 for w in workouts {

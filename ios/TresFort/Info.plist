@@ -22,6 +22,10 @@
   <string>$(CURRENT_PROJECT_VERSION)</string>
   <key>NSSupportsLiveActivities</key>
   <true/>
+  <!-- HealthKit read access. Mandatory or App Review rejects the build; shown in
+       the system permission sheet. Read-only, so no NSHealthUpdateUsageDescription. -->
+  <key>NSHealthShareUsageDescription</key>
+  <string>Très Fort reads your workouts — including heart rate, distance, and calories — so your coach can see your cardio and balance it against your lifting.</string>
   <key>ITSAppUsesNonExemptEncryption</key>
   <false/>
   <key>UIAppFonts</key>

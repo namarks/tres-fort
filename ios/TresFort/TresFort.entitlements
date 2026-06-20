@@ -19,5 +19,17 @@
   <array>
     <string>applinks:tres-fort.nmarkspdx.workers.dev</string>
   </array>
+  <!-- HealthKit: on-device read of HKWorkouts (+ HR / distance / energy),
+       pushed to the backend so the coach sees cardio (docs/MULTISOURCE-
+       INGESTION.md §2.5). Automatic signing adds the "HealthKit" capability to
+       the App ID on the next device build. background-delivery backs the
+       HKObserverQuery near-real-time path; foreground anchored sync is the
+       source of truth. NOTE: we intentionally do NOT add
+       com.apple.developer.healthkit.access (clinical health records) — that's a
+       different, heavier entitlement we don't need. -->
+  <key>com.apple.developer.healthkit</key>
+  <true/>
+  <key>com.apple.developer.healthkit.background-delivery</key>
+  <true/>
 </dict>
 </plist>

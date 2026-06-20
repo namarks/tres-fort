@@ -117,6 +117,11 @@ final class AuthModel: ObservableObject {
         Keychain.clear()
         UserDefaults.standard.removeObject(forKey: Self.userIDKey)
         UserDefaults.standard.removeObject(forKey: GroupModel.intervalsConnectionKey)
+        // Apple Health connection + anchor are device-global but represent the
+        // current user's connection — clear them so a different account signing
+        // in next doesn't inherit "connected" or sync from a stale anchor.
+        UserDefaults.standard.removeObject(forKey: HealthKitSyncModel.enabledKey)
+        UserDefaults.standard.removeObject(forKey: HealthKitSyncModel.anchorKey)
         ActivityOutboxStore.clear()
         jwt = nil
         userID = nil

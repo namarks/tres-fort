@@ -8,6 +8,7 @@ struct MainTabView: View {
     @ObservedObject var auth: AuthModel
     @StateObject private var sync: SyncModel
     @StateObject private var groupModel: GroupModel
+    @StateObject private var health: HealthKitSyncModel
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var showActivitySheet = false
@@ -26,6 +27,7 @@ struct MainTabView: View {
         self.auth = auth
         let sync = SyncModel(auth: auth)
         let groupModel = GroupModel(auth: auth)
+        let health = HealthKitSyncModel(auth: auth)
         // Bridge group-side activity writes to the personal calendar here in
         // init — NOT in `.task` — so the closure is set before GroupTabView's
         // own `.task { groupModel.load() }` can drain the outbox on launch.
@@ -34,8 +36,13 @@ struct MainTabView: View {
         // rows). StateObject keeps the first instances, so the closure stays
         // bound to the retained sync across re-inits.
         groupModel.onActivityPersisted = { [weak sync] in await sync?.load() }
+        // HealthKit pushes land in external_activities (source='healthkit'),
+        // which ride /api/state — so a completed sync must refresh the personal
+        // calendar/agenda just like a manual activity does.
+        health.onActivitiesPersisted = { [weak sync] in await sync?.load() }
         _sync = StateObject(wrappedValue: sync)
         _groupModel = StateObject(wrappedValue: groupModel)
+        _health = StateObject(wrappedValue: health)
     }
 
     var body: some View {
@@ -56,13 +63,18 @@ struct MainTabView: View {
             GroupTabView(groupModel: groupModel, auth: auth)
                 .tabItem { Label("Group", systemImage: "person.2.fill") }
                 .tag(Tab.group)
-            ProfileView(groupModel: groupModel, auth: auth)
+            ProfileView(groupModel: groupModel, auth: auth, health: health)
                 .tabItem { Label("Profile", systemImage: "person.crop.circle") }
                 .tag(Tab.profile)
         }
         .tint(Theme.accent)
         .task {
             await sync.load()
+            // Register the HealthKit observer + run an incremental sync if the
+            // user has connected Apple Health (no-op otherwise). Anchored
+            // foreground sync is the source of truth (background delivery is
+            // best-effort); this is the reliable per-launch pass.
+            health.start()
         }
         .onChange(of: scenePhase) { _, new in
             // On foreground, refresh the currently-visible group's feed +
@@ -75,6 +87,8 @@ struct MainTabView: View {
                     if let gid = groupModel.selectedGroupID {
                         await groupModel.refreshGroup(groupID: gid)
                     }
+                    // Pull any workouts recorded while we were backgrounded.
+                    await health.sync()
                 }
             }
         }

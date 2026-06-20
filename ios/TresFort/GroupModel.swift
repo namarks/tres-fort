@@ -530,6 +530,20 @@ final class GroupModel: ObservableObject {
         return connected
     }
 
+    // MARK: - Apple Health
+
+    /// Flip the Apple Health group-feed opt-in (PATCH /api/me/health-sharing,
+    /// migration 0028) and refresh `me` so the toggle reflects server truth.
+    /// HealthKit reading/pushing itself lives in HealthKitSyncModel — this only
+    /// controls cross-user VISIBILITY of those activities in the group feed.
+    func setHealthSharing(_ enabled: Bool) async throws {
+        guard let jwt = auth.jwt else {
+            throw APIError.http(401, "not_signed_in")
+        }
+        _ = try await api.setHealthSharing(enabled: enabled, jwt: jwt)
+        await refreshMe()
+    }
+
     // MARK: - Claude connect code (M3)
 
     /// Generate a fresh MCP connect code, store it server-side, and return the

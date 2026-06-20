@@ -9,6 +9,7 @@ import SwiftUI
 struct ProfileView: View {
     @ObservedObject var groupModel: GroupModel
     @ObservedObject var auth: AuthModel
+    @ObservedObject var health: HealthKitSyncModel
 
     @State private var showJoin = false
     @State private var showCreate = false
@@ -109,7 +110,7 @@ struct ProfileView: View {
     private var integrationsSection: some View {
         Section("Integrations") {
             NavigationLink {
-                ConnectionsView(groupModel: groupModel)
+                ConnectionsView(groupModel: groupModel, health: health)
             } label: {
                 HStack {
                     Image(systemName: "link").foregroundStyle(Theme.muted)

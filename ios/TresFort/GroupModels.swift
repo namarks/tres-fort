@@ -414,6 +414,9 @@ struct MeProfile: Decodable, Equatable {
     let email: String?
     let intervals: IntervalsStatus
     let claude: ClaudeStatus
+    /// Apple Health group-feed opt-in (migration 0028). Optional so an app
+    /// built before the server field shipped still decodes; nil == not sharing.
+    let health: HealthStatus?
 
     struct IntervalsStatus: Decodable, Equatable {
         let connected: Bool
@@ -431,6 +434,13 @@ struct MeProfile: Decodable, Equatable {
         let is_owner: Bool
         let connected: Bool
         let last_active: Int?
+    }
+
+    /// Whether this user's Apple Health activities are shared into the group
+    /// feed (opt-in, default off). The iOS Apple Health detail toggle flips it
+    /// via PATCH /api/me/health-sharing; the gate itself lives server-side.
+    struct HealthStatus: Decodable, Equatable {
+        let sharing_in_group: Bool
     }
 }
 

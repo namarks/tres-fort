@@ -60,7 +60,13 @@ struct AppleHealthSettingsView: View {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Connected").font(.headline)
-                        if let t = health.lastSyncedAt {
+                        // The first connect kicks a full historical backfill that
+                        // can run for a while — say so explicitly so it doesn't
+                        // read as a stuck/failed connect.
+                        if health.isSyncing {
+                            Text("Syncing your workouts…")
+                                .font(.footnote).foregroundStyle(.secondary)
+                        } else if let t = health.lastSyncedAt {
                             Text("Last synced \(relative(t))")
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
@@ -90,10 +96,17 @@ struct AppleHealthSettingsView: View {
             Button {
                 action()
             } label: {
-                HStack {
+                HStack(spacing: 8) {
                     Spacer()
-                    if connecting || health.isSyncing {
+                    if connecting {
                         ProgressView()
+                        Text("Connecting…")
+                    } else if health.enabled && health.isSyncing {
+                        // Background backfill — labeled so it never reads as a
+                        // hung "Connect" tap (the connect itself already
+                        // succeeded; the status shows "Connected" above).
+                        ProgressView()
+                        Text("Syncing…")
                     } else {
                         Text(health.enabled ? "Sync now" : "Connect Apple Health").bold()
                     }

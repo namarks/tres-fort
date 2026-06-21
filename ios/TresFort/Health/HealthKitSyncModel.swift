@@ -85,10 +85,19 @@ final class HealthKitSyncModel: ObservableObject {
     // MARK: - Connect / disconnect
 
     /// Request HealthKit read access, mark connected, register the observer,
-    /// and run the first (full-backfill) sync. Apple hides read denial, so a
+    /// and kick the first (full-backfill) sync. Apple hides read denial, so a
     /// returned-but-denied authorization still flips `enabled` — empty reads
     /// just produce thin rows. Throwing here means the user dismissed or the
     /// system errored before any prompt.
+    ///
+    /// The backfill sync is fired-and-forgotten on purpose: the FIRST sync reads
+    /// the user's whole workout history and pushes each one sequentially (an HR
+    /// query + a network POST per workout), which can take many seconds. We do
+    /// NOT `await` it here so `connect()` returns the instant authorization
+    /// completes — the UI flips to "Connected" immediately and surfaces the
+    /// ongoing import via `isSyncing` ("Syncing…"), instead of leaving the
+    /// connect spinner spinning through the whole backfill (which read as a
+    /// hang/failure).
     func connect() async {
         guard isAvailable else {
             lastError = "Apple Health isn’t available on this device."
@@ -96,13 +105,14 @@ final class HealthKitSyncModel: ObservableObject {
         }
         do {
             try await store.requestAuthorization(toShare: [], read: readTypes)
-            enabled = true
-            lastError = nil
-            registerObserver()
-            await sync()
         } catch {
             lastError = "Couldn’t access Apple Health. \(error.localizedDescription)"
+            return
         }
+        enabled = true
+        lastError = nil
+        registerObserver()
+        Task { await sync() }
     }
 
     /// Stop syncing Apple Health. Clears intent + the anchor + the observer.

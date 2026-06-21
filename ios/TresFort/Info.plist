@@ -22,10 +22,15 @@
   <string>$(CURRENT_PROJECT_VERSION)</string>
   <key>NSSupportsLiveActivities</key>
   <true/>
-  <!-- HealthKit read access. Mandatory or App Review rejects the build; shown in
-       the system permission sheet. Read-only, so no NSHealthUpdateUsageDescription. -->
+  <!-- HealthKit purpose strings. We READ only (request no write access), but App
+       Store upload validation (409) requires BOTH strings once the HealthKit
+       entitlement is present — so the Update string must exist even though iOS
+       never shows it (we pass toShare: []). The Share string IS shown in the
+       read-permission sheet. -->
   <key>NSHealthShareUsageDescription</key>
   <string>Très Fort reads your workouts — including heart rate, distance, and calories — so your coach can see your cardio and balance it against your lifting.</string>
+  <key>NSHealthUpdateUsageDescription</key>
+  <string>Très Fort does not write to Apple Health — it only reads your workouts to inform your coaching.</string>
   <key>ITSAppUsesNonExemptEncryption</key>
   <false/>
   <key>UIAppFonts</key>

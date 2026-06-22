@@ -14,7 +14,7 @@ struct MainTabView: View {
     @State private var showActivitySheet = false
     @State private var selectedTab: Tab = .today
 
-    enum Tab { case today, calendar, history, group, profile }
+    enum Tab { case today, history, group, profile }
 
     /// Wraps the pending invite code as Identifiable so `.sheet(item:)` can
     /// drive the join-confirm sheet off AuthModel's optional code.
@@ -54,11 +54,8 @@ struct MainTabView: View {
                     Label("Today", systemImage: "figure.strengthtraining.traditional")
                 }
                 .tag(Tab.today)
-            CalendarView(sync: sync)
-                .tabItem { Label("Calendar", systemImage: "calendar") }
-                .tag(Tab.calendar)
             HistoryView(sync: sync)
-                .tabItem { Label("History", systemImage: "chart.xyaxis.line") }
+                .tabItem { Label("History", systemImage: "calendar") }
                 .tag(Tab.history)
             GroupTabView(groupModel: groupModel, auth: auth)
                 .tabItem { Label("Group", systemImage: "person.2.fill") }

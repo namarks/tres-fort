@@ -57,9 +57,9 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
 }
 
 // Embedded inside the merged History tab (see HistoryView) — owns no nav
-// chrome: no NavigationStack, no title, no "Today" button. The parent hosts
-// one NavigationStack for both segments and supplies the trailing "Today"
-// affordance, which resets `monthAnchor` (owned by the parent, bound here).
+// chrome (no NavigationStack/title; the parent's stack handles navigation).
+// Self-owned `monthAnchor` plus an in-header "TODAY" button; the feed's scroll
+// offset drives the condense morph.
 struct CalendarMonthView: View {
     @ObservedObject var sync: SyncModel
 
@@ -168,8 +168,10 @@ struct CalendarMonthView: View {
         // Floor the content above the full available height so condensing
         // (which frees ~360pt) can never make a short feed suddenly fit the
         // taller viewport and snap the scroll back to 0 — which would bounce
-        // the calendar open again.
-        .frame(minHeight: availableHeight + 120, alignment: .top)
+        // the calendar open again. The max(…, 600) guards the first layout pass,
+        // where the outer GeometryReader hasn't measured yet (availableHeight 0)
+        // — without it an empty feed visibly jumps height on the second frame.
+        .frame(minHeight: max(availableHeight, 600) + 120, alignment: .top)
     }
 
     /// Flip the morph from the feed's scroll distance. Hysteresis band (6…28)
@@ -355,7 +357,7 @@ struct CalendarMonthView: View {
         // `Date()` each access). The cell's projection ring (past/future
         // split), the today-highlight ring (`isToday`), and the A/B label
         // gate must all agree; reading the clock 3× (proj convenience
-        // overload + `isToday` + inside `dayLabel`) could straddle
+        // overload + `isToday` + inside `dayCell`) could straddle
         // midnight so e.g. `proj` resolves `ymd` as a future projected
         // workout while `isToday` is false. Capture ONCE, thread to all
         // three.
@@ -413,19 +415,24 @@ struct CalendarMonthView: View {
         // already occupies the primary marker; on a no-lift day it becomes
         // the primary glyph below.
         let secondaryEndurance = hasEndurance && (isWorkout || isSkipped)
-        // Condensed chip = the day's activity CATEGORIES as vertical color
-        // bands, so a multi-sport day (e.g. lift + ride + swim) shows ALL of
-        // them rather than collapsing to one dominant color. Order: lift (its
-        // state color — green=done / amber=planned/active) or skip (red), then
-        // endurance (cyan), then manual (purple); a bare planned ride is muted.
-        // Empty array → rest/empty day (no chip). NOTE: ride & swim are both the
-        // "endurance" category, so they share the one cyan band by design.
+        // Condensed dots = the day's activity CATEGORIES, one dot per category,
+        // so a multi-sport day (e.g. lift + ride) shows ALL of them rather than
+        // collapsing to one dominant color. Order: lift (its state color —
+        // green=done / amber=planned/active) or skip (red), then endurance
+        // (cyan), then manual (its OWN category color via forActivityKind — so a
+        // manual run/ride reads cyan, matching the expanded glyph + the Group
+        // heatmap, not a blanket purple). A bare planned ride is muted. Duplicate
+        // categories collapse to one dot (a manual ride alongside an intervals
+        // ride → a single cyan dot). Empty array → rest/empty day (no dot).
         let dayColors: [Color] = {
             var out: [Color] = []
             if isWorkout, let c = st?.color { out.append(c) }
             else if isSkipped { out.append(Theme.danger) }
             if hasActivity { out.append(WorkoutCategory.endurance.color) }
-            if hasManual { out.append(WorkoutCategory.activity.color) }
+            if hasManual {
+                let c = WorkoutCategory.forActivityKind(dayManual.first?.type ?? "other").color
+                if !out.contains(c) { out.append(c) }
+            }
             if out.isEmpty && hasRide { out.append(Theme.muted) }
             return out
         }()

@@ -136,7 +136,7 @@ struct DayAgendaView: View {
     /// recovers the template via the weekly schedule.
     ///
     /// The schedule-inference fallback is gated EXACTLY as FIX6 gates it
-    /// in `CalendarView.dayLabel`: `dateString >= today` — the same
+    /// in `CalendarMonthView.dayCell`: `dateString >= today` — the same
     /// civil-date boundary `CalendarProjection.project` uses
     /// (`dateString < today`). For a PAST date with a null
     /// `day_template_id` this returns nil (no schedule-inferred relabel —

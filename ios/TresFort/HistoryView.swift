@@ -5,39 +5,80 @@ private func fmtW(_ w: Double) -> String {
     w.rounded() == w ? String(Int(w)) : String(format: "%.1f", w)
 }
 
+/// The single home for "my training history," two ways to look back:
+///   • Calendar — a month grid that condenses, as you scroll into the feed,
+///     into a contribution heatmap; the reverse-chron feed of training days
+///     sits beneath it. Tap a day (grid) or a row (feed) for full detail.
+///   • Exercises — per-lift progress (est 1RM trend, last session).
+/// The nav bar holds ONLY the centered segmented control — no trailing item,
+/// so toggling segments never shifts the picker or leaves a blank slot. The
+/// calendar owns its own "Today" affordance (and its month state) internally.
 struct HistoryView: View {
     @ObservedObject var sync: SyncModel
+
+    enum Segment: String, CaseIterable, Identifiable {
+        case calendar, exercises
+        var id: String { rawValue }
+        var label: String { self == .calendar ? "Calendar" : "Exercises" }
+    }
+
+    @State private var segment: Segment = .calendar
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Theme.background
-                let ids = sync.loggedExerciseIDs
-                if ids.isEmpty {
-                    VStack(spacing: 8) {
-                        Text("NO HISTORY").font(Theme.display(28)).foregroundStyle(Theme.text)
-                        Text("Log some sets and they'll show here.")
-                            .font(Theme.mono(13)).foregroundStyle(Theme.muted)
-                    }
-                } else {
-                    ScrollView {
-                        VStack(spacing: 10) {
-                            ForEach(ids, id: \.self) { id in
-                                NavigationLink {
-                                    ExerciseDetailView(sync: sync, exerciseID: id)
-                                } label: { row(id) }
-                            }
-                        }
-                        .padding(16)
-                    }
-                    .refreshable { await sync.load() }
+                switch segment {
+                case .calendar:
+                    CalendarMonthView(sync: sync)
+                case .exercises:
+                    ExerciseHistoryList(sync: sync)
                 }
             }
-            .navigationTitle("History")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Picker("View", selection: $segment) {
+                        ForEach(Segment.allCases) { s in
+                            Text(s.label).tag(s)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 240)
+                }
+            }
             .toolbarColorScheme(.dark, for: .navigationBar)
         }
         .preferredColorScheme(.dark)
+    }
+}
+
+/// Per-exercise progress list — the original History content, now embeddable
+/// in the merged tab's NavigationStack (owns no nav chrome of its own).
+private struct ExerciseHistoryList: View {
+    @ObservedObject var sync: SyncModel
+
+    var body: some View {
+        let ids = sync.loggedExerciseIDs
+        if ids.isEmpty {
+            VStack(spacing: 8) {
+                Text("NO HISTORY").font(Theme.display(28)).foregroundStyle(Theme.text)
+                Text("Log some sets and they'll show here.")
+                    .font(Theme.mono(13)).foregroundStyle(Theme.muted)
+            }
+        } else {
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach(ids, id: \.self) { id in
+                        NavigationLink {
+                            ExerciseDetailView(sync: sync, exerciseID: id)
+                        } label: { row(id) }
+                    }
+                }
+                .padding(16)
+            }
+            .refreshable { await sync.load() }
+        }
     }
 
     private func row(_ id: String) -> some View {

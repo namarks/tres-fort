@@ -56,49 +56,165 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
     }
 }
 
-struct CalendarView: View {
+// Embedded inside the merged History tab (see HistoryView) — owns no nav
+// chrome: no NavigationStack, no title, no "Today" button. The parent hosts
+// one NavigationStack for both segments and supplies the trailing "Today"
+// affordance, which resets `monthAnchor` (owned by the parent, bound here).
+struct CalendarMonthView: View {
     @ObservedObject var sync: SyncModel
 
-    /// First day of the currently displayed month (anchored to its 1st).
-    @State private var monthAnchor: Date = CalendarProjection.calendar
-        .date(from: CalendarProjection.calendar.dateComponents([.year, .month], from: Date()))!
+    /// First day of the displayed month (anchored to its 1st). Self-owned now
+    /// — the in-calendar "Today" button resets it; prev/next arrows shift it.
+    @State private var monthAnchor: Date = CalendarMonthView.currentMonth()
     @State private var selectedDate: String?      // YYYY-MM-DD → agenda sheet
+    /// Drives the morph: false → full month grid header; true → condensed
+    /// contribution-heatmap "hub". Flipped by the feed's scroll offset.
+    @State private var collapsed = false
 
     private var cal: Calendar { CalendarProjection.calendar }
+    private let feedSpace = "history-feed"
 
+    static func currentMonth() -> Date {
+        let cal = CalendarProjection.calendar
+        return cal.date(from: cal.dateComponents([.year, .month], from: Date()))!
+    }
+
+    // ONE calendar surface that condenses, not two stacked views: a fixed
+    // header that morphs month grid ⇄ heatmap as the feed scrolls beneath it.
+    // GeometryReader gives the feed a min-height floor (see feedScroll) so
+    // condensing never makes a short feed fit and snap the scroll back.
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Theme.background
-                VStack(spacing: 0) {
-                    header
-                    weekdayHeader
-                    grid
-                    Spacer(minLength: 0)
-                    legend
-                }
-            }
-            .navigationTitle("Calendar")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Today") { withAnimation { goToToday() } }
-                        .font(Theme.mono(13, .bold))
-                        .foregroundStyle(Theme.accent)
-                }
-            }
-            .toolbarColorScheme(.dark, for: .navigationBar)
-            .sheet(item: Binding(
-                get: { selectedDate.map(IdentifiedDate.init) },
-                set: { selectedDate = $0?.id })
-            ) { wrapped in
-                DayAgendaView(sync: sync, dateString: wrapped.id)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                calendarHub
+                feedScroll(availableHeight: geo.size.height)
             }
         }
-        .preferredColorScheme(.dark)
+        .sheet(item: Binding(
+            get: { selectedDate.map(IdentifiedDate.init) },
+            set: { selectedDate = $0?.id })
+        ) { wrapped in
+            DayAgendaView(sync: sync, dateString: wrapped.id)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
         .task { if sync.plan == nil { await sync.load() } }
+    }
+
+    // MARK: morphing calendar header
+
+    /// ONE calendar surface that DENSIFIES on scroll — the SAME full-width month
+    /// grid throughout. As `collapsed` flips, each row's cells shrink and swap
+    /// their date number + glyph for a centered activity chip (see `dayCell`).
+    /// Full-width + column-aligned in both states, so the condensed grid merges
+    /// seamlessly into the full calendar, one row at a time.
+    private var calendarHub: some View {
+        VStack(spacing: 0) {
+            header
+            // Full width — aligns with the grid in BOTH states (the condensed
+            // grid is full-width too), so it stays put through the merge.
+            weekdayHeader
+            grid
+                .padding(.bottom, collapsed ? 10 : 12)
+        }
+        .frame(maxWidth: .infinity)
+        .background(Theme.bg)
+        .overlay(alignment: .bottom) {
+            if collapsed { Rectangle().fill(Theme.surface2).frame(height: 1) }
+        }
+        // Container-level fallback animation for the padding/hairline; each grid
+        // row carries its own delayed animation, which overrides this for the
+        // staggered one-row-at-a-time merge.
+        .animation(.easeInOut(duration: 0.3), value: collapsed)
+    }
+
+    // MARK: feed (scrolls beneath the calendar; its offset drives the morph)
+
+    @ViewBuilder
+    private func feedScroll(availableHeight: CGFloat) -> some View {
+        if #available(iOS 18.0, *) {
+            // Reliable path: read the scroll offset directly.
+            ScrollView {
+                feedContent(availableHeight)
+            }
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, y in
+                updateCollapsed(scrolled: y)
+            }
+        } else {
+            // iOS 17 fallback: derive offset from a named-space GeometryReader.
+            ScrollView {
+                feedContent(availableHeight)
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: ScrollOffsetKey.self,
+                                value: geo.frame(in: .named(feedSpace)).minY)
+                        }
+                    )
+            }
+            .coordinateSpace(name: feedSpace)
+            .onPreferenceChange(ScrollOffsetKey.self) { minY in
+                updateCollapsed(scrolled: -minY)
+            }
+        }
+    }
+
+    private func feedContent(_ availableHeight: CGFloat) -> some View {
+        LazyVStack(spacing: 12) {
+            feed
+        }
+        .padding(.top, 12)
+        .padding(.bottom, 28)
+        // Floor the content above the full available height so condensing
+        // (which frees ~360pt) can never make a short feed suddenly fit the
+        // taller viewport and snap the scroll back to 0 — which would bounce
+        // the calendar open again.
+        .frame(minHeight: availableHeight + 120, alignment: .top)
+    }
+
+    /// Flip the morph from the feed's scroll distance. Hysteresis band (6…28)
+    /// keeps it from fluttering right at the threshold. No `withAnimation` here
+    /// — the per-row `.animation(value: collapsed)` modifiers own the staggered
+    /// transition so the rows merge one at a time.
+    private func updateCollapsed(scrolled: CGFloat) {
+        let next = collapsed ? (scrolled > 6) : (scrolled > 28)
+        if next != collapsed { collapsed = next }
+    }
+
+    // MARK: activity log (condensed heatmap + feed)
+
+    /// Distinct civil dates (≤ today) that carry real training — a completed/
+    /// in-progress session with logged sets, a completed endurance activity,
+    /// or a user-logged manual activity — newest first.
+    private var activityDays: [String] {
+        var set = Set<String>()
+        for (date, s) in sync.sessionsByDate
+        where s.status == "completed" || s.status == "in_progress" {
+            if sync.loggedSetCount(forDate: date) > 0 { set.insert(date) }
+        }
+        for a in sync.activities where !a.isDeleted { set.insert(a.date) }
+        for m in sync.manualActivities where m.deleted_at == nil { set.insert(m.date) }
+        let today = sync.todayString
+        return set.filter { $0 <= today }.sorted(by: >)
+    }
+
+    @ViewBuilder private var feed: some View {
+        let days = activityDays
+        if days.isEmpty {
+            Text("No activity logged yet — start a workout and it'll show here.")
+                .font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(20)
+                .background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, 16)
+        } else {
+            ForEach(days, id: \.self) { ymd in
+                Button { selectedDate = ymd } label: {
+                    ActivityFeedRow(sync: sync, ymd: ymd)
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 
     // MARK: month nav
@@ -117,30 +233,27 @@ struct CalendarView: View {
         }
     }
 
-    private func goToToday() {
-        monthAnchor = cal.date(from: cal.dateComponents([.year, .month], from: Date()))!
-    }
-
     private var header: some View {
-        HStack {
-            navArrow("chevron.left") { withAnimation { shiftMonth(-1) } }
-            Spacer()
+        HStack(spacing: 8) {
             Text(monthTitle)
                 .font(Theme.display(30))
                 .foregroundStyle(Theme.text)
-            Spacer()
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            // "Today" lives in the calendar itself now (not the nav bar), so
+            // the toolbar can stay a single centered segmented control with no
+            // shifting/blank trailing slot.
+            Button { withAnimation { monthAnchor = Self.currentMonth() } } label: {
+                Text("TODAY")
+                    .font(Theme.mono(12, .bold))
+                    .foregroundStyle(Theme.accent)
+            }
+            navArrow("chevron.left") { withAnimation { shiftMonth(-1) } }
             navArrow("chevron.right") { withAnimation { shiftMonth(1) } }
         }
-        .padding(.horizontal, 24)
+        .padding(.horizontal, 20)
         .padding(.top, 8)
         .padding(.bottom, 14)
-        .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 40)
-                .onEnded { v in
-                    withAnimation { shiftMonth(v.translation.width < 0 ? 1 : -1) }
-                }
-        )
     }
 
     private func navArrow(_ sym: String, _ action: @escaping () -> Void) -> some View {
@@ -187,11 +300,50 @@ struct CalendarView: View {
         return cells
     }
 
+    /// Condensed day-square side (and its expanded counterpart's height). The
+    /// morph tweens between these. Cells stay FULL WIDTH (flexible columns,
+    /// column-aligned with the expanded grid) in BOTH states — only the height
+    /// and the cell contents change — so the condensed grid merges cell-for-cell
+    /// into the full calendar. Validated in an HTML prototype (28pt rows, 18pt
+    /// chips, 6pt gaps → a clean full-width activity grid).
+    private var cellHeight: CGFloat { collapsed ? 20 : 56 }
+    /// Horizontal gap is CONSTANT so condensed columns stay aligned with the
+    /// expanded grid; the vertical gap tightens when condensed for density.
+    private let colGap: CGFloat = 6
+    private var rowGap: CGFloat { collapsed ? 3 : 6 }
+
+    /// gridDays chunked into calendar weeks (rows of 7).
+    private var gridRows: [[Date?]] {
+        let days = gridDays
+        return stride(from: 0, to: days.count, by: 7).map {
+            Array(days[$0 ..< min($0 + 7, days.count)])
+        }
+    }
+
+    /// The month grid — full width in both states, so the condensed heatmap
+    /// lines up cell-for-cell with the expanded calendar. Each row animates on
+    /// its OWN slightly-delayed beat off `collapsed`, so the calendar merges
+    /// with / peels away from the feed ONE ROW AT A TIME instead of all at once.
     private var grid: some View {
-        let cols = Array(repeating: GridItem(.flexible(), spacing: 6), count: 7)
-        return LazyVGrid(columns: cols, spacing: 6) {
-            ForEach(Array(gridDays.enumerated()), id: \.offset) { _, day in
-                if let day { dayCell(day) } else { Color.clear.frame(height: 56) }
+        VStack(spacing: rowGap) {
+            ForEach(Array(gridRows.enumerated()), id: \.offset) { rowIndex, row in
+                HStack(spacing: colGap) {
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, day in
+                        Group {
+                            if let day { dayCell(day) } else { Color.clear }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: cellHeight)
+                    }
+                    // Pad the final partial week so columns stay aligned.
+                    if row.count < 7 {
+                        ForEach(0 ..< (7 - row.count), id: \.self) { _ in
+                            Color.clear.frame(maxWidth: .infinity).frame(height: cellHeight)
+                        }
+                    }
+                }
+                .animation(.easeInOut(duration: 0.3).delay(Double(rowIndex) * 0.06),
+                           value: collapsed)
             }
         }
         .padding(.horizontal, 12)
@@ -246,167 +398,228 @@ struct CalendarView: View {
             : (hasManual
                 ? PendingActivity.glyph(for: dayManual.first?.type ?? "other")
                 : "bicycle")
-        // Completed work (intervals actual OR a logged manual activity) reads
-        // in accent; a bare planned ride stays muted.
-        let enduranceColor: Color = (hasActivity || hasManual) ? Theme.accent : Theme.muted
+        // Endurance/manual glyph color — CATEGORY-based so a completed ride
+        // reads CYAN (not amber) and a manual logs its own category color,
+        // matching the condensed dots, the feed, and the Group heatmap
+        // everywhere. A bare planned ride stays muted. (Previously this was a
+        // blanket Theme.accent, which made rides look like lifts and clashed
+        // with the cyan used in every other view.)
+        let enduranceColor: Color = hasActivity
+            ? WorkoutCategory.endurance.color
+            : (hasManual
+                ? WorkoutCategory.forActivityKind(dayManual.first?.type ?? "other").color
+                : Theme.muted)
         // Endurance is a secondary corner badge ONLY when a lift or skip
         // already occupies the primary marker; on a no-lift day it becomes
         // the primary glyph below.
         let secondaryEndurance = hasEndurance && (isWorkout || isSkipped)
+        // Condensed chip = the day's activity CATEGORIES as vertical color
+        // bands, so a multi-sport day (e.g. lift + ride + swim) shows ALL of
+        // them rather than collapsing to one dominant color. Order: lift (its
+        // state color — green=done / amber=planned/active) or skip (red), then
+        // endurance (cyan), then manual (purple); a bare planned ride is muted.
+        // Empty array → rest/empty day (no chip). NOTE: ride & swim are both the
+        // "endurance" category, so they share the one cyan band by design.
+        let dayColors: [Color] = {
+            var out: [Color] = []
+            if isWorkout, let c = st?.color { out.append(c) }
+            else if isSkipped { out.append(Theme.danger) }
+            if hasActivity { out.append(WorkoutCategory.endurance.color) }
+            if hasManual { out.append(WorkoutCategory.activity.color) }
+            if out.isEmpty && hasRide { out.append(Theme.muted) }
+            return out
+        }()
 
         Button {
             selectedDate = ymd
         } label: {
-            VStack(spacing: 4) {
-                Text("\(dayNum)")
-                    .font(Theme.mono(13, (isToday || isWorkout) ? .bold : .medium))
-                    .foregroundStyle(isToday ? Theme.accent
-                                     : (isWorkout ? Theme.text : Theme.muted))
-                // ONE primary marker per day, anchored inside the cell box
-                // (the old below-the-lift endurance glyph floated against
-                // the next week's row — ambiguous which day it belonged to).
-                if isWorkout, let st {
-                    // One consistent glyph per state (matches the legend):
-                    // dumbbell for upcoming, checkmark for done, bolt for
-                    // in-progress. The day_template's day_label (A/B/Push/
-                    // Pull/etc.) is intentionally NOT shown — it added a
-                    // second visual language on top of the state glyph and
-                    // made the calendar feel noisy. Tap the cell for the
-                    // full agenda (template name + exercises).
-                    Image(systemName: st.glyph)
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(st.color)
-                } else if isSkipped, let st {
-                    // Skipped lift keeps its distinct xmark (an endurance
-                    // badge, if any, rides the corner overlay below).
-                    Image(systemName: st.glyph)
-                        .font(.system(size: 12))
-                        .foregroundStyle(st.color)
-                } else if hasEndurance {
-                    // No lift, but a ride/run happened or is planned, or the
-                    // user logged a manual activity (Pilates/walk/…) — this is
-                    // an active day, not a rest day. That activity's glyph is
-                    // the day's identity (replaces the rest moon).
-                    Image(systemName: enduranceGlyph)
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundStyle(enduranceColor)
-                } else if let st {
-                    // True rest day — a small muted moon.
-                    Image(systemName: st.glyph)
-                        .font(.system(size: 12))
-                        .foregroundStyle(st.color)
-                } else {
-                    // keep cell height uniform when nothing to show
-                    Image(systemName: "circle.fill")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.clear)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 56)
-            .background(
+            // Two stacked backings cross-fade so the box recolors cleanly from
+            // the expanded surface to a uniform faint condensed box. Everything
+            // else (ring, chip, number, glyph, badges) is an OVERLAY, so the
+            // grid's .frame is the SOLE size source — the cell can never be
+            // stretched taller than its frame by the text's intrinsic height
+            // (that was the "tall bars" bug).
+            ZStack {
                 RoundedRectangle(cornerRadius: 10)
                     .fill(isToday ? Theme.surface2
-                          : (isWorkout ? Theme.surface
-                             : Theme.surface.opacity(0.35)))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(isToday ? Theme.accent
-                            : (isWorkout ? (st?.color ?? Theme.accent).opacity(0.35)
+                          : (isWorkout ? Theme.surface : Theme.surface.opacity(0.35)))
+                    .opacity(collapsed ? 0 : 1)
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(hex: 0x191920))
+                    .opacity(collapsed ? 1 : 0)
+            }
+            // Today keeps its accent ring in both states (the workout tint ring
+            // only shows when expanded).
+            .overlay {
+                RoundedRectangle(cornerRadius: collapsed ? 8 : 10)
+                    .strokeBorder(isToday ? Theme.accent
+                            : (!collapsed && isWorkout ? (st?.color ?? Theme.accent).opacity(0.35)
                                : Color.clear),
                             lineWidth: isToday ? 1.5 : 1)
-            )
-            // Amber clash badge: a lift date that conflicts with a ride.
-            // Corner triangle-ish dot, distinct from every lift glyph. Only a
-            // real .clash / .heavyNextDay warrants the warning — a benign
-            // same-day .brick must NOT flag (matches DayAgendaView; Codex #64 P2).
+            }
+            // Condensed: a centered row of activity dots (fades in) — one dot
+            // per category present, so a multi-sport day shows several dots
+            // side by side. Rest/empty → no dots.
+            .overlay {
+                if !dayColors.isEmpty {
+                    HStack(spacing: 3) {
+                        ForEach(dayColors.indices, id: \.self) { i in
+                            RoundedRectangle(cornerRadius: 2.5)
+                                .fill(dayColors[i])
+                                .frame(width: 10, height: 10)
+                        }
+                    }
+                    .opacity(collapsed ? 1 : 0)
+                }
+            }
+            // Expanded: date number + state glyph (fades out as it condenses).
+            .overlay {
+                VStack(spacing: 4) {
+                    Text("\(dayNum)")
+                        .font(Theme.mono(13, (isToday || isWorkout) ? .bold : .medium))
+                        .foregroundStyle(isToday ? Theme.accent
+                                         : (isWorkout ? Theme.text : Theme.muted))
+                    // ONE primary marker per day (dumbbell upcoming, checkmark
+                    // done, bolt in-progress, endurance glyph for a ride/run/
+                    // manual day, moon for rest).
+                    if isWorkout, let st {
+                        Image(systemName: st.glyph)
+                            .font(.system(size: 14, weight: .bold)).foregroundStyle(st.color)
+                    } else if isSkipped, let st {
+                        Image(systemName: st.glyph)
+                            .font(.system(size: 12)).foregroundStyle(st.color)
+                    } else if hasEndurance {
+                        Image(systemName: enduranceGlyph)
+                            .font(.system(size: 13, weight: .bold)).foregroundStyle(enduranceColor)
+                    } else if let st {
+                        Image(systemName: st.glyph)
+                            .font(.system(size: 12)).foregroundStyle(st.color)
+                    }
+                }
+                .opacity(collapsed ? 0 : 1)
+                .allowsHitTesting(false)
+            }
+            // Corner badges belong to the full cell only — they fade out with
+            // the rest of the expanded chrome.
             .overlay(alignment: .topTrailing) {
                 if conflict == .clash || conflict == .heavyNextDay {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(Theme.accent)
                         .padding(4)
+                        .opacity(collapsed ? 0 : 1)
                 }
             }
-            // "Lift + bike": on a lift/skip day the endurance glyph rides a
-            // bottom-leading corner — clearly INSIDE this day's box, never
-            // floating toward the next row.
             .overlay(alignment: .bottomLeading) {
                 if secondaryEndurance {
                     Image(systemName: enduranceGlyph)
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(enduranceColor)
                         .padding(4)
+                        .opacity(collapsed ? 0 : 1)
                 }
             }
         }
         .buttonStyle(.plain)
     }
 
-    // MARK: legend
-
-    private var legend: some View {
-        // Planned + projected collapse to ONE "Workout" entry: dedupe by
-        // label so the legend shows Completed / In progress / Workout /
-        // Skipped / Rest (no "Projected").
-        let kinds: [DayProjection.Kind] =
-            [.completed, .inProgress, .planned, .projected, .skipped, .rest]
-        var seen = Set<String>()
-        let entries = kinds.compactMap { style(for: $0) }
-            .filter { seen.insert($0.label).inserted }
-        return LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3),
-            spacing: 10
-        ) {
-            ForEach(entries, id: \.label) { s in
-                HStack(spacing: 6) {
-                    Image(systemName: s.glyph)
-                        .font(.system(size: 11))
-                        .foregroundStyle(s.color)
-                    Text(s.label.uppercased())
-                        .font(Theme.mono(9, .bold)).tracking(0.5)
-                        .foregroundStyle(Theme.muted)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            // Read-only ride overlay legend (distinct from lift states).
-            HStack(spacing: 6) {
-                Image(systemName: "bicycle")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.muted)
-                Text("RIDE")
-                    .font(Theme.mono(9, .bold)).tracking(0.5)
-                    .foregroundStyle(Theme.muted)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            // Completed endurance activity (intervals.icu actuals).
-            HStack(spacing: 6) {
-                Image(systemName: "figure.run")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.accent)
-                Text("CARDIO DONE")
-                    .font(Theme.mono(9, .bold)).tracking(0.5)
-                    .foregroundStyle(Theme.muted)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 11))
-                    .foregroundStyle(Theme.accent)
-                Text("CONFLICT")
-                    .font(Theme.mono(9, .bold)).tracking(0.5)
-                    .foregroundStyle(Theme.muted)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 16)
-        .background(Theme.surface.opacity(0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .padding(16)
-    }
 }
 
 /// Sheet item wrapper (a YYYY-MM-DD string identifies the day).
 private struct IdentifiedDate: Identifiable { let id: String }
+
+/// Tracks the History feed's scroll offset (iOS 17-compatible — no
+/// `onScrollGeometryChange`, which is 18+). The feed reports its top edge in a
+/// named coordinate space; `CalendarMonthView` reads it to morph the calendar.
+private struct ScrollOffsetKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+/// One day in the History feed: a date block + that day's training (lift,
+/// endurance, manual), color-coded by category (matching the heatmap). Tapping
+/// the row opens the full DayAgendaView for the date — where all the detail
+/// already lives, so the feed stays a lightweight index.
+private struct ActivityFeedRow: View {
+    @ObservedObject var sync: SyncModel
+    let ymd: String
+
+    private struct Item { let glyph: String; let text: String; let color: Color }
+
+    var body: some View {
+        HStack(spacing: 14) {
+            dateBlock
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, it in
+                    HStack(spacing: 8) {
+                        Image(systemName: it.glyph)
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(it.color)
+                            .frame(width: 16)
+                        Text(it.text)
+                            .font(Theme.mono(13))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            Spacer(minLength: 4)
+            Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.dim)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 14))
+        .padding(.horizontal, 16)
+    }
+
+    private var dateBlock: some View {
+        VStack(spacing: 1) {
+            Text(part("EEE").uppercased())
+                .font(Theme.mono(9, .bold)).tracking(1).foregroundStyle(Theme.muted)
+            Text(part("d"))
+                .font(Theme.display(26)).foregroundStyle(Theme.text)
+            Text(part("MMM").uppercased())
+                .font(Theme.mono(9, .bold)).tracking(1).foregroundStyle(Theme.dim)
+        }
+        .frame(width: 46)
+    }
+
+    private func part(_ fmt: String) -> String {
+        guard let d = CalendarProjection.date(from: ymd) else { return "" }
+        let f = DateFormatter()
+        f.calendar = CalendarProjection.calendar
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = fmt
+        return f.string(from: d)
+    }
+
+    private var items: [Item] {
+        var out: [Item] = []
+        if let s = sync.sessionsByDate[ymd],
+           s.status == "completed" || s.status == "in_progress",
+           sync.loggedSetCount(forDate: ymd) > 0 {
+            let title = sync.sessionDisplayTemplate(
+                forDateString: ymd, allowScheduleInference: false)?.title ?? "Workout"
+            let n = sync.loggedSetCount(forDate: ymd)
+            out.append(Item(glyph: "dumbbell.fill",
+                            text: "\(title) · \(n) set\(n == 1 ? "" : "s")",
+                            color: WorkoutCategory.lift.color))
+        }
+        for a in sync.activities(on: ymd) {
+            var t = a.displayTitle
+            if let d = a.durationLabel { t += " · \(d)" }
+            out.append(Item(glyph: a.glyph, text: t, color: WorkoutCategory.endurance.color))
+        }
+        for m in sync.manualActivities(on: ymd) {
+            let label = (m.title?.isEmpty == false) ? m.title! : PendingActivity.label(for: m.type)
+            var t = label
+            if let mins = m.duration_minutes, mins > 0 { t += " · \(mins) min" }
+            out.append(Item(glyph: PendingActivity.glyph(for: m.type),
+                            text: t,
+                            color: WorkoutCategory.forActivityKind(m.type).color))
+        }
+        return out
+    }
+}

@@ -81,7 +81,6 @@ describe('open sign-in does not capture owner state (Codex PR#38 P1)', () => {
       // Intervals.icu reconciled caches reference users.
       env.DB.prepare('DELETE FROM external_activities'),
       env.DB.prepare('DELETE FROM external_events'),
-      env.DB.prepare('DELETE FROM session_load_exports'),
       // Audit log references users.
       env.DB.prepare('DELETE FROM audit_log'),
       // Finally the parent.

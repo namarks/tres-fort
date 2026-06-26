@@ -11,7 +11,6 @@ import { oauthRoutes } from './oauth';
 import {
   syncExternalActivities,
   syncExternalEvents,
-  retryPendingLoadExports,
 } from './db';
 
 const app = new Hono<HonoEnv>();
@@ -37,14 +36,16 @@ app.onError((err, c) => {
 app.notFound((c) => c.json({ error: 'not_found' }, 404));
 
 /**
- * Cron entrypoint (wrangler triggers.crons). Three independent best-effort
- * jobs, each isolated so one's failure cannot affect the others:
+ * Cron entrypoint (wrangler triggers.crons). SAFETY NET for intervals.icu
+ * sync — real-time reconciliation is push-based (POST /webhooks/intervals);
+ * this cron backstops any webhook a user's account didn't deliver. Two
+ * independent best-effort jobs, each isolated so one's failure cannot affect
+ * the other:
  *  1. reconcile the intervals.icu planned-event cache (ride awareness);
- *  2. reconcile the intervals.icu completed-activity cache (workouts done);
- *  3. retry any still-`pending` one-way lifting-load exports (Option C).
- * All are dormant no-ops when INTERVALS_ICU_API_KEY is unset and NEVER
- * bump plans.version. exportSessionLoad audits its own attempts; the cache
- * syncs are the audited-elsewhere manual path (refresh_rides).
+ *  2. reconcile the intervals.icu completed-activity cache (workouts done).
+ * Both are dormant no-ops when INTERVALS_ICU_API_KEY is unset and NEVER
+ * bump plans.version. The cache syncs are the audited-elsewhere manual path
+ * (refresh_rides).
  */
 async function scheduled(
   _event: ScheduledController,
@@ -65,14 +66,6 @@ async function scheduled(
       } catch (e) {
         // Same isolation as the planned-event sync above.
         console.error('scheduled syncExternalActivities failed', e);
-      }
-      try {
-        // Idempotent: each retry routes back through the session_id-keyed
-        // upsert, so a retry UPDATEs the same intervals activity (never a
-        // duplicate). retryPendingLoadExports never throws.
-        await retryPendingLoadExports(env.DB, env);
-      } catch (e) {
-        console.error('scheduled retryPendingLoadExports failed', e);
       }
     })(),
   );

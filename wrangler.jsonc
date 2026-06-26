@@ -29,12 +29,16 @@
       "bucket_name": "tres-fort-demos"
     }
   ],
-  // Cron: reconcile the intervals.icu caches (planned rides + completed
-  // activities) every 15 minutes, so a finished ride shows up in the app
-  // within ~15 min instead of up to 6 hours. Invokes the `scheduled` handler
-  // in src/index.ts (syncExternalEvents / syncExternalActivities). Interim
-  // measure pending push-based syncing (intervals.icu webhook).
-  "triggers": { "crons": ["*/15 * * * *"] },
+  // Cron: SAFETY NET only. Real-time intervals.icu sync is push-based — the
+  // webhook receiver (POST /webhooks/intervals, registered on the Manage App
+  // page for OAuth client #431) reconciles caches the moment an athlete's data
+  // changes. This hourly cron is the backstop that catches anything push
+  // missed (an undelivered webhook). Invokes the `scheduled` handler in
+  // src/index.ts (syncExternalEvents / syncExternalActivities). Was */15 as
+  // an interim
+  // measure before the webhook shipped; hourly cuts intervals call volume ~4x
+  // (the pooled OAuth daily limit is the binding constraint as users grow).
+  "triggers": { "crons": ["0 * * * *"] },
   "vars": {
     "APPLE_BUNDLE_ID": "com.nmarkspdx.tresfort",
     // intervals.icu OAuth client id (non-sensitive — appears in authorize

@@ -37,7 +37,6 @@ import {
   nextExerciseOrderIndex,
   patchDayTemplate,
   patchSet,
-  tryExportSessionLoad,
   resolveExercise,
   removeTrip,
   setPeriodization,
@@ -575,7 +574,7 @@ const TOOLS: Record<string, Tool> = {
       [],
     ),
     write: true,
-    handler: async (a, env, userId, bg) => {
+    handler: async (a, env, userId) => {
       const date = typeof a.session_date === 'string' ? a.session_date : await ownerToday(env, userId);
       const s = await logWorkoutComplete(
         env.DB,
@@ -585,17 +584,6 @@ const TOOLS: Record<string, Tool> = {
         typeof a.notes === 'string' ? a.notes : null,
       );
       if (!s) return { error: 'no_active_plan' };
-      // BEST-EFFORT one-way load export to intervals.icu. tryExport* is
-      // fully self-guarded (never throws). BLOCKER-2 fix: when an execution
-      // context is available, run it via waitUntil so the response returns
-      // IMMEDIATELY and the (up to ~10s) intervals round-trip finishes
-      // afterwards without being killed. Only if no ctx is plumbed (e.g. a
-      // direct test/unit call) do we fall back to inline — still safe, just
-      // not deferred. Either way the sacred path cannot throw or be blocked
-      // by intervals.icu when a ctx is present.
-      const exportP = tryExportSessionLoad(env.DB, env, userId, s.id);
-      if (bg) bg.waitUntil(exportP);
-      else await exportP;
       return s;
     },
   },

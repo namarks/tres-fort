@@ -182,11 +182,11 @@ export async function fetchPlannedEvents(
   for (const raw of body as Record<string, unknown>[]) {
     if (!raw || typeof raw !== 'object') continue;
     if (String(raw.category ?? '') !== 'WORKOUT') continue;
-    // BLOCKER-3 fix: never ingest OUR OWN exported lift events back into
-    // the endurance cache. Without this, exportSessionLoad's WeightTraining
-    // event lands in `external_events` and detectConflicts flags every lift
-    // day as clashing with its own exported load (a self-conflict loop).
-    // `external_events` stays endurance-commitments-only.
+    // Never ingest a (now-legacy) Tres Fort lift export back into the
+    // endurance cache. The one-way load export was removed, but WeightTraining
+    // events it wrote previously may still exist in a user's intervals.icu
+    // account; keeping them out of `external_events` keeps it endurance-only
+    // and avoids detectConflicts flagging a lift day against its own old event.
     if (isTresFortExport(raw)) continue;
     const externalId = raw.id != null ? String(raw.id) : null;
     const startLocal = str(raw.start_date_local);
@@ -328,53 +328,13 @@ export async function fetchCompletedActivities(
   return { ok: true, activities };
 }
 
-// ---- WRITE path: one-way lifting-load export ---------------------------
+// ---- read-path filter: legacy exported lift events -------------------
 //
-// The ONLY place this backend WRITES to intervals.icu. Mirrors the read
-// path: injectable fetcher (tests never hit the network), dormant no-op
-// when unconfigured, and a discriminated result — any non-2xx / throw /
-// parse error collapses to a typed {ok:false} that the caller treats as
-// "leave it pending, retry later" (it must never throw into the caller).
-
-export interface StrengthActivity {
-  /** Device-local civil date YYYY-MM-DD — used VERBATIM, no tz math. */
-  date: string;
-  /** e.g. "Lift: Push A". */
-  name: string;
-  /** Computed sRPE load → intervals `icu_training_load`. */
-  loadTss: number;
-  /** Clamped session duration in seconds → intervals `moving_time`. */
-  durationSec: number;
-  /**
-   * tres-fort session id. Drives the DETERMINISTIC `external_id` marker
-   * (`liftcoach:session:<id>`) stamped on the remote event so a re-export
-   * — even with a lost D1 ref — finds and UPDATEs its own prior event
-   * instead of creating a duplicate.
-   */
-  sessionId: string;
-  /**
-   * Known intervals.icu event id to UPDATE directly (fast path; from our
-   * D1 ledger). When absent we fall back to a marker lookup before any
-   * create, so a blind retry never duplicates.
-   */
-  ref?: string | null;
-}
-
-export type PushResult =
-  | { ok: true; ref: string }
-  | { ok: false; reason: 'disabled' | 'http' | 'timeout' | 'parse'; status?: number };
-
-/** Deterministic, session-stable marker stamped as the event `external_id`.
- *  This is THE idempotency key for the remote artifact (see EXPORT MARKER
- *  note on pushStrengthActivity).
- *
- *  The `liftcoach:` prefix is a FROZEN wire format — it is intentionally NOT
- *  renamed to `tresfort:` in the rebrand. It is already persisted on every
- *  exported intervals.icu event; changing it would orphan those events and
- *  duplicate them on the next sync. Leave it. */
-export function exportMarker(sessionId: string): string {
-  return `liftcoach:session:${sessionId}`;
-}
+// Tres Fort once exported lifting load to intervals.icu as WeightTraining
+// WORKOUT events; that export was removed. Those events may still exist in
+// a user's intervals.icu account, so the inbound sync paths screen them out
+// via the two helpers below, keeping the endurance caches free of our own
+// (now-historical) strength exports.
 
 /** Recognises our own exported lift events (used to keep them OUT of the
  *  endurance `external_events` cache — no self-conflict). Matches either
@@ -405,168 +365,4 @@ export function isTresFortExport(raw: {
 export function isOwnExportMarker(raw: { external_id?: unknown }): boolean {
   const ext = typeof raw.external_id === 'string' ? raw.external_id : '';
   return ext.startsWith('liftcoach:session:');
-}
-
-/**
- * Create-or-update a COMPLETED strength entry in intervals.icu carrying the
- * computed training load.
- *
- * VERIFIED endpoint (against the intervals-icu MCP server's working client
- * — ~/repos/mcp-servers/intervals-icu/.../client.py + event_management.py):
- *   - create: POST  https://intervals.icu/api/v1/athlete/{id}/events
- *   - update: PUT   https://intervals.icu/api/v1/athlete/{id}/events/{ref}
- *   body: {
- *     start_date_local: "YYYY-MM-DDT00:00:00",   // T00:00:00 suffix required
- *     name, category: "WORKOUT", type: "WeightTraining",
- *     moving_time: <sec>, icu_training_load: <load>
- *   }
- *   auth: HTTP Basic, username "API_KEY", password = the API key.
- * The read path consumes exactly this shape (category=="WORKOUT" +
- * icu_training_load), so create→read round-trips.
- *
- * NOTE / uncertainty (flagged, not silently guessed): the intervals-icu
- * MCP only ever creates calendar EVENTS, never uploads a recorded activity
- * file. There is no code-verified "manual completed activity" write API.
- * A WORKOUT event with icu_training_load is the verified, round-trippable
- * mechanism for injecting strength load into the intervals.icu calendar;
- * it is isolated behind THIS one function so the artifact can be swapped
- * without touching db.ts if a manual-activity endpoint is later confirmed.
- *
- * EXPORT MARKER / remote idempotency (BLOCKER-1 fix). The intervals.icu
- * event API does NOT expose a verified server-side dedupe on create:
- * `models.py` shows the Event model HAS an `external_id` field and
- * `client.create_event` POSTs an arbitrary body (so we can set it), but
- * `client.get_events` only filters by date window and NO code path relies
- * on the server rejecting/upserting a duplicate `external_id`. So a blind
- * re-POST after a lost D1 ref WOULD create a duplicate. Per the verified
- * API we therefore use the **pre-POST lookup**: stamp a deterministic
- * `external_id = liftcoach:session:<id>` AND, whenever we don't already
- * hold a ref, GET that date's events and PUT-update our own prior event
- * if the marker is present — we never POST without first checking for our
- * own export. Evidence: ~/repos/mcp-servers/intervals-icu/src/
- * intervals_icu_mcp/{models.py:191 external_id field, client.py
- * create_event/get_events/update_event}.
- */
-export async function pushStrengthActivity(
-  apiKey: string | null | undefined,
-  athleteId: string | null | undefined,
-  activity: StrengthActivity,
-  deps: Pick<FetchDeps, 'fetcher' | 'timeoutMs' | 'accessToken'> = {},
-): Promise<PushResult> {
-  // Dormant when unconfigured: clean no-op, never an error/throw. Auth is
-  // OAuth Bearer when a token is supplied, else HTTP Basic with the API key.
-  const authHeader = intervalsAuthHeader(apiKey, deps.accessToken);
-  if (!authHeader || !athleteId) return { ok: false, reason: 'disabled' };
-  // Capture the narrowed (non-null) header into a string-typed const so the
-  // nested `call` closure sees `string`, not `string | null` (TS doesn't
-  // propagate the guard's narrowing into nested function bodies).
-  const authValue: string = authHeader;
-
-  const fetcher = deps.fetcher ?? (globalThis.fetch as unknown as Fetcher);
-  const base =
-    `https://intervals.icu/api/v1/athlete/${encodeURIComponent(athleteId)}/events`;
-  const marker = exportMarker(activity.sessionId);
-  const timeoutMs = deps.timeoutMs ?? 10_000;
-
-  // One AbortController per HTTP call; total wall-time is bounded by each
-  // call's own timeout (the export runs off the response path via
-  // waitUntil — see db.ts/mcp.ts).
-  async function call(
-    url: string,
-    method: string,
-    jsonBody?: string,
-  ): Promise<
-    | { ok: true; status: number; json: unknown }
-    | { ok: false; reason: 'http' | 'timeout' | 'parse'; status?: number }
-  > {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    let res: { ok: boolean; status: number; json: () => Promise<unknown> };
-    try {
-      res = await fetcher(url, {
-        method,
-        headers: {
-          Authorization: authValue,
-          Accept: 'application/json',
-          ...(jsonBody ? { 'Content-Type': 'application/json' } : {}),
-        },
-        body: jsonBody,
-        signal: controller.signal,
-      });
-    } catch {
-      return { ok: false, reason: 'timeout' };
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!res.ok) return { ok: false, reason: 'http', status: res.status };
-    try {
-      return { ok: true, status: res.status, json: await res.json() };
-    } catch {
-      return { ok: false, reason: 'parse' };
-    }
-  }
-
-  const body = JSON.stringify({
-    // T00:00:00 suffix is required by the intervals.icu API; the date part
-    // is the device-local civil date VERBATIM (no timezone math).
-    start_date_local: `${activity.date}T00:00:00`,
-    name: activity.name,
-    category: 'WORKOUT',
-    type: 'WeightTraining',
-    moving_time: activity.durationSec,
-    icu_training_load: activity.loadTss,
-    // Deterministic remote idempotency key (see EXPORT MARKER note).
-    external_id: marker,
-  });
-
-  // Resolve the target event id. Fast path: a known ref from our ledger.
-  let ref: string | null =
-    activity.ref != null && activity.ref.length > 0 ? activity.ref : null;
-
-  // Slow path / SAFETY NET: no known ref → look up our own prior export
-  // for this date by the deterministic marker BEFORE any create, so a
-  // blind retry (D1 ref lost after a successful POST) updates instead of
-  // duplicating on intervals.icu.
-  if (ref == null) {
-    const day = activity.date;
-    const lookup = await call(
-      `${base}?oldest=${day}&newest=${day}`,
-      'GET',
-    );
-    if (!lookup.ok) {
-      return lookup.reason === 'parse'
-        ? { ok: false, reason: 'parse' }
-        : lookup.reason === 'http'
-          ? { ok: false, reason: 'http', status: lookup.status }
-          : { ok: false, reason: 'timeout' };
-    }
-    if (Array.isArray(lookup.json)) {
-      for (const e of lookup.json as Record<string, unknown>[]) {
-        if (e && typeof e === 'object' && e.external_id === marker && e.id != null) {
-          ref = String(e.id);
-          break;
-        }
-      }
-    }
-  }
-
-  const isUpdate = ref != null;
-  const url = isUpdate ? `${base}/${encodeURIComponent(ref!)}` : base;
-  const out = await call(url, isUpdate ? 'PUT' : 'POST', body);
-  if (!out.ok) {
-    return out.reason === 'parse'
-      ? { ok: false, reason: 'parse' }
-      : out.reason === 'http'
-        ? { ok: false, reason: 'http', status: out.status }
-        : { ok: false, reason: 'timeout' };
-  }
-
-  const parsed = out.json;
-  const echoed =
-    parsed && typeof parsed === 'object' && (parsed as { id?: unknown }).id != null
-      ? String((parsed as { id: unknown }).id)
-      : null;
-  const finalRef = echoed ?? ref;
-  if (!finalRef) return { ok: false, reason: 'parse' };
-  return { ok: true, ref: finalRef };
 }

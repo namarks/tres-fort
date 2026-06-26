@@ -47,9 +47,8 @@ describe('scheduled() cron entrypoint', () => {
     await worker.scheduled!(ctrl, env, ctx);
     await waitOnExecutionContext(ctx);
 
-    // Two intervals.icu fetches now fire: the planned /events sync AND the
-    // completed /activities sync (retryPendingLoadExports makes none — no
-    // pending exports). Both URLs hit the athlete API.
+    // Two intervals.icu fetches fire: the planned /events sync AND the
+    // completed /activities sync. Both URLs hit the athlete API.
     expect(stub).toHaveBeenCalledTimes(2);
     expect(String(stub.mock.calls[0]![0])).toContain('intervals.icu/api/v1/athlete/');
     const urls = stub.mock.calls.map((c) => String(c[0]));

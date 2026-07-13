@@ -28,6 +28,8 @@ npm run deploy                 # wrangler deploy
 npm run release                # db:migrate:remote && deploy (migration MUST run first
                                # — deploying code that SELECTs a new column before the
                                # column exists 500s every read)
+npm run ios:testflight         # build, archive, export, upload to TestFlight
+npm run beta:feedback          # mirror TestFlight beta feedback into GitHub issues
 ```
 
 iOS (`ios/`):

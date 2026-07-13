@@ -123,16 +123,21 @@ aren't on the free tier.
    server supports Dynamic Client Registration (RFC 7591), so Claude
    registers itself automatically. Click **Add**.
 5. Claude discovers the OAuth endpoints and opens a **consent screen**
-   titled "Connect tres-fort" with an **Owner passphrase** field.
-6. Enter your `OWNER_AUTH_PASSPHRASE` → **Authorize**. The connector now
-   shows as **Connected** (single-user gate — only someone with the
-   passphrase can ever link a client).
+   titled "Connect Très Fort" with a **Connect code** field.
+6. Get your code and enter it → **Authorize**. The connector now shows as
+   **Connected**, scoped to whichever user the code belongs to:
+   - **Owner:** your `OWNER_AUTH_PASSPHRASE` Worker secret works as the code, or
+   - **Any user** (including group members): open the app → **Profile →
+     Coach** and copy your personal connect code (a per-user passphrase set
+     via `POST /api/me/mcp-passphrase`, PBKDF2-hashed in D1 — no Worker
+     secret needed).
 7. In a new chat, make sure the connector is enabled, and ask
    *"what's my current plan?"* — it should call `get_current_plan` and
    read your live database.
 
 > The OAuth flow uses PKCE + refresh tokens, all served by the Worker
-> itself (no third-party auth provider). Tokens are stored in your D1.
+> itself (no third-party auth provider). Tokens are stored in your D1 and
+> scoped to the user who authorized them.
 
 ### Option B — Claude Code (static bearer)
 

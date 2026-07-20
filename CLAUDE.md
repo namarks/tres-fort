@@ -46,12 +46,18 @@ The `.xcodeproj` is generated; treat `project.yml` as the source of truth.
 
 **One Worker, route groups, one service layer.** `src/index.ts` mounts
 `/auth`, `/auth/intervals` (intervals.icu OAuth connect), `/api` (iOS REST,
-app-JWT), `/mcp` (Claude), and OAuth discovery under one Hono app. **All D1
-access goes through `src/db.ts`** — REST routes (`src/routes/`) and MCP tools
+app-JWT), `/mcp` (Claude), OAuth discovery, `/webhooks` (intervals.icu push
+receiver, `src/routes/webhooks.ts` — public, authenticated by a body
+`secret` rather than app-JWT/MCP bearer), `/privacy` (App Store Connect
+compliance page), and `/join/:code` + AASA (`src/routes/invites.ts` —
+Universal Link group invites) under one Hono app. **All D1 access goes
+through `src/db.ts`** — REST routes (`src/routes/`) and MCP tools
 (`src/mcp/server.ts`) are thin wrappers over the same functions, so behavior
 stays identical across clients. Add data logic in `db.ts`, not in route/tool
 handlers. intervals.icu I/O is isolated in `src/intervals.ts` (injectable
-fetcher, dormant when no credentials are set).
+fetcher, dormant when no credentials are set); an hourly cron
+(`wrangler.jsonc` `triggers.crons`) re-syncs as a backstop for any
+undelivered webhook — the webhook is the primary sync path, not the cron.
 
 **Two data classes, two consistency strategies** — this split is the core
 design and dictates how you mutate things:

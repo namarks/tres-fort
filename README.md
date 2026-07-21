@@ -188,8 +188,10 @@ Post-milestone additions:
 - **intervals.icu integration** — per-user credentials (API key or OAuth),
   ride/activity sync (`/auth/intervals` OAuth flow, webhook-driven via
   `external_events`), upcoming-ride awareness baked into workout planning.
-- **Groups & invites** — friend/family containers with invite-code sign-up;
-  group activity feed (`get_group_feed`) visible to Claude.
+- **Groups & invites** — friend/family containers with invite-code sign-up,
+  Universal Link `/join/:code` invite cards (rich preview + AASA, falls back
+  to in-app manual code entry); group activity feed (`get_group_feed`)
+  visible to Claude.
 - **Multisport (endurance) coaching** — one adaptive plan spans strength +
   endurance: race goals (`set_race`), periodization phases
   (`set_periodization`), travel/rest/injury blackouts (`add_trip`), and a

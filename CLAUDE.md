@@ -72,8 +72,10 @@ design and dictates how you mutate things:
 
 - *Versioned document* — the plan tree (`plans` / `day_templates` /
   `template_exercises`). One monotonic `plans.version`, bumped on any plan
-  mutation. The MCP `update_plan` tool takes an expected version and 409s on
-  mismatch (the caller refetches and reapplies); `PATCH /api/days/:id` and
+  mutation. The MCP `update_plan` tool takes an expected version and on
+  mismatch returns a structured `{ conflict: true, current_version }` result
+  inside a normal HTTP 200 `tools/call` response — **not** a 409 (the caller
+  refetches and reapplies); `PATCH /api/days/:id` and
   `/api/days/:id/exercises/:teId` patch a single field allowlist and
   unconditionally bump `plans.version` with no version check of their own.
   Never mutate the plan tree without going through one of these paths.

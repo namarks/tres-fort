@@ -42,8 +42,9 @@ A Streamable-HTTP MCP server at `/mcp` exposing the same service layer:
   `get_session_log`, `get_history`, `get_volume_trend`, `list_exercises`,
   `get_upcoming_rides`, `get_recent_activities`, `get_group_feed`
 - **Write:** `log_set`, `delete_set`, `log_activity`, `log_workout_complete`,
-  `add_note`, `update_plan` (transactional, `expected_version` → 409 on
-  conflict), `update_exercise`, `swap_exercise`, `add_exercise`, `add_day`,
+  `add_note`, `update_plan` (transactional, `expected_version` → structured
+  `{conflict, current_version}` result on mismatch), `update_exercise`,
+  `swap_exercise`, `add_exercise`, `add_day`,
   `update_day`, `delete_exercise`, `adjust_today`, `set_schedule`,
   `set_planned_session`, `skip_planned_session`, `set_race`,
   `set_periodization`, `add_trip`, `update_trip`, `remove_trip`,

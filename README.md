@@ -197,6 +197,12 @@ Post-milestone additions:
   (`set_periodization`), travel/rest/injury blackouts (`add_trip`), and a
   multi-dimensional stress model (`set_stress_model`) so training load is
   never collapsed to a single number. See `docs/MULTISPORT.md`.
+- **Apple Health (HealthKit) direct connector** — a second activity source
+  alongside intervals.icu: since the Worker can never read HealthKit itself,
+  the iOS app pushes workouts to `POST /api/activities/healthkit`, cached
+  into `external_activities` with `source='healthkit'`. A per-user opt-in
+  gates whether these rows are visible to other group members. See
+  `docs/MULTISOURCE-INGESTION.md`.
 
 ## License
 

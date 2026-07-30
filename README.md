@@ -207,4 +207,4 @@ Post-milestone additions:
 ## License
 
 Personal project. Bundled fonts (Bebas Neue, JetBrains Mono) are SIL Open
-Font License.
+Font License — see `ios/TresFort/Fonts/OFL-*.txt`.

@@ -58,16 +58,27 @@ handlers. intervals.icu I/O is isolated in `src/intervals.ts` (injectable
 fetcher, dormant when no credentials are set); an hourly cron
 (`wrangler.jsonc` `triggers.crons`) re-syncs as a backstop for any
 undelivered webhook — the webhook is the primary sync path, not the cron.
+Apple Health (HealthKit) is a second, iOS-only activity source: the Worker
+can never read HealthKit directly, so the app pushes idempotent workouts to
+`POST /api/activities/healthkit` (`upsertHealthKitActivity` in `db.ts`),
+landing in `external_activities` with `source='healthkit'`. A per-user
+opt-in (`users.share_health_activities`, migration `0028`, flipped via
+`PATCH /api/me/health-sharing`) gates whether a member's HealthKit rows are
+visible to other group members in `get_group_feed`/group stats —
+intervals-sourced rows are unaffected. See `docs/MULTISOURCE-INGESTION.md`.
 
 **Two data classes, two consistency strategies** — this split is the core
 design and dictates how you mutate things:
 
 - *Versioned document* — the plan tree (`plans` / `day_templates` /
   `template_exercises`). One monotonic `plans.version`, bumped on any plan
-  mutation. Writes use optimistic concurrency: `update_plan` /
-  `PATCH /api/day_templates` take an expected version and 409 on mismatch
-  (the caller refetches and reapplies). Never mutate the plan tree without
-  going through the versioned path.
+  mutation. The MCP `update_plan` tool takes an expected version and on
+  mismatch returns a structured `{ conflict: true, current_version }` result
+  inside a normal HTTP 200 `tools/call` response — **not** a 409 (the caller
+  refetches and reapplies); `PATCH /api/days/:id` and
+  `/api/days/:id/exercises/:teId` patch a single field allowlist and
+  unconditionally bump `plans.version` with no version check of their own.
+  Never mutate the plan tree without going through one of these paths.
 - *Append-only log* — `set_logs` / `notes` / `sessions`. The row `id` is a
   **client-generated UUID = idempotency key**; writes dedup on it and are
   safe to retry. Logged data is **soft-deleted** (`deleted_at`), never hard

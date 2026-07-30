@@ -7,7 +7,7 @@
 Status: **IMPLEMENTED** — all milestones (a–i) shipped; intervals.icu
 integration, groups/invites (M1/M2), and multisport (endurance) coaching
 added post-milestone.
-Date: 2026-05-18 · Owner: Nick · Apple Developer Program: **Active** ·
+Date: 2026-07-30 · Owner: Nick · Apple Developer Program: **Active** ·
 Claude surface: all (auth designed OAuth-capable with static-bearer fallback).
 
 Project name `tres-fort` (originally scaffolded as `lift-coach`).

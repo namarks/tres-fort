@@ -42,8 +42,9 @@ A Streamable-HTTP MCP server at `/mcp` exposing the same service layer:
   `get_session_log`, `get_history`, `get_volume_trend`, `list_exercises`,
   `get_upcoming_rides`, `get_recent_activities`, `get_group_feed`
 - **Write:** `log_set`, `delete_set`, `log_activity`, `log_workout_complete`,
-  `add_note`, `update_plan` (transactional, `expected_version` → 409 on
-  conflict), `update_exercise`, `swap_exercise`, `add_exercise`, `add_day`,
+  `add_note`, `update_plan` (transactional, `expected_version` → structured
+  `{conflict, current_version}` result on mismatch), `update_exercise`,
+  `swap_exercise`, `add_exercise`, `add_day`,
   `update_day`, `delete_exercise`, `adjust_today`, `set_schedule`,
   `set_planned_session`, `skip_planned_session`, `set_race`,
   `set_periodization`, `add_trip`, `update_trip`, `remove_trip`,
@@ -197,8 +198,14 @@ Post-milestone additions:
   (`set_periodization`), travel/rest/injury blackouts (`add_trip`), and a
   multi-dimensional stress model (`set_stress_model`) so training load is
   never collapsed to a single number. See `docs/MULTISPORT.md`.
+- **Apple Health (HealthKit) direct connector** — a second activity source
+  alongside intervals.icu: since the Worker can never read HealthKit itself,
+  the iOS app pushes workouts to `POST /api/activities/healthkit`, cached
+  into `external_activities` with `source='healthkit'`. A per-user opt-in
+  gates whether these rows are visible to other group members. See
+  `docs/MULTISOURCE-INGESTION.md`.
 
 ## License
 
 Personal project. Bundled fonts (Bebas Neue, JetBrains Mono) are SIL Open
-Font License.
+Font License — see `ios/TresFort/Fonts/OFL-*.txt`.

@@ -75,10 +75,19 @@ design and dictates how you mutate things:
   mutation. The MCP `update_plan` tool takes an expected version and on
   mismatch returns a structured `{ conflict: true, current_version }` result
   inside a normal HTTP 200 `tools/call` response — **not** a 409 (the caller
-  refetches and reapplies); `PATCH /api/days/:id` and
-  `/api/days/:id/exercises/:teId` patch a single field allowlist and
-  unconditionally bump `plans.version` with no version check of their own.
-  Never mutate the plan tree without going through one of these paths.
+  refetches and reapplies); `PATCH /api/days/:id`, `POST
+  /api/days/:id/exercises` (add), `PATCH /api/days/:id/exercises/:teId`
+  (edit), and `DELETE /api/days/:id/exercises/:teId` (remove, detaching
+  historical `set_logs.template_exercise_id`) each patch a single-field
+  allowlist or one slot and unconditionally bump `plans.version` with no
+  version check of their own — these give the iOS app direct, non-Claude
+  write access to a day's exercises (audited as `actor='ios'`), reusing the
+  same `db.ts` functions MCP's `update_exercise` / `delete_exercise` call.
+  `template_exercises.is_warmup` (migration `0026`) marks a slot a
+  prescribed warm-up, excluded from working-set rollups; `cardio` is a
+  `modality` for erg/treadmill/bike slots logged by duration via the same
+  timed-set runner. Never mutate the plan tree without going through one of
+  these paths.
 - *Append-only log* — `set_logs` / `notes` / `sessions`. The row `id` is a
   **client-generated UUID = idempotency key**; writes dedup on it and are
   safe to retry. Logged data is **soft-deleted** (`deleted_at`), never hard

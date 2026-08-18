@@ -52,12 +52,13 @@ A Streamable-HTTP MCP server at `/mcp` exposing the same service layer:
 - **Resource:** `coach://state/current` — a compact brief Claude can read at
   chat start. Plus a `coach_brief` prompt.
 
-Every write records an `audit_log` row and a Claude-authored note (the
-single-user substitute for per-tool scopes).
+Every write records an `audit_log` row and a Claude-authored note — a
+visible, reversible trail that substitutes for per-tool scopes (recorded
+per user).
 
 **Auth (dual):**
 - **Static bearer** — trivial for Claude Code / curl.
-- **OAuth 2.1** (RFC 9728 / 8414 / 7591, PKCE, refresh, single-user
+- **OAuth 2.1** (RFC 9728 / 8414 / 7591, PKCE, refresh, per-user
   passphrase consent) — for claude.ai / Claude desktop custom connectors.
 
 ### 3. iOS app — the gym executor

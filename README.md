@@ -68,7 +68,11 @@ SwiftUI, iOS 17+, XcodeGen-managed. A guided **workout runner**:
 - Overview → **START** → one exercise at a time: progress bar, jump pills
   (reorder on the fly when a rack's taken), inline steppers, auto-advance.
 - Full-screen rest overlay; **Live Activity** rest timer on the Lock Screen
-  / Dynamic Island (local, no push).
+  / Dynamic Island (local, no push); a chime + haptic + spoken cue when rest
+  ends (headphones-friendly, default on).
+- **Edit workout** sheet (from Today or the runner's overflow menu): add /
+  remove / reorder exercises and warm-ups in place — writes straight to the
+  same versioned plan tree Claude edits.
 - Whole-workout stopwatch + per-set duration; **timed exercises** (planks/
   holds) become a START SET countdown that auto-logs.
 - History tab with Swift Charts (estimated-1RM and set-duration trends).

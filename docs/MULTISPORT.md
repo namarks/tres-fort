@@ -197,7 +197,7 @@ bounded "rolling materialization" of §6.4.
 
 ## 4. Data model changes
 
-All additive, idempotent, numbered migrations per `CLAUDE.md` conventions.
+All additive, idempotent, numbered migrations per `AGENTS.md` conventions.
 Reuse `plans.meta` JSON (already the home of `schedule`) for authored intent —
 graduate any of these to a real table only if it becomes relational/queryable
 enough to deserve one (noted per item).

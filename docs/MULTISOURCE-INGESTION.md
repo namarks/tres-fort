@@ -57,7 +57,7 @@ Be explicit with stakeholders: **Zwift, Apple Health, and Google Fit are NOT dir
 
 ## 2. Unified, provider-agnostic ingestion architecture
 
-The design principle is unchanged from `CLAUDE.md`: **all D1 access goes through `src/db.ts`; route handlers and MCP tools are thin wrappers.** We keep one normalized model and one reconciled cache, and we add a thin per-provider adapter layer below `db.ts`.
+The design principle is unchanged from `AGENTS.md`: **all D1 access goes through `src/db.ts`; route handlers and MCP tools are thin wrappers.** We keep one normalized model and one reconciled cache, and we add a thin per-provider adapter layer below `db.ts`.
 
 ### 2.1 Normalized activity model (reuse what exists)
 

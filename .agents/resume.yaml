@@ -1,0 +1,14 @@
+version: 1
+
+project:
+  name: Tres Fort
+
+plans:
+  include: "*/plan.md"
+
+evidence:
+  git_history: true
+  github_pull_requests:
+    enabled: true
+    limit: 40
+  production: named-gates-only

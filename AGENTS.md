@@ -11,6 +11,16 @@ The backend contains **no AI** — it is pure data. Full rationale, schema, and
 the API/MCP surface live in `docs/DESIGN.md` (read it before non-trivial
 backend work).
 
+## Repository planning
+
+Engineering workstream plans are distinct from the workout plan stored in D1.
+Current workstreams live at `docs/plans/<slug>/plan.md`; cross-plan initiatives
+live at `docs/initiatives/<slug>.md`; and `.agents/resume.yaml` configures the
+shared planning workflows. Only `plan.md` carries live phase status,
+dependencies, execution frontier, and next step. Run the shared
+`planning-conventions` compiler's `check` command after changing a plan,
+initiative, index, or adapter.
+
 ## Commands
 
 Backend (repo root):

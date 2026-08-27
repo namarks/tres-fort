@@ -86,6 +86,8 @@ migrations/          D1 schema + seed
 test/                vitest integration tests (real D1 in Workers runtime)
 ios/                 XcodeGen project (app + Live Activity widget extension)
 docs/DESIGN.md       system design doc
+docs/plans/          canonical engineering workstream plans
+docs/initiatives/    cross-plan initiatives (plans of plans)
 ```
 
 ## Backend: develop & deploy

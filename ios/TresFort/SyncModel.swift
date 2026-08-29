@@ -185,6 +185,28 @@ final class SyncModel: ObservableObject {
         catalog.first { $0.id == exerciseID }?.laterality == "unilateral" ? 2 : 1
     }
 
+    /// How many separately loaded implements a logged weight represents — 2
+    /// for `per_hand` exercises, 1 otherwise. This is independent of
+    /// laterality: a unilateral, per-hand movement counts both dimensions.
+    /// Defaults to 1 when the catalog row is unknown.
+    func implements(for exerciseID: String) -> Int {
+        catalog.first { $0.id == exerciseID }?.load_mode == "per_hand" ? 2 : 1
+    }
+
+    /// Physical reps represented by one logged set. Unilateral movements are
+    /// logged per side, so the rollup counts both sides.
+    func effectiveReps(for set: SetLog) -> Int {
+        set.reps * sides(for: set.exercise_id)
+    }
+
+    /// Effective tonnage represented by one logged set. Side count and
+    /// per-hand implement count are independent multipliers; total-load,
+    /// bilateral exercises therefore retain their original 1x behavior.
+    func tonnage(for set: SetLog) -> Double {
+        set.weight * Double(effectiveReps(for: set))
+            * Double(implements(for: set.exercise_id))
+    }
+
     /// True when the catalog row is a timed modality (planks/holds) — the only
     /// sets whose logged value is seconds, not reps. Logged sets carry no
     /// modality, so resolve it from the catalog. Defaults to false (rep set)
@@ -238,10 +260,10 @@ final class SyncModel: ObservableObject {
     func history(for exerciseID: String) -> [SessionStat] {
         let dateBySession = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.date) })
         let grouped = Dictionary(grouping: live(exerciseID), by: \.session_id)
-        // Volume doubles for unilateral exercises (reps logged per-side).
+        // Volume accounts independently for reps logged per-side and weights
+        // logged per hand.
         // topReps + est-1RM stay per-side: those represent per-leg/per-arm
         // strength, which is what the lifter actually displaced in one rep.
-        let s = Double(sides(for: exerciseID))
         return grouped.compactMap { sid, rows -> SessionStat? in
             guard let date = dateBySession[sid], !rows.isEmpty else { return nil }
             let top = rows.max { epley($0.weight, $0.reps) < epley($1.weight, $1.reps) }!
@@ -250,7 +272,7 @@ final class SyncModel: ObservableObject {
                 id: sid, date: date,
                 est1RM: epley(top.weight, top.reps).rounded(),
                 topWeight: top.weight, topReps: top.reps,
-                volume: rows.reduce(0) { $0 + $1.weight * Double($1.reps) * s },
+                volume: rows.reduce(0) { $0 + tonnage(for: $1) },
                 setCount: rows.count,
                 avgDuration: durs.isEmpty ? 0 : durs.reduce(0, +) / durs.count)
         }

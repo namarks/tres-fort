@@ -1,6 +1,6 @@
 # Workout Write Reliability
 
-Slug: workout-write-reliability · Status: active · Updated: 2026-08-28 · Theme: training-trust
+Slug: workout-write-reliability · Status: active · Updated: 2026-08-29 · Theme: training-trust
 
 ## Goal
 
@@ -40,12 +40,6 @@ never present a failed write as completed or silently drop the user's intent.
 
 - P0
 
-## Dependencies
-
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P0 | coordinates_with | plan:identity-account-lifecycle#P0(a) | This plan owns set-outbox storage and delivery; identity owns the shared per-user account namespace and switch semantics that contain it. |
-
 ## Next step
 
 **Now (@agent):** Implement P0 by adapting the existing activity-outbox pattern
@@ -56,7 +50,9 @@ for set bodies, then verify retry identity and visible failure behavior.
 - Source: the August 2026 functionality review at commit `91fd622`; the server's
   client-UUID idempotency contract already exists and should remain the seam.
 - Set bodies, retry state, and drain behavior remain owned here. Coordinate only
-  the user-keyed namespace and account-switch boundary with identity work.
+  the user-keyed namespace and account-switch boundary with the completed
+  [Identity and Account Lifecycle](../completed/identity-account-lifecycle/plan.md)
+  contracts.
 - Store only the pending request bodies and small UI checkpoint needed for
   recovery. Do not build event sourcing, background-server infrastructure, or a
   new synchronization protocol for this workstream.

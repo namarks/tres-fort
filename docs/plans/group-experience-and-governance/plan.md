@@ -1,6 +1,6 @@
 # Group Experience and Governance
 
-Slug: group-experience-and-governance · Status: planned · Updated: 2026-08-28 · Theme: connected-training
+Slug: group-experience-and-governance · Status: planned · Updated: 2026-08-29 · Theme: connected-training
 
 ## Goal
 
@@ -67,7 +67,6 @@ Done means:
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P0 | coordinates_with | plan:activity-integration-integrity#P0 | Feed pagination, labels, and own-activity visibility can land independently; jointly verify the final cross-source feed result against its identity and civil-date rules. |
-| P3 | coordinates_with | plan:identity-account-lifecycle | Group deletion and account deletion need one documented ownership outcome, not duplicate deletion machinery. |
 
 ## Next step
 
@@ -82,6 +81,10 @@ before adding engagement features.
 - Reuse the tenant and authorization fixes completed in
   [Server Mutation Integrity](../completed/server-mutation-integrity/plan.md);
   they are historical foundation rather than an unresolved dependency.
+- Reuse the account-deletion ownership outcome completed in
+  [Identity and Account Lifecycle](../completed/identity-account-lifecycle/plan.md):
+  personal training data and membership are removed with the account, surviving
+  groups transfer to their longest-tenured member, and empty groups are deleted.
 - Notification implementation still follows the repository's ordinary
   credential and release gates; this plan does not grant permission to create
   production APNs credentials or send production notifications.

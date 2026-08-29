@@ -17,11 +17,15 @@ private final class AuthAPIStub: AuthAPI {
         .failure(URLError(.badServerResponse))
     var deletionResult: Result<AccountDeletionResponse, Error> =
         .failure(URLError(.badServerResponse))
+    var exportResult: Result<AccountExportFile, Error> =
+        .failure(URLError(.badServerResponse))
     var renewalHandler: ((String) async throws -> SessionRenewalResponse)?
     var deletionHandler: ((String, String) async throws -> AccountDeletionResponse)?
+    var exportHandler: ((String) async throws -> AccountExportFile)?
     private(set) var renewalCalls = 0
     private(set) var deletionCalls = 0
     private(set) var deletionKeys: [String] = []
+    private(set) var exportCalls = 0
 
     func authApple(identityToken: String, fullName: String?) async throws -> AuthResponse {
         try authResult.get()
@@ -43,6 +47,12 @@ private final class AuthAPIStub: AuthAPI {
             return try await deletionHandler(jwt, idempotencyKey)
         }
         return try deletionResult.get()
+    }
+
+    func downloadAccountExport(jwt: String) async throws -> AccountExportFile {
+        exportCalls += 1
+        if let exportHandler { return try await exportHandler(jwt) }
+        return try exportResult.get()
     }
 }
 
@@ -513,6 +523,91 @@ final class AuthModelTests: XCTestCase {
         XCTAssertFalse(healthB.enabled)
         XCTAssertNil(
             defaults.data(forKey: HealthKitSyncModel.anchorKey(userID: "user-b")))
+    }
+
+    func testAccountExportUsesCurrentFeatureBearer() async {
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        let token = sessionToken(for: "user-a")
+        let api = AuthAPIStub()
+        let expected = AccountExportFile(
+            data: Data("{\"schema_version\":1}".utf8),
+            filename: "tres-fort-account-export-2026-08-29.json")
+        api.exportResult = .success(expected)
+        let model = AuthModel(
+            api: api,
+            tokenStore: MemoryTokenStore(token),
+            defaults: defaults)
+
+        do {
+            let file = try await model.downloadAccountExport()
+            XCTAssertEqual(file, expected)
+        } catch {
+            XCTFail("account export failed: \(error)")
+        }
+        XCTAssertEqual(api.exportCalls, 1)
+    }
+
+    func testPendingDeletionCannotExportAccountData() async {
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        defaults.set(
+            UUID().uuidString,
+            forKey: AccountLocalState.accountDeletionKey(userID: "user-a"))
+        let api = AuthAPIStub()
+        let model = AuthModel(
+            api: api,
+            tokenStore: MemoryTokenStore(sessionToken(for: "user-a")),
+            defaults: defaults)
+
+        do {
+            _ = try await model.downloadAccountExport()
+            XCTFail("pending deletion unexpectedly exported account data")
+        } catch let APIError.http(code, _) {
+            XCTAssertEqual(code, 401)
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        XCTAssertEqual(api.exportCalls, 0)
+    }
+
+    func testInFlightExportIsDiscardedAfterAccountSwitch() async {
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        let tokenA = sessionToken(for: "user-a")
+        let api = AuthAPIStub()
+        let started = AsyncLatch()
+        let release = AsyncLatch()
+        api.exportHandler = { _ in
+            await started.open()
+            await release.wait()
+            return AccountExportFile(
+                data: Data("{\"account\":\"user-a\"}".utf8),
+                filename: "user-a.json")
+        }
+        let model = AuthModel(
+            api: api,
+            tokenStore: MemoryTokenStore(tokenA),
+            defaults: defaults)
+
+        let export = Task { try await model.downloadAccountExport() }
+        await started.wait()
+        let tokenB = sessionToken(for: "user-b")
+        api.authResult = .success(response(jwt: tokenB, userID: "user-b"))
+        await model.exchange(identityToken: "apple-b", fullName: nil)
+        await release.open()
+
+        do {
+            _ = try await export.value
+            XCTFail("stale account export unexpectedly reached the new account")
+        } catch let APIError.decoding(message) {
+            XCTAssertTrue(message.contains("account changed"))
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+        XCTAssertEqual(model.userID, "user-b")
+        XCTAssertEqual(model.jwt, tokenB)
+        XCTAssertEqual(api.exportCalls, 1)
     }
 
     func testAcknowledgedDeletionClearsOnlyCurrentAccountLocalState() async {

@@ -11,6 +11,7 @@ import {
   deleteUserAccount,
   deleteTemplateExercise,
   discardSession,
+  exportUserData,
   getActivePlan,
   getExercises,
   getGroupActivitySeries,
@@ -621,6 +622,31 @@ apiRoutes.patch('/me/health-sharing', async (c) => {
 apiRoutes.get('/me', async (c) => {
   const userId = c.get('userId');
   return c.json(await getMeProfile(c.env.DB, userId, c.env.OWNER_APPLE_SUB));
+});
+
+// GET /api/me/export — download the authenticated caller's portable account
+// and training-data snapshot. There is deliberately no user id in either the
+// path or query contract: requireAppJwt supplies the sole export principal.
+// The attachment is never cacheable and the service projection excludes
+// credentials, tokens, invite capabilities, and other members' private data.
+apiRoutes.get('/me/export', async (c) => {
+  const exported = await exportUserData(c.env.DB, c.get('userId'));
+  if (!exported) return c.json({ error: 'not_found' }, 404);
+  const exportedAt = exported.exported_at;
+  const date =
+    typeof exportedAt === 'number' && Number.isFinite(exportedAt)
+      ? new Date(exportedAt).toISOString().slice(0, 10)
+      : 'data';
+  return new Response(JSON.stringify(exported, null, 2), {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Content-Disposition':
+        `attachment; filename="tres-fort-account-export-${date}.json"`,
+      'Cache-Control': 'no-store',
+      'X-Content-Type-Options': 'nosniff',
+    },
+  });
 });
 
 // PATCH /api/me/profile — repair the display name Apple provides only on the

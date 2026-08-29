@@ -365,6 +365,30 @@ final class AuthModel: ObservableObject {
         }
     }
 
+    /// Fetch a portable snapshot for the currently signed-in account. Export
+    /// is an ordinary feature request (never allowed while deletion is
+    /// pending), and an account/token change while the request is in flight
+    /// discards the old account's bytes instead of presenting them in the new
+    /// account's Profile UI.
+    func downloadAccountExport() async throws -> AccountExportFile {
+        guard let token = featureJWT, let accountID = userID else {
+            throw APIError.http(401, "missing_session")
+        }
+        do {
+            let file = try await api.downloadAccountExport(jwt: token)
+            guard userID == accountID, featureJWT == token else {
+                throw APIError.decoding(
+                    "the signed-in account changed while the export was downloading")
+            }
+            return file
+        } catch let APIError.http(code, body) where code == 401 {
+            if userID == accountID, featureJWT == token {
+                requireReauthentication()
+            }
+            throw APIError.http(code, body)
+        }
+    }
+
     // MARK: - Universal Link invites
 
     /// Handle an inbound Universal Link. If it carries a well-formed group

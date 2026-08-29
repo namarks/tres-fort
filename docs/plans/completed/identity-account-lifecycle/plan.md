@@ -1,6 +1,6 @@
 # Identity and Account Lifecycle
 
-Slug: identity-account-lifecycle · Status: gated · Updated: 2026-08-29 · Theme: training-trust
+Slug: identity-account-lifecycle · Status: done · Archived: completed · Updated: 2026-08-29 · Theme: training-trust
 
 ## Goal
 
@@ -31,8 +31,8 @@ iOS verification.
       deleted user out only after the server acknowledges deletion.
     - Verify cascade behavior with seeded test users; never exercise deletion
       against a real owner account during development or CI.
-- [ ] **P1 — Portability and credential recovery**
-  - [ ] **(a) Authorized downloadable account export**
+- [x] **P1 — Portability and credential recovery**
+  - [x] **(a) Authorized downloadable account export**
     - Add the authenticated transport and Profile download/share flow only after
       explicit authorization for the sensitive account-and-training-data egress.
     - Keep the existing caller-scoped service projection dormant until then; its
@@ -45,21 +45,11 @@ iOS verification.
     - Store the credential identifier supplied locally by Sign in with Apple;
       do not add a backend identity-data egress solely to migrate older installs.
 
-## Execution frontier
-
-- P1(a)
-
-## Dependencies
-
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P1(a) | gated_by | external:account-export-network-authorization | A downloadable JSON export exposes sensitive account and training data over an authenticated network surface and requires explicit authorization before the route or iOS share flow is added. |
-
 ## Next step
 
-**Now (@owner):** Explicitly authorize or decline the authenticated downloadable
-account-and-training-data export. If authorized, @agent completes P1(a), repeats
-exact-head verification, and closes the plan.
+No further executable step. The owner authorized a direct authenticated download
+for the signed account only; public links, automatic third-party sharing, merge,
+and deployment were not authorized or performed during closeout.
 
 ## Notes / open questions
 
@@ -121,18 +111,23 @@ exact-head verification, and closes the plan.
   the old effective name cannot survive in another group surface. Hydrated
   create, join, and per-group-name mutation responses carry the same generation
   guard and reconcile from the server if a global-name update overtakes them.
-- The dormant portability projection includes only catalog exercises referenced
+- The portability projection includes only catalog exercises referenced
   by the caller's templates or logged sets, including their names, units,
   modalities, muscles, and aliases, so its exercise identifiers remain
   independently interpretable without exposing unrelated catalog rows.
   Invite capabilities are omitted from new audit rows and stripped from
   historical invite-audit arguments before export.
-- Verification at this milestone: the full Workers suite passes 398/398, the
-  TypeScript compiler and plan compiler pass, iOS device sources compile, the
-  app module and XCTest source typecheck, including stale renewal, stale
-  Apple-credential callback, account-switch-during-deletion, in-flight
-  deletion/outbox cleanup, durable owner recovery, and lost-response
-  retry/bearer coverage. The standalone production AuthModel harness passes Apple
-  revocation, provider-unavailable, transferred-identity, and bearer/account
-  binding behavior. This host still has no installed iOS simulator runtime, so
-  XCTest execution remains unavailable locally.
+- P1(a) exposes that projection only at authenticated `GET /api/me/export`; the
+  bearer subject is the sole principal, the JSON attachment is non-cacheable,
+  and the Profile action saves through the system Files picker without creating
+  a public link or app-managed third-party transfer. A response is discarded if
+  the app changes accounts while it is downloading, and ordinary feature access
+  remains disabled while account deletion is pending.
+- Verification at closeout: the full Workers suite passes 400/400, and the
+  TypeScript and plan compilers pass. The full iOS production source typecheck,
+  app-module emission, and XCTest source typecheck pass, including stale
+  renewal, stale Apple-credential callback, account-switch-during-deletion,
+  in-flight deletion/outbox cleanup, durable owner recovery, lost-response
+  retry/bearer, and account-switch-during-export coverage. This host lacks the
+  installed iOS 26.2 platform/runtime required by `xcodebuild`, so XCTest
+  execution remains unavailable locally.

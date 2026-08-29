@@ -1,6 +1,9 @@
-import { env, applyD1Migrations } from 'cloudflare:test';
+import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { issueAppJwt } from '../src/auth';
 import { createInvite, exportUserData, upsertUser } from '../src/db';
+
+const BASE = 'https://lift-coach.test';
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -177,5 +180,56 @@ describe('account export projection', () => {
     expect(serialized).not.toContain(other.id);
     expect(serialized).not.toContain(otherPrivate);
     expect(await exportUserData(env.DB, crypto.randomUUID())).toBeNull();
+  });
+});
+
+describe('GET /api/me/export', () => {
+  it('requires an authenticated app session', async () => {
+    const response = await SELF.fetch(`${BASE}/api/me/export`);
+    expect(response.status).toBe(401);
+  });
+
+  it('downloads only the signed caller as a non-cacheable JSON attachment', async () => {
+    const suffix = crypto.randomUUID();
+    const caller = await upsertUser(
+      env.DB,
+      `route-export-caller-sub-${suffix}`,
+      `route-export-caller-${suffix}@test`,
+      'Route Export Caller',
+    );
+    const other = await upsertUser(
+      env.DB,
+      `route-export-other-sub-${suffix}`,
+      `route-export-other-${suffix}@test`,
+      'Route Export Other',
+    );
+    const jwt = await issueAppJwt(caller.id, 'test-secret');
+
+    // Even a caller-supplied selector is inert: the JWT subject remains the
+    // only principal accepted by this endpoint.
+    const response = await SELF.fetch(
+      `${BASE}/api/me/export?user_id=${encodeURIComponent(other.id)}`,
+      { headers: { Authorization: `Bearer ${jwt}` } },
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe(
+      'application/json; charset=utf-8',
+    );
+    expect(response.headers.get('content-disposition')).toMatch(
+      /^attachment; filename="tres-fort-account-export-\d{4}-\d{2}-\d{2}\.json"$/,
+    );
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+
+    const exported = await response.json<{
+      schema_version: number;
+      account: { id: string; email: string };
+    }>();
+    expect(exported.schema_version).toBe(1);
+    expect(exported.account.id).toBe(caller.id);
+    expect(exported.account.email).toBe(caller.email);
+    expect(JSON.stringify(exported)).not.toContain(other.id);
+    expect(JSON.stringify(exported)).not.toContain(other.email);
   });
 });

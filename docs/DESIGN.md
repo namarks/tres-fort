@@ -204,6 +204,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `PATCH /api/sets/{id}` | Edit / soft-delete a set. |
 | `GET /api/history?exercise_id=&from=&to=` | Set history + est-1RM (Epley) + top set/session. |
 | `GET /api/volume?muscle=&from=&to=` | Tonnage & hard sets per week bucket. |
+| `GET /api/me/export` | Download the signed caller's portable account and training-data snapshot as a non-cacheable JSON attachment. Excludes credentials, tokens, invite capabilities, and other members' private data. |
 | `PATCH /api/days/{id}` | `{name?, day_label?, order_index?, notes?}` — inline day rename/reorder. |
 | `POST /api/days/{id}/exercises` | Add an exercise slot (incl. `is_warmup`, `target_duration_s`). |
 | `PATCH /api/days/{id}/exercises/{teId}` | Edit one slot in place (targets / rest / warm-up flag / order). |

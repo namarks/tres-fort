@@ -12,6 +12,11 @@ enum APIError: Error, LocalizedError {
     }
 }
 
+struct AccountExportFile: Equatable {
+    let data: Data
+    let filename: String
+}
+
 struct APIClient {
     var baseURL = Config.apiBaseURL
 
@@ -42,6 +47,46 @@ struct APIClient {
             "api/me",
             jwt: jwt,
             headers: ["X-Account-Deletion-Key": idempotencyKey])
+    }
+
+    /// Download the authenticated caller's portable account snapshot. The
+    /// server chooses the attachment filename; validate that the successful
+    /// response is actually JSON before offering it to the Files picker.
+    func downloadAccountExport(jwt: String) async throws -> AccountExportFile {
+        var req = URLRequest(
+            url: URL(string: baseURL.absoluteString + "/api/me/export")!)
+        req.httpMethod = "GET"
+        req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
+        let (data, response) = try await URLSession.shared.data(for: req)
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.http(-1, "missing HTTP response")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw APIError.http(
+                http.statusCode,
+                String(data: data, encoding: .utf8) ?? "")
+        }
+        guard
+            http.value(forHTTPHeaderField: "Content-Type")?
+                .lowercased().hasPrefix("application/json") == true
+        else {
+            throw APIError.decoding("account export was not JSON")
+        }
+        do {
+            let value = try JSONSerialization.jsonObject(with: data)
+            guard value is [String: Any] else {
+                throw APIError.decoding("account export was not a JSON object")
+            }
+        } catch let error as APIError {
+            throw error
+        } catch {
+            throw APIError.decoding("account export was invalid JSON: \(error)")
+        }
+        return AccountExportFile(
+            data: data,
+            filename: response.suggestedFilename
+                ?? "tres-fort-account-export.json")
     }
 
     /// Full sync pull (since=0 → everything; the app dedupes locally).
@@ -216,6 +261,7 @@ protocol AuthAPI {
         jwt: String,
         idempotencyKey: String
     ) async throws -> AccountDeletionResponse
+    func downloadAccountExport(jwt: String) async throws -> AccountExportFile
 }
 
 extension APIClient: AuthAPI {}

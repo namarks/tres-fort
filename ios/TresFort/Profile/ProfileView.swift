@@ -1,4 +1,26 @@
 import SwiftUI
+import UniformTypeIdentifiers
+
+private struct AccountExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+
+    let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        self.data = data
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
 
 /// The "Profile" tab — one place to manage your setup: account, the Claude
 /// coach connection, integrations (intervals.icu), and your groups. All
@@ -14,6 +36,12 @@ struct ProfileView: View {
     @State private var showJoin = false
     @State private var showCreate = false
     @State private var showNameEditor = false
+    @State private var accountExportDocument: AccountExportDocument?
+    @State private var accountExportFilename = "tres-fort-account-export.json"
+    @State private var showAccountExporter = false
+    @State private var isExportingAccount = false
+    @State private var showExportError = false
+    @State private var exportErrorMessage = ""
     @State private var showDeleteConfirmation = false
     @State private var isDeletingAccount = false
     @State private var showDeletionError = false
@@ -56,6 +84,23 @@ struct ProfileView: View {
         } message: {
             Text(deletionErrorMessage)
         }
+        .alert("Account data wasn’t downloaded", isPresented: $showExportError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(exportErrorMessage)
+        }
+        .fileExporter(
+            isPresented: $showAccountExporter,
+            document: accountExportDocument,
+            contentType: .json,
+            defaultFilename: accountExportFilename
+        ) { result in
+            if case let .failure(error) = result {
+                exportErrorMessage = error.localizedDescription
+                showExportError = true
+            }
+            accountExportDocument = nil
+        }
         .task {
             // Loads groups if the Profile tab is opened before the Group tab;
             // load() also refreshes `me`. Otherwise just refresh the snapshot.
@@ -84,6 +129,22 @@ struct ProfileView: View {
             if let email = groupModel.me?.email, !email.isEmpty {
                 LabeledContent("Apple ID", value: email)
             }
+            Button {
+                Task { await downloadAccountData() }
+            } label: {
+                if isExportingAccount {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("Preparing account data…")
+                    }
+                } else {
+                    Label("Download account data", systemImage: "square.and.arrow.down")
+                }
+            }
+            .disabled(isExportingAccount || isDeletingAccount || auth.accountDeletionPending)
+            Text("Saves a JSON file containing your profile and training data. It excludes credentials, access tokens, invite codes, and other members’ private data.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             Button(role: .destructive) { auth.signOut() } label: {
                 Text("Sign out")
             }
@@ -103,6 +164,21 @@ struct ProfileView: View {
                 }
             }
             .disabled(isDeletingAccount)
+        }
+    }
+
+    private func downloadAccountData() async {
+        guard !isExportingAccount else { return }
+        isExportingAccount = true
+        defer { isExportingAccount = false }
+        do {
+            let file = try await auth.downloadAccountExport()
+            accountExportDocument = AccountExportDocument(data: file.data)
+            accountExportFilename = file.filename
+            showAccountExporter = true
+        } catch {
+            exportErrorMessage = error.localizedDescription
+            showExportError = true
         }
     }
 

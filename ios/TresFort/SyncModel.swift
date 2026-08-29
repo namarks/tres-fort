@@ -86,6 +86,9 @@ final class SyncModel: ObservableObject {
     /// `getState` always uses zero watermarks, so every collection is a full
     /// replacement rather than a delta merge.
     private func replaceState(with state: StateResponse, preferredTodaySessionID: String? = nil) {
+        let previousSelectedDayID = selectedDayID
+        let runnerWasActive = running
+        let activeSlotID = activeRunnerSlotID()
         plan = state.plan
         sets = state.sets
         sessions = state.sessions
@@ -100,7 +103,121 @@ final class SyncModel: ObservableObject {
         todaySession = preferredTodaySessionID.flatMap { preferredID in
             state.sessions.first { $0.id == preferredID }
         } ?? state.sessions.first { $0.date == todayString }
-        if selectedDayID == nil { selectedDayID = state.plan?.days.first?.id }
+        reconcileSelection(
+            previousSelectedDayID: previousSelectedDayID,
+            activeSlotID: activeSlotID,
+            runnerWasActive: runnerWasActive)
+    }
+
+    /// The runner's current physical slot without `selectedDay`'s first-day
+    /// fallback. A missing day or out-of-range index is invalid runner state.
+    private func activeRunnerSlotID() -> String? {
+        guard running,
+              let selectedDayID,
+              let day = plan?.days.first(where: { $0.id == selectedDayID }),
+              day.exercises.indices.contains(exerciseIndex)
+        else { return nil }
+        return day.exercises[exerciseIndex].id
+    }
+
+    /// Inactive state prefers the real session's remapped day. An active
+    /// explicit override retains its valid day; otherwise it falls back to the
+    /// remapped session day. The runner continues only when its physical slot
+    /// still exists on the resolved day.
+    private func reconcileSelection(previousSelectedDayID: String?, activeSlotID: String?,
+                                    runnerWasActive: Bool) {
+        let days = plan?.days ?? []
+        let sessionDayID = todaySession?.day_template_id
+        let resolvedSessionDayID = sessionDayID.flatMap { id in
+            days.contains(where: { $0.id == id }) ? id : nil
+        }
+        let retainedDayID = previousSelectedDayID.flatMap { id in
+            days.contains(where: { $0.id == id }) ? id : nil
+        }
+        // A running explicit "train a different day" override owns its still-
+        // valid selection. The session day is the recovery target only when
+        // that prior day disappeared (for example, update_plan rebuilt ids).
+        selectedDayID = runnerWasActive
+            ? retainedDayID ?? resolvedSessionDayID ?? days.first?.id
+            : resolvedSessionDayID ?? retainedDayID ?? days.first?.id
+
+        guard runnerWasActive else { return }
+        guard sessionDayID == nil || resolvedSessionDayID != nil,
+              let activeSlotID,
+              let selectedDayID,
+              let day = days.first(where: { $0.id == selectedDayID })
+        else {
+            stopRunnerForStateChange()
+            return
+        }
+        if let newIndex = day.exercises.firstIndex(where: { $0.id == activeSlotID }) {
+            exerciseIndex = newIndex
+        } else if previousSelectedDayID == selectedDayID, !day.exercises.isEmpty {
+            // Same valid day, active slot removed by an in-app edit: retain
+            // the existing documented behavior and clamp to the next slot.
+            exerciseIndex = min(exerciseIndex, day.exercises.count - 1)
+        } else {
+            stopRunnerForStateChange()
+        }
+    }
+
+    /// Stop only local execution state; the already-logged server data stays.
+    private func stopRunnerForStateChange() {
+        exerciseIndex = 0
+        running = false
+        finished = false
+        workoutStart = nil
+        timedActive = false
+        timedEndDate = nil
+        timedStartDate = nil
+        skipped = []
+        skipRest()
+    }
+
+    /// Adopt a successful aliased write when the follow-up full refresh is
+    /// unavailable. All cached same-date session/set aliases collapse onto the
+    /// canonical id returned by the POST, so the committed set remains visible
+    /// and a retry cannot create a second physical set.
+    private func adoptSessionAliasLocally(
+        staleSession: SessionRow,
+        committedSet: SetLog,
+        submittedSlotID: String
+    ) {
+        let previousSelectedDayID = selectedDayID
+        let runnerWasActive = running
+        let activeSlotID = activeRunnerSlotID()
+        var aliasedSessionIDs = Set(
+            sessions.filter { $0.date == staleSession.date }.map(\.id))
+        aliasedSessionIDs.insert(staleSession.id)
+        let canonicalSession = SessionRow(
+            id: committedSet.session_id,
+            date: staleSession.date,
+            status: staleSession.status,
+            day_template_id: staleSession.day_template_id)
+
+        sessions.removeAll { $0.date == staleSession.date }
+        sessions.append(canonicalSession)
+        sets = sets.map { row in
+            aliasedSessionIDs.contains(row.session_id)
+                ? row.replacingSessionID(with: committedSet.session_id)
+                : row
+        }
+        if let i = sets.firstIndex(where: { $0.id == committedSet.id }) {
+            sets[i] = committedSet
+        } else {
+            sets.append(committedSet)
+        }
+        todaySession = canonicalSession
+        reconcileSelection(
+            previousSelectedDayID: previousSelectedDayID,
+            activeSlotID: activeSlotID,
+            runnerWasActive: runnerWasActive)
+        // A missing/different echoed slot means update_plan rebuilt or removed
+        // the submitted slot. Preserve the committed set, but never continue
+        // executing a server-invalid cached plan or invite another tap.
+        if committedSet.template_exercise_id != submittedSlotID {
+            stopRunnerForStateChange()
+        }
     }
 
     /// Live (non-deleted) working sets for an exercise.
@@ -341,13 +458,21 @@ final class SyncModel: ObservableObject {
                 // its id. Reload before the runner evaluates completion so the
                 // session and set caches switch together; appending just the set
                 // would leave todaySlotSets filtering it out by the stale id.
-                let state = try await api.getState(jwt: jwt)
-                replaceState(with: state, preferredTodaySessionID: res.set.session_id)
-                guard todaySession?.id == res.set.session_id else {
-                    throw APIError.decoding("Logged set's canonical session is missing from state")
+                do {
+                    let state = try await api.getState(jwt: jwt)
+                    guard state.sessions.contains(where: { $0.id == res.set.session_id }) else {
+                        throw APIError.decoding("Logged set's canonical session is missing from state")
+                    }
+                    replaceState(with: state, preferredTodaySessionID: res.set.session_id)
+                } catch {
+                    adoptSessionAliasLocally(
+                        staleSession: session,
+                        committedSet: res.set,
+                        submittedSlotID: ex.id)
+                    handle(error)
                 }
             }
-            startRest(seconds: ex.rest_seconds, name: ex.exercise_name)
+            if running { startRest(seconds: ex.rest_seconds, name: ex.exercise_name) }
             return true
         } catch {
             handle(error)
@@ -444,7 +569,8 @@ final class SyncModel: ObservableObject {
         skipped.remove(ex.id)   // logging work un-skips this slot
         let secs = max(1, held)
         guard await logSet(ex, weight: 0, reps: secs, durationOverride: secs) else { return }
-        if isComplete(ex) {
+        guard running, let current = currentExercise else { return }
+        if isComplete(current) {
             if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
         }
     }
@@ -488,7 +614,8 @@ final class SyncModel: ObservableObject {
         guard let ex = currentExercise else { return }
         skipped.remove(ex.id)   // logging work un-skips this slot
         guard await logSet(ex, weight: weight, reps: reps) else { return } // also starts rest timer
-        if isComplete(ex) {
+        guard running, let current = currentExercise else { return }
+        if isComplete(current) {
             if let next = nextIncompleteIndex { jump(to: next) }
             else { finished = true }
         }
@@ -1159,5 +1286,24 @@ final class SyncModel: ObservableObject {
         } else {
             loadError = error.localizedDescription
         }
+    }
+}
+
+private extension SetLog {
+    func replacingSessionID(with sessionID: String) -> SetLog {
+        SetLog(
+            id: id,
+            session_id: sessionID,
+            exercise_id: exercise_id,
+            template_exercise_id: template_exercise_id,
+            set_index: set_index,
+            weight: weight,
+            reps: reps,
+            rpe: rpe,
+            is_warmup: is_warmup,
+            logged_at: logged_at,
+            duration_s: duration_s,
+            is_timed: is_timed,
+            deleted_at: deleted_at)
     }
 }

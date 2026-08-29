@@ -1280,6 +1280,18 @@ export async function addDayTemplate(
   return row;
 }
 
+/** Resolve a day only inside one already-authorized plan. */
+export async function getDayTemplateInPlan(
+  db: D1Database,
+  planId: string,
+  dayId: string,
+): Promise<DayTemplateRow | null> {
+  return db
+    .prepare('SELECT * FROM day_templates WHERE id = ?1 AND plan_id = ?2')
+    .bind(dayId, planId)
+    .first<DayTemplateRow>();
+}
+
 /** Allowlist of patch keys accepted by `patchDayTemplate`. Unknown keys
  *  surface as `{ error: 'unknown_fields', fields }` — same diagnosability
  *  contract as updateExercise. */

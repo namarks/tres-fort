@@ -12,15 +12,15 @@ return stable client-visible outcomes.
 
 ## Phases
 
-- [ ] **P0 — Independent confirmed write-path fixes**
-  - [ ] **(a) Scope and validate REST writes**
+- [x] **P0 — Independent confirmed write-path fixes**
+  - [x] **(a) Scope and validate REST writes**
     - Resolve exercise additions only through a day in the caller's active plan.
     - Validate set and session fields before D1 writes, return typed 4xx
       responses, and prove malformed values cannot poison a later `/api/state`
       decode.
     - Cover the confirmed foreign-day, archived-day, and malformed-set cases
       with route-level tests.
-  - [ ] **(b) Preserve intended MCP straight and timed sets**
+  - [x] **(b) Preserve intended MCP straight and timed sets**
     - Make MCP `log_set` distinguish intended sets by source, set index, and
       duration from a true cross-channel duplicate while retaining an explicit
       confirmation override.
@@ -40,18 +40,19 @@ return stable client-visible outcomes.
 
 ## Execution frontier
 
-- P0(a)
-- P0(b)
+- P1
 
 ## Next step
 
-**Now (@agent):** Implement P0(a) and P0(b) as independently reviewable fixes,
-then run their affected route/MCP tests plus the repository typecheck.
+**Now (@agent):** Implement P1's version-checked plan commit and one-session-per-
+user-date invariant, with focused Workers/D1 race coverage.
 
 ## Notes / open questions
 
 - Source: the August 2026 functionality review at commit `91fd622`; verify each
   named path against current code before editing.
+- P0 completed with focused route/MCP regressions and the repository typecheck;
+  no schema migration or broader authorization rewrite was needed.
 - This plan is not a blanket authorization audit or a data-layer rewrite. Reuse
   the user-scoped lookup, validation, conflict, and D1 transaction patterns that
   already work on sibling routes.

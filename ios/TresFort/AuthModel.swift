@@ -16,6 +16,11 @@ final class AuthModel: ObservableObject {
     @Published private(set) var isRenewing = false
     @Published private(set) var appleCredentialUserID: String?
     @Published private(set) var reauthenticationReason: String?
+    /// A durable DELETE /api/me attempt has not yet been acknowledged. While
+    /// this is true the current bearer is the only credential that can replay
+    /// the key-bound deletion receipt after a lost response, so background
+    /// 401s and explicit sign-out must not discard it.
+    @Published private(set) var accountDeletionPending = false
     /// Server user id, captured from /auth/apple's `user.id` and persisted
     /// in UserDefaults so GroupModel can survive an app relaunch with the
     /// keychain JWT alone. Used as the fallback for `is_me` comparisons
@@ -103,6 +108,9 @@ final class AuthModel: ObservableObject {
             appleCredentialUserID = defaults.string(
                 forKey: AccountLocalState.appleCredentialUserKey(
                     userID: accountID))
+            accountDeletionPending = defaults.string(
+                forKey: AccountLocalState.accountDeletionKey(
+                    userID: accountID)) != nil
         }
     }
 
@@ -156,6 +164,9 @@ final class AuthModel: ObservableObject {
             jwt = res.jwt
             userID = res.user.id
             defaults.set(res.user.id, forKey: Self.userIDKey)
+            accountDeletionPending = defaults.string(
+                forKey: AccountLocalState.accountDeletionKey(
+                    userID: res.user.id)) != nil
             if let appleUserID {
                 appleCredentialUserID = appleUserID
                 defaults.set(
@@ -261,6 +272,12 @@ final class AuthModel: ObservableObject {
     /// next Apple exchange can recover the same account namespace without
     /// erasing its outboxes, connection flags, or HealthKit anchor.
     func requireReauthentication(reason: String? = nil) {
+        if accountDeletionPending, jwt != nil, userID != nil {
+            reauthenticationReason = reason
+                ?? "Account deletion is awaiting confirmation. Retry account deletion to finish."
+            phase = .signedIn
+            return
+        }
         tokenStore.clear()
         jwt = nil
         reauthenticationReason = reason
@@ -270,6 +287,11 @@ final class AuthModel: ObservableObject {
     /// Explicit sign-out removes the current account pointer. Feature state is
     /// keyed by user id and remains isolated for a later return to that account.
     func signOut() {
+        guard !accountDeletionPending else {
+            reauthenticationReason =
+                "Account deletion is awaiting confirmation. Retry account deletion to finish."
+            return
+        }
         tokenStore.clear()
         defaults.removeObject(forKey: Self.userIDKey)
         jwt = nil
@@ -295,9 +317,25 @@ final class AuthModel: ObservableObject {
             idempotencyKey = UUID().uuidString
             defaults.set(idempotencyKey, forKey: deletionKeyName)
         }
-        let response = try await api.deleteAccount(
-            jwt: token,
-            idempotencyKey: idempotencyKey)
+        if userID == accountID {
+            accountDeletionPending = true
+        }
+        let response: AccountDeletionResponse
+        do {
+            response = try await api.deleteAccount(
+                jwt: token,
+                idempotencyKey: idempotencyKey)
+        } catch let APIError.http(code, _) where code == 401 {
+            // A key-bound receipt retry is accepted even after the account row
+            // is gone. An authoritative 401 therefore means this bearer/key
+            // pair cannot complete the deletion and ordinary reauth is needed.
+            defaults.removeObject(forKey: deletionKeyName)
+            if userID == accountID {
+                accountDeletionPending = false
+                requireReauthentication()
+            }
+            throw APIError.http(401, "missing_session")
+        }
         guard response.ok else {
             throw APIError.decoding("account deletion was not acknowledged")
         }
@@ -306,6 +344,7 @@ final class AuthModel: ObservableObject {
         // signed out or switched accounts while the request was in flight.
         AccountLocalState.clear(userID: accountID, defaults: defaults)
         if userID == accountID {
+            accountDeletionPending = false
             tokenStore.clear()
             defaults.removeObject(forKey: Self.userIDKey)
             defaults.removeObject(forKey: Self.onboardedKey)

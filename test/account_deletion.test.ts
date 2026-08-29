@@ -571,5 +571,41 @@ describe('DELETE /api/me', () => {
     });
     expect(survivorMe.status).toBe(200);
     expect((await survivorMe.json<any>()).claude.is_owner).toBe(false);
+
+    // Removing only the identity tombstone is not sufficient recovery. The
+    // durable owner-marked receipt keeps legacy no-allowlist lookup from
+    // promoting the earliest survivor or silently seeding another owner.
+    await env.DB
+      .prepare('DELETE FROM owner_deletion_tombstone WHERE singleton = 1')
+      .run();
+    expect(await findOwnerRow(env.DB, undefined)).toBeNull();
+    expect(await ensureOwnerUser(env.DB, undefined)).toBeNull();
+
+    const staticAfterTombstoneRemoval = await SELF.fetch(`${BASE}/mcp`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-mcp-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/list',
+        params: {},
+      }),
+    });
+    expect(staticAfterTombstoneRemoval.status).toBe(401);
+    expect((await SELF.fetch(`${BASE}/api/me`, {
+      headers: auth(survivor.jwt),
+    })).status).toBe(200);
+
+    // A configured replacement is explicit recovery and gets a new row; it
+    // never aliases or promotes the surviving member.
+    const replacement = await ensureOwnerUser(
+      env.DB,
+      `replacement-owner-${crypto.randomUUID()}`,
+    );
+    expect(replacement).not.toBeNull();
+    expect(replacement!.id).not.toBe(survivor.user.id);
   });
 });

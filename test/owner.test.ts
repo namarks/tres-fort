@@ -64,6 +64,10 @@ describe('open sign-in does not capture owner state (Codex PR#38 P1)', () => {
   // tests in OTHER files seeding dependents into the shared D1 too.
   beforeEach(async () => {
     await env.DB.batch([
+      // Reset terminal owner-deletion state before exercising fresh-install
+      // owner semantics in this suite.
+      env.DB.prepare('DELETE FROM account_deletion_receipts'),
+      env.DB.prepare('DELETE FROM owner_deletion_tombstone'),
       // Append-only logs that reference users directly.
       env.DB.prepare('DELETE FROM set_logs'),
       env.DB.prepare('DELETE FROM notes'),

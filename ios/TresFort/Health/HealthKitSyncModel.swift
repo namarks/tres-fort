@@ -80,6 +80,16 @@ final class HealthKitSyncModel: ObservableObject {
         }
     }
 
+    private var currentJWT: String? {
+        guard let accountID, auth.userID == accountID else { return nil }
+        return auth.jwt
+    }
+
+    private func isCurrentAccount(using jwt: String) -> Bool {
+        guard let accountID, auth.userID == accountID else { return false }
+        return auth.jwt == jwt
+    }
+
     private static func migrateLegacyState(userID: String, defaults: UserDefaults) {
         let scopedEnabled = enabledKey(userID: userID)
         if defaults.object(forKey: scopedEnabled) == nil,
@@ -198,7 +208,7 @@ final class HealthKitSyncModel: ObservableObject {
     /// leaves that page's anchor put for a clean retry (the push is idempotent,
     /// so re-sending already-saved rows is harmless).
     func sync() async {
-        guard enabled, isAvailable, let jwt = auth.jwt, !isSyncing else { return }
+        guard enabled, isAvailable, let jwt = currentJWT, !isSyncing else { return }
         isSyncing = true
         defer { isSyncing = false }
         var anchor = loadAnchor()
@@ -206,8 +216,10 @@ final class HealthKitSyncModel: ObservableObject {
         var pushedAny = false
         do {
             while true {
+                guard isCurrentAccount(using: jwt) else { return }
                 let (workouts, newAnchor) =
                     try await fetchNewWorkouts(anchor: anchor, limit: Self.pageLimit)
+                guard isCurrentAccount(using: jwt) else { return }
                 if workouts.isEmpty {
                     // Only checkpoint an empty result once we KNOW reads work —
                     // i.e. we already had a stored anchor, or we've pushed a page
@@ -223,20 +235,25 @@ final class HealthKitSyncModel: ObservableObject {
                 }
                 for w in workouts {
                     let body = await buildPush(for: w)
+                    guard isCurrentAccount(using: jwt) else { return }
                     _ = try await api.pushHealthKitActivity(body, jwt: jwt)
                 }
                 // Whole page pushed — checkpoint the anchor before the next page.
+                guard isCurrentAccount(using: jwt) else { return }
                 if let newAnchor { saveAnchor(newAnchor); anchor = newAnchor }
                 pushedAny = true
                 if workouts.count < Self.pageLimit { break } // last page
             }
+            guard isCurrentAccount(using: jwt) else { return }
             lastSyncedAt = Date()
             lastError = nil
             if pushedAny { await onActivitiesPersisted?() }
         } catch let APIError.http(code, _) where code == 401 {
             // Token died mid-sync — let AuthModel handle it. Anchor is already
             // checkpointed at the last good page, so a re-auth resumes cleanly.
-            auth.requireReauthentication()
+            if isCurrentAccount(using: jwt) {
+                auth.requireReauthentication()
+            }
         } catch {
             lastError = "Apple Health sync didn’t finish. It’ll retry."
         }

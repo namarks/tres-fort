@@ -49,8 +49,25 @@ final class SyncModel: ObservableObject {
 
     private let api = APIClient()
     private unowned let auth: AuthModel
+    private let accountID: String?
 
-    init(auth: AuthModel) { self.auth = auth }
+    init(auth: AuthModel) {
+        self.auth = auth
+        self.accountID = auth.userID
+    }
+
+    /// Bind every request to the account that created this model. An old
+    /// MainTab task may finish after AuthModel switches users; it must never
+    /// continue using the replacement account's bearer.
+    private var currentJWT: String? {
+        guard let accountID, auth.userID == accountID else { return nil }
+        return auth.jwt
+    }
+
+    private func isCurrentAccount(using jwt: String) -> Bool {
+        guard let accountID, auth.userID == accountID else { return false }
+        return auth.jwt == jwt
+    }
 
     var todayString: String {
         let f = DateFormatter()
@@ -67,7 +84,7 @@ final class SyncModel: ObservableObject {
     }
 
     func load() async {
-        guard let jwt = auth.jwt else { return }
+        guard let jwt = currentJWT else { return }
         isLoading = true
         defer { isLoading = false }
         do {
@@ -78,7 +95,7 @@ final class SyncModel: ObservableObject {
             }
             loadError = nil
         } catch {
-            handle(error)
+            handle(error, jwt: jwt)
         }
     }
 
@@ -404,7 +421,7 @@ final class SyncModel: ObservableObject {
     @discardableResult
     func logSet(_ ex: TemplateExercise, weight: Double, reps: Int,
                 durationOverride: Int? = nil) async -> Bool {
-        guard let jwt = auth.jwt else { return false }
+        guard let jwt = currentJWT else { return false }
         do {
             if todaySession == nil {
                 // Tie the lazily-created session to the day template the
@@ -469,13 +486,13 @@ final class SyncModel: ObservableObject {
                         staleSession: session,
                         committedSet: res.set,
                         submittedSlotID: ex.id)
-                    handle(error)
+                    handle(error, jwt: jwt)
                 }
             }
             if running { startRest(seconds: ex.rest_seconds, name: ex.exercise_name) }
             return true
         } catch {
-            handle(error)
+            handle(error, jwt: jwt)
             return false
         }
     }
@@ -647,7 +664,7 @@ final class SyncModel: ObservableObject {
     }
 
     func finishWorkout() async {
-        if let jwt = auth.jwt, let sid = todaySession?.id {
+        if let jwt = currentJWT, let sid = todaySession?.id {
             todaySession = try? await api.completeSession(sessionId: sid, jwt: jwt)
         }
         running = false
@@ -667,7 +684,7 @@ final class SyncModel: ObservableObject {
     /// the runner/Live Activity don't linger; `load()` then pulls the
     /// vanished state. Restarting the day creates a fresh session.
     func discardWorkout() async {
-        if let jwt = auth.jwt, let sid = todaySession?.id {
+        if let jwt = currentJWT, let sid = todaySession?.id {
             _ = try? await api.discardSession(sessionId: sid, jwt: jwt)
         }
         todaySession = nil
@@ -699,7 +716,7 @@ final class SyncModel: ObservableObject {
     func addExerciseToDay(_ dayID: String, exercise: String, isWarmup: Bool,
                           targetSets: Int, targetReps: Int, restSeconds: Int,
                           targetDurationS: Int?) async {
-        guard let jwt = auth.jwt else { return }
+        guard let jwt = currentJWT else { return }
         let activeSlotID = currentExercise?.id
         do {
             _ = try await api.addExercise(
@@ -708,30 +725,30 @@ final class SyncModel: ObservableObject {
                 restSeconds: restSeconds, targetDurationS: targetDurationS, jwt: jwt)
             await load()
             restoreActiveSlot(activeSlotID)
-        } catch { handle(error) }
+        } catch { handle(error, jwt: jwt) }
     }
 
     func deleteSlot(dayID: String, teID: String) async {
-        guard let jwt = auth.jwt else { return }
+        guard let jwt = currentJWT else { return }
         let activeSlotID = currentExercise?.id
         do {
             try await api.deleteExerciseSlot(dayID: dayID, teID: teID, jwt: jwt)
             await load()
             restoreActiveSlot(activeSlotID)
-        } catch { handle(error) }
+        } catch { handle(error, jwt: jwt) }
     }
 
     /// Move a slot to a new position. The backend densifies sibling
     /// order_index values around the requested destination.
     func moveSlot(dayID: String, teID: String, toIndex: Int) async {
-        guard let jwt = auth.jwt else { return }
+        guard let jwt = currentJWT else { return }
         let activeSlotID = currentExercise?.id
         do {
             _ = try await api.updateExerciseSlot(
                 dayID: dayID, teID: teID, fields: ["order_index": toIndex], jwt: jwt)
             await load()
             restoreActiveSlot(activeSlotID)
-        } catch { handle(error) }
+        } catch { handle(error, jwt: jwt) }
     }
 
     /// After an edit reloads the plan, keep the runner on the same physical
@@ -773,11 +790,11 @@ final class SyncModel: ObservableObject {
     }
 
     func removeSet(_ set: SetLog) async {
-        guard let jwt = auth.jwt else { return }
+        guard let jwt = currentJWT else { return }
         do {
             try await api.deleteSet(setId: set.id, jwt: jwt)
             sets.removeAll { $0.id == set.id }
-        } catch { handle(error) }
+        } catch { handle(error, jwt: jwt) }
     }
 
     /// Fires the "rest's up" audio cue exactly when the current rest elapses.
@@ -1280,9 +1297,11 @@ final class SyncModel: ObservableObject {
             }
     }
 
-    private func handle(_ error: Error) {
+    private func handle(_ error: Error, jwt: String) {
         if case let APIError.http(code, _) = error, code == 401 {
-            auth.requireReauthentication()
+            if isCurrentAccount(using: jwt) {
+                auth.requireReauthentication()
+            }
         } else {
             loadError = error.localizedDescription
         }

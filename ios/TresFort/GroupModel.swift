@@ -93,6 +93,19 @@ final class GroupModel: ObservableObject {
         self.outbox = ActivityOutboxStore.load(userID: auth.userID)
     }
 
+    /// This model is scoped to the account that created it. MainTabView can
+    /// retain in-flight tasks briefly while rebuilding for a newly signed-in
+    /// account, so never borrow that new account's bearer.
+    private var currentJWT: String? {
+        guard let accountID, auth.userID == accountID else { return nil }
+        return auth.jwt
+    }
+
+    private func isCurrentAccount(using jwt: String) -> Bool {
+        guard let accountID, auth.userID == accountID else { return false }
+        return auth.jwt == jwt
+    }
+
     private static func loadIntervalsConnection(
         userID: String?,
         defaults: UserDefaults = .standard
@@ -145,7 +158,7 @@ final class GroupModel: ObservableObject {
     /// `.none` / `.ready` / `.error` accordingly. Called on tab `.task`
     /// and on scene-foreground transitions.
     func load() async {
-        guard let jwt = auth.jwt else { phase = .loading; return }
+        guard let jwt = currentJWT else { phase = .loading; return }
         phase = .loading
         do {
             let list = try await api.listGroups(jwt: jwt)
@@ -162,7 +175,7 @@ final class GroupModel: ObservableObject {
             // Account/setup snapshot for the Profile tab.
             await refreshMe()
         } catch {
-            handle(error)
+            handle(error, jwt: jwt)
             phase = .error(error.localizedDescription)
         }
     }
@@ -177,7 +190,7 @@ final class GroupModel: ObservableObject {
     }
 
     func refreshFeed(groupID: String) async {
-        guard let jwt = auth.jwt else { return }
+        guard let jwt = currentJWT else { return }
         isRefreshingFeed[groupID] = true
         defer { isRefreshingFeed[groupID] = false }
         do {
@@ -187,12 +200,12 @@ final class GroupModel: ObservableObject {
             feedNextSinceID[groupID] = res.next_since_id
             lastError = nil
         } catch {
-            handle(error)
+            handle(error, jwt: jwt)
         }
     }
 
     func refreshStats(groupID: String) async {
-        guard let jwt = auth.jwt else { return }
+        guard let jwt = currentJWT else { return }
         isRefreshingStats[groupID] = true
         defer { isRefreshingStats[groupID] = false }
         do {
@@ -200,7 +213,7 @@ final class GroupModel: ObservableObject {
             stats[groupID] = res.members
             lastError = nil
         } catch {
-            handle(error)
+            handle(error, jwt: jwt)
         }
     }
 
@@ -208,25 +221,25 @@ final class GroupModel: ObservableObject {
     /// the week/month/year zoom strip. Failure leaves the cached series in
     /// place (same forgiving stance as feed/stats).
     func refreshActivitySeries(groupID: String) async {
-        guard let jwt = auth.jwt else { return }
+        guard let jwt = currentJWT else { return }
         do {
             let res = try await api.getGroupActivity(groupID: groupID, jwt: jwt)
             activitySeries[groupID] = res.members
             lastError = nil
         } catch {
-            handle(error)
+            handle(error, jwt: jwt)
         }
     }
 
     /// Pull the account/setup snapshot (intervals + Claude status) for the
     /// Profile tab. Failure leaves any cached `me` in place.
     func refreshMe() async {
-        guard let jwt = auth.jwt else { return }
+        guard let jwt = currentJWT else { return }
         do {
             me = try await api.getMe(jwt: jwt)
             lastError = nil
         } catch {
-            handle(error)
+            handle(error, jwt: jwt)
         }
     }
 
@@ -244,7 +257,7 @@ final class GroupModel: ObservableObject {
     /// created group on success; throws (and stays put) on failure.
     @discardableResult
     func createGroup(name: String) async throws -> GroupSummary {
-        guard let jwt = auth.jwt else {
+        guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")
         }
         let g = try await api.createGroup(name: name, jwt: jwt)
@@ -262,7 +275,7 @@ final class GroupModel: ObservableObject {
     /// user-facing string).
     @discardableResult
     func joinGroup(code: String) async throws -> GroupSummary {
-        guard let jwt = auth.jwt else {
+        guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")
         }
         let res = try await api.joinGroup(code: code, jwt: jwt)
@@ -294,7 +307,7 @@ final class GroupModel: ObservableObject {
     /// Universal-Link join-confirm sheet. Never throws — the sheet renders
     /// each case directly; `failed` (vs `unknown`) lets the UI offer a retry.
     func invitePreview(code: String) async -> InvitePreviewResult {
-        guard let jwt = auth.jwt else { return .failed }
+        guard let jwt = currentJWT else { return .failed }
         do {
             let p = try await api.getInvitePreview(code: code, jwt: jwt)
             switch p.status {
@@ -311,7 +324,7 @@ final class GroupModel: ObservableObject {
     /// Leave a group. Drops local cache; the server doesn't 404 on
     /// already-gone so this is idempotent.
     func leaveGroup(id: String) async throws {
-        guard let jwt = auth.jwt else { return }
+        guard let jwt = currentJWT else { return }
         try await api.leaveGroup(id: id, jwt: jwt)
         groups.removeAll { $0.id == id }
         feed[id] = nil
@@ -328,7 +341,7 @@ final class GroupModel: ObservableObject {
     /// it back into our cache.
     @discardableResult
     func setMyDisplayName(groupID: String, name: String?) async throws -> GroupSummary {
-        guard let jwt = auth.jwt else {
+        guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")
         }
         let updated = try await api.setGroupDisplayName(
@@ -344,7 +357,7 @@ final class GroupModel: ObservableObject {
 
     /// Mint a new invite code.
     func createInvite(groupID: String) async throws -> GroupInviteCode {
-        guard let jwt = auth.jwt else {
+        guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")
         }
         return try await api.createGroupInvite(groupID: groupID, jwt: jwt)
@@ -364,6 +377,7 @@ final class GroupModel: ObservableObject {
     ///      version (top sets, etc., for a session-typed activity in the
     ///      future will be backend-computed).
     func logActivity(_ pending: PendingActivity) async {
+        guard let accountID, auth.userID == accountID else { return }
         // 1. Optimistic insert. We construct a fake FeedItem from the
         //    pending payload so the row renders immediately. The display
         //    name comes from the user's own entry in the currently-selected
@@ -372,7 +386,7 @@ final class GroupModel: ObservableObject {
         let myName = currentSelfDisplayName(in: selectedGroupID) ?? "You"
         let optimistic = FeedItem.activity(.init(
             id: pending.id,
-            user_id: auth.userID ?? "self",
+            user_id: accountID,
             user_display_name: myName,
             is_me: true,
             date: pending.date,
@@ -388,7 +402,7 @@ final class GroupModel: ObservableObject {
             feed[gid] = current
         }
         // 2/3/4. Network.
-        guard let jwt = auth.jwt else {
+        guard let jwt = currentJWT else {
             // Not signed in — enqueue so it goes out next time. Should be
             // unreachable from a signed-in UI but defensive.
             enqueue(pending)
@@ -422,7 +436,7 @@ final class GroupModel: ObservableObject {
             // stays visible. Surface a soft hint.
             enqueue(pending)
             lastError = "Will sync when online."
-            handle(error)
+            handle(error, jwt: jwt)
         }
     }
 
@@ -435,7 +449,7 @@ final class GroupModel: ObservableObject {
     /// and after every successful logActivity. POST is idempotent on
     /// id, so a retry of an already-sent row is safe.
     func drainOutbox() async {
-        guard let jwt = auth.jwt, !outbox.isEmpty else { return }
+        guard let jwt = currentJWT, !outbox.isEmpty else { return }
         // Snapshot the pending list so we can mutate `outbox` as we go
         // without invalidating the iteration.
         let pending = outbox.pending
@@ -456,7 +470,7 @@ final class GroupModel: ObservableObject {
                     ActivityOutboxStore.save(outbox, userID: accountID)
                     continue
                 }
-                handle(error)
+                handle(error, jwt: jwt)
                 break
             }
         }
@@ -476,7 +490,7 @@ final class GroupModel: ObservableObject {
 
     /// Delete a manual activity (my own row only — the server enforces).
     func deleteActivity(id: String) async {
-        guard let jwt = auth.jwt else { return }
+        guard let jwt = currentJWT else { return }
         do {
             try await api.deleteActivity(id: id, jwt: jwt)
             // Strip the row from every group's cache (it could be in
@@ -492,14 +506,14 @@ final class GroupModel: ObservableObject {
             // And drop it from the personal calendar.
             await onActivityPersisted?()
         } catch {
-            handle(error)
+            handle(error, jwt: jwt)
         }
     }
 
     // MARK: - Account profile
 
     func updateDisplayName(_ displayName: String) async throws {
-        guard let jwt = auth.jwt else {
+        guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")
         }
         me = try await api.updateDisplayName(displayName, jwt: jwt)
@@ -511,7 +525,7 @@ final class GroupModel: ObservableObject {
     /// locally on success so the settings view can render "Connected"
     /// across app restarts.
     func setIntervalsCredentials(apiKey: String, athleteID: String) async throws {
-        guard let jwt = auth.jwt else {
+        guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")
         }
         // intervals.icu supports athlete id "0" = the athlete that owns the
@@ -530,7 +544,7 @@ final class GroupModel: ObservableObject {
     }
 
     func disconnectIntervals() async throws {
-        guard let jwt = auth.jwt else {
+        guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")
         }
         _ = try await api.setIntervalsCredentials(
@@ -548,7 +562,7 @@ final class GroupModel: ObservableObject {
     /// dismissed the sheet — the caller treats that as a no-op, not an error.
     @discardableResult
     func connectIntervalsViaOAuth() async throws -> Bool {
-        guard let jwt = auth.jwt else {
+        guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")
         }
         let url = try await api.startIntervalsOAuth(jwt: jwt)
@@ -565,7 +579,7 @@ final class GroupModel: ObservableObject {
     /// HealthKit reading/pushing itself lives in HealthKitSyncModel — this only
     /// controls cross-user VISIBILITY of those activities in the group feed.
     func setHealthSharing(_ enabled: Bool) async throws {
-        guard let jwt = auth.jwt else {
+        guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")
         }
         _ = try await api.setHealthSharing(enabled: enabled, jwt: jwt)
@@ -581,7 +595,7 @@ final class GroupModel: ObservableObject {
     /// screen — regenerating just rotates it (existing linked Claude sessions
     /// keep working, since their token was already bound at authorize time).
     func generateClaudeConnectCode() async throws -> String {
-        guard let jwt = auth.jwt else {
+        guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")
         }
         let code = Self.makeConnectCode()
@@ -609,19 +623,23 @@ final class GroupModel: ObservableObject {
     /// the GroupSummary members (server resolves override OR global).
     /// Used for the optimistic `logActivity` insert.
     func currentSelfDisplayName(in groupID: String?) -> String? {
-        guard let gid = groupID, let g = groups.first(where: { $0.id == gid }) else {
+        guard let accountID,
+              let gid = groupID,
+              let g = groups.first(where: { $0.id == gid })
+        else {
             return nil
         }
-        let uid = auth.userID
-        if let me = g.members.first(where: { $0.user_id == uid }) {
+        if let me = g.members.first(where: { $0.user_id == accountID }) {
             return me.effective_display_name
         }
         return nil
     }
 
-    private func handle(_ error: Error) {
+    private func handle(_ error: Error, jwt: String) {
         if case let APIError.http(code, _) = error, code == 401 {
-            auth.requireReauthentication()
+            if isCurrentAccount(using: jwt) {
+                auth.requireReauthentication()
+            }
         } else {
             lastError = error.localizedDescription
         }

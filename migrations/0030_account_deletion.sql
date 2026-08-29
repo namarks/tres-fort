@@ -8,7 +8,10 @@
 -- promote the earliest remaining member. The Apple subject is retained only
 -- as a one-way SHA-256 digest so a later Sign in with Apple attempt by the same
 -- identity can receive an explicit account-deleted response. Administrative
--- recovery is an intentional D1 operation that removes this row.
+-- recovery is an intentional D1 operation that removes this row AND either
+-- configures an explicit replacement OWNER_APPLE_SUB or deliberately inserts
+-- a new bootstrap sentinel. The durable receipt below prevents tombstone
+-- removal alone from promoting the earliest surviving member.
 
 CREATE TABLE IF NOT EXISTS owner_deletion_tombstone (
   singleton        INTEGER PRIMARY KEY CHECK (singleton = 1),

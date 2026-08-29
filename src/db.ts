@@ -67,6 +67,21 @@ export async function isOwnerDeletionTombstoned(
   return row !== null;
 }
 
+/**
+ * Durable owner-deletion history survives administrative removal of the
+ * identity tombstone. It prevents the legacy OWNER_APPLE_SUB-unset fallback
+ * from treating the earliest surviving member as the new distinguished owner.
+ */
+async function hasOwnerDeletionReceipt(db: D1Database): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 AS x FROM account_deletion_receipts
+        WHERE owner_tombstoned = 1 LIMIT 1`,
+    )
+    .first<{ x: number }>();
+  return row !== null;
+}
+
 /** True only for the Apple identity that deleted the owner account. */
 export async function isDeletedOwnerAppleSub(
   db: D1Database,
@@ -308,6 +323,11 @@ export async function ensureOwnerUser(
 ): Promise<User | null> {
   const existing = await findOwnerRow(db, ownerAppleSub);
   if (existing) return existing;
+  // Clearing the identity tombstone re-enables explicit recovery, but it must
+  // not restore the old implicit bootstrap/earliest-user behavior. Configure
+  // a replacement OWNER_APPLE_SUB or deliberately insert the bootstrap
+  // sentinel before calling this path.
+  if (!ownerAppleSub && (await hasOwnerDeletionReceipt(db))) return null;
   return insertOwnerUnlessTombstoned(
     db,
     ownerAppleSub ?? BOOTSTRAP_APPLE_SUB,
@@ -328,10 +348,10 @@ export async function ensureOwnerUser(
  *    ever signs in or MCP seeds the row. Treating a reviewer/new-user
  *    row as the owner would attribute Claude's plan + sets + intervals
  *    creds to the wrong user. (Codex PR #38 P1.)
- *  - ownerAppleSub UNSET → fall back to "earliest by created_at." The
- *    fresh-install/claim path (Path 3) ensures the earliest row is
- *    always the rightful owner in this mode (no other path can create
- *    a user before the owner has signed in or been bootstrap-seeded).
+ *  - ownerAppleSub UNSET → fall back to "earliest by created_at" only before
+ *    any distinguished-owner deletion. After deletion history exists, an
+ *    explicitly inserted bootstrap sentinel is the only owner row this mode
+ *    will resolve; ordinary surviving members are never promoted.
  *
  * Returns null when no matching row exists; the caller chooses whether
  * to seed (ensureOwnerUser) or no-op (seedOwnerIntervalsCredsFromEnv).
@@ -350,6 +370,19 @@ export async function findOwnerRow(
                 )`,
       )
       .bind(ownerAppleSub)
+      .first<User>();
+  }
+  if (await hasOwnerDeletionReceipt(db)) {
+    return await db
+      .prepare(
+        `SELECT u.* FROM users u
+          WHERE u.apple_sub = ?1
+            AND NOT EXISTS (
+                  SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+                )
+          LIMIT 1`,
+      )
+      .bind(BOOTSTRAP_APPLE_SUB)
       .first<User>();
   }
   return await db
@@ -371,7 +404,12 @@ export async function findOwnerRow(
  * bound to a real apple_sub, hence the strict sentinel match.
  */
 export async function isBootstrapClaimEligible(db: D1Database): Promise<boolean> {
-  if (await isOwnerDeletionTombstoned(db)) return false;
+  if (
+    (await isOwnerDeletionTombstoned(db)) ||
+    (await hasOwnerDeletionReceipt(db))
+  ) {
+    return false;
+  }
   const rows = await db
     .prepare('SELECT apple_sub FROM users')
     .all<{ apple_sub: string }>();

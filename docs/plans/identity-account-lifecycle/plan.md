@@ -71,8 +71,10 @@ exact-head verification, and closes the plan.
   offline failure, same-user recovery, and account switching. A persisted bearer
   is accepted only when its JWT subject matches the account namespace (older
   installs migrate a missing pointer from that subject), and foreground work is
-  pinned to the account that initiated it. This host has no installed iOS
-  simulator runtime, so the checked-in XCTest target could not run through
+  pinned to the account that initiated it. Sync, group, and HealthKit models
+  also capture that account and never borrow a replacement account's bearer or
+  apply a stale 401 to a renewed/switched session. This host has no installed
+  iOS simulator runtime, so the checked-in XCTest target could not run through
   `xcodebuild` here.
 - Runtime account deletion remains destructive and must always require the
   authenticated user's explicit in-app confirmation. Development and CI must
@@ -85,9 +87,14 @@ exact-head verification, and closes the plan.
   key-bound deletion receipt makes a lost success response safe to retry, while
   database triggers reject late writes and OAuth grants for a deleted principal.
   Owner bootstrap mutations are conditional on tombstone absence in the same
-  SQLite statement. The iOS client clears only the initiating account's local
-  namespace after success—even if the user switched accounts while waiting—and
-  preserves both the session data and deletion key after a failed request.
+  SQLite statement. The owner-marked receipt remains durable if an administrator
+  removes the identity tombstone, so recovery also requires an explicit
+  replacement `OWNER_APPLE_SUB` or deliberately inserted bootstrap sentinel;
+  a surviving member is never promoted by fallback. The iOS client clears only
+  the initiating account's local namespace after success—even if the user
+  switched accounts while waiting—and preserves the session, deletion key, and
+  retry-capable bearer after a lost response. An authoritative deletion 401
+  abandons the unrecognized retry key and transitions to ordinary reauthentication.
 - P1(b) stores Apple's credential identifier from the local Sign in with Apple
   result and checks it on launch/foreground. Revoked, missing, or transferred
   credentials are handled without crossing account namespaces: revoked or
@@ -104,8 +111,9 @@ exact-head verification, and closes the plan.
 - Verification at this milestone: the full Workers suite passes 395/395, the
   TypeScript compiler and plan compiler pass, iOS device sources compile, the
   simulator module and XCTest source typecheck, including stale renewal, stale
-  Apple-credential callback, account-switch-during-deletion, and lost-response
-  retry coverage. The standalone production AuthModel harness passes Apple
+  Apple-credential callback, account-switch-during-deletion, durable owner
+  recovery, and lost-response retry/bearer coverage. The standalone production
+  AuthModel harness passes Apple
   revocation, provider-unavailable, transferred-identity, and bearer/account
   binding behavior. This host still has no installed iOS simulator runtime, so
   XCTest execution remains unavailable locally.

@@ -87,7 +87,7 @@ struct ProfileView: View {
             Button(role: .destructive) { auth.signOut() } label: {
                 Text("Sign out")
             }
-            .disabled(isDeletingAccount)
+            .disabled(isDeletingAccount || auth.accountDeletionPending)
             Button(role: .destructive) {
                 showDeleteConfirmation = true
             } label: {
@@ -97,7 +97,9 @@ struct ProfileView: View {
                         Text("Deleting account…")
                     }
                 } else {
-                    Text("Delete account")
+                    Text(auth.accountDeletionPending
+                         ? "Retry account deletion"
+                         : "Delete account")
                 }
             }
             .disabled(isDeletingAccount)

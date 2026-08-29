@@ -625,6 +625,25 @@ final class AuthModelTests: XCTestCase {
             forKey: AccountLocalState.accountDeletionKey(userID: "user-a")))
     }
 
+    func testLaunchRestoresPendingDeletionAndProtectsRetryBearer() {
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        defaults.set(
+            "persisted-delete-key",
+            forKey: AccountLocalState.accountDeletionKey(userID: "user-a"))
+        let accountToken = sessionToken(for: "user-a")
+        let tokens = MemoryTokenStore(accountToken)
+
+        let model = AuthModel(
+            api: AuthAPIStub(), tokenStore: tokens, defaults: defaults)
+
+        XCTAssertTrue(model.accountDeletionPending)
+        model.requireReauthentication()
+        XCTAssertEqual(model.jwt, accountToken)
+        XCTAssertEqual(tokens.token, accountToken)
+        XCTAssertEqual(model.phase, .signedIn)
+    }
+
     func testDeletionRetryReusesIdempotencyKeyAfterLostResponse() async {
         let defaults = defaults()
         defaults.set("user-a", forKey: AuthModel.userIDKey)
@@ -647,6 +666,19 @@ final class AuthModelTests: XCTestCase {
         let persisted = defaults.string(
             forKey: AccountLocalState.accountDeletionKey(userID: "user-a"))
         XCTAssertNotNil(persisted)
+        XCTAssertTrue(model.accountDeletionPending)
+
+        // A background request can observe the already-committed deletion and
+        // receive 401 before this lost DELETE response is retried. Preserve the
+        // only bearer capable of replaying the key-bound receipt.
+        let pendingToken = model.jwt
+        model.requireReauthentication()
+        XCTAssertEqual(model.jwt, pendingToken)
+        XCTAssertEqual(tokens.token, pendingToken)
+        XCTAssertEqual(model.phase, .signedIn)
+        model.signOut()
+        XCTAssertEqual(model.jwt, pendingToken)
+        XCTAssertEqual(model.userID, "user-a")
 
         do {
             try await model.deleteAccount()
@@ -662,6 +694,31 @@ final class AuthModelTests: XCTestCase {
         XCTAssertNil(model.userID)
         XCTAssertNil(defaults.string(
             forKey: AccountLocalState.accountDeletionKey(userID: "user-a")))
+        XCTAssertFalse(model.accountDeletionPending)
+    }
+
+    func testUnauthorizedDeletionAbandonsUnrecognizedRetryKeyAndRequiresReauth() async {
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        let tokens = MemoryTokenStore(sessionToken(for: "user-a"))
+        let api = AuthAPIStub()
+        api.deletionResult = .failure(APIError.http(401, "invalid_token"))
+        let model = AuthModel(api: api, tokenStore: tokens, defaults: defaults)
+
+        do {
+            try await model.deleteAccount()
+            XCTFail("unauthorized deletion unexpectedly succeeded")
+        } catch {
+            // Expected: the server did not recognize this bearer/key pair.
+        }
+
+        XCTAssertFalse(model.accountDeletionPending)
+        XCTAssertNil(defaults.string(
+            forKey: AccountLocalState.accountDeletionKey(userID: "user-a")))
+        XCTAssertNil(model.jwt)
+        XCTAssertNil(tokens.token)
+        XCTAssertEqual(model.userID, "user-a")
+        XCTAssertEqual(model.phase, .signedOut)
     }
 
     func testDeletionCompletionAfterAccountSwitchOnlyClearsInitiatingAccount() async {

@@ -45,12 +45,6 @@ or editable by the coach.
   - Keep the recurring schedule unchanged and keep these rows outside the plan
     version; a one-off exception is not a copied workout or a hidden week plan.
 
-## Dependencies
-
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P0 | coordinates_with | plan:server-mutation-integrity#P1 | Both use the same plan-version and write-validation boundary; manual authoring is not blocked on unrelated hardening. |
-
 ## Next step
 
 **Now (@owner):** Activate P0 to ship the narrow create-to-Today path; do not
@@ -61,6 +55,9 @@ wait for one-off overrides or a starter-plan policy decision.
 - Tres Fort already supports creating plans and days through REST and editing
   day exercise slots in iOS. P0 completes the missing no-plan, target-edit, and
   recurring-schedule experience instead of replacing those paths.
+- Manual authoring reuses the plan-version and write-validation boundary
+  completed in [Server Mutation Integrity](../completed/server-mutation-integrity/plan.md);
+  no unresolved dependency remains.
 - There is no manual-mode schema, weeks table, duplicate calendar projection,
   or client-only workout store. The existing versioned plan tree remains the
   source of truth for both the member and Claude.

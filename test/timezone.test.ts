@@ -95,4 +95,44 @@ describe('#4 device-local today', () => {
     const today = await call('get_today_workout', {});
     expect(today.date).toBe('2026-05-21');
   });
+
+  it('uses the authenticated user timezone for REST today and omitted session dates', async () => {
+    // At this frozen instant UTC is May 22 while Los Angeles is still May
+    // 21, so this cannot pass accidentally via the old UTC date shortcut.
+    vi.setSystemTime(new Date('2026-05-22T00:32:00Z'));
+    const jwt = await devJwt();
+    const headers = {
+      'content-type': 'application/json',
+      Authorization: `Bearer ${jwt}`,
+      'X-Device-TZ': 'America/Los_Angeles',
+    };
+    const plan = await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ name: 'Local date defaults' }),
+    });
+    expect(plan.status).toBe(201);
+
+    const todayResponse = await SELF.fetch(`${BASE}/api/today`, { headers });
+    expect(todayResponse.status).toBe(200);
+    const today = await todayResponse.json<{ session: { id: string; date: string } }>();
+    expect(today.session.date).toBe('2026-05-21');
+
+    const defaultResponse = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers,
+      body: '{}',
+    });
+    expect(defaultResponse.status).toBe(201);
+    const defaulted = await defaultResponse.json<{ id: string; date: string }>();
+    expect(defaulted).toMatchObject({ id: today.session.id, date: '2026-05-21' });
+
+    const explicitResponse = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ date: '2026-06-15' }),
+    });
+    expect(explicitResponse.status).toBe(201);
+    expect(await explicitResponse.json<{ date: string }>()).toMatchObject({ date: '2026-06-15' });
+  });
 });

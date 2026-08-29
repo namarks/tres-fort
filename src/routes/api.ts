@@ -23,6 +23,7 @@ import {
   getDayTemplateInPlan,
   getPlanTree,
   getState,
+  getUserTimezone,
   getVolume,
   isGroupMember,
   leaveGroup,
@@ -40,6 +41,7 @@ import {
   setUserMcpPassphrase,
   setHealthActivitySharing,
   softDeleteActivity,
+  todayInTz,
   updateExercise,
   upsertHealthKitActivity,
   writeAudit,
@@ -47,8 +49,6 @@ import {
 
 export const apiRoutes = new Hono<HonoEnv>();
 apiRoutes.use('*', requireAppJwt);
-
-const todayLocal = () => new Date().toISOString().slice(0, 10);
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -280,7 +280,8 @@ apiRoutes.get('/today', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
   if (!plan) return c.json({ error: 'no_active_plan' }, 400);
-  const session = await getOrCreateSession(c.env.DB, userId, plan.id, todayLocal(), null);
+  const date = todayInTz(await getUserTimezone(c.env.DB, userId));
+  const session = await getOrCreateSession(c.env.DB, userId, plan.id, date, null);
   const sets = await c.env.DB
     .prepare('SELECT * FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL ORDER BY logged_at')
     .bind(session.id)
@@ -300,11 +301,15 @@ apiRoutes.post('/sessions', async (c) => {
     day_template_id: (value) => value === null || isNonEmptyString(value),
   });
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const date =
+    typeof b.date === 'string'
+      ? b.date
+      : todayInTz(await getUserTimezone(c.env.DB, userId));
   const s = await getOrCreateSession(
     c.env.DB,
     userId,
     plan.id,
-    (b.date as string | undefined) ?? todayLocal(),
+    date,
     (b.day_template_id as string | null | undefined) ?? null,
   );
   return c.json(s, 201);
@@ -396,14 +401,18 @@ apiRoutes.patch('/sets/:id', async (c) => {
   const parsed = await readMutationBody(c);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
+  const allowed = new Set(['weight', 'reps', 'rpe', 'notes', 'duration_s', 'deleted']);
   const invalid = invalidMutationFields(b, {}, {
     weight: isFiniteNumber,
     reps: isNonNegativeInteger,
     rpe: isNullableFiniteNumber,
     notes: isNullableString,
+    duration_s: isNullableNonNegativeInteger,
     deleted: (value) => typeof value === 'boolean',
   });
+  invalid.push(...Object.keys(b).filter((field) => !allowed.has(field)));
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  if (Object.keys(b).length === 0) return c.json({ error: 'no_corrections' }, 400);
   const row = await patchSet(c.env.DB, c.get('userId'), c.req.param('id'), b);
   return row ? c.json(row) : c.json({ error: 'not_found' }, 404);
 });
@@ -412,8 +421,8 @@ apiRoutes.patch('/sets/:id', async (c) => {
 apiRoutes.get('/exercises', async (c) => {
   // Funnel through getExercises so the wire shape matches MCP's
   // list_exercises — in particular, `laterality` rides along, which iOS
-  // needs to compute per-side rollups (Bulgarian split squat 45×8 →
-  // 16 reps / 720 lb instead of 8 / 360).
+  // needs to compute per-side/per-hand rollups (two-DB Bulgarian split squat
+  // 45×8 → 16 reps / 1,440 lb instead of 8 / 360).
   return c.json(await getExercises(c.env.DB));
 });
 
@@ -472,7 +481,9 @@ apiRoutes.get('/volume', async (c) => {
   if (!muscle) return c.json({ error: 'missing_muscle' }, 400);
   const from = Number(c.req.query('from') ?? 0);
   const to = Number(c.req.query('to') ?? Date.now());
-  return c.json(await getVolume(c.env.DB, c.get('userId'), muscle, from, to));
+  const result = await getVolume(c.env.DB, c.get('userId'), muscle, from, to);
+  if ('error' in result) return c.json(result, 400);
+  return c.json(result);
 });
 
 // ---- generic activities (M3 — pilates / cardio / yoga / walks / …) -------

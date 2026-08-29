@@ -53,7 +53,7 @@ describe('load_mode (per-hand dumbbell lifts)', () => {
     }
   });
 
-  it('log_set echoes load_mode + a per-hand weight_display for two-DB lifts', async () => {
+  it('log_set echoes load_mode and counts both implements for two-DB lifts', async () => {
     await call('update_plan', {
       name: 'PerHand',
       days: [
@@ -67,12 +67,24 @@ describe('load_mode (per-hand dumbbell lifts)', () => {
     const r = await call('log_set', { exercise: 'dumbbell curl', weight: 25, reps: 10 });
     expect(r.set.weight).toBe(25); // stored per hand, not doubled
     expect(r.exercise.load_mode).toBe('per_hand');
+    expect(r.effective.implements).toBe(2);
+    expect(r.effective.tonnage).toBe(25 * 10 * 2);
     expect(r.effective.weight_display).toBe('25 lb in each hand');
+    const volume = await call('get_volume_trend', { muscle_group: 'biceps', range: '4w' });
+    const tonnage = (volume.buckets as { tonnage: number }[]).reduce(
+      (total, bucket) => total + (bucket.tonnage ?? 0),
+      0,
+    );
+    // Dumbbell curl is bilateral + per_hand: count two implements, but no
+    // unilateral side multiplier.
+    expect(tonnage).toBe(25 * 10 * 2);
 
     // A barbell lift reads as a plain total.
     const b = await call('log_set', { exercise: 'bench', weight: 135, reps: 5 });
     if (!b.error) {
       expect(b.exercise.load_mode).toBe('total');
+      expect(b.effective.implements).toBe(1);
+      expect(b.effective.tonnage).toBe(135 * 5);
       expect(b.effective.weight_display).toBe('135 lb');
     }
   });

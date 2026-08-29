@@ -207,6 +207,19 @@ describe('sessions, idempotent set logging, history, volume', () => {
     expect(vol.buckets.length).toBeGreaterThanOrEqual(1);
     expect(vol.buckets[0]!.tonnage).toBe(225 * 8);
 
+    // A known catalog muscle with no logs is a valid empty result; a typo is
+    // a structured client error rather than a misleading zero-volume week.
+    const knownEmpty = await SELF.fetch(`${BASE}/api/volume?muscle=shoulders`, {
+      headers: H,
+    });
+    expect(knownEmpty.status).toBe(200);
+    expect(await knownEmpty.json()).toMatchObject({ muscle_group: 'shoulders', buckets: [] });
+    const unknown = await SELF.fetch(`${BASE}/api/volume?muscle=chset-typo`, {
+      headers: H,
+    });
+    expect(unknown.status).toBe(400);
+    expect(await unknown.json()).toEqual({ error: 'unknown_muscle', query: 'chset-typo' });
+
     // soft-delete the set
     const del = await SELF.fetch(`${BASE}/api/sets/${setId}`, {
       method: 'PATCH',

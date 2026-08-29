@@ -1529,11 +1529,48 @@ export async function getOrCreateSession(
   date: string,
   dayTemplateId: string | null,
 ): Promise<SessionRow> {
-  const existing = await db
-    .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at LIMIT 1')
-    .bind(userId, date)
-    .first<SessionRow>();
-  if (existing && existing.status !== 'discarded') {
+  const readExisting = () =>
+    db
+      .prepare(
+        'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
+      )
+      .bind(userId, date)
+      .first<SessionRow>();
+
+  // Keep all existing-row behavior in one path. A writer that loses the
+  // conflict-safe INSERT below must behave exactly like a caller that found
+  // the winning row on its initial read: it may fill an unpinned explicit day
+  // (first writer wins), and it may revive a discarded session.
+  const useExisting = async (existing: SessionRow): Promise<SessionRow> => {
+    if (existing.status === 'discarded') {
+      // The (user,date) row exists but was DISCARDED. "Discarded" means
+      // "this never happened" — so a fresh get/start for the same date must
+      // RESURRECT it to a clean planned state rather than hand back the
+      // tombstone (which would leave the day un-startable: the start path
+      // only promotes 'planned'→'in_progress'). We keep the same row id
+      // (the (user,date) idempotency key) but wipe it back to pristine. Its
+      // old set_logs stay soft-deleted (they belong to the thrown-away
+      // attempt); new work logs fresh rows.
+      const ts = now();
+      const revived: SessionRow = {
+        ...existing,
+        day_template_id: dayTemplateId,
+        status: 'planned',
+        started_at: null,
+        completed_at: null,
+        perceived_fatigue: null,
+        notes: null,
+        updated_at: ts,
+      };
+      await db
+        .prepare(
+          'UPDATE sessions SET day_template_id=?2, status=?3, started_at=?4, completed_at=?5, perceived_fatigue=?6, notes=?7, updated_at=?8 WHERE id=?1',
+        )
+        .bind(revived.id, revived.day_template_id, revived.status, null, null, null, null, ts)
+        .run();
+      return revived;
+    }
+
     // #926: honor an EXPLICITLY-provided day_template_id on a row that
     // doesn't have one yet. Most creators (GET /today, MCP log_set,
     // logWorkoutComplete) pass null and let the weekly schedule resolve the
@@ -1570,35 +1607,11 @@ export async function getOrCreateSession(
       return fresh ?? existing;
     }
     return existing;
-  }
-  if (existing) {
-    // The (user,date) row exists but was DISCARDED. "Discarded" means
-    // "this never happened" — so a fresh get/start for the same date must
-    // RESURRECT it to a clean planned state rather than hand back the
-    // tombstone (which would leave the day un-startable: the start path
-    // only promotes 'planned'→'in_progress'). We keep the same row id
-    // (the (user,date) idempotency key) but wipe it back to pristine. Its
-    // old set_logs stay soft-deleted (they belong to the thrown-away
-    // attempt); new work logs fresh rows.
-    const ts = now();
-    const revived: SessionRow = {
-      ...existing,
-      day_template_id: dayTemplateId,
-      status: 'planned',
-      started_at: null,
-      completed_at: null,
-      perceived_fatigue: null,
-      notes: null,
-      updated_at: ts,
-    };
-    await db
-      .prepare(
-        'UPDATE sessions SET day_template_id=?2, status=?3, started_at=?4, completed_at=?5, perceived_fatigue=?6, notes=?7, updated_at=?8 WHERE id=?1',
-      )
-      .bind(revived.id, revived.day_template_id, revived.status, null, null, null, null, ts)
-      .run();
-    return revived;
-  }
+  };
+
+  const existing = await readExisting();
+  if (existing) return useExisting(existing);
+
   const ts = now();
   const s: SessionRow = {
     id: uuid(),
@@ -1614,13 +1627,24 @@ export async function getOrCreateSession(
     created_at: ts,
     updated_at: ts,
   };
-  await db
+  const inserted = await db
     .prepare(
-      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)',
+      `INSERT INTO sessions
+       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+       ON CONFLICT(user_id,date) DO NOTHING`,
     )
     .bind(s.id, s.user_id, s.plan_id, s.day_template_id, s.date, s.status, s.started_at, s.completed_at, s.perceived_fatigue, s.notes, s.created_at, s.updated_at)
     .run();
-  return s;
+  if (inserted.meta.changes > 0) return s;
+
+  // Another creator won after our null read. Do not inspect or parse an
+  // engine-specific unique-constraint error: the unique index plus
+  // ON CONFLICT makes the outcome explicit, and we re-read the canonical
+  // row before applying the same explicit-pin/discarded-revival rules above.
+  const winner = await readExisting();
+  if (!winner) throw new Error('session_create_conflict_without_winner');
+  return useExisting(winner);
 }
 
 export async function patchSession(
@@ -2009,7 +2033,14 @@ export async function patchSet(
   db: D1Database,
   userId: string,
   setId: string,
-  patch: { weight?: number; reps?: number; rpe?: number | null; notes?: string | null; deleted?: boolean },
+  patch: {
+    weight?: number;
+    reps?: number;
+    rpe?: number | null;
+    notes?: string | null;
+    duration_s?: number | null;
+    deleted?: boolean;
+  },
 ): Promise<SetLogRow | null> {
   const row = await db
     .prepare(
@@ -2019,15 +2050,18 @@ export async function patchSet(
     .bind(setId, userId)
     .first<SetLogRow>();
   if (!row) return null;
-  const weight = patch.weight ?? row.weight;
-  const reps = patch.reps ?? row.reps;
-  const rpe = patch.rpe === undefined ? row.rpe : patch.rpe;
-  const notes = patch.notes === undefined ? row.notes : patch.notes;
+  const has = (field: keyof typeof patch) =>
+    Object.prototype.hasOwnProperty.call(patch, field);
   // WARNING: this soft-delete is INVISIBLE to an incremental `sets_since`
   // client — the getState sets query gates on the immutable `logged_at`,
   // not deleted_at (see the WARNING on that query). Only safe while the
   // iOS client full-reloads; needs a mutable updated_at cursor (follow-up).
-  const deletedAt = patch.deleted ? row.deleted_at ?? now() : patch.deleted === false ? null : row.deleted_at;
+  const deletedAt =
+    patch.deleted === undefined
+      ? row.deleted_at
+      : patch.deleted
+        ? row.deleted_at ?? now()
+        : null;
   // Undelete collision: the partial unique index ux_set_slot only covers
   // live rows, so reviving a soft-deleted set whose slot was reused while it
   // was gone would violate the constraint (→ 500). Renumber the revived row
@@ -2056,17 +2090,39 @@ export async function patchSet(
       setIndex = (max?.m ?? 0) + 1;
     }
   }
+  // Build a field-only UPDATE. A duration correction must not rewrite a
+  // concurrently changed weight/RPE or resurrect a concurrently deleted row;
+  // deleted_at and set_index are touched only for an explicit delete/undelete.
+  const values: unknown[] = [setId];
+  const assignments: string[] = [];
+  const assign = (column: string, value: unknown) => {
+    values.push(value);
+    assignments.push(`${column}=?${values.length}`);
+  };
+  if (has('weight')) assign('weight', patch.weight);
+  if (has('reps')) assign('reps', patch.reps);
+  if (has('rpe')) assign('rpe', patch.rpe);
+  if (has('notes')) assign('notes', patch.notes);
+  if (has('duration_s')) assign('duration_s', patch.duration_s);
+  if (has('deleted')) assign('deleted_at', deletedAt);
+  let setIndexValuePosition: number | null = null;
+  if (isUndelete) {
+    assign('set_index', setIndex);
+    setIndexValuePosition = values.length - 1;
+  }
+
   // The clash pre-check above narrows the common case, but a concurrent
   // undelete/logSet can still race onto the same slot and trip ux_set_slot.
   // Retry-renumber on conflict (same contract as logSet) so an undelete is
-  // never a 500. Non-undelete patches keep their set_index, so they never
-  // conflict and the loop runs once.
+  // never a 500. Other corrections do not touch set_index and run once.
   for (let attempt = 0; ; attempt++) {
     try {
-      await db
-        .prepare('UPDATE set_logs SET weight=?2, reps=?3, rpe=?4, notes=?5, deleted_at=?6, set_index=?7 WHERE id=?1')
-        .bind(setId, weight, reps, rpe, notes, deletedAt, setIndex)
-        .run();
+      if (assignments.length > 0) {
+        await db
+          .prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1`)
+          .bind(...values)
+          .run();
+      }
       break;
     } catch (e) {
       const msg = String((e as Error)?.message ?? '');
@@ -2081,6 +2137,7 @@ export async function patchSet(
         .bind(row.session_id, row.exercise_id, row.is_warmup)
         .first<{ m: number }>();
       setIndex = (max?.m ?? 0) + 1;
+      if (setIndexValuePosition !== null) values[setIndexValuePosition] = setIndex;
     }
   }
   // Phantom-session guard. Logging a set promotes a session 'planned' ->
@@ -2108,7 +2165,15 @@ export async function patchSet(
         .run();
     }
   }
-  return { ...row, weight, reps, rpe, notes, deleted_at: deletedAt, set_index: setIndex };
+  // Return a fresh row so the caller sees any disjoint concurrent correction
+  // or delete that committed alongside this field-only update.
+  return db
+    .prepare(
+      `SELECT sl.* FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
+       WHERE sl.id = ?1 AND s.user_id = ?2`,
+    )
+    .bind(setId, userId)
+    .first<SetLogRow>();
 }
 
 // ---- read models ---------------------------------------------------------
@@ -2720,9 +2785,27 @@ export async function updatePlanTree(
     stmts.push(
       db
         .prepare(
-          'INSERT INTO day_templates (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)',
+          `INSERT INTO day_templates
+           (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+           SELECT ?1,?2,?3,?4,?5,?6,?7,?8
+            WHERE EXISTS (
+              SELECT 1 FROM plans
+               WHERE id = ?9 AND user_id = ?10 AND status = 'active' AND version = ?11
+            )`,
         )
-        .bind(dayId, plan!.id, d.name, d.day_label ?? null, d.order_index ?? di, d.notes ?? null, ts, ts),
+        .bind(
+          dayId,
+          plan!.id,
+          d.name,
+          d.day_label ?? null,
+          d.order_index ?? di,
+          d.notes ?? null,
+          ts,
+          ts,
+          plan!.id,
+          userId,
+          plan!.version,
+        ),
     );
   });
   // 2) INSERT new template_exercises (children of step 1's parents). is_warmup
@@ -2739,14 +2822,18 @@ export async function updatePlanTree(
           .prepare(
             `INSERT INTO template_exercises
              (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)`,
+             SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16
+              WHERE EXISTS (
+                SELECT 1 FROM plans
+                 WHERE id = ?17 AND user_id = ?18 AND status = 'active' AND version = ?19
+              )`,
           )
           .bind(
             teIdPerExerciseOccurrence[di]![ei]!, dayId, exId, e.order_index ?? ei, e.target_sets,
             e.target_reps, e.target_reps_max ?? null, e.target_rpe ?? null, e.rest_seconds ?? 120,
             e.target_weight ?? null, e.target_duration_s ?? null,
             e.progression == null ? null : JSON.stringify(e.progression),
-            e.cues ?? null, isWarmup, ts, ts,
+            e.cues ?? null, isWarmup, ts, ts, plan!.id, userId, plan!.version,
           ),
       );
     });
@@ -2756,14 +2843,28 @@ export async function updatePlanTree(
     if (newDayId != null) {
       stmts.push(
         db
-          .prepare('UPDATE sessions SET day_template_id = ?2 WHERE day_template_id = ?1')
-          .bind(oldDayId, newDayId),
+          .prepare(
+            `UPDATE sessions SET day_template_id = ?2
+              WHERE day_template_id = ?1
+                AND EXISTS (
+                  SELECT 1 FROM plans
+                   WHERE id = ?3 AND user_id = ?4 AND status = 'active' AND version = ?5
+                )`,
+          )
+          .bind(oldDayId, newDayId, plan.id, userId, plan.version),
       );
     } else {
       stmts.push(
         db
-          .prepare('UPDATE sessions SET day_template_id = NULL WHERE day_template_id = ?1')
-          .bind(oldDayId),
+          .prepare(
+            `UPDATE sessions SET day_template_id = NULL
+              WHERE day_template_id = ?1
+                AND EXISTS (
+                  SELECT 1 FROM plans
+                   WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
+                )`,
+          )
+          .bind(oldDayId, plan.id, userId, plan.version),
       );
     }
   }
@@ -2772,25 +2873,61 @@ export async function updatePlanTree(
     if (newTeId != null) {
       stmts.push(
         db
-          .prepare('UPDATE set_logs SET template_exercise_id = ?2 WHERE template_exercise_id = ?1')
-          .bind(oldTeId, newTeId),
+          .prepare(
+            `UPDATE set_logs SET template_exercise_id = ?2
+              WHERE template_exercise_id = ?1
+                AND EXISTS (
+                  SELECT 1 FROM plans
+                   WHERE id = ?3 AND user_id = ?4 AND status = 'active' AND version = ?5
+                )`,
+          )
+          .bind(oldTeId, newTeId, plan.id, userId, plan.version),
       );
     } else {
       stmts.push(
         db
-          .prepare('UPDATE set_logs SET template_exercise_id = NULL WHERE template_exercise_id = ?1')
-          .bind(oldTeId),
+          .prepare(
+            `UPDATE set_logs SET template_exercise_id = NULL
+              WHERE template_exercise_id = ?1
+                AND EXISTS (
+                  SELECT 1 FROM plans
+                   WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
+                )`,
+          )
+          .bind(oldTeId, plan.id, userId, plan.version),
       );
     }
   }
   // 5) DELETE old template_exercises by EXPLICIT id (avoid catching the
   //    freshly-inserted new rows that now share plan_id). Children first.
   for (const ot of oldTeRows.results) {
-    stmts.push(db.prepare('DELETE FROM template_exercises WHERE id = ?1').bind(ot.id));
+    stmts.push(
+      db
+        .prepare(
+          `DELETE FROM template_exercises
+            WHERE id = ?1
+              AND EXISTS (
+                SELECT 1 FROM plans
+                 WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
+              )`,
+        )
+        .bind(ot.id, plan.id, userId, plan.version),
+    );
   }
   // 6) DELETE old day_templates by EXPLICIT id. Parents last.
   for (const od of oldDays.results) {
-    stmts.push(db.prepare('DELETE FROM day_templates WHERE id = ?1').bind(od.id));
+    stmts.push(
+      db
+        .prepare(
+          `DELETE FROM day_templates
+            WHERE id = ?1
+              AND EXISTS (
+                SELECT 1 FROM plans
+                 WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
+              )`,
+        )
+        .bind(od.id, plan.id, userId, plan.version),
+    );
   }
   // The full tree is rebuilt with fresh day UUIDs. Re-point each schedule
   // weekday at the NEW day whose name/label matches the OLD day it pointed
@@ -2846,16 +2983,31 @@ export async function updatePlanTree(
   stmts.push(
     db
       .prepare(
-        'UPDATE plans SET name = ?2, meta = ?3, version = version + 1, updated_at = ?4 WHERE id = ?1',
+        `UPDATE plans
+            SET name = ?2, meta = ?3, version = version + 1, updated_at = ?4
+          WHERE id = ?1 AND user_id = ?5 AND status = 'active' AND version = ?6`,
       )
       .bind(
         plan.id,
         input.name ?? plan.name,
         serializePlanMeta(baseMeta, remappedSchedule),
         ts,
+        userId,
+        plan.version,
       ),
   );
-  await db.batch(stmts);
+  // D1 executes a batch atomically and sequentially. Every statement above
+  // carries the SAME active-plan/version predicate, so after one contender
+  // bumps the version a stale contender's entire batch becomes a no-op: no
+  // transient inserts, remaps, or deletes can leak through before the final
+  // compare-and-swap. This applies even when the caller omitted
+  // expected_version; the version we actually read is always the CAS token.
+  const results = await db.batch(stmts);
+  const finalUpdate = results[results.length - 1];
+  if (!finalUpdate || finalUpdate.meta.changes === 0) {
+    const current = await getActivePlan(db, userId);
+    return { conflict: true, current_version: current?.version ?? plan.version };
+  }
   return { conflict: false, plan: (await getPlanTree(db, userId))! };
 }
 
@@ -3160,27 +3312,38 @@ export async function getVolume(
   muscle: string,
   from: number,
   to: number,
-) {
-  // Unilateral sets log reps per-side, so a 45x8 Bulgarian split squat is
-  // really 16 physical reps and 720 lb of work — not 8 reps and 360 lb.
-  // hard_sets stays a literal COUNT (one logged set is one set entered),
-  // tonnage doubles via the CASE so volume trends match reality.
+): Promise<
+  | { muscle_group: string; buckets: { week: string; hard_sets: number; tonnage: number }[] }
+  | { error: 'unknown_muscle'; query: string }
+> {
+  const normalizedMuscle = muscle.trim().toLowerCase();
+  const known = await db
+    .prepare('SELECT 1 FROM exercises WHERE lower(primary_muscle) = ?1 LIMIT 1')
+    .bind(normalizedMuscle)
+    .first();
+  if (!known) return { error: 'unknown_muscle', query: muscle };
+
+  // `weight` is one implement when load_mode=per_hand and `reps` is one
+  // side when laterality=unilateral. These dimensions are independent: a
+  // 45x8 two-dumbbell Bulgarian split squat is 45*8*2 legs*2 dumbbells =
+  // 1,440 lb of work. hard_sets remains a literal logged-set count.
   const rows = await db
     .prepare(
       `SELECT strftime('%Y-%W', s.date) AS week,
               COUNT(*) AS hard_sets,
               SUM(sl.weight * sl.reps
-                  * CASE WHEN e.laterality = 'unilateral' THEN 2 ELSE 1 END) AS tonnage
+                  * CASE WHEN e.laterality = 'unilateral' THEN 2 ELSE 1 END
+                  * CASE WHEN e.load_mode = 'per_hand' THEN 2 ELSE 1 END) AS tonnage
        FROM set_logs sl
        JOIN sessions s ON s.id = sl.session_id
        JOIN exercises e ON e.id = sl.exercise_id
-       WHERE s.user_id = ?1 AND e.primary_muscle = ?2 AND sl.deleted_at IS NULL
+       WHERE s.user_id = ?1 AND lower(e.primary_muscle) = ?2 AND sl.deleted_at IS NULL
          AND sl.is_warmup = 0 AND sl.logged_at BETWEEN ?3 AND ?4
        GROUP BY week ORDER BY week`,
     )
-    .bind(userId, muscle, from, to)
+    .bind(userId, normalizedMuscle, from, to)
     .all<{ week: string; hard_sets: number; tonnage: number }>();
-  return { muscle_group: muscle, buckets: rows.results };
+  return { muscle_group: normalizedMuscle, buckets: rows.results };
 }
 
 // ---- weekly schedule + future-calendar projection ------------------------

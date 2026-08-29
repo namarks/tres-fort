@@ -81,8 +81,8 @@ const SERVER_INSTRUCTIONS =
   'status update — acknowledge it, do not log. Sets with source="ios" in ' +
   'get_current_session / get_today_workout are evidence the user is ' +
   'logging in-app right now; assume any set they mention is already ' +
-  'recorded. When in doubt, ask before logging. Use delete_set to undo a ' +
-  'wrongly-logged set; the user fixes weight/reps mistakes in iOS.';
+  'recorded. When in doubt, ask before logging. Use correct_set for value ' +
+  'mistakes and delete_set only to remove a phantom or duplicate set.';
 const DEFAULT_PROTOCOL = '2025-06-18';
 const SUPPORTED_PROTOCOLS = new Set(['2025-06-18', '2025-03-26', '2024-11-05']);
 
@@ -291,7 +291,7 @@ const TOOLS: Record<string, Tool> = {
 
   list_exercises: {
     description:
-      'List the exercise catalog so you can discover what is resolvable BEFORE calling add_exercise / update_plan (those reject unknown names with `unknown_exercise`). Optional filters: `query` (case-insensitive substring on name), `muscle` (primary_muscle exact, e.g. "quads"), `modality` (e.g. "barbell","dumbbell","bw","machine","timed"). Each row includes `laterality` ("bilateral" | "unilateral"); unilateral exercises log reps per-side, and the system doubles for total reps / tonnage (see log_set). Each row also includes `load_mode` ("total" | "per_hand"); for "per_hand" two-dumbbell lifts the weight is ONE dumbbell — set target_weight and phrase guidance per hand ("25 lb each hand"), never the doubled total. Returns up to a few hundred rows in the seeded catalog; combine filters to narrow.',
+      'List the exercise catalog so you can discover what is resolvable BEFORE calling add_exercise / update_plan (those reject unknown names with `unknown_exercise`). Optional filters: `query` (case-insensitive substring on name), `muscle` (primary_muscle exact, e.g. "quads"), `modality` (e.g. "barbell","dumbbell","bw","machine","timed"). Each row includes `laterality` ("bilateral" | "unilateral"); unilateral exercises log reps per-side, and the system doubles for total reps / tonnage (see log_set). Each row also includes `load_mode` ("total" | "per_hand"); for "per_hand" two-dumbbell lifts the weight is ONE dumbbell — set target_weight and phrase guidance per hand ("25 lb each hand"), never the doubled total. Tonnage independently counts both implements, so a per_hand + unilateral lift gets both multipliers. Returns up to a few hundred rows in the seeded catalog; combine filters to narrow.',
     inputSchema: obj(
       {
         query: { type: 'string' },
@@ -377,7 +377,8 @@ const TOOLS: Record<string, Tool> = {
       'weight is the weight of ONE dumbbell. Set target_weight and phrase ' +
       'all guidance per hand — say "25 lb in each hand", never a vague ' +
       'doubled "50 lb". The response echoes exercise.load_mode so you can ' +
-      'word it correctly.',
+      'word it correctly; effective.implements is 2 and tonnage counts both ' +
+      'implements independently from any unilateral-side multiplier.',
     inputSchema: obj(
       {
         exercise: { type: 'string', description: 'name, alias, or id' },
@@ -445,7 +446,8 @@ const TOOLS: Record<string, Tool> = {
             `duplicate from the user logging in iOS — do NOT retry or ` +
             `tweak the numbers. If the user confirms this is a separate ` +
             `intended set, retry unchanged with confirm_duplicate=true. ` +
-            `Use delete_set if the existing set is wrong.`,
+            `Use correct_set if the existing values are wrong; use ` +
+            `delete_set only if the whole set should be removed.`,
           existing_set: recent,
         };
       }
@@ -468,13 +470,14 @@ const TOOLS: Record<string, Tool> = {
         is_timed: typeof a.is_timed === 'boolean' ? a.is_timed : undefined,
         source: 'mcp',
       });
-      // Surface the resolved exercise + per-side accounting so the agent
-      // can confirm "45x8 each leg → 16 total reps, 720 lb tonnage" to the
-      // user without a second lookup.
+      // Surface the resolved exercise + per-side/per-hand accounting so the
+      // agent can confirm "two 45 lb DBs x8 each leg → 16 total reps,
+      // 1,440 lb tonnage" to the user without a second lookup.
       const exLat = (ex as { laterality?: string }).laterality ?? 'bilateral';
       const exLoad = (ex as { load_mode?: string }).load_mode ?? 'total';
       const sides = exLat === 'unilateral' ? 2 : 1;
       const perHand = exLoad === 'per_hand';
+      const implementsUsed = perHand ? 2 : 1;
       return {
         set,
         deduped,
@@ -487,8 +490,9 @@ const TOOLS: Record<string, Tool> = {
         },
         effective: {
           sides,
+          implements: implementsUsed,
           total_reps: set.reps * sides,
-          tonnage: set.weight * set.reps * sides,
+          tonnage: set.weight * set.reps * sides * implementsUsed,
           // For two-dumbbell lifts, the weight is one dumbbell — surface a
           // ready-to-say phrasing so guidance never reads as the vague total.
           weight_display: perHand
@@ -498,15 +502,92 @@ const TOOLS: Record<string, Tool> = {
       };
     },
   },
+  correct_set: {
+    description:
+      'Correct the values on an existing logged set while preserving its identity and history. ' +
+      'Pass the set_id plus at least one corrected value: weight, reps, rpe, notes, or duration_s. ' +
+      'Use null to clear rpe, notes, or duration_s. Find the id with get_current_session or ' +
+      'get_session_log. Use delete_set instead only when the entire set is a phantom or duplicate.',
+    inputSchema: obj(
+      {
+        set_id: { type: 'string', description: 'set_logs.id (UUID) to correct' },
+        weight: { type: 'number' },
+        reps: { type: 'integer', minimum: 0 },
+        rpe: { type: ['number', 'null'] },
+        notes: { type: ['string', 'null'] },
+        duration_s: {
+          type: ['integer', 'null'],
+          minimum: 0,
+          description: 'seconds, or null to clear the recorded duration',
+        },
+      },
+      ['set_id'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const has = (field: string) => Object.prototype.hasOwnProperty.call(a, field);
+      const allowed = new Set(['set_id', 'weight', 'reps', 'rpe', 'notes', 'duration_s']);
+      const invalid: string[] = [];
+      if (typeof a.set_id !== 'string' || a.set_id.length === 0) invalid.push('set_id');
+      if (has('weight') && (typeof a.weight !== 'number' || !Number.isFinite(a.weight))) {
+        invalid.push('weight');
+      }
+      if (has('reps') && (!Number.isSafeInteger(a.reps) || (a.reps as number) < 0)) {
+        invalid.push('reps');
+      }
+      if (
+        has('rpe') &&
+        a.rpe !== null &&
+        (typeof a.rpe !== 'number' || !Number.isFinite(a.rpe))
+      ) {
+        invalid.push('rpe');
+      }
+      if (has('notes') && a.notes !== null && typeof a.notes !== 'string') {
+        invalid.push('notes');
+      }
+      if (
+        has('duration_s') &&
+        a.duration_s !== null &&
+        (!Number.isSafeInteger(a.duration_s) || (a.duration_s as number) < 0)
+      ) {
+        invalid.push('duration_s');
+      }
+      invalid.push(...Object.keys(a).filter((field) => !allowed.has(field)));
+      if (invalid.length > 0) return { error: 'invalid_fields', fields: invalid };
+
+      const correctionFields = ['weight', 'reps', 'rpe', 'notes', 'duration_s'] as const;
+      if (!correctionFields.some(has)) return { error: 'no_corrections' };
+      const patch: {
+        weight?: number;
+        reps?: number;
+        rpe?: number | null;
+        notes?: string | null;
+        duration_s?: number | null;
+      } = {};
+      if (has('weight')) patch.weight = a.weight as number;
+      if (has('reps')) patch.reps = a.reps as number;
+      if (has('rpe')) patch.rpe = a.rpe as number | null;
+      if (has('notes')) patch.notes = a.notes as string | null;
+      if (has('duration_s')) patch.duration_s = a.duration_s as number | null;
+
+      const row = await patchSet(env.DB, userId, a.set_id as string, patch);
+      return row ?? { error: 'not_found', set_id: a.set_id };
+    },
+    note: (a, r) =>
+      r?.error
+        ? null
+        : `Corrected set ${a.set_id} to ${r.weight}x${r.reps}` +
+          `${r.rpe == null ? '' : ` @ RPE ${r.rpe}`}` +
+          `${r.duration_s == null ? '' : `, ${r.duration_s}s`}.`,
+  },
   delete_set: {
     description:
       'Soft-delete a logged set by id — use this to undo a wrong log_set ' +
       'call (a phantom set you logged in error, or a true duplicate). The ' +
       'row is marked deleted (deleted_at set); history is preserved but ' +
       'it stops counting toward volume/sync. To find the set_id, call ' +
-      'get_current_session or get_session_log first. For value ' +
-      'corrections (wrong weight/reps), ask the user to fix it in iOS — ' +
-      'there is no patch tool here.',
+      'get_current_session or get_session_log first. Use correct_set instead ' +
+      'for value corrections such as wrong weight, reps, RPE, notes, or duration.',
     inputSchema: obj(
       {
         set_id: { type: 'string', description: 'set_logs.id (UUID) to soft-delete' },

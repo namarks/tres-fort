@@ -67,7 +67,6 @@ Done means:
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | coordinates_with | plan:server-mutation-integrity | Reuse its user-scoping and mutation-validation rules without waiting for unrelated server work. |
 | P1 | coordinates_with | plan:identity-account-lifecycle | Connection recovery and app authentication share state, but neither plan should become a blanket prerequisite for the other. |
 | P3 | gated_by | external:owner-healthkit-writeback-decision | Writing workouts into a user's health record is an optional product and privacy decision, not an implied extension of read access. |
 
@@ -81,6 +80,9 @@ and leave HealthKit write-back gated until the explicit P3 decision.
 - Use the current `external_activities` model, source-scoped reconciliation,
   tombstones, and incremental state cursor. Add a new abstraction only if a
   focused fixture proves those mechanisms cannot express the required result.
+- Reuse the user-scoping and validation rules completed in
+  [Server Mutation Integrity](../completed/server-mutation-integrity/plan.md);
+  they are historical foundation rather than an unresolved dependency.
 - The intervals.icu-to-HealthKit deduplication rule is existing behavior and a
   regression boundary, not a new subsystem in this workstream.
 - The intervals.icu endurance write bridge documented as M5 in

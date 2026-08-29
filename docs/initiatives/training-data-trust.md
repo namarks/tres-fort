@@ -11,14 +11,13 @@ not erase local data, and plan changes can be inspected and restored.
 
 ## Scope
 
-- plan:server-mutation-integrity
 - plan:identity-account-lifecycle
 - plan:workout-write-reliability
 - plan:reversible-plan-management
 
 ## Priority policy
 
-1. Run the P0 slices of the three active plans in parallel when their files and
+1. Run the P0 slices of the remaining active plans in parallel when their files and
    migration surfaces do not overlap; serialize only real collisions.
 2. Fix the confirmed data-loss, cross-user, invalid-write, and destructive-auth
    paths before adjacent cleanup. Each slice carries its own focused regression
@@ -28,8 +27,8 @@ not erase local data, and plan changes can be inspected and restored.
 
 ## Completion condition
 
-All four member plans reach their stated outcomes: the confirmed unsafe writes
-have deterministic tests, offline workout intents recover without duplication,
+Server mutation integrity is complete. The remaining three member plans reach
+their stated outcomes: offline workout intents recover without duplication,
 same-user reauthentication preserves local training state, users can export and
 confirm deletion of their own data, and AI or manual plan edits share a readable
 snapshot-and-revert history.

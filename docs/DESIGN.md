@@ -261,8 +261,8 @@ models, lifecycles, and revocation paths → decoupled on purpose.
 **iOS → Worker JWT (Sign in with Apple)**
 1. App: `ASAuthorizationAppleIDProvider` → `identityToken` (Apple-signed JWT) + `authorizationCode` + name (first auth only).
 2. `POST /auth/apple`. Worker: fetch/cache Apple JWKS, verify signature + `iss=appleid.apple.com` + `aud=<bundle id>` + `exp`; extract `sub`; **allowlist your sub** (`OWNER_APPLE_SUB` secret) so nobody else can create an account; upsert `users`.
-3. Worker issues app JWT (HS256, `APP_JWT_SECRET`, `sub=user_id`, ~60-day exp) → app stores in **Keychain**.
-4. Refresh: near expiry, app silently re-runs SIWA → new JWT. No refresh-token store in v1.
+3. Worker issues an app JWT (HS256, `APP_JWT_SECRET`, `sub=user_id`, ~60-day exp, original `auth_time`) → app stores it in **Keychain**.
+4. Refresh: near expiry, the app exchanges a still-valid bearer for another ~60-day JWT that preserves `auth_time`, capped at a 180-day absolute session lifetime. Expiry, revocation, or that ceiling requires Sign in with Apple again; there is no refresh-token store.
 
 **MCP → dual acceptance on `/mcp`** (resolves your "one token? scopes? rate limits?")
 - (a) **OAuth 2.1** for claude.ai/desktop custom connectors — a minimal in-Worker provider (`src/oauth.ts`). The `/oauth/authorize` step is gated by a passphrase: the **owner** uses `OWNER_AUTH_PASSPHRASE`, any other user a personal MCP passphrase (PBKDF2-SHA256, per-user salt) set via `POST /api/me/mcp-passphrase`. On match it binds that `user_id` into the auth code and issues short-lived access tokens (also carrying the `user_id`) the Worker validates.

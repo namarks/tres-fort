@@ -1,6 +1,11 @@
 import { Hono } from 'hono';
 import type { HonoEnv, User } from '../types';
-import { issueAppJwt, requireAppJwt, verifyAppleToken } from '../auth';
+import {
+  APP_JWT_MAX_SESSION_SECONDS,
+  issueAppJwt,
+  requireAppJwt,
+  verifyAppleToken,
+} from '../auth';
 import {
   claimOrCreateOwner,
   isBootstrapClaimEligible,
@@ -139,12 +144,20 @@ authRoutes.post('/apple', async (c) => {
 
 // POST /auth/renew -> { jwt }
 //
-// The app renews while its current app JWT is still valid. This deliberately
-// remains a rolling stateless session rather than adding refresh-token
-// storage: Sign in with Apple is still the recovery path after expiry or
-// revocation.
+// The app renews while its current app JWT is still valid. Renewal preserves
+// the original authentication time and stops at an absolute ceiling, so a
+// copied bearer cannot extend itself forever. Sign in with Apple starts a new
+// session after expiry, revocation, or that ceiling.
 authRoutes.post('/renew', requireAppJwt, async (c) => {
-  const jwt = await issueAppJwt(c.get('userId'), c.env.APP_JWT_SECRET);
+  const nowSec = Math.floor(Date.now() / 1000);
+  const authTimeSec = c.get('appAuthTime');
+  if (nowSec >= authTimeSec + APP_JWT_MAX_SESSION_SECONDS) {
+    return c.json({ error: 'reauthentication_required' }, 401);
+  }
+  const jwt = await issueAppJwt(c.get('userId'), c.env.APP_JWT_SECRET, {
+    nowSeconds: nowSec,
+    authTimeSeconds: authTimeSec,
+  });
   return c.json({ jwt });
 });
 

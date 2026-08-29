@@ -65,7 +65,8 @@ exact-head verification, and closes the plan.
 
 - Source: the August 2026 functionality review at commit `91fd622`; the confirmed
   root issue is the fixed JWT expiry plus an over-broad `AuthModel.invalidate()`.
-- P0(a) now uses rolling app-JWT renewal plus account-scoped activity,
+- P0(a) now uses rolling app-JWT renewal with a preserved authentication time
+  and a 180-day absolute session ceiling, plus account-scoped activity,
   intervals.icu, and HealthKit state. Focused backend tests, direct iOS source
   typechecking, and a standalone behavioral harness cover expiry, renewal,
   offline failure, same-user recovery, and account switching. A persisted bearer
@@ -109,12 +110,14 @@ exact-head verification, and closes the plan.
   sensitive provider identifier through a new backend response.
 - Profile-name repair trims and validates a 1–80 UTF-16-unit value, updates only
   the authenticated user, and audits the changed field without copying the name
-  into audit arguments.
+  into audit arguments. iOS invalidates in-flight identity projections and
+  reloads group summaries, feeds, stats, and activity caches after the update so
+  the old effective name cannot survive in another group surface.
 - The dormant portability projection includes only catalog exercises referenced
   by the caller's templates or logged sets, including their names, units,
   modalities, muscles, and aliases, so its exercise identifiers remain
   independently interpretable without exposing unrelated catalog rows.
-- Verification at this milestone: the full Workers suite passes 395/395, the
+- Verification at this milestone: the full Workers suite passes 397/397, the
   TypeScript compiler and plan compiler pass, iOS device sources compile, the
   app module and XCTest source typecheck, including stale renewal, stale
   Apple-credential callback, account-switch-during-deletion, durable owner

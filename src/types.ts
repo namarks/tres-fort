@@ -63,7 +63,7 @@ export interface Env {
 
 export type HonoEnv = {
   Bindings: Env;
-  Variables: { userId: string };
+  Variables: { userId: string; appAuthTime: number };
 };
 
 export interface User {

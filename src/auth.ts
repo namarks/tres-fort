@@ -9,6 +9,7 @@ import { setUserTimezoneIfChanged } from './db';
 
 const APPLE_ISS = 'https://appleid.apple.com';
 export const APP_JWT_TTL_SECONDS = 60 * 60 * 24 * 60; // 60 days
+export const APP_JWT_MAX_SESSION_SECONDS = 60 * 60 * 24 * 180; // 180 days
 
 let appleJwks: ReturnType<typeof createRemoteJWKSet> | null = null;
 function jwks() {
@@ -32,12 +33,25 @@ export async function verifyAppleToken(
 export async function issueAppJwt(
   userId: string,
   secret: string,
-  options: { nowSeconds?: number; ttlSeconds?: number } = {},
+  options: {
+    nowSeconds?: number;
+    ttlSeconds?: number;
+    authTimeSeconds?: number;
+  } = {},
 ): Promise<string> {
   const nowSec = options.nowSeconds ?? Math.floor(Date.now() / 1000);
   const ttlSeconds = options.ttlSeconds ?? APP_JWT_TTL_SECONDS;
+  const authTimeSec = options.authTimeSeconds ?? nowSec;
   return sign(
-    { sub: userId, iat: nowSec, exp: nowSec + ttlSeconds },
+    {
+      sub: userId,
+      iat: nowSec,
+      auth_time: authTimeSec,
+      exp: Math.min(
+        nowSec + ttlSeconds,
+        authTimeSec + APP_JWT_MAX_SESSION_SECONDS,
+      ),
+    },
     secret,
     'HS256',
   );
@@ -53,7 +67,20 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
     if (!payload.sub || typeof payload.sub !== 'string') {
       return c.json({ error: 'invalid_token' }, 401);
     }
+    // Tokens issued before auth_time shipped fall back to their original iat.
+    // Renewal then stamps that value into auth_time, so a legacy bearer cannot
+    // reset the absolute session lifetime merely by crossing the rollout.
+    const authTime =
+      typeof payload.auth_time === 'number'
+        ? payload.auth_time
+        : typeof payload.iat === 'number'
+          ? payload.iat
+          : null;
+    if (authTime === null || !Number.isFinite(authTime)) {
+      return c.json({ error: 'invalid_token' }, 401);
+    }
     c.set('userId', payload.sub);
+    c.set('appAuthTime', authTime);
   } catch {
     return c.json({ error: 'invalid_token' }, 401);
   }

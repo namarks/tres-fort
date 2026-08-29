@@ -76,6 +76,10 @@ final class GroupModel: ObservableObject {
     private let api = APIClient()
     private unowned let auth: AuthModel
     private let accountID: String?
+    /// Invalidates identity-bearing responses that began before a global
+    /// profile-name update. Without this, an older in-flight feed or stats
+    /// response could restore the previous effective display name.
+    private var identityCacheGeneration = 0
 
     /// Fired after a manual activity is persisted, drained from the
     /// outbox, or deleted. The owner (MainTabView) sets this to refresh
@@ -159,9 +163,12 @@ final class GroupModel: ObservableObject {
     /// and on scene-foreground transitions.
     func load() async {
         guard let jwt = currentJWT else { phase = .loading; return }
+        let generation = identityCacheGeneration
         phase = .loading
         do {
             let list = try await api.listGroups(jwt: jwt)
+            guard isCurrentAccount(using: jwt),
+                  generation == identityCacheGeneration else { return }
             groups = list
             ensureSelection()
             phase = list.isEmpty ? .none : .ready
@@ -191,10 +198,13 @@ final class GroupModel: ObservableObject {
 
     func refreshFeed(groupID: String) async {
         guard let jwt = currentJWT else { return }
+        let generation = identityCacheGeneration
         isRefreshingFeed[groupID] = true
         defer { isRefreshingFeed[groupID] = false }
         do {
             let res = try await api.getGroupFeed(groupID: groupID, limit: 30, jwt: jwt)
+            guard isCurrentAccount(using: jwt),
+                  generation == identityCacheGeneration else { return }
             feed[groupID] = res.items
             feedNextSince[groupID] = res.next_since
             feedNextSinceID[groupID] = res.next_since_id
@@ -206,10 +216,13 @@ final class GroupModel: ObservableObject {
 
     func refreshStats(groupID: String) async {
         guard let jwt = currentJWT else { return }
+        let generation = identityCacheGeneration
         isRefreshingStats[groupID] = true
         defer { isRefreshingStats[groupID] = false }
         do {
             let res = try await api.getGroupStats(groupID: groupID, range: "7d", jwt: jwt)
+            guard isCurrentAccount(using: jwt),
+                  generation == identityCacheGeneration else { return }
             stats[groupID] = res.members
             lastError = nil
         } catch {
@@ -222,8 +235,11 @@ final class GroupModel: ObservableObject {
     /// place (same forgiving stance as feed/stats).
     func refreshActivitySeries(groupID: String) async {
         guard let jwt = currentJWT else { return }
+        let generation = identityCacheGeneration
         do {
             let res = try await api.getGroupActivity(groupID: groupID, jwt: jwt)
+            guard isCurrentAccount(using: jwt),
+                  generation == identityCacheGeneration else { return }
             activitySeries[groupID] = res.members
             lastError = nil
         } catch {
@@ -235,8 +251,12 @@ final class GroupModel: ObservableObject {
     /// Profile tab. Failure leaves any cached `me` in place.
     func refreshMe() async {
         guard let jwt = currentJWT else { return }
+        let generation = identityCacheGeneration
         do {
-            me = try await api.getMe(jwt: jwt)
+            let profile = try await api.getMe(jwt: jwt)
+            guard isCurrentAccount(using: jwt),
+                  generation == identityCacheGeneration else { return }
+            me = profile
             lastError = nil
         } catch {
             handle(error, jwt: jwt)
@@ -516,7 +536,22 @@ final class GroupModel: ObservableObject {
         guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")
         }
-        me = try await api.updateDisplayName(displayName, jwt: jwt)
+        let profile = try await api.updateDisplayName(displayName, jwt: jwt)
+        guard isCurrentAccount(using: jwt) else { return }
+        me = profile
+
+        // The global name is materialized as effective_display_name in group
+        // summaries, feeds, and stats. Drop every old projection, invalidate
+        // in-flight responses, and reload from the server so no group surface
+        // can keep rendering the former identity.
+        identityCacheGeneration += 1
+        groups.removeAll()
+        feed.removeAll()
+        stats.removeAll()
+        activitySeries.removeAll()
+        feedNextSince.removeAll()
+        feedNextSinceID.removeAll()
+        await load()
     }
 
     // MARK: - Intervals.icu

@@ -72,23 +72,7 @@ final class SyncModel: ObservableObject {
         defer { isLoading = false }
         do {
             let state = try await api.getState(jwt: jwt)
-            plan = state.plan
-            sets = state.sets
-            sessions = state.sessions
-            // Full reload every sync (getState uses events_since=0): the
-            // server returns the full current non-deleted external_events
-            // set, so this is a full replace, not a delta merge. No
-            // client-side watermark/tombstone-merge is needed; we still
-            // defensively drop any tombstoned events at the cache boundary
-            // so glyphs, agenda, and conflict detection never see them.
-            rides = state.external_events.filter { !$0.isDeleted }
-            // Same full-replace + tombstone-drop boundary as `rides`.
-            activities = state.external_activities.filter { !$0.isDeleted }
-            // Manual activities: same full-replace, drop soft-deleted rows
-            // at the boundary so the calendar never renders a tombstone.
-            manualActivities = state.activities.filter { $0.deleted_at == nil }
-            todaySession = state.sessions.first { $0.date == todayString }
-            if selectedDayID == nil { selectedDayID = state.plan?.days.first?.id }
+            replaceState(with: state)
             if catalog.isEmpty {
                 catalog = (try? await api.getExercises(jwt: jwt)) ?? []
             }
@@ -96,6 +80,27 @@ final class SyncModel: ObservableObject {
         } catch {
             handle(error)
         }
+    }
+
+    /// Apply a full `/api/state` response atomically at the cache boundary.
+    /// `getState` always uses zero watermarks, so every collection is a full
+    /// replacement rather than a delta merge.
+    private func replaceState(with state: StateResponse, preferredTodaySessionID: String? = nil) {
+        plan = state.plan
+        sets = state.sets
+        sessions = state.sessions
+        // The server returns the full current non-deleted external_events set;
+        // defensively drop any tombstones so calendar surfaces never see them.
+        rides = state.external_events.filter { !$0.isDeleted }
+        activities = state.external_activities.filter { !$0.isDeleted }
+        manualActivities = state.activities.filter { $0.deleted_at == nil }
+        // Alias recovery knows the canonical session id from the logged set.
+        // Prefer it over date-ordering so runner progress immediately keys on
+        // the same session as the returned set.
+        todaySession = preferredTodaySessionID.flatMap { preferredID in
+            state.sessions.first { $0.id == preferredID }
+        } ?? state.sessions.first { $0.date == todayString }
+        if selectedDayID == nil { selectedDayID = state.plan?.days.first?.id }
     }
 
     /// Live (non-deleted) working sets for an exercise.
@@ -279,9 +284,10 @@ final class SyncModel: ObservableObject {
         .sorted { $0.date < $1.date }
     }
 
+    @discardableResult
     func logSet(_ ex: TemplateExercise, weight: Double, reps: Int,
-                durationOverride: Int? = nil) async {
-        guard let jwt = auth.jwt else { return }
+                durationOverride: Int? = nil) async -> Bool {
+        guard let jwt = auth.jwt else { return false }
         do {
             if todaySession == nil {
                 // Tie the lazily-created session to the day template the
@@ -295,7 +301,7 @@ final class SyncModel: ObservableObject {
                     dayTemplateID: selectedDay?.id,
                     jwt: jwt)
             }
-            guard let session = todaySession else { return }
+            guard let session = todaySession else { return false }
             // Index per SLOT, not per exercise_id, so two slots of the same
             // movement number independently (#3). The backend re-numbers on a
             // (session, exercise_id, set_index, is_warmup) collision, so a
@@ -326,10 +332,26 @@ final class SyncModel: ObservableObject {
             // render off it rather than re-deriving from catalog modality.
             body["is_timed"] = ex.isTimed
             let res = try await api.logSet(sessionId: session.id, body: body, jwt: jwt)
-            if !sets.contains(where: { $0.id == res.set.id }) { sets.append(res.set) }
+            if res.set.session_id == session.id {
+                if !sets.contains(where: { $0.id == res.set.id }) { sets.append(res.set) }
+            } else {
+                // Migration 0029 can leave an old client holding a duplicate
+                // session id that now aliases to the canonical row. The write
+                // succeeds against that canonical row and the response exposes
+                // its id. Reload before the runner evaluates completion so the
+                // session and set caches switch together; appending just the set
+                // would leave todaySlotSets filtering it out by the stale id.
+                let state = try await api.getState(jwt: jwt)
+                replaceState(with: state, preferredTodaySessionID: res.set.session_id)
+                guard todaySession?.id == res.set.session_id else {
+                    throw APIError.decoding("Logged set's canonical session is missing from state")
+                }
+            }
             startRest(seconds: ex.rest_seconds, name: ex.exercise_name)
+            return true
         } catch {
             handle(error)
+            return false
         }
     }
 
@@ -421,7 +443,7 @@ final class SyncModel: ObservableObject {
         timedStartDate = nil
         skipped.remove(ex.id)   // logging work un-skips this slot
         let secs = max(1, held)
-        await logSet(ex, weight: 0, reps: secs, durationOverride: secs)
+        guard await logSet(ex, weight: 0, reps: secs, durationOverride: secs) else { return }
         if isComplete(ex) {
             if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
         }
@@ -465,7 +487,7 @@ final class SyncModel: ObservableObject {
     func logCurrentSet() async {
         guard let ex = currentExercise else { return }
         skipped.remove(ex.id)   // logging work un-skips this slot
-        await logSet(ex, weight: weight, reps: reps)   // also starts rest timer
+        guard await logSet(ex, weight: weight, reps: reps) else { return } // also starts rest timer
         if isComplete(ex) {
             if let next = nextIncompleteIndex { jump(to: next) }
             else { finished = true }

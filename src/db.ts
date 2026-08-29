@@ -1280,6 +1280,18 @@ export async function addDayTemplate(
   return row;
 }
 
+/** Resolve a day only inside one already-authorized plan. */
+export async function getDayTemplateInPlan(
+  db: D1Database,
+  planId: string,
+  dayId: string,
+): Promise<DayTemplateRow | null> {
+  return db
+    .prepare('SELECT * FROM day_templates WHERE id = ?1 AND plan_id = ?2')
+    .bind(dayId, planId)
+    .first<DayTemplateRow>();
+}
+
 /** Allowlist of patch keys accepted by `patchDayTemplate`. Unknown keys
  *  surface as `{ error: 'unknown_fields', fields }` — same diagnosability
  *  contract as updateExercise. */
@@ -1943,10 +1955,11 @@ export async function logSet(
 }
 
 /**
- * Most recent live set across ALL sources for (user, exercise, weight, reps,
- * is_warmup) within a sliding window (default 120s). Used by the MCP log_set
- * path to refuse phantom dupes when iOS just logged the same work; REST
- * writes from iOS are not gated by this (their idempotency is the row UUID).
+ * Most recent live non-MCP set for (user, exercise, weight, reps, is_warmup)
+ * within a sliding window (default 120s). Explicit set index / duration
+ * values narrow the match; omitted values remain ambiguous wildcards. Used
+ * by MCP log_set to refuse cross-channel phantom dupes when iOS just logged
+ * the same work; REST writes are not gated (their idempotency is the row UUID).
  */
 export async function findRecentMatchingSet(
   db: D1Database,
@@ -1956,6 +1969,8 @@ export async function findRecentMatchingSet(
     weight: number;
     reps: number;
     is_warmup: boolean;
+    set_index?: number | null;
+    duration_s?: number | null;
     within_ms?: number;
   },
 ): Promise<SetLogRow | null> {
@@ -1969,11 +1984,23 @@ export async function findRecentMatchingSet(
          AND sl.weight = ?3
          AND sl.reps = ?4
          AND sl.is_warmup = ?5
+         AND sl.source <> 'mcp'
          AND sl.deleted_at IS NULL
          AND sl.logged_at >= ?6
+         AND (?7 IS NULL OR sl.set_index = ?7)
+         AND (?8 IS NULL OR sl.duration_s = ?8)
        ORDER BY sl.logged_at DESC LIMIT 1`,
     )
-    .bind(userId, args.exercise_id, args.weight, args.reps, args.is_warmup ? 1 : 0, since)
+    .bind(
+      userId,
+      args.exercise_id,
+      args.weight,
+      args.reps,
+      args.is_warmup ? 1 : 0,
+      since,
+      args.set_index ?? null,
+      args.duration_s ?? null,
+    )
     .first<SetLogRow>();
   return row ?? null;
 }

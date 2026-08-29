@@ -20,6 +20,7 @@ import {
   getGroupWithMembers,
   getHistory,
   getOrCreateSession,
+  getDayTemplateInPlan,
   getPlanTree,
   getState,
   getVolume,
@@ -48,6 +49,69 @@ export const apiRoutes = new Hono<HonoEnv>();
 apiRoutes.use('*', requireAppJwt);
 
 const todayLocal = () => new Date().toISOString().slice(0, 10);
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+type JsonObject = Record<string, unknown>;
+type FieldRule = (value: unknown) => boolean;
+
+const hasOwn = (body: JsonObject, field: string) =>
+  Object.prototype.hasOwnProperty.call(body, field);
+const isNonEmptyString: FieldRule = (value) =>
+  typeof value === 'string' && value.length > 0;
+const isFiniteNumber: FieldRule = (value) =>
+  typeof value === 'number' && Number.isFinite(value);
+const isNonNegativeInteger: FieldRule = (value) =>
+  Number.isSafeInteger(value) && (value as number) >= 0;
+const isPositiveInteger: FieldRule = (value) =>
+  Number.isSafeInteger(value) && (value as number) > 0;
+const isNullableString: FieldRule = (value) =>
+  value === null || typeof value === 'string';
+const isNullableFiniteNumber: FieldRule = (value) =>
+  value === null || isFiniteNumber(value);
+const isNullableNonNegativeInteger: FieldRule = (value) =>
+  value === null || isNonNegativeInteger(value);
+
+/**
+ * JSON generics only describe a body to TypeScript; they do not validate the
+ * bytes a client actually sent. Keep the four session/set mutation routes on
+ * one stable error contract before any value reaches D1.
+ */
+async function readMutationBody(
+  c: Context<HonoEnv>,
+): Promise<
+  | { ok: true; body: JsonObject }
+  | { ok: false; error: 'invalid_json' | 'invalid_body' }
+> {
+  let value: unknown;
+  try {
+    value = await c.req.json<unknown>();
+  } catch {
+    return { ok: false, error: 'invalid_json' };
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return { ok: false, error: 'invalid_body' };
+  }
+  return { ok: true, body: value as JsonObject };
+}
+
+/** Return required or present optional fields whose runtime value is invalid. */
+function invalidMutationFields(
+  body: JsonObject,
+  required: Record<string, FieldRule>,
+  optional: Record<string, FieldRule> = {},
+): string[] {
+  const invalid: string[] = [];
+  for (const [field, rule] of Object.entries(required)) {
+    if (!hasOwn(body, field) || !rule(body[field])) invalid.push(field);
+  }
+  for (const [field, rule] of Object.entries(optional)) {
+    if (hasOwn(body, field) && !rule(body[field])) invalid.push(field);
+  }
+  return invalid;
+}
 
 // ---- sync pull -----------------------------------------------------------
 // Device timezone (X-Device-TZ) is captured for EVERY authenticated request
@@ -110,6 +174,13 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
   if (!plan) return c.json({ error: 'no_active_plan' }, 400);
+  const dayId = c.req.param('id');
+  // Resolve the nested day through THIS user's active plan before resolving
+  // the exercise or computing order. A globally-valid day from another user
+  // or one of this user's archived plans is intentionally indistinguishable
+  // from a missing day and can never receive a slot or bump the active plan.
+  const day = await getDayTemplateInPlan(c.env.DB, plan.id, dayId);
+  if (!day) return c.json({ error: 'not_found' }, 404);
   const b = await c.req.json<{
     exercise: string;
     order_index?: number;
@@ -126,7 +197,6 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
   }>();
   const ex = await resolveExercise(c.env.DB, b.exercise);
   if (!ex) return c.json({ error: 'unknown_exercise', query: b.exercise }, 400);
-  const dayId = c.req.param('id');
   const orderIndex =
     typeof b.order_index === 'number'
       ? b.order_index
@@ -222,19 +292,35 @@ apiRoutes.post('/sessions', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
   if (!plan) return c.json({ error: 'no_active_plan' }, 400);
-  const b = await c.req.json<{ date?: string; day_template_id?: string | null }>();
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const invalid = invalidMutationFields(b, {}, {
+    date: (value) => typeof value === 'string' && ISO_DATE_RE.test(value),
+    day_template_id: (value) => value === null || isNonEmptyString(value),
+  });
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const s = await getOrCreateSession(
     c.env.DB,
     userId,
     plan.id,
-    b.date ?? todayLocal(),
-    b.day_template_id ?? null,
+    (b.date as string | undefined) ?? todayLocal(),
+    (b.day_template_id as string | null | undefined) ?? null,
   );
   return c.json(s, 201);
 });
 
 apiRoutes.patch('/sessions/:id', async (c) => {
-  const b = await c.req.json<{ status?: string; perceived_fatigue?: number; notes?: string }>();
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const invalid = invalidMutationFields(b, {}, {
+    // status remains deliberately `unknown`: patchSession owns its closed
+    // status allowlist and stable invalid_status response.
+    perceived_fatigue: isNonNegativeInteger,
+    notes: (value) => typeof value === 'string',
+  });
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const s = await patchSession(c.env.DB, c.get('userId'), c.req.param('id'), b);
   if (!s) return c.json({ error: 'not_found' }, 404);
   if ('error' in s) {
@@ -257,25 +343,47 @@ apiRoutes.post('/sessions/:id/discard', async (c) => {
 });
 
 apiRoutes.post('/sessions/:id/sets', async (c) => {
-  const b = await c.req.json<{
-    id: string;
-    exercise_id: string;
-    set_index: number;
-    weight: number;
-    reps: number;
-    rpe?: number | null;
-    is_warmup?: boolean;
-    template_exercise_id?: string | null;
-    notes?: string | null;
-    logged_at?: number;
-    duration_s?: number | null;
-    is_timed?: boolean;
-  }>();
-  if (!b.id) return c.json({ error: 'missing_set_id' }, 400);
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  // Preserve the established missing-id response while using invalid_fields
+  // for a present id (or any other field) with the wrong runtime shape.
+  if (!hasOwn(b, 'id')) return c.json({ error: 'missing_set_id' }, 400);
+  const invalid = invalidMutationFields(
+    b,
+    {
+      id: (value) => typeof value === 'string' && UUID_RE.test(value),
+      exercise_id: isNonEmptyString,
+      set_index: isPositiveInteger,
+      weight: isFiniteNumber,
+      reps: isNonNegativeInteger,
+    },
+    {
+      rpe: isNullableFiniteNumber,
+      is_warmup: (value) => typeof value === 'boolean',
+      template_exercise_id: (value) => value === null || isNonEmptyString(value),
+      notes: isNullableString,
+      logged_at: isNonNegativeInteger,
+      duration_s: isNullableNonNegativeInteger,
+      is_timed: (value) => typeof value === 'boolean',
+    },
+  );
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   try {
     const result = await logSet(c.env.DB, c.get('userId'), {
-      ...b,
+      id: b.id as string,
       session_id: c.req.param('id'),
+      exercise_id: b.exercise_id as string,
+      template_exercise_id: b.template_exercise_id as string | null | undefined,
+      set_index: b.set_index as number,
+      weight: b.weight as number,
+      reps: b.reps as number,
+      rpe: b.rpe as number | null | undefined,
+      is_warmup: b.is_warmup as boolean | undefined,
+      notes: b.notes as string | null | undefined,
+      logged_at: b.logged_at as number | undefined,
+      duration_s: b.duration_s as number | null | undefined,
+      is_timed: b.is_timed as boolean | undefined,
       source: 'ios',
     });
     return c.json(result, result.deduped ? 200 : 201);
@@ -285,13 +393,17 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
 });
 
 apiRoutes.patch('/sets/:id', async (c) => {
-  const b = await c.req.json<{
-    weight?: number;
-    reps?: number;
-    rpe?: number | null;
-    notes?: string | null;
-    deleted?: boolean;
-  }>();
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const invalid = invalidMutationFields(b, {}, {
+    weight: isFiniteNumber,
+    reps: isNonNegativeInteger,
+    rpe: isNullableFiniteNumber,
+    notes: isNullableString,
+    deleted: (value) => typeof value === 'boolean',
+  });
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const row = await patchSet(c.env.DB, c.get('userId'), c.req.param('id'), b);
   return row ? c.json(row) : c.json({ error: 'not_found' }, 404);
 });
@@ -368,10 +480,6 @@ apiRoutes.get('/volume', async (c) => {
 // Append-only log, client-UUID idempotent (same model as POST /sessions/:id/
 // sets). The iOS outbox can retry safely; the second POST with the same `id`
 // returns the existing row instead of duplicating.
-
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 apiRoutes.post('/activities', async (c) => {
   const b = await c.req.json<{

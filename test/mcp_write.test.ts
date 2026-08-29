@@ -964,7 +964,72 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     expect(exs.find((e: { exercise_id: string }) => e.exercise_id === 'ex_bench').target_duration_s).toBeNull();
   });
 
-  it('log_set rejects a recent_duplicate of an iOS-logged set within 120s', async () => {
+  it('log_set preserves a same-weight MCP straight-set series', async () => {
+    await call('update_plan', {
+      name: 'Straight sets',
+      days: [
+        {
+          day_label: 'S',
+          name: 'Straight Sets',
+          exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }],
+        },
+      ],
+    });
+
+    const sets = [];
+    for (let i = 0; i < 3; i++) {
+      sets.push(
+        await call('log_set', {
+          exercise: 'bench',
+          weight: 187,
+          reps: 5,
+        }),
+      );
+    }
+
+    expect(sets.map((r) => r.error)).toEqual([undefined, undefined, undefined]);
+    const indexes = sets.map((r) => r.set.set_index);
+    expect(indexes[1]).toBe(indexes[0] + 1);
+    expect(indexes[2]).toBe(indexes[1] + 1);
+    expect(new Set(sets.map((r) => r.set.id)).size).toBe(3);
+  });
+
+  it('log_set preserves repeated timed MCP efforts', async () => {
+    await call('update_plan', {
+      name: 'Timed repeats',
+      days: [
+        {
+          day_label: 'T',
+          name: 'Timed Repeats',
+          exercises: [{ exercise: 'plank', target_sets: 2, target_reps: 1, target_duration_s: 30 }],
+        },
+      ],
+    });
+
+    const first = await call('log_set', {
+      exercise: 'plank',
+      weight: 0,
+      reps: 1,
+      duration_s: 30,
+      is_timed: true,
+    });
+    const second = await call('log_set', {
+      exercise: 'plank',
+      weight: 0,
+      reps: 1,
+      duration_s: 30,
+      is_timed: true,
+    });
+
+    expect(first.error).toBeUndefined();
+    expect(second.error).toBeUndefined();
+    expect([first.set.duration_s, second.set.duration_s]).toEqual([30, 30]);
+    expect([first.set.is_timed, second.set.is_timed]).toEqual([1, 1]);
+    expect(second.set.set_index).toBe(first.set.set_index + 1);
+    expect(first.set.id).not.toBe(second.set.id);
+  });
+
+  it('log_set blocks ambiguous iOS narration but accepts explicit distinctions and confirmation', async () => {
     // Plan + a session iOS just logged a 185x5 squat into.
     const built = await call('update_plan', {
       name: 'Dedupe',
@@ -998,13 +1063,23 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
       )
       .bind(sessionId, userId, planId, today, tNow - 30_000)
       .run();
-    await env.DB
-      .prepare(
-        `INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,deleted_at)
-         VALUES (?1,?2,'ex_back_squat',NULL,1,185,5,NULL,0,NULL,?3,'ios',NULL,NULL)`,
-      )
-      .bind(crypto.randomUUID(), sessionId, tNow - 30_000)
-      .run();
+    const insertIosSet = env.DB.prepare(
+      `INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,deleted_at)
+       VALUES (?1,?2,'ex_back_squat',NULL,?3,?4,5,NULL,0,NULL,?5,'ios',?6,NULL)`,
+    );
+    for (const [setIndex, weight, loggedAt, duration] of [
+      [1, 185, tNow - 30_000, 30],
+      [2, 195, tNow - 30_000, 30],
+      [3, 205, tNow - 30_000, 30],
+      // Same triple twice: the older row must remain discoverable when an
+      // explicit discriminator matches it but not the newest candidate.
+      [4, 215, tNow - 40_000, 30],
+      [5, 215, tNow - 20_000, 45],
+    ]) {
+      await insertIosSet
+        .bind(crypto.randomUUID(), sessionId, setIndex, weight, loggedAt, duration)
+        .run();
+    }
 
     // The phantom narration call: same exercise/weight/reps, ~30s later.
     const dup = await call('log_set', { exercise: 'squat', weight: 185, reps: 5 });
@@ -1012,7 +1087,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     expect(dup.existing_set.source).toBe('ios');
     expect(dup.message).toMatch(/iOS/);
 
-    // Only the one (iOS) live set survives — the MCP call did NOT insert.
+    // Only the one matching iOS set survives — the MCP call did NOT insert.
     const live = await env.DB
       .prepare(
         "SELECT COUNT(*) AS c FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL AND weight = 185 AND reps = 5",
@@ -1020,6 +1095,48 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
       .bind(sessionId)
       .first<{ c: number }>();
     expect(live!.c).toBe(1);
+
+    // Supplying today's date is still ambiguous and remains blocked.
+    const sameDay = await call('log_set', {
+      exercise: 'squat',
+      weight: 185,
+      reps: 5,
+      session_date: today,
+    });
+    expect(sameDay.error).toBe('recent_duplicate');
+
+    // The newest same-triple row differs, but an older recent iOS row still
+    // matches each supplied discriminator and must not be shadowed.
+    const olderIndexMatch = await call('log_set', {
+      exercise: 'squat',
+      weight: 215,
+      reps: 5,
+      set_index: 4,
+    });
+    expect(olderIndexMatch.error).toBe('recent_duplicate');
+    expect(olderIndexMatch.existing_set.set_index).toBe(4);
+
+    const olderDurationMatch = await call('log_set', {
+      exercise: 'squat',
+      weight: 215,
+      reps: 5,
+      duration_s: 30,
+      is_timed: true,
+    });
+    expect(olderDurationMatch.error).toBe('recent_duplicate');
+    expect(olderDurationMatch.existing_set.duration_s).toBe(30);
+
+    const trulyDistinct = await call('log_set', {
+      exercise: 'squat',
+      weight: 215,
+      reps: 5,
+      set_index: 21,
+      duration_s: 60,
+      is_timed: true,
+    });
+    expect(trulyDistinct.error).toBeUndefined();
+    expect(trulyDistinct.set.set_index).toBe(21);
+    expect(trulyDistinct.set.duration_s).toBe(60);
 
     // Same triple-but-warmup is NOT considered a dupe of a working set.
     const wu = await call('log_set', {
@@ -1036,6 +1153,45 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     expect(next.error).toBeUndefined();
     expect(next.set.weight).toBe(225);
 
+    // An explicit different set index identifies a separate intended set,
+    // even though an iOS set has the same exercise/weight/reps triple.
+    const indexed = await call('log_set', {
+      exercise: 'squat',
+      weight: 205,
+      reps: 5,
+      set_index: 20,
+    });
+    expect(indexed.error).toBeUndefined();
+    expect(indexed.set.set_index).toBe(20);
+
+    // Duration distinguishes repeated timed efforts across channels.
+    const durationDistinct = await call('log_set', {
+      exercise: 'squat',
+      weight: 185,
+      reps: 5,
+      duration_s: 45,
+      is_timed: true,
+    });
+    expect(durationDistinct.error).toBeUndefined();
+    expect(durationDistinct.set.duration_s).toBe(45);
+
+    // An otherwise identical recent iOS set remains blocked until the user
+    // explicitly confirms it is a separate intentional repeat.
+    const needsConfirmation = await call('log_set', {
+      exercise: 'squat',
+      weight: 195,
+      reps: 5,
+    });
+    expect(needsConfirmation.error).toBe('recent_duplicate');
+    const confirmed = await call('log_set', {
+      exercise: 'squat',
+      weight: 195,
+      reps: 5,
+      confirm_duplicate: true,
+    });
+    expect(confirmed.error).toBeUndefined();
+    expect(confirmed.set.source).toBe('mcp');
+
     // Explicit backfill to a past date bypasses the gate — "log yesterday's
     // 185x5" is an explicit logging intent and must not be blocked by today's
     // matching iOS set.
@@ -1049,15 +1205,6 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     expect(backfill.error).toBeUndefined();
     expect(backfill.set.weight).toBe(185);
 
-    // session_date == today still goes through the gate (narration could
-    // supply today explicitly; we only trust an explicit *past* date).
-    const sameDay = await call('log_set', {
-      exercise: 'squat',
-      weight: 185,
-      reps: 5,
-      session_date: today,
-    });
-    expect(sameDay.error).toBe('recent_duplicate');
   });
 
   it('delete_set soft-deletes a logged set; missing id reports not_found', async () => {

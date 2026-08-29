@@ -354,10 +354,14 @@ const TOOLS: Record<string, Tool> = {
       'like "set 2 down", "5x135", "just did bench", "that felt heavy" ' +
       'are status reports, not logging requests — acknowledge them, do ' +
       'not call this tool. When unsure, ask the user before logging. The ' +
-      'server also rejects sets that duplicate a same exercise/weight/' +
-      'reps logged within the last 120 seconds (error: "recent_duplicate"' +
-      '); that signal almost always means iOS already logged it — do NOT ' +
-      'retry, and do NOT re-call with tweaked numbers. The dedupe gate is ' +
+      'server also rejects an ambiguous same exercise/weight/reps set ' +
+      'logged by iOS within the last 120 seconds (error: ' +
+      '"recent_duplicate"); that signal almost always means iOS already ' +
+      'logged it — do NOT retry or tweak the numbers. A distinct explicit ' +
+      'set_index or duration_s is treated as a separate intended set, and ' +
+      'same-weight MCP straight sets are preserved. If the user confirms ' +
+      'the rejected set is separate, retry it unchanged with ' +
+      'confirm_duplicate=true. The dedupe gate is ' +
       'skipped for explicit backfill (session_date set to a past day, e.g. ' +
       '"log yesterday\'s 185x5") — those are explicit logging intents. ' +
       'CONVENTION: weight is per implement and reps is per side. For a ' +
@@ -389,6 +393,11 @@ const TOOLS: Record<string, Tool> = {
           description:
             'true if this set is a timed hold (renders as "Ns"). Defaults to the exercise modality; pass true when logging a duration-pinned hold on a non-timed exercise.',
         },
+        confirm_duplicate: {
+          type: 'boolean',
+          description:
+            'true only after the user explicitly confirms a recent_duplicate is a separate intended set',
+        },
         notes: { type: 'string' },
       },
       ['exercise', 'weight', 'reps'],
@@ -404,9 +413,12 @@ const TOOLS: Record<string, Tool> = {
       if (!ex) return { error: 'unknown_exercise', query: a.exercise };
       const exId = (ex as { id: string }).id;
       const isWarmup = a.is_warmup === true;
-      // Phantom-dupe guard: if the same exercise/weight/reps was logged by
-      // ANY source in the last 120s, refuse. The narration-while-logging-
-      // in-iOS case (the bug this fixes) hits exactly this window.
+      const requestedSetIndex = typeof a.set_index === 'number' ? a.set_index : null;
+      const requestedDuration = a.duration_s == null ? null : Number(a.duration_s);
+      // Phantom-dupe guard: refuse only an ambiguous cross-channel replay.
+      // Repeated MCP calls are legitimate straight/timed sets, and explicit
+      // set indices or durations distinguish separate work from the recent
+      // iOS set. An unchanged retry is allowed only after user confirmation.
       // BUT: skip the gate for explicit backfill ("log yesterday's 185x5")
       // — when session_date is supplied and isn't today, the user is making
       // an explicit historical log, not narrating; rejecting it on a same-
@@ -419,8 +431,10 @@ const TOOLS: Record<string, Tool> = {
             weight: Number(a.weight),
             reps: Number(a.reps),
             is_warmup: isWarmup,
+            set_index: requestedSetIndex,
+            duration_s: requestedDuration,
           });
-      if (recent) {
+      if (recent && a.confirm_duplicate !== true) {
         const ageS = Math.max(0, Math.round((Date.now() - recent.logged_at) / 1000));
         return {
           error: 'recent_duplicate',
@@ -428,16 +442,17 @@ const TOOLS: Record<string, Tool> = {
             `A ${a.weight}x${a.reps}${isWarmup ? ' warmup' : ''} set for ` +
             `${(ex as { name: string }).name} was already logged ${ageS}s ` +
             `ago (source=${recent.source}). This is almost certainly a ` +
-            `duplicate from the user logging in iOS — do NOT retry, and ` +
-            `do NOT tweak the numbers to bypass this. Use delete_set if ` +
-            `the existing set is wrong.`,
+            `duplicate from the user logging in iOS — do NOT retry or ` +
+            `tweak the numbers. If the user confirms this is a separate ` +
+            `intended set, retry unchanged with confirm_duplicate=true. ` +
+            `Use delete_set if the existing set is wrong.`,
           existing_set: recent,
         };
       }
       const existing = await getSetsForSession(env.DB, session.id);
       const setIndex =
-        typeof a.set_index === 'number'
-          ? a.set_index
+        requestedSetIndex != null
+          ? requestedSetIndex
           : existing.filter((s) => s.exercise_id === exId && !s.is_warmup).length + 1;
       const { set, deduped } = await logSet(env.DB, userId, {
         id: crypto.randomUUID(),
@@ -449,7 +464,7 @@ const TOOLS: Record<string, Tool> = {
         rpe: a.rpe == null ? null : Number(a.rpe),
         is_warmup: a.is_warmup === true,
         notes: typeof a.notes === 'string' ? a.notes : null,
-        duration_s: a.duration_s == null ? null : Number(a.duration_s),
+        duration_s: requestedDuration,
         is_timed: typeof a.is_timed === 'boolean' ? a.is_timed : undefined,
         source: 'mcp',
       });

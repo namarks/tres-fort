@@ -1,6 +1,6 @@
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { exportUserData, upsertUser } from '../src/db';
+import { createInvite, exportUserData, upsertUser } from '../src/db';
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -105,6 +105,22 @@ describe('account export projection', () => {
       ).bind(groupId, caller.id, other.id, ts, otherPrivate),
     ]);
 
+    const invite = await createInvite(env.DB, caller.id, groupId);
+    const legacyInviteAuditId = `export-invite-audit-${suffix}`;
+    await env.DB
+      .prepare(
+        `INSERT INTO audit_log
+           (id,user_id,actor,tool,args,result,created_at)
+         VALUES (?1,?2,'ios','create_invite',?3,'created',?4)`,
+      )
+      .bind(
+        legacyInviteAuditId,
+        caller.id,
+        JSON.stringify({ group_id: groupId, code: invite.code }),
+        ts,
+      )
+      .run();
+
     const exported = await exportUserData(env.DB, caller.id);
     expect(exported).not.toBeNull();
     if (!exported) throw new Error('expected caller export');
@@ -121,6 +137,7 @@ describe('account export projection', () => {
       }>;
       sessions: Array<{ id: string }>;
       set_logs: Array<{ id: string }>;
+      audit_log: Array<{ id: string; tool: string; args: string }>;
     };
 
     expect(exported.schema_version).toBe(1);
@@ -140,6 +157,13 @@ describe('account export projection', () => {
     ]);
     expect(training.sessions.map((row) => row.id)).toEqual([sessionId]);
     expect(training.set_logs.map((row) => row.id)).toEqual([setId]);
+    const legacyInviteAudit = training.audit_log.find(
+      (row) => row.id === legacyInviteAuditId,
+    );
+    expect(legacyInviteAudit).toBeDefined();
+    expect(JSON.parse(legacyInviteAudit?.args ?? '{}')).toEqual({
+      group_id: groupId,
+    });
     expect(exported.group_memberships).toEqual([
       {
         group_id: groupId,
@@ -149,6 +173,7 @@ describe('account export projection', () => {
       },
     ]);
     expect(serialized).not.toContain(callerSecret);
+    expect(serialized).not.toContain(invite.code);
     expect(serialized).not.toContain(other.id);
     expect(serialized).not.toContain(otherPrivate);
     expect(await exportUserData(env.DB, crypto.randomUUID())).toBeNull();

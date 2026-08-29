@@ -82,12 +82,12 @@ final class HealthKitSyncModel: ObservableObject {
 
     private var currentJWT: String? {
         guard let accountID, auth.userID == accountID else { return nil }
-        return auth.jwt
+        return auth.featureJWT
     }
 
     private func isCurrentAccount(using jwt: String) -> Bool {
         guard let accountID, auth.userID == accountID else { return false }
-        return auth.jwt == jwt
+        return auth.featureJWT == jwt
     }
 
     private static func migrateLegacyState(userID: String, defaults: UserDefaults) {
@@ -143,12 +143,14 @@ final class HealthKitSyncModel: ObservableObject {
             lastError = "Apple Health isn’t available on this device."
             return
         }
+        guard let jwt = currentJWT else { return }
         do {
             try await store.requestAuthorization(toShare: [], read: readTypes)
         } catch {
             lastError = "Couldn’t access Apple Health. \(error.localizedDescription)"
             return
         }
+        guard isCurrentAccount(using: jwt) else { return }
         enabled = true
         if let accountID {
             defaults.set(true, forKey: Self.enabledKey(userID: accountID))
@@ -182,7 +184,7 @@ final class HealthKitSyncModel: ObservableObject {
     /// Called on launch + foreground. No-op unless connected; otherwise
     /// (re)registers the observer and kicks an incremental sync.
     func start() {
-        guard enabled, isAvailable else { return }
+        guard enabled, isAvailable, currentJWT != nil else { return }
         registerObserver()
         Task { await sync() }
     }
@@ -394,7 +396,9 @@ final class HealthKitSyncModel: ObservableObject {
     }
 
     private func saveAnchor(_ anchor: HKQueryAnchor) {
-        guard let accountID else { return }
+        guard let accountID,
+              auth.userID == accountID,
+              auth.featureJWT != nil else { return }
         guard let data = try? NSKeyedArchiver.archivedData(
             withRootObject: anchor, requiringSecureCoding: true) else { return }
         defaults.set(data, forKey: Self.anchorKey(userID: accountID))

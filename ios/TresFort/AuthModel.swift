@@ -21,6 +21,12 @@ final class AuthModel: ObservableObject {
     /// the key-bound deletion receipt after a lost response, so background
     /// 401s and explicit sign-out must not discard it.
     @Published private(set) var accountDeletionPending = false
+    /// Ordinary feature models must not use the bearer while DELETE /api/me
+    /// is unresolved. `jwt` itself remains available only so AuthModel can
+    /// replay the key-bound deletion receipt after a lost response.
+    var featureJWT: String? {
+        accountDeletionPending ? nil : jwt
+    }
     /// Server user id, captured from /auth/apple's `user.id` and persisted
     /// in UserDefaults so GroupModel can survive an app relaunch with the
     /// keychain JWT alone. Used as the fallback for `is_me` comparisons

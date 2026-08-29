@@ -61,12 +61,12 @@ final class SyncModel: ObservableObject {
     /// continue using the replacement account's bearer.
     private var currentJWT: String? {
         guard let accountID, auth.userID == accountID else { return nil }
-        return auth.jwt
+        return auth.featureJWT
     }
 
     private func isCurrentAccount(using jwt: String) -> Bool {
         guard let accountID, auth.userID == accountID else { return false }
-        return auth.jwt == jwt
+        return auth.featureJWT == jwt
     }
 
     var todayString: String {

@@ -808,4 +808,57 @@ final class AuthModelTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: AuthModel.userIDKey), "user-b")
         XCTAssertEqual(model.phase, .signedIn)
     }
+
+    func testInFlightActivityCannotRecreateOutboxAfterDeletion() async {
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        let tokens = MemoryTokenStore(sessionToken(for: "user-a"))
+        let api = AuthAPIStub()
+        let deletionStarted = AsyncLatch()
+        let deletionRelease = AsyncLatch()
+        api.deletionHandler = { _, _ in
+            await deletionStarted.open()
+            await deletionRelease.wait()
+            return AccountDeletionResponse(ok: true, owner_tombstoned: false)
+        }
+        let activityStarted = AsyncLatch()
+        let activityRelease = AsyncLatch()
+        let auth = AuthModel(
+            api: api, tokenStore: tokens, defaults: defaults)
+        let group = GroupModel(
+            auth: auth,
+            defaults: defaults,
+            activityLogger: { _, _ in
+                await activityStarted.open()
+                await activityRelease.wait()
+                throw APIError.http(500, "deleted_principal")
+            })
+        let pending = PendingActivity(
+            id: UUID().uuidString,
+            date: "2026-08-29",
+            type: "walk",
+            title: nil,
+            duration_minutes: nil,
+            notes: nil,
+            logged_at: 2_000_000_000_000)
+
+        let logging = Task { await group.logActivity(pending) }
+        await activityStarted.wait()
+        let deletion = Task { try await auth.deleteAccount() }
+        await deletionStarted.wait()
+        XCTAssertTrue(auth.accountDeletionPending)
+        XCTAssertNil(auth.featureJWT)
+        await deletionRelease.open()
+        do {
+            try await deletion.value
+        } catch {
+            XCTFail("acknowledged deletion failed: \(error)")
+        }
+        await activityRelease.open()
+        await logging.value
+
+        XCTAssertTrue(
+            ActivityOutboxStore.load(
+                userID: "user-a", defaults: defaults).isEmpty)
+    }
 }

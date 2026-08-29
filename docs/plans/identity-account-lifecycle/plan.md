@@ -74,9 +74,12 @@ exact-head verification, and closes the plan.
   installs migrate a missing pointer from that subject), and foreground work is
   pinned to the account that initiated it. Sync, group, and HealthKit models
   also capture that account and never borrow a replacement account's bearer or
-  apply a stale 401 to a renewed/switched session. This host has no installed
-  iOS simulator runtime, so the checked-in XCTest target could not run through
-  `xcodebuild` here.
+  apply a stale 401 to a renewed/switched session. While deletion is pending,
+  only AuthModel can retain the bearer for a receipt retry; feature models are
+  denied access, and post-await persistence guards prevent an in-flight task
+  from recreating cleared outbox, intervals, or HealthKit state. This host has
+  no installed iOS simulator runtime, so the checked-in XCTest target could not
+  run through `xcodebuild` here.
 - Runtime account deletion remains destructive and must always require the
   authenticated user's explicit in-app confirmation. Development and CI must
   exercise only seeded users.
@@ -112,17 +115,21 @@ exact-head verification, and closes the plan.
   the authenticated user, and audits the changed field without copying the name
   into audit arguments. iOS invalidates in-flight identity projections and
   reloads group summaries, feeds, stats, and activity caches after the update so
-  the old effective name cannot survive in another group surface.
+  the old effective name cannot survive in another group surface. Hydrated
+  create, join, and per-group-name mutation responses carry the same generation
+  guard and reconcile from the server if a global-name update overtakes them.
 - The dormant portability projection includes only catalog exercises referenced
   by the caller's templates or logged sets, including their names, units,
   modalities, muscles, and aliases, so its exercise identifiers remain
   independently interpretable without exposing unrelated catalog rows.
+  Invite capabilities are omitted from new audit rows and stripped from
+  historical invite-audit arguments before export.
 - Verification at this milestone: the full Workers suite passes 397/397, the
   TypeScript compiler and plan compiler pass, iOS device sources compile, the
   app module and XCTest source typecheck, including stale renewal, stale
-  Apple-credential callback, account-switch-during-deletion, durable owner
-  recovery, and lost-response retry/bearer coverage. The standalone production
-  AuthModel harness passes Apple
+  Apple-credential callback, account-switch-during-deletion, in-flight
+  deletion/outbox cleanup, durable owner recovery, and lost-response
+  retry/bearer coverage. The standalone production AuthModel harness passes Apple
   revocation, provider-unavailable, transferred-identity, and bearer/account
   binding behavior. This host still has no installed iOS simulator runtime, so
   XCTest execution remains unavailable locally.

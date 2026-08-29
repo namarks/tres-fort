@@ -1218,11 +1218,11 @@ export async function getMeProfile(
  * Portable, caller-scoped snapshot of authoritative account and training data.
  * This projection is intentionally not mounted on a network route until the
  * sensitive export surface receives explicit product/security authorization.
- * Secret material (intervals credentials, MCP passphrase hashes, OAuth tokens)
- * is deliberately excluded; connection metadata and the Apple subject remain
- * because they are the user's own account data. Shared group exports contain
- * only the caller's membership row and group name, never another member's
- * profile or activity.
+ * Secret material (intervals credentials, MCP passphrase hashes, OAuth tokens,
+ * and group-invite capabilities) is deliberately excluded; connection metadata
+ * and the Apple subject remain because they are the user's own account data.
+ * Shared group exports contain only the caller's membership row and group name,
+ * never another member's profile or activity.
  */
 export async function exportUserData(
   db: D1Database,
@@ -1318,6 +1318,24 @@ export async function exportUserData(
     .prepare('SELECT * FROM audit_log WHERE user_id = ?1 ORDER BY created_at, id')
     .bind(userId)
     .all();
+  const auditRows = audit.results.map((row) => {
+    if (row.tool !== 'create_invite' && row.tool !== 'redeem_invite') {
+      return row;
+    }
+    if (typeof row.args !== 'string') return { ...row, args: '{}' };
+    try {
+      const args = JSON.parse(row.args) as unknown;
+      if (args === null || Array.isArray(args) || typeof args !== 'object') {
+        return { ...row, args: '{}' };
+      }
+      delete (args as Record<string, unknown>).code;
+      return { ...row, args: JSON.stringify(args) };
+    } catch {
+      // Known invite audit rows fail closed: malformed historical arguments
+      // must not bypass capability redaction.
+      return { ...row, args: '{}' };
+    }
+  });
   const events = await db
     .prepare('SELECT * FROM external_events WHERE user_id = ?1 ORDER BY date, id')
     .bind(userId)
@@ -1355,7 +1373,7 @@ export async function exportUserData(
       session_aliases: aliases.results,
       session_load_exports: loadExports.results,
       notes: notes.results,
-      audit_log: audit.results,
+      audit_log: auditRows,
       external_events: events.results,
       external_activities: externalActivities.results,
       activities: activities.results,
@@ -1571,7 +1589,7 @@ export async function createInvite(
     db,
     userId,
     'create_invite',
-    { group_id: groupId, code, expires_at: expires },
+    { group_id: groupId, expires_at: expires },
     'created',
     'ios',
   );
@@ -1688,7 +1706,7 @@ export async function redeemInvite(
     db,
     userId,
     'redeem_invite',
-    { group_id: invite.group_id, code },
+    { group_id: invite.group_id },
     'joined',
     'ios',
   );

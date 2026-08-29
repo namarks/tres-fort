@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { HonoEnv, User } from '../types';
-import { issueAppJwt, verifyAppleToken } from '../auth';
+import { issueAppJwt, requireAppJwt, verifyAppleToken } from '../auth';
 import {
   claimOrCreateOwner,
   isBootstrapClaimEligible,
@@ -118,6 +118,17 @@ authRoutes.post('/apple', async (c) => {
     }
   }
   return c.json({ jwt, user });
+});
+
+// POST /auth/renew -> { jwt }
+//
+// The app renews while its current app JWT is still valid. This deliberately
+// remains a rolling stateless session rather than adding refresh-token
+// storage: Sign in with Apple is still the recovery path after expiry or
+// revocation.
+authRoutes.post('/renew', requireAppJwt, async (c) => {
+  const jwt = await issueAppJwt(c.get('userId'), c.env.APP_JWT_SECRET);
+  return c.json({ jwt });
 });
 
 // POST /auth/dev  { secret }  -> { jwt, user }

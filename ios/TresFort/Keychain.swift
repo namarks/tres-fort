@@ -45,3 +45,15 @@ enum Keychain {
         ] as CFDictionary)
     }
 }
+
+protocol AppTokenStore {
+    func save(_ token: String)
+    func load() -> String?
+    func clear()
+}
+
+struct KeychainTokenStore: AppTokenStore {
+    func save(_ token: String) { Keychain.save(token) }
+    func load() -> String? { Keychain.load() }
+    func clear() { Keychain.clear() }
+}

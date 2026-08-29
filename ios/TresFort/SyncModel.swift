@@ -1282,7 +1282,7 @@ final class SyncModel: ObservableObject {
 
     private func handle(_ error: Error) {
         if case let APIError.http(code, _) = error, code == 401 {
-            auth.invalidate()
+            auth.requireReauthentication()
         } else {
             loadError = error.localizedDescription
         }

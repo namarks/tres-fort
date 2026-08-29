@@ -8,7 +8,7 @@ import type { HonoEnv } from './types';
 import { setUserTimezoneIfChanged } from './db';
 
 const APPLE_ISS = 'https://appleid.apple.com';
-const APP_JWT_TTL_SECONDS = 60 * 60 * 24 * 60; // 60 days
+export const APP_JWT_TTL_SECONDS = 60 * 60 * 24 * 60; // 60 days
 
 let appleJwks: ReturnType<typeof createRemoteJWKSet> | null = null;
 function jwks() {
@@ -29,10 +29,15 @@ export async function verifyAppleToken(
   return { sub: payload.sub, email: (payload.email as string) ?? null };
 }
 
-export async function issueAppJwt(userId: string, secret: string): Promise<string> {
-  const nowSec = Math.floor(Date.now() / 1000);
+export async function issueAppJwt(
+  userId: string,
+  secret: string,
+  options: { nowSeconds?: number; ttlSeconds?: number } = {},
+): Promise<string> {
+  const nowSec = options.nowSeconds ?? Math.floor(Date.now() / 1000);
+  const ttlSeconds = options.ttlSeconds ?? APP_JWT_TTL_SECONDS;
   return sign(
-    { sub: userId, iat: nowSec, exp: nowSec + APP_JWT_TTL_SECONDS },
+    { sub: userId, iat: nowSec, exp: nowSec + ttlSeconds },
     secret,
     'HS256',
   );

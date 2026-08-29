@@ -25,6 +25,12 @@ struct APIClient {
         return try await post("auth/apple", body: body, jwt: nil)
     }
 
+    /// Roll a still-valid app JWT forward before its fixed expiry. Sign in
+    /// with Apple remains the recovery path after the bearer has expired.
+    func renewAppSession(jwt: String) async throws -> SessionRenewalResponse {
+        try await post("auth/renew", body: [:], jwt: jwt)
+    }
+
     /// Full sync pull (since=0 → everything; the app dedupes locally).
     ///
     /// `events_since=0` / `activities_since=0` are passed explicitly (not
@@ -180,3 +186,12 @@ struct APIClient {
         catch { throw APIError.decoding("\(error)") }
     }
 }
+
+/// Narrow auth surface injected into AuthModel so expiry, offline renewal,
+/// and same-user recovery are covered without real Apple/network calls.
+protocol AuthAPI {
+    func authApple(identityToken: String, fullName: String?) async throws -> AuthResponse
+    func renewAppSession(jwt: String) async throws -> SessionRenewalResponse
+}
+
+extension APIClient: AuthAPI {}

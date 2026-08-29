@@ -51,33 +51,17 @@ final class GroupModel: ObservableObject {
 
     // MARK: Intervals.icu connection
 
-    /// UserDefaults key holding the JSON-encoded `IntervalsConnection`.
-    /// Exposed here so `AuthModel.invalidate()` can wipe it on sign-out
-    /// (the key is global to the device but represents the CURRENT user's
-    /// connection — if user A signs out and user B signs in, the settings
-    /// screen must not show user A's athlete id as "connected").
-    static let intervalsConnectionKey = "com.nmarkspdx.liftcoach.intervals-connection.v1"
+    static let legacyIntervalsConnectionKey =
+        "com.nmarkspdx.liftcoach.intervals-connection.v1"
 
-    /// What the user last successfully PATCHed. There's no GET endpoint
-    /// today, so this is the only place iOS knows about a connection.
-    /// Persisted in @AppStorage by IntervalsSettingsView itself; mirrored
-    /// here for convenience reads.
-    @AppStorage(GroupModel.intervalsConnectionKey)
-    var intervalsConnectionRaw: Data = Data()
-    var intervalsConnection: IntervalsConnection? {
-        get {
-            guard !intervalsConnectionRaw.isEmpty else { return nil }
-            return try? JSONDecoder().decode(IntervalsConnection.self,
-                                             from: intervalsConnectionRaw)
-        }
-        set {
-            if let v = newValue {
-                intervalsConnectionRaw = (try? JSONEncoder().encode(v)) ?? Data()
-            } else {
-                intervalsConnectionRaw = Data()
-            }
-        }
+    static func intervalsConnectionKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.intervals-connection.v2.\(userID)"
     }
+
+    /// Local mirror of the last app-managed connection. The authoritative
+    /// profile status still comes from /api/me; this mirror is account-scoped
+    /// so switching Apple accounts cannot display another athlete id.
+    @Published var intervalsConnection: IntervalsConnection?
 
     // MARK: Activity outbox (the one persisted piece)
 
@@ -91,6 +75,7 @@ final class GroupModel: ObservableObject {
 
     private let api = APIClient()
     private unowned let auth: AuthModel
+    private let accountID: String?
 
     /// Fired after a manual activity is persisted, drained from the
     /// outbox, or deleted. The owner (MainTabView) sets this to refresh
@@ -103,7 +88,39 @@ final class GroupModel: ObservableObject {
 
     init(auth: AuthModel) {
         self.auth = auth
-        self.outbox = ActivityOutboxStore.load()
+        self.accountID = auth.userID
+        self.intervalsConnection = Self.loadIntervalsConnection(userID: auth.userID)
+        self.outbox = ActivityOutboxStore.load(userID: auth.userID)
+    }
+
+    private static func loadIntervalsConnection(
+        userID: String?,
+        defaults: UserDefaults = .standard
+    ) -> IntervalsConnection? {
+        guard let userID else { return nil }
+        let key = intervalsConnectionKey(userID: userID)
+        if defaults.data(forKey: key) == nil,
+           let legacy = defaults.data(forKey: legacyIntervalsConnectionKey) {
+            defaults.set(legacy, forKey: key)
+            defaults.removeObject(forKey: legacyIntervalsConnectionKey)
+        }
+        guard let data = defaults.data(forKey: key), !data.isEmpty else { return nil }
+        return try? JSONDecoder().decode(IntervalsConnection.self, from: data)
+    }
+
+    private static func saveIntervalsConnection(
+        _ connection: IntervalsConnection?,
+        userID: String?,
+        defaults: UserDefaults = .standard
+    ) {
+        guard let userID else { return }
+        let key = intervalsConnectionKey(userID: userID)
+        if let connection,
+           let data = try? JSONEncoder().encode(connection) {
+            defaults.set(data, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
     }
 
     // MARK: - Selection
@@ -382,7 +399,7 @@ final class GroupModel: ObservableObject {
             // Success — remove from outbox if we had previously enqueued
             // it on a prior attempt (no-op if not present).
             outbox.remove(id: pending.id)
-            ActivityOutboxStore.save(outbox)
+            ActivityOutboxStore.save(outbox, userID: accountID)
             // 5. Refresh so the optimistic row is replaced by the
             // server-truth row (same id). Refresh the zoom series too so
             // the new activity lights up its day cell.
@@ -395,7 +412,7 @@ final class GroupModel: ObservableObject {
             await onActivityPersisted?()
         } catch let APIError.http(code, _) where (400..<500).contains(code) && code != 401 {
             // Validation failure → roll back the optimistic insert and
-            // surface the error. 401 falls through to handle() → invalidate().
+            // surface the error. 401 falls through to same-user reauthentication.
             if let gid = selectedGroupID {
                 feed[gid]?.removeAll { $0.id == pending.id }
             }
@@ -411,7 +428,7 @@ final class GroupModel: ObservableObject {
 
     private func enqueue(_ pending: PendingActivity) {
         outbox.enqueue(pending)
-        ActivityOutboxStore.save(outbox)
+        ActivityOutboxStore.save(outbox, userID: accountID)
     }
 
     /// Drain the outbox. Called on `.task` (mount), on scene-foreground,
@@ -427,7 +444,7 @@ final class GroupModel: ObservableObject {
             do {
                 _ = try await api.logActivity(entry, jwt: jwt)
                 outbox.remove(id: entry.id)
-                ActivityOutboxStore.save(outbox)
+                ActivityOutboxStore.save(outbox, userID: accountID)
                 didPersist = true
             } catch {
                 // Stop on the first network failure — no point hammering a
@@ -436,7 +453,7 @@ final class GroupModel: ObservableObject {
                 if case let APIError.http(code, _) = error,
                    (400..<500).contains(code) && code != 401 {
                     outbox.remove(id: entry.id)
-                    ActivityOutboxStore.save(outbox)
+                    ActivityOutboxStore.save(outbox, userID: accountID)
                     continue
                 }
                 handle(error)
@@ -499,6 +516,7 @@ final class GroupModel: ObservableObject {
         intervalsConnection = IntervalsConnection(
             athlete_id: resolvedAthlete,
             connected_at: Int(Date().timeIntervalSince1970 * 1000))
+        Self.saveIntervalsConnection(intervalsConnection, userID: accountID)
         await refreshMe()
     }
 
@@ -509,6 +527,7 @@ final class GroupModel: ObservableObject {
         _ = try await api.setIntervalsCredentials(
             apiKey: nil, athleteID: nil, jwt: jwt)
         intervalsConnection = nil
+        Self.saveIntervalsConnection(nil, userID: accountID)
         await refreshMe()
     }
 
@@ -593,7 +612,7 @@ final class GroupModel: ObservableObject {
 
     private func handle(_ error: Error) {
         if case let APIError.http(code, _) = error, code == 401 {
-            auth.invalidate()
+            auth.requireReauthentication()
         } else {
             lastError = error.localizedDescription
         }

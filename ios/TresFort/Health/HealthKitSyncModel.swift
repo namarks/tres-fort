@@ -33,18 +33,21 @@ final class HealthKitSyncModel: ObservableObject {
     /// False on iPad / unsupported hardware. Gate every HealthKit call on this.
     let isAvailable: Bool = HKHealthStore.isHealthDataAvailable()
 
-    /// UserDefaults keys. Exposed (not private) so `AuthModel.invalidate()` can
-    /// wipe them on sign-out — both are device-global but represent the CURRENT
-    /// user's connection, so a different account signing in must not inherit
-    /// "connected" or a stale anchor (same reasoning as the intervals key).
-    static let enabledKey = "com.nmarkspdx.liftcoach.healthkit-enabled.v1"
-    static let anchorKey = "com.nmarkspdx.liftcoach.healthkit-anchor.v1"
+    static let legacyEnabledKey = "com.nmarkspdx.liftcoach.healthkit-enabled.v1"
+    static let legacyAnchorKey = "com.nmarkspdx.liftcoach.healthkit-anchor.v1"
+
+    static func enabledKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.healthkit-enabled.v2.\(userID)"
+    }
+
+    static func anchorKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.healthkit-anchor.v2.\(userID)"
+    }
 
     /// User intent — the only durable "is Apple Health connected" signal we
     /// have (Apple hides read-auth status). Drives the Connections UI and gates
     /// background sync. Persisted so it survives relaunch; reset on disconnect.
-    @AppStorage(HealthKitSyncModel.enabledKey)
-    var enabled: Bool = false
+    @Published var enabled: Bool
 
     @Published private(set) var isSyncing = false
     @Published private(set) var lastSyncedAt: Date?
@@ -59,11 +62,38 @@ final class HealthKitSyncModel: ObservableObject {
     private let store = HKHealthStore()
     private let api = APIClient()
     private unowned let auth: AuthModel
+    private let accountID: String?
+    private let defaults: UserDefaults
 
     /// Held so we can stop it on disconnect / sign-out.
     private var observerQuery: HKObserverQuery?
 
-    init(auth: AuthModel) { self.auth = auth }
+    init(auth: AuthModel, defaults: UserDefaults = .standard) {
+        self.auth = auth
+        self.accountID = auth.userID
+        self.defaults = defaults
+        if let userID = auth.userID {
+            Self.migrateLegacyState(userID: userID, defaults: defaults)
+            self.enabled = defaults.bool(forKey: Self.enabledKey(userID: userID))
+        } else {
+            self.enabled = false
+        }
+    }
+
+    private static func migrateLegacyState(userID: String, defaults: UserDefaults) {
+        let scopedEnabled = enabledKey(userID: userID)
+        if defaults.object(forKey: scopedEnabled) == nil,
+           defaults.object(forKey: legacyEnabledKey) != nil {
+            defaults.set(defaults.bool(forKey: legacyEnabledKey), forKey: scopedEnabled)
+            defaults.removeObject(forKey: legacyEnabledKey)
+        }
+        let scopedAnchor = anchorKey(userID: userID)
+        if defaults.data(forKey: scopedAnchor) == nil,
+           let legacyAnchor = defaults.data(forKey: legacyAnchorKey) {
+            defaults.set(legacyAnchor, forKey: scopedAnchor)
+            defaults.removeObject(forKey: legacyAnchorKey)
+        }
+    }
 
     // MARK: - Read scope
 
@@ -110,6 +140,9 @@ final class HealthKitSyncModel: ObservableObject {
             return
         }
         enabled = true
+        if let accountID {
+            defaults.set(true, forKey: Self.enabledKey(userID: accountID))
+        }
         lastError = nil
         registerObserver()
         Task { await sync() }
@@ -121,7 +154,10 @@ final class HealthKitSyncModel: ObservableObject {
     /// fresh anchor; the idempotent push means re-seen workouts just no-op.
     func disconnect() {
         enabled = false
-        UserDefaults.standard.removeObject(forKey: Self.anchorKey)
+        if let accountID {
+            defaults.set(false, forKey: Self.enabledKey(userID: accountID))
+            defaults.removeObject(forKey: Self.anchorKey(userID: accountID))
+        }
         if let q = observerQuery {
             store.stop(q)
             observerQuery = nil
@@ -141,8 +177,8 @@ final class HealthKitSyncModel: ObservableObject {
         Task { await sync() }
     }
 
-    /// Drop all local HealthKit state on sign-out so a different Apple user
-    /// signing in next doesn't inherit this account's anchor/observer.
+    /// Explicitly disconnect this account's HealthKit state. Ordinary sign-out
+    /// and same-user reauthentication retain the account-scoped values.
     func reset() {
         disconnect()
         lastSyncedAt = nil
@@ -200,7 +236,7 @@ final class HealthKitSyncModel: ObservableObject {
         } catch let APIError.http(code, _) where code == 401 {
             // Token died mid-sync — let AuthModel handle it. Anchor is already
             // checkpointed at the last good page, so a re-auth resumes cleanly.
-            auth.invalidate()
+            auth.requireReauthentication()
         } catch {
             lastError = "Apple Health sync didn’t finish. It’ll retry."
         }
@@ -334,14 +370,17 @@ final class HealthKitSyncModel: ObservableObject {
     // MARK: - Anchor persistence
 
     private func loadAnchor() -> HKQueryAnchor? {
-        guard let data = UserDefaults.standard.data(forKey: Self.anchorKey) else { return nil }
+        guard let accountID,
+              let data = defaults.data(forKey: Self.anchorKey(userID: accountID))
+        else { return nil }
         return try? NSKeyedUnarchiver.unarchivedObject(ofClass: HKQueryAnchor.self, from: data)
     }
 
     private func saveAnchor(_ anchor: HKQueryAnchor) {
+        guard let accountID else { return }
         guard let data = try? NSKeyedArchiver.archivedData(
             withRootObject: anchor, requiringSecureCoding: true) else { return }
-        UserDefaults.standard.set(data, forKey: Self.anchorKey)
+        defaults.set(data, forKey: Self.anchorKey(userID: accountID))
     }
 
     // MARK: - Mapping (keep the kind vocab in sync with backend kindOf)

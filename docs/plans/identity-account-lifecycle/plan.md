@@ -1,6 +1,6 @@
 # Identity and Account Lifecycle
 
-Slug: identity-account-lifecycle · Status: active · Updated: 2026-08-28 · Theme: training-trust
+Slug: identity-account-lifecycle · Status: gated · Updated: 2026-08-29 · Theme: training-trust
 
 ## Goal
 
@@ -13,7 +13,7 @@ iOS verification.
 ## Phases
 
 - [ ] **P0 — Independent identity foundations**
-  - [ ] **(a) Renewable sessions and per-user account scoping**
+  - [x] **(a) Renewable sessions and per-user account scoping**
     - Implement the smallest renewable app-session path compatible with the
       current JWT and Sign in with Apple design, renewing before the fixed expiry
       and recovering the same user after an authorization failure.
@@ -42,19 +42,35 @@ iOS verification.
 
 ## Execution frontier
 
-- P0(a)
 - P0(b)
+
+## Dependencies
+
+| Local phase | Relationship | Target | Reason |
+|---|---|---|---|
+| P0(b) | gated_by | external:account-deletion-implementation-authorization | Creating a broad irreversible account-deletion service path requires explicit owner authorization; owner-anchor recreation and surviving-group ownership also need explicit semantics. |
 
 ## Next step
 
-**Now (@agent):** Complete P0(a) and P0(b) independently: verify renewable
-same-user sessions preserve account-scoped state while the deletion slice ships
-its focused backend and Profile flow without waiting for auth renewal.
+**Now (@owner):** Explicitly authorize the destructive account-deletion service
+path and decide whether owner deletion leaves a tombstone that blocks automatic
+MCP re-bootstrap, plus how surviving groups transfer `created_by`.
 
 ## Notes / open questions
 
 - Source: the August 2026 functionality review at commit `91fd622`; the confirmed
   root issue is the fixed JWT expiry plus an over-broad `AuthModel.invalidate()`.
+- P0(a) now uses rolling app-JWT renewal plus account-scoped activity,
+  intervals.icu, and HealthKit state. Focused backend tests, direct iOS source
+  typechecking, and a standalone behavioral harness cover expiry, renewal,
+  offline failure, same-user recovery, and account switching; this host has no
+  installed iOS simulator runtime, so the checked-in XCTest target could not run
+  through `xcodebuild` here.
 - Runtime account deletion remains destructive and must always require the
-  authenticated user's explicit confirmation. Routine implementation, seeded
-  tests, and review do not need an owner gate.
+  authenticated user's explicit in-app confirmation. Development and CI must
+  exercise only seeded users.
+- `ensureOwnerUser` currently recreates a missing owner whenever the static MCP
+  bearer is used, so deleting the owner row without a persistent suppression
+  rule would silently recreate the account. `groups.created_by` is also a
+  non-null user reference, so a creator's deletion must either transfer each
+  surviving group or deliberately block until ownership changes.

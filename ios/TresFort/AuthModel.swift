@@ -1,4 +1,5 @@
 import AuthenticationServices
+import Foundation
 import SwiftUI
 
 @MainActor
@@ -12,6 +13,7 @@ final class AuthModel: ObservableObject {
 
     @Published var phase: Phase = .signedOut
     @Published var jwt: String?
+    @Published private(set) var isRenewing = false
     /// Server user id, captured from /auth/apple's `user.id` and persisted
     /// in UserDefaults so GroupModel can survive an app relaunch with the
     /// keychain JWT alone. Used as the fallback for `is_me` comparisons
@@ -33,25 +35,37 @@ final class AuthModel: ObservableObject {
     /// `handleDeepLink`, cleared when the sheet is dismissed.
     @Published var pendingInviteCode: String?
 
-    private let api = APIClient()
-    private static let userIDKey = "com.nmarkspdx.liftcoach.user-id.v1"
-    private static let onboardedKey = "com.nmarkspdx.liftcoach.onboarded.v1"
+    private let api: any AuthAPI
+    private let tokenStore: any AppTokenStore
+    private let defaults: UserDefaults
+    private let now: () -> Date
+    static let userIDKey = "com.nmarkspdx.liftcoach.user-id.v1"
+    static let onboardedKey = "com.nmarkspdx.liftcoach.onboarded.v1"
+    static let renewalWindow: TimeInterval = 7 * 24 * 60 * 60
 
-    init() {
-        let token = Keychain.load()
+    init(
+        api: any AuthAPI = APIClient(),
+        tokenStore: any AppTokenStore = KeychainTokenStore(),
+        defaults: UserDefaults = .standard,
+        now: @escaping () -> Date = Date.init
+    ) {
+        self.api = api
+        self.tokenStore = tokenStore
+        self.defaults = defaults
+        self.now = now
+        let token = tokenStore.load()
         if let token {
             jwt = token
             phase = .signedIn
         }
-        userID = UserDefaults.standard.string(forKey: Self.userIDKey)
+        userID = defaults.string(forKey: Self.userIDKey)
         // First launch of a build that has onboarding: if the user is
         // ALREADY signed in (an existing install updating in place), treat
         // them as onboarded so the app update never drops a returning user
         // back into the intro. Fresh installs (no keychain token) default to
         // NOT onboarded → they get the guided setup right after their first
-        // sign-in. Sign-out does NOT reset this (invalidate leaves it), so a
+        // sign-in. Sign-out does NOT reset this, so a
         // returning user re-signing in skips onboarding.
-        let defaults = UserDefaults.standard
         if defaults.object(forKey: Self.onboardedKey) == nil {
             defaults.set(token != nil, forKey: Self.onboardedKey)
         }
@@ -61,7 +75,7 @@ final class AuthModel: ObservableObject {
     /// Mark first-run setup done (finished or skipped through). Persists so
     /// `OnboardingView` never shows again on this device.
     func completeOnboarding() {
-        UserDefaults.standard.set(true, forKey: Self.onboardedKey)
+        defaults.set(true, forKey: Self.onboardedKey)
         onboardingComplete = true
     }
 
@@ -86,49 +100,82 @@ final class AuthModel: ObservableObject {
         }
     }
 
-    private func exchange(identityToken: String, fullName: String?) async {
+    func exchange(identityToken: String, fullName: String?) async {
         phase = .working("Signing in…")
         do {
             let res = try await api.authApple(
                 identityToken: identityToken,
                 fullName: fullName)
-            Keychain.save(res.jwt)
+            tokenStore.save(res.jwt)
             jwt = res.jwt
             userID = res.user.id
-            UserDefaults.standard.set(res.user.id, forKey: Self.userIDKey)
+            defaults.set(res.user.id, forKey: Self.userIDKey)
             phase = .signedIn
         } catch {
             phase = .error(error.localizedDescription)
         }
     }
 
-    /// Called by the data layer on a 401 (stale JWT) → force re-auth.
-    /// Also clears every piece of PER-USER state persisted on the device:
-    ///   - keychain JWT,
-    ///   - userID (UserDefaults),
-    ///   - the activity outbox (entries have no user_id baked in, so on
-    ///     re-auth as a different account they would POST through the
-    ///     new user's JWT and mis-attribute the rows),
-    ///   - the intervals.icu connection record (the AppStorage key is
-    ///     device-global but its content represents the current user's
-    ///     athlete connection — a different signed-in user must not see
-    ///     the previous user's athlete id as "connected").
-    func invalidate() {
-        Keychain.clear()
-        UserDefaults.standard.removeObject(forKey: Self.userIDKey)
-        UserDefaults.standard.removeObject(forKey: GroupModel.intervalsConnectionKey)
-        // Apple Health connection + anchor are device-global but represent the
-        // current user's connection — clear them so a different account signing
-        // in next doesn't inherit "connected" or sync from a stale anchor.
-        UserDefaults.standard.removeObject(forKey: HealthKitSyncModel.enabledKey)
-        UserDefaults.standard.removeObject(forKey: HealthKitSyncModel.anchorKey)
-        ActivityOutboxStore.clear()
+    /// Decode the unverified expiry claim only to schedule renewal. The Worker
+    /// remains the authority and verifies the signature on /auth/renew.
+    static func expirationDate(of token: String) -> Date? {
+        let parts = token.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 3 else { return nil }
+        var encoded = String(parts[1])
+            .replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/")
+        let padding = (4 - encoded.count % 4) % 4
+        encoded += String(repeating: "=", count: padding)
+        guard let data = Data(base64Encoded: encoded),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let exp = object["exp"] as? NSNumber
+        else { return nil }
+        return Date(timeIntervalSince1970: exp.doubleValue)
+    }
+
+    static func shouldRenew(_ token: String, now: Date) -> Bool {
+        guard let expiry = expirationDate(of: token) else { return true }
+        return expiry.timeIntervalSince(now) <= renewalWindow
+    }
+
+    /// Renew before expiry while keeping the current signed-in surface usable.
+    /// A network/offline failure preserves the existing JWT and local state;
+    /// an authoritative 401 transitions to same-user reauthentication.
+    func renewSessionIfNeeded(force: Bool = false) async {
+        guard !isRenewing, let token = jwt else { return }
+        guard force || Self.shouldRenew(token, now: now()) else { return }
+        isRenewing = true
+        defer { isRenewing = false }
+        do {
+            let renewed = try await api.renewAppSession(jwt: token)
+            tokenStore.save(renewed.jwt)
+            jwt = renewed.jwt
+        } catch let APIError.http(code, _) where code == 401 {
+            requireReauthentication()
+        } catch {
+            // Offline/transport failure is intentionally soft. The existing
+            // token may still be valid and account-scoped state must survive.
+        }
+    }
+
+    /// Called on a 401. Drop only the invalid bearer: retain userID so the
+    /// next Apple exchange can recover the same account namespace without
+    /// erasing its outboxes, connection flags, or HealthKit anchor.
+    func requireReauthentication() {
+        tokenStore.clear()
+        jwt = nil
+        phase = .signedOut
+    }
+
+    /// Explicit sign-out removes the current account pointer. Feature state is
+    /// keyed by user id and remains isolated for a later return to that account.
+    func signOut() {
+        tokenStore.clear()
+        defaults.removeObject(forKey: Self.userIDKey)
         jwt = nil
         userID = nil
         phase = .signedOut
     }
-
-    func signOut() { invalidate() }
 
     // MARK: - Universal Link invites
 

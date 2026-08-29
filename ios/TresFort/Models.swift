@@ -7,6 +7,10 @@ struct AuthResponse: Decodable {
     let user: UserDTO
 }
 
+struct SessionRenewalResponse: Decodable {
+    let jwt: String
+}
+
 struct UserDTO: Decodable {
     let id: String
     let display_name: String?

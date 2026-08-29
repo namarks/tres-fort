@@ -66,6 +66,11 @@ struct MainTabView: View {
         }
         .tint(Theme.accent)
         .task {
+            // Renew before the first authenticated pull when the fixed-expiry
+            // app JWT is within its seven-day window. Offline failure is soft;
+            // an expired/revoked bearer moves AuthModel to reauthentication.
+            await auth.renewSessionIfNeeded()
+            guard auth.jwt != nil else { return }
             await sync.load()
             // Register the HealthKit observer + run an incremental sync if the
             // user has connected Apple Health (no-op otherwise). Anchored
@@ -80,6 +85,8 @@ struct MainTabView: View {
             // background-task continuation, just cooperative.
             if new == .active {
                 Task {
+                    await auth.renewSessionIfNeeded()
+                    guard auth.jwt != nil else { return }
                     await groupModel.drainOutbox()
                     if let gid = groupModel.selectedGroupID {
                         await groupModel.refreshGroup(groupID: gid)

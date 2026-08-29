@@ -41,7 +41,7 @@ A Streamable-HTTP MCP server at `/mcp` exposing the same service layer:
 - **Read:** `get_current_plan`, `get_today_workout`, `get_current_session`,
   `get_session_log`, `get_history`, `get_volume_trend`, `list_exercises`,
   `get_upcoming_rides`, `get_recent_activities`, `get_group_feed`
-- **Write:** `log_set`, `delete_set`, `log_activity`, `log_workout_complete`,
+- **Write:** `log_set`, `correct_set`, `delete_set`, `log_activity`, `log_workout_complete`,
   `add_note`, `update_plan` (transactional, `expected_version` → structured
   `{conflict, current_version}` result on mismatch), `update_exercise`,
   `swap_exercise`, `add_exercise`, `add_day`,

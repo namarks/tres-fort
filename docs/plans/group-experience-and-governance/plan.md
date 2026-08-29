@@ -67,7 +67,6 @@ Done means:
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P0 | coordinates_with | plan:activity-integration-integrity#P0 | Feed pagination, labels, and own-activity visibility can land independently; jointly verify the final cross-source feed result against its identity and civil-date rules. |
-| P0 | coordinates_with | plan:server-mutation-integrity | Reuse its tenant and authorization fixes while keeping the feed slice independently implementable. |
 | P3 | coordinates_with | plan:identity-account-lifecycle | Group deletion and account deletion need one documented ownership outcome, not duplicate deletion machinery. |
 
 ## Next step
@@ -80,6 +79,9 @@ before adding engagement features.
 - The intended product is a private training circle, not a generalized social
   graph. New roles, moderation systems, discovery, public content, and chat
   require separate evidence and promotion.
+- Reuse the tenant and authorization fixes completed in
+  [Server Mutation Integrity](../completed/server-mutation-integrity/plan.md);
+  they are historical foundation rather than an unresolved dependency.
 - Notification implementation still follows the repository's ordinary
   credential and release gates; this plan does not grant permission to create
   production APNs credentials or send production notifications.

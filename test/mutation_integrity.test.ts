@@ -232,18 +232,69 @@ describe('REST session and set bodies are runtime-validated before writes', () =
     const badSetPatch = await SELF.fetch(`${BASE}/api/sets/${validSetId}`, {
       method: 'PATCH',
       headers,
-      body: JSON.stringify({ weight: 'still heavy', reps: 3.5 }),
+      body: JSON.stringify({ weight: 'still heavy', reps: 3.5, duration_s: 1.5 }),
     });
     expect(badSetPatch.status).toBe(400);
     expect(await badSetPatch.json()).toEqual({
       error: 'invalid_fields',
-      fields: ['weight', 'reps'],
+      fields: ['weight', 'reps', 'duration_s'],
     });
     const unchangedSet = await env.DB
-      .prepare('SELECT weight, reps FROM set_logs WHERE id = ?1')
+      .prepare('SELECT weight, reps, duration_s FROM set_logs WHERE id = ?1')
       .bind(validSetId)
-      .first<{ weight: number; reps: number }>();
-    expect(unchangedSet).toEqual({ weight: 225, reps: 5 });
+      .first<{ weight: number; reps: number; duration_s: number | null }>();
+    expect(unchangedSet).toEqual({ weight: 225, reps: 5, duration_s: null });
+
+    const unknownSetField = await SELF.fetch(`${BASE}/api/sets/${validSetId}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ weight: 999, duration_seconds: 75 }),
+    });
+    expect(unknownSetField.status).toBe(400);
+    expect(await unknownSetField.json()).toEqual({
+      error: 'invalid_fields',
+      fields: ['duration_seconds'],
+    });
+    expect(
+      await env.DB
+        .prepare('SELECT weight, duration_s FROM set_logs WHERE id = ?1')
+        .bind(validSetId)
+        .first<{ weight: number; duration_s: number | null }>(),
+    ).toEqual({ weight: 225, duration_s: null });
+
+    const emptySetPatch = await SELF.fetch(`${BASE}/api/sets/${validSetId}`, {
+      method: 'PATCH',
+      headers,
+      body: '{}',
+    });
+    expect(emptySetPatch.status).toBe(400);
+    expect(await emptySetPatch.json()).toEqual({ error: 'no_corrections' });
+
+    const durationUpdate = await SELF.fetch(`${BASE}/api/sets/${validSetId}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ duration_s: 75 }),
+    });
+    expect(durationUpdate.status).toBe(200);
+    expect(await durationUpdate.json<{ duration_s: number | null }>()).toMatchObject({
+      duration_s: 75,
+    });
+    expect(
+      await env.DB
+        .prepare('SELECT duration_s FROM set_logs WHERE id = ?1')
+        .bind(validSetId)
+        .first<{ duration_s: number | null }>(),
+    ).toEqual({ duration_s: 75 });
+
+    const durationClear = await SELF.fetch(`${BASE}/api/sets/${validSetId}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ duration_s: null }),
+    });
+    expect(durationClear.status).toBe(200);
+    expect(await durationClear.json<{ duration_s: number | null }>()).toMatchObject({
+      duration_s: null,
+    });
 
     const stateResponse = await SELF.fetch(`${BASE}/api/state?since=0&sets_since=0`, {
       headers,
@@ -256,6 +307,7 @@ describe('REST session and set bodies are runtime-validated before writes', () =
         weight: unknown;
         reps: unknown;
         logged_at: unknown;
+        duration_s: unknown;
       }>;
     }>();
     expect(state.sets.some((set) => set.id === malformedSetId)).toBe(false);
@@ -266,5 +318,6 @@ describe('REST session and set bodies are runtime-validated before writes', () =
     expect(typeof returned?.weight).toBe('number');
     expect(Number.isInteger(returned?.reps)).toBe(true);
     expect(Number.isInteger(returned?.logged_at)).toBe(true);
+    expect(returned?.duration_s).toBeNull();
   });
 });

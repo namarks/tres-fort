@@ -1247,6 +1247,146 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     const miss = await call('delete_set', { set_id: 'no-such-uuid' });
     expect(miss.error).toBe('not_found');
   });
+
+  it('correct_set validates and visibly corrects values without crossing tenant boundaries', async () => {
+    const built = await call('update_plan', {
+      name: 'Corrections',
+      days: [
+        {
+          day_label: 'C',
+          name: 'Correction day',
+          exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }],
+        },
+      ],
+    });
+    expect(built.conflict).toBe(false);
+    const logged = await call('log_set', {
+      exercise: 'bench',
+      weight: 185,
+      reps: 5,
+      duration_s: 42,
+    });
+    expect(logged.error).toBeUndefined();
+    const setId = logged.set.id as string;
+
+    const corrected = await call('correct_set', {
+      set_id: setId,
+      weight: 190,
+      reps: 6,
+      rpe: 8.5,
+      notes: 'corrected from watch',
+      duration_s: 75,
+    });
+    expect(corrected).toMatchObject({
+      id: setId,
+      weight: 190,
+      reps: 6,
+      rpe: 8.5,
+      notes: 'corrected from watch',
+      duration_s: 75,
+    });
+
+    const visible = await call('get_current_session', {});
+    expect(visible.sets.find((set: { id: string }) => set.id === setId)).toMatchObject({
+      weight: 190,
+      reps: 6,
+      duration_s: 75,
+    });
+
+    const cleared = await call('correct_set', {
+      set_id: setId,
+      rpe: null,
+      notes: null,
+      duration_s: null,
+    });
+    expect(cleared).toMatchObject({ id: setId, rpe: null, notes: null, duration_s: null });
+
+    // One invalid value rejects the whole correction; valid siblings do not
+    // leak through as a partial update.
+    const invalid = await call('correct_set', {
+      set_id: setId,
+      weight: 999,
+      duration_s: 1.5,
+    });
+    expect(invalid).toEqual({ error: 'invalid_fields', fields: ['duration_s'] });
+    const unchanged = await env.DB
+      .prepare('SELECT weight, duration_s FROM set_logs WHERE id = ?1')
+      .bind(setId)
+      .first<{ weight: number; duration_s: number | null }>();
+    expect(unchanged).toEqual({ weight: 190, duration_s: null });
+
+    const unknownField = await call('correct_set', {
+      set_id: setId,
+      weight: 999,
+      duration_seconds: 75,
+    });
+    expect(unknownField).toEqual({
+      error: 'invalid_fields',
+      fields: ['duration_seconds'],
+    });
+    expect(
+      await env.DB
+        .prepare('SELECT weight, duration_s FROM set_logs WHERE id = ?1')
+        .bind(setId)
+        .first<{ weight: number; duration_s: number | null }>(),
+    ).toEqual({ weight: 190, duration_s: null });
+    expect(await call('correct_set', { set_id: setId })).toEqual({ error: 'no_corrections' });
+
+    const audit = await env.DB
+      .prepare("SELECT COUNT(*) AS c FROM audit_log WHERE tool='correct_set'")
+      .first<{ c: number }>();
+    expect(audit!.c).toBeGreaterThanOrEqual(4);
+    const note = await env.DB
+      .prepare('SELECT body FROM notes WHERE body = ?1 ORDER BY created_at DESC LIMIT 1')
+      .bind(`Corrected set ${setId} to 190x6.`)
+      .first<{ body: string }>();
+    expect(note?.body).toBe(`Corrected set ${setId} to 190x6.`);
+
+    expect(await call('correct_set', { set_id: 'missing-set', weight: 1 })).toMatchObject({
+      error: 'not_found',
+      set_id: 'missing-set',
+    });
+
+    const foreignUserId = crypto.randomUUID();
+    const foreignPlanId = crypto.randomUUID();
+    const foreignSessionId = crypto.randomUUID();
+    const foreignSetId = crypto.randomUUID();
+    const now = Date.now();
+    await env.DB
+      .prepare(
+        'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,NULL,?3,?4)',
+      )
+      .bind(foreignUserId, `sub-${foreignUserId}`, 'Foreign lifter', now)
+      .run();
+    await env.DB
+      .prepare(
+        "INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at) VALUES (?1,?2,'Foreign','active',1,NULL,?3,?3)",
+      )
+      .bind(foreignPlanId, foreignUserId, now)
+      .run();
+    await env.DB
+      .prepare(
+        "INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,'2040-01-02','in_progress',?4,NULL,NULL,NULL,?4,?4)",
+      )
+      .bind(foreignSessionId, foreignUserId, foreignPlanId, now)
+      .run();
+    await env.DB
+      .prepare(
+        "INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,deleted_at,duration_s,is_timed) VALUES (?1,?2,'ex_bench',NULL,1,95,5,NULL,0,NULL,?3,'ios',NULL,NULL,0)",
+      )
+      .bind(foreignSetId, foreignSessionId, now)
+      .run();
+
+    expect(await call('correct_set', { set_id: foreignSetId, weight: 100 })).toMatchObject({
+      error: 'not_found',
+      set_id: foreignSetId,
+    });
+    const foreignRow = await env.DB
+      .prepare('SELECT weight FROM set_logs WHERE id = ?1')
+      .bind(foreignSetId)
+      .first<{ weight: number }>();
+    expect(foreignRow?.weight).toBe(95);
+  });
 });
 
 describe('update_plan preserves warm-up flags', () => {

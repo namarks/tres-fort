@@ -95,6 +95,7 @@ describe('mcp auth + protocol', () => {
     // model picks up the narration guard at session start.
     expect(typeof body.result.instructions).toBe('string');
     expect(body.result.instructions).toMatch(/log_set/);
+    expect(body.result.instructions).toMatch(/correct_set/);
     expect(body.result.instructions).toMatch(/iOS/);
   });
 
@@ -127,6 +128,7 @@ describe('mcp tools list', () => {
         'get_volume_trend',
         'list_exercises',
         'log_set',
+        'correct_set',
         'delete_set',
         'log_workout_complete',
         'add_note',
@@ -154,8 +156,11 @@ describe('mcp tools list', () => {
         'set_stress_model',
       ]),
     );
-    expect(names).toHaveLength(33);
+    expect(names).toHaveLength(34);
     for (const t of body.result.tools) expect(t.inputSchema.type).toBe('object');
+    const correction = body.result.tools.find((t: any) => t.name === 'correct_set');
+    expect(correction.inputSchema.required).toEqual(['set_id']);
+    expect(correction.inputSchema.properties.duration_s.type).toEqual(['integer', 'null']);
   });
 });
 
@@ -184,7 +189,7 @@ describe('mcp tools read live D1', () => {
       headers: H,
       body: JSON.stringify({ name: 'Discard Vis' }),
     });
-    // No date → server uses todayLocal(), which is what get_today_workout reads.
+    // No date → REST and MCP resolve the same stored user-timezone date.
     const session = await (
       await SELF.fetch(`${BASE}/api/sessions`, { method: 'POST', headers: H, body: '{}' })
     ).json<{ id: string }>();
@@ -229,6 +234,25 @@ describe('mcp tools read live D1', () => {
         .body,
     );
     expect(vol.buckets[0].tonnage).toBe(225 * 8);
+
+    const knownEmpty = toolJson(
+      (
+        await rpc('tools/call', {
+          name: 'get_volume_trend',
+          arguments: { muscle_group: 'shoulders' },
+        })
+      ).body,
+    );
+    expect(knownEmpty).toMatchObject({ muscle_group: 'shoulders', buckets: [] });
+    const unknownMuscle = toolJson(
+      (
+        await rpc('tools/call', {
+          name: 'get_volume_trend',
+          arguments: { muscle_group: 'chset-typo' },
+        })
+      ).body,
+    );
+    expect(unknownMuscle).toEqual({ error: 'unknown_muscle', query: 'chset-typo' });
 
     // list_exercises: catalog discoverability for agents (closes the
     // bug-report P1 "exercise vocabulary is closed and undiscoverable").

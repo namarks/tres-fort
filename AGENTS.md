@@ -167,7 +167,7 @@ resolver (`resolveExercise`) before hitting the catalog. Current tools:
 `get_current_plan`, `get_today_workout`, `get_current_session`,
 `get_session_log`, `get_history`, `get_volume_trend`, `list_exercises`,
 `get_upcoming_rides`, `get_recent_activities`, `get_group_feed`, `log_set`,
-`delete_set`, `log_activity`, `log_workout_complete`, `add_note`,
+`correct_set`, `delete_set`, `log_activity`, `log_workout_complete`, `add_note`,
 `update_plan`, `update_exercise`, `swap_exercise`, `add_exercise`, `add_day`,
 `update_day`, `delete_exercise`, `adjust_today`, `set_schedule`,
 `set_planned_session`, `skip_planned_session`, `set_race`,
@@ -192,5 +192,5 @@ chat start) and a **prompt** (`coach_brief`).
 - Tests run against a real D1 in the Workers runtime via
   `@cloudflare/vitest-pool-workers`; each suite applies `migrations/` with
   `applyD1Migrations(env.DB, env.TEST_MIGRATIONS)` and authenticates through
-  `/auth/dev`. 31 test suites cover the full surface. Schema changes mean a
+  `/auth/dev`. The test suites cover the full surface. Schema changes mean a
   new numbered file in `migrations/`.

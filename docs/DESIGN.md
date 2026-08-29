@@ -135,6 +135,14 @@ CREATE TABLE sessions (
   updated_at        INTEGER NOT NULL
 );
 
+-- Migration 0029 reconciles legacy duplicate (user_id,date) rows. A client
+-- may still hold a deleted duplicate id while that migration rolls out, so
+-- mutation endpoints resolve it through this durable, tenant-checked alias.
+CREATE TABLE session_aliases (
+  alias_session_id     TEXT PRIMARY KEY,
+  canonical_session_id TEXT NOT NULL REFERENCES sessions(id)
+);
+
 CREATE TABLE set_logs (
   id                   TEXT PRIMARY KEY,        -- CLIENT-generated UUID = idempotency key
   session_id           TEXT NOT NULL REFERENCES sessions(id),
@@ -173,7 +181,7 @@ CREATE TABLE audit_log (                        -- every MCP write, for trust/un
 
 CREATE INDEX ix_sets_session ON set_logs(session_id);
 CREATE INDEX ix_sets_ex_time ON set_logs(exercise_id, logged_at);
-CREATE INDEX ix_sessions_user_date ON sessions(user_id, date);
+CREATE UNIQUE INDEX ux_session_user_date ON sessions(user_id, date);
 CREATE INDEX ix_te_day ON template_exercises(day_template_id, order_index);
 ```
 

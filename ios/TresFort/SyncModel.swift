@@ -72,29 +72,151 @@ final class SyncModel: ObservableObject {
         defer { isLoading = false }
         do {
             let state = try await api.getState(jwt: jwt)
-            plan = state.plan
-            sets = state.sets
-            sessions = state.sessions
-            // Full reload every sync (getState uses events_since=0): the
-            // server returns the full current non-deleted external_events
-            // set, so this is a full replace, not a delta merge. No
-            // client-side watermark/tombstone-merge is needed; we still
-            // defensively drop any tombstoned events at the cache boundary
-            // so glyphs, agenda, and conflict detection never see them.
-            rides = state.external_events.filter { !$0.isDeleted }
-            // Same full-replace + tombstone-drop boundary as `rides`.
-            activities = state.external_activities.filter { !$0.isDeleted }
-            // Manual activities: same full-replace, drop soft-deleted rows
-            // at the boundary so the calendar never renders a tombstone.
-            manualActivities = state.activities.filter { $0.deleted_at == nil }
-            todaySession = state.sessions.first { $0.date == todayString }
-            if selectedDayID == nil { selectedDayID = state.plan?.days.first?.id }
+            replaceState(with: state)
             if catalog.isEmpty {
                 catalog = (try? await api.getExercises(jwt: jwt)) ?? []
             }
             loadError = nil
         } catch {
             handle(error)
+        }
+    }
+
+    /// Apply a full `/api/state` response atomically at the cache boundary.
+    /// `getState` always uses zero watermarks, so every collection is a full
+    /// replacement rather than a delta merge.
+    private func replaceState(with state: StateResponse, preferredTodaySessionID: String? = nil) {
+        let previousSelectedDayID = selectedDayID
+        let runnerWasActive = running
+        let activeSlotID = activeRunnerSlotID()
+        plan = state.plan
+        sets = state.sets
+        sessions = state.sessions
+        // The server returns the full current non-deleted external_events set;
+        // defensively drop any tombstones so calendar surfaces never see them.
+        rides = state.external_events.filter { !$0.isDeleted }
+        activities = state.external_activities.filter { !$0.isDeleted }
+        manualActivities = state.activities.filter { $0.deleted_at == nil }
+        // Alias recovery knows the canonical session id from the logged set.
+        // Prefer it over date-ordering so runner progress immediately keys on
+        // the same session as the returned set.
+        todaySession = preferredTodaySessionID.flatMap { preferredID in
+            state.sessions.first { $0.id == preferredID }
+        } ?? state.sessions.first { $0.date == todayString }
+        reconcileSelection(
+            previousSelectedDayID: previousSelectedDayID,
+            activeSlotID: activeSlotID,
+            runnerWasActive: runnerWasActive)
+    }
+
+    /// The runner's current physical slot without `selectedDay`'s first-day
+    /// fallback. A missing day or out-of-range index is invalid runner state.
+    private func activeRunnerSlotID() -> String? {
+        guard running,
+              let selectedDayID,
+              let day = plan?.days.first(where: { $0.id == selectedDayID }),
+              day.exercises.indices.contains(exerciseIndex)
+        else { return nil }
+        return day.exercises[exerciseIndex].id
+    }
+
+    /// Inactive state prefers the real session's remapped day. An active
+    /// explicit override retains its valid day; otherwise it falls back to the
+    /// remapped session day. The runner continues only when its physical slot
+    /// still exists on the resolved day.
+    private func reconcileSelection(previousSelectedDayID: String?, activeSlotID: String?,
+                                    runnerWasActive: Bool) {
+        let days = plan?.days ?? []
+        let sessionDayID = todaySession?.day_template_id
+        let resolvedSessionDayID = sessionDayID.flatMap { id in
+            days.contains(where: { $0.id == id }) ? id : nil
+        }
+        let retainedDayID = previousSelectedDayID.flatMap { id in
+            days.contains(where: { $0.id == id }) ? id : nil
+        }
+        // A running explicit "train a different day" override owns its still-
+        // valid selection. The session day is the recovery target only when
+        // that prior day disappeared (for example, update_plan rebuilt ids).
+        selectedDayID = runnerWasActive
+            ? retainedDayID ?? resolvedSessionDayID ?? days.first?.id
+            : resolvedSessionDayID ?? retainedDayID ?? days.first?.id
+
+        guard runnerWasActive else { return }
+        guard sessionDayID == nil || resolvedSessionDayID != nil,
+              let activeSlotID,
+              let selectedDayID,
+              let day = days.first(where: { $0.id == selectedDayID })
+        else {
+            stopRunnerForStateChange()
+            return
+        }
+        if let newIndex = day.exercises.firstIndex(where: { $0.id == activeSlotID }) {
+            exerciseIndex = newIndex
+        } else if previousSelectedDayID == selectedDayID, !day.exercises.isEmpty {
+            // Same valid day, active slot removed by an in-app edit: retain
+            // the existing documented behavior and clamp to the next slot.
+            exerciseIndex = min(exerciseIndex, day.exercises.count - 1)
+        } else {
+            stopRunnerForStateChange()
+        }
+    }
+
+    /// Stop only local execution state; the already-logged server data stays.
+    private func stopRunnerForStateChange() {
+        exerciseIndex = 0
+        running = false
+        finished = false
+        workoutStart = nil
+        timedActive = false
+        timedEndDate = nil
+        timedStartDate = nil
+        skipped = []
+        skipRest()
+    }
+
+    /// Adopt a successful aliased write when the follow-up full refresh is
+    /// unavailable. All cached same-date session/set aliases collapse onto the
+    /// canonical id returned by the POST, so the committed set remains visible
+    /// and a retry cannot create a second physical set.
+    private func adoptSessionAliasLocally(
+        staleSession: SessionRow,
+        committedSet: SetLog,
+        submittedSlotID: String
+    ) {
+        let previousSelectedDayID = selectedDayID
+        let runnerWasActive = running
+        let activeSlotID = activeRunnerSlotID()
+        var aliasedSessionIDs = Set(
+            sessions.filter { $0.date == staleSession.date }.map(\.id))
+        aliasedSessionIDs.insert(staleSession.id)
+        let canonicalSession = SessionRow(
+            id: committedSet.session_id,
+            date: staleSession.date,
+            status: staleSession.status,
+            day_template_id: staleSession.day_template_id)
+
+        sessions.removeAll { $0.date == staleSession.date }
+        sessions.append(canonicalSession)
+        sets = sets.map { row in
+            aliasedSessionIDs.contains(row.session_id)
+                ? row.replacingSessionID(with: committedSet.session_id)
+                : row
+        }
+        if let i = sets.firstIndex(where: { $0.id == committedSet.id }) {
+            sets[i] = committedSet
+        } else {
+            sets.append(committedSet)
+        }
+        todaySession = canonicalSession
+        reconcileSelection(
+            previousSelectedDayID: previousSelectedDayID,
+            activeSlotID: activeSlotID,
+            runnerWasActive: runnerWasActive)
+        // A missing/different echoed slot means update_plan rebuilt or removed
+        // the submitted slot. Preserve the committed set, but never continue
+        // executing a server-invalid cached plan or invite another tap.
+        if committedSet.template_exercise_id != submittedSlotID {
+            stopRunnerForStateChange()
         }
     }
 
@@ -185,6 +307,28 @@ final class SyncModel: ObservableObject {
         catalog.first { $0.id == exerciseID }?.laterality == "unilateral" ? 2 : 1
     }
 
+    /// How many separately loaded implements a logged weight represents — 2
+    /// for `per_hand` exercises, 1 otherwise. This is independent of
+    /// laterality: a unilateral, per-hand movement counts both dimensions.
+    /// Defaults to 1 when the catalog row is unknown.
+    func implements(for exerciseID: String) -> Int {
+        catalog.first { $0.id == exerciseID }?.load_mode == "per_hand" ? 2 : 1
+    }
+
+    /// Physical reps represented by one logged set. Unilateral movements are
+    /// logged per side, so the rollup counts both sides.
+    func effectiveReps(for set: SetLog) -> Int {
+        set.reps * sides(for: set.exercise_id)
+    }
+
+    /// Effective tonnage represented by one logged set. Side count and
+    /// per-hand implement count are independent multipliers; total-load,
+    /// bilateral exercises therefore retain their original 1x behavior.
+    func tonnage(for set: SetLog) -> Double {
+        set.weight * Double(effectiveReps(for: set))
+            * Double(implements(for: set.exercise_id))
+    }
+
     /// True when the catalog row is a timed modality (planks/holds) — the only
     /// sets whose logged value is seconds, not reps. Logged sets carry no
     /// modality, so resolve it from the catalog. Defaults to false (rep set)
@@ -238,10 +382,10 @@ final class SyncModel: ObservableObject {
     func history(for exerciseID: String) -> [SessionStat] {
         let dateBySession = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.date) })
         let grouped = Dictionary(grouping: live(exerciseID), by: \.session_id)
-        // Volume doubles for unilateral exercises (reps logged per-side).
+        // Volume accounts independently for reps logged per-side and weights
+        // logged per hand.
         // topReps + est-1RM stay per-side: those represent per-leg/per-arm
         // strength, which is what the lifter actually displaced in one rep.
-        let s = Double(sides(for: exerciseID))
         return grouped.compactMap { sid, rows -> SessionStat? in
             guard let date = dateBySession[sid], !rows.isEmpty else { return nil }
             let top = rows.max { epley($0.weight, $0.reps) < epley($1.weight, $1.reps) }!
@@ -250,16 +394,17 @@ final class SyncModel: ObservableObject {
                 id: sid, date: date,
                 est1RM: epley(top.weight, top.reps).rounded(),
                 topWeight: top.weight, topReps: top.reps,
-                volume: rows.reduce(0) { $0 + $1.weight * Double($1.reps) * s },
+                volume: rows.reduce(0) { $0 + tonnage(for: $1) },
                 setCount: rows.count,
                 avgDuration: durs.isEmpty ? 0 : durs.reduce(0, +) / durs.count)
         }
         .sorted { $0.date < $1.date }
     }
 
+    @discardableResult
     func logSet(_ ex: TemplateExercise, weight: Double, reps: Int,
-                durationOverride: Int? = nil) async {
-        guard let jwt = auth.jwt else { return }
+                durationOverride: Int? = nil) async -> Bool {
+        guard let jwt = auth.jwt else { return false }
         do {
             if todaySession == nil {
                 // Tie the lazily-created session to the day template the
@@ -273,7 +418,7 @@ final class SyncModel: ObservableObject {
                     dayTemplateID: selectedDay?.id,
                     jwt: jwt)
             }
-            guard let session = todaySession else { return }
+            guard let session = todaySession else { return false }
             // Index per SLOT, not per exercise_id, so two slots of the same
             // movement number independently (#3). The backend re-numbers on a
             // (session, exercise_id, set_index, is_warmup) collision, so a
@@ -304,10 +449,34 @@ final class SyncModel: ObservableObject {
             // render off it rather than re-deriving from catalog modality.
             body["is_timed"] = ex.isTimed
             let res = try await api.logSet(sessionId: session.id, body: body, jwt: jwt)
-            if !sets.contains(where: { $0.id == res.set.id }) { sets.append(res.set) }
-            startRest(seconds: ex.rest_seconds, name: ex.exercise_name)
+            if res.set.session_id == session.id {
+                if !sets.contains(where: { $0.id == res.set.id }) { sets.append(res.set) }
+            } else {
+                // Migration 0029 can leave an old client holding a duplicate
+                // session id that now aliases to the canonical row. The write
+                // succeeds against that canonical row and the response exposes
+                // its id. Reload before the runner evaluates completion so the
+                // session and set caches switch together; appending just the set
+                // would leave todaySlotSets filtering it out by the stale id.
+                do {
+                    let state = try await api.getState(jwt: jwt)
+                    guard state.sessions.contains(where: { $0.id == res.set.session_id }) else {
+                        throw APIError.decoding("Logged set's canonical session is missing from state")
+                    }
+                    replaceState(with: state, preferredTodaySessionID: res.set.session_id)
+                } catch {
+                    adoptSessionAliasLocally(
+                        staleSession: session,
+                        committedSet: res.set,
+                        submittedSlotID: ex.id)
+                    handle(error)
+                }
+            }
+            if running { startRest(seconds: ex.rest_seconds, name: ex.exercise_name) }
+            return true
         } catch {
             handle(error)
+            return false
         }
     }
 
@@ -399,8 +568,9 @@ final class SyncModel: ObservableObject {
         timedStartDate = nil
         skipped.remove(ex.id)   // logging work un-skips this slot
         let secs = max(1, held)
-        await logSet(ex, weight: 0, reps: secs, durationOverride: secs)
-        if isComplete(ex) {
+        guard await logSet(ex, weight: 0, reps: secs, durationOverride: secs) else { return }
+        guard running, let current = currentExercise else { return }
+        if isComplete(current) {
             if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
         }
     }
@@ -443,8 +613,9 @@ final class SyncModel: ObservableObject {
     func logCurrentSet() async {
         guard let ex = currentExercise else { return }
         skipped.remove(ex.id)   // logging work un-skips this slot
-        await logSet(ex, weight: weight, reps: reps)   // also starts rest timer
-        if isComplete(ex) {
+        guard await logSet(ex, weight: weight, reps: reps) else { return } // also starts rest timer
+        guard running, let current = currentExercise else { return }
+        if isComplete(current) {
             if let next = nextIncompleteIndex { jump(to: next) }
             else { finished = true }
         }
@@ -1115,5 +1286,24 @@ final class SyncModel: ObservableObject {
         } else {
             loadError = error.localizedDescription
         }
+    }
+}
+
+private extension SetLog {
+    func replacingSessionID(with sessionID: String) -> SetLog {
+        SetLog(
+            id: id,
+            session_id: sessionID,
+            exercise_id: exercise_id,
+            template_exercise_id: template_exercise_id,
+            set_index: set_index,
+            weight: weight,
+            reps: reps,
+            rpe: rpe,
+            is_warmup: is_warmup,
+            logged_at: logged_at,
+            duration_s: duration_s,
+            is_timed: is_timed,
+            deleted_at: deleted_at)
     }
 }

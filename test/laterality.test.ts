@@ -3,10 +3,11 @@
  *
  * 1. The catalog row carries `laterality`, and the MCP `list_exercises` tool
  *    surfaces it (so iOS + the LLM can both compute correct totals).
- * 2. `getVolume` doubles tonnage for unilateral exercises — a 45×8 Bulgarian
- *    split squat reads as 720 lb, not 360 lb. hard_sets stays a literal count.
+ * 2. `getVolume` independently accounts for unilateral sides and per-hand
+ *    implements — a two-DB 45×8 Bulgarian split squat reads as 1,440 lb,
+ *    not 360 lb. hard_sets stays a literal count.
  * 3. `log_set` returns the resolved exercise's laterality + effective totals
- *    so the LLM can confirm "16 reps total / 720 lb" back to the user.
+ *    so the LLM can confirm "16 reps total / 1,440 lb" back to the user.
  *
  * Catalog rows seeded as unilateral by migration 0011: lunges, Bulgarian
  * split squat, step-ups, single-leg glute bridge, one-arm DB row.
@@ -77,7 +78,7 @@ describe('laterality (unilateral exercises)', () => {
     expect(built.conflict).toBe(false);
 
     // 45 lb in each hand, 8 reps each leg — should round-trip the per-side
-    // numbers literally, with effective.total_reps=16 / tonnage=720.
+    // numbers literally, with effective.total_reps=16 / tonnage=1,440.
     const r = await call('log_set', {
       exercise: 'bulgarian split squat',
       weight: 45,
@@ -87,8 +88,9 @@ describe('laterality (unilateral exercises)', () => {
     expect(r.set.reps).toBe(8); // stored per-side, NOT doubled
     expect(r.exercise.laterality).toBe('unilateral');
     expect(r.effective.sides).toBe(2);
+    expect(r.effective.implements).toBe(2);
     expect(r.effective.total_reps).toBe(16);
-    expect(r.effective.tonnage).toBe(45 * 8 * 2); // 720
+    expect(r.effective.tonnage).toBe(45 * 8 * 2 * 2); // 1,440
 
     // A bilateral set (bench) gets sides=1 / no doubling.
     const b = await call('log_set', { exercise: 'bench', weight: 135, reps: 5 });
@@ -97,12 +99,13 @@ describe('laterality (unilateral exercises)', () => {
     if (!b.error) {
       expect(b.exercise.laterality).toBe('bilateral');
       expect(b.effective.sides).toBe(1);
+      expect(b.effective.implements).toBe(1);
       expect(b.effective.total_reps).toBe(5);
       expect(b.effective.tonnage).toBe(135 * 5);
     }
   });
 
-  it('get_volume_trend doubles tonnage for unilateral hard sets', async () => {
+  it('get_volume_trend multiplies unilateral sides and per-hand implements', async () => {
     // Fresh state: plan with one unilateral quad exercise so the volume
     // bucket math is unambiguous.
     const built = await call('update_plan', {
@@ -127,8 +130,8 @@ describe('laterality (unilateral exercises)', () => {
       (s, b) => s + (b.tonnage ?? 0),
       0,
     );
-    // 45 × 8 = 360 logged, doubled for unilateral = 720.
-    expect(total).toBe(720);
+    // 45 × 8 = 360 logged, doubled for two legs and two implements = 1,440.
+    expect(total).toBe(1440);
     // hard_sets is a literal set count, not doubled.
     const sets = (vol.buckets as { hard_sets: number }[]).reduce(
       (s, b) => s + (b.hard_sets ?? 0),

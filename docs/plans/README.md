@@ -82,7 +82,7 @@ and `feeds` for informational direction.
 
 ## The roadmap — current plans by theme
 
-The three trust-critical plans marked **active** are the initial execution
+The two trust-critical plans marked **active** are the initial execution
 frontier. Every other plan is **planned**: visible for sequencing and
 validation, but not executable until explicitly activated. This keeps the
 review actionable without starting ten workstreams at once.
@@ -92,8 +92,6 @@ review actionable without starting ten workstreams at once.
 Make every workout and plan mutation authorized, validated, durable, and
 recoverable before adding product depth.
 
-- [Server mutation integrity](server-mutation-integrity/plan.md) — **active**;
-  close tenant-scoping, validation, concurrency, and mutation-contract gaps.
 - [Identity and account lifecycle](identity-account-lifecycle/plan.md) —
   **active**; renew authentication without destructive local resets and provide
   a complete account exit path.

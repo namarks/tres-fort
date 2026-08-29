@@ -5,7 +5,10 @@ import { sign, verify } from 'hono/jwt';
 import { createMiddleware } from 'hono/factory';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type { HonoEnv } from './types';
-import { setUserTimezoneIfChanged } from './db';
+import {
+  accountDeletionReceiptMatches,
+  setUserTimezoneIfChanged,
+} from './db';
 
 const APPLE_ISS = 'https://appleid.apple.com';
 export const APP_JWT_TTL_SECONDS = 60 * 60 * 24 * 60; // 60 days
@@ -57,38 +60,74 @@ export async function issueAppJwt(
   );
 }
 
+type AppJwtPayload = Awaited<ReturnType<typeof verify>>;
+
+function appJwtPrincipal(
+  payload: AppJwtPayload,
+): { userId: string; authTime: number } | null {
+  if (!payload.sub || typeof payload.sub !== 'string') return null;
+  // Tokens issued before auth_time shipped fall back to their original iat.
+  // Renewal then stamps that value into auth_time, so a legacy bearer cannot
+  // reset the absolute session lifetime merely by crossing the rollout.
+  const authTime =
+    typeof payload.auth_time === 'number'
+      ? payload.auth_time
+      : typeof payload.iat === 'number'
+        ? payload.iat
+        : null;
+  if (authTime === null || !Number.isFinite(authTime)) return null;
+  return { userId: payload.sub, authTime };
+}
+
 /** Bearer-app-JWT middleware for /api/*. Sets `userId` on the context. */
 export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
   const header = c.req.header('Authorization') ?? '';
   const token = header.startsWith('Bearer ') ? header.slice(7) : '';
   if (!token) return c.json({ error: 'missing_bearer' }, 401);
+  const isDeletionRequest =
+    c.req.method === 'DELETE' && new URL(c.req.url).pathname === '/api/me';
+  let payload: AppJwtPayload;
   try {
-    const payload = await verify(token, c.env.APP_JWT_SECRET, 'HS256');
-    if (!payload.sub || typeof payload.sub !== 'string') {
-      return c.json({ error: 'invalid_token' }, 401);
-    }
-    // Tokens issued before auth_time shipped fall back to their original iat.
-    // Renewal then stamps that value into auth_time, so a legacy bearer cannot
-    // reset the absolute session lifetime merely by crossing the rollout.
-    const authTime =
-      typeof payload.auth_time === 'number'
-        ? payload.auth_time
-        : typeof payload.iat === 'number'
-          ? payload.iat
-          : null;
-    if (authTime === null || !Number.isFinite(authTime)) {
-      return c.json({ error: 'invalid_token' }, 401);
-    }
-    c.set('userId', payload.sub);
-    c.set('appAuthTime', authTime);
+    payload = await verify(token, c.env.APP_JWT_SECRET, 'HS256');
   } catch {
-    return c.json({ error: 'invalid_token' }, 401);
+    // A deletion can commit while its success response is lost. The account
+    // and renewal path are then gone, so a later receipt retry must be able to
+    // finish local cleanup even if the original app JWT has expired. Accept an
+    // expired bearer only when its signature/iat/nbf remain valid, this is the
+    // exact DELETE endpoint, and the high-entropy key matches that subject's
+    // already-committed receipt. It cannot authorize an initial deletion or
+    // any other feature request.
+    if (!isDeletionRequest) return c.json({ error: 'invalid_token' }, 401);
+    try {
+      payload = await verify(token, c.env.APP_JWT_SECRET, {
+        alg: 'HS256',
+        exp: false,
+      });
+      const principal = appJwtPrincipal(payload);
+      const exp = payload.exp;
+      const key = c.req.header('X-Account-Deletion-Key') ?? '';
+      if (
+        !principal ||
+        typeof exp !== 'number' ||
+        !Number.isFinite(exp) ||
+        exp > Math.floor(Date.now() / 1000) ||
+        !(await accountDeletionReceiptMatches(c.env.DB, principal.userId, key))
+      ) {
+        return c.json({ error: 'invalid_token' }, 401);
+      }
+    } catch {
+      return c.json({ error: 'invalid_token' }, 401);
+    }
   }
+  const principal = appJwtPrincipal(payload);
+  if (!principal) return c.json({ error: 'invalid_token' }, 401);
+  c.set('userId', principal.userId);
+  c.set('appAuthTime', principal.authTime);
   // App JWTs are stateless, so deleting an account cannot revoke one bearer
   // from a token table. Requiring the subject row on every authenticated call
   // makes all outstanding app tokens unusable immediately after DELETE /api/me
   // commits (and prevents rolling renewal from resurrecting the session).
-  const principal = await c.env.DB
+  const livePrincipal = await c.env.DB
     .prepare(
       `SELECT 1 AS x FROM users
         WHERE id = ?1
@@ -99,13 +138,11 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
     )
     .bind(c.get('userId'))
     .first<{ x: number }>();
-  if (!principal) {
+  if (!livePrincipal) {
     // A signed JWT whose principal has just been deleted is accepted only for
     // an idempotent retry of that same DELETE. The route verifies the durable
     // high-entropy receipt; every other endpoint remains revoked immediately.
-    const isDeletionRetry =
-      c.req.method === 'DELETE' && new URL(c.req.url).pathname === '/api/me';
-    if (!isDeletionRetry) return c.json({ error: 'invalid_token' }, 401);
+    if (!isDeletionRequest) return c.json({ error: 'invalid_token' }, 401);
     await next();
     return;
   }

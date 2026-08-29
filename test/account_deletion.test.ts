@@ -210,6 +210,56 @@ async function byId(
 }
 
 describe('DELETE /api/me', () => {
+  it('accepts an expired bearer only for its matching committed receipt', async () => {
+    const target = await makeUser('expired-receipt');
+    const deletionKey = crypto.randomUUID();
+    const expiredBearer = await issueAppJwt(target.user.id, 'test-secret', {
+      ttlSeconds: -1,
+    });
+
+    // Expiry can never authorize the initial destructive operation.
+    const premature = await SELF.fetch(`${BASE}/api/me`, {
+      method: 'DELETE',
+      headers: deletionAuth(expiredBearer, deletionKey),
+    });
+    expect(premature.status).toBe(401);
+    expect(await byId('users', 'id', target.user.id)).not.toBeNull();
+
+    const deletion = await SELF.fetch(`${BASE}/api/me`, {
+      method: 'DELETE',
+      headers: deletionAuth(target.jwt, deletionKey),
+    });
+    expect(deletion.status).toBe(200);
+    const deletionResult = await deletion.json<{
+      ok: true;
+      owner_tombstoned: boolean;
+    }>();
+
+    // Once deletion has committed, the expired signed bearer plus the exact
+    // high-entropy receipt key can acknowledge the lost response.
+    const retry = await SELF.fetch(`${BASE}/api/me`, {
+      method: 'DELETE',
+      headers: deletionAuth(expiredBearer, deletionKey),
+    });
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toEqual(deletionResult);
+
+    const wrongKey = await SELF.fetch(`${BASE}/api/me`, {
+      method: 'DELETE',
+      headers: deletionAuth(expiredBearer, crypto.randomUUID()),
+    });
+    expect(wrongKey.status).toBe(401);
+
+    const forgedBearer = await issueAppJwt(target.user.id, 'wrong-secret', {
+      ttlSeconds: -1,
+    });
+    const forged = await SELF.fetch(`${BASE}/api/me`, {
+      method: 'DELETE',
+      headers: deletionAuth(forgedBearer, deletionKey),
+    });
+    expect(forged.status).toBe(401);
+  });
+
   it('requires an authenticated app session', async () => {
     const response = await SELF.fetch(`${BASE}/api/me`, { method: 'DELETE' });
     expect(response.status).toBe(401);

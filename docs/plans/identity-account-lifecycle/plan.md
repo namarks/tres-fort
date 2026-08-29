@@ -97,8 +97,11 @@ exact-head verification, and closes the plan.
   a surviving member is never promoted by fallback. The iOS client clears only
   the initiating account's local namespace after success—even if the user
   switched accounts while waiting—and preserves the session, deletion key, and
-  retry-capable bearer after a lost response. An authoritative deletion 401 or
-  a 404 for a key that cannot match the durable receipt abandons the
+  retry-capable bearer after a lost response. A signature-verified expired
+  bearer is accepted only for the exact deletion endpoint and only when its
+  subject plus the high-entropy key match an already-committed receipt; it
+  cannot initiate deletion or access another feature. An authoritative deletion
+  401 or a 404 for a key that cannot match the durable receipt abandons the
   unrecognized retry key and transitions to ordinary reauthentication, avoiding
   a permanent pending state after deletion on another device.
 - P1(b) stores Apple's credential identifier from the local Sign in with Apple
@@ -124,7 +127,7 @@ exact-head verification, and closes the plan.
   independently interpretable without exposing unrelated catalog rows.
   Invite capabilities are omitted from new audit rows and stripped from
   historical invite-audit arguments before export.
-- Verification at this milestone: the full Workers suite passes 397/397, the
+- Verification at this milestone: the full Workers suite passes 398/398, the
   TypeScript compiler and plan compiler pass, iOS device sources compile, the
   app module and XCTest source typecheck, including stale renewal, stale
   Apple-credential callback, account-switch-during-deletion, in-flight

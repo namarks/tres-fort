@@ -52,6 +52,34 @@ async function sha256Hex(value: string): Promise<string> {
     .join('');
 }
 
+export function isAccountDeletionKey(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
+}
+
+/**
+ * Match the second half of a durable deletion-receipt credential without
+ * exposing the stored digest. Used by app-JWT middleware only for the narrow
+ * case where the signed bearer has expired after deletion already committed.
+ */
+export async function accountDeletionReceiptMatches(
+  db: D1Database,
+  userId: string,
+  idempotencyKey: string,
+): Promise<boolean> {
+  if (!isAccountDeletionKey(idempotencyKey)) return false;
+  const receipt = await db
+    .prepare(
+      `SELECT idempotency_key_sha256
+         FROM account_deletion_receipts WHERE user_id = ?1`,
+    )
+    .bind(userId)
+    .first<{ idempotency_key_sha256: string }>();
+  if (!receipt) return false;
+  return receipt.idempotency_key_sha256 === (await sha256Hex(idempotencyKey));
+}
+
 /**
  * Account deletion is terminal for the distinguished owner until an
  * administrator deliberately clears the singleton tombstone. Keeping this

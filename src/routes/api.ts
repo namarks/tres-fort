@@ -27,6 +27,7 @@ import {
   getUserTimezone,
   getVolume,
   isGroupMember,
+  isAccountDeletionKey,
   leaveGroup,
   listGroupsForUser,
   logActivity,
@@ -664,11 +665,7 @@ apiRoutes.patch('/me/profile', async (c) => {
 // tombstone. Tests exercise seeded users only.
 apiRoutes.delete('/me', async (c) => {
   const idempotencyKey = c.req.header('X-Account-Deletion-Key') ?? '';
-  if (
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-      idempotencyKey,
-    )
-  ) {
+  if (!isAccountDeletionKey(idempotencyKey)) {
     return c.json({ error: 'invalid_account_deletion_key' }, 400);
   }
   const result = await deleteUserAccount(

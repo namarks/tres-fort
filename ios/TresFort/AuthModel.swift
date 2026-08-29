@@ -173,13 +173,16 @@ final class AuthModel: ObservableObject {
     func renewSessionIfNeeded(force: Bool = false) async {
         guard !isRenewing, let token = jwt else { return }
         guard force || Self.shouldRenew(token, now: now()) else { return }
+        let initiatingUserID = userID
         isRenewing = true
         defer { isRenewing = false }
         do {
             let renewed = try await api.renewAppSession(jwt: token)
+            guard jwt == token, userID == initiatingUserID else { return }
             tokenStore.save(renewed.jwt)
             jwt = renewed.jwt
         } catch let APIError.http(code, _) where code == 401 {
+            guard jwt == token, userID == initiatingUserID else { return }
             requireReauthentication()
         } catch {
             // Offline/transport failure is intentionally soft. The existing
@@ -192,8 +195,18 @@ final class AuthModel: ObservableObject {
     /// recoverable sign-in state while retaining the account id and all scoped
     /// queued data. Provider errors are soft so offline launch remains usable.
     func checkAppleCredentialState() async {
-        guard jwt != nil, let appleCredentialUserID else { return }
-        switch await appleCredentialChecker.state(for: appleCredentialUserID) {
+        guard
+            let initiatingToken = jwt,
+            let initiatingUserID = userID,
+            let initiatingAppleUserID = appleCredentialUserID
+        else { return }
+        let state = await appleCredentialChecker.state(for: initiatingAppleUserID)
+        guard
+            jwt == initiatingToken,
+            userID == initiatingUserID,
+            appleCredentialUserID == initiatingAppleUserID
+        else { return }
+        switch state {
         case .authorized, .unavailable:
             return
         case .revoked, .notFound, .transferred:
@@ -229,26 +242,38 @@ final class AuthModel: ObservableObject {
     /// transaction: a network/server failure leaves the signed-in account and
     /// every queued write intact so the user can retry safely.
     func deleteAccount() async throws {
-        guard let token = jwt else {
+        guard let token = jwt, let accountID = userID else {
             throw APIError.http(401, "missing_session")
         }
-        let response = try await api.deleteAccount(jwt: token)
+        let deletionKeyName = AccountLocalState.accountDeletionKey(userID: accountID)
+        let idempotencyKey: String
+        if let existingKey = defaults.string(forKey: deletionKeyName) {
+            idempotencyKey = existingKey
+        } else {
+            idempotencyKey = UUID().uuidString
+            defaults.set(idempotencyKey, forKey: deletionKeyName)
+        }
+        let response = try await api.deleteAccount(
+            jwt: token,
+            idempotencyKey: idempotencyKey)
         guard response.ok else {
             throw APIError.decoding("account deletion was not acknowledged")
         }
 
-        if let accountID = userID {
-            AccountLocalState.clear(userID: accountID, defaults: defaults)
+        // Always erase the account that initiated deletion, even if the user
+        // signed out or switched accounts while the request was in flight.
+        AccountLocalState.clear(userID: accountID, defaults: defaults)
+        if userID == accountID {
+            tokenStore.clear()
+            defaults.removeObject(forKey: Self.userIDKey)
+            defaults.removeObject(forKey: Self.onboardedKey)
+            jwt = nil
+            userID = nil
+            appleCredentialUserID = nil
+            reauthenticationReason = nil
+            onboardingComplete = false
+            phase = .signedOut
         }
-        tokenStore.clear()
-        defaults.removeObject(forKey: Self.userIDKey)
-        defaults.removeObject(forKey: Self.onboardedKey)
-        jwt = nil
-        userID = nil
-        appleCredentialUserID = nil
-        reauthenticationReason = nil
-        onboardingComplete = false
-        phase = .signedOut
     }
 
     // MARK: - Universal Link invites

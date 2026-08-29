@@ -127,6 +127,66 @@ export async function upsertUser(
 }
 
 /**
+ * Create the distinguished owner only while no terminal owner tombstone
+ * exists. The predicate and INSERT share one SQLite statement, so a deletion
+ * that wins the write lock cannot be followed by a stale bootstrap request
+ * recreating the owner.
+ */
+async function insertOwnerUnlessTombstoned(
+  db: D1Database,
+  appleSub: string,
+  email: string | null,
+  displayName: string | null,
+  requireEmptyUsers: boolean,
+): Promise<User | null> {
+  const candidate: User = {
+    id: uuid(),
+    apple_sub: appleSub,
+    email,
+    display_name: displayName,
+    created_at: now(),
+    timezone: null,
+    intervals_api_key: null,
+    intervals_athlete_id: null,
+    intervals_oauth_access_token: null,
+    intervals_oauth_refresh_token: null,
+    intervals_oauth_expires_at: null,
+    intervals_auth_error_at: null,
+    mcp_passphrase_hash: null,
+    mcp_passphrase_salt: null,
+  };
+  await db
+    .prepare(
+      `INSERT INTO users (id, apple_sub, email, display_name, created_at)
+       SELECT ?1, ?2, ?3, ?4, ?5
+        WHERE NOT EXISTS (
+                SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+              )
+          AND (?6 = 0 OR NOT EXISTS (SELECT 1 FROM users))
+       ON CONFLICT(apple_sub) DO NOTHING`,
+    )
+    .bind(
+      candidate.id,
+      candidate.apple_sub,
+      candidate.email,
+      candidate.display_name,
+      candidate.created_at,
+      requireEmptyUsers ? 1 : 0,
+    )
+    .run();
+  return db
+    .prepare(
+      `SELECT u.* FROM users u
+        WHERE u.apple_sub = ?1
+          AND NOT EXISTS (
+                SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+              )`,
+    )
+    .bind(appleSub)
+    .first<User>();
+}
+
+/**
  * Sign in with Apple owner resolution. Single-user invariant: there is
  * exactly one user row. If this Apple sub is unseen and the only existing
  * user is a bootstrap row (e.g. the MCP-created 'mcp-owner'), *claim* that
@@ -139,9 +199,15 @@ export async function claimOrCreateOwner(
   email: string | null,
   displayName: string | null,
   ownerSubLocked: boolean,
-): Promise<User> {
+): Promise<User | null> {
   const byApple = await db
-    .prepare('SELECT * FROM users WHERE apple_sub = ?1')
+    .prepare(
+      `SELECT u.* FROM users u
+        WHERE u.apple_sub = ?1
+          AND NOT EXISTS (
+                SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+              )`,
+    )
     .bind(appleSub)
     .first<User>();
   if (byApple) return byApple;
@@ -151,13 +217,35 @@ export async function claimOrCreateOwner(
     if (all.results.length === 1) {
       const row = all.results[0]!;
       await db
-        .prepare('UPDATE users SET apple_sub = ?2, email = ?3, display_name = ?4 WHERE id = ?1')
+        .prepare(
+          `UPDATE users
+              SET apple_sub = ?2, email = ?3, display_name = ?4
+            WHERE id = ?1
+              AND NOT EXISTS (
+                    SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+                  )`,
+        )
         .bind(row.id, appleSub, email ?? row.email, displayName ?? row.display_name)
         .run();
-      return { ...row, apple_sub: appleSub, email: email ?? row.email, display_name: displayName ?? row.display_name };
+      return db
+        .prepare(
+          `SELECT u.* FROM users u
+            WHERE u.id = ?1 AND u.apple_sub = ?2
+              AND NOT EXISTS (
+                    SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+                  )`,
+        )
+        .bind(row.id, appleSub)
+        .first<User>();
     }
   }
-  return upsertUser(db, appleSub, email, displayName);
+  return insertOwnerUnlessTombstoned(
+    db,
+    appleSub,
+    email,
+    displayName,
+    !ownerSubLocked,
+  );
 }
 
 /**
@@ -178,10 +266,15 @@ export async function ensureOwnerUser(
   db: D1Database,
   ownerAppleSub: string | undefined,
 ): Promise<User | null> {
-  if (await isOwnerDeletionTombstoned(db)) return null;
   const existing = await findOwnerRow(db, ownerAppleSub);
   if (existing) return existing;
-  return upsertUser(db, ownerAppleSub ?? BOOTSTRAP_APPLE_SUB, null, 'Owner');
+  return insertOwnerUnlessTombstoned(
+    db,
+    ownerAppleSub ?? BOOTSTRAP_APPLE_SUB,
+    null,
+    'Owner',
+    !ownerAppleSub,
+  );
 }
 
 /**
@@ -207,15 +300,26 @@ export async function findOwnerRow(
   db: D1Database,
   ownerAppleSub: string | undefined,
 ): Promise<User | null> {
-  if (await isOwnerDeletionTombstoned(db)) return null;
   if (ownerAppleSub) {
     return await db
-      .prepare('SELECT * FROM users WHERE apple_sub = ?1')
+      .prepare(
+        `SELECT u.* FROM users u
+          WHERE u.apple_sub = ?1
+            AND NOT EXISTS (
+                  SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+                )`,
+      )
       .bind(ownerAppleSub)
       .first<User>();
   }
   return await db
-    .prepare('SELECT * FROM users ORDER BY created_at LIMIT 1')
+    .prepare(
+      `SELECT u.* FROM users u
+        WHERE NOT EXISTS (
+                SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+              )
+        ORDER BY u.created_at LIMIT 1`,
+    )
     .first<User>();
 }
 
@@ -256,7 +360,25 @@ export async function deleteUserAccount(
   db: D1Database,
   userId: string,
   ownerAppleSub: string | undefined,
+  idempotencyKey: string,
 ): Promise<DeleteUserAccountResult> {
+  const idempotencyKeyHash = await sha256Hex(idempotencyKey);
+  const priorReceipt = await db
+    .prepare(
+      `SELECT idempotency_key_sha256, owner_tombstoned
+         FROM account_deletion_receipts WHERE user_id = ?1`,
+    )
+    .bind(userId)
+    .first<{
+      idempotency_key_sha256: string;
+      owner_tombstoned: number;
+    }>();
+  if (priorReceipt) {
+    return priorReceipt.idempotency_key_sha256 === idempotencyKeyHash
+      ? { ok: true, owner_tombstoned: priorReceipt.owner_tombstoned === 1 }
+      : { error: 'not_found' };
+  }
+
   const user = await db
     .prepare('SELECT * FROM users WHERE id = ?1')
     .bind(userId)
@@ -265,7 +387,16 @@ export async function deleteUserAccount(
 
   const owner = await findOwnerRow(db, ownerAppleSub);
   const deletingOwner = owner?.id === userId;
-  const statements: D1PreparedStatement[] = [];
+  const deletionTime = now();
+  const statements: D1PreparedStatement[] = [
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO account_deletion_receipts
+           (user_id, idempotency_key_sha256, owner_tombstoned, deleted_at)
+         VALUES (?1, ?2, ?3, ?4)`,
+      )
+      .bind(userId, idempotencyKeyHash, deletingOwner ? 1 : 0, deletionTime),
+  ];
 
   if (deletingOwner) {
     statements.push(
@@ -278,7 +409,7 @@ export async function deleteUserAccount(
              apple_sub_sha256 = excluded.apple_sub_sha256,
              deleted_at = excluded.deleted_at`,
         )
-        .bind(await sha256Hex(user.apple_sub), now()),
+        .bind(await sha256Hex(user.apple_sub), deletionTime),
     );
   }
 
@@ -410,7 +541,20 @@ export async function deleteUserAccount(
 
   statements.push(db.prepare('DELETE FROM users WHERE id = ?1').bind(userId));
   await db.batch(statements);
-  return { ok: true, owner_tombstoned: deletingOwner };
+  const receipt = await db
+    .prepare(
+      `SELECT idempotency_key_sha256, owner_tombstoned
+         FROM account_deletion_receipts WHERE user_id = ?1`,
+    )
+    .bind(userId)
+    .first<{
+      idempotency_key_sha256: string;
+      owner_tombstoned: number;
+    }>();
+  if (!receipt || receipt.idempotency_key_sha256 !== idempotencyKeyHash) {
+    return { error: 'not_found' };
+  }
+  return { ok: true, owner_tombstoned: receipt.owner_tombstoned === 1 };
 }
 
 // ---- per-user MCP passphrase (M3 multi-tenant auth) -----------------------

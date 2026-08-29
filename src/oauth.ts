@@ -41,7 +41,20 @@ export async function validateBearer(env: Env, token: string): Promise<string | 
     .bind(token)
     .first<{ user_id: string | null; expires_at: number }>();
   if (!row || row.expires_at <= Math.floor(Date.now() / 1000)) return null;
-  if (row.user_id) return row.user_id;
+  if (row.user_id) {
+    const principal = await env.DB
+      .prepare(
+        `SELECT 1 AS x FROM users
+          WHERE id = ?1
+            AND NOT EXISTS (
+                  SELECT 1 FROM account_deletion_receipts
+                   WHERE user_id = ?1
+                )`,
+      )
+      .bind(row.user_id)
+      .first<{ x: number }>();
+    return principal ? row.user_id : null;
+  }
   return (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB))?.id ?? null;
 }
 
@@ -230,15 +243,35 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
 
 // ---- token ---------------------------------------------------------------
 
-async function issueTokens(env: Env, clientId: string, scope: string, userId: string | null) {
+async function issueTokens(
+  env: Env,
+  clientId: string,
+  scope: string,
+  userId: string | null,
+) {
   const access = rand();
   const refresh = rand();
   const nowSec = Math.floor(Date.now() / 1000);
-  await env.DB.prepare(
-    'INSERT INTO oauth_tokens (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id) VALUES (?1,?2,?3,?4,?5,?6,?7)',
+  const inserted = await env.DB.prepare(
+    `INSERT INTO oauth_tokens
+       (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id)
+     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+      WHERE (
+        ?7 IS NOT NULL
+        AND EXISTS (SELECT 1 FROM users WHERE id = ?7)
+        AND NOT EXISTS (
+              SELECT 1 FROM account_deletion_receipts WHERE user_id = ?7
+            )
+      ) OR (
+        ?7 IS NULL
+        AND NOT EXISTS (
+              SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+            )
+      )`,
   )
     .bind(access, refresh, clientId, scope, nowSec + ACCESS_TTL, nowSec, userId)
     .run();
+  if (inserted.meta.changes !== 1) return null;
   return {
     access_token: access,
     token_type: 'Bearer',
@@ -267,7 +300,14 @@ oauthRoutes.post('/oauth/token', async (c) => {
     if ((await s256(f('code_verifier'))) !== code.code_challenge) {
       return c.json({ error: 'invalid_grant', detail: 'pkce' }, 400);
     }
-    return c.json(await issueTokens(c.env, code.client_id, code.scope ?? 'mcp', code.user_id ?? null));
+    const tokens = await issueTokens(
+      c.env,
+      code.client_id,
+      code.scope ?? 'mcp',
+      code.user_id ?? null,
+    );
+    if (!tokens) return c.json({ error: 'invalid_grant' }, 400);
+    return c.json(tokens);
   }
 
   if (grant === 'refresh_token') {
@@ -280,7 +320,14 @@ oauthRoutes.post('/oauth/token', async (c) => {
     await c.env.DB.prepare('DELETE FROM oauth_tokens WHERE refresh_token = ?1')
       .bind(f('refresh_token'))
       .run();
-    return c.json(await issueTokens(c.env, row.client_id, row.scope ?? 'mcp', row.user_id ?? null));
+    const tokens = await issueTokens(
+      c.env,
+      row.client_id,
+      row.scope ?? 'mcp',
+      row.user_id ?? null,
+    );
+    if (!tokens) return c.json({ error: 'invalid_grant' }, 400);
+    return c.json(tokens);
   }
 
   return c.json({ error: 'unsupported_grant_type' }, 400);

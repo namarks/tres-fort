@@ -62,10 +62,26 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
   // makes all outstanding app tokens unusable immediately after DELETE /api/me
   // commits (and prevents rolling renewal from resurrecting the session).
   const principal = await c.env.DB
-    .prepare('SELECT 1 AS x FROM users WHERE id = ?1')
+    .prepare(
+      `SELECT 1 AS x FROM users
+        WHERE id = ?1
+          AND NOT EXISTS (
+                SELECT 1 FROM account_deletion_receipts
+                 WHERE user_id = ?1
+              )`,
+    )
     .bind(c.get('userId'))
     .first<{ x: number }>();
-  if (!principal) return c.json({ error: 'invalid_token' }, 401);
+  if (!principal) {
+    // A signed JWT whose principal has just been deleted is accepted only for
+    // an idempotent retry of that same DELETE. The route verifies the durable
+    // high-entropy receipt; every other endpoint remains revoked immediately.
+    const isDeletionRetry =
+      c.req.method === 'DELETE' && new URL(c.req.url).pathname === '/api/me';
+    if (!isDeletionRetry) return c.json({ error: 'invalid_token' }, 401);
+    await next();
+    return;
+  }
   // The device sends its IANA timezone on EVERY authenticated request, so
   // "today" on the MCP side tracks the user across zones even when they only
   // do non-/state actions (logging sets) after travelling. Best-effort:

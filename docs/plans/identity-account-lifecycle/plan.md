@@ -78,9 +78,13 @@ exact-head verification, and closes the plan.
   tokens, remove their complete training-data graph and memberships, transfer
   surviving groups to the longest-tenured remaining member, and delete empty
   groups. Owner deletion writes a one-way identity tombstone in that same batch
-  so static MCP cannot recreate the owner or promote another member. The iOS
-  client clears only the acknowledged account's local namespace after success;
-  a failed request preserves the session and queued writes for retry.
+  so static MCP cannot recreate the owner or promote another member. A durable,
+  key-bound deletion receipt makes a lost success response safe to retry, while
+  database triggers reject late writes and OAuth grants for a deleted principal.
+  Owner bootstrap mutations are conditional on tombstone absence in the same
+  SQLite statement. The iOS client clears only the initiating account's local
+  namespace after success—even if the user switched accounts while waiting—and
+  preserves both the session data and deletion key after a failed request.
 - P1(b) stores Apple's credential identifier from the local Sign in with Apple
   result and checks it on launch/foreground. Revoked, missing, or transferred
   credentials clear only the bearer and explain same-account reauthentication;
@@ -92,7 +96,8 @@ exact-head verification, and closes the plan.
   into audit arguments.
 - Verification at this milestone: the full Workers suite passes 395/395, the
   TypeScript compiler and plan compiler pass, iOS device sources compile, the
-  simulator module and XCTest source typecheck, and the standalone production
-  AuthModel harness passes Apple revocation/provider-unavailable behavior. This
-  host still has no installed iOS simulator runtime, so XCTest execution remains
-  unavailable locally.
+  simulator module and XCTest source typecheck, including stale renewal, stale
+  Apple-credential callback, account-switch-during-deletion, and lost-response
+  retry coverage. The standalone production AuthModel harness passes Apple
+  revocation/provider-unavailable behavior. This host still has no installed iOS
+  simulator runtime, so XCTest execution remains unavailable locally.

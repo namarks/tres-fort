@@ -86,6 +86,7 @@ authRoutes.post('/apple', async (c) => {
       body.fullName ?? null,
       ownerSubLocked,
     );
+    if (!user) return c.json({ error: 'owner_account_deleted' }, 410);
     const jwt = await issueAppJwt(user.id, c.env.APP_JWT_SECRET);
     return c.json({ jwt, user });
   }
@@ -102,6 +103,7 @@ authRoutes.post('/apple', async (c) => {
       body.fullName ?? null,
       false,
     );
+    if (!user) return c.json({ error: 'owner_account_deleted' }, 410);
     const jwt = await issueAppJwt(user.id, c.env.APP_JWT_SECRET);
     return c.json({ jwt, user });
   }
@@ -148,13 +150,20 @@ authRoutes.post('/dev', async (c) => {
   if (body.secret !== c.env.DEV_AUTH_SECRET) {
     return c.json({ error: 'bad_dev_secret' }, 401);
   }
-  const sub = c.env.OWNER_APPLE_SUB ?? 'dev-owner';
   // This local/CI-only backdoor always represents the distinguished owner,
   // even when its synthetic sub differs from the MCP bootstrap sentinel.
   if (await isOwnerDeletionTombstoned(c.env.DB)) {
     return c.json({ error: 'owner_account_deleted' }, 410);
   }
-  const user = await upsertUser(c.env.DB, sub, 'dev@local', 'Dev Owner');
+  const sub = c.env.OWNER_APPLE_SUB ?? 'dev-owner';
+  const user = await claimOrCreateOwner(
+    c.env.DB,
+    sub,
+    'dev@local',
+    'Dev Owner',
+    true,
+  );
+  if (!user) return c.json({ error: 'owner_account_deleted' }, 410);
   const jwt = await issueAppJwt(user.id, c.env.APP_JWT_SECRET);
   return c.json({ jwt, user });
 });

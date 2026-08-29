@@ -2,6 +2,7 @@ import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { issueAppJwt } from '../src/auth';
 import {
+  claimOrCreateOwner,
   ensureOwnerUser,
   findOwnerRow,
   upsertUser,
@@ -9,6 +10,10 @@ import {
 
 const BASE = 'https://lift-coach.test';
 const auth = (jwt: string) => ({ Authorization: `Bearer ${jwt}` });
+const deletionAuth = (jwt: string, key: string) => ({
+  ...auth(jwt),
+  'X-Account-Deletion-Key': key,
+});
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -226,6 +231,7 @@ describe('DELETE /api/me', () => {
     const foreignGroup = `foreign-${crypto.randomUUID()}`;
     const targetInvite = `target-invite-${crypto.randomUUID()}`;
     const survivorInvite = `survivor-invite-${crypto.randomUUID()}`;
+    const deletionKey = crypto.randomUUID();
 
     await env.DB.batch([
       env.DB
@@ -302,7 +308,7 @@ describe('DELETE /api/me', () => {
 
     const response = await SELF.fetch(`${BASE}/api/me`, {
       method: 'DELETE',
-      headers: auth(target.jwt),
+      headers: deletionAuth(target.jwt, deletionKey),
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
@@ -387,6 +393,58 @@ describe('DELETE /api/me', () => {
       headers: auth(target.jwt),
     });
     expect(renew.status).toBe(401);
+
+    // A lost success response is safe to retry with the same key even though
+    // the JWT principal row is gone. A different key cannot probe or reuse the
+    // receipt.
+    const retry = await SELF.fetch(`${BASE}/api/me`, {
+      method: 'DELETE',
+      headers: deletionAuth(target.jwt, deletionKey),
+    });
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toEqual({
+      ok: true,
+      owner_tombstoned: false,
+    });
+    const differentRetry = await SELF.fetch(`${BASE}/api/me`, {
+      method: 'DELETE',
+      headers: deletionAuth(target.jwt, crypto.randomUUID()),
+    });
+    expect(differentRetry.status).toBe(404);
+
+    // Late in-flight writes that passed authentication before deletion cannot
+    // recreate rows in tables without users foreign keys.
+    await expect(
+      env.DB
+        .prepare(
+          `INSERT INTO external_activities
+             (id,user_id,source,external_id,date,kind,synced_at)
+           VALUES (?1,?2,'healthkit',?3,'2026-08-29','walk',?4)`,
+        )
+        .bind(
+          `late-activity-${crypto.randomUUID()}`,
+          target.user.id,
+          `late-upstream-${crypto.randomUUID()}`,
+          Date.now(),
+        )
+        .run(),
+    ).rejects.toThrow('deleted_user');
+    await expect(
+      env.DB
+        .prepare(
+          `INSERT INTO oauth_tokens
+             (access_token,refresh_token,client_id,scope,expires_at,created_at,user_id)
+           VALUES (?1,?2,'late-client','mcp',?3,?4,?5)`,
+        )
+        .bind(
+          `late-access-${crypto.randomUUID()}`,
+          `late-refresh-${crypto.randomUUID()}`,
+          Date.now() + 60_000,
+          Date.now(),
+          target.user.id,
+        )
+        .run(),
+    ).rejects.toThrow('deleted_user');
   });
 
   it('tombstones a seeded owner without promoting or recreating a member', async () => {
@@ -394,6 +452,7 @@ describe('DELETE /api/me', () => {
     expect(owner).not.toBeNull();
     const seededOwner = owner!;
     const ownerJwt = await issueAppJwt(seededOwner.id, 'test-secret');
+    const deletionKey = crypto.randomUUID();
     const survivor = await makeUser('owner-survivor');
     const groupId = `owner-group-${crypto.randomUUID()}`;
     const legacyAccess = `legacy-owner-${crypto.randomUUID()}`;
@@ -427,7 +486,7 @@ describe('DELETE /api/me', () => {
 
     const response = await SELF.fetch(`${BASE}/api/me`, {
       method: 'DELETE',
-      headers: auth(ownerJwt),
+      headers: deletionAuth(ownerJwt, deletionKey),
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
@@ -438,6 +497,15 @@ describe('DELETE /api/me', () => {
     expect(await byId('users', 'id', seededOwner.id)).toBeNull();
     expect(await findOwnerRow(env.DB, undefined)).toBeNull();
     expect(await ensureOwnerUser(env.DB, undefined)).toBeNull();
+    expect(
+      await claimOrCreateOwner(
+        env.DB,
+        seededOwner.apple_sub,
+        null,
+        null,
+        false,
+      ),
+    ).toBeNull();
     expect((await byId('groups', 'id', groupId))?.created_by).toBe(
       survivor.user.id,
     );

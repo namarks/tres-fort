@@ -28,12 +28,17 @@ enum AccountLocalState {
         "com.nmarkspdx.liftcoach.apple-credential-user.v1.\(userID)"
     }
 
+    static func accountDeletionKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.account-deletion-key.v1.\(userID)"
+    }
+
     static func clear(userID: String, defaults: UserDefaults = .standard) {
         ActivityOutboxStore.clear(userID: userID, defaults: defaults)
         defaults.removeObject(forKey: intervalsConnectionKey(userID: userID))
         defaults.removeObject(forKey: healthEnabledKey(userID: userID))
         defaults.removeObject(forKey: healthAnchorKey(userID: userID))
         defaults.removeObject(forKey: appleCredentialUserKey(userID: userID))
+        defaults.removeObject(forKey: accountDeletionKey(userID: userID))
 
         // Defensive upgrade cleanup: if this account never mounted the feature
         // models after updating, the process-global v1 values may not have been

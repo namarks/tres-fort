@@ -199,7 +199,7 @@ describe('bootstrap path: claimOrCreateOwner + countUsers', () => {
     // The route would call claimOrCreateOwner(unlocked) when both
     // OWNER_APPLE_SUB is unset and countUsers===0. We mirror that.
     const sub = `sub-fresh-${crypto.randomUUID()}`;
-    const user = await claimOrCreateOwner(env.DB, sub, 'fresh@test', 'Fresh', false);
+    const user = (await claimOrCreateOwner(env.DB, sub, 'fresh@test', 'Fresh', false))!;
     expect(user.apple_sub).toBe(sub);
     expect(await countUsers(env.DB)).toBe(1);
   });
@@ -232,7 +232,7 @@ describe('bootstrap path: claimOrCreateOwner + countUsers', () => {
     // Sign-in path then calls claimOrCreateOwner(unlocked), which rebinds
     // the seeded row to the real Apple sub (no duplicate user created).
     const realSub = `sub-real-${crypto.randomUUID()}`;
-    const claimed = await claimOrCreateOwner(env.DB, realSub, 'real@test', 'Real', false);
+    const claimed = (await claimOrCreateOwner(env.DB, realSub, 'real@test', 'Real', false))!;
     expect(claimed.id).toBe(seeded.id);
     expect(claimed.apple_sub).toBe(realSub);
     expect(await countUsers(env.DB)).toBe(1); // no duplicate
@@ -291,27 +291,27 @@ describe('bootstrap path: claimOrCreateOwner + countUsers', () => {
     expect(seeded.apple_sub).toBe('sub-owner');
 
     // Owner sub signs in -> idempotent return of the seeded row.
-    const ownerLogin = await claimOrCreateOwner(
+    const ownerLogin = (await claimOrCreateOwner(
       env.DB,
       'sub-owner',
       'owner@test',
       'Owner',
       true,
-    );
+    ))!;
     expect(ownerLogin.id).toBe(seeded.id);
   });
 
   it('existing apple_sub -> returns the existing row (no invite needed)', async () => {
     // Seed.
-    const seeded = await claimOrCreateOwner(
+    const seeded = (await claimOrCreateOwner(
       env.DB,
       `sub-existing-${crypto.randomUUID()}`,
       'e@test',
       'E',
       false,
-    );
+    ))!;
     // Idempotent.
-    const again = await claimOrCreateOwner(env.DB, seeded.apple_sub, null, null, false);
+    const again = (await claimOrCreateOwner(env.DB, seeded.apple_sub, null, null, false))!;
     expect(again.id).toBe(seeded.id);
   });
 });

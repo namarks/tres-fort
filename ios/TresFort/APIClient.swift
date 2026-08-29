@@ -34,8 +34,14 @@ struct APIClient {
     /// Permanently delete the authenticated account. The Profile UI owns the
     /// destructive confirmation; AuthModel clears local account state only
     /// after this response is acknowledged.
-    func deleteAccount(jwt: String) async throws -> AccountDeletionResponse {
-        try await delete("api/me", jwt: jwt)
+    func deleteAccount(
+        jwt: String,
+        idempotencyKey: String
+    ) async throws -> AccountDeletionResponse {
+        try await delete(
+            "api/me",
+            jwt: jwt,
+            headers: ["X-Account-Deletion-Key": idempotencyKey])
     }
 
     /// Full sync pull (since=0 → everything; the app dedupes locally).
@@ -175,11 +181,18 @@ struct APIClient {
     /// DELETE with no request body. Decodes the JSON response into T (the
     /// backend mostly returns `{ok: true}` for deletes; use `EmptyResponse`
     /// when you don't care about the body).
-    func delete<T: Decodable>(_ path: String, jwt: String) async throws -> T {
+    func delete<T: Decodable>(
+        _ path: String,
+        jwt: String,
+        headers: [String: String] = [:]
+    ) async throws -> T {
         var req = URLRequest(url: URL(string: baseURL.absoluteString + "/" + path)!)
         req.httpMethod = "DELETE"
         req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
         req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
+        for (field, value) in headers {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
         return try await send(req)
     }
 
@@ -199,7 +212,10 @@ struct APIClient {
 protocol AuthAPI {
     func authApple(identityToken: String, fullName: String?) async throws -> AuthResponse
     func renewAppSession(jwt: String) async throws -> SessionRenewalResponse
-    func deleteAccount(jwt: String) async throws -> AccountDeletionResponse
+    func deleteAccount(
+        jwt: String,
+        idempotencyKey: String
+    ) async throws -> AccountDeletionResponse
 }
 
 extension APIClient: AuthAPI {}

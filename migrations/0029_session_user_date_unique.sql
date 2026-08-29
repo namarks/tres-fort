@@ -230,10 +230,10 @@ WHERE session_id IN (
 );
 
 -- Keep the canonical id/user/date/created_at, but do not let an early planned
--- shell erase a later workout. A completed row is more meaningful than an
--- in-progress row, and both outrank all other states. Within the same tier the
--- canonical row wins, so reconciliation never replaces an equally meaningful
--- canonical state. Remaining ties are deterministic.
+-- shell erase a later workout or explicit skip. Lifecycle meaning is ordered
+-- completed > in_progress > skipped > planned > discarded/other. Within the
+-- same tier the canonical row wins, so reconciliation never replaces an
+-- equally meaningful canonical state. Remaining ties are deterministic.
 WITH mapped_sessions AS (
   SELECT
     s.*,
@@ -251,8 +251,10 @@ ranked_sessions AS (
       PARTITION BY user_id, date
       ORDER BY
         CASE status
-          WHEN 'completed' THEN 2
-          WHEN 'in_progress' THEN 1
+          WHEN 'completed' THEN 4
+          WHEN 'in_progress' THEN 3
+          WHEN 'skipped' THEN 2
+          WHEN 'planned' THEN 1
           ELSE 0
         END DESC,
         CASE WHEN id = target_session_id THEN 1 ELSE 0 END DESC,

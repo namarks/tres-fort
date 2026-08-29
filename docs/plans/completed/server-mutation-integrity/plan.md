@@ -1,6 +1,6 @@
 # Server Mutation Integrity
 
-Slug: server-mutation-integrity · Status: done · Archived: completed · Updated: 2026-08-28 · Theme: training-trust
+Slug: server-mutation-integrity · Status: done · Archived: completed · Updated: 2026-08-29 · Theme: training-trust
 
 ## Goal
 
@@ -52,10 +52,12 @@ workstream's authority and was not performed during closeout.
   no schema migration or broader authorization rewrite was needed.
 - P1 and P2 completed with migration 0029's exact duplicate-session replay,
   plan/session/set race coverage, the repository typecheck, and the complete
-  Workers/D1 suite (`33` files, `382` tests). The authorized migration preserves
-  the canonical session identity and creation time, deterministically promotes
-  a coherent completed/in-progress state, preserves every set and the best usable
-  export ledger, then removes redundant loser shells. Per-hand tonnage now uses
+  Workers/D1 suite (`33` files, `384` tests). The authorized migration preserves
+  the canonical session identity and creation time, ranks lifecycle state as
+  completed > in-progress > skipped > planned > discarded/other, promotes the
+  winning row's coherent plan/day/status/timestamps/fatigue/notes/update tuple,
+  preserves every set and the best usable export ledger, then removes redundant
+  loser shells. Per-hand tonnage now uses
   the same independent side/implement multipliers in server, MCP, and iOS
   rollups. Migration 0029 was authored and locally tested but not applied remotely.
 - Independent pre-integration review found no remaining actionable findings;

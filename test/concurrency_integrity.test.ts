@@ -445,8 +445,20 @@ describe('0029 duplicate-session reconciliation', () => {
         .bind(lateLoser, userId, planId, canonicalDay, date),
       sessionInsert(exportWinner, exportDate, 300),
       sessionInsert(exportLoser, exportDate, 400),
-      sessionInsert(movedExportWinner, movedExportDate, 500),
-      sessionInsert(movedExportLoser, movedExportDate, 600),
+      env.DB
+        .prepare(
+          `INSERT INTO sessions
+           (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
+           VALUES (?1,?2,?3,?4,?5,'planned',NULL,NULL,NULL,'empty skip shell',500,510)`,
+        )
+        .bind(movedExportWinner, userId, planId, canonicalDay, movedExportDate),
+      env.DB
+        .prepare(
+          `INSERT INTO sessions
+           (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
+           VALUES (?1,?2,?3,?4,?5,'skipped',NULL,NULL,NULL,'explicit skip',600,650)`,
+        )
+        .bind(movedExportLoser, userId, promotedPlan, promotedDay, movedExportDate),
     ]);
 
     const setInsert = (
@@ -591,6 +603,42 @@ describe('0029 duplicate-session reconciliation', () => {
       .bind(movedExportWinner)
       .first<{ session_id: string; intervals_ref: string }>();
     expect(movedExport?.intervals_ref).toBe('moved-ref');
+
+    const promotedSkip = await env.DB
+      .prepare(
+        `SELECT id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,
+                perceived_fatigue,notes,created_at,updated_at
+         FROM sessions WHERE id = ?1`,
+      )
+      .bind(movedExportWinner)
+      .first<{
+        id: string;
+        user_id: string;
+        plan_id: string;
+        day_template_id: string | null;
+        date: string;
+        status: string;
+        started_at: number | null;
+        completed_at: number | null;
+        perceived_fatigue: number | null;
+        notes: string | null;
+        created_at: number;
+        updated_at: number;
+      }>();
+    expect(promotedSkip).toEqual({
+      id: movedExportWinner,
+      user_id: userId,
+      plan_id: promotedPlan,
+      day_template_id: promotedDay,
+      date: movedExportDate,
+      status: 'skipped',
+      started_at: null,
+      completed_at: null,
+      perceived_fatigue: null,
+      notes: 'explicit skip',
+      created_at: 500,
+      updated_at: 650,
+    });
     expect(
       await env.DB
         .prepare('SELECT * FROM session_load_exports WHERE session_id = ?1')

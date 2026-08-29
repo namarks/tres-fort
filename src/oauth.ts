@@ -33,7 +33,7 @@ async function s256(verifier: string): Promise<string> {
 export async function validateBearer(env: Env, token: string): Promise<string | null> {
   if (!token) return null;
   if (env.MCP_STATIC_TOKEN && token === env.MCP_STATIC_TOKEN) {
-    return (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB)).id;
+    return (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB))?.id ?? null;
   }
   const row = await env.DB.prepare(
     'SELECT user_id, expires_at FROM oauth_tokens WHERE access_token = ?1',
@@ -41,7 +41,8 @@ export async function validateBearer(env: Env, token: string): Promise<string | 
     .bind(token)
     .first<{ user_id: string | null; expires_at: number }>();
   if (!row || row.expires_at <= Math.floor(Date.now() / 1000)) return null;
-  return row.user_id ?? (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB)).id;
+  if (row.user_id) return row.user_id;
+  return (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB))?.id ?? null;
 }
 
 export const oauthRoutes = new Hono<HonoEnv>();
@@ -193,7 +194,7 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
   const pass = f('passphrase').trim();
   let userId: string | null = null;
   if (c.env.OWNER_AUTH_PASSPHRASE && pass === c.env.OWNER_AUTH_PASSPHRASE) {
-    userId = (await ensureOwnerUser(c.env.DB, c.env.OWNER_APPLE_SUB)).id;
+    userId = (await ensureOwnerUser(c.env.DB, c.env.OWNER_APPLE_SUB))?.id ?? null;
   } else if (pass) {
     userId = await findUserByMcpPassphrase(c.env.DB, pass);
   }

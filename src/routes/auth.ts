@@ -4,6 +4,8 @@ import { issueAppJwt, requireAppJwt, verifyAppleToken } from '../auth';
 import {
   claimOrCreateOwner,
   isBootstrapClaimEligible,
+  isDeletedOwnerAppleSub,
+  isOwnerDeletionTombstoned,
   redeemInvite,
   upsertUser,
 } from '../db';
@@ -52,6 +54,13 @@ authRoutes.post('/apple', async (c) => {
     claims = await verifyAppleToken(body.identityToken, c.env.APPLE_BUNDLE_ID);
   } catch {
     return c.json({ error: 'apple_verification_failed' }, 401);
+  }
+
+  // A deliberately deleted owner is suppressed until an administrator clears
+  // the D1 tombstone. Do this before every create/claim path so neither Apple
+  // sign-in nor a configured OWNER_APPLE_SUB can silently recreate it.
+  if (await isDeletedOwnerAppleSub(c.env.DB, claims.sub)) {
+    return c.json({ error: 'owner_account_deleted' }, 410);
   }
 
   // Path 1: existing user — fast path.
@@ -140,6 +149,11 @@ authRoutes.post('/dev', async (c) => {
     return c.json({ error: 'bad_dev_secret' }, 401);
   }
   const sub = c.env.OWNER_APPLE_SUB ?? 'dev-owner';
+  // This local/CI-only backdoor always represents the distinguished owner,
+  // even when its synthetic sub differs from the MCP bootstrap sentinel.
+  if (await isOwnerDeletionTombstoned(c.env.DB)) {
+    return c.json({ error: 'owner_account_deleted' }, 410);
+  }
   const user = await upsertUser(c.env.DB, sub, 'dev@local', 'Dev Owner');
   const jwt = await issueAppJwt(user.id, c.env.APP_JWT_SECRET);
   return c.json({ jwt, user });

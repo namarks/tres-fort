@@ -11,6 +11,11 @@ struct SessionRenewalResponse: Decodable {
     let jwt: String
 }
 
+struct AccountDeletionResponse: Decodable {
+    let ok: Bool
+    let owner_tombstoned: Bool
+}
+
 struct UserDTO: Decodable {
     let id: String
     let display_name: String?

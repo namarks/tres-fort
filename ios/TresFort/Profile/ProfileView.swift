@@ -13,6 +13,11 @@ struct ProfileView: View {
 
     @State private var showJoin = false
     @State private var showCreate = false
+    @State private var showNameEditor = false
+    @State private var showDeleteConfirmation = false
+    @State private var isDeletingAccount = false
+    @State private var showDeletionError = false
+    @State private var deletionErrorMessage = ""
 
     var body: some View {
         NavigationStack {
@@ -29,6 +34,28 @@ struct ProfileView: View {
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showJoin) { JoinGroupSheet(groupModel: groupModel) }
         .sheet(isPresented: $showCreate) { CreateGroupSheet(groupModel: groupModel) }
+        .sheet(isPresented: $showNameEditor) {
+            EditDisplayNameSheet(
+                initialName: groupModel.me?.display_name ?? "",
+                onSave: { try await groupModel.updateDisplayName($0) })
+        }
+        .confirmationDialog(
+            "Permanently delete your account?",
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Delete Account", role: .destructive) {
+                Task { await deleteConfirmedAccount() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently deletes your training plan, workout history, connected-service credentials, Claude tokens, and group memberships. Groups with other members will continue under another member. This cannot be undone.")
+        }
+        .alert("Account wasn’t deleted", isPresented: $showDeletionError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(deletionErrorMessage)
+        }
         .task {
             // Loads groups if the Profile tab is opened before the Group tab;
             // load() also refreshes `me`. Otherwise just refresh the snapshot.
@@ -45,8 +72,14 @@ struct ProfileView: View {
 
     private var accountSection: some View {
         Section("Account") {
-            if let name = groupModel.me?.display_name, !name.isEmpty {
-                LabeledContent("Name", value: name)
+            HStack {
+                Text("Name")
+                Spacer()
+                Text(groupModel.me?.display_name.flatMap { $0.isEmpty ? nil : $0 }
+                     ?? "Not set")
+                    .foregroundStyle(.secondary)
+                Button("Edit") { showNameEditor = true }
+                    .font(.footnote)
             }
             if let email = groupModel.me?.email, !email.isEmpty {
                 LabeledContent("Apple ID", value: email)
@@ -54,6 +87,31 @@ struct ProfileView: View {
             Button(role: .destructive) { auth.signOut() } label: {
                 Text("Sign out")
             }
+            Button(role: .destructive) {
+                showDeleteConfirmation = true
+            } label: {
+                if isDeletingAccount {
+                    HStack {
+                        ProgressView().controlSize(.small)
+                        Text("Deleting account…")
+                    }
+                } else {
+                    Text("Delete account")
+                }
+            }
+            .disabled(isDeletingAccount)
+        }
+    }
+
+    private func deleteConfirmedAccount() async {
+        guard !isDeletingAccount else { return }
+        isDeletingAccount = true
+        defer { isDeletingAccount = false }
+        do {
+            try await auth.deleteAccount()
+        } catch {
+            deletionErrorMessage = error.localizedDescription
+            showDeletionError = true
         }
     }
 
@@ -177,5 +235,68 @@ struct ProfileView: View {
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .short
         return f.localizedString(for: d, relativeTo: Date())
+    }
+}
+
+private struct EditDisplayNameSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var displayName: String
+    @State private var isSaving = false
+    @State private var errorMessage: String?
+    let onSave: (String) async throws -> Void
+
+    init(
+        initialName: String,
+        onSave: @escaping (String) async throws -> Void
+    ) {
+        _displayName = State(initialValue: initialName)
+        self.onSave = onSave
+    }
+
+    private var trimmedName: String {
+        displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                TextField("Display name", text: $displayName)
+                    .textContentType(.name)
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
+            }
+            .navigationTitle("Edit Name")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                        .disabled(isSaving)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(isSaving ? "Saving…" : "Save") {
+                        Task { await save() }
+                    }
+                    .disabled(
+                        isSaving || trimmedName.isEmpty || trimmedName.utf16.count > 80)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func save() async {
+        guard !isSaving else { return }
+        isSaving = true
+        errorMessage = nil
+        do {
+            try await onSave(trimmedName)
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+            isSaving = false
+        }
     }
 }

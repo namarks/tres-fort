@@ -42,6 +42,45 @@ const uuid = () => crypto.randomUUID();
 
 // ---- users ---------------------------------------------------------------
 
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(value),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+/**
+ * Account deletion is terminal for the distinguished owner until an
+ * administrator deliberately clears the singleton tombstone. Keeping this
+ * check independent of the users table prevents static MCP/bootstrap traffic
+ * from recreating the owner or promoting the earliest surviving member.
+ */
+export async function isOwnerDeletionTombstoned(
+  db: D1Database,
+): Promise<boolean> {
+  const row = await db
+    .prepare('SELECT 1 AS x FROM owner_deletion_tombstone WHERE singleton = 1')
+    .first<{ x: number }>();
+  return row !== null;
+}
+
+/** True only for the Apple identity that deleted the owner account. */
+export async function isDeletedOwnerAppleSub(
+  db: D1Database,
+  appleSub: string,
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      'SELECT apple_sub_sha256 FROM owner_deletion_tombstone WHERE singleton = 1',
+    )
+    .first<{ apple_sub_sha256: string }>();
+  if (!row) return false;
+  return row.apple_sub_sha256 === (await sha256Hex(appleSub));
+}
+
 export async function upsertUser(
   db: D1Database,
   appleSub: string,
@@ -138,7 +177,8 @@ export const BOOTSTRAP_APPLE_SUB = 'mcp-owner';
 export async function ensureOwnerUser(
   db: D1Database,
   ownerAppleSub: string | undefined,
-): Promise<User> {
+): Promise<User | null> {
+  if (await isOwnerDeletionTombstoned(db)) return null;
   const existing = await findOwnerRow(db, ownerAppleSub);
   if (existing) return existing;
   return upsertUser(db, ownerAppleSub ?? BOOTSTRAP_APPLE_SUB, null, 'Owner');
@@ -167,6 +207,7 @@ export async function findOwnerRow(
   db: D1Database,
   ownerAppleSub: string | undefined,
 ): Promise<User | null> {
+  if (await isOwnerDeletionTombstoned(db)) return null;
   if (ownerAppleSub) {
     return await db
       .prepare('SELECT * FROM users WHERE apple_sub = ?1')
@@ -186,6 +227,7 @@ export async function findOwnerRow(
  * bound to a real apple_sub, hence the strict sentinel match.
  */
 export async function isBootstrapClaimEligible(db: D1Database): Promise<boolean> {
+  if (await isOwnerDeletionTombstoned(db)) return false;
   const rows = await db
     .prepare('SELECT apple_sub FROM users')
     .all<{ apple_sub: string }>();
@@ -194,6 +236,181 @@ export async function isBootstrapClaimEligible(db: D1Database): Promise<boolean>
     return rows.results[0]!.apple_sub === BOOTSTRAP_APPLE_SUB;
   }
   return false;
+}
+
+export type DeleteUserAccountResult =
+  | { ok: true; owner_tombstoned: boolean }
+  | { error: 'not_found' };
+
+/**
+ * Permanently remove one authenticated account and every row it owns.
+ *
+ * D1 batch execution is transactional: the owner tombstone, group transfer,
+ * descendant cleanup, credential/token revocation, and final users-row delete
+ * either all commit or none do. Exercises and shared groups/member data are
+ * intentionally retained. A creator's surviving group transfers to its
+ * longest-tenured remaining member (user id is the deterministic tie-breaker);
+ * a group with no remaining member is removed.
+ */
+export async function deleteUserAccount(
+  db: D1Database,
+  userId: string,
+  ownerAppleSub: string | undefined,
+): Promise<DeleteUserAccountResult> {
+  const user = await db
+    .prepare('SELECT * FROM users WHERE id = ?1')
+    .bind(userId)
+    .first<User>();
+  if (!user) return { error: 'not_found' };
+
+  const owner = await findOwnerRow(db, ownerAppleSub);
+  const deletingOwner = owner?.id === userId;
+  const statements: D1PreparedStatement[] = [];
+
+  if (deletingOwner) {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO owner_deletion_tombstone
+             (singleton, apple_sub_sha256, deleted_at)
+           VALUES (1, ?1, ?2)
+           ON CONFLICT(singleton) DO UPDATE SET
+             apple_sub_sha256 = excluded.apple_sub_sha256,
+             deleted_at = excluded.deleted_at`,
+        )
+        .bind(await sha256Hex(user.apple_sub), now()),
+    );
+  }
+
+  // Empty groups owned by the caller have no shared state to preserve.
+  statements.push(
+    db
+      .prepare(
+        `DELETE FROM group_invites
+          WHERE group_id IN (
+            SELECT g.id FROM groups g
+             WHERE g.created_by = ?1
+               AND NOT EXISTS (
+                 SELECT 1 FROM group_members gm
+                  WHERE gm.group_id = g.id AND gm.user_id <> ?1
+               )
+          )`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `DELETE FROM group_members
+          WHERE group_id IN (
+            SELECT g.id FROM groups g
+             WHERE g.created_by = ?1
+               AND NOT EXISTS (
+                 SELECT 1 FROM group_members gm
+                  WHERE gm.group_id = g.id AND gm.user_id <> ?1
+               )
+          )`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `DELETE FROM groups
+          WHERE created_by = ?1
+            AND NOT EXISTS (
+              SELECT 1 FROM group_members gm
+               WHERE gm.group_id = groups.id AND gm.user_id <> ?1
+            )`,
+      )
+      .bind(userId),
+
+    // Preserve a shared group by transferring its creator anchor before the
+    // deleting user's membership and users row disappear.
+    db
+      .prepare(
+        `UPDATE groups
+            SET created_by = (
+              SELECT gm.user_id FROM group_members gm
+               WHERE gm.group_id = groups.id AND gm.user_id <> ?1
+               ORDER BY gm.joined_at, gm.user_id
+               LIMIT 1
+            )
+          WHERE created_by = ?1
+            AND EXISTS (
+              SELECT 1 FROM group_members gm
+               WHERE gm.group_id = groups.id AND gm.user_id <> ?1
+            )`,
+      )
+      .bind(userId),
+
+    // Invites created by the account are credentials and are revoked. Invites
+    // another member created remain, but no longer retain used_by attribution
+    // to the deleted account.
+    db.prepare('DELETE FROM group_invites WHERE created_by = ?1').bind(userId),
+    db.prepare('UPDATE group_invites SET used_by = NULL WHERE used_by = ?1').bind(userId),
+    db.prepare('DELETE FROM group_members WHERE user_id = ?1').bind(userId),
+
+    // Session-dependent ledgers and logs must go before their canonical
+    // sessions; the plan tree follows sessions because those rows hold plan/day
+    // references under strict foreign keys.
+    db
+      .prepare(
+        `DELETE FROM session_aliases
+          WHERE canonical_session_id IN (
+            SELECT id FROM sessions WHERE user_id = ?1
+          )`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `DELETE FROM session_load_exports
+          WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?1)`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `DELETE FROM set_logs
+          WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?1)`,
+      )
+      .bind(userId),
+    db.prepare('DELETE FROM sessions WHERE user_id = ?1').bind(userId),
+    db
+      .prepare(
+        `DELETE FROM template_exercises
+          WHERE day_template_id IN (
+            SELECT d.id FROM day_templates d
+            JOIN plans p ON p.id = d.plan_id
+            WHERE p.user_id = ?1
+          )`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `DELETE FROM day_templates
+          WHERE plan_id IN (SELECT id FROM plans WHERE user_id = ?1)`,
+      )
+      .bind(userId),
+    db.prepare('DELETE FROM plans WHERE user_id = ?1').bind(userId),
+
+    db.prepare('DELETE FROM activities WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM external_events WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM external_activities WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM notes WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM audit_log WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM intervals_oauth_states WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM oauth_codes WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM oauth_tokens WHERE user_id = ?1').bind(userId),
+  );
+
+  // Tokens issued before multi-user MCP have a NULL principal and resolve to
+  // the owner. Revoke them only when the distinguished owner is deleted.
+  if (deletingOwner) {
+    statements.push(
+      db.prepare('DELETE FROM oauth_codes WHERE user_id IS NULL'),
+      db.prepare('DELETE FROM oauth_tokens WHERE user_id IS NULL'),
+    );
+  }
+
+  statements.push(db.prepare('DELETE FROM users WHERE id = ?1').bind(userId));
+  await db.batch(statements);
+  return { ok: true, owner_tombstoned: deletingOwner };
 }
 
 // ---- per-user MCP passphrase (M3 multi-tenant auth) -----------------------
@@ -773,6 +990,150 @@ export async function getMeProfile(
       sharing_in_group: !!u?.share_health_activities,
     },
   };
+}
+
+/**
+ * Portable, caller-scoped snapshot of authoritative account and training data.
+ * This projection is intentionally not mounted on a network route until the
+ * sensitive export surface receives explicit product/security authorization.
+ * Secret material (intervals credentials, MCP passphrase hashes, OAuth tokens)
+ * is deliberately excluded; connection metadata and the Apple subject remain
+ * because they are the user's own account data. Shared group exports contain
+ * only the caller's membership row and group name, never another member's
+ * profile or activity.
+ */
+export async function exportUserData(
+  db: D1Database,
+  userId: string,
+): Promise<Record<string, unknown> | null> {
+  const account = await db
+    .prepare(
+      `SELECT id, apple_sub, email, display_name, created_at, timezone,
+              intervals_athlete_id, intervals_auth_error_at,
+              share_health_activities
+         FROM users WHERE id = ?1`,
+    )
+    .bind(userId)
+    .first<Record<string, unknown>>();
+  if (!account) return null;
+
+  const plans = await db
+    .prepare('SELECT * FROM plans WHERE user_id = ?1 ORDER BY created_at, id')
+    .bind(userId)
+    .all();
+  const days = await db
+    .prepare(
+      `SELECT d.* FROM day_templates d
+       JOIN plans p ON p.id = d.plan_id
+       WHERE p.user_id = ?1
+       ORDER BY d.plan_id, d.order_index, d.created_at, d.id`,
+    )
+    .bind(userId)
+    .all();
+  const templateExercises = await db
+    .prepare(
+      `SELECT te.* FROM template_exercises te
+       JOIN day_templates d ON d.id = te.day_template_id
+       JOIN plans p ON p.id = d.plan_id
+       WHERE p.user_id = ?1
+       ORDER BY te.day_template_id, te.order_index, te.created_at, te.id`,
+    )
+    .bind(userId)
+    .all();
+  const sessions = await db
+    .prepare('SELECT * FROM sessions WHERE user_id = ?1 ORDER BY date, created_at, id')
+    .bind(userId)
+    .all();
+  const sets = await db
+    .prepare(
+      `SELECT sl.* FROM set_logs sl
+       JOIN sessions s ON s.id = sl.session_id
+       WHERE s.user_id = ?1
+       ORDER BY sl.logged_at, sl.id`,
+    )
+    .bind(userId)
+    .all();
+  const aliases = await db
+    .prepare(
+      `SELECT sa.* FROM session_aliases sa
+       JOIN sessions s ON s.id = sa.canonical_session_id
+       WHERE s.user_id = ?1
+       ORDER BY sa.alias_session_id`,
+    )
+    .bind(userId)
+    .all();
+  const loadExports = await db
+    .prepare(
+      `SELECT sle.* FROM session_load_exports sle
+       JOIN sessions s ON s.id = sle.session_id
+       WHERE s.user_id = ?1
+       ORDER BY sle.updated_at, sle.session_id`,
+    )
+    .bind(userId)
+    .all();
+  const notes = await db
+    .prepare('SELECT * FROM notes WHERE user_id = ?1 ORDER BY created_at, id')
+    .bind(userId)
+    .all();
+  const audit = await db
+    .prepare('SELECT * FROM audit_log WHERE user_id = ?1 ORDER BY created_at, id')
+    .bind(userId)
+    .all();
+  const events = await db
+    .prepare('SELECT * FROM external_events WHERE user_id = ?1 ORDER BY date, id')
+    .bind(userId)
+    .all();
+  const externalActivities = await db
+    .prepare('SELECT * FROM external_activities WHERE user_id = ?1 ORDER BY date, id')
+    .bind(userId)
+    .all();
+  const activities = await db
+    .prepare('SELECT * FROM activities WHERE user_id = ?1 ORDER BY date, logged_at, id')
+    .bind(userId)
+    .all();
+  const memberships = await db
+    .prepare(
+      `SELECT gm.group_id, g.name AS group_name, gm.display_name, gm.joined_at
+         FROM group_members gm
+         JOIN groups g ON g.id = gm.group_id
+        WHERE gm.user_id = ?1
+        ORDER BY gm.joined_at, gm.group_id`,
+    )
+    .bind(userId)
+    .all();
+
+  return {
+    schema_version: 1,
+    exported_at: now(),
+    account,
+    training: {
+      plans: plans.results,
+      day_templates: days.results,
+      template_exercises: templateExercises.results,
+      sessions: sessions.results,
+      set_logs: sets.results,
+      session_aliases: aliases.results,
+      session_load_exports: loadExports.results,
+      notes: notes.results,
+      audit_log: audit.results,
+      external_events: events.results,
+      external_activities: externalActivities.results,
+      activities: activities.results,
+    },
+    group_memberships: memberships.results,
+  };
+}
+
+export async function setUserDisplayName(
+  db: D1Database,
+  userId: string,
+  displayName: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare('UPDATE users SET display_name = ?2 WHERE id = ?1')
+    .bind(userId, displayName)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
 }
 
 /**

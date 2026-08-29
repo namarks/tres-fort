@@ -61,6 +61,13 @@ private struct SignedOutView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
+            if let reason = model.reauthenticationReason {
+                Text(reason)
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.orange)
+            }
+
             SignInWithAppleButton(.signIn,
                                   onRequest: { req in
                                       req.requestedScopes = [.fullName, .email]

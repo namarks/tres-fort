@@ -15,7 +15,7 @@ beforeAll(async () => {
 describe('single-owner claim (MCP bootstrap -> Sign in with Apple)', () => {
   it('claims the MCP bootstrap row so MCP-seeded data stays on one user', async () => {
     // MCP created the owner + a plan before any iOS sign-in.
-    const boot = await ensureOwnerUser(env.DB, undefined);
+    const boot = (await ensureOwnerUser(env.DB, undefined))!;
     await createPlan(env.DB, boot.id, 'Starter');
 
     // First Sign in with Apple (owner not locked) claims that same row.
@@ -98,7 +98,7 @@ describe('open sign-in does not capture owner state (Codex PR#38 P1)', () => {
 
     // Pre-fix: ensureOwnerUser returns the reviewer row (earliest by
     // created_at). Post-fix: it CREATES the owner row under OWNER_APPLE_SUB.
-    const owner = await ensureOwnerUser(env.DB, 'configured-owner-sub');
+    const owner = (await ensureOwnerUser(env.DB, 'configured-owner-sub'))!;
     expect(owner.apple_sub).toBe('configured-owner-sub');
     expect(owner.id).not.toBe(reviewer.id);
 

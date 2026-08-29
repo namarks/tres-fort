@@ -8,6 +8,7 @@ import {
   createGroup,
   createInvite,
   createPlan,
+  deleteUserAccount,
   deleteTemplateExercise,
   discardSession,
   getActivePlan,
@@ -37,6 +38,7 @@ import {
   redeemInvite,
   resolveExercise,
   setGroupDisplayName,
+  setUserDisplayName,
   setUserIntervalsCreds,
   setUserMcpPassphrase,
   setHealthActivitySharing,
@@ -618,6 +620,56 @@ apiRoutes.patch('/me/health-sharing', async (c) => {
 apiRoutes.get('/me', async (c) => {
   const userId = c.get('userId');
   return c.json(await getMeProfile(c.env.DB, userId, c.env.OWNER_APPLE_SUB));
+});
+
+// PATCH /api/me/profile — repair the display name Apple provides only on the
+// first authorization. Only the caller's user row changes; group-specific
+// nickname overrides remain independent.
+apiRoutes.patch('/me/profile', async (c) => {
+  let body: { display_name?: unknown };
+  try {
+    body = await c.req.json<{ display_name?: unknown }>();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  if (typeof body.display_name !== 'string') {
+    return c.json({ error: 'invalid_display_name' }, 400);
+  }
+  const displayName = body.display_name.trim();
+  if (displayName.length < 1 || displayName.length > 80) {
+    return c.json({ error: 'invalid_display_name' }, 400);
+  }
+  const userId = c.get('userId');
+  if (!(await setUserDisplayName(c.env.DB, userId, displayName))) {
+    return c.json({ error: 'not_found' }, 404);
+  }
+  await writeAudit(
+    c.env.DB,
+    userId,
+    'update_profile',
+    { field: 'display_name' },
+    'ok',
+    'ios',
+  );
+  return c.json(await getMeProfile(c.env.DB, userId, c.env.OWNER_APPLE_SUB));
+});
+
+// DELETE /api/me — permanently delete the authenticated account.
+//
+// There is deliberately no soft-delete or recovery token: the iOS client puts
+// a plainly worded destructive confirmation in front of this request, and the
+// service transaction removes all caller-owned rows and credentials. Shared
+// groups survive under their longest-tenured remaining member; an owner
+// deletion additionally leaves the non-personal bootstrap-suppression
+// tombstone. Tests exercise seeded users only.
+apiRoutes.delete('/me', async (c) => {
+  const result = await deleteUserAccount(
+    c.env.DB,
+    c.get('userId'),
+    c.env.OWNER_APPLE_SUB,
+  );
+  if ('error' in result) return c.json({ error: result.error }, 404);
+  return c.json(result);
 });
 
 // ---- integrations: intervals.icu credentials (M1 multi-user) ------------

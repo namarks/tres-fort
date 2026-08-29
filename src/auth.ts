@@ -57,6 +57,15 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
   } catch {
     return c.json({ error: 'invalid_token' }, 401);
   }
+  // App JWTs are stateless, so deleting an account cannot revoke one bearer
+  // from a token table. Requiring the subject row on every authenticated call
+  // makes all outstanding app tokens unusable immediately after DELETE /api/me
+  // commits (and prevents rolling renewal from resurrecting the session).
+  const principal = await c.env.DB
+    .prepare('SELECT 1 AS x FROM users WHERE id = ?1')
+    .bind(c.get('userId'))
+    .first<{ x: number }>();
+  if (!principal) return c.json({ error: 'invalid_token' }, 401);
   // The device sends its IANA timezone on EVERY authenticated request, so
   // "today" on the MCP side tracks the user across zones even when they only
   // do non-/state actions (logging sets) after travelling. Best-effort:

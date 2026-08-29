@@ -33,15 +33,15 @@ final class HealthKitSyncModel: ObservableObject {
     /// False on iPad / unsupported hardware. Gate every HealthKit call on this.
     let isAvailable: Bool = HKHealthStore.isHealthDataAvailable()
 
-    static let legacyEnabledKey = "com.nmarkspdx.liftcoach.healthkit-enabled.v1"
-    static let legacyAnchorKey = "com.nmarkspdx.liftcoach.healthkit-anchor.v1"
+    static let legacyEnabledKey = AccountLocalState.legacyHealthEnabledKey
+    static let legacyAnchorKey = AccountLocalState.legacyHealthAnchorKey
 
     static func enabledKey(userID: String) -> String {
-        "com.nmarkspdx.liftcoach.healthkit-enabled.v2.\(userID)"
+        AccountLocalState.healthEnabledKey(userID: userID)
     }
 
     static func anchorKey(userID: String) -> String {
-        "com.nmarkspdx.liftcoach.healthkit-anchor.v2.\(userID)"
+        AccountLocalState.healthAnchorKey(userID: userID)
     }
 
     /// User intent — the only durable "is Apple Health connected" signal we

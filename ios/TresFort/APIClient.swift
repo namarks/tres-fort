@@ -31,6 +31,13 @@ struct APIClient {
         try await post("auth/renew", body: [:], jwt: jwt)
     }
 
+    /// Permanently delete the authenticated account. The Profile UI owns the
+    /// destructive confirmation; AuthModel clears local account state only
+    /// after this response is acknowledged.
+    func deleteAccount(jwt: String) async throws -> AccountDeletionResponse {
+        try await delete("api/me", jwt: jwt)
+    }
+
     /// Full sync pull (since=0 → everything; the app dedupes locally).
     ///
     /// `events_since=0` / `activities_since=0` are passed explicitly (not
@@ -192,6 +199,7 @@ struct APIClient {
 protocol AuthAPI {
     func authApple(identityToken: String, fullName: String?) async throws -> AuthResponse
     func renewAppSession(jwt: String) async throws -> SessionRenewalResponse
+    func deleteAccount(jwt: String) async throws -> AccountDeletionResponse
 }
 
 extension APIClient: AuthAPI {}

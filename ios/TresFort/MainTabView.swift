@@ -66,6 +66,8 @@ struct MainTabView: View {
         }
         .tint(Theme.accent)
         .task {
+            await auth.checkAppleCredentialState()
+            guard auth.jwt != nil else { return }
             // Renew before the first authenticated pull when the fixed-expiry
             // app JWT is within its seven-day window. Offline failure is soft;
             // an expired/revoked bearer moves AuthModel to reauthentication.
@@ -85,6 +87,8 @@ struct MainTabView: View {
             // background-task continuation, just cooperative.
             if new == .active {
                 Task {
+                    await auth.checkAppleCredentialState()
+                    guard auth.jwt != nil else { return }
                     await auth.renewSessionIfNeeded()
                     guard auth.jwt != nil else { return }
                     await groupModel.drainOutbox()

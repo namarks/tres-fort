@@ -83,7 +83,7 @@ describe('/auth/apple bad-input branches (no JWKS network needed)', () => {
 // proving the back-compat sequence is well-behaved at all branches.
 describe('Path 4 back-compat: legacy invite_code shim (Codex PR#38 P2)', () => {
   it('valid code → user created, joined to inviter\'s group, group_id returned', async () => {
-    const owner = await ensureOwnerUser(env.DB, undefined);
+    const owner = (await ensureOwnerUser(env.DB, undefined))!;
     const group = await createGroup(env.DB, owner.id, 'BackCompat');
     const invite = await createInvite(env.DB, owner.id, group.id);
 
@@ -124,7 +124,7 @@ describe('Path 4 back-compat: legacy invite_code shim (Codex PR#38 P2)', () => {
   });
 
   it('expired code → user STILL signed in, code stays unused', async () => {
-    const owner = await ensureOwnerUser(env.DB, undefined);
+    const owner = (await ensureOwnerUser(env.DB, undefined))!;
     const group = await createGroup(env.DB, owner.id, 'Stale');
     const invite = await createInvite(env.DB, owner.id, group.id, Date.now() - 1000);
 
@@ -220,7 +220,7 @@ describe('bootstrap path: claimOrCreateOwner + countUsers', () => {
 
     // Simulate MCP/OAuth seeding the owner row before any iOS sign-in.
     // ensureOwnerUser(undefined) writes apple_sub = BOOTSTRAP_APPLE_SUB.
-    const seeded = await ensureOwnerUser(env.DB, undefined);
+    const seeded = (await ensureOwnerUser(env.DB, undefined))!;
     expect(seeded.apple_sub).toBe(BOOTSTRAP_APPLE_SUB);
     expect(await countUsers(env.DB)).toBe(1);
 
@@ -287,7 +287,7 @@ describe('bootstrap path: claimOrCreateOwner + countUsers', () => {
     // Seed an MCP bootstrap row (simulates Claude creating the owner before
     // any iOS sign-in). With ownerSubLocked=true, the claim path does NOT
     // claim that row — a new user is created for any other sub.
-    const seeded = await ensureOwnerUser(env.DB, 'sub-owner');
+    const seeded = (await ensureOwnerUser(env.DB, 'sub-owner'))!;
     expect(seeded.apple_sub).toBe('sub-owner');
 
     // Owner sub signs in -> idempotent return of the seeded row.

@@ -1,0 +1,137 @@
+import { env, applyD1Migrations } from 'cloudflare:test';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { exportUserData, upsertUser } from '../src/db';
+
+beforeAll(async () => {
+  await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+});
+
+describe('account export projection', () => {
+  it('contains the caller training graph without secrets or another member data', async () => {
+    const suffix = crypto.randomUUID();
+    const caller = await upsertUser(
+      env.DB,
+      `export-caller-sub-${suffix}`,
+      `export-caller-${suffix}@test`,
+      'Export Caller',
+    );
+    const other = await upsertUser(
+      env.DB,
+      `export-other-sub-${suffix}`,
+      `export-other-${suffix}@test`,
+      'Export Other',
+    );
+    const callerSecret = `caller-secret-${suffix}`;
+    const otherPrivate = `other-private-${suffix}`;
+    const exerciseId = `export-exercise-${suffix}`;
+    const planId = `export-plan-${suffix}`;
+    const dayId = `export-day-${suffix}`;
+    const templateExerciseId = `export-template-exercise-${suffix}`;
+    const sessionId = `export-session-${suffix}`;
+    const setId = `export-set-${suffix}`;
+    const groupId = `export-group-${suffix}`;
+    const ts = Date.now();
+
+    await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE users SET intervals_api_key=?2,
+                          mcp_passphrase_hash=?2,
+                          mcp_passphrase_salt=?2
+         WHERE id=?1`,
+      ).bind(caller.id, callerSecret),
+      env.DB.prepare(
+        `INSERT INTO exercises
+           (id,name,primary_muscle,unit,created_at)
+         VALUES (?1,'Export Lift','legs','lb',?2)`,
+      ).bind(exerciseId, ts),
+      env.DB.prepare(
+        `INSERT INTO plans
+           (id,user_id,name,status,version,created_at,updated_at)
+         VALUES (?1,?2,'Caller Plan','active',1,?3,?3)`,
+      ).bind(planId, caller.id, ts),
+      env.DB.prepare(
+        `INSERT INTO day_templates
+           (id,plan_id,name,order_index,created_at,updated_at)
+         VALUES (?1,?2,'Caller Day',0,?3,?3)`,
+      ).bind(dayId, planId, ts),
+      env.DB.prepare(
+        `INSERT INTO template_exercises
+           (id,day_template_id,exercise_id,order_index,target_sets,target_reps,
+            rest_seconds,created_at,updated_at)
+         VALUES (?1,?2,?3,0,3,5,120,?4,?4)`,
+      ).bind(templateExerciseId, dayId, exerciseId, ts),
+      env.DB.prepare(
+        `INSERT INTO sessions
+           (id,user_id,plan_id,day_template_id,date,status,created_at,updated_at)
+         VALUES (?1,?2,?3,?4,'2026-08-29','completed',?5,?5)`,
+      ).bind(sessionId, caller.id, planId, dayId, ts),
+      env.DB.prepare(
+        `INSERT INTO set_logs
+           (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,
+            logged_at,source)
+         VALUES (?1,?2,?3,?4,1,100,5,?5,'ios')`,
+      ).bind(setId, sessionId, exerciseId, templateExerciseId, ts),
+      env.DB.prepare(
+        `INSERT INTO notes (id,user_id,scope,author,body,created_at)
+         VALUES (?1,?2,'user','ios','caller note',?3)`,
+      ).bind(`export-note-${suffix}`, caller.id, ts),
+      env.DB.prepare(
+        `INSERT INTO notes (id,user_id,scope,author,body,created_at)
+         VALUES (?1,?2,'user','ios',?3,?4)`,
+      ).bind(`export-other-note-${suffix}`, other.id, otherPrivate, ts),
+      env.DB.prepare(
+        `INSERT INTO activities
+           (id,user_id,date,type,logged_at,source)
+         VALUES (?1,?2,'2026-08-29','walk',?3,'ios')`,
+      ).bind(`export-activity-${suffix}`, caller.id, ts),
+      env.DB.prepare(
+        `INSERT INTO activities
+           (id,user_id,date,type,title,logged_at,source)
+         VALUES (?1,?2,'2026-08-29','walk',?3,?4,'ios')`,
+      ).bind(`export-other-activity-${suffix}`, other.id, otherPrivate, ts),
+      env.DB.prepare(
+        `INSERT INTO groups (id,name,created_by,created_at)
+         VALUES (?1,'Shared Group',?2,?3)`,
+      ).bind(groupId, other.id, ts),
+      env.DB.prepare(
+        `INSERT INTO group_members (group_id,user_id,display_name,joined_at)
+         VALUES (?1,?2,'Caller in group',?4),
+                (?1,?3,?5,?4)`,
+      ).bind(groupId, caller.id, other.id, ts, otherPrivate),
+    ]);
+
+    const exported = await exportUserData(env.DB, caller.id);
+    expect(exported).not.toBeNull();
+    if (!exported) throw new Error('expected caller export');
+    const serialized = JSON.stringify(exported);
+    const training = exported.training as {
+      plans: Array<{ id: string }>;
+      day_templates: Array<{ id: string }>;
+      template_exercises: Array<{ id: string }>;
+      sessions: Array<{ id: string }>;
+      set_logs: Array<{ id: string }>;
+    };
+
+    expect(exported.schema_version).toBe(1);
+    expect((exported.account as { id: string }).id).toBe(caller.id);
+    expect(training.plans.map((row) => row.id)).toEqual([planId]);
+    expect(training.day_templates.map((row) => row.id)).toEqual([dayId]);
+    expect(training.template_exercises.map((row) => row.id)).toEqual([
+      templateExerciseId,
+    ]);
+    expect(training.sessions.map((row) => row.id)).toEqual([sessionId]);
+    expect(training.set_logs.map((row) => row.id)).toEqual([setId]);
+    expect(exported.group_memberships).toEqual([
+      {
+        group_id: groupId,
+        group_name: 'Shared Group',
+        display_name: 'Caller in group',
+        joined_at: ts,
+      },
+    ]);
+    expect(serialized).not.toContain(callerSecret);
+    expect(serialized).not.toContain(other.id);
+    expect(serialized).not.toContain(otherPrivate);
+    expect(await exportUserData(env.DB, crypto.randomUUID())).toBeNull();
+  });
+});

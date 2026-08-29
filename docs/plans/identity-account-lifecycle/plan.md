@@ -12,7 +12,7 @@ iOS verification.
 
 ## Phases
 
-- [ ] **P0 — Independent identity foundations**
+- [x] **P0 — Independent identity foundations**
   - [x] **(a) Renewable sessions and per-user account scoping**
     - Implement the smallest renewable app-session path compatible with the
       current JWT and Sign in with Apple design, renewing before the fixed expiry
@@ -22,7 +22,7 @@ iOS verification.
       and HealthKit state survive reauthentication without crossing accounts.
     - Cover expiry, renewal, offline renewal failure, same-user recovery, and
       account switching without introducing a general session platform.
-  - [ ] **(b) In-app account deletion**
+  - [x] **(b) In-app account deletion**
     - Add an authenticated `DELETE /api/me` service path that removes the
       caller's personal training data, external credentials, tokens, and
       memberships under the current ownership model without touching another
@@ -32,29 +32,34 @@ iOS verification.
     - Verify cascade behavior with seeded test users; never exercise deletion
       against a real owner account during development or CI.
 - [ ] **P1 — Portability and credential recovery**
-  - Add a user-scoped export assembled from the authoritative training state and
-    make it downloadable from Profile.
-  - Detect revoked Sign in with Apple credentials and present a recoverable
-    sign-in state; let a user repair the profile name that Apple supplies only on
-    first authorization.
-  - Verify exports contain only the caller's data and revoked credentials do not
-    leave the app appearing connected.
+  - [ ] **(a) Authorized downloadable account export**
+    - Add the authenticated transport and Profile download/share flow only after
+      explicit authorization for the sensitive account-and-training-data egress.
+    - Keep the existing caller-scoped service projection dormant until then; its
+      focused test already proves caller isolation and secret exclusion.
+  - [x] **(b) Apple credential recovery and profile-name repair**
+    - Detect revoked Sign in with Apple credentials and present a recoverable
+      sign-in state that retains the account namespace and queued training data.
+    - Let a user repair the profile name that Apple supplies only on first
+      authorization, updating and auditing only the authenticated caller.
+    - Store the credential identifier supplied locally by Sign in with Apple;
+      do not add a backend identity-data egress solely to migrate older installs.
 
 ## Execution frontier
 
-- P0(b)
+- P1(a)
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0(b) | gated_by | external:account-deletion-implementation-authorization | Creating a broad irreversible account-deletion service path requires explicit owner authorization; owner-anchor recreation and surviving-group ownership also need explicit semantics. |
+| P1(a) | gated_by | external:account-export-network-authorization | A downloadable JSON export exposes sensitive account and training data over an authenticated network surface and requires explicit authorization before the route or iOS share flow is added. |
 
 ## Next step
 
-**Now (@owner):** Explicitly authorize the destructive account-deletion service
-path and decide whether owner deletion leaves a tombstone that blocks automatic
-MCP re-bootstrap, plus how surviving groups transfer `created_by`.
+**Now (@owner):** Explicitly authorize or decline the authenticated downloadable
+account-and-training-data export. If authorized, @agent completes P1(a), repeats
+exact-head verification, and closes the plan.
 
 ## Notes / open questions
 
@@ -69,8 +74,25 @@ MCP re-bootstrap, plus how surviving groups transfer `created_by`.
 - Runtime account deletion remains destructive and must always require the
   authenticated user's explicit in-app confirmation. Development and CI must
   exercise only seeded users.
-- `ensureOwnerUser` currently recreates a missing owner whenever the static MCP
-  bearer is used, so deleting the owner row without a persistent suppression
-  rule would silently recreate the account. `groups.created_by` is also a
-  non-null user reference, so a creator's deletion must either transfer each
-  surviving group or deliberately block until ownership changes.
+- P0(b) uses one transactional D1 batch to revoke the caller's credentials and
+  tokens, remove their complete training-data graph and memberships, transfer
+  surviving groups to the longest-tenured remaining member, and delete empty
+  groups. Owner deletion writes a one-way identity tombstone in that same batch
+  so static MCP cannot recreate the owner or promote another member. The iOS
+  client clears only the acknowledged account's local namespace after success;
+  a failed request preserves the session and queued writes for retry.
+- P1(b) stores Apple's credential identifier from the local Sign in with Apple
+  result and checks it on launch/foreground. Revoked, missing, or transferred
+  credentials clear only the bearer and explain same-account reauthentication;
+  provider-check failures are soft. Existing installs without the scoped local
+  identifier begin these checks after their next Apple sign-in rather than
+  receiving the sensitive provider identifier through a new backend response.
+- Profile-name repair trims and validates a 1–80 UTF-16-unit value, updates only
+  the authenticated user, and audits the changed field without copying the name
+  into audit arguments.
+- Verification at this milestone: the full Workers suite passes 395/395, the
+  TypeScript compiler and plan compiler pass, iOS device sources compile, the
+  simulator module and XCTest source typecheck, and the standalone production
+  AuthModel harness passes Apple revocation/provider-unavailable behavior. This
+  host still has no installed iOS simulator runtime, so XCTest execution remains
+  unavailable locally.

@@ -15,7 +15,10 @@ private final class AuthAPIStub: AuthAPI {
     var authResult: Result<AuthResponse, Error> = .failure(URLError(.badServerResponse))
     var renewalResult: Result<SessionRenewalResponse, Error> =
         .failure(URLError(.badServerResponse))
+    var deletionResult: Result<AccountDeletionResponse, Error> =
+        .failure(URLError(.badServerResponse))
     private(set) var renewalCalls = 0
+    private(set) var deletionCalls = 0
 
     func authApple(identityToken: String, fullName: String?) async throws -> AuthResponse {
         try authResult.get()
@@ -24,6 +27,21 @@ private final class AuthAPIStub: AuthAPI {
     func renewAppSession(jwt: String) async throws -> SessionRenewalResponse {
         renewalCalls += 1
         return try renewalResult.get()
+    }
+
+    func deleteAccount(jwt: String) async throws -> AccountDeletionResponse {
+        deletionCalls += 1
+        return try deletionResult.get()
+    }
+}
+
+private final class AppleCredentialCheckerStub: AppleCredentialStateChecking {
+    var result: AppAppleCredentialState = .authorized
+    private(set) var checkedUserIDs: [String] = []
+
+    func state(for appleUserID: String) async -> AppAppleCredentialState {
+        checkedUserIDs.append(appleUserID)
+        return result
     }
 }
 
@@ -53,7 +71,10 @@ final class AuthModelTests: XCTestCase {
     private func response(jwt: String, userID: String) -> AuthResponse {
         AuthResponse(
             jwt: jwt,
-            user: UserDTO(id: userID, display_name: "Test", email: "test@example.com"))
+            user: UserDTO(
+                id: userID,
+                display_name: "Test",
+                email: "test@example.com"))
     }
 
     func testNearExpirySessionRenewsAndKeepsSameAccount() async {
@@ -127,6 +148,67 @@ final class AuthModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .signedOut)
     }
 
+    func testRevokedAppleCredentialRequiresRecoverableSameUserSignIn() async {
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        defaults.set(
+            "apple-user-a",
+            forKey: AccountLocalState.appleCredentialUserKey(userID: "user-a"))
+        var outbox = ActivityOutbox()
+        outbox.enqueue(PendingActivity(
+            id: UUID().uuidString,
+            date: "2026-08-29",
+            type: "walk",
+            title: nil,
+            duration_minutes: nil,
+            notes: nil,
+            logged_at: 2_000_000_000_000))
+        ActivityOutboxStore.save(outbox, userID: "user-a", defaults: defaults)
+        let tokens = MemoryTokenStore("account-token")
+        let checker = AppleCredentialCheckerStub()
+        checker.result = .revoked
+        let model = AuthModel(
+            api: AuthAPIStub(),
+            tokenStore: tokens,
+            appleCredentialChecker: checker,
+            defaults: defaults)
+
+        await model.checkAppleCredentialState()
+
+        XCTAssertEqual(checker.checkedUserIDs, ["apple-user-a"])
+        XCTAssertNil(model.jwt)
+        XCTAssertNil(tokens.token)
+        XCTAssertEqual(model.userID, "user-a")
+        XCTAssertEqual(model.appleCredentialUserID, "apple-user-a")
+        XCTAssertEqual(model.phase, .signedOut)
+        XCTAssertNotNil(model.reauthenticationReason)
+        XCTAssertEqual(
+            ActivityOutboxStore.load(userID: "user-a", defaults: defaults).count,
+            1)
+    }
+
+    func testUnavailableAppleCredentialCheckPreservesUsableSession() async {
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        defaults.set(
+            "apple-user-a",
+            forKey: AccountLocalState.appleCredentialUserKey(userID: "user-a"))
+        let tokens = MemoryTokenStore("account-token")
+        let checker = AppleCredentialCheckerStub()
+        checker.result = .unavailable
+        let model = AuthModel(
+            api: AuthAPIStub(),
+            tokenStore: tokens,
+            appleCredentialChecker: checker,
+            defaults: defaults)
+
+        await model.checkAppleCredentialState()
+
+        XCTAssertEqual(model.jwt, "account-token")
+        XCTAssertEqual(model.phase, .signedIn)
+        XCTAssertNil(model.reauthenticationReason)
+    }
+
     func testSameUserRecoveryAndAccountSwitchKeepOutboxesSeparated() async {
         let defaults = defaults()
         defaults.set("user-a", forKey: AuthModel.userIDKey)
@@ -147,13 +229,25 @@ final class AuthModelTests: XCTestCase {
         let model = AuthModel(api: api, tokenStore: tokenStore, defaults: defaults)
 
         api.authResult = .success(response(jwt: "same-user-token", userID: "user-a"))
-        await model.exchange(identityToken: "apple-a", fullName: nil)
+        await model.exchange(
+            identityToken: "apple-a",
+            fullName: nil,
+            appleUserID: "apple-user-a")
+        XCTAssertEqual(model.appleCredentialUserID, "apple-user-a")
+        XCTAssertEqual(
+            defaults.string(forKey: AccountLocalState.appleCredentialUserKey(
+                userID: "user-a")),
+            "apple-user-a")
         XCTAssertEqual(
             ActivityOutboxStore.load(userID: "user-a", defaults: defaults).count, 1)
 
         api.authResult = .success(response(jwt: "other-user-token", userID: "user-b"))
-        await model.exchange(identityToken: "apple-b", fullName: nil)
+        await model.exchange(
+            identityToken: "apple-b",
+            fullName: nil,
+            appleUserID: "apple-user-b")
         XCTAssertEqual(model.userID, "user-b")
+        XCTAssertEqual(model.appleCredentialUserID, "apple-user-b")
         XCTAssertTrue(
             ActivityOutboxStore.load(userID: "user-b", defaults: defaults).isEmpty)
         XCTAssertEqual(
@@ -207,5 +301,109 @@ final class AuthModelTests: XCTestCase {
         XCTAssertFalse(healthB.enabled)
         XCTAssertNil(
             defaults.data(forKey: HealthKitSyncModel.anchorKey(userID: "user-b")))
+    }
+
+    func testAcknowledgedDeletionClearsOnlyCurrentAccountLocalState() async {
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        defaults.set(true, forKey: AuthModel.onboardedKey)
+        let tokens = MemoryTokenStore("account-token")
+        let api = AuthAPIStub()
+        api.deletionResult = .success(AccountDeletionResponse(
+            ok: true,
+            owner_tombstoned: false))
+
+        var outboxA = ActivityOutbox()
+        outboxA.enqueue(PendingActivity(
+            id: UUID().uuidString,
+            date: "2026-08-29",
+            type: "walk",
+            title: nil,
+            duration_minutes: nil,
+            notes: nil,
+            logged_at: 2_000_000_000_000))
+        var outboxB = ActivityOutbox()
+        outboxB.enqueue(PendingActivity(
+            id: UUID().uuidString,
+            date: "2026-08-29",
+            type: "run",
+            title: nil,
+            duration_minutes: nil,
+            notes: nil,
+            logged_at: 2_000_000_000_001))
+        ActivityOutboxStore.save(outboxA, userID: "user-a", defaults: defaults)
+        ActivityOutboxStore.save(outboxB, userID: "user-b", defaults: defaults)
+        defaults.set(Data([1]), forKey: GroupModel.intervalsConnectionKey(userID: "user-a"))
+        defaults.set(Data([2]), forKey: GroupModel.intervalsConnectionKey(userID: "user-b"))
+        defaults.set(true, forKey: HealthKitSyncModel.enabledKey(userID: "user-a"))
+        defaults.set(Data([3]), forKey: HealthKitSyncModel.anchorKey(userID: "user-a"))
+        defaults.set(true, forKey: HealthKitSyncModel.enabledKey(userID: "user-b"))
+
+        let model = AuthModel(api: api, tokenStore: tokens, defaults: defaults)
+        do {
+            try await model.deleteAccount()
+        } catch {
+            XCTFail("acknowledged deletion failed: \(error)")
+        }
+
+        XCTAssertEqual(api.deletionCalls, 1)
+        XCTAssertNil(model.jwt)
+        XCTAssertNil(model.userID)
+        XCTAssertEqual(model.phase, .signedOut)
+        XCTAssertFalse(model.onboardingComplete)
+        XCTAssertNil(tokens.token)
+        XCTAssertNil(defaults.string(forKey: AuthModel.userIDKey))
+        XCTAssertNil(defaults.object(forKey: AuthModel.onboardedKey))
+        XCTAssertTrue(
+            ActivityOutboxStore.load(userID: "user-a", defaults: defaults).isEmpty)
+        XCTAssertEqual(
+            ActivityOutboxStore.load(userID: "user-b", defaults: defaults).count, 1)
+        XCTAssertNil(defaults.data(
+            forKey: GroupModel.intervalsConnectionKey(userID: "user-a")))
+        XCTAssertEqual(
+            defaults.data(forKey: GroupModel.intervalsConnectionKey(userID: "user-b")),
+            Data([2]))
+        XCTAssertNil(defaults.object(
+            forKey: HealthKitSyncModel.enabledKey(userID: "user-a")))
+        XCTAssertNil(defaults.data(
+            forKey: HealthKitSyncModel.anchorKey(userID: "user-a")))
+        XCTAssertTrue(defaults.bool(
+            forKey: HealthKitSyncModel.enabledKey(userID: "user-b")))
+    }
+
+    func testFailedDeletionPreservesSessionAndQueuedStateForRetry() async {
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        defaults.set(true, forKey: AuthModel.onboardedKey)
+        let tokens = MemoryTokenStore("account-token")
+        let api = AuthAPIStub()
+        api.deletionResult = .failure(URLError(.notConnectedToInternet))
+        var outbox = ActivityOutbox()
+        outbox.enqueue(PendingActivity(
+            id: UUID().uuidString,
+            date: "2026-08-29",
+            type: "walk",
+            title: nil,
+            duration_minutes: nil,
+            notes: nil,
+            logged_at: 2_000_000_000_000))
+        ActivityOutboxStore.save(outbox, userID: "user-a", defaults: defaults)
+        let model = AuthModel(api: api, tokenStore: tokens, defaults: defaults)
+
+        do {
+            try await model.deleteAccount()
+            XCTFail("failed deletion unexpectedly succeeded")
+        } catch {
+            // Expected: no acknowledgement means no local destructive cleanup.
+        }
+
+        XCTAssertEqual(api.deletionCalls, 1)
+        XCTAssertEqual(model.jwt, "account-token")
+        XCTAssertEqual(model.userID, "user-a")
+        XCTAssertEqual(model.phase, .signedIn)
+        XCTAssertTrue(model.onboardingComplete)
+        XCTAssertEqual(tokens.token, "account-token")
+        XCTAssertEqual(
+            ActivityOutboxStore.load(userID: "user-a", defaults: defaults).count, 1)
     }
 }

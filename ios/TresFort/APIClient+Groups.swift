@@ -11,6 +11,15 @@ import Foundation
 
 extension APIClient {
 
+    // MARK: - Account profile
+
+    func updateDisplayName(_ displayName: String, jwt: String) async throws -> MeProfile {
+        try await patch(
+            "api/me/profile",
+            body: ["display_name": displayName],
+            jwt: jwt)
+    }
+
     // MARK: - M1: Intervals.icu credentials
 
     /// PATCH /api/me/integrations/intervals — connect or disconnect.

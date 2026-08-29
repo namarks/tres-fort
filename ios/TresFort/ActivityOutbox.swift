@@ -74,5 +74,9 @@ enum ActivityOutboxStore {
 
     static func clear(userID: String, defaults: UserDefaults = .standard) {
         defaults.removeObject(forKey: scopedKey(userID: userID))
+        // Defensive for an upgraded install that has not loaded/migrated the
+        // legacy queue yet. Account deletion must not leave it for a future
+        // Apple account to claim.
+        defaults.removeObject(forKey: legacyKey)
     }
 }

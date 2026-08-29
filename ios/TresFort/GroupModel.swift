@@ -52,10 +52,10 @@ final class GroupModel: ObservableObject {
     // MARK: Intervals.icu connection
 
     static let legacyIntervalsConnectionKey =
-        "com.nmarkspdx.liftcoach.intervals-connection.v1"
+        AccountLocalState.legacyIntervalsConnectionKey
 
     static func intervalsConnectionKey(userID: String) -> String {
-        "com.nmarkspdx.liftcoach.intervals-connection.v2.\(userID)"
+        AccountLocalState.intervalsConnectionKey(userID: userID)
     }
 
     /// Local mirror of the last app-managed connection. The authoritative
@@ -494,6 +494,15 @@ final class GroupModel: ObservableObject {
         } catch {
             handle(error)
         }
+    }
+
+    // MARK: - Account profile
+
+    func updateDisplayName(_ displayName: String) async throws {
+        guard let jwt = auth.jwt else {
+            throw APIError.http(401, "not_signed_in")
+        }
+        me = try await api.updateDisplayName(displayName, jwt: jwt)
     }
 
     // MARK: - Intervals.icu

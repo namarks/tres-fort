@@ -52,12 +52,13 @@ workstream's authority and was not performed during closeout.
   no schema migration or broader authorization rewrite was needed.
 - P1 and P2 completed with migration 0029's exact duplicate-session replay,
   plan/session/set race coverage, the repository typecheck, and the complete
-  Workers/D1 suite (`33` files, `384` tests). The authorized migration preserves
+  Workers/D1 suite (`33` files, `386` tests). The authorized migration preserves
   the canonical session identity and creation time, ranks lifecycle state as
   completed > in-progress > skipped > planned > discarded/other, promotes the
   winning row's coherent plan/day/status/timestamps/fatigue/notes/update tuple,
-  preserves every set and the best usable export ledger, then removes redundant
-  loser shells. Per-hand tonnage now uses
+  preserves every set and the best usable export ledger, and records each
+  removed loser id as a tenant-scoped alias so an in-flight app can continue
+  writing to the canonical session. Per-hand tonnage now uses
   the same independent side/implement multipliers in server, MCP, and iOS
   rollups. Migration 0029 was authored and locally tested but not applied remotely.
 - Independent pre-integration review found no remaining actionable findings;

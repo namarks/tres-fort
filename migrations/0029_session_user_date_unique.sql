@@ -315,6 +315,32 @@ SET
   )
 WHERE id IN (SELECT target_session_id FROM selected_state);
 
+-- A client may still hold a duplicate session id while this migration runs.
+-- Preserve a durable redirect before deleting that loser shell so subsequent
+-- writes can resolve the stale id to the same canonical row used above. The
+-- alias itself cannot reference sessions because its source row is removed;
+-- the target remains FK-protected.
+CREATE TABLE IF NOT EXISTS session_aliases (
+  alias_session_id     TEXT PRIMARY KEY,
+  canonical_session_id TEXT NOT NULL REFERENCES sessions(id)
+);
+
+WITH session_map AS (
+  SELECT
+    id AS source_session_id,
+    FIRST_VALUE(id) OVER (
+      PARTITION BY user_id, date
+      ORDER BY created_at, id
+    ) AS target_session_id,
+    COUNT(*) OVER (PARTITION BY user_id, date) AS session_count
+  FROM sessions
+)
+INSERT INTO session_aliases (alias_session_id, canonical_session_id)
+SELECT source_session_id, target_session_id
+FROM session_map
+WHERE session_count > 1
+  AND source_session_id <> target_session_id;
+
 -- Dependencies and the meaningful state are now attached to the canonical row,
 -- so the empty duplicate session shells can be removed safely.
 WITH session_map AS (

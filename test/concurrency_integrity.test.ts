@@ -514,6 +514,43 @@ describe('0029 duplicate-session reconciliation', () => {
       await env.DB.prepare(query).run();
     }
 
+    const aliases = await env.DB
+      .prepare(
+        `SELECT sa.alias_session_id,sa.canonical_session_id,s.id AS surviving_session_id
+         FROM session_aliases AS sa
+         JOIN sessions AS s ON s.id = sa.canonical_session_id
+         WHERE sa.alias_session_id IN (?1,?2,?3,?4)
+         ORDER BY sa.alias_session_id`,
+      )
+      .bind(tieLoser, lateLoser, exportLoser, movedExportLoser)
+      .all<{
+        alias_session_id: string;
+        canonical_session_id: string;
+        surviving_session_id: string;
+      }>();
+    expect(aliases.results).toEqual([
+      {
+        alias_session_id: tieLoser,
+        canonical_session_id: winner,
+        surviving_session_id: winner,
+      },
+      {
+        alias_session_id: lateLoser,
+        canonical_session_id: winner,
+        surviving_session_id: winner,
+      },
+      {
+        alias_session_id: exportLoser,
+        canonical_session_id: exportWinner,
+        surviving_session_id: exportWinner,
+      },
+      {
+        alias_session_id: movedExportLoser,
+        canonical_session_id: movedExportWinner,
+        surviving_session_id: movedExportWinner,
+      },
+    ]);
+
     const sessions = await env.DB
       .prepare(
         `SELECT id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,

@@ -956,6 +956,209 @@ describe('POST /api/sessions/:id/discard — the explicit escape hatch', () => {
   });
 });
 
+describe('migration 0029 session aliases — stale REST mutations self-heal', () => {
+  async function freshAliasedSession(
+    H: Record<string, string>,
+    date: string,
+  ): Promise<{ aliasId: string; canonicalId: string }> {
+    const plan = await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: `Alias bridge ${date}` }),
+    });
+    expect(plan.status).toBe(201);
+    const session = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ date }),
+    });
+    expect(session.status).toBe(201);
+    const canonical = await session.json<{ id: string; status: string }>();
+    expect(canonical.status).toBe('planned');
+
+    const aliasId = crypto.randomUUID();
+    await env.DB
+      .prepare(
+        'INSERT INTO session_aliases (alias_session_id,canonical_session_id) VALUES (?1,?2)',
+      )
+      .bind(aliasId, canonical.id)
+      .run();
+    return { aliasId, canonicalId: canonical.id };
+  }
+
+  it('routes alias set retries, completion, and discard to the canonical session', async () => {
+    const H = auth(await devJwt());
+    const { aliasId, canonicalId } = await freshAliasedSession(H, '2041-01-10');
+    const setId = crypto.randomUUID();
+    const setBody = {
+      id: setId,
+      exercise_id: 'ex_bench',
+      set_index: 1,
+      weight: 185,
+      reps: 5,
+    };
+
+    const first = await SELF.fetch(`${BASE}/api/sessions/${aliasId}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify(setBody),
+    });
+    expect(first.status).toBe(201);
+    expect(await first.json()).toMatchObject({
+      deduped: false,
+      set: { id: setId, session_id: canonicalId },
+    });
+
+    // The offline retry still uses the stale path id, but the stored and
+    // returned set identifies the canonical session so the client can heal.
+    const retry = await SELF.fetch(`${BASE}/api/sessions/${aliasId}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify(setBody),
+    });
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({
+      deduped: true,
+      set: { id: setId, session_id: canonicalId },
+    });
+
+    const complete = await SELF.fetch(`${BASE}/api/sessions/${aliasId}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    expect(complete.status).toBe(200);
+    expect(await complete.json()).toMatchObject({ id: canonicalId, status: 'completed' });
+
+    const discard = await SELF.fetch(`${BASE}/api/sessions/${aliasId}/discard`, {
+      method: 'POST',
+      headers: H,
+    });
+    expect(discard.status).toBe(200);
+    expect(await discard.json()).toMatchObject({ id: canonicalId, status: 'discarded' });
+
+    const canonical = await env.DB
+      .prepare('SELECT status FROM sessions WHERE id = ?1')
+      .bind(canonicalId)
+      .first<{ status: string }>();
+    const set = await env.DB
+      .prepare('SELECT session_id,deleted_at FROM set_logs WHERE id = ?1')
+      .bind(setId)
+      .first<{ session_id: string; deleted_at: number | null }>();
+    expect(canonical?.status).toBe('discarded');
+    expect(set?.session_id).toBe(canonicalId);
+    expect(set?.deleted_at).not.toBeNull();
+    expect(
+      await env.DB.prepare('SELECT id FROM sessions WHERE id = ?1').bind(aliasId).first(),
+    ).toBeNull();
+  });
+
+  it('rejects a foreign tenant alias across every bridged mutation', async () => {
+    const H = auth(await devJwt());
+    const foreignUserId = crypto.randomUUID();
+    const foreignPlanId = crypto.randomUUID();
+    const foreignSessionId = crypto.randomUUID();
+    const foreignAliasId = crypto.randomUUID();
+    const foreignSetId = crypto.randomUUID();
+    const ts = Date.now();
+    await env.DB.batch([
+      env.DB
+        .prepare(
+          'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,NULL,?3,?4)',
+        )
+        .bind(foreignUserId, `sub-${foreignUserId}`, 'Foreign lifter', ts),
+      env.DB
+        .prepare(
+          `INSERT INTO plans
+           (id,user_id,name,status,version,meta,created_at,updated_at)
+           VALUES (?1,?2,'Foreign plan','active',1,NULL,?3,?3)`,
+        )
+        .bind(foreignPlanId, foreignUserId, ts),
+      env.DB
+        .prepare(
+          `INSERT INTO sessions
+           (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
+           VALUES (?1,?2,?3,NULL,'2041-01-11','planned',NULL,NULL,NULL,NULL,?4,?4)`,
+        )
+        .bind(foreignSessionId, foreignUserId, foreignPlanId, ts),
+      env.DB
+        .prepare(
+          'INSERT INTO session_aliases (alias_session_id,canonical_session_id) VALUES (?1,?2)',
+        )
+        .bind(foreignAliasId, foreignSessionId),
+      env.DB
+        .prepare(
+          `INSERT INTO set_logs
+           (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at)
+           VALUES (?1,?2,'ex_bench',NULL,1,225,5,8,0,NULL,?3,'ios',NULL,0,NULL)`,
+        )
+        .bind(foreignSetId, foreignSessionId, ts),
+    ]);
+
+    const setId = crypto.randomUUID();
+    const set = await SELF.fetch(`${BASE}/api/sessions/${foreignAliasId}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        id: setId,
+        exercise_id: 'ex_bench',
+        set_index: 1,
+        weight: 135,
+        reps: 5,
+      }),
+    });
+    expect(set.status).toBe(404);
+    expect(await set.json()).toEqual({ error: 'session_not_found' });
+
+    const complete = await SELF.fetch(`${BASE}/api/sessions/${foreignAliasId}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    expect(complete.status).toBe(404);
+    expect(await complete.json()).toEqual({ error: 'not_found' });
+
+    const discard = await SELF.fetch(`${BASE}/api/sessions/${foreignAliasId}/discard`, {
+      method: 'POST',
+      headers: H,
+    });
+    expect(discard.status).toBe(404);
+    expect(await discard.json()).toEqual({ error: 'not_found' });
+
+    // A valid owned alias must not turn the globally unique set UUID into a
+    // cross-tenant read primitive. The foreign row remains undisclosed and
+    // untouched rather than being returned as an idempotent retry.
+    const owned = await freshAliasedSession(H, '2041-01-12');
+    const foreignSetRetry = await SELF.fetch(`${BASE}/api/sessions/${owned.aliasId}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        id: foreignSetId,
+        exercise_id: 'ex_bench',
+        set_index: 1,
+        weight: 225,
+        reps: 5,
+      }),
+    });
+    expect(foreignSetRetry.status).toBe(404);
+    expect(await foreignSetRetry.json()).toEqual({ error: 'session_not_found' });
+
+    expect(
+      await env.DB.prepare('SELECT id FROM set_logs WHERE id = ?1').bind(setId).first(),
+    ).toBeNull();
+    const foreign = await env.DB
+      .prepare('SELECT status FROM sessions WHERE id = ?1')
+      .bind(foreignSessionId)
+      .first<{ status: string }>();
+    expect(foreign?.status).toBe('planned');
+    const foreignSet = await env.DB
+      .prepare('SELECT session_id FROM set_logs WHERE id = ?1')
+      .bind(foreignSetId)
+      .first<{ session_id: string }>();
+    expect(foreignSet?.session_id).toBe(foreignSessionId);
+  });
+});
+
 // /mcp behavior is covered comprehensively in test/mcp.test.ts.
 
 // ---- PATCH /api/me/integrations/intervals (M1 multi-user creds) ----------

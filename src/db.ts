@@ -1647,6 +1647,35 @@ export async function getOrCreateSession(
   return useExisting(winner);
 }
 
+/**
+ * Resolve a session mutation target for one user. Direct session ids take
+ * precedence; otherwise a stale id retained by migration 0029 may redirect to
+ * its surviving canonical row. Joining through sessions keeps both paths
+ * tenant-scoped and ensures an alias can never grant access to another user's
+ * session.
+ */
+async function resolveOwnedSessionId(
+  db: D1Database,
+  userId: string,
+  requestedId: string,
+): Promise<string | null> {
+  const resolved = await db
+    .prepare(
+      `SELECT s.id
+         FROM sessions AS s
+         LEFT JOIN session_aliases AS sa
+           ON sa.canonical_session_id = s.id
+          AND sa.alias_session_id = ?1
+        WHERE s.user_id = ?2
+          AND (s.id = ?1 OR sa.alias_session_id = ?1)
+        ORDER BY CASE WHEN s.id = ?1 THEN 0 ELSE 1 END
+        LIMIT 1`,
+    )
+    .bind(requestedId, userId)
+    .first<{ id: string }>();
+  return resolved?.id ?? null;
+}
+
 export async function patchSession(
   db: D1Database,
   userId: string,
@@ -1661,9 +1690,11 @@ export async function patchSession(
   | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
   | { error: 'invalid_status'; status: unknown }
 > {
+  const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
+  if (!canonicalSessionId) return null;
   const s = await db
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
-    .bind(sessionId, userId)
+    .bind(canonicalSessionId, userId)
     .first<SessionRow>();
   if (!s) return null;
   // Type-guard BEFORE normalizing: a present-but-non-string `status`
@@ -1718,7 +1749,7 @@ export async function patchSession(
   const startedAt = status === 'in_progress' ? s.started_at ?? now() : s.started_at;
   await db
     .prepare('UPDATE sessions SET status=?2, perceived_fatigue=?3, notes=?4, started_at=?5, completed_at=?6, updated_at=?7 WHERE id=?1')
-    .bind(sessionId, status, fatigue, notes, startedAt, completedAt, now())
+    .bind(canonicalSessionId, status, fatigue, notes, startedAt, completedAt, now())
     .run();
   return { ...s, status, perceived_fatigue: fatigue, notes, started_at: startedAt, completed_at: completedAt };
 }
@@ -1750,9 +1781,11 @@ export async function discardSession(
   userId: string,
   sessionId: string,
 ): Promise<SessionRow | null> {
+  const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
+  if (!canonicalSessionId) return null;
   const s = await db
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
-    .bind(sessionId, userId)
+    .bind(canonicalSessionId, userId)
     .first<SessionRow>();
   if (!s) return null;
   // Already discarded → true no-op: skip the (no-op) UPDATEs AND the audit
@@ -1762,22 +1795,22 @@ export async function discardSession(
   const ts = now();
   const live = await db
     .prepare('SELECT COUNT(*) AS n FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL')
-    .bind(sessionId)
+    .bind(canonicalSessionId)
     .first<{ n: number }>();
   const discardedSets = live?.n ?? 0;
   await db
     .prepare('UPDATE set_logs SET deleted_at = ?2 WHERE session_id = ?1 AND deleted_at IS NULL')
-    .bind(sessionId, ts)
+    .bind(canonicalSessionId, ts)
     .run();
   await db
     .prepare("UPDATE sessions SET status = 'discarded', updated_at = ?2 WHERE id = ?1")
-    .bind(sessionId, ts)
+    .bind(canonicalSessionId, ts)
     .run();
   await writeAudit(
     db,
     userId,
     'discard_session',
-    { session_id: sessionId, date: s.date, prior_status: s.status, sets_discarded: discardedSets },
+    { session_id: canonicalSessionId, date: s.date, prior_status: s.status, sets_discarded: discardedSets },
     `discarded:${discardedSets}_sets`,
   );
   return { ...s, status: 'discarded', updated_at: ts };
@@ -1808,17 +1841,26 @@ export async function logSet(
     source: 'ios' | 'mcp';
   },
 ): Promise<{ set: SetLogRow; deduped: boolean }> {
-  // Guard: the session must belong to this user.
-  const sess = await db
-    .prepare('SELECT id FROM sessions WHERE id = ?1 AND user_id = ?2')
-    .bind(input.session_id, userId)
-    .first();
-  if (!sess) throw new Error('session_not_found');
+  // Guard + migration compatibility: the requested id must resolve to this
+  // user's direct or canonical session. Every operation below uses that
+  // canonical id so a stale client heals from the returned SetLogRow.
+  const canonicalSessionId = await resolveOwnedSessionId(db, userId, input.session_id);
+  if (!canonicalSessionId) throw new Error('session_not_found');
 
-  const existing = await db
-    .prepare('SELECT * FROM set_logs WHERE id = ?1')
-    .bind(input.id)
-    .first<SetLogRow>();
+  // A set UUID is idempotent only within the resolved owned session. Never
+  // return a globally-matched row from another session/tenant, even if a
+  // caller happens to know its UUID.
+  const readExisting = () =>
+    db
+      .prepare(
+        `SELECT sl.*
+           FROM set_logs AS sl
+           JOIN sessions AS s ON s.id = sl.session_id
+          WHERE sl.id = ?1 AND sl.session_id = ?2 AND s.user_id = ?3`,
+      )
+      .bind(input.id, canonicalSessionId, userId)
+      .first<SetLogRow>();
+  const existing = await readExisting();
   if (existing) return { set: existing, deduped: true };
 
   // Resolve the plan slot (if a link was provided) ONCE — it drives both the
@@ -1879,7 +1921,7 @@ export async function logSet(
        WHERE session_id = ?1 AND exercise_id = ?2 AND set_index = ?3
          AND is_warmup = ?4 AND deleted_at IS NULL LIMIT 1`,
     )
-    .bind(input.session_id, input.exercise_id, setIndex, isWarmupInt)
+    .bind(canonicalSessionId, input.exercise_id, setIndex, isWarmupInt)
     .first();
   if (clash) {
     const max = await db
@@ -1888,7 +1930,7 @@ export async function logSet(
          WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
            AND deleted_at IS NULL`,
       )
-      .bind(input.session_id, input.exercise_id, isWarmupInt)
+      .bind(canonicalSessionId, input.exercise_id, isWarmupInt)
       .first<{ m: number }>();
     setIndex = (max?.m ?? 0) + 1;
   }
@@ -1911,7 +1953,7 @@ export async function logSet(
 
   const row: SetLogRow = {
     id: input.id,
-    session_id: input.session_id,
+    session_id: canonicalSessionId,
     exercise_id: input.exercise_id,
     template_exercise_id: templateExerciseId,
     set_index: setIndex,
@@ -1948,7 +1990,15 @@ export async function logSet(
       .run();
   for (let attempt = 0; ; attempt++) {
     try {
-      await insert();
+      const inserted = await insert();
+      if (inserted.meta.changes === 0) {
+        // A concurrent same-id request won after our pre-read. Return only a
+        // winner from this owned canonical session; a UUID already used by a
+        // different session remains indistinguishable from a missing target.
+        const winner = await readExisting();
+        if (!winner) throw new Error('session_not_found');
+        return { set: winner, deduped: true };
+      }
       break;
     } catch (e) {
       const msg = String((e as Error)?.message ?? '');
@@ -1960,7 +2010,7 @@ export async function logSet(
            WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
              AND deleted_at IS NULL`,
         )
-        .bind(input.session_id, input.exercise_id, isWarmupInt)
+        .bind(canonicalSessionId, input.exercise_id, isWarmupInt)
         .first<{ m: number }>();
       row.set_index = (max?.m ?? 0) + 1;
     }
@@ -1973,7 +2023,7 @@ export async function logSet(
   // sRPE duration reflects the new attempt, not the thrown-away one.
   await db
     .prepare("UPDATE sessions SET status = CASE WHEN status IN ('planned','discarded') THEN 'in_progress' ELSE status END, started_at = CASE WHEN status='discarded' THEN ?2 ELSE COALESCE(started_at, ?2) END, updated_at = ?2 WHERE id = ?1")
-    .bind(input.session_id, now())
+    .bind(canonicalSessionId, now())
     .run();
   return { set: row, deduped: false };
 }

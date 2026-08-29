@@ -3761,12 +3761,17 @@ export async function setPlannedSession(
     .bind(plan.id, day)
     .first<{ id: string }>();
   if (!d) return { error: 'unknown_day_ref', ref: day };
-  const existing = await db
-    .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at LIMIT 1')
-    .bind(userId, date)
-    .first<SessionRow>();
-  const ts = now();
-  if (existing) {
+  const readExisting = () =>
+    db
+      .prepare(
+        'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
+      )
+      .bind(userId, date)
+      .first<SessionRow>();
+  const useExisting = async (
+    existing: SessionRow,
+  ): Promise<{ ok: true; session: SessionRow }> => {
+    const ts = now();
     // The SQL CASE already flips the row to a sensible status; the bug was
     // that the response object spread `...existing` and kept the OLD status
     // (e.g. an agent saw `status: 'discarded'` with a past `started_at`
@@ -3788,18 +3793,20 @@ export async function setPlannedSession(
       )
       .bind(existing.id, d.id, newStatus, newStartedAt, newCompletedAt, ts)
       .run();
-    return {
-      ok: true,
-      session: {
-        ...existing,
-        day_template_id: d.id,
-        status: newStatus,
-        started_at: newStartedAt,
-        completed_at: newCompletedAt,
-        updated_at: ts,
-      },
+    const session: SessionRow = {
+      ...existing,
+      day_template_id: d.id,
+      status: newStatus,
+      started_at: newStartedAt,
+      completed_at: newCompletedAt,
+      updated_at: ts,
     };
-  }
+    return { ok: true, session };
+  };
+  const existing = await readExisting();
+  if (existing) return useExisting(existing);
+
+  const ts = now();
   const s: SessionRow = {
     id: uuid(),
     user_id: userId,
@@ -3814,13 +3821,20 @@ export async function setPlannedSession(
     created_at: ts,
     updated_at: ts,
   };
-  await db
+  const inserted = await db
     .prepare(
-      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)',
+      `INSERT INTO sessions
+       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+       ON CONFLICT(user_id,date) DO NOTHING`,
     )
     .bind(s.id, s.user_id, s.plan_id, s.day_template_id, s.date, s.status, s.started_at, s.completed_at, s.perceived_fatigue, s.notes, s.created_at, s.updated_at)
     .run();
-  return { ok: true, session: s };
+  if (inserted.meta.changes > 0) return { ok: true, session: s };
+
+  const winner = await readExisting();
+  if (!winner) throw new Error('session_create_conflict_without_winner');
+  return useExisting(winner);
 }
 
 /**
@@ -3838,12 +3852,19 @@ export async function skipPlannedSession(
 > {
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' };
-  const existing = await db
-    .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at LIMIT 1')
-    .bind(userId, date)
-    .first<SessionRow>();
-  const ts = now();
-  if (existing) {
+  const readExisting = () =>
+    db
+      .prepare(
+        'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
+      )
+      .bind(userId, date)
+      .first<SessionRow>();
+  const useExisting = async (
+    existing: SessionRow,
+  ): Promise<
+    | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
+    | { ok: true; session: SessionRow }
+  > => {
     // A skip may only override a planned (or absent) session. If the date
     // already has a started/finished workout, skipping it would hide logged
     // sets and destroy visible history for a mis-dated skip. Reject and
@@ -3855,12 +3876,17 @@ export async function skipPlannedSession(
         status: existing.status as 'in_progress' | 'completed',
       };
     }
+    const ts = now();
     await db
       .prepare("UPDATE sessions SET status = 'skipped', updated_at = ?2 WHERE id = ?1")
       .bind(existing.id, ts)
       .run();
     return { ok: true, session: { ...existing, status: 'skipped', updated_at: ts } };
-  }
+  };
+  const existing = await readExisting();
+  if (existing) return useExisting(existing);
+
+  const ts = now();
   const s: SessionRow = {
     id: uuid(),
     user_id: userId,
@@ -3875,13 +3901,20 @@ export async function skipPlannedSession(
     created_at: ts,
     updated_at: ts,
   };
-  await db
+  const inserted = await db
     .prepare(
-      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)',
+      `INSERT INTO sessions
+       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+       ON CONFLICT(user_id,date) DO NOTHING`,
     )
     .bind(s.id, s.user_id, s.plan_id, s.day_template_id, s.date, s.status, s.started_at, s.completed_at, s.perceived_fatigue, s.notes, s.created_at, s.updated_at)
     .run();
-  return { ok: true, session: s };
+  if (inserted.meta.changes > 0) return { ok: true, session: s };
+
+  const winner = await readExisting();
+  if (!winner) throw new Error('session_create_conflict_without_winner');
+  return useExisting(winner);
 }
 
 /**

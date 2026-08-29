@@ -1,6 +1,12 @@
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { getOrCreateSession, patchSet, updatePlanTree } from '../src/db';
+import {
+  getOrCreateSession,
+  patchSet,
+  setPlannedSession,
+  skipPlannedSession,
+  updatePlanTree,
+} from '../src/db';
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -270,6 +276,63 @@ describe('session create concurrency', () => {
     );
     expect(repeated.id).toBe(resultA.id);
     expect(repeated.day_template_id).toBe(resultA.day_template_id);
+  });
+
+  it('applies a planned-day override after losing an insert race', async () => {
+    const { userId, planId } = await seedUserAndPlan('planned-override-race');
+    const dayId = crypto.randomUUID();
+    const ts = Date.now();
+    await env.DB
+      .prepare(
+        `INSERT INTO day_templates
+         (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+         VALUES (?1,?2,'Override day','O',0,NULL,?3,?3)`,
+      )
+      .bind(dayId, planId, ts)
+      .run();
+
+    const [creatorDb, overrideDb] = databasesWithSharedReadBarrier(
+      'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
+    );
+    const [created, override] = await Promise.all([
+      getOrCreateSession(creatorDb, userId, planId, '2037-01-04', null),
+      setPlannedSession(overrideDb, userId, '2037-01-04', 'O'),
+    ]);
+
+    expect(override).toMatchObject({
+      ok: true,
+      session: { id: created.id, day_template_id: dayId, status: 'planned' },
+    });
+    const rows = await env.DB
+      .prepare(
+        'SELECT id,day_template_id,status FROM sessions WHERE user_id = ?1 AND date = ?2',
+      )
+      .bind(userId, '2037-01-04')
+      .all<{ id: string; day_template_id: string | null; status: string }>();
+    expect(rows.results).toEqual([
+      { id: created.id, day_template_id: dayId, status: 'planned' },
+    ]);
+  });
+
+  it('applies a skip override after losing an insert race', async () => {
+    const { userId, planId } = await seedUserAndPlan('skip-override-race');
+    const [creatorDb, overrideDb] = databasesWithSharedReadBarrier(
+      'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
+    );
+    const [created, override] = await Promise.all([
+      getOrCreateSession(creatorDb, userId, planId, '2037-01-05', null),
+      skipPlannedSession(overrideDb, userId, '2037-01-05'),
+    ]);
+
+    expect(override).toMatchObject({
+      ok: true,
+      session: { id: created.id, status: 'skipped' },
+    });
+    const rows = await env.DB
+      .prepare('SELECT id,status FROM sessions WHERE user_id = ?1 AND date = ?2')
+      .bind(userId, '2037-01-05')
+      .all<{ id: string; status: string }>();
+    expect(rows.results).toEqual([{ id: created.id, status: 'skipped' }]);
   });
 });
 

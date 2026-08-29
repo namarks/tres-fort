@@ -13,9 +13,14 @@ or editable by the coach.
 ## Phases
 
 - [ ] **P0 — Build and schedule one workout without AI**
-  - From the no-plan state, let the member create an active plan and one day,
-    select catalog exercises, set targets, and add, edit, remove, or reorder
-    slots using the existing plan services and editor endpoints.
+  - From the no-plan state, create an active plan only when none exists, then
+    let the member add one day, select catalog exercises, set targets, and add,
+    edit, remove, or reorder slots using the existing plan services and editor
+    endpoints.
+  - If a retry, stale screen, or concurrent Claude setup finds that an active
+    plan now exists, return or reload that current plan and version. Never
+    archive or replace it implicitly; replacement remains a separate explicit
+    action.
   - Add a thin authenticated schedule-write path for iOS over the existing
     versioned `plans.meta.schedule` service, then let the member assign the day
     to a recurring weekday or leave it unscheduled.

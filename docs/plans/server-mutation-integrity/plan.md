@@ -12,12 +12,20 @@ return stable client-visible outcomes.
 
 ## Phases
 
-- [ ] **P0 — Scope and validate core writes**
-  - Resolve exercise additions only through a day in the caller's active plan.
-  - Validate set and session fields before D1 writes, return typed 4xx responses,
-    and prove malformed values cannot poison a later `/api/state` decode.
-  - Cover the confirmed foreign-day, archived-day, and malformed-set cases with
-    route-level tests.
+- [ ] **P0 — Independent confirmed write-path fixes**
+  - [ ] **(a) Scope and validate REST writes**
+    - Resolve exercise additions only through a day in the caller's active plan.
+    - Validate set and session fields before D1 writes, return typed 4xx
+      responses, and prove malformed values cannot poison a later `/api/state`
+      decode.
+    - Cover the confirmed foreign-day, archived-day, and malformed-set cases
+      with route-level tests.
+  - [ ] **(b) Preserve intended MCP straight and timed sets**
+    - Make MCP `log_set` distinguish intended sets by source, set index, and
+      duration from a true cross-channel duplicate while retaining an explicit
+      confirmation override.
+    - Prove a same-weight straight-set series and repeated timed efforts all log,
+      while immediate iOS narration remains protected from duplication.
 - [ ] **P1 — Make concurrent plan and session writes deterministic**
   - Gate `updatePlanTree`'s committing update on the version it read and return
     the existing conflict shape when the write loses a race.
@@ -25,8 +33,6 @@ return stable client-visible outcomes.
     rows in the migration, and make concurrent creation re-read the winner.
   - Exercise both races against the Workers/D1 test runtime.
 - [ ] **P2 — Correct coaching-facing write semantics**
-  - Make MCP `log_set` distinguish intended straight or timed sets from a true
-    cross-channel duplicate, while retaining an explicit confirmation override.
   - Use the established user/device date boundary for `/api/today` and defaulted
     session dates; expose the existing set correction path, including duration.
   - Correct the confirmed per-hand volume and unknown-muscle response semantics
@@ -34,12 +40,13 @@ return stable client-visible outcomes.
 
 ## Execution frontier
 
-- P0
+- P0(a)
+- P0(b)
 
 ## Next step
 
-**Now (@agent):** Implement P0 as one focused backend hardening change and run
-the affected route tests plus the repository typecheck.
+**Now (@agent):** Implement P0(a) and P0(b) as independently reviewable fixes,
+then run their affected route/MCP tests plus the repository typecheck.
 
 ## Notes / open questions
 

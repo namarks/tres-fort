@@ -13,11 +13,13 @@ surfaces without adding AI to the Worker or creating a second coaching record.
 ## Phases
 
 - [ ] **P0 — Workout feedback reaches the coach**
-  - Add an optional, quick finish flow for session RPE, fatigue or pain flags,
-    and a short note; completing a workout must not require a questionnaire.
-  - Persist the feedback with the session and expose it through the relevant
+  - Add an optional, quick finish flow for perceived fatigue and a short note;
+    pain can be described in the note, and completing a workout must not
+    require a questionnaire.
+  - Persist those existing session fields and expose them through the relevant
     history, current-state, and coaching-brief reads so the next coaching
-    conversation receives the member's words and the recorded workout.
+    conversation receives the member's words and the recorded workout without
+    a schema change.
   - Verify one end-to-end path from iOS capture to MCP read, including an edit
     made before the session is finalized.
 - [ ] **P1 — Coaching changes are visible and correctable**
@@ -52,5 +54,7 @@ executable backlog; it does not require the later change-history work to start.
 - The first slice captures only feedback a coach can act on. Readiness scores,
   questionnaires, automated recommendations, and model-generated diagnoses are
   outside this workstream unless real usage demonstrates a need.
+- Per-set RPE remains part of ordinary set logging and later runner refinement;
+  P0 does not add a separate session-RPE field.
 - The Worker remains deterministic data infrastructure. Claude interprets the
   feedback in conversation; the backend stores and returns it.

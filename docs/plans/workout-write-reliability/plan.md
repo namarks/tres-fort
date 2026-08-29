@@ -30,12 +30,21 @@ never present a failed write as completed or silently drop the user's intent.
     then offer resume when today's server session is still in progress.
   - Refresh and drain on foreground, show cached plan data with an offline label
     on cold launch, and end stale rest Live Activities left by process death.
+  - Update the server and iOS calendar projections so a real logged session stays
+    visible on a blackout-trip date, and keep their truth table covered by the
+    shared parity verification.
   - Verify relaunch recovery without introducing a second plan projection or a
     general-purpose sync framework.
 
 ## Execution frontier
 
 - P0
+
+## Dependencies
+
+| Local phase | Relationship | Target | Reason |
+|---|---|---|---|
+| P0 | coordinates_with | plan:identity-account-lifecycle#P0(a) | This plan owns set-outbox storage and delivery; identity owns the shared per-user account namespace and switch semantics that contain it. |
 
 ## Next step
 
@@ -46,6 +55,8 @@ for set bodies, then verify retry identity and visible failure behavior.
 
 - Source: the August 2026 functionality review at commit `91fd622`; the server's
   client-UUID idempotency contract already exists and should remain the seam.
+- Set bodies, retry state, and drain behavior remain owned here. Coordinate only
+  the user-keyed namespace and account-switch boundary with identity work.
 - Store only the pending request bodies and small UI checkpoint needed for
   recovery. Do not build event sourcing, background-server infrastructure, or a
   new synchronization protocol for this workstream.

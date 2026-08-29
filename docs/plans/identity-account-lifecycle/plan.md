@@ -12,24 +12,26 @@ iOS verification.
 
 ## Phases
 
-- [ ] **P0 — Renewable sessions without destructive reauthentication**
-  - Implement the smallest renewable app-session path compatible with the
-    current JWT and Sign in with Apple design, renewing before the fixed expiry
-    and recovering the same user after an authorization failure.
-  - Separate same-user reauthentication from an account switch. Key local
-    outboxes and HealthKit state by user so reauthentication preserves them and
-    a real switch cannot inherit them.
-  - Cover expiry, renewal, offline renewal failure, same-user recovery, and
-    account switching without introducing a general session platform.
-- [ ] **P1 — In-app account deletion**
-  - Add an authenticated `DELETE /api/me` service path that removes the caller's
-    personal training data, external credentials, tokens, and memberships under
-    the current ownership model without touching another user's data.
-  - Add a plainly worded, explicit confirmation flow in Profile and sign the
-    deleted user out only after the server acknowledges deletion.
-  - Verify cascade behavior with seeded test users; never exercise deletion
-    against a real owner account during development or CI.
-- [ ] **P2 — Portability and credential recovery**
+- [ ] **P0 — Independent identity foundations**
+  - [ ] **(a) Renewable sessions and per-user account scoping**
+    - Implement the smallest renewable app-session path compatible with the
+      current JWT and Sign in with Apple design, renewing before the fixed expiry
+      and recovering the same user after an authorization failure.
+    - Separate same-user reauthentication from an account switch. Own the shared
+      per-user account namespace and switch semantics so feature-owned outboxes
+      and HealthKit state survive reauthentication without crossing accounts.
+    - Cover expiry, renewal, offline renewal failure, same-user recovery, and
+      account switching without introducing a general session platform.
+  - [ ] **(b) In-app account deletion**
+    - Add an authenticated `DELETE /api/me` service path that removes the
+      caller's personal training data, external credentials, tokens, and
+      memberships under the current ownership model without touching another
+      user's data.
+    - Add a plainly worded, explicit confirmation flow in Profile and sign the
+      deleted user out only after the server acknowledges deletion.
+    - Verify cascade behavior with seeded test users; never exercise deletion
+      against a real owner account during development or CI.
+- [ ] **P1 — Portability and credential recovery**
   - Add a user-scoped export assembled from the authoritative training state and
     make it downloadable from Profile.
   - Detect revoked Sign in with Apple credentials and present a recoverable
@@ -40,12 +42,14 @@ iOS verification.
 
 ## Execution frontier
 
-- P0
+- P0(a)
+- P0(b)
 
 ## Next step
 
-**Now (@agent):** Complete P0 with focused auth and state-preservation tests,
-then verify the iOS client renews without clearing the current user's local data.
+**Now (@agent):** Complete P0(a) and P0(b) independently: verify renewable
+same-user sessions preserve account-scoped state while the deletion slice ships
+its focused backend and Profile flow without waiting for auth renewal.
 
 ## Notes / open questions
 

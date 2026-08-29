@@ -29,28 +29,30 @@ correct workout.
     schedule, skip, completion, or sign-out changes.
   - Keep notification timing and copy editable in app settings; do not require
     a new server notification system for the initial adherence loop.
-- [ ] **P2 — Decide the starter path from evidence**
+- [ ] **P2 — Recommend the starter path from evidence**
   - Use direct member feedback and observed walkthroughs of the manual and
-    coach-connected paths to decide whether a built-in starter plan would
-    materially improve activation.
-  - If approved, seed the starter through `manual-workout-authoring` and the
-    same versioned plan tree. If declined, retain the manual and coach choices
-    without a hidden default plan.
+    coach-connected paths to recommend whether a built-in starter plan would
+    materially improve activation; gathering this evidence requires no starter
+    policy decision.
   - Tune reminders and onboarding copy from concrete member feedback rather
     than add a generalized analytics, growth, or messaging platform.
+  - [ ] **(a) Implement the decided starter path**
+    - After the product decision, either seed an approved starter through
+      `manual-workout-authoring` and the same versioned plan tree, or record the
+      decision not to offer one and retain the manual and coach choices.
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P0 | coordinates_with | plan:manual-workout-authoring#P0 | The no-plan surface links to the manual builder, while invite and Coach Connect continuity can proceed independently. |
-| P2 | gated_by | external:starter-plan-policy | Shipping a default program is a product decision; manual workout creation and reminders do not wait for it. |
+| P2(a) | gated_by | external:starter-plan-policy | Implementing or explicitly declining the starter path requires the product decision; evidence and recommendation do not. |
 
 ## Next step
 
 **Now (@owner):** Activate P0 when the member entry path should enter the
-backlog; preserve the narrow P2 starter-plan decision instead of treating it as
-a prerequisite.
+backlog. P2 evidence and recommendation remain ungated; only P2(a) waits on the
+starter-plan product decision.
 
 ## Notes / open questions
 

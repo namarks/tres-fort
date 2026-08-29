@@ -53,9 +53,11 @@ workstream's authority and was not performed during closeout.
 - P1 and P2 completed with migration 0029's exact duplicate-session replay,
   plan/session/set race coverage, the repository typecheck, and the complete
   Workers/D1 suite (`33` files, `382` tests). The authorized migration preserves
-  the canonical session, every set, and one usable export ledger before removing
-  redundant loser shells; it was authored and locally tested but not applied
-  remotely.
+  the canonical session identity and creation time, deterministically promotes
+  a coherent completed/in-progress state, preserves every set and the best usable
+  export ledger, then removes redundant loser shells. Per-hand tonnage now uses
+  the same independent side/implement multipliers in server, MCP, and iOS
+  rollups. Migration 0029 was authored and locally tested but not applied remotely.
 - Independent pre-integration review found no remaining actionable findings;
   repository delivery still requires the ordinary exact-head review and CI
   gates before merge.

@@ -321,6 +321,9 @@ describe('0029 duplicate-session reconciliation', () => {
     const exportLoser = `${suffix}-e`;
     const movedExportWinner = `${suffix}-f`;
     const movedExportLoser = `${suffix}-g`;
+    const canonicalDay = `${suffix}-canonical-day`;
+    const promotedPlan = `${suffix}-promoted-plan`;
+    const promotedDay = `${suffix}-promoted-day`;
     const date = '2038-02-03';
     const exportDate = '2038-02-04';
     const movedExportDate = '2038-02-05';
@@ -335,9 +338,48 @@ describe('0029 duplicate-session reconciliation', () => {
         )
         .bind(id, userId, planId, sessionDate, createdAt);
     await env.DB.batch([
-      sessionInsert(winner, date, 100),
-      sessionInsert(tieLoser, date, 100),
-      sessionInsert(lateLoser, date, 200),
+      env.DB
+        .prepare(
+          `INSERT INTO plans
+           (id,user_id,name,status,version,meta,created_at,updated_at)
+           VALUES (?1,?2,'Prior plan','archived',1,NULL,50,50)`,
+        )
+        .bind(promotedPlan, userId),
+      env.DB
+        .prepare(
+          `INSERT INTO day_templates
+           (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+           VALUES (?1,?2,'Canonical day','C',0,NULL,60,60)`,
+        )
+        .bind(canonicalDay, planId),
+      env.DB
+        .prepare(
+          `INSERT INTO day_templates
+           (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+           VALUES (?1,?2,'Completed day','P',0,NULL,70,70)`,
+        )
+        .bind(promotedDay, promotedPlan),
+      env.DB
+        .prepare(
+          `INSERT INTO sessions
+           (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
+           VALUES (?1,?2,?3,?4,?5,'planned',NULL,NULL,NULL,'canonical shell',100,150)`,
+        )
+        .bind(winner, userId, planId, canonicalDay, date),
+      env.DB
+        .prepare(
+          `INSERT INTO sessions
+           (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
+           VALUES (?1,?2,?3,?4,?5,'completed',700,900,9,'completed duplicate',100,950)`,
+        )
+        .bind(tieLoser, userId, promotedPlan, promotedDay, date),
+      env.DB
+        .prepare(
+          `INSERT INTO sessions
+           (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
+           VALUES (?1,?2,?3,?4,?5,'in_progress',800,NULL,5,'newer in-progress duplicate',200,1000)`,
+        )
+        .bind(lateLoser, userId, planId, canonicalDay, date),
       sessionInsert(exportWinner, exportDate, 300),
       sessionInsert(exportLoser, exportDate, 400),
       sessionInsert(movedExportWinner, movedExportDate, 500),
@@ -398,10 +440,52 @@ describe('0029 duplicate-session reconciliation', () => {
     }
 
     const sessions = await env.DB
-      .prepare('SELECT id FROM sessions WHERE user_id = ?1 AND date = ?2')
+      .prepare(
+        `SELECT id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,
+                perceived_fatigue,notes,created_at,updated_at
+         FROM sessions WHERE user_id = ?1 AND date = ?2`,
+      )
       .bind(userId, date)
-      .all<{ id: string }>();
-    expect(sessions.results).toEqual([{ id: winner }]);
+      .all<{
+        id: string;
+        user_id: string;
+        plan_id: string;
+        day_template_id: string | null;
+        date: string;
+        status: string;
+        started_at: number | null;
+        completed_at: number | null;
+        perceived_fatigue: number | null;
+        notes: string | null;
+        created_at: number;
+        updated_at: number;
+      }>();
+    expect(sessions.results).toEqual([
+      {
+        id: winner,
+        user_id: userId,
+        plan_id: promotedPlan,
+        day_template_id: promotedDay,
+        date,
+        status: 'completed',
+        started_at: 700,
+        completed_at: 900,
+        perceived_fatigue: 9,
+        notes: 'completed duplicate',
+        created_at: 100,
+        updated_at: 950,
+      },
+    ]);
+
+    const meaningfulCanonical = await env.DB
+      .prepare('SELECT status,created_at,updated_at FROM sessions WHERE id = ?1')
+      .bind(exportWinner)
+      .first<{ status: string; created_at: number; updated_at: number }>();
+    expect(meaningfulCanonical).toEqual({
+      status: 'completed',
+      created_at: 300,
+      updated_at: 300,
+    });
 
     const sets = await env.DB
       .prepare(

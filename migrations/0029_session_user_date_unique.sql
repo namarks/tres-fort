@@ -229,8 +229,92 @@ WHERE session_id IN (
     AND source_session_id <> target_session_id
 );
 
--- Dependencies are now attached to the canonical row, so the empty duplicate
--- session shells can be removed safely.
+-- Keep the canonical id/user/date/created_at, but do not let an early planned
+-- shell erase a later workout. A completed row is more meaningful than an
+-- in-progress row, and both outrank all other states. Within the same tier the
+-- canonical row wins, so reconciliation never replaces an equally meaningful
+-- canonical state. Remaining ties are deterministic.
+WITH mapped_sessions AS (
+  SELECT
+    s.*,
+    FIRST_VALUE(id) OVER (
+      PARTITION BY user_id, date
+      ORDER BY created_at, id
+    ) AS target_session_id,
+    COUNT(*) OVER (PARTITION BY user_id, date) AS session_count
+  FROM sessions AS s
+),
+ranked_sessions AS (
+  SELECT
+    mapped_sessions.*,
+    ROW_NUMBER() OVER (
+      PARTITION BY user_id, date
+      ORDER BY
+        CASE status
+          WHEN 'completed' THEN 2
+          WHEN 'in_progress' THEN 1
+          ELSE 0
+        END DESC,
+        CASE WHEN id = target_session_id THEN 1 ELSE 0 END DESC,
+        updated_at DESC,
+        created_at,
+        id
+    ) AS state_rank
+  FROM mapped_sessions
+),
+selected_state AS (
+  SELECT *
+  FROM ranked_sessions
+  WHERE session_count > 1
+    AND state_rank = 1
+    AND id <> target_session_id
+)
+UPDATE sessions
+SET
+  plan_id = (
+    SELECT plan_id
+    FROM selected_state
+    WHERE selected_state.target_session_id = sessions.id
+  ),
+  day_template_id = (
+    SELECT day_template_id
+    FROM selected_state
+    WHERE selected_state.target_session_id = sessions.id
+  ),
+  status = (
+    SELECT status
+    FROM selected_state
+    WHERE selected_state.target_session_id = sessions.id
+  ),
+  started_at = (
+    SELECT started_at
+    FROM selected_state
+    WHERE selected_state.target_session_id = sessions.id
+  ),
+  completed_at = (
+    SELECT completed_at
+    FROM selected_state
+    WHERE selected_state.target_session_id = sessions.id
+  ),
+  perceived_fatigue = (
+    SELECT perceived_fatigue
+    FROM selected_state
+    WHERE selected_state.target_session_id = sessions.id
+  ),
+  notes = (
+    SELECT notes
+    FROM selected_state
+    WHERE selected_state.target_session_id = sessions.id
+  ),
+  updated_at = (
+    SELECT updated_at
+    FROM selected_state
+    WHERE selected_state.target_session_id = sessions.id
+  )
+WHERE id IN (SELECT target_session_id FROM selected_state);
+
+-- Dependencies and the meaningful state are now attached to the canonical row,
+-- so the empty duplicate session shells can be removed safely.
 WITH session_map AS (
   SELECT
     id AS source_session_id,

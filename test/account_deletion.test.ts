@@ -5,6 +5,7 @@ import {
   claimOrCreateOwner,
   ensureOwnerUser,
   findOwnerRow,
+  upsertUserUnlessDeletedOwner,
   upsertUser,
 } from '../src/db';
 
@@ -519,6 +520,25 @@ describe('DELETE /api/me', () => {
     expect(tombstone?.apple_sub_sha256).toMatch(/^[0-9a-f]{64}$/);
     expect(tombstone?.apple_sub_sha256).not.toBe(seededOwner.apple_sub);
     expect(tombstone?.deleted_at).toBeGreaterThan(0);
+
+    // The open-sign-in path performs the digest check in the INSERT itself,
+    // so a stale request cannot recreate this exact identity after deletion.
+    expect(
+      await upsertUserUnlessDeletedOwner(
+        env.DB,
+        seededOwner.apple_sub,
+        null,
+        null,
+      ),
+    ).toBeNull();
+    expect(
+      await upsertUserUnlessDeletedOwner(
+        env.DB,
+        `new-member-${crypto.randomUUID()}`,
+        null,
+        'New member',
+      ),
+    ).not.toBeNull();
 
     const staticMcp = await SELF.fetch(`${BASE}/mcp`, {
       method: 'POST',

@@ -60,9 +60,33 @@ final class AuthModel: ObservableObject {
         self.defaults = defaults
         self.now = now
         let token = tokenStore.load()
-        if let token {
-            jwt = token
-            phase = .signedIn
+        let persistedUserID = defaults.string(forKey: Self.userIDKey)
+        userID = persistedUserID
+        if let token, let tokenUserID = Self.subject(of: token) {
+            if let persistedUserID, persistedUserID != tokenUserID {
+                // A crash between the separate Keychain and UserDefaults
+                // writes can leave account A's local namespace beside account
+                // B's bearer. Never enter the signed-in surface with that
+                // mixed pair; preserve A's pointer for explicit recovery.
+                tokenStore.clear()
+                reauthenticationReason =
+                    "Your saved session could not be matched to this account. Sign in with Apple again to reconnect it."
+            } else {
+                if persistedUserID == nil {
+                    // Upgrade older installs that have a valid app JWT but
+                    // predate the persisted account namespace.
+                    defaults.set(tokenUserID, forKey: Self.userIDKey)
+                    userID = tokenUserID
+                }
+                jwt = token
+                phase = .signedIn
+            }
+        } else if token != nil {
+            // Server app JWTs always carry `sub`. A malformed or legacy
+            // credential cannot safely be paired with account-scoped state.
+            tokenStore.clear()
+            reauthenticationReason =
+                "Your saved session needs to be renewed. Sign in with Apple again to reconnect this account."
         }
         // First launch of a build that has onboarding: if the user is
         // ALREADY signed in (an existing install updating in place), treat
@@ -75,12 +99,10 @@ final class AuthModel: ObservableObject {
             defaults.set(token != nil, forKey: Self.onboardedKey)
         }
         onboardingComplete = defaults.bool(forKey: Self.onboardedKey)
-        let persistedUserID = defaults.string(forKey: Self.userIDKey)
-        userID = persistedUserID
-        if let persistedUserID {
+        if let accountID = userID {
             appleCredentialUserID = defaults.string(
                 forKey: AccountLocalState.appleCredentialUserKey(
-                    userID: persistedUserID))
+                    userID: accountID))
         }
     }
 
@@ -127,6 +149,9 @@ final class AuthModel: ObservableObject {
             let res = try await api.authApple(
                 identityToken: identityToken,
                 fullName: fullName)
+            guard Self.subject(of: res.jwt) == res.user.id else {
+                throw APIError.decoding("session identity mismatch")
+            }
             tokenStore.save(res.jwt)
             jwt = res.jwt
             userID = res.user.id
@@ -145,9 +170,10 @@ final class AuthModel: ObservableObject {
         }
     }
 
-    /// Decode the unverified expiry claim only to schedule renewal. The Worker
-    /// remains the authority and verifies the signature on /auth/renew.
-    static func expirationDate(of token: String) -> Date? {
+    /// Decode unverified claims only to bind local account state and schedule
+    /// renewal. The Worker remains the authority and verifies the signature on
+    /// every authenticated request.
+    private static func claims(of token: String) -> [String: Any]? {
         let parts = token.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 3 else { return nil }
         var encoded = String(parts[1])
@@ -155,10 +181,19 @@ final class AuthModel: ObservableObject {
             .replacingOccurrences(of: "_", with: "/")
         let padding = (4 - encoded.count % 4) % 4
         encoded += String(repeating: "=", count: padding)
-        guard let data = Data(base64Encoded: encoded),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let exp = object["exp"] as? NSNumber
+        guard let data = Data(base64Encoded: encoded) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
+    static func subject(of token: String) -> String? {
+        guard let subject = claims(of: token)?["sub"] as? String,
+              !subject.isEmpty
         else { return nil }
+        return subject
+    }
+
+    static func expirationDate(of token: String) -> Date? {
+        guard let exp = claims(of: token)?["exp"] as? NSNumber else { return nil }
         return Date(timeIntervalSince1970: exp.doubleValue)
     }
 
@@ -179,6 +214,11 @@ final class AuthModel: ObservableObject {
         do {
             let renewed = try await api.renewAppSession(jwt: token)
             guard jwt == token, userID == initiatingUserID else { return }
+            guard Self.subject(of: renewed.jwt) == initiatingUserID else {
+                requireReauthentication(
+                    reason: "Your renewed session could not be matched to this account. Sign in with Apple again to reconnect it.")
+                return
+            }
             tokenStore.save(renewed.jwt)
             jwt = renewed.jwt
         } catch let APIError.http(code, _) where code == 401 {
@@ -191,9 +231,11 @@ final class AuthModel: ObservableObject {
     }
 
     /// Ask Apple whether the persisted Sign in with Apple grant is still
-    /// authorized. Revoked/not-found/transferred credentials move to a
-    /// recoverable sign-in state while retaining the account id and all scoped
-    /// queued data. Provider errors are soft so offline launch remains usable.
+    /// authorized. Revoked/not-found credentials move to a recoverable sign-in
+    /// state while retaining the account id and all scoped queued data.
+    /// Provider errors and transferred-team identities are soft: Apple's
+    /// transferred subject requires a server-side migration, so ordinary
+    /// reauthentication must not create a fresh empty account.
     func checkAppleCredentialState() async {
         guard
             let initiatingToken = jwt,
@@ -207,9 +249,9 @@ final class AuthModel: ObservableObject {
             appleCredentialUserID == initiatingAppleUserID
         else { return }
         switch state {
-        case .authorized, .unavailable:
+        case .authorized, .unavailable, .transferred:
             return
-        case .revoked, .notFound, .transferred:
+        case .revoked, .notFound:
             requireReauthentication(
                 reason: "Your Apple authorization needs to be renewed. Sign in with Apple again to reconnect this account. Your queued workouts remain on this device.")
         }

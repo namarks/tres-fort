@@ -7,7 +7,7 @@ import {
   isDeletedOwnerAppleSub,
   isOwnerDeletionTombstoned,
   redeemInvite,
-  upsertUser,
+  upsertUserUnlessDeletedOwner,
 } from '../db';
 
 export const authRoutes = new Hono<HonoEnv>();
@@ -109,10 +109,16 @@ authRoutes.post('/apple', async (c) => {
   }
 
   // Path 4: any other new Apple sub. Open sign-in, zero memberships by
-  // default. upsertUser is safe here because Path 1 already returned for
-  // known subs: we reach here only with an unknown apple_sub, so this
-  // INSERTs.
-  const user = await upsertUser(c.env.DB, claims.sub, claims.email, body.fullName ?? null);
+  // default. Keep the deletion-tombstone comparison inside the INSERT so an
+  // owner deletion racing this request cannot be followed by recreation from
+  // the stale pre-deletion check above.
+  const user = await upsertUserUnlessDeletedOwner(
+    c.env.DB,
+    claims.sub,
+    claims.email,
+    body.fullName ?? null,
+  );
+  if (!user) return c.json({ error: 'owner_account_deleted' }, 410);
   const jwt = await issueAppJwt(user.id, c.env.APP_JWT_SECRET);
   // Back-compat shim for pre-open-signin clients (see file header). If
   // a code was posted, best-effort redeem it against the just-created

@@ -632,7 +632,7 @@ apiRoutes.patch('/me/profile', async (c) => {
   } catch {
     return c.json({ error: 'invalid_json' }, 400);
   }
-  if (typeof body.display_name !== 'string') {
+  if (body === null || typeof body !== 'object' || typeof body.display_name !== 'string') {
     return c.json({ error: 'invalid_display_name' }, 400);
   }
   const displayName = body.display_name.trim();

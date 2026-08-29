@@ -127,6 +127,46 @@ export async function upsertUser(
 }
 
 /**
+ * Open-sign-in creation path that cannot recreate the deliberately deleted
+ * owner identity. The one-way identity comparison and INSERT share one SQLite
+ * statement, so a concurrent owner deletion that wins the write lock also
+ * prevents a stale sign-in request from inserting the same Apple subject.
+ */
+export async function upsertUserUnlessDeletedOwner(
+  db: D1Database,
+  appleSub: string,
+  email: string | null,
+  displayName: string | null,
+): Promise<User | null> {
+  const candidateId = uuid();
+  const createdAt = now();
+  const appleSubHash = await sha256Hex(appleSub);
+  await db
+    .prepare(
+      `INSERT INTO users (id, apple_sub, email, display_name, created_at)
+       SELECT ?1, ?2, ?3, ?4, ?5
+        WHERE NOT EXISTS (
+                SELECT 1 FROM owner_deletion_tombstone
+                 WHERE singleton = 1 AND apple_sub_sha256 = ?6
+              )
+       ON CONFLICT(apple_sub) DO NOTHING`,
+    )
+    .bind(candidateId, appleSub, email, displayName, createdAt, appleSubHash)
+    .run();
+  return db
+    .prepare(
+      `SELECT u.* FROM users u
+        WHERE u.apple_sub = ?1
+          AND NOT EXISTS (
+                SELECT 1 FROM owner_deletion_tombstone
+                 WHERE singleton = 1 AND apple_sub_sha256 = ?2
+              )`,
+    )
+    .bind(appleSub, appleSubHash)
+    .first<User>();
+}
+
+/**
  * Create the distinguished owner only while no terminal owner tombstone
  * exists. The predicate and INSERT share one SQLite statement, so a deletion
  * that wins the write lock cannot be followed by a stale bootstrap request

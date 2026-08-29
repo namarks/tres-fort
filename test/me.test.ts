@@ -208,6 +208,7 @@ describe('PATCH /api/me/profile', () => {
     const caller = await makeUser('profile-invalid');
     const requests: Array<{ body: string; contentType?: string }> = [
       { body: '{', contentType: 'application/json' },
+      { body: 'null' },
       { body: JSON.stringify({ display_name: '   ' }) },
       { body: JSON.stringify({ display_name: 42 }) },
       { body: JSON.stringify({ display_name: 'x'.repeat(81) }) },

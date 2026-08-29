@@ -68,9 +68,12 @@ exact-head verification, and closes the plan.
 - P0(a) now uses rolling app-JWT renewal plus account-scoped activity,
   intervals.icu, and HealthKit state. Focused backend tests, direct iOS source
   typechecking, and a standalone behavioral harness cover expiry, renewal,
-  offline failure, same-user recovery, and account switching; this host has no
-  installed iOS simulator runtime, so the checked-in XCTest target could not run
-  through `xcodebuild` here.
+  offline failure, same-user recovery, and account switching. A persisted bearer
+  is accepted only when its JWT subject matches the account namespace (older
+  installs migrate a missing pointer from that subject), and foreground work is
+  pinned to the account that initiated it. This host has no installed iOS
+  simulator runtime, so the checked-in XCTest target could not run through
+  `xcodebuild` here.
 - Runtime account deletion remains destructive and must always require the
   authenticated user's explicit in-app confirmation. Development and CI must
   exercise only seeded users.
@@ -87,10 +90,14 @@ exact-head verification, and closes the plan.
   preserves both the session data and deletion key after a failed request.
 - P1(b) stores Apple's credential identifier from the local Sign in with Apple
   result and checks it on launch/foreground. Revoked, missing, or transferred
-  credentials clear only the bearer and explain same-account reauthentication;
-  provider-check failures are soft. Existing installs without the scoped local
-  identifier begin these checks after their next Apple sign-in rather than
-  receiving the sensitive provider identifier through a new backend response.
+  credentials are handled without crossing account namespaces: revoked or
+  missing credentials clear only the bearer and explain same-account
+  reauthentication, while a transferred-team identity preserves the current
+  bearer because it requires Apple's server-side transfer migration rather than
+  an ordinary sign-in that could create an empty account. Provider-check
+  failures are soft. Existing installs without the scoped local identifier begin
+  these checks after their next Apple sign-in rather than receiving the
+  sensitive provider identifier through a new backend response.
 - Profile-name repair trims and validates a 1–80 UTF-16-unit value, updates only
   the authenticated user, and audits the changed field without copying the name
   into audit arguments.
@@ -99,5 +106,6 @@ exact-head verification, and closes the plan.
   simulator module and XCTest source typecheck, including stale renewal, stale
   Apple-credential callback, account-switch-during-deletion, and lost-response
   retry coverage. The standalone production AuthModel harness passes Apple
-  revocation/provider-unavailable behavior. This host still has no installed iOS
-  simulator runtime, so XCTest execution remains unavailable locally.
+  revocation, provider-unavailable, transferred-identity, and bearer/account
+  binding behavior. This host still has no installed iOS simulator runtime, so
+  XCTest execution remains unavailable locally.

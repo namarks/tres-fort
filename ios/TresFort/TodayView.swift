@@ -468,7 +468,7 @@ private struct TodayWorkoutView: View {
                 laterality: ex.exercise_laterality ?? "bilateral",
                 loadMode: ex.exercise_load_mode ?? "total",
                 demoSlug: ex.exercise_demo_slug,
-                jwt: auth.jwt
+                jwt: auth.featureJWT
             )
         }
     }
@@ -720,7 +720,7 @@ private struct RunnerView: View {
                     laterality: ex.exercise_laterality ?? "bilateral",
                     loadMode: ex.exercise_load_mode ?? "total",
                     demoSlug: ex.exercise_demo_slug,
-                    jwt: auth.jwt
+                    jwt: auth.featureJWT
                 )
             }
         }

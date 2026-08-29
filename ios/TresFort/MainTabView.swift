@@ -68,14 +68,14 @@ struct MainTabView: View {
         .task {
             guard let initiatingUserID = auth.userID else { return }
             await auth.checkAppleCredentialState()
-            guard auth.jwt != nil, auth.userID == initiatingUserID else { return }
+            guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
             // Renew before the first authenticated pull when the fixed-expiry
             // app JWT is within its seven-day window. Offline failure is soft;
             // an expired/revoked bearer moves AuthModel to reauthentication.
             await auth.renewSessionIfNeeded()
-            guard auth.jwt != nil, auth.userID == initiatingUserID else { return }
+            guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
             await sync.load()
-            guard auth.jwt != nil, auth.userID == initiatingUserID else { return }
+            guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
             // Register the HealthKit observer + run an incremental sync if the
             // user has connected Apple Health (no-op otherwise). Anchored
             // foreground sync is the source of truth (background delivery is
@@ -91,15 +91,15 @@ struct MainTabView: View {
                 Task {
                     guard let initiatingUserID = auth.userID else { return }
                     await auth.checkAppleCredentialState()
-                    guard auth.jwt != nil, auth.userID == initiatingUserID else { return }
+                    guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     await auth.renewSessionIfNeeded()
-                    guard auth.jwt != nil, auth.userID == initiatingUserID else { return }
+                    guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     await groupModel.drainOutbox()
-                    guard auth.jwt != nil, auth.userID == initiatingUserID else { return }
+                    guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     if let gid = groupModel.selectedGroupID {
                         await groupModel.refreshGroup(groupID: gid)
                     }
-                    guard auth.jwt != nil, auth.userID == initiatingUserID else { return }
+                    guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     // Pull any workouts recorded while we were backgrounded.
                     await health.sync()
                 }

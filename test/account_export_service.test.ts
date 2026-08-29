@@ -41,9 +41,14 @@ describe('account export projection', () => {
       ).bind(caller.id, callerSecret),
       env.DB.prepare(
         `INSERT INTO exercises
-           (id,name,primary_muscle,unit,created_at)
-         VALUES (?1,'Export Lift','legs','lb',?2)`,
+           (id,name,primary_muscle,unit,aliases,created_at)
+         VALUES (?1,'Export Lift','legs','lb','["export lift alias"]',?2)`,
       ).bind(exerciseId, ts),
+      env.DB.prepare(
+        `INSERT INTO exercises
+           (id,name,primary_muscle,unit,created_at)
+         VALUES (?1,'Unreferenced Lift','back','lb',?2)`,
+      ).bind(`unreferenced-exercise-${suffix}`, ts),
       env.DB.prepare(
         `INSERT INTO plans
            (id,user_id,name,status,version,created_at,updated_at)
@@ -108,6 +113,12 @@ describe('account export projection', () => {
       plans: Array<{ id: string }>;
       day_templates: Array<{ id: string }>;
       template_exercises: Array<{ id: string }>;
+      exercises: Array<{
+        id: string;
+        name: string;
+        unit: string;
+        aliases: string;
+      }>;
       sessions: Array<{ id: string }>;
       set_logs: Array<{ id: string }>;
     };
@@ -118,6 +129,14 @@ describe('account export projection', () => {
     expect(training.day_templates.map((row) => row.id)).toEqual([dayId]);
     expect(training.template_exercises.map((row) => row.id)).toEqual([
       templateExerciseId,
+    ]);
+    expect(training.exercises).toEqual([
+      expect.objectContaining({
+        id: exerciseId,
+        name: 'Export Lift',
+        unit: 'lb',
+        aliases: '["export lift alias"]',
+      }),
     ]);
     expect(training.sessions.map((row) => row.id)).toEqual([sessionId]);
     expect(training.set_logs.map((row) => row.id)).toEqual([setId]);

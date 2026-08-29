@@ -93,8 +93,10 @@ exact-head verification, and closes the plan.
   a surviving member is never promoted by fallback. The iOS client clears only
   the initiating account's local namespace after success—even if the user
   switched accounts while waiting—and preserves the session, deletion key, and
-  retry-capable bearer after a lost response. An authoritative deletion 401
-  abandons the unrecognized retry key and transitions to ordinary reauthentication.
+  retry-capable bearer after a lost response. An authoritative deletion 401 or
+  a 404 for a key that cannot match the durable receipt abandons the
+  unrecognized retry key and transitions to ordinary reauthentication, avoiding
+  a permanent pending state after deletion on another device.
 - P1(b) stores Apple's credential identifier from the local Sign in with Apple
   result and checks it on launch/foreground. Revoked, missing, or transferred
   credentials are handled without crossing account namespaces: revoked or
@@ -108,9 +110,13 @@ exact-head verification, and closes the plan.
 - Profile-name repair trims and validates a 1–80 UTF-16-unit value, updates only
   the authenticated user, and audits the changed field without copying the name
   into audit arguments.
+- The dormant portability projection includes only catalog exercises referenced
+  by the caller's templates or logged sets, including their names, units,
+  modalities, muscles, and aliases, so its exercise identifiers remain
+  independently interpretable without exposing unrelated catalog rows.
 - Verification at this milestone: the full Workers suite passes 395/395, the
   TypeScript compiler and plan compiler pass, iOS device sources compile, the
-  simulator module and XCTest source typecheck, including stale renewal, stale
+  app module and XCTest source typecheck, including stale renewal, stale
   Apple-credential callback, account-switch-during-deletion, durable owner
   recovery, and lost-response retry/bearer coverage. The standalone production
   AuthModel harness passes Apple

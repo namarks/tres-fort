@@ -721,6 +721,35 @@ final class AuthModelTests: XCTestCase {
         XCTAssertEqual(model.phase, .signedOut)
     }
 
+    func testUnknownDeletionReceiptAbandonsPendingStateAndRequiresReauth() async {
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        defaults.set(
+            "receipt-from-this-device",
+            forKey: AccountLocalState.accountDeletionKey(userID: "user-a"))
+        let tokens = MemoryTokenStore(sessionToken(for: "user-a"))
+        let api = AuthAPIStub()
+        api.deletionResult = .failure(APIError.http(404, "not_found"))
+        let model = AuthModel(api: api, tokenStore: tokens, defaults: defaults)
+
+        XCTAssertTrue(model.accountDeletionPending)
+        do {
+            try await model.deleteAccount()
+            XCTFail("unknown deletion receipt unexpectedly succeeded")
+        } catch {
+            // The account may have been deleted from another device. This
+            // device cannot replay that receipt and must leave pending mode.
+        }
+
+        XCTAssertFalse(model.accountDeletionPending)
+        XCTAssertNil(defaults.string(
+            forKey: AccountLocalState.accountDeletionKey(userID: "user-a")))
+        XCTAssertNil(model.jwt)
+        XCTAssertNil(tokens.token)
+        XCTAssertEqual(model.userID, "user-a")
+        XCTAssertEqual(model.phase, .signedOut)
+    }
+
     func testDeletionCompletionAfterAccountSwitchOnlyClearsInitiatingAccount() async {
         let defaults = defaults()
         defaults.set("user-a", forKey: AuthModel.userIDKey)

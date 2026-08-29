@@ -1275,6 +1275,23 @@ export async function exportUserData(
     )
     .bind(userId)
     .all();
+  const exercises = await db
+    .prepare(
+      `SELECT e.* FROM exercises e
+       WHERE e.id IN (
+         SELECT te.exercise_id FROM template_exercises te
+         JOIN day_templates d ON d.id = te.day_template_id
+         JOIN plans p ON p.id = d.plan_id
+         WHERE p.user_id = ?1
+         UNION
+         SELECT sl.exercise_id FROM set_logs sl
+         JOIN sessions s ON s.id = sl.session_id
+         WHERE s.user_id = ?1
+       )
+       ORDER BY e.name, e.id`,
+    )
+    .bind(userId)
+    .all();
   const aliases = await db
     .prepare(
       `SELECT sa.* FROM session_aliases sa
@@ -1332,6 +1349,7 @@ export async function exportUserData(
       plans: plans.results,
       day_templates: days.results,
       template_exercises: templateExercises.results,
+      exercises: exercises.results,
       sessions: sessions.results,
       set_logs: sets.results,
       session_aliases: aliases.results,

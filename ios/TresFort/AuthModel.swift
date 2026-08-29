@@ -325,16 +325,18 @@ final class AuthModel: ObservableObject {
             response = try await api.deleteAccount(
                 jwt: token,
                 idempotencyKey: idempotencyKey)
-        } catch let APIError.http(code, _) where code == 401 {
+        } catch let APIError.http(code, body) where code == 401 || code == 404 {
             // A key-bound receipt retry is accepted even after the account row
-            // is gone. An authoritative 401 therefore means this bearer/key
-            // pair cannot complete the deletion and ordinary reauth is needed.
+            // is gone. An authoritative 401 or a 404 receipt mismatch therefore
+            // means this bearer/key pair cannot complete the deletion and
+            // ordinary reauthentication is needed. Other failures preserve the
+            // key and bearer so an uncertain request can be retried exactly.
             defaults.removeObject(forKey: deletionKeyName)
             if userID == accountID {
                 accountDeletionPending = false
                 requireReauthentication()
             }
-            throw APIError.http(401, "missing_session")
+            throw APIError.http(code, body)
         }
         guard response.ok else {
             throw APIError.decoding("account deletion was not acknowledged")

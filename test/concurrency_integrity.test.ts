@@ -319,8 +319,11 @@ describe('0029 duplicate-session reconciliation', () => {
     const lateLoser = `${suffix}-c`;
     const exportWinner = `${suffix}-d`;
     const exportLoser = `${suffix}-e`;
+    const movedExportWinner = `${suffix}-f`;
+    const movedExportLoser = `${suffix}-g`;
     const date = '2038-02-03';
     const exportDate = '2038-02-04';
+    const movedExportDate = '2038-02-05';
 
     await env.DB.prepare('DROP INDEX ux_session_user_date').run();
     const sessionInsert = (id: string, sessionDate: string, createdAt: number) =>
@@ -337,6 +340,8 @@ describe('0029 duplicate-session reconciliation', () => {
       sessionInsert(lateLoser, date, 200),
       sessionInsert(exportWinner, exportDate, 300),
       sessionInsert(exportLoser, exportDate, 400),
+      sessionInsert(movedExportWinner, movedExportDate, 500),
+      sessionInsert(movedExportLoser, movedExportDate, 600),
     ]);
 
     const setInsert = (
@@ -365,9 +370,23 @@ describe('0029 duplicate-session reconciliation', () => {
         .prepare(
           `INSERT INTO session_load_exports
            (session_id,intervals_ref,load,status,attempts,updated_at)
+           VALUES (?1,NULL,50,'disabled',4,600)`,
+        )
+        .bind(exportWinner),
+      env.DB
+        .prepare(
+          `INSERT INTO session_load_exports
+           (session_id,intervals_ref,load,status,attempts,updated_at)
            VALUES (?1,'usable-ref',100,'ok',1,500)`,
         )
         .bind(exportLoser),
+      env.DB
+        .prepare(
+          `INSERT INTO session_load_exports
+           (session_id,intervals_ref,load,status,attempts,updated_at)
+           VALUES (?1,'moved-ref',125,'ok',2,700)`,
+        )
+        .bind(movedExportLoser),
     ]);
 
     const migration = (
@@ -397,15 +416,38 @@ describe('0029 duplicate-session reconciliation', () => {
       { id: deleted, session_id: winner, set_index: 1, deleted_at: 999 },
     ]);
 
-    const movedExport = await env.DB
+    const retainedExport = await env.DB
       .prepare('SELECT * FROM session_load_exports WHERE session_id = ?1')
       .bind(exportWinner)
-      .first<{ session_id: string; intervals_ref: string }>();
-    expect(movedExport?.intervals_ref).toBe('usable-ref');
+      .first<{
+        session_id: string;
+        intervals_ref: string;
+        load: number;
+        status: string;
+        attempts: number;
+      }>();
+    expect(retainedExport).toMatchObject({
+      intervals_ref: 'usable-ref',
+      load: 100,
+      status: 'ok',
+      attempts: 1,
+    });
     expect(
       await env.DB
         .prepare('SELECT * FROM session_load_exports WHERE session_id = ?1')
         .bind(exportLoser)
+        .first(),
+      ).toBeNull();
+
+    const movedExport = await env.DB
+      .prepare('SELECT * FROM session_load_exports WHERE session_id = ?1')
+      .bind(movedExportWinner)
+      .first<{ session_id: string; intervals_ref: string }>();
+    expect(movedExport?.intervals_ref).toBe('moved-ref');
+    expect(
+      await env.DB
+        .prepare('SELECT * FROM session_load_exports WHERE session_id = ?1')
+        .bind(movedExportLoser)
         .first(),
     ).toBeNull();
 

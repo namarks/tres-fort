@@ -87,9 +87,12 @@ WHERE deleted_at IS NOT NULL
   );
 
 -- session_load_exports is keyed by session_id, so a duplicate group may have
--- several ledgers but its canonical session can retain only one. An existing
--- canonical ledger always wins. Otherwise move the deterministic best loser:
--- a usable intervals reference first, then status=ok, newest update, stable id.
+-- several ledgers but its canonical session can retain only one. Rank every
+-- ledger regardless of which session currently owns it: a usable intervals
+-- reference first, then status=ok, newest update, stable id. If the canonical
+-- row is present but worse, copy the best payload onto it before deleting the
+-- redundant rows. This prevents an unusable canonical ledger from shadowing a
+-- usable loser ledger.
 WITH session_map AS (
   SELECT
     id AS source_session_id,
@@ -104,9 +107,78 @@ ranked_exports AS (
   SELECT
     sle.session_id AS source_session_id,
     sm.target_session_id,
-    MAX(
-      CASE WHEN sle.session_id = sm.target_session_id THEN 1 ELSE 0 END
-    ) OVER (PARTITION BY sm.target_session_id) AS target_has_export,
+    sle.intervals_ref,
+    sle.load,
+    sle.status,
+    sle.attempts,
+    sle.updated_at,
+    ROW_NUMBER() OVER (
+      PARTITION BY sm.target_session_id
+      ORDER BY
+        CASE WHEN sle.intervals_ref IS NOT NULL THEN 1 ELSE 0 END DESC,
+        CASE WHEN sle.status = 'ok' THEN 1 ELSE 0 END DESC,
+        sle.updated_at DESC,
+        sle.session_id
+    ) AS preference_rank
+  FROM session_load_exports AS sle
+  JOIN session_map AS sm ON sm.source_session_id = sle.session_id
+  WHERE sm.session_count > 1
+)
+UPDATE session_load_exports
+SET
+  intervals_ref = (
+    SELECT intervals_ref
+    FROM ranked_exports
+    WHERE ranked_exports.target_session_id = session_load_exports.session_id
+      AND preference_rank = 1
+  ),
+  load = (
+    SELECT load
+    FROM ranked_exports
+    WHERE ranked_exports.target_session_id = session_load_exports.session_id
+      AND preference_rank = 1
+  ),
+  status = (
+    SELECT status
+    FROM ranked_exports
+    WHERE ranked_exports.target_session_id = session_load_exports.session_id
+      AND preference_rank = 1
+  ),
+  attempts = (
+    SELECT attempts
+    FROM ranked_exports
+    WHERE ranked_exports.target_session_id = session_load_exports.session_id
+      AND preference_rank = 1
+  ),
+  updated_at = (
+    SELECT updated_at
+    FROM ranked_exports
+    WHERE ranked_exports.target_session_id = session_load_exports.session_id
+      AND preference_rank = 1
+  )
+WHERE session_id IN (
+  SELECT target_session_id
+  FROM ranked_exports
+  WHERE preference_rank = 1
+    AND source_session_id <> target_session_id
+);
+
+-- If the canonical session had no ledger at all, move the ranked winner onto
+-- it. Groups handled by the copy above now have a canonical row and are skipped.
+WITH session_map AS (
+  SELECT
+    id AS source_session_id,
+    FIRST_VALUE(id) OVER (
+      PARTITION BY user_id, date
+      ORDER BY created_at, id
+    ) AS target_session_id,
+    COUNT(*) OVER (PARTITION BY user_id, date) AS session_count
+  FROM sessions
+),
+ranked_exports AS (
+  SELECT
+    sle.session_id AS source_session_id,
+    sm.target_session_id,
     ROW_NUMBER() OVER (
       PARTITION BY sm.target_session_id
       ORDER BY
@@ -128,8 +200,13 @@ SET session_id = (
 WHERE session_id IN (
   SELECT source_session_id
   FROM ranked_exports
-  WHERE target_has_export = 0
-    AND preference_rank = 1
+  WHERE preference_rank = 1
+    AND source_session_id <> target_session_id
+    AND NOT EXISTS (
+      SELECT 1
+      FROM session_load_exports AS canonical_export
+      WHERE canonical_export.session_id = ranked_exports.target_session_id
+    )
 );
 
 -- Remove every remaining loser ledger. The row moved above now has the target

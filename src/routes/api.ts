@@ -64,9 +64,9 @@ const isNonEmptyString: FieldRule = (value) =>
 const isFiniteNumber: FieldRule = (value) =>
   typeof value === 'number' && Number.isFinite(value);
 const isNonNegativeInteger: FieldRule = (value) =>
-  Number.isInteger(value) && (value as number) >= 0;
+  Number.isSafeInteger(value) && (value as number) >= 0;
 const isPositiveInteger: FieldRule = (value) =>
-  Number.isInteger(value) && (value as number) > 0;
+  Number.isSafeInteger(value) && (value as number) > 0;
 const isNullableString: FieldRule = (value) =>
   value === null || typeof value === 'string';
 const isNullableFiniteNumber: FieldRule = (value) =>

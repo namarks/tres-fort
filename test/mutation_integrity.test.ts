@@ -189,6 +189,32 @@ describe('REST session and set bodies are runtime-validated before writes', () =
       await env.DB.prepare('SELECT id FROM set_logs WHERE id = ?1').bind(malformedSetId).first(),
     ).toBeNull();
 
+    // Number.isInteger(1e100) is true, but SQLite stores that magnitude as
+    // REAL even in INTEGER-affinity columns. Reject it before it can break
+    // Swift's Int decoding of the entire /api/state set delta.
+    const oversizedSetId = crypto.randomUUID();
+    const oversizedSet = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        id: oversizedSetId,
+        exercise_id: 'ex_bench',
+        set_index: 1e100,
+        weight: 225,
+        reps: 1e100,
+        logged_at: 1e100,
+        duration_s: 1e100,
+      }),
+    });
+    expect(oversizedSet.status).toBe(400);
+    expect(await oversizedSet.json()).toEqual({
+      error: 'invalid_fields',
+      fields: ['set_index', 'reps', 'logged_at', 'duration_s'],
+    });
+    expect(
+      await env.DB.prepare('SELECT id FROM set_logs WHERE id = ?1').bind(oversizedSetId).first(),
+    ).toBeNull();
+
     const validSetId = crypto.randomUUID();
     const validSet = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
       method: 'POST',
@@ -233,6 +259,7 @@ describe('REST session and set bodies are runtime-validated before writes', () =
       }>;
     }>();
     expect(state.sets.some((set) => set.id === malformedSetId)).toBe(false);
+    expect(state.sets.some((set) => set.id === oversizedSetId)).toBe(false);
     const returned = state.sets.find((set) => set.id === validSetId);
     expect(returned).toBeDefined();
     expect(Number.isInteger(returned?.set_index)).toBe(true);

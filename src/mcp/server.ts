@@ -431,13 +431,10 @@ const TOOLS: Record<string, Tool> = {
             weight: Number(a.weight),
             reps: Number(a.reps),
             is_warmup: isWarmup,
+            set_index: requestedSetIndex,
+            duration_s: requestedDuration,
           });
-      const isCrossChannelDuplicate =
-        recent != null &&
-        recent.source !== 'mcp' &&
-        (requestedSetIndex == null || requestedSetIndex === recent.set_index) &&
-        (requestedDuration == null || requestedDuration === recent.duration_s);
-      if (recent && isCrossChannelDuplicate && a.confirm_duplicate !== true) {
+      if (recent && a.confirm_duplicate !== true) {
         const ageS = Math.max(0, Math.round((Date.now() - recent.logged_at) / 1000));
         return {
           error: 'recent_duplicate',

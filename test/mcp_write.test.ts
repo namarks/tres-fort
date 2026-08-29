@@ -1065,15 +1065,19 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
       .run();
     const insertIosSet = env.DB.prepare(
       `INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,deleted_at)
-       VALUES (?1,?2,'ex_back_squat',NULL,?3,?4,5,NULL,0,NULL,?5,'ios',30,NULL)`,
+       VALUES (?1,?2,'ex_back_squat',NULL,?3,?4,5,NULL,0,NULL,?5,'ios',?6,NULL)`,
     );
-    for (const [setIndex, weight] of [
-      [1, 185],
-      [2, 195],
-      [3, 205],
+    for (const [setIndex, weight, loggedAt, duration] of [
+      [1, 185, tNow - 30_000, 30],
+      [2, 195, tNow - 30_000, 30],
+      [3, 205, tNow - 30_000, 30],
+      // Same triple twice: the older row must remain discoverable when an
+      // explicit discriminator matches it but not the newest candidate.
+      [4, 215, tNow - 40_000, 30],
+      [5, 215, tNow - 20_000, 45],
     ]) {
       await insertIosSet
-        .bind(crypto.randomUUID(), sessionId, setIndex, weight, tNow - 30_000)
+        .bind(crypto.randomUUID(), sessionId, setIndex, weight, loggedAt, duration)
         .run();
     }
 
@@ -1100,6 +1104,39 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
       session_date: today,
     });
     expect(sameDay.error).toBe('recent_duplicate');
+
+    // The newest same-triple row differs, but an older recent iOS row still
+    // matches each supplied discriminator and must not be shadowed.
+    const olderIndexMatch = await call('log_set', {
+      exercise: 'squat',
+      weight: 215,
+      reps: 5,
+      set_index: 4,
+    });
+    expect(olderIndexMatch.error).toBe('recent_duplicate');
+    expect(olderIndexMatch.existing_set.set_index).toBe(4);
+
+    const olderDurationMatch = await call('log_set', {
+      exercise: 'squat',
+      weight: 215,
+      reps: 5,
+      duration_s: 30,
+      is_timed: true,
+    });
+    expect(olderDurationMatch.error).toBe('recent_duplicate');
+    expect(olderDurationMatch.existing_set.duration_s).toBe(30);
+
+    const trulyDistinct = await call('log_set', {
+      exercise: 'squat',
+      weight: 215,
+      reps: 5,
+      set_index: 21,
+      duration_s: 60,
+      is_timed: true,
+    });
+    expect(trulyDistinct.error).toBeUndefined();
+    expect(trulyDistinct.set.set_index).toBe(21);
+    expect(trulyDistinct.set.duration_s).toBe(60);
 
     // Same triple-but-warmup is NOT considered a dupe of a working set.
     const wu = await call('log_set', {

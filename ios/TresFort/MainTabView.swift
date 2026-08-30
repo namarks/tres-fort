@@ -9,6 +9,7 @@ struct MainTabView: View {
     @StateObject private var sync: SyncModel
     @StateObject private var groupModel: GroupModel
     @StateObject private var health: HealthKitSyncModel
+    @StateObject private var setConnectivity: SetConnectivityMonitor
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var showActivitySheet = false
@@ -28,6 +29,7 @@ struct MainTabView: View {
         let sync = SyncModel(auth: auth)
         let groupModel = GroupModel(auth: auth)
         let health = HealthKitSyncModel(auth: auth)
+        let setConnectivity = SetConnectivityMonitor()
         // Bridge group-side activity writes to the personal calendar here in
         // init — NOT in `.task` — so the closure is set before GroupTabView's
         // own `.task { groupModel.load() }` can drain the outbox on launch.
@@ -40,9 +42,13 @@ struct MainTabView: View {
         // which ride /api/state — so a completed sync must refresh the personal
         // calendar/agenda just like a manual activity does.
         health.onActivitiesPersisted = { [weak sync] in await sync?.load() }
+        setConnectivity.onSatisfiedTransition = { [weak sync] in
+            Task { await sync?.drainSetOutbox() }
+        }
         _sync = StateObject(wrappedValue: sync)
         _groupModel = StateObject(wrappedValue: groupModel)
         _health = StateObject(wrappedValue: health)
+        _setConnectivity = StateObject(wrappedValue: setConnectivity)
     }
 
     var body: some View {
@@ -74,6 +80,8 @@ struct MainTabView: View {
             // an expired/revoked bearer moves AuthModel to reauthentication.
             await auth.renewSessionIfNeeded()
             guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
+            await sync.drainSetOutbox()
+            guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
             await sync.load()
             guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
             // Register the HealthKit observer + run an incremental sync if the
@@ -93,6 +101,8 @@ struct MainTabView: View {
                     await auth.checkAppleCredentialState()
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     await auth.renewSessionIfNeeded()
+                    guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
+                    await sync.drainSetOutbox()
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     await groupModel.drainOutbox()
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }

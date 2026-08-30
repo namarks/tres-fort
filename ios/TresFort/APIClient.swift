@@ -125,8 +125,13 @@ struct APIClient {
         return try await post("api/sessions", body: body, jwt: jwt)
     }
 
-    /// Idempotent on `id` — safe to retry after a flaky gym connection.
-    func logSet(sessionId: String, body: [String: Any], jwt: String) async throws -> SetLogResult {
+    /// Idempotent on the immutable body's `id`. The typed body prevents a
+    /// retry from accidentally minting a new UUID or tap timestamp.
+    func logSet(
+        sessionId: String,
+        body: SetRequestBody,
+        jwt: String
+    ) async throws -> SetLogResult {
         try await post("api/sessions/\(sessionId)/sets", body: body, jwt: jwt)
     }
 
@@ -217,6 +222,23 @@ struct APIClient {
         return try await send(req)
     }
 
+    /// Typed JSON-body variant used by the durable set writer. Keep this
+    /// overload narrow: other endpoints intentionally retain their existing
+    /// dictionary construction for explicit-null/omitted-field semantics.
+    func post<T: Decodable, Body: Encodable>(
+        _ path: String,
+        body: Body,
+        jwt: String?
+    ) async throws -> T {
+        var req = URLRequest(url: URL(string: baseURL.absoluteString + "/" + path)!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let jwt { req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization") }
+        req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
+        req.httpBody = try JSONEncoder().encode(body)
+        return try await send(req)
+    }
+
     func patch<T: Decodable>(_ path: String, body: [String: Any], jwt: String) async throws -> T {
         var req = URLRequest(url: URL(string: baseURL.absoluteString + "/" + path)!)
         req.httpMethod = "PATCH"
@@ -277,3 +299,33 @@ protocol AuthAPI {
 }
 
 extension APIClient: AuthAPI {}
+
+/// Only the three calls required to settle a set intent are injectable. The
+/// rest of SyncModel continues using APIClient directly, avoiding a broad sync
+/// abstraction while making persist-before-network and retry identity testable.
+@MainActor
+protocol SetWriteAPI {
+    func createSession(
+        date: String,
+        dayTemplateID: String?,
+        jwt: String
+    ) async throws -> SessionRow
+    func logSet(
+        sessionId: String,
+        body: SetRequestBody,
+        jwt: String
+    ) async throws -> APIClient.SetLogResult
+    func getState(jwt: String) async throws -> StateResponse
+}
+
+extension APIClient: SetWriteAPI {}
+
+/// Narrow terminal-session seam used only to prove the P0 exclusion between
+/// destructive/completing session mutations and new set persistence.
+@MainActor
+protocol WorkoutTerminalAPI {
+    func completeSession(sessionId: String, jwt: String) async throws -> SessionRow
+    func discardSession(sessionId: String, jwt: String) async throws -> SessionRow
+}
+
+extension APIClient: WorkoutTerminalAPI {}

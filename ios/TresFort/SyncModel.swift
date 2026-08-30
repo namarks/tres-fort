@@ -21,6 +21,13 @@ final class SyncModel: ObservableObject {
     @Published var selectedDayID: String?
     @Published var loadError: String?
     @Published var isLoading = false
+    /// Durable set intents are separate from acknowledged `sets`. Publishing
+    /// the account queue makes relaunch state visible on Today even when the
+    /// workout runner is not mounted.
+    @Published private(set) var setOutbox: SetOutbox
+    @Published private(set) var sendingSetIntentIDs: Set<String> = []
+    @Published private(set) var setSlotsInFlight: Set<String> = []
+    @Published private(set) var isTerminalMutationInFlight = false
 
     // Rest timer (local Live Activity arrives in milestone g).
     @Published var restEndDate: Date?
@@ -48,12 +55,34 @@ final class SyncModel: ObservableObject {
     @Published var timedStartDate: Date?    // wall-clock start of the hold
 
     private let api = APIClient()
+    private let setWriteAPI: any SetWriteAPI
+    private let terminalAPI: any WorkoutTerminalAPI
     private unowned let auth: AuthModel
     private let accountID: String?
+    private let defaults: UserDefaults
+    private let uuidFactory: () -> UUID
+    private let now: () -> Date
+    private var isDrainingSetOutbox = false
+    private var setDrainRequested = false
+    private var setDrainWaiters: [CheckedContinuation<Void, Never>] = []
 
-    init(auth: AuthModel) {
+    init(
+        auth: AuthModel,
+        setWriteAPI: any SetWriteAPI = APIClient(),
+        terminalAPI: any WorkoutTerminalAPI = APIClient(),
+        defaults: UserDefaults = .standard,
+        uuidFactory: @escaping () -> UUID = UUID.init,
+        now: @escaping () -> Date = Date.init
+    ) {
         self.auth = auth
         self.accountID = auth.userID
+        self.setWriteAPI = setWriteAPI
+        self.terminalAPI = terminalAPI
+        self.defaults = defaults
+        self.uuidFactory = uuidFactory
+        self.now = now
+        self.setOutbox = SetOutboxStore.load(
+            userID: auth.userID, defaults: defaults)
     }
 
     /// Bind every request to the account that created this model. An old
@@ -69,13 +98,22 @@ final class SyncModel: ObservableObject {
         return auth.featureJWT == jwt
     }
 
+    /// Set callbacks may complete after a same-account token renewal, so JWT
+    /// equality is intentionally not part of this generation check. Account
+    /// switch, sign-out, and deletion do invalidate it and must never recreate
+    /// the old account's cleared queue.
+    private var canMutateBoundSetAccount: Bool {
+        guard let accountID, auth.userID == accountID else { return false }
+        return !auth.accountDeletionPending
+    }
+
     var todayString: String {
         let f = DateFormatter()
         f.calendar = Calendar(identifier: .gregorian)
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = .current
         f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: Date())
+        return f.string(from: now())
     }
 
     var selectedDay: DayTemplate? {
@@ -102,13 +140,14 @@ final class SyncModel: ObservableObject {
     /// Apply a full `/api/state` response atomically at the cache boundary.
     /// `getState` always uses zero watermarks, so every collection is a full
     /// replacement rather than a delta merge.
-    private func replaceState(with state: StateResponse, preferredTodaySessionID: String? = nil) {
+    func replaceState(with state: StateResponse, preferredTodaySessionID: String? = nil) {
         let previousSelectedDayID = selectedDayID
         let runnerWasActive = running
         let activeSlotID = activeRunnerSlotID()
         plan = state.plan
         sets = state.sets
         sessions = state.sessions
+        reconcileSetOutboxWithServerSets()
         // The server returns the full current non-deleted external_events set;
         // defensively drop any tombstones so calendar surfaces never see them.
         rides = state.external_events.filter { !$0.isDeleted }
@@ -224,16 +263,18 @@ final class SyncModel: ObservableObject {
         } else {
             sets.append(committedSet)
         }
-        todaySession = canonicalSession
-        reconcileSelection(
-            previousSelectedDayID: previousSelectedDayID,
-            activeSlotID: activeSlotID,
-            runnerWasActive: runnerWasActive)
-        // A missing/different echoed slot means update_plan rebuilt or removed
-        // the submitted slot. Preserve the committed set, but never continue
-        // executing a server-invalid cached plan or invite another tap.
-        if committedSet.template_exercise_id != submittedSlotID {
-            stopRunnerForStateChange()
+        if staleSession.date == todayString {
+            todaySession = canonicalSession
+            reconcileSelection(
+                previousSelectedDayID: previousSelectedDayID,
+                activeSlotID: activeSlotID,
+                runnerWasActive: runnerWasActive)
+            // A missing/different echoed slot means update_plan rebuilt or
+            // removed today's submitted slot. A past-date outbox drain must
+            // not disturb the currently running workout.
+            if committedSet.template_exercise_id != submittedSlotID {
+                stopRunnerForStateChange()
+            }
         }
     }
 
@@ -418,82 +459,415 @@ final class SyncModel: ObservableObject {
         .sorted { $0.date < $1.date }
     }
 
+    var pendingSetIntentCount: Int { setOutbox.count }
+    var failedSetIntentCount: Int {
+        setOutbox.pending.filter { $0.deliveryState == .failed }.count
+    }
+    var queuedSetIntentCount: Int {
+        setOutbox.pending.filter {
+            $0.deliveryState == .queued && !sendingSetIntentIDs.contains($0.id)
+        }.count
+    }
+    var sendingSetIntentCount: Int { sendingSetIntentIDs.count }
+
+    func pendingSetIntents(for ex: TemplateExercise) -> [PendingSetIntent] {
+        let date = todaySession?.date ?? todayString
+        return setOutbox.pending.filter {
+            $0.date == date && $0.slotID == ex.id
+        }
+    }
+
+    func isSetSending(slotID: String) -> Bool {
+        if isTerminalMutationInFlight { return true }
+        if setSlotsInFlight.contains(slotID) { return true }
+        return setOutbox.pending.contains {
+            $0.slotID == slotID && sendingSetIntentIDs.contains($0.id)
+        }
+    }
+
+    /// Terminal workout mutations are P1, but P0 must not let an acknowledged
+    /// discard/finish erase the session context that queued set retries need.
+    var hasPendingSetsForCurrentWorkout: Bool {
+        let date = todaySession?.date ?? todayString
+        return setOutbox.pending.contains { $0.date == date }
+    }
+
+    private func persistEnqueuedSetIntent(_ intent: PendingSetIntent) {
+        guard canMutateBoundSetAccount else { return }
+        SetOutboxStore.enqueue(
+            intent, userID: accountID, defaults: defaults)
+    }
+
+    private func persistReplacedSetIntent(_ intent: PendingSetIntent) {
+        guard canMutateBoundSetAccount else { return }
+        SetOutboxStore.replace(
+            intent, userID: accountID, defaults: defaults)
+    }
+
+    private func persistRemovedSetIntentIDs(_ ids: Set<String>) {
+        guard canMutateBoundSetAccount else { return }
+        SetOutboxStore.remove(
+            ids: ids, userID: accountID, defaults: defaults)
+    }
+
+    /// A full state pull is also authoritative acknowledgement of an exact
+    /// client UUID. This closes the commit-then-timeout window when an ordinary
+    /// refresh wins the race with the retry drain and prevents double-counting
+    /// one physical set as both completed and pending.
+    private func reconcileSetOutboxWithServerSets() {
+        guard canMutateBoundSetAccount else { return }
+        let serverIDs = Set(sets.map(\.id))
+        let acknowledgedPendingIDs = Set(
+            setOutbox.pending.lazy.map(\.id).filter(serverIDs.contains))
+        guard !acknowledgedPendingIDs.isEmpty else { return }
+        for id in acknowledgedPendingIDs { setOutbox.remove(id: id) }
+        persistRemovedSetIntentIDs(acknowledgedPendingIDs)
+    }
+
+    /// Explicitly re-arm one permanent 4xx failure. The request body remains
+    /// byte-for-byte equivalent under Codable and retains its original UUID.
+    func retrySetIntent(id: String) async {
+        guard canMutateBoundSetAccount,
+              var intent = setOutbox.pending.first(where: { $0.id == id }),
+              intent.deliveryState == .failed
+        else { return }
+        intent.deliveryState = .queued
+        intent.failedHTTPStatus = nil
+        setOutbox.replace(intent)
+        persistReplacedSetIntent(intent)
+        await drainSetOutbox()
+    }
+
+    func retryFailedSetIntents() async {
+        guard canMutateBoundSetAccount else { return }
+        var changed = false
+        for var intent in setOutbox.pending where intent.deliveryState == .failed {
+            intent.deliveryState = .queued
+            intent.failedHTTPStatus = nil
+            setOutbox.replace(intent)
+            persistReplacedSetIntent(intent)
+            changed = true
+        }
+        guard changed else { return }
+        await drainSetOutbox()
+    }
+
     @discardableResult
     func logSet(_ ex: TemplateExercise, weight: Double, reps: Int,
                 durationOverride: Int? = nil) async -> Bool {
-        guard let jwt = currentJWT else { return false }
-        do {
-            if todaySession == nil {
-                // Tie the lazily-created session to the day template the
-                // runner is executing so the calendar/agenda resolve it as
-                // that workout. `day_template_id` is part of the EXISTING
-                // POST /api/sessions contract; getOrCreateSession is
-                // idempotent per (user, date) — this is a one-off `sessions`
-                // write, never a `plans.meta.schedule` mutation.
-                todaySession = try await api.createSession(
-                    date: todayString,
-                    dayTemplateID: selectedDay?.id,
-                    jwt: jwt)
+        guard currentJWT != nil, canMutateBoundSetAccount,
+              !isTerminalMutationInFlight,
+              !setSlotsInFlight.contains(ex.id)
+        else { return false }
+
+        // This guard is published before the first await, so two Tasks created
+        // by a rapid double tap cannot both mint intents for the same slot.
+        setSlotsInFlight.insert(ex.id)
+        defer { setSlotsInFlight.remove(ex.id) }
+
+        // Index per SLOT. Pending (queued OR visibly failed) intents reserve
+        // their index so intentional offline sets remain distinct; completion
+        // still counts acknowledged `SetLog` rows only.
+        let nextIndex = todaySlotSets(ex).count + pendingSetIntents(for: ex).count + 1
+        let body = SetRequestBody(
+            id: uuidFactory().uuidString,
+            exercise_id: ex.exercise_id,
+            template_exercise_id: ex.id,
+            set_index: nextIndex,
+            weight: weight,
+            reps: reps,
+            is_warmup: ex.isWarmup,
+            logged_at: Int((now().timeIntervalSince1970 * 1_000).rounded(.down)),
+            duration_s: durationOverride,
+            is_timed: ex.isTimed)
+        let intent = PendingSetIntent(
+            body: body,
+            date: todaySession?.date ?? todayString,
+            dayTemplateID: selectedDay?.id,
+            resolvedSessionID: todaySession?.id,
+            deliveryState: .queued,
+            failedHTTPStatus: nil)
+
+        // No network await may occur above this save. A failed/lost session
+        // create therefore leaves the complete intent available on relaunch.
+        setOutbox.enqueue(intent)
+        persistEnqueuedSetIntent(intent)
+
+        await drainSetOutbox()
+        guard canMutateBoundSetAccount else { return false }
+        let acknowledged = !setOutbox.pending.contains(where: { $0.id == body.id })
+            && sets.contains(where: { $0.id == body.id })
+        if acknowledged && running {
+            startRest(seconds: ex.rest_seconds, name: ex.exercise_name)
+        }
+        return acknowledged
+    }
+
+    private enum SetSendOutcome {
+        case acknowledged(setID: String, canonicalSessionID: String, date: String)
+        case permanentFailure
+        case transientFailure(attemptedJWT: String, wasUnauthorized: Bool)
+        case staleAccount
+    }
+
+    /// All launch/foreground/connectivity/tap triggers converge here. A second
+    /// caller waits for the active drain instead of starting another POST loop.
+    func drainSetOutbox() async {
+        guard currentJWT != nil, canMutateBoundSetAccount, !setOutbox.isEmpty else {
+            return
+        }
+        if isDrainingSetOutbox {
+            // Remember the trigger, not just its waiter. If the active request
+            // is about to report a transient failure, this may be the launch,
+            // foreground, or connectivity recovery signal that makes one more
+            // immediate pass worthwhile.
+            setDrainRequested = true
+            await withCheckedContinuation { continuation in
+                setDrainWaiters.append(continuation)
             }
-            guard let session = todaySession else { return false }
-            // Index per SLOT, not per exercise_id, so two slots of the same
-            // movement number independently (#3). The backend re-numbers on a
-            // (session, exercise_id, set_index, is_warmup) collision, so a
-            // shared exercise_id can't drop a set.
-            let nextIndex = todaySlotSets(ex).count + 1
-            var body: [String: Any] = [
-                "id": UUID().uuidString,
-                "exercise_id": ex.exercise_id,
-                // Link the set to its plan slot so completion/chips key on the
-                // slot (the #3 fix) and a warm-up slot's set inherits is_warmup
-                // server-side.
-                "template_exercise_id": ex.id,
-                "set_index": nextIndex,
-                "weight": weight,
-                "reps": reps,
-            ]
-            // A warm-up slot's sets are warm-ups: kept out of working-set
-            // rollups / session RPE. (The backend also infers this from the
-            // slot, but stating it keeps the local cache correct pre-reload.)
-            if ex.isWarmup { body["is_warmup"] = true }
-            // Only timed holds (planks) record a duration. Rep sets must NOT —
-            // previously every set stored wall-clock seconds since it began,
-            // which then rendered as the set's value for bodyweight lifts, so
-            // pull-ups read "31s" instead of reps. #30
-            if let durationOverride { body["duration_s"] = durationOverride }
-            // Declare the slot's timed-ness so the backend stores an
-            // authoritative per-set flag (migration 0024); history/agenda
-            // render off it rather than re-deriving from catalog modality.
-            body["is_timed"] = ex.isTimed
-            let res = try await api.logSet(sessionId: session.id, body: body, jwt: jwt)
-            if res.set.session_id == session.id {
-                if !sets.contains(where: { $0.id == res.set.id }) { sets.append(res.set) }
-            } else {
-                // Migration 0029 can leave an old client holding a duplicate
-                // session id that now aliases to the canonical row. The write
-                // succeeds against that canonical row and the response exposes
-                // its id. Reload before the runner evaluates completion so the
-                // session and set caches switch together; appending just the set
-                // would leave todaySlotSets filtering it out by the stale id.
+            return
+        }
+
+        isDrainingSetOutbox = true
+        // An intent can be persisted while this owner is awaiting the final
+        // reconciliation pull. Re-check the queue before releasing waiters so
+        // that trigger coalesces into this same serialized drain instead of
+        // being stranded until some later lifecycle/network event.
+        while canMutateBoundSetAccount, currentJWT != nil {
+            setDrainRequested = false
+            let stoppedForRetryableFailure = await performSetOutboxDrain()
+            if stoppedForRetryableFailure && !setDrainRequested { break }
+            guard setOutbox.pending.contains(where: {
+                $0.deliveryState == .queued
+            }) else { break }
+        }
+        isDrainingSetOutbox = false
+        let waiters = setDrainWaiters
+        setDrainWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+    }
+
+    /// Returns true only when another immediate pass would repeat a transient
+    /// failure (or would cross an account boundary). A normal empty-queue exit
+    /// returns false so the owner can coalesce work that arrived during its
+    /// reconciliation await.
+    private func performSetOutboxDrain() async -> Bool {
+        var acknowledgedIDs: [String] = []
+        var preferredSessionID: String?
+        var stoppedForRetryableFailure = false
+
+        while canMutateBoundSetAccount,
+              let intent = setOutbox.pending.first(where: {
+                  $0.deliveryState == .queued
+              }) {
+            let outcome = await sendPersistedSetIntent(intent)
+            switch outcome {
+            case let .acknowledged(setID, canonicalSessionID, date):
+                acknowledgedIDs.append(setID)
+                if date == todayString { preferredSessionID = canonicalSessionID }
+            case .permanentFailure:
+                // Keep the failed row visible and continue with later FIFO
+                // entries; retrying it later still reuses its exact body.
+                continue
+            case let .transientFailure(attemptedJWT, wasUnauthorized):
+                // A stale-token 401 can race same-account renewal. If renewal
+                // already installed a replacement token, retry immediately;
+                // otherwise stop and retain every queued intent.
+                if wasUnauthorized,
+                   let latestJWT = currentJWT,
+                   latestJWT != attemptedJWT,
+                   canMutateBoundSetAccount {
+                    continue
+                }
+                stoppedForRetryableFailure = true
+                break
+            case .staleAccount:
+                stoppedForRetryableFailure = true
+                break
+            }
+
+            if case .transientFailure = outcome { break }
+            if case .staleAccount = outcome { break }
+        }
+
+        guard !acknowledgedIDs.isEmpty,
+              canMutateBoundSetAccount,
+              let jwt = currentJWT
+        else { return stoppedForRetryableFailure }
+        do {
+            let state = try await setWriteAPI.getState(jwt: jwt)
+            guard canMutateBoundSetAccount else { return true }
+            let returnedIDs = Set(state.sets.map(\.id))
+            guard acknowledgedIDs.allSatisfy(returnedIDs.contains) else {
+                throw APIError.decoding(
+                    "Acknowledged set was missing from the reconciliation state")
+            }
+            replaceState(
+                with: state,
+                preferredTodaySessionID: preferredSessionID)
+            loadError = nil
+        } catch {
+            guard canMutateBoundSetAccount else { return true }
+            // The acknowledgement itself remains authoritative and is already
+            // reflected locally. A later full sync will reconcile the cache.
+            handle(error, jwt: jwt)
+        }
+        return stoppedForRetryableFailure
+    }
+
+    private func sendPersistedSetIntent(_ original: PendingSetIntent) async -> SetSendOutcome {
+        guard canMutateBoundSetAccount, currentJWT != nil else {
+            return .staleAccount
+        }
+        sendingSetIntentIDs.insert(original.id)
+        defer { sendingSetIntentIDs.remove(original.id) }
+
+        var intent = original
+        let session: SessionRow
+        if let sessionID = intent.resolvedSessionID {
+            session = sessions.first(where: { $0.id == sessionID })
+                ?? SessionRow(
+                    id: sessionID,
+                    date: intent.date,
+                    status: "in_progress",
+                    day_template_id: intent.dayTemplateID)
+        } else {
+            guard let jwt = currentJWT else { return .staleAccount }
+            let createdSession: SessionRow
+            do {
+                createdSession = try await setWriteAPI.createSession(
+                    date: intent.date,
+                    dayTemplateID: intent.dayTemplateID,
+                    jwt: jwt)
+            } catch {
+                // update_plan may rebuild every day UUID while this offline
+                // intent is unresolved. A rejected persisted association must
+                // not poison the FIFO forever: clear only that stale optional
+                // FK, persist before the fallback await, and let the date's
+                // canonical session preserve the set itself.
+                guard intent.dayTemplateID != nil,
+                      isPermanentSetClientError(error),
+                      canMutateBoundSetAccount,
+                      let fallbackJWT = currentJWT
+                else {
+                    return classifySetIntentFailure(
+                        intentID: intent.id,
+                        error: error,
+                        attemptedJWT: jwt)
+                }
+                intent.dayTemplateID = nil
+                setOutbox.replace(intent)
+                persistReplacedSetIntent(intent)
                 do {
-                    let state = try await api.getState(jwt: jwt)
-                    guard state.sessions.contains(where: { $0.id == res.set.session_id }) else {
-                        throw APIError.decoding("Logged set's canonical session is missing from state")
-                    }
-                    replaceState(with: state, preferredTodaySessionID: res.set.session_id)
+                    createdSession = try await setWriteAPI.createSession(
+                        date: intent.date,
+                        dayTemplateID: nil,
+                        jwt: fallbackJWT)
                 } catch {
-                    adoptSessionAliasLocally(
-                        staleSession: session,
-                        committedSet: res.set,
-                        submittedSlotID: ex.id)
-                    handle(error, jwt: jwt)
+                    return classifySetIntentFailure(
+                        intentID: intent.id,
+                        error: error,
+                        attemptedJWT: fallbackJWT)
                 }
             }
-            if running { startRest(seconds: ex.rest_seconds, name: ex.exercise_name) }
-            return true
+            guard canMutateBoundSetAccount else { return .staleAccount }
+            session = createdSession
+            intent.resolvedSessionID = session.id
+            setOutbox.replace(intent)
+            persistReplacedSetIntent(intent)
+            upsertSessionAfterCreate(session)
+        }
+
+        // The original body was persisted before session creation, and the
+        // resolved session id is persisted above before this POST await.
+        guard let jwt = currentJWT else { return .staleAccount }
+        do {
+            let result = try await setWriteAPI.logSet(
+                sessionId: session.id,
+                body: intent.body,
+                jwt: jwt)
+            guard canMutateBoundSetAccount else { return .staleAccount }
+            guard result.set.id == intent.id else {
+                throw APIError.decoding(
+                    "Set acknowledgement did not match the persisted intent")
+            }
+            applySetAcknowledgement(
+                result,
+                intent: intent,
+                submittedSession: session)
+            setOutbox.remove(id: intent.id)
+            persistRemovedSetIntentIDs(Set([intent.id]))
+            return .acknowledged(
+                setID: result.set.id,
+                canonicalSessionID: result.set.session_id,
+                date: intent.date)
         } catch {
-            handle(error, jwt: jwt)
-            return false
+            return classifySetIntentFailure(
+                intentID: intent.id, error: error, attemptedJWT: jwt)
+        }
+    }
+
+    private func classifySetIntentFailure(
+        intentID: String,
+        error: Error,
+        attemptedJWT: String
+    ) -> SetSendOutcome {
+        guard canMutateBoundSetAccount else { return .staleAccount }
+        if isPermanentSetClientError(error),
+           case let APIError.http(code, _) = error {
+            if var intent = setOutbox.pending.first(where: { $0.id == intentID }) {
+                intent.deliveryState = .failed
+                intent.failedHTTPStatus = code
+                setOutbox.replace(intent)
+                persistReplacedSetIntent(intent)
+            }
+            loadError = "Set wasn't saved because the server rejected it (HTTP \(code))."
+            return .permanentFailure
+        }
+        handle(error, jwt: attemptedJWT)
+        let unauthorized: Bool
+        if case let APIError.http(code, _) = error { unauthorized = code == 401 }
+        else { unauthorized = false }
+        return .transientFailure(
+            attemptedJWT: attemptedJWT,
+            wasUnauthorized: unauthorized)
+    }
+
+    private func isPermanentSetClientError(_ error: Error) -> Bool {
+        guard case let APIError.http(code, _) = error else { return false }
+        return (400..<500).contains(code) && ![401, 408, 429].contains(code)
+    }
+
+    private func upsertSessionAfterCreate(_ session: SessionRow) {
+        guard canMutateBoundSetAccount else { return }
+        if let index = sessions.firstIndex(where: { $0.id == session.id }) {
+            sessions[index] = session
+        } else {
+            sessions.append(session)
+        }
+        if session.date == todayString { todaySession = session }
+    }
+
+    private func applySetAcknowledgement(
+        _ result: APIClient.SetLogResult,
+        intent: PendingSetIntent,
+        submittedSession: SessionRow
+    ) {
+        if result.set.session_id == submittedSession.id {
+            upsertSessionAfterCreate(submittedSession)
+            if let index = sets.firstIndex(where: { $0.id == result.set.id }) {
+                sets[index] = result.set
+            } else {
+                sets.append(result.set)
+            }
+        } else {
+            // Preserve migration-0029 alias healing even when reconciliation
+            // later fails: collapse the stale local session immediately onto
+            // the canonical id echoed by the acknowledged set.
+            adoptSessionAliasLocally(
+                staleSession: submittedSession,
+                committedSet: result.set,
+                submittedSlotID: intent.slotID)
         }
     }
 
@@ -506,7 +880,7 @@ final class SyncModel: ObservableObject {
     /// 1-based number of the set about to be performed for the current exercise.
     var currentSetNumber: Int {
         guard let ex = currentExercise else { return 1 }
-        return todaySlotSets(ex).count + 1
+        return todaySlotSets(ex).count + pendingSetIntents(for: ex).count + 1
     }
 
     func startWorkout() {
@@ -536,7 +910,10 @@ final class SyncModel: ObservableObject {
     // MARK: timed exercises (plank, holds)
 
     func startTimedSet() {
-        guard let ex = currentExercise, ex.isTimed else { return }
+        guard let ex = currentExercise, ex.isTimed,
+              !isTerminalMutationInFlight,
+              !isSetSending(slotID: ex.id)
+        else { return }
         timedActive = true
         let now = Date()
         timedStartDate = now
@@ -664,8 +1041,16 @@ final class SyncModel: ObservableObject {
     }
 
     func finishWorkout() async {
+        guard !isTerminalMutationInFlight else { return }
+        guard !hasPendingSetsForCurrentWorkout else {
+            loadError = "Wait for queued sets to sync before finishing this workout."
+            return
+        }
+        isTerminalMutationInFlight = true
+        defer { isTerminalMutationInFlight = false }
         if let jwt = currentJWT, let sid = todaySession?.id {
-            todaySession = try? await api.completeSession(sessionId: sid, jwt: jwt)
+            todaySession = try? await terminalAPI.completeSession(
+                sessionId: sid, jwt: jwt)
         }
         running = false
         finished = false
@@ -684,8 +1069,16 @@ final class SyncModel: ObservableObject {
     /// the runner/Live Activity don't linger; `load()` then pulls the
     /// vanished state. Restarting the day creates a fresh session.
     func discardWorkout() async {
+        guard !isTerminalMutationInFlight else { return }
+        guard !hasPendingSetsForCurrentWorkout else {
+            loadError = "Retry or resolve queued sets before discarding this workout."
+            return
+        }
+        isTerminalMutationInFlight = true
+        defer { isTerminalMutationInFlight = false }
         if let jwt = currentJWT, let sid = todaySession?.id {
-            _ = try? await api.discardSession(sessionId: sid, jwt: jwt)
+            _ = try? await terminalAPI.discardSession(
+                sessionId: sid, jwt: jwt)
         }
         todaySession = nil
         running = false

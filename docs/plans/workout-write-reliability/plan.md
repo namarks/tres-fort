@@ -1,6 +1,6 @@
 # Workout Write Reliability
 
-Slug: workout-write-reliability · Status: active · Updated: 2026-08-29 · Theme: training-trust
+Slug: workout-write-reliability · Status: gated · Updated: 2026-08-30 · Theme: training-trust
 
 ## Goal
 
@@ -40,19 +40,36 @@ never present a failed write as completed or silently drop the user's intent.
 
 - P0
 
+## Dependencies
+
+| Local phase | Relationship | Target | Reason |
+|---|---|---|---|
+| P0 | gated_by | external:ios-runtime-build-verification | The owner must install an iOS 26.2 simulator runtime or provide an iOS runner so the focused XCTest suite and full app build can execute. |
+
 ## Next step
 
-**Now (@agent):** Implement P0 by adapting the existing activity-outbox pattern
-for set bodies, then verify retry identity and visible failure behavior.
+**Now (@owner):** Install an iOS 26.2 simulator runtime (or provide an iOS
+runner), then have the agent execute the focused set-outbox XCTest suite and a
+full TresFort app build. The P0 implementation and source-level verification
+are complete, but P0 remains open until those runtime gates pass.
 
 ## Notes / open questions
 
 - Source: the August 2026 functionality review at commit `91fd622`; the server's
   client-UUID idempotency contract already exists and should remain the seam.
+- P0 implementation is present on `codex/workout-write-reliability-p0`: an
+  account-scoped durable set-intent queue persists the immutable UUID/body
+  before network work, retries through serialized launch/foreground/connectivity
+  drains, reconciles server acknowledgements, preserves lifecycle boundaries,
+  and renders queued/failed state without counting it as completed. Direct
+  production/module/XCTest source compilation, TypeScript typecheck, all 434
+  Worker tests, and exact-diff review pass. The installed Xcode exposes the iOS
+  SDK but no iOS runtime, so `xcodebuild` cannot select an iOS destination and
+  asset compilation reports `supportedRuntimes=[]`; no XCTest assertion or full
+  app build has executed yet.
 - Set bodies, retry state, and drain behavior remain owned here. Coordinate only
-  the user-keyed namespace and account-switch boundary with the completed
-  [Identity and Account Lifecycle](../completed/identity-account-lifecycle/plan.md)
-  contracts.
+  the user-keyed namespace and account-switch boundary with the completed P0
+  contracts in [Identity and Account Lifecycle](../identity-account-lifecycle/plan.md).
 - Store only the pending request bodies and small UI checkpoint needed for
   recovery. Do not build event sourcing, background-server infrastructure, or a
   new synchronization protocol for this workstream.

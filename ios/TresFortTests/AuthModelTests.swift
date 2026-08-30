@@ -131,6 +131,29 @@ final class AuthModelTests: XCTestCase {
         jwt(expiration: Date.distantFuture, subject: userID)
     }
 
+    private func pendingSetIntent(
+        id: String = UUID().uuidString,
+        slotID: String = "slot-a"
+    ) -> PendingSetIntent {
+        PendingSetIntent(
+            body: SetRequestBody(
+                id: id,
+                exercise_id: "exercise-a",
+                template_exercise_id: slotID,
+                set_index: 1,
+                weight: 100,
+                reps: 5,
+                is_warmup: false,
+                logged_at: 2_000_000_000_000,
+                duration_s: nil,
+                is_timed: false),
+            date: "2026-08-29",
+            dayTemplateID: "day-a",
+            resolvedSessionID: "session-a",
+            deliveryState: .queued,
+            failedHTTPStatus: nil)
+    }
+
     func testLaunchRejectsBearerBoundToDifferentPersistedAccount() {
         let defaults = defaults()
         defaults.set("user-a", forKey: AuthModel.userIDKey)
@@ -396,6 +419,29 @@ final class AuthModelTests: XCTestCase {
         XCTAssertNotNil(model.reauthenticationReason)
         XCTAssertEqual(
             ActivityOutboxStore.load(userID: "user-a", defaults: defaults).count,
+            1)
+    }
+
+    func testReauthenticationAndOrdinarySignOutRetainAccountSetQueue() {
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        var setOutbox = SetOutbox()
+        setOutbox.enqueue(pendingSetIntent())
+        SetOutboxStore.save(setOutbox, userID: "user-a", defaults: defaults)
+        let model = AuthModel(
+            api: AuthAPIStub(),
+            tokenStore: MemoryTokenStore(sessionToken(for: "user-a")),
+            defaults: defaults)
+
+        model.requireReauthentication()
+        XCTAssertEqual(
+            SetOutboxStore.load(userID: "user-a", defaults: defaults).count,
+            1)
+        model.signOut()
+
+        XCTAssertNil(model.userID)
+        XCTAssertEqual(
+            SetOutboxStore.load(userID: "user-a", defaults: defaults).count,
             1)
     }
 
@@ -808,6 +854,12 @@ final class AuthModelTests: XCTestCase {
             logged_at: 2_000_000_000_001))
         ActivityOutboxStore.save(outboxA, userID: "user-a", defaults: defaults)
         ActivityOutboxStore.save(outboxB, userID: "user-b", defaults: defaults)
+        var setOutboxA = SetOutbox()
+        setOutboxA.enqueue(pendingSetIntent(slotID: "slot-a"))
+        var setOutboxB = SetOutbox()
+        setOutboxB.enqueue(pendingSetIntent(slotID: "slot-b"))
+        SetOutboxStore.save(setOutboxA, userID: "user-a", defaults: defaults)
+        SetOutboxStore.save(setOutboxB, userID: "user-b", defaults: defaults)
         defaults.set(Data([1]), forKey: GroupModel.intervalsConnectionKey(userID: "user-a"))
         defaults.set(Data([2]), forKey: GroupModel.intervalsConnectionKey(userID: "user-b"))
         defaults.set(true, forKey: HealthKitSyncModel.enabledKey(userID: "user-a"))
@@ -833,6 +885,10 @@ final class AuthModelTests: XCTestCase {
             ActivityOutboxStore.load(userID: "user-a", defaults: defaults).isEmpty)
         XCTAssertEqual(
             ActivityOutboxStore.load(userID: "user-b", defaults: defaults).count, 1)
+        XCTAssertTrue(
+            SetOutboxStore.load(userID: "user-a", defaults: defaults).isEmpty)
+        XCTAssertEqual(
+            SetOutboxStore.load(userID: "user-b", defaults: defaults).count, 1)
         XCTAssertNil(defaults.data(
             forKey: GroupModel.intervalsConnectionKey(userID: "user-a")))
         XCTAssertEqual(

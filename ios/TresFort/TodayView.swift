@@ -10,6 +10,41 @@ private func clock(_ s: Int) -> String {
 /// Identifies the day whose workout the editor sheet is editing.
 private struct EditDayTarget: Identifiable { let id: String }
 
+private struct PendingSetBanner: View {
+    @ObservedObject var sync: SyncModel
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: sync.failedSetIntentCount > 0
+                ? "exclamationmark.triangle.fill"
+                : "arrow.triangle.2.circlepath")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(sync.failedSetIntentCount > 0
+                    ? Theme.danger : Theme.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(sync.pendingSetIntentCount) SET\(sync.pendingSetIntentCount == 1 ? "" : "S") WAITING TO SYNC")
+                    .font(Theme.mono(10, .bold)).tracking(1)
+                    .foregroundStyle(Theme.text)
+                Text(sync.failedSetIntentCount > 0
+                    ? "\(sync.failedSetIntentCount) failed — retry when ready"
+                    : (sync.sendingSetIntentCount > 0 ? "Sending…" : "Saved on this device"))
+                    .font(Theme.mono(10)).foregroundStyle(Theme.muted)
+            }
+            Spacer()
+            if sync.failedSetIntentCount > 0 {
+                Button("RETRY") {
+                    Task { await sync.retryFailedSetIntents() }
+                }
+                .font(Theme.mono(10, .bold))
+                .foregroundStyle(Theme.accent)
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Theme.surface)
+        .overlay(alignment: .bottom) { Divider().overlay(Theme.surface2) }
+    }
+}
+
 struct TodayView: View {
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
@@ -36,7 +71,12 @@ struct TodayView: View {
         NavigationStack {
             ZStack(alignment: .top) {
                 Theme.background
-                content
+                VStack(spacing: 0) {
+                    if sync.pendingSetIntentCount > 0 {
+                        PendingSetBanner(sync: sync)
+                    }
+                    content
+                }
                 if sync.restEndDate != nil {
                     if restMinimized {
                         RestPill(sync: sync) { restMinimized = false }
@@ -92,9 +132,15 @@ struct TodayView: View {
                             Button("End workout", role: .destructive) {
                                 Task { await sync.finishWorkout() }
                             }
+                            .disabled(
+                                sync.hasPendingSetsForCurrentWorkout
+                                    || sync.isTerminalMutationInFlight)
                             Button("Discard workout", role: .destructive) {
                                 showDiscardConfirm = true
                             }
+                            .disabled(
+                                sync.hasPendingSetsForCurrentWorkout
+                                    || sync.isTerminalMutationInFlight)
                         }
                         Button("Sign out", role: .destructive) { auth.signOut() }
                     } label: { Image(systemName: "ellipsis.circle").foregroundStyle(Theme.muted) }
@@ -381,6 +427,9 @@ private struct WorkoutDoneView: View {
                         .padding(.vertical, 14)
                 }
                 .buttonStyle(.plain)
+                .disabled(
+                    sync.hasPendingSetsForCurrentWorkout
+                        || sync.isTerminalMutationInFlight)
             }
             .padding(16)
         }
@@ -658,9 +707,12 @@ private struct RunnerView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 14))
                         .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
                         .padding(.top, 18)
+                        .disabled(sync.isSetSending(slotID: ex.id))
+                        .opacity(sync.isSetSending(slotID: ex.id) ? 0.55 : 1)
                     }
 
                     completedChips(ex: ex)
+                    pendingSetRows(ex: ex)
 
                     HStack {
                         navBtn("← PREV") { sync.previous() }
@@ -832,6 +884,57 @@ private struct RunnerView: View {
         .padding(.top, 24)
     }
 
+    private func pendingSetRows(ex: TemplateExercise) -> some View {
+        let pending = sync.pendingSetIntents(for: ex)
+        return Group {
+            if !pending.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("PENDING SETS")
+                        .font(Theme.mono(10, .bold)).tracking(2)
+                        .foregroundStyle(Theme.muted)
+                    ForEach(pending) { intent in
+                        let sending = sync.sendingSetIntentIDs.contains(intent.id)
+                        HStack(spacing: 10) {
+                            Image(systemName: sending
+                                ? "arrow.triangle.2.circlepath"
+                                : (intent.deliveryState == .failed
+                                    ? "exclamationmark.triangle.fill"
+                                    : "clock.fill"))
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(intent.deliveryState == .failed
+                                    ? Theme.danger : Theme.accent)
+                            Text(intent.body.is_timed
+                                ? "\(intent.body.duration_s ?? intent.body.reps)s"
+                                : (ex.isBodyweight
+                                    ? "BW × \(intent.body.reps)"
+                                    : "\(fmt(intent.body.weight)) × \(intent.body.reps)"))
+                                .font(Theme.mono(12, .bold))
+                                .foregroundStyle(Theme.text)
+                            Spacer()
+                            Text(sending
+                                ? "SENDING"
+                                : (intent.deliveryState == .failed ? "FAILED" : "QUEUED"))
+                                .font(Theme.mono(10, .bold)).tracking(1)
+                                .foregroundStyle(intent.deliveryState == .failed
+                                    ? Theme.danger : Theme.muted)
+                            if intent.deliveryState == .failed && !sending {
+                                Button("RETRY") {
+                                    Task { await sync.retrySetIntent(id: intent.id) }
+                                }
+                                .font(Theme.mono(10, .bold))
+                                .foregroundStyle(Theme.accent)
+                            }
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 10)
+                        .background(Theme.surface)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                    }
+                }
+                .padding(.top, 16)
+            }
+        }
+    }
+
     private func navBtn(_ t: String, _ a: @escaping () -> Void) -> some View {
         Button(action: a) {
             Text(t).font(Theme.mono(12, .bold)).tracking(1.2)
@@ -957,6 +1060,7 @@ private struct TimedSetView: View {
                 }
                 .background(Theme.surface2).foregroundStyle(Theme.text)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
+                .disabled(sync.isTerminalMutationInFlight)
             } else {
                 Button { sync.startTimedSet() } label: {
                     Text("START SET \(sync.currentSetNumber)")
@@ -966,6 +1070,8 @@ private struct TimedSetView: View {
                 .background(Theme.accent).foregroundStyle(.black)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
+                .disabled(sync.isSetSending(slotID: ex.id))
+                .opacity(sync.isSetSending(slotID: ex.id) ? 0.55 : 1)
             }
         }
         .frame(maxWidth: .infinity)
@@ -1169,6 +1275,9 @@ private struct FinishedView: View {
                 .background(Theme.accent).foregroundStyle(.black)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .padding(.top, 24)
+                .disabled(
+                    sync.hasPendingSetsForCurrentWorkout
+                        || sync.isTerminalMutationInFlight)
             }
             .padding(28)
         }

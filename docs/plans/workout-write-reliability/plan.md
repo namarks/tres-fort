@@ -1,6 +1,6 @@
 # Workout Write Reliability
 
-Slug: workout-write-reliability · Status: gated · Updated: 2026-08-30 · Theme: training-trust
+Slug: workout-write-reliability · Status: active · Updated: 2026-08-30 · Theme: training-trust
 
 ## Goal
 
@@ -11,7 +11,7 @@ never present a failed write as completed or silently drop the user's intent.
 
 ## Phases
 
-- [ ] **P0 — Durable, idempotent set intents**
+- [x] **P0 — Durable, idempotent set intents**
   - Mint one UUID and request body per user tap, persist it before sending, and
     reuse it for every retry so the existing server deduplication can work.
   - Disable duplicate submission while a set is in flight, render queued and
@@ -38,35 +38,28 @@ never present a failed write as completed or silently drop the user's intent.
 
 ## Execution frontier
 
-- P0
-
-## Dependencies
-
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P0 | gated_by | external:ios-runtime-build-verification | The owner must install an iOS 26.2 simulator runtime or provide an iOS runner so the focused XCTest suite and full app build can execute. |
+- P1
 
 ## Next step
 
-**Now (@owner):** Install an iOS 26.2 simulator runtime (or provide an iOS
-runner), then have the agent execute the focused set-outbox XCTest suite and a
-full TresFort app build. The P0 implementation and source-level verification
-are complete, but P0 remains open until those runtime gates pass.
+**Now (@agent):** Implement P1 by persisting workout-finish and discard intents,
+ordering finish behind that session's queued sets, and making discard supersede
+pending set/finish intents while the UI remains queued until server acknowledgement.
 
 ## Notes / open questions
 
 - Source: the August 2026 functionality review at commit `91fd622`; the server's
   client-UUID idempotency contract already exists and should remain the seam.
-- P0 implementation is present on `codex/workout-write-reliability-p0`: an
+- P0 is complete on `codex/workout-write-reliability-p0`: an
   account-scoped durable set-intent queue persists the immutable UUID/body
   before network work, retries through serialized launch/foreground/connectivity
   drains, reconciles server acknowledgements, preserves lifecycle boundaries,
-  and renders queued/failed state without counting it as completed. Direct
-  production/module/XCTest source compilation, TypeScript typecheck, all 434
-  Worker tests, and exact-diff review pass. The installed Xcode exposes the iOS
-  SDK but no iOS runtime, so `xcodebuild` cannot select an iOS destination and
-  asset compilation reports `supportedRuntimes=[]`; no XCTest assertion or full
-  app build has executed yet.
+  and renders queued/failed state without counting it as completed. Xcode 26.3
+  runtime verification on an iPhone 17 Pro simulator (iOS 26.3.1) produced a
+  successful full app build, 23/23 focused `SetOutboxTests`, and 61/61 complete
+  `TresFortTests`; the broader run also exposed and verified a small pre-existing
+  auth-integrity error-label fix. TypeScript typecheck, all 434 Worker tests,
+  direct source compilation, and exact-diff review also pass.
 - Set bodies, retry state, and drain behavior remain owned here. Coordinate only
   the user-keyed namespace and account-switch boundary with the completed P0
   contracts in [Identity and Account Lifecycle](../identity-account-lifecycle/plan.md).

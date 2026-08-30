@@ -223,7 +223,12 @@ final class AuthModel: ObservableObject {
                 authorizationCode: authorizationCode,
                 fullName: fullName)
             guard Self.subject(of: res.jwt) == res.user.id else {
-                throw APIError.decoding("session identity mismatch")
+                // This is an authentication-integrity failure, not malformed
+                // response JSON. Keep the user-facing state specific instead
+                // of routing it through APIError.decoding's "Decode failed"
+                // prefix.
+                phase = .error("session identity mismatch")
+                return
             }
             AccountLocalState.bindLegacyState(
                 userID: res.user.id, defaults: defaults)

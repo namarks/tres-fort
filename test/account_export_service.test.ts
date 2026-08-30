@@ -10,6 +10,42 @@ beforeAll(async () => {
 });
 
 describe('account export projection', () => {
+  it('reads the complete projection through one D1 batch snapshot', async () => {
+    const userId = crypto.randomUUID();
+    const preparedSql: string[] = [];
+    let batchCalls = 0;
+    let batchSize = 0;
+    const fakeDb = {
+      prepare(sql: string) {
+        const statement = {
+          bind(..._values: unknown[]) {
+            preparedSql.push(sql);
+            return statement;
+          },
+        };
+        return statement;
+      },
+      async batch(statements: unknown[]) {
+        batchCalls += 1;
+        batchSize = statements.length;
+        return Array.from({ length: 15 }, (_, index) => ({
+          results: index === 0 ? [{ id: userId }] : [],
+        }));
+      },
+    } as unknown as D1Database;
+
+    const exported = await exportUserData(fakeDb, userId);
+
+    expect(batchCalls).toBe(1);
+    expect(batchSize).toBe(15);
+    expect(preparedSql).toHaveLength(15);
+    expect(exported).toMatchObject({
+      account: { id: userId },
+      training: { plans: [], sessions: [], set_logs: [] },
+      group_memberships: [],
+    });
+  });
+
   it('contains the caller training graph without secrets or another member data', async () => {
     const suffix = crypto.randomUUID();
     const caller = await upsertUser(

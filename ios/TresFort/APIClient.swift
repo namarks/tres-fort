@@ -20,12 +20,20 @@ struct AccountExportFile: Equatable {
 struct APIClient {
     var baseURL = Config.apiBaseURL
 
-    func authApple(identityToken: String, fullName: String?) async throws -> AuthResponse {
-        // Open sign-in: identityToken (required) + optional display name.
+    func authApple(
+        identityToken: String,
+        authorizationCode: String? = nil,
+        fullName: String?
+    ) async throws -> AuthResponse {
+        // Open sign-in: identityToken (required), the short-lived Apple
+        // authorization code when the native UI supplied one, and an optional
+        // display name. The code is sent directly to the Worker for provider
+        // revocation support and is never persisted on-device.
         // Invite redemption is NOT bundled into sign-in — invited users
         // sign in first, then redeem via POST /api/groups/join (see
         // APIClient+Groups.joinGroup).
         var body: [String: Any] = ["identityToken": identityToken]
+        if let authorizationCode { body["authorizationCode"] = authorizationCode }
         if let fullName { body["fullName"] = fullName }
         return try await post("auth/apple", body: body, jwt: nil)
     }
@@ -255,7 +263,11 @@ struct APIClient {
 /// Narrow auth surface injected into AuthModel so expiry, offline renewal,
 /// and same-user recovery are covered without real Apple/network calls.
 protocol AuthAPI {
-    func authApple(identityToken: String, fullName: String?) async throws -> AuthResponse
+    func authApple(
+        identityToken: String,
+        authorizationCode: String?,
+        fullName: String?
+    ) async throws -> AuthResponse
     func renewAppSession(jwt: String) async throws -> SessionRenewalResponse
     func deleteAccount(
         jwt: String,

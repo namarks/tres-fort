@@ -195,7 +195,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 
 | Method · Path | Purpose |
 |---|---|
-| `POST /auth/apple` | Body `{identityToken, authorizationCode, fullName?}` → `{jwt, user}`. Verifies Apple JWT, allowlists owner sub, issues app JWT. |
+| `POST /auth/apple` | Body `{identityToken, authorizationCode?, fullName?}` → `{jwt, user}`. Verifies Apple JWT and resolves the caller. When the native client supplies Apple's single-use code, the route reserves that caller against concurrent deletion, exchanges the code, verifies the returned `id_token` has the same Apple subject, and stores only the caller-scoped refresh token before issuing the app JWT. Storage retains the exact reservation until a second acknowledgement, so a D1 commit whose response is lost can still become sticky revocation uncertainty. Code omission remains compatible with older clients. |
 | `GET /api/state?since=<planVersion>&sets_since=<epochMs>` | **The sync pull.** Returns `{plan: tree|null, sessions[], sets[], server_time}`. `plan` is null when `version <= since`; otherwise the full small tree. sessions/sets are deltas. Called on launch/foreground/post-write. |
 | `GET /api/today` | Today's session (created from today's template if absent) + its sets + per-exercise last-time actuals + suggested weight. |
 | `POST /api/sessions` | `{date, day_template_id?}` → create/start session. |
@@ -205,6 +205,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `GET /api/history?exercise_id=&from=&to=` | Set history + est-1RM (Epley) + top set/session. |
 | `GET /api/volume?muscle=&from=&to=` | Tonnage & hard sets per week bucket. |
 | `GET /api/me/export` | Download the signed caller's portable account and training-data snapshot as a non-cacheable JSON attachment. Excludes credentials, tokens, invite capabilities, and other members' private data. |
+| `DELETE /api/me` | Permanently delete the signed caller after explicit in-app confirmation and recent Apple authentication. A UUID-bound intent serializes provider revocation and local deletion; a durable receipt makes a lost success response safe to acknowledge. The response reports `apple_revocation: revoked|manual_required`; provider failure, legacy accounts without a stored token, or an uncertain exchange never retain local data and instead trigger the manual Apple Account handoff. |
 | `PATCH /api/days/{id}` | `{name?, day_label?, order_index?, notes?}` — inline day rename/reorder. |
 | `POST /api/days/{id}/exercises` | Add an exercise slot (incl. `is_warmup`, `target_duration_s`). |
 | `PATCH /api/days/{id}/exercises/{teId}` | Edit one slot in place (targets / rest / warm-up flag / order). |
@@ -260,10 +261,10 @@ Same identity (you), **two credentials**, one `user_id`. Different threat
 models, lifecycles, and revocation paths → decoupled on purpose.
 
 **iOS → Worker JWT (Sign in with Apple)**
-1. App: `ASAuthorizationAppleIDProvider` → `identityToken` (Apple-signed JWT) + `authorizationCode` + name (first auth only).
-2. `POST /auth/apple`. Worker: fetch/cache Apple JWKS, verify signature + `iss=appleid.apple.com` + `aud=<bundle id>` + `exp`; extract `sub`; **allowlist your sub** (`OWNER_APPLE_SUB` secret) so nobody else can create an account; upsert `users`.
-3. Worker issues an app JWT (HS256, `APP_JWT_SECRET`, `sub=user_id`, ~60-day exp, original `auth_time`) → app stores it in **Keychain**.
-4. Refresh: near expiry, the app exchanges a still-valid bearer for another ~60-day JWT that preserves `auth_time`, capped at a 180-day absolute session lifetime. Expiry, revocation, or that ceiling requires Sign in with Apple again; there is no refresh-token store.
+1. App: `ASAuthorizationAppleIDProvider` → `identityToken` (Apple-signed JWT), a single-use authorization code, a local credential identifier, and name (first auth only). The client requires and forwards the code without persisting it.
+2. `POST /auth/apple`. Worker: fetch/cache Apple JWKS, verify signature + `iss=appleid.apple.com` + `aud=<bundle id>` + `exp`; extract `sub`; resolve or create the corresponding user (with `OWNER_APPLE_SUB` anchoring the distinguished owner when configured). For a supplied code, a durable caller-bound reservation closes the D1 → Apple → D1 race; the Worker exchanges the code and re-verifies the returned subject. Token storage and reservation acknowledgement are separate D1 phases: storage retains the exact reservation, acknowledgement clears it, and any ambiguous store can therefore be marked as sticky uncertainty before deletion proceeds.
+3. Only after that exchange finishes, the Worker issues an app JWT (HS256, `APP_JWT_SECRET`, `sub=user_id`, ~60-day exp, original `auth_time`) → app stores it in **Keychain**. Authentication responses contain only the public user projection.
+4. Refresh: near expiry, the app exchanges a still-valid bearer for another ~60-day JWT that preserves `auth_time`, capped at a 180-day absolute session lifetime. Expiry, revocation, or that ceiling requires Sign in with Apple again. Initial account deletion additionally requires an Apple authentication no more than five minutes old, claims a key-bound intent before provider I/O, and blocks ordinary app/MCP/OAuth credentials until local deletion commits. A known caller refresh token is revoked through Apple; missing configuration/token, provider failure, or prior exchange uncertainty completes local deletion with `manual_required` instead.
 
 **MCP → dual acceptance on `/mcp`** (resolves your "one token? scopes? rate limits?")
 - (a) **OAuth 2.1** for claude.ai/desktop custom connectors — a minimal in-Worker provider (`src/oauth.ts`). The `/oauth/authorize` step is gated by a passphrase: the **owner** uses `OWNER_AUTH_PASSPHRASE`, any other user a personal MCP passphrase (PBKDF2-SHA256, per-user salt) set via `POST /api/me/mcp-passphrase`. On match it binds that `user_id` into the auth code and issues short-lived access tokens (also carrying the `user_id`) the Worker validates.

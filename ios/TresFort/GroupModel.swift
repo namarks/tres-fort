@@ -120,6 +120,15 @@ final class GroupModel: ObservableObject {
         return auth.featureJWT == jwt
     }
 
+    /// A same-user session renewal changes the bearer but not the account
+    /// generation this model owns. Use this for the result of an already-sent
+    /// activity request; reserve the exact-token check above for deciding
+    /// whether a 401 may invalidate the current bearer.
+    private var isCurrentAccountGeneration: Bool {
+        guard let accountID, auth.userID == accountID else { return false }
+        return auth.featureJWT != nil
+    }
+
     private func persistActivity(
         _ pending: PendingActivity,
         jwt: String
@@ -135,12 +144,8 @@ final class GroupModel: ObservableObject {
         defaults: UserDefaults = .standard
     ) -> IntervalsConnection? {
         guard let userID else { return nil }
+        AccountLocalState.bindLegacyState(userID: userID, defaults: defaults)
         let key = intervalsConnectionKey(userID: userID)
-        if defaults.data(forKey: key) == nil,
-           let legacy = defaults.data(forKey: legacyIntervalsConnectionKey) {
-            defaults.set(legacy, forKey: key)
-            defaults.removeObject(forKey: legacyIntervalsConnectionKey)
-        }
         guard let data = defaults.data(forKey: key), !data.isEmpty else { return nil }
         return try? JSONDecoder().decode(IntervalsConnection.self, from: data)
     }
@@ -482,7 +487,7 @@ final class GroupModel: ObservableObject {
         }
         do {
             _ = try await persistActivity(pending, jwt: jwt)
-            guard isCurrentAccount(using: jwt) else { return }
+            guard isCurrentAccountGeneration else { return }
             // Success — remove from outbox if we had previously enqueued
             // it on a prior attempt (no-op if not present).
             outbox.remove(id: pending.id)
@@ -499,7 +504,7 @@ final class GroupModel: ObservableObject {
             // must surface on the day it happened regardless of group.
             await onActivityPersisted?()
         } catch let APIError.http(code, _) where (400..<500).contains(code) && code != 401 {
-            guard isCurrentAccount(using: jwt) else { return }
+            guard isCurrentAccountGeneration else { return }
             // Validation failure → roll back the optimistic insert and
             // surface the error. 401 falls through to same-user reauthentication.
             if let gid = selectedGroupID {
@@ -507,7 +512,7 @@ final class GroupModel: ObservableObject {
             }
             lastError = "Couldn't save activity (server rejected it)."
         } catch {
-            guard isCurrentAccount(using: jwt) else { return }
+            guard isCurrentAccountGeneration else { return }
             // Network failure (incl. 5xx) → enqueue; the optimistic row
             // stays visible. Surface a soft hint.
             enqueue(pending)

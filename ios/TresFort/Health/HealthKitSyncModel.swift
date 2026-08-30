@@ -73,7 +73,7 @@ final class HealthKitSyncModel: ObservableObject {
         self.accountID = auth.userID
         self.defaults = defaults
         if let userID = auth.userID {
-            Self.migrateLegacyState(userID: userID, defaults: defaults)
+            AccountLocalState.bindLegacyState(userID: userID, defaults: defaults)
             self.enabled = defaults.bool(forKey: Self.enabledKey(userID: userID))
         } else {
             self.enabled = false
@@ -88,21 +88,6 @@ final class HealthKitSyncModel: ObservableObject {
     private func isCurrentAccount(using jwt: String) -> Bool {
         guard let accountID, auth.userID == accountID else { return false }
         return auth.featureJWT == jwt
-    }
-
-    private static func migrateLegacyState(userID: String, defaults: UserDefaults) {
-        let scopedEnabled = enabledKey(userID: userID)
-        if defaults.object(forKey: scopedEnabled) == nil,
-           defaults.object(forKey: legacyEnabledKey) != nil {
-            defaults.set(defaults.bool(forKey: legacyEnabledKey), forKey: scopedEnabled)
-            defaults.removeObject(forKey: legacyEnabledKey)
-        }
-        let scopedAnchor = anchorKey(userID: userID)
-        if defaults.data(forKey: scopedAnchor) == nil,
-           let legacyAnchor = defaults.data(forKey: legacyAnchorKey) {
-            defaults.set(legacyAnchor, forKey: scopedAnchor)
-            defaults.removeObject(forKey: legacyAnchorKey)
-        }
     }
 
     // MARK: - Read scope

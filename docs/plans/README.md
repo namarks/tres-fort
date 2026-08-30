@@ -82,10 +82,9 @@ and `feeds` for informational direction.
 
 ## The roadmap — current plans by theme
 
-The trust-critical plan marked **active** is the current execution frontier.
-Every other current plan is **planned**: visible for sequencing and validation,
-but not executable until explicitly activated. This keeps the review actionable
-without starting many workstreams at once.
+Plans marked **active** are current execution frontiers. Other current plans
+show their exact **gated**, **paused**, or **planned** state and are not eligible
+until their named authority, evidence, or activation condition is satisfied.
 
 ### Training trust (`training-trust`)
 
@@ -94,6 +93,9 @@ recoverable before adding product depth.
 
 - [Workout write reliability](workout-write-reliability/plan.md) — **active**;
   make offline and interrupted workout writes durable and recoverable.
+- [Identity and account lifecycle](identity-account-lifecycle/plan.md) —
+  **gated**; the tested Sign in with Apple revocation path is implemented, while
+  owner-managed signing credentials and live provider/deployment proof remain.
 - [Reversible plan management](reversible-plan-management/plan.md) —
   **planned**; make coach and manual plan changes inspectable and reversible.
 

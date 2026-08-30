@@ -5,7 +5,11 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env, HonoEnv } from './types';
-import { ensureOwnerUser, findUserByMcpPassphrase } from './db';
+import {
+  ensureOwnerUser,
+  findUserByMcpPassphrase,
+  isAccountDeletionInProgress,
+} from './db';
 
 const ACCESS_TTL = 60 * 60 * 24 * 30; // 30 days
 const CODE_TTL_MS = 10 * 60 * 1000; // 10 min
@@ -33,7 +37,10 @@ async function s256(verifier: string): Promise<string> {
 export async function validateBearer(env: Env, token: string): Promise<string | null> {
   if (!token) return null;
   if (env.MCP_STATIC_TOKEN && token === env.MCP_STATIC_TOKEN) {
-    return (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB))?.id ?? null;
+    const owner = await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB);
+    return owner && !(await isAccountDeletionInProgress(env.DB, owner.id))
+      ? owner.id
+      : null;
   }
   const row = await env.DB.prepare(
     'SELECT user_id, expires_at FROM oauth_tokens WHERE access_token = ?1',
@@ -47,6 +54,10 @@ export async function validateBearer(env: Env, token: string): Promise<string | 
         `SELECT 1 AS x FROM users
           WHERE id = ?1
             AND NOT EXISTS (
+                  SELECT 1 FROM account_deletion_intents
+                   WHERE user_id = ?1
+                )
+            AND NOT EXISTS (
                   SELECT 1 FROM account_deletion_receipts
                    WHERE user_id = ?1
                 )`,
@@ -55,7 +66,10 @@ export async function validateBearer(env: Env, token: string): Promise<string | 
       .first<{ x: number }>();
     return principal ? row.user_id : null;
   }
-  return (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB))?.id ?? null;
+  const owner = await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB);
+  return owner && !(await isAccountDeletionInProgress(env.DB, owner.id))
+    ? owner.id
+    : null;
 }
 
 export const oauthRoutes = new Hono<HonoEnv>();
@@ -217,10 +231,26 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
       401,
     );
   }
+  if (await isAccountDeletionInProgress(c.env.DB, userId)) {
+    return c.html(
+      consentPage(params, 'That account is being deleted and cannot be connected.'),
+      401,
+    );
+  }
 
   const code = rand();
-  await c.env.DB.prepare(
-    'INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, code_challenge_method, scope, resource, expires_at, created_at, user_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)',
+  const inserted = await c.env.DB.prepare(
+    `INSERT INTO oauth_codes
+       (code, client_id, redirect_uri, code_challenge, code_challenge_method,
+        scope, resource, expires_at, created_at, user_id)
+     SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10
+      WHERE EXISTS (SELECT 1 FROM users WHERE id = ?10)
+        AND NOT EXISTS (
+              SELECT 1 FROM account_deletion_intents WHERE user_id = ?10
+            )
+        AND NOT EXISTS (
+              SELECT 1 FROM account_deletion_receipts WHERE user_id = ?10
+            )`,
   )
     .bind(
       code,
@@ -235,6 +265,12 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
       userId,
     )
     .run();
+  if (inserted.meta.changes !== 1) {
+    return c.html(
+      consentPage(params, 'That account is being deleted and cannot be connected.'),
+      401,
+    );
+  }
   const url = new URL(params.redirect_uri);
   url.searchParams.set('code', code);
   if (params.state) url.searchParams.set('state', params.state);
@@ -249,6 +285,12 @@ async function issueTokens(
   scope: string,
   userId: string | null,
 ) {
+  // Pre-M3 codes/tokens carried no principal. Resolve those to the current
+  // owner before issuing the replacement so the same intent/receipt guards
+  // apply and the newly minted row is no longer legacy-unscoped.
+  const effectiveUserId =
+    userId ?? (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB))?.id ?? null;
+  if (!effectiveUserId) return null;
   const access = rand();
   const refresh = rand();
   const nowSec = Math.floor(Date.now() / 1000);
@@ -256,20 +298,23 @@ async function issueTokens(
     `INSERT INTO oauth_tokens
        (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id)
      SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
-      WHERE (
-        ?7 IS NOT NULL
-        AND EXISTS (SELECT 1 FROM users WHERE id = ?7)
+      WHERE EXISTS (SELECT 1 FROM users WHERE id = ?7)
+        AND NOT EXISTS (
+              SELECT 1 FROM account_deletion_intents WHERE user_id = ?7
+            )
         AND NOT EXISTS (
               SELECT 1 FROM account_deletion_receipts WHERE user_id = ?7
-            )
-      ) OR (
-        ?7 IS NULL
-        AND NOT EXISTS (
-              SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
-            )
-      )`,
+            )`,
   )
-    .bind(access, refresh, clientId, scope, nowSec + ACCESS_TTL, nowSec, userId)
+    .bind(
+      access,
+      refresh,
+      clientId,
+      scope,
+      nowSec + ACCESS_TTL,
+      nowSec,
+      effectiveUserId,
+    )
     .run();
   if (inserted.meta.changes !== 1) return null;
   return {

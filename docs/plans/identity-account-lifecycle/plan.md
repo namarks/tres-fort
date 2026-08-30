@@ -1,6 +1,6 @@
 # Identity and Account Lifecycle
 
-Slug: identity-account-lifecycle · Status: done · Archived: completed · Updated: 2026-08-29 · Theme: training-trust
+Slug: identity-account-lifecycle · Status: gated · Updated: 2026-08-30 · Theme: training-trust
 
 ## Goal
 
@@ -44,12 +44,49 @@ iOS verification.
       authorization, updating and auditing only the authenticated caller.
     - Store the credential identifier supplied locally by Sign in with Apple;
       do not add a backend identity-data egress solely to migrate older installs.
+- [ ] **P2 — Exact-head repair and provider authorization revocation**
+  - [x] **(a) Lifecycle integrity and destructive-auth repair**
+    - Make exports one transactional D1 snapshot and make invite redemption
+      atomic with its membership and audit writes.
+    - Require recent authentication for an initial account deletion while
+      preserving receipt-backed retries, and clear the correct local account
+      after deletion completed on another device.
+    - Bind legacy local state before bearer validation, tolerate same-account
+      token renewal for in-flight activity/export work, and make bootstrap
+      owner claiming compare-and-swap safe.
+    - Return only the public user projection from authentication so database
+      credentials and passphrase hashes cannot leak in a sign-in response.
+    - Give the user a truthful manual Apple-grant revocation handoff whenever
+      provider revocation cannot be confirmed.
+  - [x] **(b) Programmatic Sign in with Apple token revocation**
+    - Transmit and validate Apple's single-use authorization code, retain only
+      the caller-scoped refresh token needed for revocation, and revoke it when
+      the user deletes the account.
+    - Preserve local-data deletion when Apple is unavailable, return a durable
+      revocation outcome for receipt retries, and keep the manual handoff as the
+      fail-safe for existing accounts without a stored token.
+  - [ ] **(c) Owner-provisioned live revocation proof**
+    - Verify the token exchange and deletion-time revoke flow with owner-managed
+      Apple client-signing credentials before deployment or release.
+
+## Execution frontier
+
+- P2(c)
+
+## Dependencies
+
+| Local phase | Relationship | Target | Reason |
+|---|---|---|---|
+| P2(c) | gated_by | external:apple-sign-in-revocation-credentials | The owner must provision the Apple Team ID, key ID, and private signing key directly through the deployment secret surface. |
+| P2(c) | gated_by | external:deployment-authorization | Live provider proof requires separately authorized deployment; merge alone is not production authority. |
 
 ## Next step
 
-No further executable step. The owner authorized a direct authenticated download
-for the signed account only; public links, automatic third-party sharing, merge,
-and deployment were not authorized or performed during closeout.
+**Now (@owner):** Provision the Apple Team ID, key ID, and private signing key
+directly through the deployment secret surface, then separately authorize the
+controlled P2(c) live provider proof and deployment. Do not send credentials to
+an agent, apply migration `0031`, delete a real account, merge, or deploy under
+the completed P2(b) implementation authority.
 
 ## Notes / open questions
 
@@ -89,11 +126,12 @@ and deployment were not authorized or performed during closeout.
   switched accounts while waiting—and preserves the session, deletion key, and
   retry-capable bearer after a lost response. A signature-verified expired
   bearer is accepted only for the exact deletion endpoint and only when its
-  subject plus the high-entropy key match an already-committed receipt; it
-  cannot initiate deletion or access another feature. An authoritative deletion
-  401 or a 404 for a key that cannot match the durable receipt abandons the
-  unrecognized retry key and transitions to ordinary reauthentication, avoiding
-  a permanent pending state after deletion on another device.
+  subject plus the high-entropy key match an already-claimed intent or committed
+  receipt; it cannot initiate deletion or access another feature. An authoritative deletion
+  401 abandons an unrecognized retry key and transitions to ordinary
+  reauthentication. A receipt-mismatch 404 after explicit deletion confirmation
+  means another device already deleted the account, so iOS clears only that
+  account's scoped local state and signs it out if it is still current.
 - P1(b) stores Apple's credential identifier from the local Sign in with Apple
   result and checks it on launch/foreground. Revoked, missing, or transferred
   credentials are handled without crossing account namespaces: revoked or
@@ -121,9 +159,37 @@ and deployment were not authorized or performed during closeout.
   bearer subject is the sole principal, the JSON attachment is non-cacheable,
   and the Profile action saves through the system Files picker without creating
   a public link or app-managed third-party transfer. A response is discarded if
-  the app changes accounts while it is downloading, and ordinary feature access
-  remains disabled while account deletion is pending.
-- Verification at closeout: the full Workers suite passes 400/400, and the
+  the app changes accounts while it is downloading, while same-account token
+  renewal remains safe; ordinary feature access stays disabled while account
+  deletion is pending.
+- The exact-head review after the prior closeout found four additional integrity
+  faults and two security gaps. P2(a) now makes the export read transactionally,
+  closes deletion/invite and bootstrap-claim races, requires a five-minute
+  destructive-auth freshness window, repairs cross-device cleanup and legacy
+  migration ownership, and prevents same-account renewal from dropping pending
+  activity or export work. The post-deletion flow also tells users how to revoke
+  the Apple grant manually when the server cannot confirm it. Programmatic Apple
+  token exchange/revocation is complete under deterministic injected-provider
+  coverage; no Apple private signing material is committed or handled by agents.
+- P2(b) reserves each supplied authorization-code exchange against concurrent
+  deletion, re-verifies Apple's returned subject, and stores only the caller's
+  refresh token. Storage retains the exact reservation until a second
+  acknowledgement; even a D1 commit whose result is lost can therefore be
+  marked sticky before deletion proceeds. Exchange uncertainty remains sticky
+  across later sign-ins: a fresh exchange blocks deletion, while an ambiguous
+  or stale exchange forces `manual_required` so deletion cannot claim that only
+  an older grant was revoked. `DELETE /api/me` claims its UUID-digest intent
+  before provider I/O, blocks app/MCP/OAuth credentials and already-authenticated
+  invite redemption, persists the first `revoked` or
+  `manual_required` outcome, and copies it into the receipt before transactional
+  local deletion. A matching retry skips Apple; a live different-key collision
+  returns 409 rather than the deletion-specific
+  `{"error":"account_not_found"}` response iOS alone treats as cross-device
+  completion; the Worker's generic `{"error":"not_found"}` fallback preserves
+  local data and the retry credential. Provider failure never retains local
+  data. No Apple request, credential handling,
+  migration application, real-account deletion, merge, or deployment was run.
+- Verification at this gate: the full Workers suite passed 434/434, and the
   TypeScript and plan compilers pass. The full iOS production source typecheck,
   app-module emission, and XCTest source typecheck pass, including stale
   renewal, stale Apple-credential callback, account-switch-during-deletion,

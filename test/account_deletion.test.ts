@@ -1,10 +1,17 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { issueAppJwt } from '../src/auth';
+import { validateBearer } from '../src/oauth';
 import {
+  acknowledgeAppleGrantExchange,
+  beginAppleGrantExchange,
   claimOrCreateOwner,
+  deleteUserAccount,
   ensureOwnerUser,
+  finishAppleGrantExchange,
   findOwnerRow,
+  markAppleGrantExchangeUncertain,
+  storeAppleRefreshToken,
   upsertUserUnlessDeletedOwner,
   upsertUser,
 } from '../src/db';
@@ -233,6 +240,7 @@ describe('DELETE /api/me', () => {
     const deletionResult = await deletion.json<{
       ok: true;
       owner_tombstoned: boolean;
+      apple_revocation: 'revoked' | 'manual_required';
     }>();
 
     // Once deletion has committed, the expired signed bearer plus the exact
@@ -263,6 +271,561 @@ describe('DELETE /api/me', () => {
   it('requires an authenticated app session', async () => {
     const response = await SELF.fetch(`${BASE}/api/me`, { method: 'DELETE' });
     expect(response.status).toBe(401);
+  });
+
+  it('requires recent authentication for an initial deletion but not a receipt retry', async () => {
+    const target = await makeUser('recent-auth');
+    const deletionKey = crypto.randomUUID();
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const oldBearer = await issueAppJwt(target.user.id, 'test-secret', {
+      nowSeconds,
+      authTimeSeconds: nowSeconds - 6 * 60,
+    });
+
+    const staleAttempt = await SELF.fetch(`${BASE}/api/me`, {
+      method: 'DELETE',
+      headers: deletionAuth(oldBearer, deletionKey),
+    });
+    expect(staleAttempt.status).toBe(401);
+    expect(await staleAttempt.json()).toEqual({
+      error: 'reauthentication_required',
+    });
+    expect(await byId('users', 'id', target.user.id)).not.toBeNull();
+
+    const deletion = await SELF.fetch(`${BASE}/api/me`, {
+      method: 'DELETE',
+      headers: deletionAuth(target.jwt, deletionKey),
+    });
+    expect(deletion.status).toBe(200);
+    const deletionResult = await deletion.json();
+
+    // Once the transaction committed, the older still-valid bearer cannot
+    // initiate another deletion; it can only acknowledge this exact receipt.
+    const retry = await SELF.fetch(`${BASE}/api/me`, {
+      method: 'DELETE',
+      headers: deletionAuth(oldBearer, deletionKey),
+    });
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toEqual(deletionResult);
+  });
+
+  it('claims a live intent before provider I/O, blocks other auth, and returns 409 for a different key', async () => {
+    const target = await makeUser('provider-intent');
+    const deletionKey = crypto.randomUUID();
+    const oauthAccess = `intent-access-${crypto.randomUUID()}`;
+    const oauthRefresh = `intent-refresh-${crypto.randomUUID()}`;
+    await env.DB
+      .prepare(
+        `INSERT INTO oauth_tokens
+           (access_token,refresh_token,client_id,scope,expires_at,created_at,user_id)
+         VALUES (?1,?2,'intent-client','mcp',?3,?4,?5)`,
+      )
+      .bind(
+        oauthAccess,
+        oauthRefresh,
+        Math.floor(Date.now() / 1000) + 3600,
+        Math.floor(Date.now() / 1000),
+        target.user.id,
+      )
+      .run();
+    expect(
+      await storeAppleRefreshToken(
+        env.DB,
+        target.user.id,
+        'caller-refresh-token',
+      ),
+    ).toBe(true);
+
+    let releaseProvider!: () => void;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    let providerStarted!: () => void;
+    const providerStart = new Promise<void>((resolve) => {
+      providerStarted = resolve;
+    });
+    let providerCalls = 0;
+    const deletion = deleteUserAccount(
+      env.DB,
+      target.user.id,
+      undefined,
+      deletionKey,
+      {
+        appleConfig: {
+          clientId: 'com.example.tresfort',
+          teamId: 'test-team',
+          keyId: 'test-key',
+          privateKey: 'not-used-by-injected-revoker',
+        },
+        revokeAppleToken: async (_config, token) => {
+          providerCalls += 1;
+          expect(token).toBe('caller-refresh-token');
+          providerStarted();
+          await providerReleased;
+        },
+      },
+    );
+    await providerStart;
+
+    const intent = await byId(
+      'account_deletion_intents',
+      'user_id',
+      target.user.id,
+    );
+    expect(intent?.apple_revocation).toBeNull();
+    expect(await byId('users', 'id', target.user.id)).not.toBeNull();
+
+    // Once claimed, copied app and MCP credentials cannot perform normal work.
+    expect(
+      (await SELF.fetch(`${BASE}/api/me`, { headers: auth(target.jwt) })).status,
+    ).toBe(401);
+    expect(await validateBearer(env, oauthAccess)).toBeNull();
+    await expect(
+      env.DB
+        .prepare(
+          `INSERT INTO oauth_tokens
+             (access_token,refresh_token,client_id,scope,expires_at,created_at,user_id)
+           VALUES (?1,?2,'late-client','mcp',?3,?4,?5)`,
+        )
+        .bind(
+          `late-${crypto.randomUUID()}`,
+          `late-refresh-${crypto.randomUUID()}`,
+          Math.floor(Date.now() / 1000) + 3600,
+          Math.floor(Date.now() / 1000),
+          target.user.id,
+        )
+        .run(),
+    ).rejects.toThrow('deleting_user');
+
+    // This is not cross-device completion: iOS must retain its local state.
+    const collision = await SELF.fetch(`${BASE}/api/me`, {
+      method: 'DELETE',
+      headers: deletionAuth(target.jwt, crypto.randomUUID()),
+    });
+    expect(collision.status).toBe(409);
+    expect(await collision.json()).toEqual({ error: 'conflict' });
+    expect(await byId('users', 'id', target.user.id)).not.toBeNull();
+
+    releaseProvider();
+    expect(await deletion).toEqual({
+      ok: true,
+      owner_tombstoned: true,
+      apple_revocation: 'revoked',
+    });
+    expect(providerCalls).toBe(1);
+
+    // A receipt retry uses the stored outcome and never calls Apple again.
+    expect(
+      await deleteUserAccount(
+        env.DB,
+        target.user.id,
+        undefined,
+        deletionKey,
+        {
+          appleConfig: {
+            clientId: 'com.example.tresfort',
+            teamId: 'test-team',
+            keyId: 'test-key',
+            privateKey: 'not-used-by-injected-revoker',
+          },
+          revokeAppleToken: async () => {
+            providerCalls += 1;
+          },
+        },
+      ),
+    ).toEqual({
+      ok: true,
+      owner_tombstoned: true,
+      apple_revocation: 'revoked',
+    });
+    expect(providerCalls).toBe(1);
+  });
+
+  it('lets an old bearer resume its matching intent and keeps the first persisted provider outcome', async () => {
+    const target = await makeUser('intent-resume');
+    const deletionKey = crypto.randomUUID();
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const oldBearer = await issueAppJwt(target.user.id, 'test-secret', {
+      nowSeconds,
+      authTimeSeconds: nowSeconds - 6 * 60,
+    });
+    expect(
+      await storeAppleRefreshToken(
+        env.DB,
+        target.user.id,
+        'resume-refresh-token',
+      ),
+    ).toBe(true);
+
+    let releaseProvider!: () => void;
+    const providerReleased = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    let providerStarted!: () => void;
+    const providerStart = new Promise<void>((resolve) => {
+      providerStarted = resolve;
+    });
+    const first = deleteUserAccount(
+      env.DB,
+      target.user.id,
+      undefined,
+      deletionKey,
+      {
+        appleConfig: {
+          clientId: 'com.example.tresfort',
+          teamId: 'test-team',
+          keyId: 'test-key',
+          privateKey: 'not-used-by-injected-revoker',
+        },
+        revokeAppleToken: async () => {
+          providerStarted();
+          await providerReleased;
+        },
+      },
+    );
+    await providerStart;
+
+    // The route has no signing credentials in test configuration, so this
+    // matching continuation durably chooses manual_required and finalizes.
+    const resumed = await SELF.fetch(`${BASE}/api/me`, {
+      method: 'DELETE',
+      headers: deletionAuth(oldBearer, deletionKey),
+    });
+    expect(resumed.status).toBe(200);
+    expect(await resumed.json()).toEqual({
+      ok: true,
+      owner_tombstoned: true,
+      apple_revocation: 'manual_required',
+    });
+
+    releaseProvider();
+    // The delayed successful call cannot overwrite the durable first outcome.
+    expect(await first).toEqual({
+      ok: true,
+      owner_tombstoned: true,
+      apple_revocation: 'manual_required',
+    });
+  });
+
+  it('deletes local data and persists manual handoff when Apple revocation fails', async () => {
+    const target = await makeUser('provider-failure');
+    const deletionKey = crypto.randomUUID();
+    await storeAppleRefreshToken(
+      env.DB,
+      target.user.id,
+      'failing-refresh-token',
+    );
+    let calls = 0;
+    const result = await deleteUserAccount(
+      env.DB,
+      target.user.id,
+      undefined,
+      deletionKey,
+      {
+        appleConfig: {
+          clientId: 'com.example.tresfort',
+          teamId: 'test-team',
+          keyId: 'test-key',
+          privateKey: 'not-used-by-injected-revoker',
+        },
+        revokeAppleToken: async () => {
+          calls += 1;
+          throw new Error('offline-provider-failure');
+        },
+      },
+    );
+    expect(result).toEqual({
+      ok: true,
+      owner_tombstoned: true,
+      apple_revocation: 'manual_required',
+    });
+    expect(calls).toBe(1);
+    expect(await byId('users', 'id', target.user.id)).toBeNull();
+    expect(
+      (await byId('account_deletion_receipts', 'user_id', target.user.id))
+        ?.apple_revocation,
+    ).toBe('manual_required');
+  });
+
+  it('blocks deletion while a fresh Apple grant exchange is active', async () => {
+    const target = await makeUser('fresh-exchange');
+    const reservationId = crypto.randomUUID();
+    expect(
+      await beginAppleGrantExchange(
+        env.DB,
+        target.user.id,
+        reservationId,
+      ),
+    ).toBe(true);
+    // A second fresh exchange cannot replace the in-flight owner.
+    expect(
+      await beginAppleGrantExchange(
+        env.DB,
+        target.user.id,
+        crypto.randomUUID(),
+      ),
+    ).toBe(false);
+
+    const routeCollision = await SELF.fetch(`${BASE}/api/me`, {
+      method: 'DELETE',
+      headers: deletionAuth(target.jwt, crypto.randomUUID()),
+    });
+    expect(routeCollision.status).toBe(409);
+    expect(await routeCollision.json()).toEqual({ error: 'conflict' });
+
+    let providerCalls = 0;
+    const result = await deleteUserAccount(
+      env.DB,
+      target.user.id,
+      undefined,
+      crypto.randomUUID(),
+      {
+        appleConfig: {
+          clientId: 'com.example.tresfort',
+          teamId: 'test-team',
+          keyId: 'test-key',
+          privateKey: 'not-used-by-injected-revoker',
+        },
+        revokeAppleToken: async () => {
+          providerCalls += 1;
+        },
+      },
+    );
+    expect(result).toEqual({ error: 'conflict' });
+    expect(providerCalls).toBe(0);
+    expect(await byId('users', 'id', target.user.id)).not.toBeNull();
+    expect(
+      (await byId(
+        'apple_grant_exchange_state',
+        'user_id',
+        target.user.id,
+      ))?.reservation_id,
+    ).toBe(reservationId);
+  });
+
+  it('atomically finishes an exchange so deletion revokes the newest token', async () => {
+    const target = await makeUser('finished-exchange');
+    await storeAppleRefreshToken(env.DB, target.user.id, 'older-refresh-token');
+    const reservationId = crypto.randomUUID();
+    expect(
+      await beginAppleGrantExchange(
+        env.DB,
+        target.user.id,
+        reservationId,
+      ),
+    ).toBe(true);
+    expect(
+      await finishAppleGrantExchange(
+        env.DB,
+        target.user.id,
+        reservationId,
+        'newest-refresh-token',
+      ),
+    ).toBe(true);
+    expect(
+      await acknowledgeAppleGrantExchange(
+        env.DB,
+        target.user.id,
+        reservationId,
+      ),
+    ).toBe(true);
+    expect(
+      await byId('apple_grant_exchange_state', 'user_id', target.user.id),
+    ).toBeNull();
+
+    let revokedToken: string | null = null;
+    expect(
+      await deleteUserAccount(
+        env.DB,
+        target.user.id,
+        undefined,
+        crypto.randomUUID(),
+        {
+          appleConfig: {
+            clientId: 'com.example.tresfort',
+            teamId: 'test-team',
+            keyId: 'test-key',
+            privateKey: 'not-used-by-injected-revoker',
+          },
+          revokeAppleToken: async (_config, token) => {
+            revokedToken = token;
+          },
+        },
+      ),
+    ).toEqual({
+      ok: true,
+      owner_tombstoned: true,
+      apple_revocation: 'revoked',
+    });
+    expect(revokedToken).toBe('newest-refresh-token');
+  });
+
+  it('keeps exchange uncertainty sticky across later success and forces manual deletion', async () => {
+    const target = await makeUser('uncertain-exchange');
+    const uncertainReservation = crypto.randomUUID();
+    expect(
+      await beginAppleGrantExchange(
+        env.DB,
+        target.user.id,
+        uncertainReservation,
+      ),
+    ).toBe(true);
+    expect(
+      await markAppleGrantExchangeUncertain(
+        env.DB,
+        target.user.id,
+        uncertainReservation,
+      ),
+    ).toBe(true);
+
+    const laterReservation = crypto.randomUUID();
+    expect(
+      await beginAppleGrantExchange(
+        env.DB,
+        target.user.id,
+        laterReservation,
+      ),
+    ).toBe(true);
+    expect(
+      await finishAppleGrantExchange(
+        env.DB,
+        target.user.id,
+        laterReservation,
+        'later-known-token',
+      ),
+    ).toBe(true);
+    expect(
+      await acknowledgeAppleGrantExchange(
+        env.DB,
+        target.user.id,
+        laterReservation,
+      ),
+    ).toBe(true);
+    const sticky = await byId(
+      'apple_grant_exchange_state',
+      'user_id',
+      target.user.id,
+    );
+    expect(sticky?.reservation_id).toBeNull();
+    expect(sticky?.revocation_uncertain).toBe(1);
+
+    let providerCalls = 0;
+    const deletionKey = crypto.randomUUID();
+    expect(
+      await deleteUserAccount(
+        env.DB,
+        target.user.id,
+        undefined,
+        deletionKey,
+        {
+          appleConfig: {
+            clientId: 'com.example.tresfort',
+            teamId: 'test-team',
+            keyId: 'test-key',
+            privateKey: 'not-used-by-injected-revoker',
+          },
+          revokeAppleToken: async () => {
+            providerCalls += 1;
+          },
+        },
+      ),
+    ).toEqual({
+      ok: true,
+      owner_tombstoned: true,
+      apple_revocation: 'manual_required',
+    });
+    expect(providerCalls).toBe(0);
+    expect(
+      await byId('apple_grant_exchange_state', 'user_id', target.user.id),
+    ).toBeNull();
+    expect(
+      (await byId('account_deletion_receipts', 'user_id', target.user.id))
+        ?.apple_revocation,
+    ).toBe('manual_required');
+  });
+
+  it('consumes a stale exchange as manual and rejects a finish serialized after an intent', async () => {
+    const target = await makeUser('stale-exchange');
+    const reservationId = crypto.randomUUID();
+    expect(
+      await beginAppleGrantExchange(
+        env.DB,
+        target.user.id,
+        reservationId,
+        Date.now() - 60_001,
+      ),
+    ).toBe(true);
+    let providerCalls = 0;
+    expect(
+      await deleteUserAccount(
+        env.DB,
+        target.user.id,
+        undefined,
+        crypto.randomUUID(),
+        {
+          appleConfig: {
+            clientId: 'com.example.tresfort',
+            teamId: 'test-team',
+            keyId: 'test-key',
+            privateKey: 'not-used-by-injected-revoker',
+          },
+          revokeAppleToken: async () => {
+            providerCalls += 1;
+          },
+        },
+      ),
+    ).toEqual({
+      ok: true,
+      owner_tombstoned: true,
+      apple_revocation: 'manual_required',
+    });
+    expect(providerCalls).toBe(0);
+    expect(
+      await finishAppleGrantExchange(
+        env.DB,
+        target.user.id,
+        reservationId,
+        'too-late-token',
+      ),
+    ).toBe(false);
+
+    // Deterministic defense-in-depth interleaving: even if a matching
+    // reservation and an intent are observed together, finish cannot store.
+    const live = await makeUser('finish-after-intent');
+    const liveReservation = crypto.randomUUID();
+    expect(
+      await beginAppleGrantExchange(
+        env.DB,
+        live.user.id,
+        liveReservation,
+      ),
+    ).toBe(true);
+    await env.DB
+      .prepare(
+        `INSERT INTO account_deletion_intents
+           (user_id,idempotency_key_sha256,apple_revocation,created_at)
+         VALUES (?1,?2,NULL,?3)`,
+      )
+      .bind(live.user.id, '0'.repeat(64), Date.now())
+      .run();
+    expect(
+      await finishAppleGrantExchange(
+        env.DB,
+        live.user.id,
+        liveReservation,
+        'must-not-store',
+      ),
+    ).toBe(false);
+    expect(
+      await byId('apple_refresh_tokens', 'user_id', live.user.id),
+    ).toBeNull();
+    expect(
+      (await byId(
+        'apple_grant_exchange_state',
+        'user_id',
+        live.user.id,
+      ))?.reservation_id,
+    ).toBe(liveReservation);
   });
 
   it('atomically removes only the caller and transfers shared groups', async () => {
@@ -365,6 +928,7 @@ describe('DELETE /api/me', () => {
     expect(await response.json()).toEqual({
       ok: true,
       owner_tombstoned: false,
+      apple_revocation: 'manual_required',
     });
 
     expect(await byId('users', 'id', target.user.id)).toBeNull();
@@ -456,12 +1020,16 @@ describe('DELETE /api/me', () => {
     expect(await retry.json()).toEqual({
       ok: true,
       owner_tombstoned: false,
+      apple_revocation: 'manual_required',
     });
     const differentRetry = await SELF.fetch(`${BASE}/api/me`, {
       method: 'DELETE',
       headers: deletionAuth(target.jwt, crypto.randomUUID()),
     });
     expect(differentRetry.status).toBe(404);
+    expect(await differentRetry.json()).toEqual({
+      error: 'account_not_found',
+    });
 
     // Late in-flight writes that passed authentication before deletion cannot
     // recreate rows in tables without users foreign keys.
@@ -543,6 +1111,7 @@ describe('DELETE /api/me', () => {
     expect(await response.json()).toEqual({
       ok: true,
       owner_tombstoned: true,
+      apple_revocation: 'manual_required',
     });
 
     expect(await byId('users', 'id', seededOwner.id)).toBeNull();

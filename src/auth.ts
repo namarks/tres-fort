@@ -6,7 +6,7 @@ import { createMiddleware } from 'hono/factory';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type { HonoEnv } from './types';
 import {
-  accountDeletionReceiptMatches,
+  accountDeletionContinuationMatches,
   setUserTimezoneIfChanged,
 } from './db';
 
@@ -95,8 +95,8 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
     // finish local cleanup even if the original app JWT has expired. Accept an
     // expired bearer only when its signature/iat/nbf remain valid, this is the
     // exact DELETE endpoint, and the high-entropy key matches that subject's
-    // already-committed receipt. It cannot authorize an initial deletion or
-    // any other feature request.
+    // already-claimed intent or committed receipt. It cannot authorize an
+    // initial deletion or any other feature request.
     if (!isDeletionRequest) return c.json({ error: 'invalid_token' }, 401);
     try {
       payload = await verify(token, c.env.APP_JWT_SECRET, {
@@ -111,7 +111,11 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
         typeof exp !== 'number' ||
         !Number.isFinite(exp) ||
         exp > Math.floor(Date.now() / 1000) ||
-        !(await accountDeletionReceiptMatches(c.env.DB, principal.userId, key))
+        !(await accountDeletionContinuationMatches(
+          c.env.DB,
+          principal.userId,
+          key,
+        ))
       ) {
         return c.json({ error: 'invalid_token' }, 401);
       }
@@ -132,6 +136,10 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
       `SELECT 1 AS x FROM users
         WHERE id = ?1
           AND NOT EXISTS (
+                SELECT 1 FROM account_deletion_intents
+                 WHERE user_id = ?1
+              )
+          AND NOT EXISTS (
                 SELECT 1 FROM account_deletion_receipts
                  WHERE user_id = ?1
               )`,
@@ -139,9 +147,9 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
     .bind(c.get('userId'))
     .first<{ x: number }>();
   if (!livePrincipal) {
-    // A signed JWT whose principal has just been deleted is accepted only for
-    // an idempotent retry of that same DELETE. The route verifies the durable
-    // high-entropy receipt; every other endpoint remains revoked immediately.
+    // Once deletion is claimed, a signed JWT is accepted only for an exact
+    // continuation of that same DELETE. The service verifies the durable
+    // high-entropy key; every other endpoint remains revoked immediately.
     if (!isDeletionRequest) return c.json({ error: 'invalid_token' }, 401);
     await next();
     return;

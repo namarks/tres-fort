@@ -4,6 +4,10 @@ import SwiftUI
 
 @MainActor
 final class AuthModel: ObservableObject {
+    private struct ServerErrorEnvelope: Decodable {
+        let error: String
+    }
+
     enum Phase: Equatable {
         case signedOut
         case working(String)
@@ -16,6 +20,11 @@ final class AuthModel: ObservableObject {
     @Published private(set) var isRenewing = false
     @Published private(set) var appleCredentialUserID: String?
     @Published private(set) var reauthenticationReason: String?
+    /// One-shot post-deletion handoff shown from RootView. Only this
+    /// non-sensitive boolean is persisted so terminating the app cannot lose
+    /// required Apple cleanup directions; no authorization code or provider
+    /// credential is stored, and dismissal does not mutate authentication.
+    @Published private(set) var postDeletionAppleRevocationRequired = false
     /// A durable DELETE /api/me attempt has not yet been acknowledged. While
     /// this is true the current bearer is the only credential that can replay
     /// the key-bound deletion receipt after a lost response, so background
@@ -55,7 +64,17 @@ final class AuthModel: ObservableObject {
     private let now: () -> Date
     static let userIDKey = "com.nmarkspdx.liftcoach.user-id.v1"
     static let onboardedKey = "com.nmarkspdx.liftcoach.onboarded.v1"
+    static let postDeletionAppleRevocationKey =
+        "com.nmarkspdx.liftcoach.post-deletion-apple-revocation.v1"
     static let renewalWindow: TimeInterval = 7 * 24 * 60 * 60
+
+    private static func serverErrorCode(in body: String) -> String? {
+        guard let data = body.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(
+            ServerErrorEnvelope.self,
+            from: data
+        ).error
+    }
 
     init(
         api: any AuthAPI = APIClient(),
@@ -70,9 +89,18 @@ final class AuthModel: ObservableObject {
         self.appleCredentialChecker = appleCredentialChecker
         self.defaults = defaults
         self.now = now
+        postDeletionAppleRevocationRequired = defaults.bool(
+            forKey: Self.postDeletionAppleRevocationKey)
         let token = tokenStore.load()
         let persistedUserID = defaults.string(forKey: Self.userIDKey)
         userID = persistedUserID
+        if let persistedUserID {
+            // Bind process-global values to their preexisting owner before a
+            // mismatched or malformed bearer can be rejected and replaced by
+            // a different Apple account.
+            AccountLocalState.bindLegacyState(
+                userID: persistedUserID, defaults: defaults)
+        }
         if let token, let tokenUserID = Self.subject(of: token) {
             if let persistedUserID, persistedUserID != tokenUserID {
                 // A crash between the separate Keychain and UserDefaults
@@ -88,6 +116,8 @@ final class AuthModel: ObservableObject {
                     // predate the persisted account namespace.
                     defaults.set(tokenUserID, forKey: Self.userIDKey)
                     userID = tokenUserID
+                    AccountLocalState.bindLegacyState(
+                        userID: tokenUserID, defaults: defaults)
                 }
                 jwt = token
                 phase = .signedIn
@@ -132,11 +162,7 @@ final class AuthModel: ObservableObject {
         case let .failure(error):
             phase = .error(error.localizedDescription)
         case let .success(auth):
-            guard
-                let cred = auth.credential as? ASAuthorizationAppleIDCredential,
-                let tokenData = cred.identityToken,
-                let identityToken = String(data: tokenData, encoding: .utf8)
-            else {
+            guard let cred = auth.credential as? ASAuthorizationAppleIDCredential else {
                 phase = .error("No Apple identity token")
                 return
             }
@@ -144,28 +170,63 @@ final class AuthModel: ObservableObject {
                 let s = PersonNameComponentsFormatter().string(from: comps)
                 return s.isEmpty ? nil : s
             }
-            Task {
-                await exchange(
-                    identityToken: identityToken,
-                    fullName: name,
-                    appleUserID: cred.user)
-            }
+            handleAppleCredential(
+                identityToken: cred.identityToken.flatMap {
+                    String(data: $0, encoding: .utf8)
+                },
+                authorizationCode: cred.authorizationCode.flatMap {
+                    String(data: $0, encoding: .utf8)
+                },
+                fullName: name,
+                appleUserID: cred.user)
+        }
+    }
+
+    /// The native Sign in with Apple UI must supply both values. Keeping this
+    /// validation in a small internal seam makes the user-visible failure
+    /// deterministic without constructing AuthenticationServices objects in
+    /// unit tests.
+    func handleAppleCredential(
+        identityToken: String?,
+        authorizationCode: String?,
+        fullName: String?,
+        appleUserID: String
+    ) {
+        guard let identityToken, !identityToken.isEmpty else {
+            phase = .error("No Apple identity token")
+            return
+        }
+        guard let authorizationCode, !authorizationCode.isEmpty else {
+            phase = .error(
+                "Apple did not provide the authorization code required to sign in. Please try again.")
+            return
+        }
+        Task {
+            await exchange(
+                identityToken: identityToken,
+                fullName: fullName,
+                appleUserID: appleUserID,
+                authorizationCode: authorizationCode)
         }
     }
 
     func exchange(
         identityToken: String,
         fullName: String?,
-        appleUserID: String? = nil
+        appleUserID: String? = nil,
+        authorizationCode: String? = nil
     ) async {
         phase = .working("Signing in…")
         do {
             let res = try await api.authApple(
                 identityToken: identityToken,
+                authorizationCode: authorizationCode,
                 fullName: fullName)
             guard Self.subject(of: res.jwt) == res.user.id else {
                 throw APIError.decoding("session identity mismatch")
             }
+            AccountLocalState.bindLegacyState(
+                userID: res.user.id, defaults: defaults)
             tokenStore.save(res.jwt)
             jwt = res.jwt
             userID = res.user.id
@@ -308,9 +369,10 @@ final class AuthModel: ObservableObject {
     }
 
     /// Permanently delete the server account, then erase only that account's
-    /// local namespace. Nothing is cleared before the Worker acknowledges the
-    /// transaction: a network/server failure leaves the signed-in account and
-    /// every queued write intact so the user can retry safely.
+    /// local namespace. Nothing is cleared before the Worker confirms the
+    /// account is gone through an acknowledgement or authenticated absence: a
+    /// network/server failure leaves the signed-in account and every queued
+    /// write intact so the user can retry safely.
     func deleteAccount() async throws {
         guard let token = jwt, let accountID = userID else {
             throw APIError.http(401, "missing_session")
@@ -331,52 +393,91 @@ final class AuthModel: ObservableObject {
             response = try await api.deleteAccount(
                 jwt: token,
                 idempotencyKey: idempotencyKey)
-        } catch let APIError.http(code, body) where code == 401 || code == 404 {
+        } catch let APIError.http(code, body) where code == 401 {
             // A key-bound receipt retry is accepted even after the account row
-            // is gone. An authoritative 401 or a 404 receipt mismatch therefore
-            // means this bearer/key pair cannot complete the deletion and
-            // ordinary reauthentication is needed. Other failures preserve the
-            // key and bearer so an uncertain request can be retried exactly.
+            // is gone. An authoritative 401 means this bearer/key pair cannot
+            // complete the deletion and ordinary reauthentication is needed.
+            // Other failures preserve the key and bearer so an uncertain
+            // request can be retried exactly.
             defaults.removeObject(forKey: deletionKeyName)
             if userID == accountID {
                 accountDeletionPending = false
-                requireReauthentication()
+                let reason = body.contains("reauthentication_required")
+                    ? "Sign in with Apple again to confirm account deletion."
+                    : nil
+                requireReauthentication(reason: reason)
             }
             throw APIError.http(code, body)
+        } catch let APIError.http(code, body)
+            where code == 404
+                && Self.serverErrorCode(in: body) == "account_not_found" {
+            // Only the Worker's typed absence contract proves the account no
+            // longer exists and this device's receipt is unknown. A generic or
+            // misrouted 404 must propagate so it cannot erase queued local
+            // training while the server account may still exist. The explicit
+            // confirmation that started this request authorizes cleanup once
+            // this exact absence is returned.
+            completeAccountDeletion(
+                for: accountID,
+                requiresManualAppleRevocation: true)
+            return
         }
         guard response.ok else {
             throw APIError.decoding("account deletion was not acknowledged")
         }
 
-        // Always erase the account that initiated deletion, even if the user
-        // signed out or switched accounts while the request was in flight.
+        completeAccountDeletion(
+            for: accountID,
+            requiresManualAppleRevocation:
+                response.apple_revocation != .revoked)
+    }
+
+    /// Always erase the account that initiated deletion, even if a different
+    /// account became current while the request was in flight. Current auth
+    /// state is reset only when it still belongs to the deleted account.
+    private func completeAccountDeletion(
+        for accountID: String,
+        requiresManualAppleRevocation: Bool
+    ) {
         AccountLocalState.clear(userID: accountID, defaults: defaults)
-        if userID == accountID {
-            accountDeletionPending = false
-            tokenStore.clear()
-            defaults.removeObject(forKey: Self.userIDKey)
-            defaults.removeObject(forKey: Self.onboardedKey)
-            jwt = nil
-            userID = nil
-            appleCredentialUserID = nil
-            reauthenticationReason = nil
-            onboardingComplete = false
-            phase = .signedOut
+        // The explicitly confirmed deletion event owns this handoff even if a
+        // different account became current while the request was in flight.
+        // The UI handoff never mutates the replacement account.
+        if requiresManualAppleRevocation {
+            defaults.set(true, forKey: Self.postDeletionAppleRevocationKey)
+            postDeletionAppleRevocationRequired = true
         }
+        guard userID == accountID else { return }
+        accountDeletionPending = false
+        tokenStore.clear()
+        defaults.removeObject(forKey: Self.userIDKey)
+        defaults.removeObject(forKey: Self.onboardedKey)
+        jwt = nil
+        userID = nil
+        appleCredentialUserID = nil
+        reauthenticationReason = nil
+        onboardingComplete = false
+        phase = .signedOut
+    }
+
+    func dismissPostDeletionAppleRevocationHandoff() {
+        defaults.removeObject(forKey: Self.postDeletionAppleRevocationKey)
+        postDeletionAppleRevocationRequired = false
     }
 
     /// Fetch a portable snapshot for the currently signed-in account. Export
     /// is an ordinary feature request (never allowed while deletion is
-    /// pending), and an account/token change while the request is in flight
-    /// discards the old account's bytes instead of presenting them in the new
-    /// account's Profile UI.
+    /// pending), and an account change or feature-session removal while the
+    /// request is in flight discards the old account's bytes instead of
+    /// presenting them in a different account's Profile UI. A same-account
+    /// token renewal is safe: the export principal did not change.
     func downloadAccountExport() async throws -> AccountExportFile {
         guard let token = featureJWT, let accountID = userID else {
             throw APIError.http(401, "missing_session")
         }
         do {
             let file = try await api.downloadAccountExport(jwt: token)
-            guard userID == accountID, featureJWT == token else {
+            guard userID == accountID, featureJWT != nil else {
                 throw APIError.decoding(
                     "the signed-in account changed while the export was downloading")
             }

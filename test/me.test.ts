@@ -66,6 +66,37 @@ describe('GET /api/me', () => {
     expect(me.intervals.api_key).toBeUndefined();
   });
 
+  it('authentication responses expose only the public user projection', async () => {
+    const a = await devJwt();
+    await env.DB.prepare(
+      `UPDATE users SET
+         intervals_api_key = 'private-api-key',
+         intervals_oauth_access_token = 'private-access-token',
+         intervals_oauth_refresh_token = 'private-refresh-token',
+         mcp_passphrase_hash = 'private-hash',
+         mcp_passphrase_salt = 'private-salt'
+       WHERE id = ?1`,
+    )
+      .bind(a.id)
+      .run();
+
+    const r = await SELF.fetch(`${BASE}/auth/dev`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: 'test-dev' }),
+    });
+    expect(r.status).toBe(200);
+    const body = await r.json<any>();
+    expect(body.user).toEqual({
+      id: a.id,
+      email: 'dev@local',
+      display_name: 'Dev Owner',
+    });
+    expect(JSON.stringify(body)).not.toContain('private-');
+    expect(body.user.apple_sub).toBeUndefined();
+    expect(body.user.created_at).toBeUndefined();
+  });
+
   it('intervals.connected reflects the user row athlete_id', async () => {
     const a = await devJwt();
     await env.DB.prepare(

@@ -36,7 +36,11 @@ import {
   type FetchDeps,
   type Fetcher,
 } from './intervals';
-
+import {
+  hasAppleProviderSigningConfig,
+  revokeAppleRefreshToken,
+  type AppleProviderConfig,
+} from './apple';
 const now = () => Date.now();
 const uuid = () => crypto.randomUUID();
 
@@ -78,6 +82,246 @@ export async function accountDeletionReceiptMatches(
     .first<{ idempotency_key_sha256: string }>();
   if (!receipt) return false;
   return receipt.idempotency_key_sha256 === (await sha256Hex(idempotencyKey));
+}
+
+/**
+ * A signed, expired app bearer may continue only a deletion that was already
+ * claimed while authentication was recent, or acknowledge its committed
+ * receipt. The exact high-entropy key must match either durable row.
+ */
+export async function accountDeletionContinuationMatches(
+  db: D1Database,
+  userId: string,
+  idempotencyKey: string,
+): Promise<boolean> {
+  if (!isAccountDeletionKey(idempotencyKey)) return false;
+  const row = await db
+    .prepare(
+      `SELECT idempotency_key_sha256
+         FROM account_deletion_intents WHERE user_id = ?1
+       UNION ALL
+       SELECT idempotency_key_sha256
+         FROM account_deletion_receipts WHERE user_id = ?1
+       LIMIT 1`,
+    )
+    .bind(userId)
+    .first<{ idempotency_key_sha256: string }>();
+  return Boolean(
+    row && row.idempotency_key_sha256 === (await sha256Hex(idempotencyKey)),
+  );
+}
+
+/** True while the provider/local deletion operation owns this principal. */
+export async function isAccountDeletionInProgress(
+  db: D1Database,
+  userId: string,
+): Promise<boolean> {
+  return (
+    (await db
+      .prepare(
+        'SELECT 1 AS x FROM account_deletion_intents WHERE user_id = ?1',
+      )
+      .bind(userId)
+      .first<{ x: number }>()) !== null
+  );
+}
+
+/**
+ * Store only the caller-scoped Apple refresh token. The conditional upsert and
+ * migration triggers serialize replacement against deletion intent creation.
+ */
+export async function storeAppleRefreshToken(
+  db: D1Database,
+  userId: string,
+  refreshToken: string,
+): Promise<boolean> {
+  if (!refreshToken) return false;
+  const result = await db
+    .prepare(
+      `INSERT INTO apple_refresh_tokens (user_id, refresh_token, updated_at)
+       SELECT ?1, ?2, ?3
+        WHERE EXISTS (SELECT 1 FROM users WHERE id = ?1)
+          AND NOT EXISTS (
+                SELECT 1 FROM account_deletion_intents WHERE user_id = ?1
+              )
+          AND NOT EXISTS (
+                SELECT 1 FROM account_deletion_receipts WHERE user_id = ?1
+              )
+          AND NOT EXISTS (
+                SELECT 1 FROM apple_grant_exchange_state WHERE user_id = ?1
+              )
+       ON CONFLICT(user_id) DO UPDATE SET
+         refresh_token = excluded.refresh_token,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(userId, refreshToken, now())
+    .run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+const APPLE_GRANT_EXCHANGE_FRESH_MS = 60_000;
+
+/**
+ * Reserve the provider-I/O gap for one Sign in with Apple code exchange.
+ * A fresh active reservation wins. An abandoned active reservation may be
+ * replaced after 60 seconds, but doing so permanently records revocation
+ * uncertainty because Apple may have issued a grant to the abandoned call.
+ */
+export async function beginAppleGrantExchange(
+  db: D1Database,
+  userId: string,
+  reservationId: string,
+  nowMs = now(),
+): Promise<boolean> {
+  if (!isAccountDeletionKey(reservationId)) return false;
+  const staleBefore = nowMs - APPLE_GRANT_EXCHANGE_FRESH_MS;
+  const result = await db
+    .prepare(
+      `INSERT INTO apple_grant_exchange_state
+         (user_id, reservation_id, active_since, revocation_uncertain)
+       SELECT id, ?2, ?3, 0 FROM users
+        WHERE id = ?1
+          AND NOT EXISTS (
+                SELECT 1 FROM account_deletion_intents WHERE user_id = ?1
+              )
+          AND NOT EXISTS (
+                SELECT 1 FROM account_deletion_receipts WHERE user_id = ?1
+              )
+       ON CONFLICT(user_id) DO UPDATE SET
+         reservation_id = excluded.reservation_id,
+         active_since = excluded.active_since,
+         revocation_uncertain = CASE
+           WHEN apple_grant_exchange_state.reservation_id IS NOT NULL
+            AND apple_grant_exchange_state.active_since < ?4
+           THEN 1
+           ELSE apple_grant_exchange_state.revocation_uncertain
+         END
+       WHERE (
+               apple_grant_exchange_state.reservation_id IS NULL
+            OR apple_grant_exchange_state.active_since < ?4
+             )
+         AND NOT EXISTS (
+               SELECT 1 FROM account_deletion_intents WHERE user_id = ?1
+             )
+         AND NOT EXISTS (
+               SELECT 1 FROM account_deletion_receipts WHERE user_id = ?1
+             )`,
+    )
+    .bind(userId, reservationId, nowMs, staleBefore)
+    .run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+/**
+ * Record that Apple may have accepted the matching exchange even though the
+ * caller did not receive a trustworthy token response. Uncertainty survives
+ * every later exchange and forces manual provider cleanup at deletion.
+ */
+export async function markAppleGrantExchangeUncertain(
+  db: D1Database,
+  userId: string,
+  reservationId: string,
+): Promise<boolean> {
+  if (!isAccountDeletionKey(reservationId)) return false;
+  const result = await db
+    .prepare(
+      `UPDATE apple_grant_exchange_state
+          SET reservation_id = NULL,
+              active_since = NULL,
+              revocation_uncertain = 1
+        WHERE user_id = ?1 AND reservation_id = ?2`,
+    )
+    .bind(userId, reservationId)
+    .run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+/**
+ * Store the newly returned refresh token while retaining exactly its active
+ * reservation. Keeping that row through the storage commit is deliberate: if
+ * D1 commits and the binding then throws, the route can still mark the exact
+ * exchange uncertain and deletion remains blocked until it does. A separate
+ * acknowledgement clears the reservation only after this call returns.
+ */
+export async function finishAppleGrantExchange(
+  db: D1Database,
+  userId: string,
+  reservationId: string,
+  refreshToken: string,
+): Promise<boolean> {
+  if (!isAccountDeletionKey(reservationId) || !refreshToken) return false;
+  const ts = now();
+  const [stored, retained] = await db.batch([
+    db
+      .prepare(
+        `INSERT INTO apple_refresh_tokens (user_id, refresh_token, updated_at)
+         SELECT s.user_id, ?3, ?4
+           FROM apple_grant_exchange_state s
+          WHERE s.user_id = ?1
+            AND s.reservation_id = ?2
+            AND EXISTS (SELECT 1 FROM users WHERE id = ?1)
+            AND NOT EXISTS (
+                  SELECT 1 FROM account_deletion_intents WHERE user_id = ?1
+                )
+            AND NOT EXISTS (
+                  SELECT 1 FROM account_deletion_receipts WHERE user_id = ?1
+                )
+         ON CONFLICT(user_id) DO UPDATE SET
+           refresh_token = excluded.refresh_token,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(userId, reservationId, refreshToken, ts),
+    db
+      .prepare(
+        `UPDATE apple_grant_exchange_state
+            SET active_since = ?3
+          WHERE user_id = ?1
+            AND reservation_id = ?2
+            AND changes() = 1`,
+      )
+      .bind(userId, reservationId, ts),
+  ]);
+  return (
+    (stored?.meta.changes ?? 0) === 1 &&
+    (retained?.meta.changes ?? 0) === 1
+  );
+}
+
+/**
+ * Acknowledge a refresh-token store that the caller observed as successful.
+ * Clearing and clean-row deletion remain exact-reservation conditional; any
+ * prior sticky uncertainty survives for deletion to consume. If this call is
+ * ambiguous, the route can safely attempt the exact uncertainty marker: a
+ * committed acknowledgement means the token is known, while an uncommitted
+ * acknowledgement still has the reservation available to mark fail-closed.
+ */
+export async function acknowledgeAppleGrantExchange(
+  db: D1Database,
+  userId: string,
+  reservationId: string,
+): Promise<boolean> {
+  if (!isAccountDeletionKey(reservationId)) return false;
+  const [cleared, removed] = await db.batch([
+    db
+      .prepare(
+        `UPDATE apple_grant_exchange_state
+            SET reservation_id = NULL, active_since = NULL
+          WHERE user_id = ?1 AND reservation_id = ?2`,
+      )
+      .bind(userId, reservationId),
+    db
+      .prepare(
+        `DELETE FROM apple_grant_exchange_state
+          WHERE user_id = ?1
+            AND reservation_id IS NULL
+            AND revocation_uncertain = 0
+            AND changes() = 1`,
+      )
+      .bind(userId),
+  ]);
+  const clearedCount = cleared?.meta.changes ?? 0;
+  const removedCount = removed?.meta.changes ?? 0;
+  return clearedCount === 1 && (removedCount === 0 || removedCount === 1);
 }
 
 /**
@@ -272,9 +516,10 @@ async function insertOwnerUnlessTombstoned(
 /**
  * Sign in with Apple owner resolution. Single-user invariant: there is
  * exactly one user row. If this Apple sub is unseen and the only existing
- * user is a bootstrap row (e.g. the MCP-created 'mcp-owner'), *claim* that
- * row — rebinding it to the real Apple identity — so MCP-seeded data and
- * iOS stay on one user_id. Otherwise create the first user.
+ * user is the MCP bootstrap sentinel, *claim* that row — rebinding it to the
+ * real Apple identity — so MCP-seeded data and iOS stay on one user_id.
+ * The claim is a compare-and-swap: a concurrent sign-in that loses the
+ * sentinel creates an ordinary user instead of stealing the winner's row.
  */
 export async function claimOrCreateOwner(
   db: D1Database,
@@ -296,39 +541,44 @@ export async function claimOrCreateOwner(
   if (byApple) return byApple;
 
   if (!ownerSubLocked) {
-    const all = await db.prepare('SELECT * FROM users').all<User>();
-    if (all.results.length === 1) {
-      const row = all.results[0]!;
-      await db
+    const bootstrap = await db
+      .prepare('SELECT * FROM users WHERE apple_sub = ?1')
+      .bind(BOOTSTRAP_APPLE_SUB)
+      .first<User>();
+    if (bootstrap) {
+      const claimed = await db
         .prepare(
           `UPDATE users
               SET apple_sub = ?2, email = ?3, display_name = ?4
             WHERE id = ?1
+              AND apple_sub = ?5
               AND NOT EXISTS (
                     SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
                   )`,
         )
-        .bind(row.id, appleSub, email ?? row.email, displayName ?? row.display_name)
+        .bind(
+          bootstrap.id,
+          appleSub,
+          email ?? bootstrap.email,
+          displayName ?? bootstrap.display_name,
+          BOOTSTRAP_APPLE_SUB,
+        )
         .run();
-      return db
-        .prepare(
-          `SELECT u.* FROM users u
-            WHERE u.id = ?1 AND u.apple_sub = ?2
-              AND NOT EXISTS (
-                    SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
-                  )`,
-        )
-        .bind(row.id, appleSub)
-        .first<User>();
+      if ((claimed.meta.changes ?? 0) === 1) {
+        return db
+          .prepare(
+            `SELECT u.* FROM users u
+              WHERE u.id = ?1 AND u.apple_sub = ?2
+                AND NOT EXISTS (
+                      SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+                    )`,
+          )
+          .bind(bootstrap.id, appleSub)
+          .first<User>();
+      }
     }
   }
-  return insertOwnerUnlessTombstoned(
-    db,
-    appleSub,
-    email,
-    displayName,
-    !ownerSubLocked,
-  );
+  return insertOwnerUnlessTombstoned(db, appleSub, email, displayName, false);
 }
 
 /**
@@ -448,9 +698,53 @@ export async function isBootstrapClaimEligible(db: D1Database): Promise<boolean>
   return false;
 }
 
+export type AppleRevocationOutcome = 'revoked' | 'manual_required';
+
 export type DeleteUserAccountResult =
-  | { ok: true; owner_tombstoned: boolean }
-  | { error: 'not_found' };
+  | {
+      ok: true;
+      owner_tombstoned: boolean;
+      apple_revocation: AppleRevocationOutcome;
+    }
+  | { error: 'not_found' | 'conflict' };
+
+export interface DeleteUserAccountDeps {
+  appleConfig?: AppleProviderConfig;
+  /** Test seam for deterministic provider success, failure, and race cases. */
+  revokeAppleToken?: (
+    config: AppleProviderConfig,
+    refreshToken: string,
+  ) => Promise<void>;
+}
+
+interface AccountDeletionReceiptRow {
+  idempotency_key_sha256: string;
+  owner_tombstoned: number;
+  apple_revocation: AppleRevocationOutcome;
+}
+
+async function getAccountDeletionReceipt(
+  db: D1Database,
+  userId: string,
+): Promise<AccountDeletionReceiptRow | null> {
+  return db
+    .prepare(
+      `SELECT idempotency_key_sha256, owner_tombstoned, apple_revocation
+         FROM account_deletion_receipts WHERE user_id = ?1`,
+    )
+    .bind(userId)
+    .first<AccountDeletionReceiptRow>();
+}
+
+function receiptResult(
+  receipt: AccountDeletionReceiptRow,
+): Extract<DeleteUserAccountResult, { ok: true }> {
+  return {
+    ok: true,
+    owner_tombstoned: receipt.owner_tombstoned === 1,
+    apple_revocation: receipt.apple_revocation,
+  };
+}
 
 /**
  * Permanently remove one authenticated account and every row it owns.
@@ -467,29 +761,164 @@ export async function deleteUserAccount(
   userId: string,
   ownerAppleSub: string | undefined,
   idempotencyKey: string,
+  deps: DeleteUserAccountDeps = {},
 ): Promise<DeleteUserAccountResult> {
   const idempotencyKeyHash = await sha256Hex(idempotencyKey);
-  const priorReceipt = await db
+  const claimTime = now();
+  const staleExchangeBefore =
+    claimTime - APPLE_GRANT_EXCHANGE_FRESH_MS;
+  // Claim the destructive operation under D1's write lock before provider
+  // I/O. INSERT OR IGNORE makes a different key lose without changing the
+  // winner; a matching key may safely resume an interrupted intent. A fresh
+  // Apple exchange reservation blocks the claim. Sticky uncertainty or a
+  // stale active exchange is consumed into an immediately-sticky manual
+  // outcome, so deletion can never report revocation of only an older grant.
+  await db.batch([
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO account_deletion_intents
+           (user_id, idempotency_key_sha256, apple_revocation, created_at)
+         SELECT u.id,
+                ?2,
+                CASE
+                  WHEN COALESCE(s.revocation_uncertain, 0) = 1
+                    OR (
+                      s.reservation_id IS NOT NULL
+                      AND s.active_since < ?4
+                    )
+                  THEN 'manual_required'
+                  ELSE NULL
+                END,
+                ?3
+           FROM users u
+           LEFT JOIN apple_grant_exchange_state s ON s.user_id = u.id
+          WHERE u.id = ?1
+            AND NOT EXISTS (
+                  SELECT 1 FROM account_deletion_receipts WHERE user_id = ?1
+                )
+            AND NOT (
+                  s.reservation_id IS NOT NULL
+                  AND s.active_since >= ?4
+                )`,
+      )
+      .bind(userId, idempotencyKeyHash, claimTime, staleExchangeBefore),
+    db
+      .prepare(
+        `DELETE FROM apple_grant_exchange_state
+          WHERE user_id = ?1
+            AND EXISTS (
+                  SELECT 1 FROM account_deletion_intents
+                   WHERE user_id = ?1
+                     AND idempotency_key_sha256 = ?2
+                )`,
+      )
+      .bind(userId, idempotencyKeyHash),
+  ]);
+
+  const priorReceipt = await getAccountDeletionReceipt(db, userId);
+  if (priorReceipt) {
+    return priorReceipt.idempotency_key_sha256 === idempotencyKeyHash
+      ? receiptResult(priorReceipt)
+      : { error: 'not_found' };
+  }
+
+  let intent = await db
     .prepare(
-      `SELECT idempotency_key_sha256, owner_tombstoned
-         FROM account_deletion_receipts WHERE user_id = ?1`,
+      `SELECT idempotency_key_sha256, apple_revocation
+         FROM account_deletion_intents WHERE user_id = ?1`,
     )
     .bind(userId)
     .first<{
       idempotency_key_sha256: string;
-      owner_tombstoned: number;
+      apple_revocation: AppleRevocationOutcome | null;
     }>();
-  if (priorReceipt) {
-    return priorReceipt.idempotency_key_sha256 === idempotencyKeyHash
-      ? { ok: true, owner_tombstoned: priorReceipt.owner_tombstoned === 1 }
-      : { error: 'not_found' };
+  if (!intent || intent.idempotency_key_sha256 !== idempotencyKeyHash) {
+    // A live intent bound to another high-entropy key is a collision, not
+    // proof that the account disappeared. iOS reserves 404 for cross-device
+    // completion and must not erase local state for this case.
+    if (intent) return { error: 'conflict' };
+    const liveUser = await db
+      .prepare('SELECT 1 AS x FROM users WHERE id = ?1')
+      .bind(userId)
+      .first<{ x: number }>();
+    return liveUser ? { error: 'conflict' } : { error: 'not_found' };
+  }
+
+  let appleRevocation = intent.apple_revocation;
+  if (appleRevocation === null) {
+    const credential = await db
+      .prepare(
+        'SELECT refresh_token FROM apple_refresh_tokens WHERE user_id = ?1',
+      )
+      .bind(userId)
+      .first<{ refresh_token: string }>();
+    appleRevocation = 'manual_required';
+    if (
+      credential &&
+      deps.appleConfig &&
+      hasAppleProviderSigningConfig(deps.appleConfig)
+    ) {
+      try {
+        await (deps.revokeAppleToken ?? revokeAppleRefreshToken)(
+          deps.appleConfig,
+          credential.refresh_token,
+        );
+        appleRevocation = 'revoked';
+      } catch {
+        // Provider unavailability must never retain the user's local account.
+        // The value-free outcome sends iOS to Apple's manual revocation path.
+        appleRevocation = 'manual_required';
+      }
+    }
+
+    // Persist provider truth on the intent immediately. If local finalization
+    // is interrupted, a matching retry skips provider I/O and carries this
+    // exact outcome into the durable receipt.
+    await db
+      .prepare(
+        `UPDATE account_deletion_intents
+            SET apple_revocation = ?3
+          WHERE user_id = ?1
+            AND idempotency_key_sha256 = ?2
+            AND apple_revocation IS NULL`,
+      )
+      .bind(userId, idempotencyKeyHash, appleRevocation)
+      .run();
+    intent = await db
+      .prepare(
+        `SELECT idempotency_key_sha256, apple_revocation
+           FROM account_deletion_intents WHERE user_id = ?1`,
+      )
+      .bind(userId)
+      .first<{
+        idempotency_key_sha256: string;
+        apple_revocation: AppleRevocationOutcome | null;
+      }>();
+    if (!intent) {
+      const committed = await getAccountDeletionReceipt(db, userId);
+      return committed?.idempotency_key_sha256 === idempotencyKeyHash
+        ? receiptResult(committed)
+        : { error: 'not_found' };
+    }
+    if (
+      intent.idempotency_key_sha256 !== idempotencyKeyHash ||
+      intent.apple_revocation === null
+    ) {
+      return { error: 'not_found' };
+    }
+    appleRevocation = intent.apple_revocation;
   }
 
   const user = await db
     .prepare('SELECT * FROM users WHERE id = ?1')
     .bind(userId)
     .first<User>();
-  if (!user) return { error: 'not_found' };
+  if (!user) {
+    const committed = await getAccountDeletionReceipt(db, userId);
+    return committed?.idempotency_key_sha256 === idempotencyKeyHash
+      ? receiptResult(committed)
+      : { error: 'not_found' };
+  }
 
   const owner = await findOwnerRow(db, ownerAppleSub);
   const deletingOwner = owner?.id === userId;
@@ -498,10 +927,17 @@ export async function deleteUserAccount(
     db
       .prepare(
         `INSERT OR IGNORE INTO account_deletion_receipts
-           (user_id, idempotency_key_sha256, owner_tombstoned, deleted_at)
-         VALUES (?1, ?2, ?3, ?4)`,
+           (user_id, idempotency_key_sha256, owner_tombstoned, deleted_at,
+            apple_revocation)
+         VALUES (?1, ?2, ?3, ?4, ?5)`,
       )
-      .bind(userId, idempotencyKeyHash, deletingOwner ? 1 : 0, deletionTime),
+      .bind(
+        userId,
+        idempotencyKeyHash,
+        deletingOwner ? 1 : 0,
+        deletionTime,
+        appleRevocation,
+      ),
   ];
 
   if (deletingOwner) {
@@ -647,20 +1083,11 @@ export async function deleteUserAccount(
 
   statements.push(db.prepare('DELETE FROM users WHERE id = ?1').bind(userId));
   await db.batch(statements);
-  const receipt = await db
-    .prepare(
-      `SELECT idempotency_key_sha256, owner_tombstoned
-         FROM account_deletion_receipts WHERE user_id = ?1`,
-    )
-    .bind(userId)
-    .first<{
-      idempotency_key_sha256: string;
-      owner_tombstoned: number;
-    }>();
+  const receipt = await getAccountDeletionReceipt(db, userId);
   if (!receipt || receipt.idempotency_key_sha256 !== idempotencyKeyHash) {
     return { error: 'not_found' };
   }
-  return { ok: true, owner_tombstoned: receipt.owner_tombstoned === 1 };
+  return receiptResult(receipt);
 }
 
 // ---- per-user MCP passphrase (M3 multi-tenant auth) -----------------------
@@ -1256,97 +1683,130 @@ export async function exportUserData(
   db: D1Database,
   userId: string,
 ): Promise<Record<string, unknown> | null> {
-  const account = await db
-    .prepare(
-      `SELECT id, apple_sub, email, display_name, created_at, timezone,
-              intervals_athlete_id, intervals_auth_error_at,
-              share_health_activities
-         FROM users WHERE id = ?1`,
-    )
-    .bind(userId)
-    .first<Record<string, unknown>>();
-  if (!account) return null;
-
-  const plans = await db
-    .prepare('SELECT * FROM plans WHERE user_id = ?1 ORDER BY created_at, id')
-    .bind(userId)
-    .all();
-  const days = await db
-    .prepare(
-      `SELECT d.* FROM day_templates d
-       JOIN plans p ON p.id = d.plan_id
-       WHERE p.user_id = ?1
-       ORDER BY d.plan_id, d.order_index, d.created_at, d.id`,
-    )
-    .bind(userId)
-    .all();
-  const templateExercises = await db
-    .prepare(
-      `SELECT te.* FROM template_exercises te
-       JOIN day_templates d ON d.id = te.day_template_id
-       JOIN plans p ON p.id = d.plan_id
-       WHERE p.user_id = ?1
-       ORDER BY te.day_template_id, te.order_index, te.created_at, te.id`,
-    )
-    .bind(userId)
-    .all();
-  const sessions = await db
-    .prepare('SELECT * FROM sessions WHERE user_id = ?1 ORDER BY date, created_at, id')
-    .bind(userId)
-    .all();
-  const sets = await db
-    .prepare(
-      `SELECT sl.* FROM set_logs sl
-       JOIN sessions s ON s.id = sl.session_id
-       WHERE s.user_id = ?1
-       ORDER BY sl.logged_at, sl.id`,
-    )
-    .bind(userId)
-    .all();
-  const exercises = await db
-    .prepare(
-      `SELECT e.* FROM exercises e
-       WHERE e.id IN (
-         SELECT te.exercise_id FROM template_exercises te
+  // D1 batches are transactional, including read-only batches. Reading the
+  // complete projection through one batch keeps the account, plan tree, logs,
+  // and memberships on one coherent database snapshot while writes continue.
+  const projection = await db.batch<Record<string, unknown>>([
+    db
+      .prepare(
+        `SELECT id, apple_sub, email, display_name, created_at, timezone,
+                intervals_athlete_id, intervals_auth_error_at,
+                share_health_activities
+           FROM users WHERE id = ?1`,
+      )
+      .bind(userId),
+    db
+      .prepare('SELECT * FROM plans WHERE user_id = ?1 ORDER BY created_at, id')
+      .bind(userId),
+    db
+      .prepare(
+        `SELECT d.* FROM day_templates d
+         JOIN plans p ON p.id = d.plan_id
+         WHERE p.user_id = ?1
+         ORDER BY d.plan_id, d.order_index, d.created_at, d.id`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `SELECT te.* FROM template_exercises te
          JOIN day_templates d ON d.id = te.day_template_id
          JOIN plans p ON p.id = d.plan_id
          WHERE p.user_id = ?1
-         UNION
-         SELECT sl.exercise_id FROM set_logs sl
+         ORDER BY te.day_template_id, te.order_index, te.created_at, te.id`,
+      )
+      .bind(userId),
+    db
+      .prepare('SELECT * FROM sessions WHERE user_id = ?1 ORDER BY date, created_at, id')
+      .bind(userId),
+    db
+      .prepare(
+        `SELECT sl.* FROM set_logs sl
          JOIN sessions s ON s.id = sl.session_id
          WHERE s.user_id = ?1
-       )
-       ORDER BY e.name, e.id`,
-    )
-    .bind(userId)
-    .all();
-  const aliases = await db
-    .prepare(
-      `SELECT sa.* FROM session_aliases sa
-       JOIN sessions s ON s.id = sa.canonical_session_id
-       WHERE s.user_id = ?1
-       ORDER BY sa.alias_session_id`,
-    )
-    .bind(userId)
-    .all();
-  const loadExports = await db
-    .prepare(
-      `SELECT sle.* FROM session_load_exports sle
-       JOIN sessions s ON s.id = sle.session_id
-       WHERE s.user_id = ?1
-       ORDER BY sle.updated_at, sle.session_id`,
-    )
-    .bind(userId)
-    .all();
-  const notes = await db
-    .prepare('SELECT * FROM notes WHERE user_id = ?1 ORDER BY created_at, id')
-    .bind(userId)
-    .all();
-  const audit = await db
-    .prepare('SELECT * FROM audit_log WHERE user_id = ?1 ORDER BY created_at, id')
-    .bind(userId)
-    .all();
-  const auditRows = audit.results.map((row) => {
+         ORDER BY sl.logged_at, sl.id`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `SELECT e.* FROM exercises e
+         WHERE e.id IN (
+           SELECT te.exercise_id FROM template_exercises te
+           JOIN day_templates d ON d.id = te.day_template_id
+           JOIN plans p ON p.id = d.plan_id
+           WHERE p.user_id = ?1
+           UNION
+           SELECT sl.exercise_id FROM set_logs sl
+           JOIN sessions s ON s.id = sl.session_id
+           WHERE s.user_id = ?1
+         )
+         ORDER BY e.name, e.id`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `SELECT sa.* FROM session_aliases sa
+         JOIN sessions s ON s.id = sa.canonical_session_id
+         WHERE s.user_id = ?1
+         ORDER BY sa.alias_session_id`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `SELECT sle.* FROM session_load_exports sle
+         JOIN sessions s ON s.id = sle.session_id
+         WHERE s.user_id = ?1
+         ORDER BY sle.updated_at, sle.session_id`,
+      )
+      .bind(userId),
+    db
+      .prepare('SELECT * FROM notes WHERE user_id = ?1 ORDER BY created_at, id')
+      .bind(userId),
+    db
+      .prepare('SELECT * FROM audit_log WHERE user_id = ?1 ORDER BY created_at, id')
+      .bind(userId),
+    db
+      .prepare('SELECT * FROM external_events WHERE user_id = ?1 ORDER BY date, id')
+      .bind(userId),
+    db
+      .prepare(
+        'SELECT * FROM external_activities WHERE user_id = ?1 ORDER BY date, id',
+      )
+      .bind(userId),
+    db
+      .prepare(
+        'SELECT * FROM activities WHERE user_id = ?1 ORDER BY date, logged_at, id',
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `SELECT gm.group_id, g.name AS group_name, gm.display_name, gm.joined_at
+           FROM group_members gm
+           JOIN groups g ON g.id = gm.group_id
+          WHERE gm.user_id = ?1
+          ORDER BY gm.joined_at, gm.group_id`,
+      )
+      .bind(userId),
+  ]);
+  const rowsAt = (index: number): Record<string, unknown>[] =>
+    projection[index]?.results ?? [];
+  const account = rowsAt(0)[0] ?? null;
+  if (!account) return null;
+  const plans = rowsAt(1);
+  const days = rowsAt(2);
+  const templateExercises = rowsAt(3);
+  const sessions = rowsAt(4);
+  const sets = rowsAt(5);
+  const exercises = rowsAt(6);
+  const aliases = rowsAt(7);
+  const loadExports = rowsAt(8);
+  const notes = rowsAt(9);
+  const audit = rowsAt(10);
+  const events = rowsAt(11);
+  const externalActivities = rowsAt(12);
+  const activities = rowsAt(13);
+  const memberships = rowsAt(14);
+
+  const auditRows = audit.map((row) => {
     if (row.tool !== 'create_invite' && row.tool !== 'redeem_invite') {
       return row;
     }
@@ -1364,49 +1824,26 @@ export async function exportUserData(
       return { ...row, args: '{}' };
     }
   });
-  const events = await db
-    .prepare('SELECT * FROM external_events WHERE user_id = ?1 ORDER BY date, id')
-    .bind(userId)
-    .all();
-  const externalActivities = await db
-    .prepare('SELECT * FROM external_activities WHERE user_id = ?1 ORDER BY date, id')
-    .bind(userId)
-    .all();
-  const activities = await db
-    .prepare('SELECT * FROM activities WHERE user_id = ?1 ORDER BY date, logged_at, id')
-    .bind(userId)
-    .all();
-  const memberships = await db
-    .prepare(
-      `SELECT gm.group_id, g.name AS group_name, gm.display_name, gm.joined_at
-         FROM group_members gm
-         JOIN groups g ON g.id = gm.group_id
-        WHERE gm.user_id = ?1
-        ORDER BY gm.joined_at, gm.group_id`,
-    )
-    .bind(userId)
-    .all();
-
   return {
     schema_version: 1,
     exported_at: now(),
     account,
     training: {
-      plans: plans.results,
-      day_templates: days.results,
-      template_exercises: templateExercises.results,
-      exercises: exercises.results,
-      sessions: sessions.results,
-      set_logs: sets.results,
-      session_aliases: aliases.results,
-      session_load_exports: loadExports.results,
-      notes: notes.results,
+      plans,
+      day_templates: days,
+      template_exercises: templateExercises,
+      exercises,
+      sessions,
+      set_logs: sets,
+      session_aliases: aliases,
+      session_load_exports: loadExports,
+      notes,
       audit_log: auditRows,
-      external_events: events.results,
-      external_activities: externalActivities.results,
-      activities: activities.results,
+      external_events: events,
+      external_activities: externalActivities,
+      activities,
     },
-    group_memberships: memberships.results,
+    group_memberships: memberships,
   };
 }
 
@@ -1677,12 +2114,11 @@ export async function getInvitePreview(
 }
 
 /**
- * Redeem an invite as `userId`. Validates → marks the code used → inserts
- * the group_members row. The check-then-write race window is tolerable in
- * the friends-and-family setting (two redemptions of the same code within
- * a few ms is essentially a non-event), but we still guard against it: the
- * `used_at IS NULL` predicate on the UPDATE means at most one redeemer
- * wins. If a redeemer loses the race they see `used`.
+ * Redeem an invite as `userId`. Validates, claims the code, inserts the
+ * membership, and writes the success audit. The three writes share one D1
+ * transaction, so account deletion or another redemption cannot land between
+ * an invite claim and its membership/audit. The conditional UPDATE means at
+ * most one redeemer wins; a loser is mapped back to the current public error.
  *
  * `already_member` is a soft success-ish case: the user is *already* in
  * the group, the invite is NOT consumed, and the iOS client can show
@@ -1710,34 +2146,69 @@ export async function redeemInvite(
     return { error: 'already_member' };
   }
   const ts = now();
-  // Conditional UPDATE: only mark used if still unused. Returns
-  // info().changes = 1 on the winning redeemer, 0 if someone else just
-  // beat us to it (race-loss → report as `used`).
-  const res = await db
-    .prepare(
-      `UPDATE group_invites
-          SET used_at = ?2, used_by = ?3
-        WHERE code = ?1 AND used_at IS NULL`,
-    )
-    .bind(code, ts, userId)
-    .run();
-  if ((res.meta?.changes ?? 0) !== 1) {
-    return { error: 'used' };
+  const auditId = uuid();
+  const auditArgs = JSON.stringify({ group_id: invite.group_id });
+  const [claim] = await db.batch([
+    // Repeat every mutable validation inside the transaction. In particular,
+    // requiring a live principal with no deletion intent prevents a deletion
+    // that won the database write lock first from consuming the invite, even
+    // while provider revocation intentionally keeps the users row present.
+    db
+      .prepare(
+        `UPDATE group_invites
+            SET used_at = ?2, used_by = ?3
+          WHERE code = ?1
+            AND used_at IS NULL
+            AND (expires_at IS NULL OR expires_at >= ?2)
+            AND EXISTS (SELECT 1 FROM users WHERE id = ?3)
+            AND NOT EXISTS (
+              SELECT 1 FROM account_deletion_intents WHERE user_id = ?3
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM account_deletion_receipts WHERE user_id = ?3
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM group_members gm
+               WHERE gm.group_id = group_invites.group_id
+                 AND gm.user_id = ?3
+            )`,
+      )
+      .bind(code, ts, userId),
+    // changes() observes the immediately preceding conditional UPDATE on this
+    // SQLite connection. A losing batch creates neither an audit attempt nor a
+    // membership; the unique audit id then gates the final INSERT.
+    db
+      .prepare(
+        `INSERT INTO audit_log
+           (id,user_id,actor,tool,args,result,created_at)
+         SELECT ?1,?2,'ios','redeem_invite',?3,'joined',?4
+          WHERE changes() = 1`,
+      )
+      .bind(auditId, userId, auditArgs, ts),
+    db
+      .prepare(
+        `INSERT INTO group_members (group_id,user_id,display_name,joined_at)
+         SELECT group_id,?2,NULL,?3 FROM group_invites
+          WHERE code = ?1
+            AND EXISTS (SELECT 1 FROM audit_log WHERE id = ?4)`,
+      )
+      .bind(code, userId, ts, auditId),
+  ]);
+  if ((claim?.meta.changes ?? 0) !== 1) {
+    const current = await getInviteForRedemption(db, code);
+    if (!current) return { error: 'unknown' };
+    if (current.used_at != null) return { error: 'used' };
+    if (current.expires_at != null && current.expires_at < now()) {
+      return { error: 'expired' };
+    }
+    if (await isGroupMember(db, userId, current.group_id)) {
+      return { error: 'already_member' };
+    }
+    // The only remaining expected case is a principal deleted before this
+    // transaction obtained the write lock. Do not disclose that lifecycle
+    // state through the invite surface.
+    return { error: 'unknown' };
   }
-  await db
-    .prepare(
-      'INSERT INTO group_members (group_id,user_id,display_name,joined_at) VALUES (?1,?2,?3,?4)',
-    )
-    .bind(invite.group_id, userId, null, ts)
-    .run();
-  await writeAudit(
-    db,
-    userId,
-    'redeem_invite',
-    { group_id: invite.group_id },
-    'joined',
-    'ios',
-  );
   return { ok: true, group_id: invite.group_id };
 }
 

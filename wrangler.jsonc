@@ -48,6 +48,9 @@
   }
   // Secrets (set via `wrangler secret put`, NOT committed):
   //   APP_JWT_SECRET        - HS256 signing key for app JWTs
+  //   APPLE_TEAM_ID         - Apple Developer Team ID for client-secret JWTs
+  //   APPLE_KEY_ID          - Sign in with Apple private-key identifier
+  //   APPLE_PRIVATE_KEY     - PKCS#8 ES256 private signing key; owner-managed
   //   MCP_STATIC_TOKEN      - static bearer accepted at /mcp (Claude Code / curl)
   //   OWNER_APPLE_SUB       - allowlisted Apple `sub`; only this user may sign in
   //   DEV_AUTH_SECRET       - if set, enables POST /auth/dev (local + tests only)

@@ -1,6 +1,6 @@
 # Training Data Trust
 
-Slug: training-data-trust · Status: active · Updated: 2026-08-29
+Slug: training-data-trust · Status: active · Updated: 2026-08-30
 
 ## Objective
 
@@ -11,6 +11,7 @@ not erase local data, and plan changes can be inspected and restored.
 
 ## Scope
 
+- plan:identity-account-lifecycle
 - plan:workout-write-reliability
 - plan:reversible-plan-management
 
@@ -26,11 +27,10 @@ not erase local data, and plan changes can be inspected and restored.
 
 ## Completion condition
 
-Server mutation integrity and
-[Identity and Account Lifecycle](../plans/completed/identity-account-lifecycle/plan.md)
-are complete. The remaining two member plans reach their stated outcomes:
-offline workout intents recover without duplication, and AI or manual plan
-edits share a readable snapshot-and-revert history.
+Server mutation integrity is complete. The three current member plans reach
+their stated outcomes: Apple-backed account deletion revokes provider
+authorization, offline workout intents recover without duplication, and AI or
+manual plan edits share a readable snapshot-and-revert history.
 
 ## Stop rules
 

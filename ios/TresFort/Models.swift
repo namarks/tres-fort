@@ -11,9 +11,18 @@ struct SessionRenewalResponse: Decodable {
     let jwt: String
 }
 
+enum AppleRevocationOutcome: String, Decodable, Equatable {
+    case revoked
+    case manualRequired = "manual_required"
+}
+
 struct AccountDeletionResponse: Decodable {
     let ok: Bool
     let owner_tombstoned: Bool
+    /// Optional for compatibility with a previous Worker during app/server
+    /// version skew. A missing outcome cannot prove provider revocation and
+    /// therefore takes the same safe UI path as `manual_required`.
+    let apple_revocation: AppleRevocationOutcome?
 }
 
 struct UserDTO: Decodable {

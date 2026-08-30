@@ -2,7 +2,9 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { HonoEnv } from '../types';
 import { requireAppJwt } from '../auth';
+import { appleProviderConfig } from '../apple';
 import {
+  accountDeletionContinuationMatches,
   addDayTemplate,
   addTemplateExercise,
   createGroup,
@@ -57,6 +59,10 @@ apiRoutes.use('*', requireAppJwt);
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+// Initial account deletion is too destructive to authorize with a bearer that
+// may have been rolling for months. A matching durable intent or receipt is
+// exempt so provider interruption cannot strand an already-authorized delete.
+const ACCOUNT_DELETION_RECENT_AUTH_SECONDS = 5 * 60;
 
 type JsonObject = Record<string, unknown>;
 type FieldRule = (value: unknown) => boolean;
@@ -694,13 +700,43 @@ apiRoutes.delete('/me', async (c) => {
   if (!isAccountDeletionKey(idempotencyKey)) {
     return c.json({ error: 'invalid_account_deletion_key' }, 400);
   }
-  const result = await deleteUserAccount(
+  const userId = c.get('userId');
+  const livePrincipal = await c.env.DB
+    .prepare('SELECT 1 AS x FROM users WHERE id = ?1')
+    .bind(userId)
+    .first<{ x: number }>();
+  const continuingDeletion = await accountDeletionContinuationMatches(
     c.env.DB,
-    c.get('userId'),
-    c.env.OWNER_APPLE_SUB,
+    userId,
     idempotencyKey,
   );
-  if ('error' in result) return c.json({ error: result.error }, 404);
+  const authAgeSeconds = Math.max(
+    0,
+    Math.floor(Date.now() / 1000) - c.get('appAuthTime'),
+  );
+  if (
+    livePrincipal &&
+    !continuingDeletion &&
+    authAgeSeconds > ACCOUNT_DELETION_RECENT_AUTH_SECONDS
+  ) {
+    return c.json({ error: 'reauthentication_required' }, 401);
+  }
+  const result = await deleteUserAccount(
+    c.env.DB,
+    userId,
+    c.env.OWNER_APPLE_SUB,
+    idempotencyKey,
+    { appleConfig: appleProviderConfig(c.env) },
+  );
+  if ('error' in result) {
+    return c.json(
+      {
+        error:
+          result.error === 'not_found' ? 'account_not_found' : result.error,
+      },
+      result.error === 'conflict' ? 409 : 404,
+    );
+  }
   return c.json(result);
 });
 

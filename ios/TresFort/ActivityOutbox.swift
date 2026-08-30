@@ -27,6 +27,16 @@ struct ActivityOutbox: Codable {
         pending.removeAll()
     }
 
+    /// Merge a legacy queue into an already-scoped queue without replaying an
+    /// activity that was persisted in both locations during an interrupted
+    /// app upgrade.
+    mutating func merge(_ other: ActivityOutbox) {
+        var knownIDs = Set(pending.map(\.id))
+        for activity in other.pending where knownIDs.insert(activity.id).inserted {
+            pending.append(activity)
+        }
+    }
+
     var isEmpty: Bool { pending.isEmpty }
     var count: Int { pending.count }
 }
@@ -46,15 +56,8 @@ enum ActivityOutboxStore {
         defaults: UserDefaults = .standard
     ) -> ActivityOutbox {
         guard let userID else { return ActivityOutbox() }
+        bindLegacyState(userID: userID, defaults: defaults)
         let key = scopedKey(userID: userID)
-        // One-time upgrade: the legacy process-global queue belonged to the
-        // account that is authenticated during migration. Move, don't copy,
-        // so another Apple account can never inherit it later.
-        if defaults.data(forKey: key) == nil,
-           let legacy = defaults.data(forKey: legacyKey) {
-            defaults.set(legacy, forKey: key)
-            defaults.removeObject(forKey: legacyKey)
-        }
         guard let data = defaults.data(forKey: key) else {
             return ActivityOutbox()
         }
@@ -70,6 +73,36 @@ enum ActivityOutboxStore {
         guard let userID else { return }
         guard let data = try? JSONEncoder().encode(outbox) else { return }
         defaults.set(data, forKey: scopedKey(userID: userID))
+    }
+
+    /// Bind the old process-global queue to its known account. This is called
+    /// by AuthModel before it evaluates a saved bearer, because an unusable or
+    /// mismatched bearer may otherwise be followed by a different Apple
+    /// sign-in that could claim the first account's pending writes.
+    static func bindLegacyState(
+        userID: String,
+        defaults: UserDefaults = .standard
+    ) {
+        guard let legacyData = defaults.data(forKey: legacyKey) else { return }
+        let key = scopedKey(userID: userID)
+        if let scopedData = defaults.data(forKey: key) {
+            let decoder = JSONDecoder()
+            if var scoped = try? decoder.decode(ActivityOutbox.self, from: scopedData),
+               let legacy = try? decoder.decode(ActivityOutbox.self, from: legacyData) {
+                scoped.merge(legacy)
+                if let merged = try? JSONEncoder().encode(scoped) {
+                    defaults.set(merged, forKey: key)
+                }
+            } else if (try? decoder.decode(ActivityOutbox.self, from: legacyData)) != nil {
+                // A corrupt scoped value is unusable; retain the decodable
+                // legacy queue under the correct account instead.
+                defaults.set(legacyData, forKey: key)
+            }
+        } else {
+            defaults.set(legacyData, forKey: key)
+        }
+        // Move, don't copy, so no later Apple account can inherit this queue.
+        defaults.removeObject(forKey: legacyKey)
     }
 
     static func clear(userID: String, defaults: UserDefaults = .standard) {

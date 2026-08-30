@@ -41,6 +41,23 @@ struct RootView: View {
         .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
             if let url = activity.webpageURL { model.handleDeepLink(url) }
         }
+        .alert(
+            "Finish disconnecting Apple sign-in",
+            isPresented: Binding(
+                get: { model.postDeletionAppleRevocationRequired },
+                set: { isPresented in
+                    if !isPresented {
+                        model.dismissPostDeletionAppleRevocationHandoff()
+                    }
+                }
+            )
+        ) {
+            Button("Done") {
+                model.dismissPostDeletionAppleRevocationHandoff()
+            }
+        } message: {
+            Text("The account deletion completed, but Apple could not confirm that its Sign in with Apple access was revoked. To remove it manually, open Settings > [your name] > Sign in with Apple > Tres Fort > Delete.")
+        }
     }
 
     private var signedOut: some View {

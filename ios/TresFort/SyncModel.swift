@@ -25,6 +25,10 @@ final class SyncModel: ObservableObject {
     /// the account queue makes relaunch state visible on Today even when the
     /// workout runner is not mounted.
     @Published private(set) var setOutbox: SetOutbox
+    /// Finish/discard intents share the same account boundary as set intents.
+    /// An acknowledged discard remains here as a local barrier until the user
+    /// explicitly starts that date again.
+    @Published private(set) var terminalOutbox: WorkoutTerminalOutbox
     @Published private(set) var sendingSetIntentIDs: Set<String> = []
     @Published private(set) var setSlotsInFlight: Set<String> = []
     @Published private(set) var isTerminalMutationInFlight = false
@@ -62,9 +66,10 @@ final class SyncModel: ObservableObject {
     private let defaults: UserDefaults
     private let uuidFactory: () -> UUID
     private let now: () -> Date
-    private var isDrainingSetOutbox = false
-    private var setDrainRequested = false
-    private var setDrainWaiters: [CheckedContinuation<Void, Never>] = []
+    private var sendingTerminalIntentID: String?
+    private var isDrainingWorkoutWrites = false
+    private var workoutWriteDrainRequested = false
+    private var workoutWriteDrainWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(
         auth: AuthModel,
@@ -81,8 +86,22 @@ final class SyncModel: ObservableObject {
         self.defaults = defaults
         self.uuidFactory = uuidFactory
         self.now = now
-        self.setOutbox = SetOutboxStore.load(
+        var persistedSets = SetOutboxStore.load(
             userID: auth.userID, defaults: defaults)
+        let persistedTerminals = WorkoutTerminalOutboxStore.load(
+            userID: auth.userID, defaults: defaults)
+        // A durable discard is the semantic commit point. If the process died
+        // after saving it but before pruning the older set queue, discard still
+        // wins on the next construction before any network recovery begins.
+        for intent in persistedTerminals.intents where intent.action == .discard {
+            persistedSets.remove(date: intent.date)
+        }
+        self.setOutbox = persistedSets
+        self.terminalOutbox = persistedTerminals
+        for intent in persistedTerminals.intents where intent.action == .discard {
+            SetOutboxStore.remove(
+                date: intent.date, userID: auth.userID, defaults: defaults)
+        }
     }
 
     /// Bind every request to the account that created this model. An old
@@ -145,8 +164,13 @@ final class SyncModel: ObservableObject {
         let runnerWasActive = running
         let activeSlotID = activeRunnerSlotID()
         plan = state.plan
-        sets = state.sets
-        sessions = state.sessions
+        reconcileTerminalOutbox(with: state.sessions)
+        let maskedDates = discardBarrierDates
+        let maskedSessionIDs = Set(state.sessions.lazy.filter {
+            maskedDates.contains($0.date)
+        }.map(\.id))
+        sessions = state.sessions.filter { !maskedDates.contains($0.date) }
+        sets = state.sets.filter { !maskedSessionIDs.contains($0.session_id) }
         reconcileSetOutboxWithServerSets()
         // The server returns the full current non-deleted external_events set;
         // defensively drop any tombstones so calendar surfaces never see them.
@@ -156,13 +180,94 @@ final class SyncModel: ObservableObject {
         // Alias recovery knows the canonical session id from the logged set.
         // Prefer it over date-ordering so runner progress immediately keys on
         // the same session as the returned set.
+        // Keep discarded history in `sessions` so calendar projection can
+        // apply its existing vanish rule, but never reuse that terminal row as
+        // the runner's live write target. This matters immediately after an
+        // explicit restart clears the acknowledged local discard barrier: a
+        // foreground refresh can still observe the server's discarded row
+        // until the first new write calls the date-level create endpoint and
+        // revives it. Binding that stale id here would skip createSession and
+        // make the backend correctly reject the new attempt.
         todaySession = preferredTodaySessionID.flatMap { preferredID in
-            state.sessions.first { $0.id == preferredID }
-        } ?? state.sessions.first { $0.date == todayString }
+            sessions.first { $0.id == preferredID && $0.status != "discarded" }
+        } ?? sessions.first {
+            $0.date == todayString && $0.status != "discarded"
+        }
         reconcileSelection(
             previousSelectedDayID: previousSelectedDayID,
             activeSlotID: activeSlotID,
             runnerWasActive: runnerWasActive)
+    }
+
+    /// Full state is an independent acknowledgement path for commit-then-
+    /// timeout. It also detects the only operation that can intentionally
+    /// revive a discarded date (a later explicit restart); until the local
+    /// user clears the acknowledged barrier, an unexpected revival requeues
+    /// discard and stays masked.
+    private func reconcileTerminalOutbox(with serverSessions: [SessionRow]) {
+        guard canMutateBoundSetAccount else { return }
+        for var intent in terminalOutbox.intents {
+            let row = intent.resolvedSessionID.flatMap { id in
+                serverSessions.first { $0.id == id }
+            } ?? serverSessions.first { $0.date == intent.date }
+            switch intent.action {
+            case .finish:
+                guard row?.status == "completed" else { continue }
+                terminalOutbox.remove(id: intent.id)
+                persistRemovedTerminalIntent(id: intent.id)
+                if intent.date == todayString { stopRunnerAfterTerminalAck() }
+            case .discard:
+                if row?.status == "discarded" {
+                    guard intent.deliveryState != .acknowledged else { continue }
+                    intent.deliveryState = .acknowledged
+                    intent.failedHTTPStatus = nil
+                    intent.resolvedSessionID = row?.id ?? intent.resolvedSessionID
+                    terminalOutbox.replace(intent)
+                    persistReplacedTerminalIntent(intent)
+                } else if intent.deliveryState == .acknowledged, row != nil {
+                    // A stale pre-discard create reached the server after the
+                    // acknowledgement. Keep it invisible and reassert the
+                    // existing idempotent discard endpoint on this lifecycle.
+                    guard let revivedSessionID = row?.id else { continue }
+                    terminalOutbox.requeueAcknowledgedDiscard(
+                        date: intent.date,
+                        resolvedSessionID: revivedSessionID)
+                    WorkoutTerminalOutboxStore.requeueAcknowledgedDiscard(
+                        date: intent.date,
+                        resolvedSessionID: revivedSessionID,
+                        userID: accountID,
+                        defaults: defaults)
+                }
+            }
+        }
+        applyLocalDiscardMask()
+    }
+
+    private func applyLocalDiscardMask() {
+        let dates = discardBarrierDates
+        guard !dates.isEmpty else { return }
+        let sessionIDs = Set(sessions.lazy.filter {
+            dates.contains($0.date)
+        }.map(\.id))
+        sessions.removeAll { dates.contains($0.date) }
+        sets.removeAll { sessionIDs.contains($0.session_id) }
+        if let todaySession, dates.contains(todaySession.date) {
+            self.todaySession = nil
+        }
+        if dates.contains(todayString) {
+            stopRunnerAfterTerminalAck()
+        }
+    }
+
+    private func stopRunnerAfterTerminalAck() {
+        running = false
+        finished = false
+        workoutStart = nil
+        timedActive = false
+        timedEndDate = nil
+        timedStartDate = nil
+        skipped = []
+        skipRest()
     }
 
     /// The runner's current physical slot without `selectedDay`'s first-day
@@ -470,6 +575,47 @@ final class SyncModel: ObservableObject {
     }
     var sendingSetIntentCount: Int { sendingSetIntentIDs.count }
 
+    var pendingTerminalIntentCount: Int {
+        terminalOutbox.intents.filter { $0.deliveryState != .acknowledged }.count
+    }
+    var failedTerminalIntentCount: Int {
+        terminalOutbox.intents.filter { $0.deliveryState == .failed }.count
+    }
+    var queuedTerminalIntentCount: Int {
+        terminalOutbox.intents.filter {
+            $0.deliveryState == .queued && $0.id != sendingTerminalIntentID
+        }.count
+    }
+    var sendingTerminalIntentCount: Int { sendingTerminalIntentID == nil ? 0 : 1 }
+
+    var currentTerminalIntent: WorkoutTerminalIntent? {
+        terminalOutbox.intent(for: todaySession?.date ?? todayString)
+    }
+
+    var hasPendingTerminalIntentForCurrentWorkout: Bool {
+        guard let intent = currentTerminalIntent else { return false }
+        return intent.deliveryState != .acknowledged
+    }
+
+    var hasDiscardIntentForCurrentWorkout: Bool {
+        currentTerminalIntent?.action == .discard
+    }
+
+    var visibleTerminalIntent: WorkoutTerminalIntent? {
+        terminalOutbox.intents.first { $0.deliveryState != .acknowledged }
+    }
+
+    var hasUnacknowledgedDiscardForToday: Bool {
+        guard let intent = terminalOutbox.intent(for: todayString) else { return false }
+        return intent.action == .discard && intent.deliveryState != .acknowledged
+    }
+
+    private var discardBarrierDates: Set<String> {
+        Set(terminalOutbox.intents.lazy.filter {
+            $0.action == .discard
+        }.map(\.date))
+    }
+
     func pendingSetIntents(for ex: TemplateExercise) -> [PendingSetIntent] {
         let date = todaySession?.date ?? todayString
         return setOutbox.pending.filter {
@@ -478,7 +624,9 @@ final class SyncModel: ObservableObject {
     }
 
     func isSetSending(slotID: String) -> Bool {
-        if isTerminalMutationInFlight { return true }
+        if hasPendingTerminalIntentForCurrentWorkout || isTerminalMutationInFlight {
+            return true
+        }
         if setSlotsInFlight.contains(slotID) { return true }
         return setOutbox.pending.contains {
             $0.slotID == slotID && sendingSetIntentIDs.contains($0.id)
@@ -508,6 +656,24 @@ final class SyncModel: ObservableObject {
         guard canMutateBoundSetAccount else { return }
         SetOutboxStore.remove(
             ids: ids, userID: accountID, defaults: defaults)
+    }
+
+    private func persistEnqueuedTerminalIntent(_ intent: WorkoutTerminalIntent) {
+        guard canMutateBoundSetAccount else { return }
+        WorkoutTerminalOutboxStore.enqueue(
+            intent, userID: accountID, defaults: defaults)
+    }
+
+    private func persistReplacedTerminalIntent(_ intent: WorkoutTerminalIntent) {
+        guard canMutateBoundSetAccount else { return }
+        WorkoutTerminalOutboxStore.replace(
+            intent, userID: accountID, defaults: defaults)
+    }
+
+    private func persistRemovedTerminalIntent(id: String) {
+        guard canMutateBoundSetAccount else { return }
+        WorkoutTerminalOutboxStore.remove(
+            id: id, userID: accountID, defaults: defaults)
     }
 
     /// A full state pull is also authoritative acknowledgement of an exact
@@ -555,8 +721,10 @@ final class SyncModel: ObservableObject {
     @discardableResult
     func logSet(_ ex: TemplateExercise, weight: Double, reps: Int,
                 durationOverride: Int? = nil) async -> Bool {
+        let workoutDate = todaySession?.date ?? todayString
         guard currentJWT != nil, canMutateBoundSetAccount,
               !isTerminalMutationInFlight,
+              terminalOutbox.intent(for: workoutDate) == nil,
               !setSlotsInFlight.contains(ex.id)
         else { return false }
 
@@ -582,7 +750,7 @@ final class SyncModel: ObservableObject {
             is_timed: ex.isTimed)
         let intent = PendingSetIntent(
             body: body,
-            date: todaySession?.date ?? todayString,
+            date: workoutDate,
             dayTemplateID: selectedDay?.id,
             resolvedSessionID: todaySession?.id,
             deliveryState: .queued,
@@ -610,41 +778,112 @@ final class SyncModel: ObservableObject {
         case staleAccount
     }
 
-    /// All launch/foreground/connectivity/tap triggers converge here. A second
-    /// caller waits for the active drain instead of starting another POST loop.
+    /// Backward-compatible entry point used by P0 tests and existing lifecycle
+    /// hooks. P1 routes both queues through one serialized owner.
     func drainSetOutbox() async {
-        guard currentJWT != nil, canMutateBoundSetAccount, !setOutbox.isEmpty else {
+        await drainWorkoutWriteOutboxes()
+    }
+
+    /// Lifecycle/network recovery brackets a fresh state pull with the same
+    /// serialized writer. The first pass delivers ordinary offline work; the
+    /// pull acknowledges commit-then-timeout results or detects a stale
+    /// post-discard revival; the second pass immediately settles anything the
+    /// reconciliation requeued.
+    func recoverWorkoutWrites() async {
+        await drainWorkoutWriteOutboxes()
+        guard currentJWT != nil, canMutateBoundSetAccount else { return }
+        await load()
+        guard currentJWT != nil, canMutateBoundSetAccount else { return }
+        await drainWorkoutWriteOutboxes()
+    }
+
+    /// All launch/foreground/connectivity/tap triggers converge here. A second
+    /// caller waits for the active drain instead of starting a competing set or
+    /// terminal request. This is the ordering boundary that makes discard the
+    /// final client mutation even when it is requested during another await.
+    func drainWorkoutWriteOutboxes() async {
+        guard currentJWT != nil, canMutateBoundSetAccount,
+              !setOutbox.isEmpty || !terminalOutbox.intents.isEmpty
+        else {
             return
         }
-        if isDrainingSetOutbox {
+        if isDrainingWorkoutWrites {
             // Remember the trigger, not just its waiter. If the active request
             // is about to report a transient failure, this may be the launch,
             // foreground, or connectivity recovery signal that makes one more
             // immediate pass worthwhile.
-            setDrainRequested = true
+            workoutWriteDrainRequested = true
             await withCheckedContinuation { continuation in
-                setDrainWaiters.append(continuation)
+                workoutWriteDrainWaiters.append(continuation)
             }
             return
         }
 
-        isDrainingSetOutbox = true
+        isDrainingWorkoutWrites = true
         // An intent can be persisted while this owner is awaiting the final
         // reconciliation pull. Re-check the queue before releasing waiters so
         // that trigger coalesces into this same serialized drain instead of
         // being stranded until some later lifecycle/network event.
         while canMutateBoundSetAccount, currentJWT != nil {
-            setDrainRequested = false
-            let stoppedForRetryableFailure = await performSetOutboxDrain()
-            if stoppedForRetryableFailure && !setDrainRequested { break }
-            guard setOutbox.pending.contains(where: {
-                $0.deliveryState == .queued
-            }) else { break }
+            workoutWriteDrainRequested = false
+            let stoppedForRetryableFailure = await performWorkoutWriteDrain()
+            if stoppedForRetryableFailure && !workoutWriteDrainRequested { break }
+            guard hasImmediatelyDeliverableWorkoutWrite else { break }
         }
-        isDrainingSetOutbox = false
-        let waiters = setDrainWaiters
-        setDrainWaiters.removeAll()
+        isDrainingWorkoutWrites = false
+        let waiters = workoutWriteDrainWaiters
+        workoutWriteDrainWaiters.removeAll()
         waiters.forEach { $0.resume() }
+    }
+
+    private var hasImmediatelyDeliverableWorkoutWrite: Bool {
+        if setOutbox.pending.contains(where: { $0.deliveryState == .queued }) {
+            return true
+        }
+        return terminalOutbox.intents.contains { intent in
+            guard intent.deliveryState == .queued else { return false }
+            if intent.action == .discard { return true }
+            return !setOutbox.pending.contains { $0.date == intent.date }
+        }
+    }
+
+    /// Persisted discard dominates both queued and visibly-failed sets. This
+    /// method is intentionally safe to repeat: it also closes the crash window
+    /// between saving the terminal barrier and pruning the older set key.
+    private func supersedeSetIntentsForDiscardBarriers() {
+        guard canMutateBoundSetAccount else { return }
+        for date in discardBarrierDates {
+            guard setOutbox.pending.contains(where: { $0.date == date }) else {
+                continue
+            }
+            setOutbox.remove(date: date)
+            SetOutboxStore.remove(
+                date: date, userID: accountID, defaults: defaults)
+        }
+        applyLocalDiscardMask()
+    }
+
+    /// One serialized pass: discards first, then sets, then finishes whose
+    /// exact workout has no queued or failed set left. A finish therefore
+    /// cannot overtake its data, while discard never waits on data it erases.
+    private func performWorkoutWriteDrain() async -> Bool {
+        supersedeSetIntentsForDiscardBarriers()
+        if let discard = terminalOutbox.intents.first(where: {
+            $0.action == .discard && $0.deliveryState == .queued
+        }) {
+            return await sendPersistedTerminalIntent(discard)
+        }
+
+        let setStopped = await performSetOutboxDrain()
+        if setStopped { return true }
+        supersedeSetIntentsForDiscardBarriers()
+
+        guard let terminal = terminalOutbox.intents.first(where: { intent in
+            guard intent.deliveryState == .queued else { return false }
+            if intent.action == .discard { return true }
+            return !setOutbox.pending.contains { $0.date == intent.date }
+        }) else { return false }
+        return await sendPersistedTerminalIntent(terminal)
     }
 
     /// Returns true only when another immediate pass would repeat a transient
@@ -660,7 +899,12 @@ final class SyncModel: ObservableObject {
               let intent = setOutbox.pending.first(where: {
                   $0.deliveryState == .queued
               }) {
+            supersedeSetIntentsForDiscardBarriers()
+            guard setOutbox.pending.contains(where: { $0.id == intent.id }) else {
+                continue
+            }
             let outcome = await sendPersistedSetIntent(intent)
+            supersedeSetIntentsForDiscardBarriers()
             switch outcome {
             case let .acknowledged(setID, canonicalSessionID, date):
                 acknowledgedIDs.append(setID)
@@ -713,6 +957,156 @@ final class SyncModel: ObservableObject {
             handle(error, jwt: jwt)
         }
         return stoppedForRetryableFailure
+    }
+
+    /// Returns true only for a retryable/account-boundary stop. Permanent 4xx
+    /// failures remain visible but do not block recovery work for other dates.
+    private func sendPersistedTerminalIntent(
+        _ original: WorkoutTerminalIntent
+    ) async -> Bool {
+        guard canMutateBoundSetAccount, currentJWT != nil,
+              terminalOutbox.intent(for: original.date)?.id == original.id
+        else { return true }
+
+        sendingTerminalIntentID = original.id
+        isTerminalMutationInFlight = true
+        defer {
+            if sendingTerminalIntentID == original.id {
+                sendingTerminalIntentID = nil
+            }
+            isTerminalMutationInFlight = sendingTerminalIntentID != nil
+        }
+
+        var intent = original
+        if intent.resolvedSessionID == nil {
+            guard let jwt = currentJWT else { return true }
+            let session: SessionRow
+            do {
+                session = try await setWriteAPI.createSession(
+                    date: intent.date,
+                    dayTemplateID: intent.dayTemplateID,
+                    jwt: jwt)
+            } catch {
+                // Match set recovery: update_plan can invalidate the optional
+                // day UUID while this terminal choice is offline. Retry the
+                // existing date-level endpoint without that stale association.
+                guard intent.dayTemplateID != nil,
+                      isPermanentSetClientError(error),
+                      canMutateBoundSetAccount,
+                      let fallbackJWT = currentJWT
+                else {
+                    return classifyTerminalIntentFailure(
+                        original, error: error, attemptedJWT: jwt)
+                }
+                do {
+                    session = try await setWriteAPI.createSession(
+                        date: intent.date, dayTemplateID: nil, jwt: fallbackJWT)
+                } catch {
+                    return classifyTerminalIntentFailure(
+                        original, error: error, attemptedJWT: fallbackJWT)
+                }
+            }
+
+            guard canMutateBoundSetAccount,
+                  terminalOutbox.intent(for: intent.date)?.id == intent.id
+            else { return false }
+            guard session.date == intent.date else {
+                return classifyTerminalIntentFailure(
+                    intent,
+                    error: APIError.decoding(
+                        "Session resolution did not match the terminal date"),
+                    attemptedJWT: jwt)
+            }
+            intent.resolvedSessionID = session.id
+            terminalOutbox.replace(intent)
+            persistReplacedTerminalIntent(intent)
+            upsertSessionAfterCreate(session)
+        }
+
+        guard let sessionID = intent.resolvedSessionID,
+              let jwt = currentJWT
+        else { return true }
+        do {
+            let response: SessionRow
+            switch intent.action {
+            case .finish:
+                // A failed set remains in the queue and is just as unsettled
+                // as a queued one; the caller excludes both before reaching us.
+                guard !setOutbox.pending.contains(where: {
+                    $0.date == intent.date
+                }) else { return false }
+                response = try await terminalAPI.completeSession(
+                    sessionId: sessionID, jwt: jwt)
+            case .discard:
+                response = try await terminalAPI.discardSession(
+                    sessionId: sessionID, jwt: jwt)
+            }
+
+            guard canMutateBoundSetAccount else { return true }
+            // Discard may have replaced an in-flight finish. Its response is
+            // real server history, but the stale callback cannot touch the
+            // newer local intent; the coordinator will send discard next.
+            guard terminalOutbox.intent(for: intent.date)?.id == intent.id else {
+                return false
+            }
+            let expectedStatus = intent.action == .finish ? "completed" : "discarded"
+            guard response.date == intent.date,
+                  response.status == expectedStatus
+            else {
+                throw APIError.decoding(
+                    "Terminal acknowledgement did not match the persisted intent")
+            }
+
+            switch intent.action {
+            case .finish:
+                terminalOutbox.remove(id: intent.id)
+                persistRemovedTerminalIntent(id: intent.id)
+                upsertSessionAfterCreate(response)
+                if intent.date == todayString { stopRunnerAfterTerminalAck() }
+            case .discard:
+                intent.resolvedSessionID = response.id
+                intent.deliveryState = .acknowledged
+                intent.failedHTTPStatus = nil
+                terminalOutbox.replace(intent)
+                persistReplacedTerminalIntent(intent)
+                applyLocalDiscardMask()
+            }
+            loadError = nil
+            return false
+        } catch {
+            return classifyTerminalIntentFailure(
+                intent, error: error, attemptedJWT: jwt)
+        }
+    }
+
+    private func classifyTerminalIntentFailure(
+        _ attempted: WorkoutTerminalIntent,
+        error: Error,
+        attemptedJWT: String
+    ) -> Bool {
+        guard canMutateBoundSetAccount else { return true }
+        // A newer discard superseded this callback while its request was in
+        // flight. Never recreate or overwrite that newer durable choice.
+        guard var current = terminalOutbox.intent(for: attempted.date),
+              current.id == attempted.id
+        else { return false }
+        if isPermanentSetClientError(error),
+           case let APIError.http(code, _) = error {
+            current.deliveryState = .failed
+            current.failedHTTPStatus = code
+            terminalOutbox.replace(current)
+            persistReplacedTerminalIntent(current)
+            loadError = "Workout \(current.action == .finish ? "finish" : "discard") wasn't saved because the server rejected it (HTTP \(code))."
+            return false
+        }
+        handle(error, jwt: attemptedJWT)
+        if case let APIError.http(code, _) = error,
+           code == 401,
+           let latestJWT = currentJWT,
+           latestJWT != attemptedJWT {
+            return false
+        }
+        return true
     }
 
     private func sendPersistedSetIntent(_ original: PendingSetIntent) async -> SetSendOutcome {
@@ -884,6 +1278,18 @@ final class SyncModel: ObservableObject {
     }
 
     func startWorkout() {
+        let date = todaySession?.date ?? todayString
+        if let terminal = terminalOutbox.intent(for: date) {
+            guard terminal.action == .discard,
+                  terminal.deliveryState == .acknowledged
+            else {
+                loadError = "This workout still has a finish or discard waiting to sync."
+                return
+            }
+            terminalOutbox.clearAcknowledgedDiscard(date: date)
+            WorkoutTerminalOutboxStore.clearAcknowledgedDiscard(
+                date: date, userID: accountID, defaults: defaults)
+        }
         running = true
         finished = false
         exerciseIndex = 0
@@ -912,6 +1318,7 @@ final class SyncModel: ObservableObject {
     func startTimedSet() {
         guard let ex = currentExercise, ex.isTimed,
               !isTerminalMutationInFlight,
+              !hasPendingTerminalIntentForCurrentWorkout,
               !isSetSending(slotID: ex.id)
         else { return }
         timedActive = true
@@ -1041,25 +1448,23 @@ final class SyncModel: ObservableObject {
     }
 
     func finishWorkout() async {
-        guard !isTerminalMutationInFlight else { return }
-        guard !hasPendingSetsForCurrentWorkout else {
-            loadError = "Wait for queued sets to sync before finishing this workout."
-            return
+        guard canMutateBoundSetAccount, currentJWT != nil else { return }
+        let date = todaySession?.date ?? todayString
+        if terminalOutbox.intent(for: date) == nil {
+            let intent = WorkoutTerminalIntent(
+                id: uuidFactory().uuidString,
+                action: .finish,
+                date: date,
+                dayTemplateID: todaySession?.day_template_id ?? selectedDay?.id,
+                resolvedSessionID: todaySession?.id,
+                deliveryState: .queued,
+                failedHTTPStatus: nil)
+            // The complete user choice is durable before the coordinator can
+            // await set delivery, session resolution, or the terminal PATCH.
+            terminalOutbox.enqueue(intent)
+            persistEnqueuedTerminalIntent(intent)
         }
-        isTerminalMutationInFlight = true
-        defer { isTerminalMutationInFlight = false }
-        if let jwt = currentJWT, let sid = todaySession?.id {
-            todaySession = try? await terminalAPI.completeSession(
-                sessionId: sid, jwt: jwt)
-        }
-        running = false
-        finished = false
-        workoutStart = nil
-        timedActive = false
-        timedEndDate = nil
-        timedStartDate = nil
-        skipRest()
-        await load()
+        await drainWorkoutWriteOutboxes()
     }
 
     /// Discard today's session — "I didn't really do this." Throws the
@@ -1069,26 +1474,52 @@ final class SyncModel: ObservableObject {
     /// the runner/Live Activity don't linger; `load()` then pulls the
     /// vanished state. Restarting the day creates a fresh session.
     func discardWorkout() async {
-        guard !isTerminalMutationInFlight else { return }
-        guard !hasPendingSetsForCurrentWorkout else {
-            loadError = "Retry or resolve queued sets before discarding this workout."
-            return
+        guard canMutateBoundSetAccount, currentJWT != nil else { return }
+        let date = todaySession?.date ?? todayString
+        let intent = WorkoutTerminalIntent(
+            id: uuidFactory().uuidString,
+            action: .discard,
+            date: date,
+            dayTemplateID: todaySession?.day_template_id ?? selectedDay?.id,
+            resolvedSessionID: todaySession?.id,
+            deliveryState: .queued,
+            failedHTTPStatus: nil)
+
+        // Saving the discard first is the atomic semantic commit. If the app
+        // dies before the following physical set-key cleanup, init observes
+        // this barrier and performs the same supersession before any drain.
+        terminalOutbox.enqueue(intent)
+        persistEnqueuedTerminalIntent(intent)
+        supersedeSetIntentsForDiscardBarriers()
+        applyLocalDiscardMask()
+        await drainWorkoutWriteOutboxes()
+    }
+
+    func retryTerminalIntent(id: String) async {
+        guard canMutateBoundSetAccount,
+              var intent = terminalOutbox.intents.first(where: { $0.id == id }),
+              intent.deliveryState == .failed
+        else { return }
+        intent.deliveryState = .queued
+        intent.failedHTTPStatus = nil
+        terminalOutbox.replace(intent)
+        persistReplacedTerminalIntent(intent)
+        await drainWorkoutWriteOutboxes()
+    }
+
+    func retryFailedTerminalIntents() async {
+        guard canMutateBoundSetAccount else { return }
+        var changed = false
+        for var intent in terminalOutbox.intents
+        where intent.deliveryState == .failed {
+            intent.deliveryState = .queued
+            intent.failedHTTPStatus = nil
+            terminalOutbox.replace(intent)
+            persistReplacedTerminalIntent(intent)
+            changed = true
         }
-        isTerminalMutationInFlight = true
-        defer { isTerminalMutationInFlight = false }
-        if let jwt = currentJWT, let sid = todaySession?.id {
-            _ = try? await terminalAPI.discardSession(
-                sessionId: sid, jwt: jwt)
-        }
-        todaySession = nil
-        running = false
-        finished = false
-        workoutStart = nil
-        timedActive = false
-        timedEndDate = nil
-        timedStartDate = nil
-        skipRest()
-        await load()
+        guard changed else { return }
+        await drainWorkoutWriteOutboxes()
     }
 
     // MARK: in-app workout editing

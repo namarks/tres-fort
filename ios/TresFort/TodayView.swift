@@ -45,6 +45,46 @@ private struct PendingSetBanner: View {
     }
 }
 
+private struct PendingTerminalBanner: View {
+    @ObservedObject var sync: SyncModel
+
+    var body: some View {
+        if let intent = sync.visibleTerminalIntent {
+            HStack(spacing: 10) {
+                Image(systemName: intent.deliveryState == .failed
+                    ? "exclamationmark.triangle.fill"
+                    : "arrow.triangle.2.circlepath")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(intent.deliveryState == .failed
+                        ? Theme.danger : Theme.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(intent.action == .finish
+                        ? "WORKOUT FINISH WAITING TO SYNC"
+                        : "WORKOUT DISCARDED — WAITING TO SYNC")
+                        .font(Theme.mono(10, .bold)).tracking(1)
+                        .foregroundStyle(Theme.text)
+                    Text(intent.deliveryState == .failed
+                        ? "Server rejected it — retry when ready"
+                        : (sync.sendingTerminalIntentCount > 0
+                            ? "Sending…" : "Saved on this device"))
+                        .font(Theme.mono(10)).foregroundStyle(Theme.muted)
+                }
+                Spacer()
+                if intent.deliveryState == .failed {
+                    Button("RETRY") {
+                        Task { await sync.retryTerminalIntent(id: intent.id) }
+                    }
+                    .font(Theme.mono(10, .bold))
+                    .foregroundStyle(Theme.accent)
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(Theme.surface)
+            .overlay(alignment: .bottom) { Divider().overlay(Theme.surface2) }
+        }
+    }
+}
+
 struct TodayView: View {
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
@@ -72,6 +112,9 @@ struct TodayView: View {
             ZStack(alignment: .top) {
                 Theme.background
                 VStack(spacing: 0) {
+                    if sync.pendingTerminalIntentCount > 0 {
+                        PendingTerminalBanner(sync: sync)
+                    }
                     if sync.pendingSetIntentCount > 0 {
                         PendingSetBanner(sync: sync)
                     }
@@ -132,15 +175,11 @@ struct TodayView: View {
                             Button("End workout", role: .destructive) {
                                 Task { await sync.finishWorkout() }
                             }
-                            .disabled(
-                                sync.hasPendingSetsForCurrentWorkout
-                                    || sync.isTerminalMutationInFlight)
+                            .disabled(sync.hasPendingTerminalIntentForCurrentWorkout)
                             Button("Discard workout", role: .destructive) {
                                 showDiscardConfirm = true
                             }
-                            .disabled(
-                                sync.hasPendingSetsForCurrentWorkout
-                                    || sync.isTerminalMutationInFlight)
+                            .disabled(sync.hasDiscardIntentForCurrentWorkout)
                         }
                         Button("Sign out", role: .destructive) { auth.signOut() }
                     } label: { Image(systemName: "ellipsis.circle").foregroundStyle(Theme.muted) }
@@ -268,7 +307,9 @@ private struct RestDayView: View {
             // day" override uses (`onOverride` → showOverridePicker).
             StartWorkoutCTA(onOverride: onOverride)
                 .padding(16)
-                .disabled(sync.plan?.days.isEmpty ?? true)
+                .disabled(
+                    (sync.plan?.days.isEmpty ?? true)
+                        || sync.hasUnacknowledgedDiscardForToday)
         }
     }
 }
@@ -427,9 +468,7 @@ private struct WorkoutDoneView: View {
                         .padding(.vertical, 14)
                 }
                 .buttonStyle(.plain)
-                .disabled(
-                    sync.hasPendingSetsForCurrentWorkout
-                        || sync.isTerminalMutationInFlight)
+                .disabled(sync.hasDiscardIntentForCurrentWorkout)
             }
             .padding(16)
         }
@@ -503,7 +542,8 @@ private struct TodayWorkoutView: View {
             .background(Theme.accent).foregroundStyle(.black)
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
-            .disabled(day.exercises.isEmpty)
+            .disabled(
+                day.exercises.isEmpty || sync.hasUnacknowledgedDiscardForToday)
             .padding(16)
         }
         .sheet(item: $demoFor) { ex in
@@ -1060,7 +1100,9 @@ private struct TimedSetView: View {
                 }
                 .background(Theme.surface2).foregroundStyle(Theme.text)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
-                .disabled(sync.isTerminalMutationInFlight)
+                .disabled(
+                    sync.isTerminalMutationInFlight
+                        || sync.hasPendingTerminalIntentForCurrentWorkout)
             } else {
                 Button { sync.startTimedSet() } label: {
                     Text("START SET \(sync.currentSetNumber)")
@@ -1245,11 +1287,17 @@ private struct FinishedView: View {
     }
 
     var body: some View {
+        let finishPending = sync.currentTerminalIntent?.action == .finish
+            && sync.currentTerminalIntent?.deliveryState != .acknowledged
         ScrollView {
             VStack(spacing: 16) {
-                Text("DONE").font(Theme.display(88))
+                Text(finishPending ? "WAITING" : "SETS DONE")
+                    .font(Theme.display(finishPending ? 64 : 58))
                     .foregroundStyle(Theme.done)
-                Text("LOGGED TO YOUR COACH").font(Theme.mono(11, .bold)).tracking(2)
+                Text(finishPending
+                    ? "FINISH SAVED ON THIS DEVICE"
+                    : "READY TO FINISH")
+                    .font(Theme.mono(11, .bold)).tracking(2)
                     .foregroundStyle(Theme.muted)
 
                 let sets = todaysSets
@@ -1269,15 +1317,15 @@ private struct FinishedView: View {
                 .padding(.top, 20)
 
                 Button { Task { await sync.finishWorkout() } } label: {
-                    Text("FINISH").font(Theme.display(24)).tracking(1.5)
+                    Text(finishPending ? "WAITING TO SYNC" : "FINISH")
+                        .font(Theme.display(24)).tracking(1.5)
                         .frame(maxWidth: .infinity).padding(.vertical, 16)
                 }
                 .background(Theme.accent).foregroundStyle(.black)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .padding(.top, 24)
                 .disabled(
-                    sync.hasPendingSetsForCurrentWorkout
-                        || sync.isTerminalMutationInFlight)
+                    sync.hasPendingTerminalIntentForCurrentWorkout)
             }
             .padding(28)
         }

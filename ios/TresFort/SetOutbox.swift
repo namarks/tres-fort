@@ -62,6 +62,10 @@ struct SetOutbox: Codable, Equatable {
         pending.removeAll { $0.id == id }
     }
 
+    mutating func remove(date: String) {
+        pending.removeAll { $0.date == date }
+    }
+
     var isEmpty: Bool { pending.isEmpty }
     var count: Int { pending.count }
 }
@@ -125,6 +129,17 @@ enum SetOutboxStore {
         update(userID: userID, defaults: defaults) { outbox in
             for id in ids { outbox.remove(id: id) }
         }
+    }
+
+    /// Discard is a durable date-level barrier. Once that barrier is saved,
+    /// every set intent for the same workout is superseded as one logical
+    /// operation, regardless of whether the set was queued or visibly failed.
+    static func remove(
+        date: String,
+        userID: String?,
+        defaults: UserDefaults = .standard
+    ) {
+        update(userID: userID, defaults: defaults) { $0.remove(date: date) }
     }
 
     private static func update(

@@ -1,7 +1,11 @@
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  discardSession,
   getOrCreateSession,
+  logSet,
+  logWorkoutComplete,
+  patchSession,
   patchSet,
   setPlannedSession,
   skipPlannedSession,
@@ -90,6 +94,148 @@ function databasesWithSharedReadBarrier(sqlNeedle: string): [D1Database, D1Datab
   };
 
   return [wrapOne(), wrapOne()];
+}
+
+/**
+ * Pause one `.run()` mutation after a matching `.first()` has returned. The
+ * caller can let another real-D1 mutation commit in that gap, then release
+ * the stale writer and assert its conditional write result.
+ */
+function databaseWithPausedRunAfterRead(
+  readNeedle: string,
+  runNeedle: string,
+): {
+  db: D1Database;
+  readReached: Promise<void>;
+  releaseRun: () => void;
+} {
+  let markRead!: () => void;
+  const readReached = new Promise<void>((resolve) => {
+    markRead = resolve;
+  });
+  let releaseRun!: () => void;
+  const runGate = new Promise<void>((resolve) => {
+    releaseRun = resolve;
+  });
+  let interceptedRead = false;
+  let interceptedRun = false;
+
+  const wrapRead = (statement: D1PreparedStatement): D1PreparedStatement =>
+    new Proxy(statement, {
+      get(target, property) {
+        if (property === 'bind') {
+          return (...values: any[]) => wrapRead(target.bind(...values));
+        }
+        if (property === 'first') {
+          return async (...args: any[]) => {
+            const value = await (target.first as (...callArgs: any[]) => Promise<unknown>)(
+              ...args,
+            );
+            markRead();
+            return value;
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  const wrapRun = (statement: D1PreparedStatement): D1PreparedStatement =>
+    new Proxy(statement, {
+      get(target, property) {
+        if (property === 'bind') {
+          return (...values: any[]) => wrapRun(target.bind(...values));
+        }
+        if (property === 'run') {
+          return async (...args: any[]) => {
+            await runGate;
+            return (target.run as (...callArgs: any[]) => Promise<unknown>)(...args);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+
+  const db = new Proxy(env.DB, {
+    get(target, property) {
+      if (property === 'prepare') {
+        return (sql: string) => {
+          const statement = target.prepare(sql);
+          if (!interceptedRead && sql.includes(readNeedle)) {
+            interceptedRead = true;
+            return wrapRead(statement);
+          }
+          if (!interceptedRun && sql.includes(runNeedle)) {
+            interceptedRun = true;
+            return wrapRun(statement);
+          }
+          return statement;
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return { db, readReached, releaseRun };
+}
+
+/** Pause the first D1 batch after a matching pre-read has returned. */
+function databaseWithPausedBatchAfterRead(readNeedle: string): {
+  db: D1Database;
+  readReached: Promise<void>;
+  releaseBatch: () => void;
+} {
+  let markRead!: () => void;
+  const readReached = new Promise<void>((resolve) => {
+    markRead = resolve;
+  });
+  let releaseBatch!: () => void;
+  const batchGate = new Promise<void>((resolve) => {
+    releaseBatch = resolve;
+  });
+  let interceptedRead = false;
+
+  const wrapRead = (statement: D1PreparedStatement): D1PreparedStatement =>
+    new Proxy(statement, {
+      get(target, property) {
+        if (property === 'bind') {
+          return (...values: any[]) => wrapRead(target.bind(...values));
+        }
+        if (property === 'first') {
+          return async (...args: any[]) => {
+            const value = await (target.first as (...callArgs: any[]) => Promise<unknown>)(
+              ...args,
+            );
+            markRead();
+            return value;
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+
+  const db = new Proxy(env.DB, {
+    get(target, property) {
+      if (property === 'prepare') {
+        return (sql: string) => {
+          const statement = target.prepare(sql);
+          if (interceptedRead || !sql.includes(readNeedle)) return statement;
+          interceptedRead = true;
+          return wrapRead(statement);
+        };
+      }
+      if (property === 'batch') {
+        return async (statements: D1PreparedStatement[]) => {
+          await batchGate;
+          return target.batch(statements);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return { db, readReached, releaseBatch };
 }
 
 describe('plan-tree optimistic concurrency', () => {
@@ -333,6 +479,183 @@ describe('session create concurrency', () => {
       .bind(userId, '2037-01-05')
       .all<{ id: string; status: string }>();
     expect(rows.results).toEqual([{ id: created.id, status: 'skipped' }]);
+  });
+});
+
+describe('discard terminal-state concurrency', () => {
+  it('keeps discard final when a completion PATCH already read the old state', async () => {
+    const { userId, planId } = await seedUserAndPlan('completion-discard-race');
+    const session = await getOrCreateSession(
+      env.DB,
+      userId,
+      planId,
+      '2037-01-06',
+      null,
+    );
+    const paused = databaseWithPausedRunAfterRead(
+      'SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2',
+      'UPDATE sessions SET status=?2',
+    );
+
+    const completionPromise = patchSession(paused.db, userId, session.id, {
+      status: 'completed',
+    });
+    await paused.readReached;
+    const discarded = await discardSession(env.DB, userId, session.id);
+    paused.releaseRun();
+    const completion = await completionPromise;
+
+    expect(discarded).toMatchObject({ id: session.id, status: 'discarded' });
+    expect(completion).toEqual({ error: 'session_discarded', status: 'discarded' });
+    const final = await env.DB
+      .prepare('SELECT status FROM sessions WHERE id = ?1')
+      .bind(session.id)
+      .first<{ status: string }>();
+    expect(final?.status).toBe('discarded');
+  });
+
+  it('returns the same terminal conflict through MCP workout completion', async () => {
+    const { userId, planId } = await seedUserAndPlan('mcp-completion-discard-race');
+    const date = '2037-01-10';
+    const session = await getOrCreateSession(env.DB, userId, planId, date, null);
+    const paused = databaseWithPausedRunAfterRead(
+      'SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2',
+      'UPDATE sessions SET status=?2',
+    );
+
+    const completionPromise = logWorkoutComplete(paused.db, userId, date, 7, null);
+    await paused.readReached;
+    await discardSession(env.DB, userId, session.id);
+    paused.releaseRun();
+
+    expect(await completionPromise).toEqual({
+      error: 'session_discarded',
+      status: 'discarded',
+    });
+  });
+
+  it('tombstones a set that commits after discard reads but before its batch', async () => {
+    const { userId, planId } = await seedUserAndPlan('set-before-discard-race');
+    const session = await getOrCreateSession(
+      env.DB,
+      userId,
+      planId,
+      '2037-01-09',
+      null,
+    );
+    const setId = crypto.randomUUID();
+    const paused = databaseWithPausedBatchAfterRead(
+      'SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2',
+    );
+
+    const discardPromise = discardSession(paused.db, userId, session.id);
+    await paused.readReached;
+    const logged = await logSet(env.DB, userId, {
+      id: setId,
+      session_id: session.id,
+      exercise_id: 'ex_bench',
+      set_index: 1,
+      weight: 175,
+      reps: 5,
+      source: 'ios',
+    });
+    paused.releaseBatch();
+    const discarded = await discardPromise;
+
+    expect(logged).toMatchObject({ deduped: false, set: { id: setId } });
+    expect(discarded).toMatchObject({ id: session.id, status: 'discarded' });
+    const finalSet = await env.DB
+      .prepare('SELECT deleted_at FROM set_logs WHERE id = ?1')
+      .bind(setId)
+      .first<{ deleted_at: number | null }>();
+    expect(finalSet?.deleted_at).not.toBeNull();
+    const audit = await env.DB
+      .prepare("SELECT args FROM audit_log WHERE user_id = ?1 AND tool = 'discard_session'")
+      .bind(userId)
+      .first<{ args: string }>();
+    expect(JSON.parse(audit!.args)).toMatchObject({
+      session_id: session.id,
+      sets_discarded: 1,
+    });
+  });
+
+  it('rejects a set when discard commits between its idempotency read and write batch', async () => {
+    const { userId, planId } = await seedUserAndPlan('set-discard-race');
+    const session = await getOrCreateSession(
+      env.DB,
+      userId,
+      planId,
+      '2037-01-07',
+      null,
+    );
+    const setId = crypto.randomUUID();
+    const paused = databaseWithPausedBatchAfterRead('FROM set_logs AS sl');
+
+    const setPromise = logSet(paused.db, userId, {
+      id: setId,
+      session_id: session.id,
+      exercise_id: 'ex_bench',
+      set_index: 1,
+      weight: 185,
+      reps: 5,
+      source: 'ios',
+    }).then(
+      (value) => ({ ok: true as const, value }),
+      (error: Error) => ({ ok: false as const, error: error.message }),
+    );
+    await paused.readReached;
+    const discarded = await discardSession(env.DB, userId, session.id);
+    paused.releaseBatch();
+    const setOutcome = await setPromise;
+
+    expect(discarded).toMatchObject({ id: session.id, status: 'discarded' });
+    expect(setOutcome).toEqual({ ok: false, error: 'session_discarded' });
+    const finalSession = await env.DB
+      .prepare('SELECT status FROM sessions WHERE id = ?1')
+      .bind(session.id)
+      .first<{ status: string }>();
+    const finalSet = await env.DB
+      .prepare('SELECT deleted_at FROM set_logs WHERE id = ?1')
+      .bind(setId)
+      .first<{ deleted_at: number | null }>();
+    const live = await env.DB
+      .prepare('SELECT COUNT(*) AS n FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL')
+      .bind(session.id)
+      .first<{ n: number }>();
+    expect(finalSession?.status).toBe('discarded');
+    expect(finalSet == null || finalSet.deleted_at != null).toBe(true);
+    expect(live?.n).toBe(0);
+  });
+
+  it('emits exactly one audit when two discards read the same live session', async () => {
+    const { userId, planId } = await seedUserAndPlan('double-discard-race');
+    const session = await getOrCreateSession(
+      env.DB,
+      userId,
+      planId,
+      '2037-01-08',
+      null,
+    );
+    const [dbA, dbB] = databasesWithSharedReadBarrier(
+      'SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2',
+    );
+
+    const [a, b] = await Promise.all([
+      discardSession(dbA, userId, session.id),
+      discardSession(dbB, userId, session.id),
+    ]);
+    expect(a?.status).toBe('discarded');
+    expect(b?.status).toBe('discarded');
+    const audits = await env.DB
+      .prepare("SELECT args FROM audit_log WHERE user_id = ?1 AND tool = 'discard_session'")
+      .bind(userId)
+      .all<{ args: string }>();
+    expect(
+      audits.results.filter(
+        (row) =>
+          (JSON.parse(row.args) as { session_id?: string }).session_id === session.id,
+      ),
+    ).toHaveLength(1);
   });
 });
 

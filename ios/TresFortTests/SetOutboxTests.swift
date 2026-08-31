@@ -234,10 +234,11 @@ final class SetOutboxTests: XCTestCase {
 
     private func session(
         id: String = "session-a",
-        date: String? = nil
+        date: String? = nil,
+        status: String = "in_progress"
     ) -> SessionRow {
         SessionRow(
-            id: id, date: date ?? fixedCivilDate, status: "in_progress",
+            id: id, date: date ?? fixedCivilDate, status: status,
             day_template_id: "day-a")
     }
 
@@ -1182,46 +1183,393 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertFalse(model.isComplete(ex))
     }
 
-    func testFinishAndDiscardStayGuardedWhileCurrentDateHasPendingIntent() async {
+    func testFinishQueuesBehindUnsettledSetAndDiscardSupersedesBoth() async {
         let defaults = defaults()
         let ex = exercise()
         let s = session()
-        let api = SetWriteAPIStub()
-        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let setAPI = SetWriteAPIStub()
+        setAPI.logHandler = { _, _, _ in
+            throw URLError(.notConnectedToInternet)
+        }
+        let terminalAPI = SetTerminalAPIStub()
+        terminalAPI.completeHandler = { [self] _, _ in
+            session(status: "completed")
+        }
+        terminalAPI.discardHandler = { [self] _, _ in
+            session(status: "discarded")
+        }
         let model = SyncModel(
-            auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: setAPI,
+            terminalAPI: terminalAPI,
             defaults: defaults, now: { self.fixedDate })
         prepare(model, exercise: ex, session: s, running: true)
         _ = await model.logSet(ex, weight: 135, reps: 5)
 
         await model.finishWorkout()
         XCTAssertTrue(model.running)
-        XCTAssertEqual(model.todaySession?.id, s.id)
-        XCTAssertTrue(model.loadError?.contains("queued sets") == true)
+        XCTAssertEqual(model.currentTerminalIntent?.action, .finish)
+        XCTAssertEqual(model.currentTerminalIntent?.deliveryState, .queued)
+        XCTAssertTrue(terminalAPI.completeCalls.isEmpty)
 
         await model.discardWorkout()
-        XCTAssertTrue(model.running)
-        XCTAssertEqual(model.todaySession?.id, s.id)
-        XCTAssertTrue(model.loadError?.contains("queued sets") == true)
+        XCTAssertFalse(model.running)
+        XCTAssertNil(model.todaySession)
+        XCTAssertTrue(model.setOutbox.isEmpty)
+        XCTAssertTrue(
+            SetOutboxStore.load(userID: "user-a", defaults: defaults).isEmpty)
+        XCTAssertEqual(model.currentTerminalIntent?.action, .discard)
+        XCTAssertEqual(model.currentTerminalIntent?.deliveryState, .acknowledged)
+        XCTAssertTrue(terminalAPI.completeCalls.isEmpty)
+        XCTAssertEqual(terminalAPI.discardCalls.count, 1)
     }
 
-    func testDiscardInFlightExcludesSetAndConcurrentFinish() async {
+    func testFinishPersistsBeforeAwaitAndStaysTruthfulOnTimeout() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session()
+        let terminalAPI = SetTerminalAPIStub()
+        terminalAPI.completeHandler = { _, _ in
+            let stored = WorkoutTerminalOutboxStore.load(
+                userID: "user-a", defaults: defaults)
+            XCTAssertEqual(stored.count, 1)
+            XCTAssertEqual(stored.intents.first?.action, .finish)
+            XCTAssertEqual(stored.intents.first?.resolvedSessionID, s.id)
+            throw URLError(.timedOut)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            terminalAPI: terminalAPI,
+            defaults: defaults,
+            uuidFactory: { self.fixedUUID },
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s, running: true)
+        model.finished = true
+
+        await model.finishWorkout()
+
+        XCTAssertTrue(model.running)
+        XCTAssertTrue(model.finished)
+        XCTAssertEqual(model.currentTerminalIntent?.id, fixedUUID.uuidString)
+        XCTAssertEqual(model.currentTerminalIntent?.deliveryState, .queued)
+        XCTAssertEqual(terminalAPI.completeCalls.count, 1)
+    }
+
+    func testFinishSurvivesUnauthorizedResponseAndSameUserReauthentication() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session()
+        let oldToken = jwt(subject: "user-a")
+        let newToken = jwt(
+            subject: "user-a",
+            expiration: fixedDate.addingTimeInterval(5_000_000))
+        let authAPI = SetAuthAPIStub()
+        let auth = auth(
+            defaults: defaults, api: authAPI, token: oldToken)
+        let terminalAPI = SetTerminalAPIStub()
+        terminalAPI.completeHandler = { [self] _, jwt in
+            if jwt == oldToken {
+                throw APIError.http(401, "invalid_token")
+            }
+            XCTAssertEqual(jwt, newToken)
+            return session(status: "completed")
+        }
+        let model = SyncModel(
+            auth: auth,
+            terminalAPI: terminalAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s, running: true)
+
+        await model.finishWorkout()
+
+        XCTAssertNil(auth.jwt)
+        XCTAssertEqual(auth.userID, "user-a")
+        XCTAssertEqual(model.currentTerminalIntent?.deliveryState, .queued)
+        XCTAssertEqual(
+            WorkoutTerminalOutboxStore.load(
+                userID: "user-a", defaults: defaults).count,
+            1)
+
+        authAPI.authResult = .success(.init(
+            jwt: newToken,
+            user: .init(id: "user-a", display_name: nil, email: nil)))
+        await auth.exchange(identityToken: "same-user", fullName: nil)
+        await model.drainWorkoutWriteOutboxes()
+
+        XCTAssertEqual(terminalAPI.completeCalls.map(\.jwt), [oldToken, newToken])
+        XCTAssertTrue(model.terminalOutbox.isEmpty)
+        XCTAssertFalse(model.running)
+    }
+
+    func testFinishSendsOnlyAfterItsQueuedSetIsAcknowledged() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session()
+        let body = SetRequestBody(
+            id: fixedUUID.uuidString,
+            exercise_id: ex.exercise_id,
+            template_exercise_id: ex.id,
+            set_index: 1,
+            weight: 135,
+            reps: 5,
+            is_warmup: false,
+            logged_at: 2_000_000_000_000,
+            duration_s: nil,
+            is_timed: false)
+        var persisted = SetOutbox()
+        persisted.enqueue(.init(
+            body: body,
+            date: s.date,
+            dayTemplateID: "day-a",
+            resolvedSessionID: s.id,
+            deliveryState: .queued,
+            failedHTTPStatus: nil))
+        SetOutboxStore.save(persisted, userID: "user-a", defaults: defaults)
+        let setAPI = SetWriteAPIStub()
+        let terminalAPI = SetTerminalAPIStub()
+        var order: [String] = []
+        let committed = setLog(body: body, sessionID: s.id)
+        setAPI.logHandler = { _, _, _ in
+            order.append("set")
+            return .init(set: committed, deduped: false)
+        }
+        setAPI.stateHandler = { [self] _ in
+            state(session: s, sets: [committed], exercise: ex)
+        }
+        terminalAPI.completeHandler = { [self] _, _ in
+            order.append("finish")
+            return session(status: "completed")
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: setAPI,
+            terminalAPI: terminalAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s, running: true)
+
+        await model.finishWorkout()
+
+        XCTAssertEqual(order, ["set", "finish"])
+        XCTAssertTrue(model.setOutbox.isEmpty)
+        XCTAssertTrue(model.terminalOutbox.isEmpty)
+        XCTAssertFalse(model.running)
+    }
+
+    func testDiscardRequestedDuringInFlightFinishIsFinalMutation() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session()
+        let setAPI = SetWriteAPIStub()
+        let terminalAPI = SetTerminalAPIStub()
+        let finishEntered = SetAsyncLatch()
+        let releaseFinish = SetAsyncLatch()
+        terminalAPI.completeHandler = { [self] _, _ in
+            await finishEntered.open()
+            await releaseFinish.wait()
+            return session(status: "completed")
+        }
+        terminalAPI.discardHandler = { [self] _, _ in
+            session(status: "discarded")
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: setAPI,
+            terminalAPI: terminalAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s, running: true)
+
+        let finish = Task { await model.finishWorkout() }
+        await finishEntered.wait()
+        XCTAssertTrue(model.isTerminalMutationInFlight)
+        let discard = Task { await model.discardWorkout() }
+        await Task.yield()
+        XCTAssertEqual(
+            WorkoutTerminalOutboxStore.load(
+                userID: "user-a", defaults: defaults).intents.first?.action,
+            .discard)
+
+        await releaseFinish.open()
+        await finish.value
+        await discard.value
+
+        XCTAssertEqual(terminalAPI.completeCalls.count, 1)
+        XCTAssertEqual(terminalAPI.discardCalls.count, 1)
+        XCTAssertEqual(model.currentTerminalIntent?.action, .discard)
+        XCTAssertEqual(model.currentTerminalIntent?.deliveryState, .acknowledged)
+        XCTAssertFalse(model.running)
+    }
+
+    func testDiscardRequestedDuringInFlightSetMasksLateAcknowledgement() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session()
+        let setAPI = SetWriteAPIStub()
+        let terminalAPI = SetTerminalAPIStub()
+        let setEntered = SetAsyncLatch()
+        let releaseSet = SetAsyncLatch()
+        var committed: SetLog?
+        setAPI.logHandler = { [self] sessionID, body, _ in
+            await setEntered.open()
+            await releaseSet.wait()
+            let row = setLog(body: body, sessionID: sessionID)
+            committed = row
+            return .init(set: row, deduped: false)
+        }
+        setAPI.stateHandler = { [self] _ in
+            state(session: s, sets: committed.map { [$0] } ?? [], exercise: ex)
+        }
+        terminalAPI.discardHandler = { [self] _, _ in
+            session(status: "discarded")
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: setAPI,
+            terminalAPI: terminalAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s, running: true)
+
+        let setTask = Task { await model.logSet(ex, weight: 135, reps: 5) }
+        await setEntered.wait()
+        let discard = Task { await model.discardWorkout() }
+        await Task.yield()
+        XCTAssertTrue(
+            SetOutboxStore.load(userID: "user-a", defaults: defaults).isEmpty)
+
+        await releaseSet.open()
+        let setAcknowledged = await setTask.value
+        await discard.value
+
+        XCTAssertFalse(setAcknowledged)
+        XCTAssertTrue(model.sets.isEmpty)
+        XCTAssertTrue(model.setOutbox.isEmpty)
+        XCTAssertEqual(model.currentTerminalIntent?.deliveryState, .acknowledged)
+        XCTAssertEqual(terminalAPI.discardCalls.count, 1)
+    }
+
+    func testPermanentTerminalFailureRequiresExplicitRetry() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session()
+        let terminalAPI = SetTerminalAPIStub()
+        terminalAPI.completeHandler = { [self] _, _ in
+            if terminalAPI.completeCalls.count == 1 {
+                throw APIError.http(422, "rejected")
+            }
+            return session(status: "completed")
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            terminalAPI: terminalAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s, running: true)
+
+        await model.finishWorkout()
+        let id = try! XCTUnwrap(model.currentTerminalIntent?.id)
+        XCTAssertEqual(model.currentTerminalIntent?.deliveryState, .failed)
+        XCTAssertTrue(model.running)
+
+        await model.retryTerminalIntent(id: id)
+
+        XCTAssertEqual(terminalAPI.completeCalls.count, 2)
+        XCTAssertTrue(model.terminalOutbox.isEmpty)
+        XCTAssertFalse(model.running)
+    }
+
+    func testRelaunchDrainsPersistedFinishWithSameSessionAndAction() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session()
+        var terminal = WorkoutTerminalOutbox()
+        terminal.enqueue(.init(
+            id: fixedUUID.uuidString,
+            action: .finish,
+            date: s.date,
+            dayTemplateID: "day-a",
+            resolvedSessionID: s.id,
+            deliveryState: .queued,
+            failedHTTPStatus: nil))
+        WorkoutTerminalOutboxStore.save(
+            terminal, userID: "user-a", defaults: defaults)
+        let terminalAPI = SetTerminalAPIStub()
+        terminalAPI.completeHandler = { [self] sessionID, _ in
+            XCTAssertEqual(sessionID, s.id)
+            return session(status: "completed")
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            terminalAPI: terminalAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s, running: true)
+
+        await model.drainWorkoutWriteOutboxes()
+
+        XCTAssertEqual(terminalAPI.completeCalls.count, 1)
+        XCTAssertTrue(model.terminalOutbox.isEmpty)
+        XCTAssertTrue(
+            WorkoutTerminalOutboxStore.load(
+                userID: "user-a", defaults: defaults).isEmpty)
+    }
+
+    func testTerminalLateCallbackAfterAccountSwitchCannotTouchEitherQueue() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session()
+        let authAPI = SetAuthAPIStub()
+        let auth = auth(defaults: defaults, api: authAPI)
+        let terminalAPI = SetTerminalAPIStub()
+        let entered = SetAsyncLatch()
+        let release = SetAsyncLatch()
+        terminalAPI.completeHandler = { [self] _, _ in
+            await entered.open()
+            await release.wait()
+            return session(status: "completed")
+        }
+        let model = SyncModel(
+            auth: auth,
+            terminalAPI: terminalAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s, running: true)
+
+        let finish = Task { await model.finishWorkout() }
+        await entered.wait()
+        authAPI.authResult = .success(.init(
+            jwt: jwt(subject: "user-b"),
+            user: .init(id: "user-b", display_name: nil, email: nil)))
+        await auth.exchange(identityToken: "apple-b", fullName: nil)
+        await release.open()
+        await finish.value
+
+        XCTAssertEqual(
+            WorkoutTerminalOutboxStore.load(
+                userID: "user-a", defaults: defaults).count,
+            1)
+        XCTAssertTrue(
+            WorkoutTerminalOutboxStore.load(
+                userID: "user-b", defaults: defaults).isEmpty)
+    }
+
+    func testDiscardInFlightExcludesNewSetAndTimedStart() async {
         let defaults = defaults()
         let ex = exercise(timed: true)
         let s = session()
-        let auth = auth(defaults: defaults)
         let setAPI = SetWriteAPIStub()
         let terminalAPI = SetTerminalAPIStub()
         let discardEntered = SetAsyncLatch()
         let releaseDiscard = SetAsyncLatch()
-        terminalAPI.discardHandler = { _, _ in
+        terminalAPI.discardHandler = { [self] _, _ in
             await discardEntered.open()
             await releaseDiscard.wait()
-            return s
+            return session(status: "discarded")
         }
-        terminalAPI.completeHandler = { _, _ in s }
         let model = SyncModel(
-            auth: auth,
+            auth: retainedAuth(defaults: defaults),
             setWriteAPI: setAPI,
             terminalAPI: terminalAPI,
             defaults: defaults,
@@ -1234,7 +1582,6 @@ final class SetOutboxTests: XCTestCase {
 
         let acknowledged = await model.logSet(ex, weight: 0, reps: 30)
         model.startTimedSet()
-        await model.finishWorkout()
 
         XCTAssertFalse(acknowledged)
         XCTAssertFalse(model.timedActive)
@@ -1245,9 +1592,175 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertTrue(terminalAPI.completeCalls.isEmpty)
         XCTAssertEqual(terminalAPI.discardCalls.count, 1)
 
-        auth.signOut()
         await releaseDiscard.open()
         await discard.value
         XCTAssertFalse(model.isTerminalMutationInFlight)
+    }
+
+    func testAcknowledgedDiscardBarrierMasksRevivalAndRequeuesDiscard() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let revived = session(status: "planned")
+        var terminal = WorkoutTerminalOutbox()
+        terminal.enqueue(.init(
+            id: fixedUUID.uuidString,
+            action: .discard,
+            date: revived.date,
+            dayTemplateID: "day-a",
+            resolvedSessionID: revived.id,
+            deliveryState: .acknowledged,
+            failedHTTPStatus: nil))
+        WorkoutTerminalOutboxStore.save(
+            terminal, userID: "user-a", defaults: defaults)
+        let terminalAPI = SetTerminalAPIStub()
+        terminalAPI.discardHandler = { [self] _, _ in
+            session(status: "discarded")
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            terminalAPI: terminalAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        prepare(model, exercise: ex)
+
+        model.replaceState(with: state(
+            session: revived, sets: [], exercise: ex))
+
+        XCTAssertNil(model.todaySession)
+        XCTAssertEqual(model.currentTerminalIntent?.deliveryState, .queued)
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertEqual(terminalAPI.discardCalls.count, 1)
+        XCTAssertEqual(model.currentTerminalIntent?.deliveryState, .acknowledged)
+    }
+
+    func testExplicitStartClearsOnlyAcknowledgedDiscardBarrier() {
+        let defaults = defaults()
+        let ex = exercise()
+        let discarded = session(status: "discarded")
+        var terminal = WorkoutTerminalOutbox()
+        terminal.enqueue(.init(
+            id: fixedUUID.uuidString,
+            action: .discard,
+            date: discarded.date,
+            dayTemplateID: "day-a",
+            resolvedSessionID: discarded.id,
+            deliveryState: .acknowledged,
+            failedHTTPStatus: nil))
+        WorkoutTerminalOutboxStore.save(
+            terminal, userID: "user-a", defaults: defaults)
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            defaults: defaults,
+            now: { self.fixedDate })
+        prepare(model, exercise: ex)
+        model.replaceState(with: state(
+            session: discarded, sets: [], exercise: ex))
+
+        model.startWorkout()
+
+        XCTAssertTrue(model.running)
+        XCTAssertTrue(model.terminalOutbox.isEmpty)
+        XCTAssertTrue(
+            WorkoutTerminalOutboxStore.load(
+                userID: "user-a", defaults: defaults).isEmpty)
+    }
+
+    func testRefreshAfterExplicitRestartCreatesSessionBeforeFirstSet() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let discarded = session(status: "discarded")
+        var terminal = WorkoutTerminalOutbox()
+        terminal.enqueue(.init(
+            id: fixedUUID.uuidString,
+            action: .discard,
+            date: discarded.date,
+            dayTemplateID: "day-a",
+            resolvedSessionID: discarded.id,
+            deliveryState: .acknowledged,
+            failedHTTPStatus: nil))
+        WorkoutTerminalOutboxStore.save(
+            terminal, userID: "user-a", defaults: defaults)
+        let setAPI = SetWriteAPIStub()
+        let revived = session(status: "planned")
+        var committed: SetLog?
+        setAPI.createHandler = { _, _, _ in revived }
+        setAPI.logHandler = { [self] sessionID, body, _ in
+            let row = setLog(body: body, sessionID: sessionID)
+            committed = row
+            return .init(set: row, deduped: false)
+        }
+        setAPI.stateHandler = { [self] _ in
+            state(
+                session: revived,
+                sets: committed.map { [$0] } ?? [],
+                exercise: ex)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: setAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        prepare(model, exercise: ex)
+        model.replaceState(with: state(
+            session: discarded, sets: [], exercise: ex))
+
+        model.startWorkout()
+        model.replaceState(with: state(
+            session: discarded, sets: [], exercise: ex))
+
+        XCTAssertNil(model.todaySession)
+        let acknowledged = await model.logSet(ex, weight: 135, reps: 5)
+        XCTAssertTrue(acknowledged)
+        XCTAssertEqual(setAPI.createCalls.count, 1)
+        XCTAssertEqual(setAPI.logCalls.first?.sessionID, revived.id)
+    }
+
+    func testRefreshAfterExplicitRestartCreatesSessionBeforeFinish() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let discarded = session(status: "discarded")
+        var terminal = WorkoutTerminalOutbox()
+        terminal.enqueue(.init(
+            id: fixedUUID.uuidString,
+            action: .discard,
+            date: discarded.date,
+            dayTemplateID: "day-a",
+            resolvedSessionID: discarded.id,
+            deliveryState: .acknowledged,
+            failedHTTPStatus: nil))
+        WorkoutTerminalOutboxStore.save(
+            terminal, userID: "user-a", defaults: defaults)
+        let setAPI = SetWriteAPIStub()
+        let terminalAPI = SetTerminalAPIStub()
+        let revived = session(status: "planned")
+        var order: [String] = []
+        setAPI.createHandler = { _, _, _ in
+            order.append("create")
+            return revived
+        }
+        terminalAPI.completeHandler = { [self] sessionID, _ in
+            XCTAssertEqual(sessionID, revived.id)
+            order.append("finish")
+            return session(status: "completed")
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: setAPI,
+            terminalAPI: terminalAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        prepare(model, exercise: ex)
+        model.replaceState(with: state(
+            session: discarded, sets: [], exercise: ex))
+
+        model.startWorkout()
+        model.replaceState(with: state(
+            session: discarded, sets: [], exercise: ex))
+
+        XCTAssertNil(model.todaySession)
+        await model.finishWorkout()
+        XCTAssertEqual(order, ["create", "finish"])
+        XCTAssertTrue(model.terminalOutbox.isEmpty)
+        XCTAssertFalse(model.running)
     }
 }

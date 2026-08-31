@@ -956,6 +956,78 @@ describe('POST /api/sessions/:id/discard — the explicit escape hatch', () => {
     expect(tomb!.deleted_at).not.toBeNull();
   });
 
+  it('rejects stale completion and brand-new sets after discard while preserving exact set retries', async () => {
+    const H = auth(await devJwt());
+    const id = await freshSession(H, '2026-08-07');
+    const priorSetId = crypto.randomUUID();
+    const priorSet = {
+      id: priorSetId,
+      exercise_id: 'ex_bench',
+      set_index: 1,
+      weight: 125,
+      reps: 5,
+    };
+    const logged = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify(priorSet),
+    });
+    expect(logged.status).toBe(201);
+
+    const discarded = await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, {
+      method: 'POST',
+      headers: H,
+    });
+    expect(discarded.status).toBe(200);
+
+    const staleCompletion = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    expect(staleCompletion.status).toBe(409);
+    expect(await staleCompletion.json()).toEqual({
+      error: 'session_discarded',
+      status: 'discarded',
+    });
+
+    const newSetId = crypto.randomUUID();
+    const staleNewSet = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ ...priorSet, id: newSetId, set_index: 2 }),
+    });
+    expect(staleNewSet.status).toBe(409);
+    expect(await staleNewSet.json()).toEqual({ error: 'session_discarded' });
+
+    // A lost-response retry for the exact pre-discard UUID remains readable
+    // and idempotent, including its tombstone, so the client can settle it.
+    const exactRetry = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify(priorSet),
+    });
+    expect(exactRetry.status).toBe(200);
+    expect(await exactRetry.json()).toMatchObject({
+      deduped: true,
+      set: { id: priorSetId, session_id: id, deleted_at: expect.any(Number) },
+    });
+
+    const session = await env.DB
+      .prepare('SELECT status FROM sessions WHERE id = ?1')
+      .bind(id)
+      .first<{ status: string }>();
+    const prior = await env.DB
+      .prepare('SELECT deleted_at FROM set_logs WHERE id = ?1')
+      .bind(priorSetId)
+      .first<{ deleted_at: number | null }>();
+    expect(session?.status).toBe('discarded');
+    expect(prior?.deleted_at).not.toBeNull();
+    expect(
+      await env.DB.prepare('SELECT id FROM set_logs WHERE id = ?1').bind(newSetId).first(),
+    ).toBeNull();
+  });
+
   it('restart after discard resurrects a fresh planned session (same date, reusable)', async () => {
     const H = auth(await devJwt());
     const date = '2026-08-10';
@@ -979,6 +1051,28 @@ describe('POST /api/sessions/:id/discard — the explicit escape hatch', () => {
     expect(revived.id).toBe(id);
     expect(revived.status).toBe('planned');
     expect(revived.started_at).toBeNull();
+
+    // Restart is the explicit attempt boundary: fresh work and completion
+    // are accepted again only after POST /sessions performed the revival.
+    const freshSet = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        id: crypto.randomUUID(),
+        exercise_id: 'ex_bench',
+        set_index: 1,
+        weight: 105,
+        reps: 5,
+      }),
+    });
+    expect(freshSet.status).toBe(201);
+    const completed = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    expect(completed.status).toBe(200);
+    expect(await completed.json()).toMatchObject({ id, status: 'completed' });
   });
 
   it('idempotent: re-discarding an already-discarded session is a clean no-op', async () => {
@@ -989,6 +1083,14 @@ describe('POST /api/sessions/:id/discard — the explicit escape hatch', () => {
     const b = await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, { method: 'POST', headers: H });
     expect(b.status).toBe(200);
     expect((await b.json<{ status: string }>()).status).toBe('discarded');
+    const audits = await env.DB
+      .prepare("SELECT args FROM audit_log WHERE tool = 'discard_session'")
+      .all<{ args: string }>();
+    expect(
+      audits.results.filter(
+        (row) => (JSON.parse(row.args) as { session_id?: string }).session_id === id,
+      ),
+    ).toHaveLength(1);
   });
 
   it('discarding an unknown session id → 404', async () => {
@@ -1187,6 +1289,11 @@ describe('migration 0029 session aliases — stale REST mutations self-heal', ()
     });
     expect(foreignSetRetry.status).toBe(404);
     expect(await foreignSetRetry.json()).toEqual({ error: 'session_not_found' });
+    const ownedAfterCollision = await env.DB
+      .prepare('SELECT status FROM sessions WHERE id = ?1')
+      .bind(owned.canonicalId)
+      .first<{ status: string }>();
+    expect(ownedAfterCollision?.status).toBe('planned');
 
     expect(
       await env.DB.prepare('SELECT id FROM set_logs WHERE id = ?1').bind(setId).first(),

@@ -2806,6 +2806,7 @@ export async function patchSession(
   | SessionRow
   | null
   | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
+  | { error: 'session_discarded'; status: 'discarded' }
   | { error: 'invalid_status'; status: unknown }
 > {
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
@@ -2844,6 +2845,14 @@ export async function patchSession(
   ) {
     return { error: 'invalid_status', status: normalizedStatus };
   }
+  // Discard is terminal for mutations that still address this session id.
+  // A deliberate same-day restart goes through getOrCreateSession, which
+  // first revives the row to a fresh `planned` attempt. Keeping that explicit
+  // boundary prevents a delayed completion/status PATCH from silently
+  // resurrecting the attempt the user just threw away.
+  if (s.status === 'discarded') {
+    return { error: 'session_discarded', status: 'discarded' };
+  }
   // History-integrity guard (REST sibling of FIX2's skipPlannedSession
   // guard): a `skipped` patch must not bury a started/finished workout.
   // Setting an in_progress/completed session to 'skipped' would render it
@@ -2865,10 +2874,19 @@ export async function patchSession(
   const notes = patch.notes ?? s.notes;
   const completedAt = status === 'completed' ? s.completed_at ?? now() : s.completed_at;
   const startedAt = status === 'in_progress' ? s.started_at ?? now() : s.started_at;
-  await db
-    .prepare('UPDATE sessions SET status=?2, perceived_fatigue=?3, notes=?4, started_at=?5, completed_at=?6, updated_at=?7 WHERE id=?1')
+  // The status predicate is the read/write-race guard. discardSession flips
+  // the row with its own atomic batch; if that batch linearizes after our
+  // read but before this write, zero rows match and the stale mutation gets a
+  // stable conflict instead of reviving the discarded session.
+  const updated = await db
+    .prepare(
+      "UPDATE sessions SET status=?2, perceived_fatigue=?3, notes=?4, started_at=?5, completed_at=?6, updated_at=?7 WHERE id=?1 AND status != 'discarded'",
+    )
     .bind(canonicalSessionId, status, fatigue, notes, startedAt, completedAt, now())
     .run();
+  if (updated.meta.changes === 0) {
+    return { error: 'session_discarded', status: 'discarded' };
+  }
   return { ...s, status, perceived_fatigue: fatigue, notes, started_at: startedAt, completed_at: completedAt };
 }
 
@@ -2911,19 +2929,33 @@ export async function discardSession(
   // Claude's coaching context).
   if (s.status === 'discarded') return s;
   const ts = now();
-  const live = await db
-    .prepare('SELECT COUNT(*) AS n FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL')
-    .bind(canonicalSessionId)
-    .first<{ n: number }>();
-  const discardedSets = live?.n ?? 0;
-  await db
-    .prepare('UPDATE set_logs SET deleted_at = ?2 WHERE session_id = ?1 AND deleted_at IS NULL')
-    .bind(canonicalSessionId, ts)
-    .run();
-  await db
-    .prepare("UPDATE sessions SET status = 'discarded', updated_at = ?2 WHERE id = ?1")
-    .bind(canonicalSessionId, ts)
-    .run();
+  // D1 batches are ordered transactions. Mark the session terminal first,
+  // then tombstone every live set in the same transaction. A concurrent
+  // logSet batch therefore linearizes wholly on one side: if it wins first,
+  // its new set is included in this tombstone; if discard wins first, its
+  // status-guarded insert observes `discarded` and is rejected.
+  const [transition, tombstones] = await db.batch([
+    db
+      .prepare(
+        "UPDATE sessions SET status = 'discarded', updated_at = ?2 WHERE id = ?1 AND status != 'discarded'",
+      )
+      .bind(canonicalSessionId, ts),
+    db
+      .prepare(
+        'UPDATE set_logs SET deleted_at = ?2 WHERE session_id = ?1 AND deleted_at IS NULL',
+      )
+      .bind(canonicalSessionId, ts),
+  ]);
+  // Another concurrent/retried discard already won. Its transaction also
+  // tombstoned the live sets, so this remains a true audit no-op. Return the
+  // terminal result observed by this batch rather than re-reading after the
+  // transaction: an explicit same-day restart may begin immediately after
+  // this linearization point, but it must not turn this discard ack into a
+  // misleading `planned` response.
+  if (transition!.meta.changes === 0) {
+    return { ...s, status: 'discarded', updated_at: ts };
+  }
+  const discardedSets = tombstones!.meta.changes;
   await writeAudit(
     db,
     userId,
@@ -3092,31 +3124,61 @@ export async function logSet(
   // contract: on a slot-unique violation, recompute max+1 and retry rather
   // than letting one writer's set be dropped. ON CONFLICT(id) DO NOTHING
   // still covers a concurrent same-id retry (idempotency).
-  const insert = () =>
-    db
-      .prepare(
-        `INSERT INTO set_logs
-         (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL)
-         ON CONFLICT(id) DO NOTHING`,
-      )
-      .bind(
-        row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
-        row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
-        row.duration_s, row.is_timed,
-      )
-      .run();
+  const insertAndStart = () => {
+    const ts = now();
+    return db.batch([
+      db
+        .prepare(
+          `INSERT INTO set_logs
+           (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at)
+           SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL
+             FROM sessions
+            WHERE id = ?2 AND status != 'discarded'
+           ON CONFLICT(id) DO NOTHING`,
+        )
+        .bind(
+          row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
+          row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
+          row.duration_s, row.is_timed,
+        ),
+      db
+        .prepare(
+          `UPDATE sessions
+              SET status = CASE WHEN status = 'planned' THEN 'in_progress' ELSE status END,
+                  started_at = COALESCE(started_at, ?2),
+                  updated_at = ?2
+            WHERE id = ?1
+              AND status != 'discarded'
+              AND EXISTS (
+                SELECT 1 FROM set_logs
+                 WHERE id = ?3 AND session_id = ?1
+              )`,
+        )
+        .bind(canonicalSessionId, ts, row.id),
+      // Capture the target state at the same linearization point. This
+      // distinguishes a discard rejection from a UUID collision in another
+      // session without a post-transaction read racing an explicit restart.
+      db.prepare('SELECT status FROM sessions WHERE id = ?1').bind(canonicalSessionId),
+    ]);
+  };
   for (let attempt = 0; ; attempt++) {
     try {
-      const inserted = await insert();
-      if (inserted.meta.changes === 0) {
+      const [inserted, started, sessionState] = await insertAndStart();
+      if (inserted!.meta.changes === 0) {
         // A concurrent same-id request won after our pre-read. Return only a
         // winner from this owned canonical session; a UUID already used by a
         // different session remains indistinguishable from a missing target.
         const winner = await readExisting();
-        if (!winner) throw new Error('session_not_found');
-        return { set: winner, deduped: true };
+        if (winner) return { set: winner, deduped: true };
+        const statusAtWrite = (sessionState!.results[0] as { status?: string } | undefined)
+          ?.status;
+        if (statusAtWrite === 'discarded') throw new Error('session_discarded');
+        throw new Error('session_not_found');
       }
+      // The two statements share one transaction, so a successful insert
+      // always has a matching non-discarded session update. Keep this check as
+      // a defensive invariant rather than allowing a stranded live set.
+      if (started!.meta.changes === 0) throw new Error('session_discarded');
       break;
     } catch (e) {
       const msg = String((e as Error)?.message ?? '');
@@ -3133,16 +3195,6 @@ export async function logSet(
       row.set_index = (max?.m ?? 0) + 1;
     }
   }
-  // Logging a set implicitly starts the session. A 'discarded' row is
-  // also revived here (defense-in-depth: getOrCreateSession already
-  // resurrects on the get path, but logging work into a discarded session
-  // must never leave the new set stranded under an invisible/vanished
-  // row). started_at resets off the COALESCE for a revived discard so the
-  // sRPE duration reflects the new attempt, not the thrown-away one.
-  await db
-    .prepare("UPDATE sessions SET status = CASE WHEN status IN ('planned','discarded') THEN 'in_progress' ELSE status END, started_at = CASE WHEN status='discarded' THEN ?2 ELSE COALESCE(started_at, ?2) END, updated_at = ?2 WHERE id = ?1")
-    .bind(canonicalSessionId, now())
-    .run();
   return { set: row, deduped: false };
 }
 
@@ -4366,7 +4418,7 @@ export async function logWorkoutComplete(
   date: string,
   perceivedFatigue: number | null,
   notes: string | null,
-): Promise<SessionRow | null> {
+): Promise<SessionRow | null | { error: 'session_discarded'; status: 'discarded' }> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
   const session = await getOrCreateSession(db, userId, plan.id, date, null);
@@ -4375,12 +4427,12 @@ export async function logWorkoutComplete(
     perceived_fatigue: perceivedFatigue ?? undefined,
     notes: notes ?? undefined,
   });
-  // logWorkoutComplete ALWAYS passes status:'completed', which is a valid
-  // status and never the skipped-burial case — so neither patchSession
-  // rejection arm ('invalid_status' / 'session_already_started') is
-  // reachable here. Fail LOUD rather than silently return null if that
-  // ever changes (e.g. the guard's scope is widened beyond 'skipped').
+  // A discard can legitimately commit after getOrCreateSession returns but
+  // before the completion PATCH writes. Preserve that stable terminal
+  // conflict for the MCP caller. The validation/skipped-burial arms remain
+  // unreachable because this helper always passes status:'completed'.
   if (r && 'error' in r) {
+    if (r.error === 'session_discarded') return r;
     throw new Error(
       `unreachable: patchSession returned ${r.error} on the status:'completed' path — guard scope changed`,
     );

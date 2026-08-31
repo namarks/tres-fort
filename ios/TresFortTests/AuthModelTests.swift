@@ -618,9 +618,11 @@ final class AuthModelTests: XCTestCase {
         XCTAssertEqual(model.userID, "user-a")
         XCTAssertEqual(
             ActivityOutboxStore.load(userID: "user-a", defaults: defaults).count, 1)
-        XCTAssertEqual(
-            defaults.data(forKey: GroupModel.intervalsConnectionKey(userID: "user-a")),
-            try! JSONEncoder().encode(intervalsA))
+        let migratedIntervals = try! JSONDecoder().decode(
+            IntervalsConnection.self,
+            from: try! XCTUnwrap(defaults.data(
+                forKey: GroupModel.intervalsConnectionKey(userID: "user-a"))))
+        XCTAssertEqual(migratedIntervals, intervalsA)
         XCTAssertTrue(defaults.bool(
             forKey: HealthKitSyncModel.enabledKey(userID: "user-a")))
         XCTAssertEqual(
@@ -860,6 +862,28 @@ final class AuthModelTests: XCTestCase {
         setOutboxB.enqueue(pendingSetIntent(slotID: "slot-b"))
         SetOutboxStore.save(setOutboxA, userID: "user-a", defaults: defaults)
         SetOutboxStore.save(setOutboxB, userID: "user-b", defaults: defaults)
+        var terminalOutboxA = WorkoutTerminalOutbox()
+        terminalOutboxA.enqueue(.init(
+            id: UUID().uuidString,
+            action: .finish,
+            date: "2026-08-29",
+            dayTemplateID: "day-a",
+            resolvedSessionID: "session-a",
+            deliveryState: .queued,
+            failedHTTPStatus: nil))
+        var terminalOutboxB = WorkoutTerminalOutbox()
+        terminalOutboxB.enqueue(.init(
+            id: UUID().uuidString,
+            action: .discard,
+            date: "2026-08-29",
+            dayTemplateID: "day-b",
+            resolvedSessionID: "session-b",
+            deliveryState: .queued,
+            failedHTTPStatus: nil))
+        WorkoutTerminalOutboxStore.save(
+            terminalOutboxA, userID: "user-a", defaults: defaults)
+        WorkoutTerminalOutboxStore.save(
+            terminalOutboxB, userID: "user-b", defaults: defaults)
         defaults.set(Data([1]), forKey: GroupModel.intervalsConnectionKey(userID: "user-a"))
         defaults.set(Data([2]), forKey: GroupModel.intervalsConnectionKey(userID: "user-b"))
         defaults.set(true, forKey: HealthKitSyncModel.enabledKey(userID: "user-a"))
@@ -889,6 +913,12 @@ final class AuthModelTests: XCTestCase {
             SetOutboxStore.load(userID: "user-a", defaults: defaults).isEmpty)
         XCTAssertEqual(
             SetOutboxStore.load(userID: "user-b", defaults: defaults).count, 1)
+        XCTAssertTrue(
+            WorkoutTerminalOutboxStore.load(
+                userID: "user-a", defaults: defaults).isEmpty)
+        XCTAssertEqual(
+            WorkoutTerminalOutboxStore.load(
+                userID: "user-b", defaults: defaults).count, 1)
         XCTAssertNil(defaults.data(
             forKey: GroupModel.intervalsConnectionKey(userID: "user-a")))
         XCTAssertEqual(

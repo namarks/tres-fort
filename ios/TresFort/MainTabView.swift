@@ -43,7 +43,7 @@ struct MainTabView: View {
         // calendar/agenda just like a manual activity does.
         health.onActivitiesPersisted = { [weak sync] in await sync?.load() }
         setConnectivity.onSatisfiedTransition = { [weak sync] in
-            Task { await sync?.drainSetOutbox() }
+            Task { await sync?.recoverWorkoutWrites() }
         }
         _sync = StateObject(wrappedValue: sync)
         _groupModel = StateObject(wrappedValue: groupModel)
@@ -80,9 +80,7 @@ struct MainTabView: View {
             // an expired/revoked bearer moves AuthModel to reauthentication.
             await auth.renewSessionIfNeeded()
             guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
-            await sync.drainSetOutbox()
-            guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
-            await sync.load()
+            await sync.recoverWorkoutWrites()
             guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
             // Register the HealthKit observer + run an incremental sync if the
             // user has connected Apple Health (no-op otherwise). Anchored
@@ -102,7 +100,7 @@ struct MainTabView: View {
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     await auth.renewSessionIfNeeded()
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
-                    await sync.drainSetOutbox()
+                    await sync.recoverWorkoutWrites()
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     await groupModel.drainOutbox()
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }

@@ -19,7 +19,7 @@ never present a failed write as completed or silently drop the user's intent.
     recovery.
   - Prove success, timeout, retry, double-tap, and relaunch behavior with focused
     model tests and an iOS build.
-- [ ] **P1 — Durable workout finish and discard**
+- [x] **P1 — Durable workout finish and discard**
   - Persist terminal intents instead of swallowing request failures.
   - Finish only after that session's queued sets settle; make discard supersede
     its pending set/finish intents so a locally discarded workout cannot return.
@@ -38,13 +38,13 @@ never present a failed write as completed or silently drop the user's intent.
 
 ## Execution frontier
 
-- P1
+- P2
 
 ## Next step
 
-**Now (@agent):** Implement P1 by persisting workout-finish and discard intents,
-ordering finish behind that session's queued sets, and making discard supersede
-pending set/finish intents while the UI remains queued until server acknowledgement.
+**Now (@agent):** Implement P2 by persisting the minimal runner checkpoint and
+last successful state snapshot, recovering an in-progress workout on relaunch,
+and bringing the iOS/backend blackout-trip projection rule into covered parity.
 
 ## Notes / open questions
 
@@ -62,6 +62,22 @@ pending set/finish intents while the UI remains queued until server acknowledgem
   proves stale day-template recovery returns the permanent 422 contract the
   outbox uses before retrying without the removed association. TypeScript
   typecheck, all 435 Worker tests, and direct source compilation pass.
+- P1 is complete in the same coherent work wave. An account-scoped terminal
+  outbox persists finish/discard before any network await and shares one
+  serialized drain with set intents: all queued or failed sets for a date settle
+  before finish, while discard durably replaces finish, removes older set
+  intents, masks late acknowledgements, and stays as an acknowledged barrier
+  until the user explicitly starts that date again. The Worker makes discard
+  final for stale session-addressed writes with conditional updates and ordered
+  D1 batches, returns a stable `409 session_discarded`, preserves exact set-UUID
+  retry semantics, and emits one discard audit under concurrent retries. The
+  accepted no-migration restart boundary remains explicit: starting the date
+  clears the acknowledged barrier, and discarded history is retained for
+  projection but cannot become the runner's live `todaySession`, so the first
+  post-restart set or finish revives through the date-level session endpoint.
+  Verification passed TypeScript typecheck, all 441 Worker tests, 82/82 iOS
+  tests from clean derived data, a full simulator app build, and independent
+  backend and iOS review.
 - Set bodies, retry state, and drain behavior remain owned here. Coordinate only
   the user-keyed namespace and account-switch boundary with the completed P0
   contracts in [Identity and Account Lifecycle](../identity-account-lifecycle/plan.md).

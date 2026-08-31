@@ -219,6 +219,15 @@ final class SetOutboxTests: XCTestCase {
         return formatter.string(from: fixedDate)
     }
 
+    func testAttemptProtocolHeaderIsPresentOnlyWithGenerationToken() {
+        XCTAssertEqual(
+            APIClient.attemptProtocolHeaders(expectedAttempt: nil),
+            [:])
+        XCTAssertEqual(
+            APIClient.attemptProtocolHeaders(expectedAttempt: 0),
+            ["X-TresFort-Write-Protocol": "attempt-v1"])
+    }
+
     private func defaults() -> UserDefaults {
         let name = "SetOutboxTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: name)!

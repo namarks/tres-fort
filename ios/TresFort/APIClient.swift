@@ -20,6 +20,16 @@ struct AccountExportFile: Equatable {
 struct APIClient {
     var baseURL = Config.apiBaseURL
 
+    /// Marks writes that carry migration-0032 attempt tokens. The compatibility
+    /// Worker uses this explicit declaration to atomically claim a legacy
+    /// generation; absence remains the released app's tokenless protocol.
+    static func attemptProtocolHeaders(
+        expectedAttempt: Int?
+    ) -> [String: String] {
+        guard expectedAttempt != nil else { return [:] }
+        return ["X-TresFort-Write-Protocol": "attempt-v1"]
+    }
+
     func authApple(
         identityToken: String,
         authorizationCode: String? = nil,
@@ -147,7 +157,12 @@ struct APIClient {
         } else if let expectedAttempt {
             body["expected_attempt"] = expectedAttempt
         }
-        return try await post("api/sessions", body: body, jwt: jwt)
+        return try await post(
+            "api/sessions",
+            body: body,
+            jwt: jwt,
+            headers: Self.attemptProtocolHeaders(
+                expectedAttempt: restartDiscardedAttempt ?? expectedAttempt))
     }
 
     /// Idempotent on the immutable body's `id`. The typed body prevents a
@@ -158,6 +173,20 @@ struct APIClient {
         jwt: String
     ) async throws -> SetLogResult {
         try await post("api/sessions/\(sessionId)/sets", body: body, jwt: jwt)
+    }
+
+    func logSet(
+        sessionId: String,
+        body: SetRequestBody,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> SetLogResult {
+        try await post(
+            "api/sessions/\(sessionId)/sets",
+            body: body.scoped(to: expectedAttempt),
+            jwt: jwt,
+            headers: Self.attemptProtocolHeaders(
+                expectedAttempt: expectedAttempt))
     }
 
     struct SetLogResult: Decodable {
@@ -195,7 +224,9 @@ struct APIClient {
             attemptScopedPath(
                 "api/sessions/\(sessionId)", expectedAttempt: expectedAttempt),
             body: body,
-            jwt: jwt)
+            jwt: jwt,
+            headers: Self.attemptProtocolHeaders(
+                expectedAttempt: expectedAttempt))
     }
 
     func completeSession(
@@ -207,7 +238,9 @@ struct APIClient {
             attemptScopedPath(
                 "api/sessions/\(sessionId)", expectedAttempt: expectedAttempt),
             body: ["status": "completed"],
-            jwt: jwt)
+            jwt: jwt,
+            headers: Self.attemptProtocolHeaders(
+                expectedAttempt: expectedAttempt))
     }
 
     /// Discard a session — "I didn't really do this." Soft-deletes its sets
@@ -227,7 +260,9 @@ struct APIClient {
                 "api/sessions/\(sessionId)/discard",
                 expectedAttempt: expectedAttempt),
             body: [:],
-            jwt: jwt)
+            jwt: jwt,
+            headers: Self.attemptProtocolHeaders(
+                expectedAttempt: expectedAttempt))
     }
 
     private func attemptScopedPath(
@@ -295,12 +330,20 @@ struct APIClient {
         return try await send(req)
     }
 
-    func post<T: Decodable>(_ path: String, body: [String: Any], jwt: String?) async throws -> T {
+    func post<T: Decodable>(
+        _ path: String,
+        body: [String: Any],
+        jwt: String?,
+        headers: [String: String] = [:]
+    ) async throws -> T {
         var req = URLRequest(url: URL(string: baseURL.absoluteString + "/" + path)!)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let jwt { req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization") }
         req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
+        for (field, value) in headers {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
         // NSNull must round-trip as JSON `null` — some POST endpoints
         // distinguish `null` from an omitted key (POST /groups/:id/invites
         // treats `expires_at: null` as "never expires" but `expires_at`
@@ -318,23 +361,35 @@ struct APIClient {
     func post<T: Decodable, Body: Encodable>(
         _ path: String,
         body: Body,
-        jwt: String?
+        jwt: String?,
+        headers: [String: String] = [:]
     ) async throws -> T {
         var req = URLRequest(url: URL(string: baseURL.absoluteString + "/" + path)!)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let jwt { req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization") }
         req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
+        for (field, value) in headers {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
         req.httpBody = try JSONEncoder().encode(body)
         return try await send(req)
     }
 
-    func patch<T: Decodable>(_ path: String, body: [String: Any], jwt: String) async throws -> T {
+    func patch<T: Decodable>(
+        _ path: String,
+        body: [String: Any],
+        jwt: String,
+        headers: [String: String] = [:]
+    ) async throws -> T {
         var req = URLRequest(url: URL(string: baseURL.absoluteString + "/" + path)!)
         req.httpMethod = "PATCH"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
         req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
+        for (field, value) in headers {
+            req.setValue(value, forHTTPHeaderField: field)
+        }
         // No NSNull stripping here — PATCH bodies need to send explicit
         // `null` (e.g. the intervals.icu disconnect path sends both fields
         // null to clear credentials). JSONSerialization writes Swift's

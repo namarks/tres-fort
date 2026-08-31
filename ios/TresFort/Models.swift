@@ -207,6 +207,9 @@ struct SessionRow: Codable, Identifiable {
     /// Monotonic generation of the single (user,date) row. Discard retains the
     /// current attempt; explicit same-day revival increments it.
     var attempt: Int? = nil
+    /// Present on compatibility Workers. Optional so the app can still decode
+    /// the pre-attempt Worker during the required Worker-first rollout.
+    var write_protocol: String? = nil
 }
 
 struct SetLog: Codable, Identifiable {

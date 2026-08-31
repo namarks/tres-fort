@@ -138,6 +138,25 @@ function readExpectedAttemptQuery(
     : { ok: false };
 }
 
+function readAttemptProtocolHeader(
+  c: Context<HonoEnv>,
+): { ok: true; declared: boolean } | { ok: false } {
+  const raw = c.req.header('X-TresFort-Write-Protocol');
+  if (raw === undefined) return { ok: true, declared: false };
+  return raw.trim().toLowerCase() === 'attempt-v1'
+    ? { ok: true, declared: true }
+    : { ok: false };
+}
+
+const protocolConflictBody = <T extends { status: string; attempt: number }>(
+  session: T,
+) => ({
+  error: 'session_attempt_required' as const,
+  status: session.status,
+  current_attempt: session.attempt,
+  current_session: session,
+});
+
 // ---- sync pull -----------------------------------------------------------
 // Device timezone (X-Device-TZ) is captured for EVERY authenticated request
 // in the requireAppJwt middleware, so it stays fresh even on non-/state
@@ -312,7 +331,10 @@ apiRoutes.get('/today', async (c) => {
     plan.id,
     date,
     null,
-    { reviveDiscarded: false },
+    // Compatibility read/start: the released app's date resolver had implicit
+    // restart semantics. It may revive only a legacy generation; the DB helper
+    // leaves an attempt-v1 tombstone untouched.
+    { reviveDiscarded: true, writeProtocol: 'legacy' },
   );
   const sets = await c.env.DB
     .prepare('SELECT * FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL ORDER BY logged_at')
@@ -328,6 +350,8 @@ apiRoutes.post('/sessions', async (c) => {
   const parsed = await readMutationBody(c);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
+  const protocolHeader = readAttemptProtocolHeader(c);
+  if (!protocolHeader.ok) return c.json({ error: 'invalid_write_protocol' }, 400);
   const invalid = invalidMutationFields(b, {}, {
     date: (value) => typeof value === 'string' && ISO_DATE_RE.test(value),
     day_template_id: (value) => value === null || isNonEmptyString(value),
@@ -335,6 +359,13 @@ apiRoutes.post('/sessions', async (c) => {
     expected_attempt: isNonNegativeInteger,
   });
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const carriesAttemptProtocol =
+    protocolHeader.declared ||
+    hasOwn(b, 'expected_attempt') ||
+    hasOwn(b, 'restart_discarded');
+  if (carriesAttemptProtocol && !hasOwn(b, 'expected_attempt')) {
+    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
+  }
   const restartDiscarded = b.restart_discarded === true;
   if (restartDiscarded && !hasOwn(b, 'expected_attempt')) {
     return c.json(
@@ -371,42 +402,66 @@ apiRoutes.post('/sessions', async (c) => {
         409,
       );
     }
-    s = existing;
-    if (existing.status === 'discarded') {
-      const revived = await reviveDiscardedSession(
-        c.env.DB,
-        userId,
-        existing.id,
-        expectedAttempt,
-        dayTemplateId,
-      );
-      if (!revived) return c.json({ error: 'not_found' }, 404);
-      if ('error' in revived) return c.json(revived, 409);
-      s = revived;
-    } else if (existing.attempt !== expectedAttempt + 1) {
-      return c.json(
-        {
-          error: 'session_attempt_conflict',
-          status: existing.status,
-          expected_attempt: expectedAttempt,
-          current_attempt: existing.attempt,
-          current_session: existing,
-        },
-        409,
-      );
-    }
-  } else {
-    const expectedAttempt = hasOwn(b, 'expected_attempt')
-      ? (b.expected_attempt as number)
-      : undefined;
-    s = await getOrCreateSession(
+    // The helper also handles a commit-then-timeout retry whose next
+    // generation is already live. That matters during migration-first
+    // rollout: the old Worker may have performed the restart and migration
+    // 0032's trigger advanced the attempt while leaving the row `legacy`.
+    // The first attempt-aware retry must claim that winner atomically before
+    // returning it, so later tokenless writes are fenced out.
+    const revived = await reviveDiscardedSession(
       c.env.DB,
       userId,
-      plan.id,
-      date,
+      existing.id,
+      expectedAttempt,
       dayTemplateId,
-      { reviveDiscarded: false, expectedAttempt },
     );
+    if (!revived) return c.json({ error: 'not_found' }, 404);
+    if ('error' in revived) return c.json(revived, 409);
+    s = revived;
+  } else {
+    const expectedAttempt = carriesAttemptProtocol
+      ? (b.expected_attempt as number)
+      : undefined;
+    if (expectedAttempt !== undefined && expectedAttempt > 0) {
+      const existing = await getOwnedSessionByDate(c.env.DB, userId, date);
+      if (!existing) {
+        return c.json(
+          {
+            error: 'session_attempt_missing',
+            expected_attempt: expectedAttempt,
+          },
+          409,
+        );
+      }
+    }
+    try {
+      s = await getOrCreateSession(
+        c.env.DB,
+        userId,
+        plan.id,
+        date,
+        dayTemplateId,
+        {
+          reviveDiscarded: !carriesAttemptProtocol,
+          expectedAttempt,
+          writeProtocol: carriesAttemptProtocol ? 'attempt-v1' : 'legacy',
+        },
+      );
+    } catch (error) {
+      if ((error as Error).message === 'session_expected_attempt_missing') {
+        return c.json(
+          {
+            error: 'session_attempt_missing',
+            expected_attempt: expectedAttempt,
+          },
+          409,
+        );
+      }
+      throw error;
+    }
+  }
+  if (!carriesAttemptProtocol && s.write_protocol !== 'legacy') {
+    return c.json(protocolConflictBody(s), 409);
   }
   if (!restartDiscarded && s.status === 'discarded') {
     return c.json(
@@ -415,7 +470,7 @@ apiRoutes.post('/sessions', async (c) => {
     );
   } else if (
     !restartDiscarded &&
-    hasOwn(b, 'expected_attempt') &&
+    carriesAttemptProtocol &&
     s.attempt !== (b.expected_attempt as number)
   ) {
     const expectedAttempt = b.expected_attempt as number;
@@ -434,8 +489,13 @@ apiRoutes.post('/sessions', async (c) => {
 });
 
 apiRoutes.patch('/sessions/:id', async (c) => {
+  const protocolHeader = readAttemptProtocolHeader(c);
+  if (!protocolHeader.ok) return c.json({ error: 'invalid_write_protocol' }, 400);
   const expected = readExpectedAttemptQuery(c);
   if (!expected.ok) {
+    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
+  }
+  if (protocolHeader.declared && expected.value === undefined) {
     return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
   const parsed = await readMutationBody(c);
@@ -483,8 +543,13 @@ apiRoutes.patch('/sessions/:id', async (c) => {
 // history/volume/conflicts). Idempotent. Restarting the same date requires
 // the explicit attempt-scoped POST /sessions restart protocol.
 apiRoutes.post('/sessions/:id/discard', async (c) => {
+  const protocolHeader = readAttemptProtocolHeader(c);
+  if (!protocolHeader.ok) return c.json({ error: 'invalid_write_protocol' }, 400);
   const expected = readExpectedAttemptQuery(c);
   if (!expected.ok) {
+    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
+  }
+  if (protocolHeader.declared && expected.value === undefined) {
     return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
   const s = await discardSession(
@@ -499,6 +564,8 @@ apiRoutes.post('/sessions/:id/discard', async (c) => {
 });
 
 apiRoutes.post('/sessions/:id/sets', async (c) => {
+  const protocolHeader = readAttemptProtocolHeader(c);
+  if (!protocolHeader.ok) return c.json({ error: 'invalid_write_protocol' }, 400);
   const parsed = await readMutationBody(c);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
@@ -526,6 +593,9 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
     },
   );
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  if (protocolHeader.declared && !hasOwn(b, 'expected_attempt')) {
+    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
+  }
   try {
     const result = await logSet(c.env.DB, c.get('userId'), {
       id: b.id as string,
@@ -570,7 +640,10 @@ apiRoutes.patch('/sets/:id', async (c) => {
     rpe: isNullableFiniteNumber,
     notes: isNullableString,
     duration_s: isNullableNonNegativeInteger,
-    deleted: (value) => typeof value === 'boolean',
+    // Tombstones are intentionally one-way. Reanimating an old row after its
+    // session was discarded/restarted would attach prior-attempt work to the
+    // current history without an attempt token.
+    deleted: (value) => value === true,
   });
   invalid.push(...Object.keys(b).filter((field) => !allowed.has(field)));
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);

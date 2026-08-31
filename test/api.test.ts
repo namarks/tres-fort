@@ -435,6 +435,174 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
     return s.id;
   }
 
+  it('bridges released tokenless writes until attempt-v1 atomically claims the generation', async () => {
+    const H = auth(await devJwt());
+    const V1 = { ...H, 'X-TresFort-Write-Protocol': 'attempt-v1' };
+    const date = '2026-08-20';
+    const id = await freshSession(H, date);
+
+    // Compatibility Worker first: the released app can log, discard, and
+    // explicitly start the date again without an attempt field.
+    const legacySetId = crypto.randomUUID();
+    const legacySet = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        id: legacySetId,
+        exercise_id: 'ex_bench',
+        set_index: 1,
+        weight: 135,
+        reps: 5,
+      }),
+    });
+    expect(legacySet.status).toBe(201);
+    const legacyDiscard = await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, {
+      method: 'POST',
+      headers: H,
+    });
+    expect(legacyDiscard.status).toBe(200);
+    const legacyRestart = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ date }),
+    });
+    expect(legacyRestart.status).toBe(201);
+    expect(await legacyRestart.json()).toMatchObject({
+      id,
+      status: 'planned',
+      attempt: 1,
+      write_protocol: 'legacy',
+    });
+
+    // The upgraded app's first scoped resolver fences this exact generation.
+    const claimed = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: V1,
+      body: JSON.stringify({ date, expected_attempt: 1 }),
+    });
+    expect(claimed.status).toBe(201);
+    expect(await claimed.json()).toMatchObject({
+      id,
+      attempt: 1,
+      write_protocol: 'attempt-v1',
+    });
+
+    const staleLegacySetId = crypto.randomUUID();
+    const staleLegacySet = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        id: staleLegacySetId,
+        exercise_id: 'ex_bench',
+        set_index: 1,
+        weight: 145,
+        reps: 5,
+      }),
+    });
+    expect(staleLegacySet.status).toBe(409);
+    expect(await staleLegacySet.json()).toMatchObject({
+      error: 'session_attempt_required',
+      current_attempt: 1,
+      current_session: { id, write_protocol: 'attempt-v1' },
+    });
+    expect(
+      await env.DB.prepare('SELECT id FROM set_logs WHERE id=?1')
+        .bind(staleLegacySetId)
+        .first(),
+    ).toBeNull();
+
+    for (const response of [
+      await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+        method: 'PATCH',
+        headers: H,
+        body: JSON.stringify({ status: 'completed' }),
+      }),
+      await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, {
+        method: 'POST',
+        headers: H,
+      }),
+      await SELF.fetch(`${BASE}/api/sessions`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ date }),
+      }),
+    ]) {
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        error: 'session_attempt_required',
+        current_attempt: 1,
+      });
+    }
+  });
+
+  it('rejects a nonzero create token without leaving a phantom session', async () => {
+    const H = auth(await devJwt());
+    const date = '2026-08-21';
+    const plan = await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Missing Attempt Plan' }),
+    });
+    expect(plan.status).toBe(201);
+    const response = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: { ...H, 'X-TresFort-Write-Protocol': 'attempt-v1' },
+      body: JSON.stringify({ date, expected_attempt: 4 }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: 'session_attempt_missing',
+      expected_attempt: 4,
+    });
+    expect(
+      await env.DB.prepare('SELECT id FROM sessions WHERE date=?1').bind(date).first(),
+    ).toBeNull();
+  });
+
+  it('advances legacy restarts during the migration-before-Worker window', async () => {
+    const H = auth(await devJwt());
+    const date = '2026-08-22';
+    const id = await freshSession(H, date);
+    await env.DB.prepare("UPDATE sessions SET status='discarded' WHERE id=?1")
+      .bind(id)
+      .run();
+
+    // This is the old Worker's restart UPDATE: it knows neither column added
+    // by migration 0032. The trigger supplies the missing generation advance.
+    await env.DB.prepare(
+      `UPDATE sessions
+          SET status='planned', started_at=NULL, completed_at=NULL, updated_at=?2
+        WHERE id=?1`,
+    )
+      .bind(id, Date.now())
+      .run();
+    expect(
+      await env.DB.prepare('SELECT status,attempt,write_protocol FROM sessions WHERE id=?1')
+        .bind(id)
+        .first(),
+    ).toEqual({ status: 'planned', attempt: 1, write_protocol: 'legacy' });
+
+    // The new app may be retrying the explicit restart whose response was
+    // lost during that window. It must adopt and claim the trigger-advanced
+    // winner rather than leaving tokenless legacy writes enabled.
+    const claimed = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: { ...H, 'X-TresFort-Write-Protocol': 'attempt-v1' },
+      body: JSON.stringify({
+        date,
+        restart_discarded: true,
+        expected_attempt: 0,
+      }),
+    });
+    expect(claimed.status).toBe(201);
+    expect(await claimed.json()).toMatchObject({
+      id,
+      status: 'planned',
+      attempt: 1,
+      write_protocol: 'attempt-v1',
+    });
+  });
+
   it('REJECTS skipped on a completed session (409); row + logged sets intact', async () => {
     const H = auth(await devJwt());
     const id = await freshSession(H, '2026-07-01');
@@ -1036,7 +1204,10 @@ describe('POST /api/sessions/:id/discard — the explicit escape hatch', () => {
       headers: H,
       body: JSON.stringify({ id: setId, exercise_id: 'ex_bench', set_index: 1, weight: 115, reps: 5 }),
     });
-    await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, { method: 'POST', headers: H });
+    await SELF.fetch(`${BASE}/api/sessions/${id}/discard?expected_attempt=0`, {
+      method: 'POST',
+      headers: H,
+    });
 
     const state = await (
       await SELF.fetch(`${BASE}/api/state?since=0&sets_since=0`, { headers: H })
@@ -1148,7 +1319,11 @@ describe('POST /api/sessions/:id/discard — the explicit escape hatch', () => {
       headers: H,
       body: JSON.stringify(discardedSet),
     });
-    await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, { method: 'POST', headers: H });
+    const discardResponse = await SELF.fetch(
+      `${BASE}/api/sessions/${id}/discard?expected_attempt=0`,
+      { method: 'POST', headers: H },
+    );
+    expect(discardResponse.status).toBe(200);
 
     // An ordinary delayed creator has no restart provenance and fails closed.
     const staleCreate = await SELF.fetch(`${BASE}/api/sessions`, {

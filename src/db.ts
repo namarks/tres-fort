@@ -2646,9 +2646,17 @@ export async function getOrCreateSession(
   planId: string,
   date: string,
   dayTemplateId: string | null,
-  options: { reviveDiscarded?: boolean; expectedAttempt?: number } = {},
+  options: {
+    reviveDiscarded?: boolean;
+    expectedAttempt?: number;
+    writeProtocol?: SessionRow['write_protocol'];
+  } = {},
 ): Promise<SessionRow> {
-  const readExisting = () =>
+  const writeProtocol =
+    options.writeProtocol ??
+    (options.expectedAttempt === undefined ? 'legacy' : 'attempt-v1');
+  const attemptScoped = writeProtocol === 'attempt-v1';
+  const selectExisting = () =>
     db
       .prepare(
         'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
@@ -2661,6 +2669,10 @@ export async function getOrCreateSession(
   // the winning row on its initial read: it may fill an unpinned explicit day
   // (first writer wins), and it may revive a discarded session.
   const useExisting = async (existing: SessionRow): Promise<SessionRow> => {
+    // A tokenless legacy resolver may operate only until an attempt-aware
+    // writer claims this generation. Returning the row unchanged lets the
+    // route surface a stable protocol conflict without reviving or pinning it.
+    if (!attemptScoped && existing.write_protocol !== 'legacy') return existing;
     // A write-scoped resolver must not mutate a later generation before its
     // caller can report the conflict. This guard precedes both revival and the
     // optional day-template backfill below.
@@ -2691,6 +2703,7 @@ export async function getOrCreateSession(
         notes: null,
         updated_at: ts,
         attempt: existing.attempt + 1,
+        write_protocol: writeProtocol,
       };
       const updated = await db
         .prepare(
@@ -2702,10 +2715,12 @@ export async function getOrCreateSession(
                   perceived_fatigue=?6,
                   notes=?7,
                   updated_at=?8,
-                  attempt=?9
+                  attempt=?9,
+                  write_protocol=?11
             WHERE id=?1
               AND status='discarded'
-              AND attempt=?10`,
+              AND attempt=?10
+              AND (?11 = 'attempt-v1' OR write_protocol = 'legacy')`,
         )
         .bind(
           revived.id,
@@ -2718,6 +2733,7 @@ export async function getOrCreateSession(
           ts,
           revived.attempt,
           existing.attempt,
+          writeProtocol,
         )
         .run();
       if (updated.meta.changes > 0) return revived;
@@ -2743,7 +2759,9 @@ export async function getOrCreateSession(
     // null-template row is the Today/session impedance mismatch the iOS UX
     // had to paper over. Backfill ONLY a NULL slot; never clobber an
     // existing pin.
-    if (dayTemplateId != null && existing.day_template_id == null) {
+    const shouldPin = dayTemplateId != null && existing.day_template_id == null;
+    const shouldClaim = attemptScoped && existing.write_protocol !== 'attempt-v1';
+    if (shouldPin || shouldClaim) {
       const ts = now();
       // Conditional UPDATE guards a read-then-write race: two explicit POSTs
       // for the same null-template date can both read day_template_id == null,
@@ -2754,15 +2772,32 @@ export async function getOrCreateSession(
       const res = await db
         .prepare(
           `UPDATE sessions
-              SET day_template_id = ?2, updated_at = ?3
+              SET day_template_id = CASE
+                    WHEN ?5 = 1 THEN ?2
+                    ELSE day_template_id
+                  END,
+                  write_protocol = ?6,
+                  updated_at = ?3
             WHERE id = ?1
-              AND day_template_id IS NULL
-              AND attempt = ?4`,
+              AND attempt = ?4
+              AND (?6 = 'attempt-v1' OR write_protocol = 'legacy')`,
         )
-        .bind(existing.id, dayTemplateId, ts, existing.attempt)
+        .bind(
+          existing.id,
+          dayTemplateId,
+          ts,
+          existing.attempt,
+          shouldPin ? 1 : 0,
+          writeProtocol,
+        )
         .run();
       if (res.meta.changes > 0) {
-        return { ...existing, day_template_id: dayTemplateId, updated_at: ts };
+        return {
+          ...existing,
+          day_template_id: shouldPin ? dayTemplateId : existing.day_template_id,
+          updated_at: ts,
+          write_protocol: writeProtocol,
+        };
       }
       // Lost the race — another writer pinned it first. Return the winner.
       const fresh = await db
@@ -2774,8 +2809,15 @@ export async function getOrCreateSession(
     return existing;
   };
 
-  const existing = await readExisting();
+  const existing = await selectExisting();
   if (existing) return useExisting(existing);
+
+  // A nonzero token asserts that a prior generation already exists. Never
+  // manufacture attempt zero and then reject the response: that phantom row
+  // would still change calendar/state projections.
+  if (options.expectedAttempt !== undefined && options.expectedAttempt !== 0) {
+    throw new Error('session_expected_attempt_missing');
+  }
 
   const ts = now();
   const s: SessionRow = {
@@ -2792,15 +2834,31 @@ export async function getOrCreateSession(
     created_at: ts,
     updated_at: ts,
     attempt: 0,
+    write_protocol: writeProtocol,
   };
   const inserted = await db
     .prepare(
       `INSERT INTO sessions
-       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
        ON CONFLICT(user_id,date) DO NOTHING`,
     )
-    .bind(s.id, s.user_id, s.plan_id, s.day_template_id, s.date, s.status, s.started_at, s.completed_at, s.perceived_fatigue, s.notes, s.created_at, s.updated_at)
+    .bind(
+      s.id,
+      s.user_id,
+      s.plan_id,
+      s.day_template_id,
+      s.date,
+      s.status,
+      s.started_at,
+      s.completed_at,
+      s.perceived_fatigue,
+      s.notes,
+      s.created_at,
+      s.updated_at,
+      s.attempt,
+      s.write_protocol,
+    )
     .run();
   if (inserted.meta.changes > 0) return s;
 
@@ -2808,7 +2866,7 @@ export async function getOrCreateSession(
   // engine-specific unique-constraint error: the unique index plus
   // ON CONFLICT makes the outcome explicit, and we re-read the canonical
   // row before applying the same explicit-pin/discarded-revival rules above.
-  const winner = await readExisting();
+  const winner = await selectExisting();
   if (!winner) throw new Error('session_create_conflict_without_winner');
   return useExisting(winner);
 }
@@ -2853,7 +2911,25 @@ export async function reviveDiscardedSession(
   // live generation. Return it as the idempotent result; do not increment it
   // again. Any later generation is a real conflict.
   if (current.status !== 'discarded') {
-    if (current.attempt === expectedAttempt + 1) return current;
+    if (current.attempt === expectedAttempt + 1) {
+      if (current.write_protocol === 'attempt-v1') return current;
+      const claimed = await db
+        .prepare(
+          `UPDATE sessions
+              SET write_protocol = 'attempt-v1'
+            WHERE id = ?1 AND user_id = ?2 AND attempt = ?3`,
+        )
+        .bind(canonicalSessionId, userId, current.attempt)
+        .run();
+      if (claimed.meta.changes > 0) {
+        return { ...current, write_protocol: 'attempt-v1' };
+      }
+      const winner = await db
+        .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
+        .bind(canonicalSessionId, userId)
+        .first<SessionRow>();
+      return winner ?? current;
+    }
     return sessionAttemptConflict(expectedAttempt, current);
   }
   if (current.attempt !== expectedAttempt) {
@@ -2872,7 +2948,8 @@ export async function reviveDiscardedSession(
               perceived_fatigue = NULL,
               notes = NULL,
               updated_at = ?3,
-              attempt = ?4
+              attempt = ?4,
+              write_protocol = 'attempt-v1'
         WHERE id = ?1
           AND user_id = ?5
           AND status = 'discarded'
@@ -2898,6 +2975,7 @@ export async function reviveDiscardedSession(
       notes: null,
       updated_at: ts,
       attempt: revivedAttempt,
+      write_protocol: 'attempt-v1',
     };
   }
 
@@ -2907,7 +2985,16 @@ export async function reviveDiscardedSession(
     .first<SessionRow>();
   if (!winner) return null;
   if (winner.status !== 'discarded' && winner.attempt === revivedAttempt) {
-    return winner;
+    if (winner.write_protocol === 'attempt-v1') return winner;
+    await db
+      .prepare(
+        `UPDATE sessions
+            SET write_protocol = 'attempt-v1'
+          WHERE id = ?1 AND user_id = ?2 AND attempt = ?3`,
+      )
+      .bind(canonicalSessionId, userId, revivedAttempt)
+      .run();
+    return { ...winner, write_protocol: 'attempt-v1' };
   }
   return sessionAttemptConflict(expectedAttempt, winner);
 }
@@ -2955,6 +3042,13 @@ export type SessionStateConflict = {
   current_session: SessionRow;
 };
 
+export type SessionProtocolConflict = {
+  error: 'session_attempt_required';
+  status: SessionRow['status'];
+  current_attempt: number;
+  current_session: SessionRow;
+};
+
 function sessionAttemptConflict(
   expectedAttempt: number,
   current: SessionRow,
@@ -2979,6 +3073,15 @@ function sessionStateConflict(
   };
 }
 
+function sessionProtocolConflict(current: SessionRow): SessionProtocolConflict {
+  return {
+    error: 'session_attempt_required',
+    status: current.status,
+    current_attempt: current.attempt,
+    current_session: current,
+  };
+}
+
 export class SessionWriteConflictError extends Error {
   readonly currentSession: SessionRow;
   readonly expectedAttempt?: number;
@@ -2987,6 +3090,7 @@ export class SessionWriteConflictError extends Error {
   constructor(
     error:
       | 'session_attempt_conflict'
+      | 'session_attempt_required'
       | 'session_discarded'
       | 'session_state_conflict',
     currentSession: SessionRow,
@@ -3002,10 +3106,14 @@ export class SessionWriteConflictError extends Error {
 
   response():
     | SessionAttemptConflict
+    | SessionProtocolConflict
     | SessionStateConflict
     | { error: 'session_discarded'; status: 'discarded'; current_session: SessionRow } {
     if (this.message === 'session_attempt_conflict' && this.expectedAttempt !== undefined) {
       return sessionAttemptConflict(this.expectedAttempt, this.currentSession);
+    }
+    if (this.message === 'session_attempt_required') {
+      return sessionProtocolConflict(this.currentSession);
     }
     if (this.message === 'session_state_conflict') {
       return {
@@ -3049,6 +3157,7 @@ export async function patchSession(
     }
   | { error: 'invalid_status'; status: unknown }
   | SessionAttemptConflict
+  | SessionProtocolConflict
   | SessionStateConflict
 > {
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
@@ -3058,6 +3167,10 @@ export async function patchSession(
     .bind(canonicalSessionId, userId)
     .first<SessionRow>();
   if (!s) return null;
+  const attemptScoped = expectedAttempt !== undefined;
+  if (!attemptScoped && s.write_protocol !== 'legacy') {
+    return sessionProtocolConflict(s);
+  }
   if (expectedAttempt !== undefined && expectedAttempt !== s.attempt) {
     return sessionAttemptConflict(expectedAttempt, s);
   }
@@ -3144,13 +3257,23 @@ export async function patchSession(
     .prepare(
       `UPDATE sessions
           SET status = CASE WHEN ?8 = 1 THEN ?2 ELSE status END,
-              perceived_fatigue = CASE WHEN ?10 = 1 THEN ?3 ELSE perceived_fatigue END,
-              notes = CASE WHEN ?11 = 1 THEN ?4 ELSE notes END,
+              perceived_fatigue = CASE
+                WHEN ?2 = 'planned' AND status = 'skipped' THEN NULL
+                WHEN ?10 = 1 THEN ?3
+                ELSE perceived_fatigue
+              END,
+              notes = CASE
+                WHEN ?2 = 'planned' AND status = 'skipped' THEN NULL
+                WHEN ?11 = 1 THEN ?4
+                ELSE notes
+              END,
               started_at = CASE
+                WHEN ?2 = 'planned' AND status = 'skipped' THEN NULL
                 WHEN ?2 = 'in_progress' THEN COALESCE(started_at, ?5)
                 ELSE started_at
               END,
               completed_at = CASE
+                WHEN ?2 = 'planned' AND status = 'skipped' THEN NULL
                 WHEN ?2 = 'completed' THEN COALESCE(completed_at, ?6)
                 ELSE completed_at
               END,
@@ -3162,9 +3285,14 @@ export async function patchSession(
                 WHEN ?12 = 1 THEN ?13
                 ELSE day_template_id
               END,
+              write_protocol = CASE
+                WHEN ?14 = 1 THEN 'attempt-v1'
+                ELSE write_protocol
+              END,
               updated_at = ?7
         WHERE id = ?1
           AND attempt = ?9
+          AND (?14 = 1 OR write_protocol = 'legacy')
           AND ${statusPredicate}`,
     )
     .bind(
@@ -3184,6 +3312,7 @@ export async function patchSession(
         ? 1
         : 0,
       patch.day_template_id ?? null,
+      attemptScoped ? 1 : 0,
     )
     .run();
   if (updated.meta.changes === 0) {
@@ -3191,6 +3320,9 @@ export async function patchSession(
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId)
       .first<SessionRow>();
+    if (current && !attemptScoped && current.write_protocol !== 'legacy') {
+      return sessionProtocolConflict(current);
+    }
     if (current && current.attempt !== casAttempt) {
       return sessionAttemptConflict(casAttempt, current);
     }
@@ -3247,7 +3379,7 @@ export async function discardSession(
   userId: string,
   sessionId: string,
   expectedAttempt?: number,
-): Promise<SessionRow | SessionAttemptConflict | null> {
+): Promise<SessionRow | SessionAttemptConflict | SessionProtocolConflict | null> {
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
   if (!canonicalSessionId) return null;
   const s = await db
@@ -3255,6 +3387,10 @@ export async function discardSession(
     .bind(canonicalSessionId, userId)
     .first<SessionRow>();
   if (!s) return null;
+  const attemptScoped = expectedAttempt !== undefined;
+  if (!attemptScoped && s.write_protocol !== 'legacy') {
+    return sessionProtocolConflict(s);
+  }
   if (expectedAttempt !== undefined && expectedAttempt !== s.attempt) {
     return sessionAttemptConflict(expectedAttempt, s);
   }
@@ -3262,7 +3398,18 @@ export async function discardSession(
   // Already discarded → true no-op: skip the (no-op) UPDATEs AND the audit
   // write, so a double-tap / retry can't inflate audit_log (which feeds
   // Claude's coaching context).
-  if (s.status === 'discarded') return s;
+  if (s.status === 'discarded') {
+    if (!attemptScoped || s.write_protocol === 'attempt-v1') return s;
+    await db
+      .prepare(
+        `UPDATE sessions
+            SET write_protocol = 'attempt-v1'
+          WHERE id = ?1 AND user_id = ?2 AND attempt = ?3`,
+      )
+      .bind(canonicalSessionId, userId, casAttempt)
+      .run();
+    return { ...s, write_protocol: 'attempt-v1' };
+  }
   const ts = now();
   // D1 batches are ordered transactions. Mark the session terminal first,
   // then tombstone every live set in the same transaction. A concurrent
@@ -3272,9 +3419,19 @@ export async function discardSession(
   const [transition, tombstones] = await db.batch([
     db
       .prepare(
-        "UPDATE sessions SET status = 'discarded', updated_at = ?2 WHERE id = ?1 AND status != 'discarded' AND attempt = ?3",
+        `UPDATE sessions
+            SET status = 'discarded',
+                updated_at = ?2,
+                write_protocol = CASE
+                  WHEN ?4 = 1 THEN 'attempt-v1'
+                  ELSE write_protocol
+                END
+          WHERE id = ?1
+            AND status != 'discarded'
+            AND attempt = ?3
+            AND (?4 = 1 OR write_protocol = 'legacy')`,
       )
-      .bind(canonicalSessionId, ts, casAttempt),
+      .bind(canonicalSessionId, ts, casAttempt, attemptScoped ? 1 : 0),
     db
       .prepare(
         `UPDATE set_logs
@@ -3299,6 +3456,9 @@ export async function discardSession(
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId)
       .first<SessionRow>();
+    if (current && !attemptScoped && current.write_protocol !== 'legacy') {
+      return sessionProtocolConflict(current);
+    }
     if (current && current.attempt !== casAttempt) {
       return sessionAttemptConflict(casAttempt, current);
     }
@@ -3318,7 +3478,12 @@ export async function discardSession(
     },
     `discarded:${discardedSets}_sets`,
   );
-  return { ...s, status: 'discarded', updated_at: ts };
+  return {
+    ...s,
+    status: 'discarded',
+    updated_at: ts,
+    write_protocol: attemptScoped ? 'attempt-v1' : s.write_protocol,
+  };
 }
 
 /** Idempotent on the client-generated `id` (offline-safe; retries are no-ops). */
@@ -3358,7 +3523,7 @@ export async function logSet(
   // A set UUID is idempotent only within the resolved owned session. Never
   // return a globally-matched row from another session/tenant, even if a
   // caller happens to know its UUID.
-  const readExisting = () =>
+  const selectExisting = () =>
     db
       .prepare(
         `SELECT sl.*
@@ -3366,22 +3531,33 @@ export async function logSet(
            JOIN sessions AS s ON s.id = sl.session_id
           WHERE sl.id = ?1 AND sl.session_id = ?2 AND s.user_id = ?3`,
       )
-      .bind(input.id, canonicalSessionId, userId)
-      .first<SetLogRow>();
-  const readSession = () =>
+      .bind(input.id, canonicalSessionId, userId);
+  const selectSession = () =>
     db
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
-      .bind(canonicalSessionId, userId)
-      .first<SessionRow>();
-  const targetSession = await readSession();
+      .bind(canonicalSessionId, userId);
+  // Read the UUID winner and its authoritative session from one D1 snapshot.
+  // A retry must never pair an old planned read with a set that won later.
+  const [initialSetState, initialSessionState] = await db.batch([
+    selectExisting(),
+    selectSession(),
+  ]);
+  const targetSession = initialSessionState!.results[0] as SessionRow | undefined;
   if (!targetSession) throw new Error('session_not_found');
   // Exact UUID retries remain idempotent even after discard/restart. The
   // original mutation already happened, so this path settles the old intent
   // without applying anything to the current generation. Return the current
   // authoritative session alongside the (possibly tombstoned) old set.
-  const existing = await readExisting();
+  const existing = initialSetState!.results[0] as SetLogRow | undefined;
   if (existing) {
     return { set: existing, deduped: true, session: targetSession };
+  }
+  const attemptScoped = input.expected_attempt !== undefined;
+  if (!attemptScoped && targetSession.write_protocol !== 'legacy') {
+    throw new SessionWriteConflictError(
+      'session_attempt_required',
+      targetSession,
+    );
   }
   if (
     input.expected_attempt !== undefined &&
@@ -3526,29 +3702,45 @@ export async function logSet(
               AND status != 'discarded'
               AND status != 'skipped'
               AND attempt = ?15
+              AND (?16 = 1 OR write_protocol = 'legacy')
            ON CONFLICT(id) DO NOTHING`,
         )
         .bind(
           row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
           row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
-          row.duration_s, row.is_timed, casAttempt,
+          row.duration_s, row.is_timed, casAttempt, attemptScoped ? 1 : 0,
         ),
+      // Claim/start only when this owned UUID now exists. Keeping the INSERT
+      // first avoids mutating the session for a globally-colliding UUID, while
+      // the enclosing D1 batch remains one atomic linearization point: no
+      // legacy writer can slip between insertion and the protocol fence.
       db
         .prepare(
           `UPDATE sessions
               SET status = CASE WHEN status = 'planned' THEN 'in_progress' ELSE status END,
                   started_at = COALESCE(started_at, ?2),
-                  updated_at = ?2
+                  updated_at = ?2,
+                  write_protocol = CASE
+                    WHEN ?4 = 1 THEN 'attempt-v1'
+                    ELSE write_protocol
+                  END
             WHERE id = ?1
               AND status != 'discarded'
               AND status != 'skipped'
-              AND attempt = ?4
+              AND attempt = ?3
+              AND (?4 = 1 OR write_protocol = 'legacy')
               AND EXISTS (
                 SELECT 1 FROM set_logs
-                 WHERE id = ?3 AND session_id = ?1
+                 WHERE id = ?5 AND session_id = ?1
               )`,
         )
-        .bind(canonicalSessionId, ts, row.id, casAttempt),
+        .bind(
+          canonicalSessionId,
+          ts,
+          casAttempt,
+          attemptScoped ? 1 : 0,
+          row.id,
+        ),
       // Capture both the target generation and the canonical current row at
       // the same linearization point. The latter gives a stable conflict body
       // when discard/restart moved the generation during this request.
@@ -3558,20 +3750,36 @@ export async function logSet(
       db
         .prepare('SELECT * FROM sessions WHERE id = ?1')
         .bind(canonicalSessionId),
+      selectExisting(),
     ]);
   };
   for (let attempt = 0; ; attempt++) {
     try {
-      const [inserted, started, sessionState, currentState] = await insertAndStart();
+      const [inserted, started, sessionState, currentState, winnerState] =
+        await insertAndStart();
       const sessionAtWrite = sessionState!.results[0] as SessionRow | undefined;
       const currentSession = currentState!.results[0] as SessionRow | undefined;
+      const winner = winnerState!.results[0] as SetLogRow | undefined;
       if (inserted!.meta.changes === 0) {
         // A concurrent same-id request won after our pre-read. Return only a
         // winner from this owned canonical session; a UUID already used by a
         // different session remains indistinguishable from a missing target.
-        const winner = await readExisting();
-        if (winner && sessionAtWrite) {
-          return { set: winner, deduped: true, session: sessionAtWrite };
+        if (winner && (sessionAtWrite || currentSession)) {
+          return {
+            set: winner,
+            deduped: true,
+            session: sessionAtWrite ?? currentSession!,
+          };
+        }
+        if (
+          currentSession &&
+          !attemptScoped &&
+          currentSession.write_protocol !== 'legacy'
+        ) {
+          throw new SessionWriteConflictError(
+            'session_attempt_required',
+            currentSession,
+          );
         }
         if (!sessionAtWrite && currentSession) {
           throw new SessionWriteConflictError(
@@ -3591,7 +3799,7 @@ export async function logSet(
         }
         throw new Error('session_not_found');
       }
-      // The two statements share one transaction, so a successful insert
+      // The claim/start and insert share one transaction, so a successful insert
       // always has a matching non-discarded session update. Keep this check as
       // a defensive invariant rather than allowing a stranded live set.
       if (started!.meta.changes === 0) {
@@ -3696,6 +3904,9 @@ export async function patchSet(
     deleted?: boolean;
   },
 ): Promise<SetLogRow | null> {
+  if (patch.deleted === false) {
+    throw new Error('set_undelete_unsupported');
+  }
   const row = await db
     .prepare(
       `SELECT sl.*, s.attempt AS session_attempt
@@ -3714,40 +3925,12 @@ export async function patchSet(
   const deletedAt =
     patch.deleted === undefined
       ? row.deleted_at
-      : patch.deleted
-        ? row.deleted_at ?? now()
-        : null;
-  // Undelete collision: the partial unique index ux_set_slot only covers
-  // live rows, so reviving a soft-deleted set whose slot was reused while it
-  // was gone would violate the constraint (→ 500). Renumber the revived row
-  // to max+1 before clearing deleted_at — same "renumber, don't reject"
-  // contract logSet uses.
-  let setIndex = row.set_index;
-  const isUndelete = row.deleted_at !== null && deletedAt === null;
-  if (isUndelete) {
-    const clash = await db
-      .prepare(
-        `SELECT 1 FROM set_logs
-         WHERE session_id = ?1 AND exercise_id = ?2 AND set_index = ?3
-           AND is_warmup = ?4 AND deleted_at IS NULL AND id != ?5 LIMIT 1`,
-      )
-      .bind(row.session_id, row.exercise_id, setIndex, row.is_warmup, setId)
-      .first();
-    if (clash) {
-      const max = await db
-        .prepare(
-          `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
-           WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
-             AND deleted_at IS NULL`,
-        )
-        .bind(row.session_id, row.exercise_id, row.is_warmup)
-        .first<{ m: number }>();
-      setIndex = (max?.m ?? 0) + 1;
-    }
-  }
+      : row.deleted_at ?? now();
   // Build a field-only UPDATE. A duration correction must not rewrite a
   // concurrently changed weight/RPE or resurrect a concurrently deleted row;
-  // deleted_at and set_index are touched only for an explicit delete/undelete.
+  // deleted_at is touched only for an explicit soft-delete. Undelete is not a
+  // public operation: an old-attempt tombstone must never rejoin a restarted
+  // workout generation.
   const values: unknown[] = [setId];
   const assignments: string[] = [];
   const assign = (column: string, value: unknown) => {
@@ -3760,40 +3943,11 @@ export async function patchSet(
   if (has('notes')) assign('notes', patch.notes);
   if (has('duration_s')) assign('duration_s', patch.duration_s);
   if (has('deleted')) assign('deleted_at', deletedAt);
-  let setIndexValuePosition: number | null = null;
-  if (isUndelete) {
-    assign('set_index', setIndex);
-    setIndexValuePosition = values.length - 1;
-  }
-
-  // The clash pre-check above narrows the common case, but a concurrent
-  // undelete/logSet can still race onto the same slot and trip ux_set_slot.
-  // Retry-renumber on conflict (same contract as logSet) so an undelete is
-  // never a 500. Other corrections do not touch set_index and run once.
-  for (let attempt = 0; ; attempt++) {
-    try {
-      if (assignments.length > 0) {
-        await db
-          .prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1`)
-          .bind(...values)
-          .run();
-      }
-      break;
-    } catch (e) {
-      const msg = String((e as Error)?.message ?? '');
-      const slotConflict = /unique constraint failed/i.test(msg) && /set_index/i.test(msg);
-      if (!slotConflict || attempt >= 5) throw e;
-      const max = await db
-        .prepare(
-          `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
-           WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
-             AND deleted_at IS NULL`,
-        )
-        .bind(row.session_id, row.exercise_id, row.is_warmup)
-        .first<{ m: number }>();
-      setIndex = (max?.m ?? 0) + 1;
-      if (setIndexValuePosition !== null) values[setIndexValuePosition] = setIndex;
-    }
+  if (assignments.length > 0) {
+    await db
+      .prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1`)
+      .bind(...values)
+      .run();
   }
   // Phantom-session guard. Logging a set promotes a session 'planned' ->
   // 'in_progress' (see logSet). Deleting the LAST live set must do the
@@ -3802,7 +3956,7 @@ export async function patchSet(
   // calendar/agenda (and MCP get_today_workout) still surface. Revert it to
   // 'planned' and clear started_at so EVERY client — app, REST, MCP — agrees
   // the day is simply the upcoming workout again. Fires only on a real
-  // live->deleted transition (undeletes / field-only edits never touch
+  // live->deleted transition (field-only edits never touch
   // status), and only for 'in_progress' (a 'completed' session is NOT
   // auto-un-completed — that's a deliberate terminal state).
   const isDelete = row.deleted_at === null && deletedAt !== null;
@@ -4861,7 +5015,10 @@ export async function logWorkoutComplete(
   date: string,
   perceivedFatigue: number | null,
   notes: string | null,
-): Promise<SessionRow | null | { error: 'session_discarded'; status: 'discarded' }> {
+): Promise<
+  | Awaited<ReturnType<typeof patchSession>>
+  | { error: 'session_discarded'; status: 'discarded' }
+> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
   const session = await getOrCreateSession(
@@ -4875,24 +5032,20 @@ export async function logWorkoutComplete(
   if (session.status === 'discarded') {
     return { error: 'session_discarded', status: 'discarded' };
   }
-  const r = await patchSession(db, userId, session.id, {
-    status: 'completed',
-    perceived_fatigue: perceivedFatigue ?? undefined,
-    notes: notes ?? undefined,
-  });
-  // A discard can legitimately commit after getOrCreateSession returns but
-  // before the completion PATCH writes. Preserve that stable terminal
-  // conflict for the MCP caller. The validation/skipped-burial arms remain
-  // unreachable because this helper always passes status:'completed'.
-  if (r && 'error' in r) {
-    if (r.error === 'session_discarded') {
-      return { error: 'session_discarded', status: 'discarded' };
-    }
-    throw new Error(
-      `unreachable: patchSession returned ${r.error} on the status:'completed' path — guard scope changed`,
-    );
-  }
-  return r;
+  // Carry the generation observed above across this await. A discard/restart
+  // in between returns a structured conflict instead of retargeting completion
+  // to the newer workout.
+  return patchSession(
+    db,
+    userId,
+    session.id,
+    {
+      status: 'completed',
+      perceived_fatigue: perceivedFatigue ?? undefined,
+      notes: notes ?? undefined,
+    },
+    session.attempt,
+  );
 }
 
 /** "I'm beat — adjust." Scales target day(s) and records the reasoning. */
@@ -5479,6 +5632,8 @@ export async function setPlannedSession(
       existing.status === 'discarded' || existing.status === 'skipped';
     const newStartedAt = reviving ? null : existing.started_at;
     const newCompletedAt = reviving ? null : existing.completed_at;
+    const newFatigue = reviving ? null : existing.perceived_fatigue;
+    const newNotes = reviving ? null : existing.notes;
     const newAttempt = reviving ? casAttempt + 1 : casAttempt;
     const updated = await db
       .prepare(
@@ -5487,8 +5642,11 @@ export async function setPlannedSession(
                 status = ?3,
                 started_at = ?4,
                 completed_at = ?5,
+                perceived_fatigue = ?11,
+                notes = ?12,
                 updated_at = ?6,
-                attempt = ?7
+                attempt = ?7,
+                write_protocol = 'attempt-v1'
           WHERE id = ?1
             AND user_id = ?8
             AND status = ?9
@@ -5505,6 +5663,8 @@ export async function setPlannedSession(
         userId,
         casStatus,
         casAttempt,
+        newFatigue,
+        newNotes,
       )
       .run();
     if (updated.meta.changes === 0) {
@@ -5521,8 +5681,11 @@ export async function setPlannedSession(
       status: newStatus,
       started_at: newStartedAt,
       completed_at: newCompletedAt,
+      perceived_fatigue: newFatigue,
+      notes: newNotes,
       updated_at: ts,
       attempt: newAttempt,
+      write_protocol: 'attempt-v1',
     };
     return { ok: true, session };
   };
@@ -5544,15 +5707,31 @@ export async function setPlannedSession(
     created_at: ts,
     updated_at: ts,
     attempt: 0,
+    write_protocol: 'attempt-v1',
   };
   const inserted = await db
     .prepare(
       `INSERT INTO sessions
-       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
        ON CONFLICT(user_id,date) DO NOTHING`,
     )
-    .bind(s.id, s.user_id, s.plan_id, s.day_template_id, s.date, s.status, s.started_at, s.completed_at, s.perceived_fatigue, s.notes, s.created_at, s.updated_at)
+    .bind(
+      s.id,
+      s.user_id,
+      s.plan_id,
+      s.day_template_id,
+      s.date,
+      s.status,
+      s.started_at,
+      s.completed_at,
+      s.perceived_fatigue,
+      s.notes,
+      s.created_at,
+      s.updated_at,
+      s.attempt,
+      s.write_protocol,
+    )
     .run();
   if (inserted.meta.changes > 0) return { ok: true, session: s };
 
@@ -5614,7 +5793,9 @@ export async function skipPlannedSession(
     const updated = await db
       .prepare(
         `UPDATE sessions
-            SET status = 'skipped', updated_at = ?2
+            SET status = 'skipped',
+                updated_at = ?2,
+                write_protocol = 'attempt-v1'
           WHERE id = ?1
             AND user_id = ?3
             AND status = ?4
@@ -5636,7 +5817,15 @@ export async function skipPlannedSession(
       }
       return sessionStateConflict(casStatus, current);
     }
-    return { ok: true, session: { ...existing, status: 'skipped', updated_at: ts } };
+    return {
+      ok: true,
+      session: {
+        ...existing,
+        status: 'skipped',
+        updated_at: ts,
+        write_protocol: 'attempt-v1',
+      },
+    };
   };
   const existing = await readExisting();
   if (existing) return useExisting(existing);
@@ -5656,15 +5845,31 @@ export async function skipPlannedSession(
     created_at: ts,
     updated_at: ts,
     attempt: 0,
+    write_protocol: 'attempt-v1',
   };
   const inserted = await db
     .prepare(
       `INSERT INTO sessions
-       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
        ON CONFLICT(user_id,date) DO NOTHING`,
     )
-    .bind(s.id, s.user_id, s.plan_id, s.day_template_id, s.date, s.status, s.started_at, s.completed_at, s.perceived_fatigue, s.notes, s.created_at, s.updated_at)
+    .bind(
+      s.id,
+      s.user_id,
+      s.plan_id,
+      s.day_template_id,
+      s.date,
+      s.status,
+      s.started_at,
+      s.completed_at,
+      s.perceived_fatigue,
+      s.notes,
+      s.created_at,
+      s.updated_at,
+      s.attempt,
+      s.write_protocol,
+    )
     .run();
   if (inserted.meta.changes > 0) return { ok: true, session: s };
 

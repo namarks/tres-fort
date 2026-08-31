@@ -38,10 +38,13 @@ never present a failed write as completed or silently drop the user's intent.
 
 ## Next step
 
-No further executable step. The implementation and local migration replay are
-complete; applying migration 0032 remotely, deploying the Worker, or releasing
-the iOS app remains outside this workstream's authority and was not performed
-during closeout.
+No further repository-executable step. Any production rollout is a separately
+authorized, ordered operation: first run the existing Worker release path so
+migration 0032 lands before the compatibility Worker; only after that Worker is
+live may the attempt-aware iOS app be released. App-first rollout is unsupported.
+Retire the tokenless `legacy` mode only after a separately chosen minimum-app-
+version or adoption gate. No migration, deploy, App Store/TestFlight release,
+or legacy-mode retirement was performed during closeout.
 
 ## Notes / open questions
 
@@ -77,29 +80,40 @@ during closeout.
   with an explicit generation contract so a delayed write from an older workout
   cannot attach to a later restart of the same civil date.
 - P2 completes recovery and the cross-surface write contract. Migration 0032
-  assigns every session an attempt generation; set, finish, discard, create,
-  skipped-reopen, REST, and MCP mutations use attempt-scoped compare-and-set
-  semantics with structured current-session conflicts. Exact set UUID retries
-  remain idempotent across a discard/restart, while stale work is retired rather
-  than retargeted. The account-scoped iOS snapshot store uses local revision
-  tickets so stale full-state pulls cannot overwrite acknowledgements from
-  another model, and durable runner checkpoints retain session/restart identity
-  across process death. Cached state stays browse-only until live validation;
-  successful deletion invalidates it, authoritative conflicts still repair the
-  mounted model, and terminal precedence normalizes legacy nil attempts to
-  generation zero. Explicit skipped overrides reopen a fresh attempt pinned to
-  the user's chosen day before the runner starts. Server and iOS blackout-trip
-  projections now share the rule that only real logged sessions survive a hard
-  blackout, without manufacturing ride conflicts.
+  assigns every session an attempt generation plus a persisted write protocol.
+  The compatibility Worker accepts released tokenless writes only while that
+  generation is `legacy`; the first attempt-scoped create, set, finish, discard,
+  or reopen atomically claims `attempt-v1`, after which tokenless mutation is a
+  visible conflict. The migration trigger advances a legacy restart made by the
+  old Worker during the migration-before-deploy window, and an idempotent new-app
+  retry claims that already-advanced winner. REST and MCP mutations carry the
+  generation they observed across awaits and return structured current-session
+  conflicts. Exact set UUID retries remain idempotent across a discard/restart,
+  while stale work is retired rather than retargeted; public undelete is rejected
+  so old-attempt tombstones cannot rejoin a later workout. The account-scoped iOS
+  snapshot store uses local revision tickets so stale full-state pulls cannot
+  overwrite acknowledgements from another model, and durable runner checkpoints
+  retain session/restart identity across process death. Cached state stays
+  browse-only until live validation; successful deletion invalidates it,
+  authoritative conflicts still repair the mounted model, and terminal precedence
+  normalizes legacy nil attempts to generation zero. Explicit skipped overrides
+  reopen a fresh attempt pinned to the user's chosen day before the runner starts,
+  clearing timestamps, fatigue, and notes. Server and iOS blackout-trip projections
+  share the rule that only real logged sessions survive a hard blackout, without
+  manufacturing ride conflicts.
 - Final verification passed TypeScript typecheck, the complete Workers/D1 suite
-  (`38` files, `462` tests), and the complete iOS simulator suite (`140` tests)
+  (`38` files, `472` tests), and the complete iOS simulator suite (`141` tests)
   from clean derived data on an iPhone 17 Pro simulator (iOS 26.3.1). Focused
-  concurrency, recovery, calendar-parity, selected-day reopen, legacy-attempt,
-  and persistence regressions also passed. Migration 0032 was authored and
-  locally exercised but was not applied remotely.
-- Independent implementation review found no remaining actionable P1/P2
-  findings across attempt CAS, write ordering, snapshot recovery, account
-  scoping, skipped override, calendar parity, and backward compatibility.
+  compatibility, MCP observation, exact-UUID concurrency, recovery,
+  calendar-parity, selected-day reopen, legacy-attempt, and persistence
+  regressions also passed. Migration 0032 was authored and locally exercised
+  but was not applied remotely.
+- Independent exact-head review is a delivery gate for the final tree. The
+  initial review of commit `a90fd118d00df22b21c33dab9bb6ab415084219e`
+  surfaced six attempt-rollout and concurrency findings; this follow-up addresses
+  all six with the compatibility protocol and focused regressions above. Do not
+  reuse that earlier review after the head changes; require a fresh exact-head
+  review before any delivery action.
 - Set bodies, retry state, and drain behavior remain owned here. Coordinate only
   the user-keyed namespace and account-switch boundary with the completed P0
   contracts in [Identity and Account Lifecycle](../../identity-account-lifecycle/plan.md).

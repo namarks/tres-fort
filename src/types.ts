@@ -190,6 +190,10 @@ export interface SessionRow {
   created_at: number;
   updated_at: number;
   attempt: number;
+  /** Rolling-release mode for the current generation. `legacy` accepts the
+   * released app's tokenless writes; the first attempt-aware mutation claims
+   * `attempt-v1`, after which tokenless writes fail visibly. */
+  write_protocol: 'legacy' | 'attempt-v1';
 }
 
 export interface SetLogRow {

@@ -33,6 +33,7 @@ const sess = (date: string, status: string, day: string | null = null): SessionR
   created_at: 0,
   updated_at: 0,
   attempt: 0,
+  write_protocol: 'legacy',
 });
 
 // Mon..Sun schedule: Mon=push, Wed=pull, Fri=legs, rest otherwise.

@@ -12,6 +12,8 @@ import {
   skipPlannedSession,
   updatePlanTree,
 } from '../src/db';
+import { handleMcp } from '../src/mcp/server';
+import type { Env } from '../src/types';
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -186,6 +188,59 @@ function databaseWithPausedRunAfterRead(
   return { db, readReached, runReached, releaseRun };
 }
 
+/** Pause before the first matching `.first()` executes. This creates a
+ * deterministic gap after an outer caller has observed a session generation
+ * but before its nested mutation resolves and rereads the target session. */
+function databaseWithPausedFirstBeforeRead(sqlNeedle: string): {
+  db: D1Database;
+  firstReached: Promise<void>;
+  releaseFirst: () => void;
+} {
+  let markFirst!: () => void;
+  const firstReached = new Promise<void>((resolve) => {
+    markFirst = resolve;
+  });
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let intercepted = false;
+
+  const wrapStatement = (statement: D1PreparedStatement): D1PreparedStatement =>
+    new Proxy(statement, {
+      get(target, property) {
+        if (property === 'bind') {
+          return (...values: any[]) => wrapStatement(target.bind(...values));
+        }
+        if (property === 'first') {
+          return async (...args: any[]) => {
+            markFirst();
+            await firstGate;
+            return (target.first as (...callArgs: any[]) => Promise<unknown>)(...args);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+
+  const db = new Proxy(env.DB, {
+    get(target, property) {
+      if (property === 'prepare') {
+        return (sql: string) => {
+          const statement = target.prepare(sql);
+          if (intercepted || !sql.includes(sqlNeedle)) return statement;
+          intercepted = true;
+          return wrapStatement(statement);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return { db, firstReached, releaseFirst };
+}
+
 /** Pause the first D1 batch after a matching pre-read has returned. */
 function databaseWithPausedBatchAfterRead(readNeedle: string): {
   db: D1Database;
@@ -243,6 +298,43 @@ function databaseWithPausedBatchAfterRead(readNeedle: string): {
     },
   });
   return { db, readReached, releaseBatch };
+}
+
+/** Let logSet's authoritative read snapshot complete, then pause its atomic
+ * insert/start batch so another writer can move the session in that gap. */
+function databaseWithPausedWriteBatchAfterSnapshot(): {
+  db: D1Database;
+  snapshotReached: Promise<void>;
+  releaseBatch: () => void;
+} {
+  let markSnapshot!: () => void;
+  const snapshotReached = new Promise<void>((resolve) => {
+    markSnapshot = resolve;
+  });
+  let releaseBatch!: () => void;
+  const writeGate = new Promise<void>((resolve) => {
+    releaseBatch = resolve;
+  });
+  let batchCount = 0;
+  const db = new Proxy(env.DB, {
+    get(target, property) {
+      if (property === 'batch') {
+        return async (statements: D1PreparedStatement[]) => {
+          batchCount += 1;
+          if (batchCount === 1) {
+            const result = await target.batch(statements);
+            markSnapshot();
+            return result;
+          }
+          if (batchCount === 2) await writeGate;
+          return target.batch(statements);
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return { db, snapshotReached, releaseBatch };
 }
 
 describe('plan-tree optimistic concurrency', () => {
@@ -492,7 +584,9 @@ describe('session create concurrency', () => {
     const { userId, planId } = await seedUserAndPlan('resolver-restart-race');
     const date = '2037-01-14';
     const session = await getOrCreateSession(env.DB, userId, planId, date, null);
-    await discardSession(env.DB, userId, session.id, 0);
+    // Seed a released-client legacy tombstone so the stale tokenless resolver
+    // can begin before the explicit v1 restart claims the generation.
+    await discardSession(env.DB, userId, session.id);
     const paused = databaseWithPausedRunAfterRead(
       'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2',
       'SET day_template_id=?2',
@@ -693,11 +787,11 @@ describe('discard terminal-state concurrency', () => {
     );
     await paused.readReached;
     await discardSession(env.DB, userId, session.id, 0);
-    const restarted = await getOrCreateSession(
+    const restarted = await reviveDiscardedSession(
       env.DB,
       userId,
-      planId,
-      session.date,
+      session.id,
+      0,
       null,
     );
     expect(restarted).toMatchObject({ id: session.id, status: 'planned', attempt: 1 });
@@ -730,10 +824,189 @@ describe('discard terminal-state concurrency', () => {
     await discardSession(env.DB, userId, session.id);
     paused.releaseRun();
 
-    expect(await completionPromise).toEqual({
+    expect(await completionPromise).toMatchObject({
       error: 'session_discarded',
       status: 'discarded',
+      current_session: { id: session.id, attempt: 0 },
     });
+  });
+
+  it('keeps MCP workout completion pinned to the attempt it observed before its patch', async () => {
+    const { userId, planId } = await seedUserAndPlan('mcp-completion-restart-race');
+    const date = '2037-01-22';
+    const session = await getOrCreateSession(env.DB, userId, planId, date, null);
+    const paused = databaseWithPausedFirstBeforeRead(
+      'LEFT JOIN session_aliases AS sa',
+    );
+
+    const completionPromise = logWorkoutComplete(paused.db, userId, date, 8, 'old attempt');
+    await paused.firstReached;
+    await discardSession(env.DB, userId, session.id, 0);
+    await reviveDiscardedSession(env.DB, userId, session.id, 0, null);
+    paused.releaseFirst();
+
+    expect(await completionPromise).toMatchObject({
+      error: 'session_attempt_conflict',
+      expected_attempt: 0,
+      current_attempt: 1,
+      current_session: {
+        id: session.id,
+        status: 'planned',
+        attempt: 1,
+      },
+    });
+    expect(
+      await env.DB
+        .prepare(
+          'SELECT status,attempt,perceived_fatigue,notes FROM sessions WHERE id=?1',
+        )
+        .bind(session.id)
+        .first(),
+    ).toEqual({
+      status: 'planned',
+      attempt: 1,
+      perceived_fatigue: null,
+      notes: null,
+    });
+  });
+
+  it('returns a structured attempt conflict when MCP log_set loses to discard and restart', async () => {
+    const { userId, planId } = await seedUserAndPlan('mcp-set-restart-race');
+    const date = '2037-01-23';
+    const session = await getOrCreateSession(env.DB, userId, planId, date, null);
+    const paused = databaseWithPausedFirstBeforeRead(
+      'LEFT JOIN session_aliases AS sa',
+    );
+    const mcpEnv = { ...env, DB: paused.db } as unknown as Env;
+
+    const rpcPromise = handleMcp(
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'log_set',
+          arguments: {
+            exercise: 'bench',
+            weight: 185,
+            reps: 5,
+            session_date: date,
+          },
+        },
+      },
+      mcpEnv,
+      userId,
+    );
+    await paused.firstReached;
+    await discardSession(env.DB, userId, session.id, 0);
+    await reviveDiscardedSession(env.DB, userId, session.id, 0, null);
+    paused.releaseFirst();
+
+    const rpc = await rpcPromise;
+    expect(rpc.status).toBe(200);
+    const envelope = rpc.json as {
+      result: { content: Array<{ text: string }>; isError?: boolean };
+    };
+    expect(envelope.result.isError).toBeUndefined();
+    expect(JSON.parse(envelope.result.content[0]!.text)).toMatchObject({
+      error: 'session_attempt_conflict',
+      expected_attempt: 0,
+      current_attempt: 1,
+      current_session: {
+        id: session.id,
+        status: 'planned',
+        attempt: 1,
+      },
+    });
+    expect(
+      await env.DB.prepare('SELECT id FROM set_logs WHERE session_id=?1').bind(session.id).first(),
+    ).toBeNull();
+  });
+
+  it('returns the authoritative started session to an exact-UUID race loser', async () => {
+    const { userId, planId } = await seedUserAndPlan('exact-uuid-winner-race');
+    const session = await getOrCreateSession(
+      env.DB,
+      userId,
+      planId,
+      '2037-01-24',
+      null,
+    );
+    const setId = crypto.randomUUID();
+    const input = {
+      id: setId,
+      session_id: session.id,
+      exercise_id: 'ex_bench',
+      set_index: 1,
+      weight: 185,
+      reps: 5,
+      expected_attempt: 0,
+      source: 'ios' as const,
+    };
+    const paused = databaseWithPausedWriteBatchAfterSnapshot();
+    const loserPromise = logSet(paused.db, userId, input);
+    await paused.snapshotReached;
+    expect(await logSet(env.DB, userId, input)).toMatchObject({
+      deduped: false,
+      session: { status: 'in_progress', attempt: 0 },
+    });
+    paused.releaseBatch();
+
+    expect(await loserPromise).toMatchObject({
+      deduped: true,
+      set: { id: setId, deleted_at: null },
+      session: {
+        id: session.id,
+        status: 'in_progress',
+        attempt: 0,
+        write_protocol: 'attempt-v1',
+      },
+    });
+  });
+
+  it('returns the authoritative restarted session and tombstone to an exact-UUID race loser', async () => {
+    const { userId, planId } = await seedUserAndPlan('exact-uuid-restart-race');
+    const session = await getOrCreateSession(
+      env.DB,
+      userId,
+      planId,
+      '2037-01-25',
+      null,
+    );
+    const setId = crypto.randomUUID();
+    const input = {
+      id: setId,
+      session_id: session.id,
+      exercise_id: 'ex_bench',
+      set_index: 1,
+      weight: 185,
+      reps: 5,
+      expected_attempt: 0,
+      source: 'ios' as const,
+    };
+    const paused = databaseWithPausedWriteBatchAfterSnapshot();
+    const loserPromise = logSet(paused.db, userId, input);
+    await paused.snapshotReached;
+    await logSet(env.DB, userId, input);
+    await discardSession(env.DB, userId, session.id, 0);
+    await reviveDiscardedSession(env.DB, userId, session.id, 0, null);
+    paused.releaseBatch();
+
+    expect(await loserPromise).toMatchObject({
+      deduped: true,
+      set: { id: setId, deleted_at: expect.any(Number) },
+      session: {
+        id: session.id,
+        status: 'planned',
+        attempt: 1,
+        write_protocol: 'attempt-v1',
+      },
+    });
+    expect(
+      await env.DB.prepare('SELECT status,attempt FROM sessions WHERE id=?1')
+        .bind(session.id)
+        .first(),
+    ).toEqual({ status: 'planned', attempt: 1 });
   });
 
   it('tombstones a set that commits after discard reads but before its batch', async () => {
@@ -801,13 +1074,16 @@ describe('discard terminal-state concurrency', () => {
     );
     await paused.readReached;
     await discardSession(env.DB, userId, session.id, 0);
-    const restarted = await getOrCreateSession(
+    const restarted = await reviveDiscardedSession(
       env.DB,
       userId,
-      planId,
-      session.date,
+      session.id,
+      0,
       null,
     );
+    if (!restarted || 'error' in restarted) {
+      throw new Error('expected discarded session revival to succeed');
+    }
     const newSetId = crypto.randomUUID();
     await logSet(env.DB, userId, {
       id: newSetId,
@@ -855,7 +1131,7 @@ describe('discard terminal-state concurrency', () => {
       null,
     );
     const setId = crypto.randomUUID();
-    const paused = databaseWithPausedBatchAfterRead('FROM set_logs AS sl');
+    const paused = databaseWithPausedWriteBatchAfterSnapshot();
 
     const setPromise = logSet(paused.db, userId, {
       id: setId,
@@ -869,7 +1145,7 @@ describe('discard terminal-state concurrency', () => {
       (value) => ({ ok: true as const, value }),
       (error: Error) => ({ ok: false as const, error: error.message }),
     );
-    await paused.readReached;
+    await paused.snapshotReached;
     const discarded = await discardSession(env.DB, userId, session.id);
     paused.releaseBatch();
     const setOutcome = await setPromise;
@@ -903,9 +1179,7 @@ describe('discard terminal-state concurrency', () => {
       null,
     );
     const setId = crypto.randomUUID();
-    const paused = databaseWithPausedBatchAfterRead(
-      'SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2',
-    );
+    const paused = databaseWithPausedWriteBatchAfterSnapshot();
     const setPromise = logSet(paused.db, userId, {
       id: setId,
       session_id: session.id,
@@ -925,9 +1199,9 @@ describe('discard terminal-state concurrency', () => {
           : null,
       }),
     );
-    await paused.readReached;
+    await paused.snapshotReached;
     await discardSession(env.DB, userId, session.id, 0);
-    await getOrCreateSession(env.DB, userId, planId, session.date, null);
+    await reviveDiscardedSession(env.DB, userId, session.id, 0, null);
     paused.releaseBatch();
 
     expect(await setPromise).toEqual({
@@ -1089,9 +1363,7 @@ describe('discard terminal-state concurrency', () => {
       null,
     );
     const setId = crypto.randomUUID();
-    const paused = databaseWithPausedBatchAfterRead(
-      'SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2',
-    );
+    const paused = databaseWithPausedWriteBatchAfterSnapshot();
     const delayedSet = logSet(paused.db, userId, {
       id: setId,
       session_id: session.id,
@@ -1111,7 +1383,7 @@ describe('discard terminal-state concurrency', () => {
             : null,
       }),
     );
-    await paused.readReached;
+    await paused.snapshotReached;
     expect(await skipPlannedSession(env.DB, userId, session.date, 0)).toMatchObject({
       ok: true,
       session: { id: session.id, status: 'skipped', attempt: 0 },
@@ -1280,6 +1552,146 @@ describe('set correction concurrency', () => {
         .bind(newSetId)
         .first(),
     ).toEqual({ deleted_at: null });
+  });
+
+  it('does not allow a discarded-attempt set to be undeleted after restart', async () => {
+    const { userId, planId } = await seedUserAndPlan('undelete-restart-guard');
+    const session = await getOrCreateSession(
+      env.DB,
+      userId,
+      planId,
+      '2037-01-26',
+      null,
+    );
+    const setId = crypto.randomUUID();
+    await logSet(env.DB, userId, {
+      id: setId,
+      session_id: session.id,
+      exercise_id: 'ex_bench',
+      set_index: 1,
+      weight: 185,
+      reps: 5,
+      expected_attempt: 0,
+      source: 'ios',
+    });
+    await discardSession(env.DB, userId, session.id, 0);
+    await reviveDiscardedSession(env.DB, userId, session.id, 0, null);
+
+    await expect(patchSet(env.DB, userId, setId, { deleted: false })).rejects.toThrow(
+      'set_undelete_unsupported',
+    );
+    expect(
+      await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?1')
+        .bind(setId)
+        .first<{ deleted_at: number | null }>(),
+    ).toEqual({ deleted_at: expect.any(Number) });
+    expect(
+      await env.DB.prepare('SELECT status,attempt FROM sessions WHERE id=?1')
+        .bind(session.id)
+        .first(),
+    ).toEqual({ status: 'planned', attempt: 1 });
+  });
+});
+
+describe('session revival hygiene', () => {
+  it('clears all attempt metadata when setPlannedSession revives a discarded session', async () => {
+    const { userId, planId } = await seedUserAndPlan('planned-revival-hygiene');
+    const dayId = crypto.randomUUID();
+    const ts = Date.now();
+    await env.DB
+      .prepare(
+        `INSERT INTO day_templates
+         (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+         VALUES (?1,?2,'Revival day','R',0,NULL,?3,?3)`,
+      )
+      .bind(dayId, planId, ts)
+      .run();
+    const date = '2037-01-27';
+    const session = await getOrCreateSession(env.DB, userId, planId, date, dayId);
+    await patchSession(env.DB, userId, session.id, { status: 'in_progress' }, 0);
+    await patchSession(
+      env.DB,
+      userId,
+      session.id,
+      { status: 'completed', perceived_fatigue: 9, notes: 'old attempt' },
+      0,
+    );
+    await discardSession(env.DB, userId, session.id, 0);
+
+    expect(await setPlannedSession(env.DB, userId, date, 'R', 0)).toMatchObject({
+      ok: true,
+      session: {
+        id: session.id,
+        status: 'planned',
+        attempt: 1,
+        started_at: null,
+        completed_at: null,
+        perceived_fatigue: null,
+        notes: null,
+      },
+    });
+    expect(
+      await env.DB
+        .prepare(
+          'SELECT status,attempt,started_at,completed_at,perceived_fatigue,notes FROM sessions WHERE id=?1',
+        )
+        .bind(session.id)
+        .first(),
+    ).toEqual({
+      status: 'planned',
+      attempt: 1,
+      started_at: null,
+      completed_at: null,
+      perceived_fatigue: null,
+      notes: null,
+    });
+  });
+
+  it('clears all attempt metadata and advances the token when PATCH reopens a skip', async () => {
+    const { userId, planId } = await seedUserAndPlan('skipped-revival-hygiene');
+    const session = await getOrCreateSession(
+      env.DB,
+      userId,
+      planId,
+      '2037-01-28',
+      null,
+    );
+    await patchSession(
+      env.DB,
+      userId,
+      session.id,
+      { status: 'skipped', perceived_fatigue: 7, notes: 'old skip' },
+      0,
+    );
+    await env.DB
+      .prepare('UPDATE sessions SET started_at=?2,completed_at=?3 WHERE id=?1')
+      .bind(session.id, Date.now() - 1_000, Date.now())
+      .run();
+
+    expect(await patchSession(env.DB, userId, session.id, { status: 'planned' }, 0)).toMatchObject({
+      id: session.id,
+      status: 'planned',
+      attempt: 1,
+      started_at: null,
+      completed_at: null,
+      perceived_fatigue: null,
+      notes: null,
+    });
+    expect(
+      await env.DB
+        .prepare(
+          'SELECT status,attempt,started_at,completed_at,perceived_fatigue,notes FROM sessions WHERE id=?1',
+        )
+        .bind(session.id)
+        .first(),
+    ).toEqual({
+      status: 'planned',
+      attempt: 1,
+      started_at: null,
+      completed_at: null,
+      perceived_fatigue: null,
+      notes: null,
+    });
   });
 });
 

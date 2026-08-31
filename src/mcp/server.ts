@@ -44,6 +44,7 @@ import {
   setPlannedSession,
   setRace,
   setStressModel,
+  SessionWriteConflictError,
   skipPlannedSession,
   todayInTz,
   swapExercise,
@@ -459,20 +460,28 @@ const TOOLS: Record<string, Tool> = {
         requestedSetIndex != null
           ? requestedSetIndex
           : existing.filter((s) => s.exercise_id === exId && !s.is_warmup).length + 1;
-      const { set, deduped } = await logSet(env.DB, userId, {
-        id: crypto.randomUUID(),
-        session_id: session.id,
-        exercise_id: exId,
-        set_index: setIndex,
-        weight: Number(a.weight),
-        reps: Number(a.reps),
-        rpe: a.rpe == null ? null : Number(a.rpe),
-        is_warmup: a.is_warmup === true,
-        notes: typeof a.notes === 'string' ? a.notes : null,
-        duration_s: requestedDuration,
-        is_timed: typeof a.is_timed === 'boolean' ? a.is_timed : undefined,
-        source: 'mcp',
-      });
+      let writeResult: Awaited<ReturnType<typeof logSet>>;
+      try {
+        writeResult = await logSet(env.DB, userId, {
+          id: crypto.randomUUID(),
+          session_id: session.id,
+          exercise_id: exId,
+          set_index: setIndex,
+          weight: Number(a.weight),
+          reps: Number(a.reps),
+          rpe: a.rpe == null ? null : Number(a.rpe),
+          is_warmup: a.is_warmup === true,
+          notes: typeof a.notes === 'string' ? a.notes : null,
+          duration_s: requestedDuration,
+          is_timed: typeof a.is_timed === 'boolean' ? a.is_timed : undefined,
+          expected_attempt: session.attempt,
+          source: 'mcp',
+        });
+      } catch (error) {
+        if (error instanceof SessionWriteConflictError) return error.response();
+        throw error;
+      }
+      const { set, deduped } = writeResult;
       // Surface the resolved exercise + per-side/per-hand accounting so the
       // agent can confirm "two 45 lb DBs x8 each leg → 16 total reps,
       // 1,440 lb tonnage" to the user without a second lookup.

@@ -55,6 +55,7 @@ import {
   upsertHealthKitActivity,
   writeAudit,
 } from '../db';
+import { isWorkoutWriteFenceEnabled } from '../workout-write-fence';
 
 export const apiRoutes = new Hono<HonoEnv>();
 apiRoutes.use('*', requireAppJwt);
@@ -156,6 +157,25 @@ const protocolConflictBody = <T extends { status: string; attempt: number }>(
   current_attempt: session.attempt,
   current_session: session,
 });
+
+async function inactiveAttemptProtocolResponse(
+  c: Context<HonoEnv>,
+  declared: boolean,
+): Promise<Response | null> {
+  if (!declared || (await isWorkoutWriteFenceEnabled(c.env.DB))) return null;
+  // The compatibility Worker is live but the irreversible database cutover
+  // has not been activated yet. New-app intents are durable/retryable; make
+  // the temporary admission boundary explicit instead of surfacing a D1 500.
+  c.header('Retry-After', '5');
+  return c.json(
+    {
+      error: 'write_protocol_not_active',
+      protocol: 'attempt-v1',
+      retryable: true,
+    },
+    503,
+  );
+}
 
 // ---- sync pull -----------------------------------------------------------
 // Device timezone (X-Device-TZ) is captured for EVERY authenticated request
@@ -334,7 +354,7 @@ apiRoutes.get('/today', async (c) => {
     // Compatibility read/start: the released app's date resolver had implicit
     // restart semantics. It may revive only a legacy generation; the DB helper
     // leaves an attempt-v1 tombstone untouched.
-    { reviveDiscarded: true, writeProtocol: 'legacy' },
+    { reviveDiscarded: true },
   );
   const sets = await c.env.DB
     .prepare('SELECT * FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL ORDER BY logged_at')
@@ -376,6 +396,11 @@ apiRoutes.post('/sessions', async (c) => {
       400,
     );
   }
+  const inactiveProtocol = await inactiveAttemptProtocolResponse(
+    c,
+    protocolHeader.declared,
+  );
+  if (inactiveProtocol) return inactiveProtocol;
   const date =
     typeof b.date === 'string'
       ? b.date
@@ -414,6 +439,7 @@ apiRoutes.post('/sessions', async (c) => {
       existing.id,
       expectedAttempt,
       dayTemplateId,
+      protocolHeader.declared,
     );
     if (!revived) return c.json({ error: 'not_found' }, 404);
     if ('error' in revived) return c.json(revived, 409);
@@ -444,7 +470,7 @@ apiRoutes.post('/sessions', async (c) => {
         {
           reviveDiscarded: !carriesAttemptProtocol,
           expectedAttempt,
-          writeProtocol: carriesAttemptProtocol ? 'attempt-v1' : 'legacy',
+          claimAttemptProtocol: protocolHeader.declared,
         },
       );
     } catch (error) {
@@ -515,6 +541,11 @@ apiRoutes.patch('/sessions/:id', async (c) => {
     invalid.push('day_template_id');
   }
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const inactiveProtocol = await inactiveAttemptProtocolResponse(
+    c,
+    protocolHeader.declared,
+  );
+  if (inactiveProtocol) return inactiveProtocol;
   if (typeof b.day_template_id === 'string') {
     const plan = await getActivePlan(c.env.DB, c.get('userId'));
     if (!plan || !(await getDayTemplateInPlan(c.env.DB, plan.id, b.day_template_id))) {
@@ -527,6 +558,7 @@ apiRoutes.patch('/sessions/:id', async (c) => {
     c.req.param('id'),
     b,
     expected.value,
+    protocolHeader.declared,
   );
   if (!s) return c.json({ error: 'not_found' }, 404);
   if ('error' in s) {
@@ -552,11 +584,17 @@ apiRoutes.post('/sessions/:id/discard', async (c) => {
   if (protocolHeader.declared && expected.value === undefined) {
     return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
+  const inactiveProtocol = await inactiveAttemptProtocolResponse(
+    c,
+    protocolHeader.declared,
+  );
+  if (inactiveProtocol) return inactiveProtocol;
   const s = await discardSession(
     c.env.DB,
     c.get('userId'),
     c.req.param('id'),
     expected.value,
+    protocolHeader.declared,
   );
   if (!s) return c.json({ error: 'not_found' }, 404);
   if ('error' in s) return c.json(s, 409);
@@ -596,6 +634,11 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
   if (protocolHeader.declared && !hasOwn(b, 'expected_attempt')) {
     return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
+  const inactiveProtocol = await inactiveAttemptProtocolResponse(
+    c,
+    protocolHeader.declared,
+  );
+  if (inactiveProtocol) return inactiveProtocol;
   try {
     const result = await logSet(c.env.DB, c.get('userId'), {
       id: b.id as string,
@@ -612,6 +655,7 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
       duration_s: b.duration_s as number | null | undefined,
       is_timed: b.is_timed as boolean | undefined,
       expected_attempt: b.expected_attempt as number | undefined,
+      claim_attempt_protocol: protocolHeader.declared,
       source: 'ios',
     });
     return c.json(result, result.deduped ? 200 : 201);

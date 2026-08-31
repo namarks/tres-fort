@@ -41,6 +41,10 @@ import {
   revokeAppleRefreshToken,
   type AppleProviderConfig,
 } from './apple';
+import {
+  runWorkoutWriteBatch,
+  runWorkoutWriteStatement,
+} from './workout-write-fence';
 const now = () => Date.now();
 const uuid = () => crypto.randomUUID();
 
@@ -2649,13 +2653,17 @@ export async function getOrCreateSession(
   options: {
     reviveDiscarded?: boolean;
     expectedAttempt?: number;
-    writeProtocol?: SessionRow['write_protocol'];
+    /** Only an explicitly capability-declaring REST client may claim v1.
+     * Internal/MCP callers still carry an attempt CAS but preserve the row's
+     * current protocol so the released tokenless app remains compatible. */
+    claimAttemptProtocol?: boolean;
   } = {},
 ): Promise<SessionRow> {
-  const writeProtocol =
-    options.writeProtocol ??
-    (options.expectedAttempt === undefined ? 'legacy' : 'attempt-v1');
-  const attemptScoped = writeProtocol === 'attempt-v1';
+  const claimAttemptProtocol = options.claimAttemptProtocol === true;
+  const attemptScoped = options.expectedAttempt !== undefined;
+  if (claimAttemptProtocol && !attemptScoped) {
+    throw new Error('session_expected_attempt_missing');
+  }
   const selectExisting = () =>
     db
       .prepare(
@@ -2703,10 +2711,13 @@ export async function getOrCreateSession(
         notes: null,
         updated_at: ts,
         attempt: existing.attempt + 1,
-        write_protocol: writeProtocol,
+        write_protocol: claimAttemptProtocol
+          ? 'attempt-v1'
+          : existing.write_protocol,
       };
-      const updated = await db
-        .prepare(
+      const updated = await runWorkoutWriteStatement(
+        db,
+        db.prepare(
           `UPDATE sessions
               SET day_template_id=?2,
                   status=?3,
@@ -2716,11 +2727,14 @@ export async function getOrCreateSession(
                   notes=?7,
                   updated_at=?8,
                   attempt=?9,
-                  write_protocol=?11
+                  write_protocol=CASE
+                    WHEN ?11 = 1 THEN 'attempt-v1'
+                    ELSE write_protocol
+                  END
             WHERE id=?1
               AND status='discarded'
               AND attempt=?10
-              AND (?11 = 'attempt-v1' OR write_protocol = 'legacy')`,
+              AND (?12 = 1 OR write_protocol = 'legacy')`,
         )
         .bind(
           revived.id,
@@ -2733,9 +2747,10 @@ export async function getOrCreateSession(
           ts,
           revived.attempt,
           existing.attempt,
-          writeProtocol,
-        )
-        .run();
+          claimAttemptProtocol ? 1 : 0,
+          attemptScoped ? 1 : 0,
+        ),
+      );
       if (updated.meta.changes > 0) return revived;
 
       // A competing explicit restart or another resolver advanced the reused
@@ -2760,27 +2775,33 @@ export async function getOrCreateSession(
     // had to paper over. Backfill ONLY a NULL slot; never clobber an
     // existing pin.
     const shouldPin = dayTemplateId != null && existing.day_template_id == null;
-    const shouldClaim = attemptScoped && existing.write_protocol !== 'attempt-v1';
+    const shouldClaim =
+      claimAttemptProtocol && existing.write_protocol !== 'attempt-v1';
     if (shouldPin || shouldClaim) {
       const ts = now();
-      // Conditional UPDATE guards a read-then-write race: two explicit POSTs
+      // The conditional SET guards a read-then-write race: two explicit POSTs
       // for the same null-template date can both read day_template_id == null,
-      // so an unconditional write would let the second clobber the first pin.
-      // `WHERE … AND day_template_id IS NULL` means only the FIRST writer's
-      // update affects a row; a racing second writer matches 0 rows and falls
-      // through to re-read the winning pin. (Codex P2 on #58.)
-      const res = await db
-        .prepare(
+      // but only the first execution sees NULL and installs its pin. Keep the
+      // row eligible after another writer pins it so this request can still
+      // perform its independent explicit protocol claim without clobbering the
+      // winning day. (Codex P2 on #58.)
+      const res = await runWorkoutWriteStatement(
+        db,
+        db.prepare(
           `UPDATE sessions
               SET day_template_id = CASE
-                    WHEN ?5 = 1 THEN ?2
+                    WHEN ?5 = 1 AND day_template_id IS NULL THEN ?2
                     ELSE day_template_id
                   END,
-                  write_protocol = ?6,
+                  write_protocol = CASE
+                    WHEN ?6 = 1 THEN 'attempt-v1'
+                    ELSE write_protocol
+                  END,
                   updated_at = ?3
             WHERE id = ?1
               AND attempt = ?4
-              AND (?6 = 'attempt-v1' OR write_protocol = 'legacy')`,
+              AND status = ?7
+              AND (?8 = 1 OR write_protocol = 'legacy')`,
         )
         .bind(
           existing.id,
@@ -2788,18 +2809,15 @@ export async function getOrCreateSession(
           ts,
           existing.attempt,
           shouldPin ? 1 : 0,
-          writeProtocol,
-        )
-        .run();
-      if (res.meta.changes > 0) {
-        return {
-          ...existing,
-          day_template_id: shouldPin ? dayTemplateId : existing.day_template_id,
-          updated_at: ts,
-          write_protocol: writeProtocol,
-        };
-      }
-      // Lost the race — another writer pinned it first. Return the winner.
+          claimAttemptProtocol ? 1 : 0,
+          existing.status,
+          attemptScoped ? 1 : 0,
+        ),
+      );
+      // Always return the authoritative row. A terminal transition can land
+      // immediately after the guarded update; synthesizing from `existing`
+      // would acknowledge stale planned/live state. A zero-change result is
+      // likewise a normal CAS loss (pin, status, generation, or protocol).
       const fresh = await db
         .prepare('SELECT * FROM sessions WHERE id = ?1')
         .bind(existing.id)
@@ -2834,10 +2852,11 @@ export async function getOrCreateSession(
     created_at: ts,
     updated_at: ts,
     attempt: 0,
-    write_protocol: writeProtocol,
+    write_protocol: claimAttemptProtocol ? 'attempt-v1' : 'legacy',
   };
-  const inserted = await db
-    .prepare(
+  const inserted = await runWorkoutWriteStatement(
+    db,
+    db.prepare(
       `INSERT INTO sessions
        (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
@@ -2858,8 +2877,8 @@ export async function getOrCreateSession(
       s.updated_at,
       s.attempt,
       s.write_protocol,
-    )
-    .run();
+    ),
+  );
   if (inserted.meta.changes > 0) return s;
 
   // Another creator won after our null read. Do not inspect or parse an
@@ -2898,37 +2917,67 @@ export async function reviveDiscardedSession(
   sessionId: string,
   expectedAttempt: number,
   dayTemplateId: string | null,
+  claimAttemptProtocol = false,
 ): Promise<SessionRow | SessionAttemptConflict | null> {
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
   if (!canonicalSessionId) return null;
-  const current = await db
-    .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
-    .bind(canonicalSessionId, userId)
-    .first<SessionRow>();
+  const readCurrent = () =>
+    db
+      .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
+      .bind(canonicalSessionId, userId)
+      .first<SessionRow>();
+  const current = await readCurrent();
   if (!current) return null;
+
+  const acceptLiveWinner = async (
+    candidate: SessionRow,
+  ): Promise<SessionRow | SessionAttemptConflict | null> => {
+    const revivedAttempt = expectedAttempt + 1;
+    if (
+      candidate.status === 'discarded' ||
+      candidate.attempt !== revivedAttempt
+    ) {
+      return sessionAttemptConflict(expectedAttempt, candidate);
+    }
+    if (!claimAttemptProtocol || candidate.write_protocol === 'attempt-v1') {
+      return candidate;
+    }
+    await runWorkoutWriteStatement(
+      db,
+      db.prepare(
+        `UPDATE sessions
+            SET write_protocol = 'attempt-v1'
+          WHERE id = ?1
+            AND user_id = ?2
+            AND attempt = ?3
+            AND status = ?4
+            AND write_protocol = 'legacy'`,
+      )
+      .bind(
+        canonicalSessionId,
+        userId,
+        revivedAttempt,
+        candidate.status,
+      ),
+    );
+    const authoritative = await readCurrent();
+    if (!authoritative) return null;
+    if (
+      authoritative.status === 'discarded' ||
+      authoritative.attempt !== revivedAttempt ||
+      authoritative.write_protocol !== 'attempt-v1'
+    ) {
+      return sessionAttemptConflict(expectedAttempt, authoritative);
+    }
+    return authoritative;
+  };
 
   // A retry after the original restart committed observes exactly the next
   // live generation. Return it as the idempotent result; do not increment it
   // again. Any later generation is a real conflict.
   if (current.status !== 'discarded') {
     if (current.attempt === expectedAttempt + 1) {
-      if (current.write_protocol === 'attempt-v1') return current;
-      const claimed = await db
-        .prepare(
-          `UPDATE sessions
-              SET write_protocol = 'attempt-v1'
-            WHERE id = ?1 AND user_id = ?2 AND attempt = ?3`,
-        )
-        .bind(canonicalSessionId, userId, current.attempt)
-        .run();
-      if (claimed.meta.changes > 0) {
-        return { ...current, write_protocol: 'attempt-v1' };
-      }
-      const winner = await db
-        .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
-        .bind(canonicalSessionId, userId)
-        .first<SessionRow>();
-      return winner ?? current;
+      return acceptLiveWinner(current);
     }
     return sessionAttemptConflict(expectedAttempt, current);
   }
@@ -2938,8 +2987,9 @@ export async function reviveDiscardedSession(
 
   const ts = now();
   const revivedAttempt = expectedAttempt + 1;
-  const updated = await db
-    .prepare(
+  const updated = await runWorkoutWriteStatement(
+    db,
+    db.prepare(
       `UPDATE sessions
           SET day_template_id = ?2,
               status = 'planned',
@@ -2949,7 +2999,10 @@ export async function reviveDiscardedSession(
               notes = NULL,
               updated_at = ?3,
               attempt = ?4,
-              write_protocol = 'attempt-v1'
+              write_protocol = CASE
+                WHEN ?7 = 1 THEN 'attempt-v1'
+                ELSE write_protocol
+              END
         WHERE id = ?1
           AND user_id = ?5
           AND status = 'discarded'
@@ -2962,39 +3015,16 @@ export async function reviveDiscardedSession(
       revivedAttempt,
       userId,
       expectedAttempt,
-    )
-    .run();
-  if (updated.meta.changes > 0) {
-    return {
-      ...current,
-      day_template_id: dayTemplateId,
-      status: 'planned',
-      started_at: null,
-      completed_at: null,
-      perceived_fatigue: null,
-      notes: null,
-      updated_at: ts,
-      attempt: revivedAttempt,
-      write_protocol: 'attempt-v1',
-    };
-  }
-
-  const winner = await db
-    .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
-    .bind(canonicalSessionId, userId)
-    .first<SessionRow>();
+      claimAttemptProtocol ? 1 : 0,
+    ),
+  );
+  // Reread even after a successful CAS. A same-attempt discard can commit
+  // immediately after the restart/claim; returning a synthesized planned row
+  // would install an obsolete client barrier.
+  const winner = await readCurrent();
   if (!winner) return null;
   if (winner.status !== 'discarded' && winner.attempt === revivedAttempt) {
-    if (winner.write_protocol === 'attempt-v1') return winner;
-    await db
-      .prepare(
-        `UPDATE sessions
-            SET write_protocol = 'attempt-v1'
-          WHERE id = ?1 AND user_id = ?2 AND attempt = ?3`,
-      )
-      .bind(canonicalSessionId, userId, revivedAttempt)
-      .run();
-    return { ...winner, write_protocol: 'attempt-v1' };
+    return acceptLiveWinner(winner);
   }
   return sessionAttemptConflict(expectedAttempt, winner);
 }
@@ -3146,6 +3176,7 @@ export async function patchSession(
     day_template_id?: string | null;
   },
   expectedAttempt?: number,
+  claimAttemptProtocol = false,
 ): Promise<
   | SessionRow
   | null
@@ -3168,6 +3199,9 @@ export async function patchSession(
     .first<SessionRow>();
   if (!s) return null;
   const attemptScoped = expectedAttempt !== undefined;
+  if (claimAttemptProtocol && !attemptScoped) {
+    throw new Error('session_expected_attempt_missing');
+  }
   if (!attemptScoped && s.write_protocol !== 'legacy') {
     return sessionProtocolConflict(s);
   }
@@ -3253,8 +3287,9 @@ export async function patchSession(
   // final logSet in the same generation, and SQL COALESCE preserves the
   // concurrently installed started_at. Skip/planned transitions are stricter:
   // once a set promoted the row, they cannot hide or demote the live workout.
-  const updated = await db
-    .prepare(
+  const updated = await runWorkoutWriteStatement(
+    db,
+    db.prepare(
       `UPDATE sessions
           SET status = CASE WHEN ?8 = 1 THEN ?2 ELSE status END,
               perceived_fatigue = CASE
@@ -3292,7 +3327,7 @@ export async function patchSession(
               updated_at = ?7
         WHERE id = ?1
           AND attempt = ?9
-          AND (?14 = 1 OR write_protocol = 'legacy')
+          AND (?15 = 1 OR write_protocol = 'legacy')
           AND ${statusPredicate}`,
     )
     .bind(
@@ -3312,9 +3347,10 @@ export async function patchSession(
         ? 1
         : 0,
       patch.day_template_id ?? null,
+      claimAttemptProtocol ? 1 : 0,
       attemptScoped ? 1 : 0,
-    )
-    .run();
+    ),
+  );
   if (updated.meta.changes === 0) {
     const current = await db
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
@@ -3379,7 +3415,13 @@ export async function discardSession(
   userId: string,
   sessionId: string,
   expectedAttempt?: number,
-): Promise<SessionRow | SessionAttemptConflict | SessionProtocolConflict | null> {
+  claimAttemptProtocol = false,
+): Promise<
+  | SessionRow
+  | SessionAttemptConflict
+  | SessionProtocolConflict
+  | null
+> {
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
   if (!canonicalSessionId) return null;
   const s = await db
@@ -3388,6 +3430,9 @@ export async function discardSession(
     .first<SessionRow>();
   if (!s) return null;
   const attemptScoped = expectedAttempt !== undefined;
+  if (claimAttemptProtocol && !attemptScoped) {
+    throw new Error('session_expected_attempt_missing');
+  }
   if (!attemptScoped && s.write_protocol !== 'legacy') {
     return sessionProtocolConflict(s);
   }
@@ -3395,20 +3440,47 @@ export async function discardSession(
     return sessionAttemptConflict(expectedAttempt, s);
   }
   const casAttempt = expectedAttempt ?? s.attempt;
-  // Already discarded → true no-op: skip the (no-op) UPDATEs AND the audit
-  // write, so a double-tap / retry can't inflate audit_log (which feeds
-  // Claude's coaching context).
-  if (s.status === 'discarded') {
-    if (!attemptScoped || s.write_protocol === 'attempt-v1') return s;
-    await db
-      .prepare(
+  const acceptDiscardedWinner = async (
+    candidate: SessionRow,
+  ): Promise<SessionRow | SessionAttemptConflict | null> => {
+    if (candidate.attempt !== casAttempt || candidate.status !== 'discarded') {
+      return sessionAttemptConflict(casAttempt, candidate);
+    }
+    if (!claimAttemptProtocol || candidate.write_protocol === 'attempt-v1') {
+      return candidate;
+    }
+    await runWorkoutWriteStatement(
+      db,
+      db.prepare(
         `UPDATE sessions
             SET write_protocol = 'attempt-v1'
-          WHERE id = ?1 AND user_id = ?2 AND attempt = ?3`,
+          WHERE id = ?1
+            AND user_id = ?2
+            AND attempt = ?3
+            AND status = 'discarded'
+            AND write_protocol = 'legacy'`,
       )
-      .bind(canonicalSessionId, userId, casAttempt)
-      .run();
-    return { ...s, write_protocol: 'attempt-v1' };
+      .bind(canonicalSessionId, userId, casAttempt),
+    );
+    const authoritative = await db
+      .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
+      .bind(canonicalSessionId, userId)
+      .first<SessionRow>();
+    if (!authoritative) return null;
+    if (
+      authoritative.attempt !== casAttempt ||
+      authoritative.status !== 'discarded' ||
+      authoritative.write_protocol !== 'attempt-v1'
+    ) {
+      return sessionAttemptConflict(casAttempt, authoritative);
+    }
+    return authoritative;
+  };
+  // Already discarded: skip the terminal/tombstone batch and its audit so a
+  // retry cannot inflate coaching history. An explicit iOS capability claim
+  // may still perform the one guarded legacy→v1 protocol update.
+  if (s.status === 'discarded') {
+    return acceptDiscardedWinner(s);
   }
   const ts = now();
   // D1 batches are ordered transactions. Mark the session terminal first,
@@ -3416,7 +3488,7 @@ export async function discardSession(
   // logSet batch therefore linearizes wholly on one side: if it wins first,
   // its new set is included in this tombstone; if discard wins first, its
   // status-guarded insert observes `discarded` and is rejected.
-  const [transition, tombstones] = await db.batch([
+  const [transition, tombstones, terminalState] = await runWorkoutWriteBatch(db, [
     db
       .prepare(
         `UPDATE sessions
@@ -3429,9 +3501,15 @@ export async function discardSession(
           WHERE id = ?1
             AND status != 'discarded'
             AND attempt = ?3
-            AND (?4 = 1 OR write_protocol = 'legacy')`,
+            AND (?5 = 1 OR write_protocol = 'legacy')`,
       )
-      .bind(canonicalSessionId, ts, casAttempt, attemptScoped ? 1 : 0),
+      .bind(
+        canonicalSessionId,
+        ts,
+        casAttempt,
+        claimAttemptProtocol ? 1 : 0,
+        attemptScoped ? 1 : 0,
+      ),
     db
       .prepare(
         `UPDATE set_logs
@@ -3444,25 +3522,30 @@ export async function discardSession(
             )`,
       )
       .bind(canonicalSessionId, ts, casAttempt),
+    db
+      .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
+      .bind(canonicalSessionId, userId),
   ]);
+  const authoritative = terminalState!.results[0] as SessionRow | undefined;
   // Another concurrent/retried discard already won. Its transaction also
   // tombstoned the live sets, so this remains a true audit no-op. Return the
-  // terminal result observed by this batch rather than re-reading after the
-  // transaction: an explicit same-day restart may begin immediately after
-  // this linearization point, but it must not turn this discard ack into a
-  // misleading `planned` response.
+  // terminal result observed by this batch. If an explicit iOS caller still
+  // needs to claim a legacy winner, acceptDiscardedWinner performs one guarded
+  // claim and authoritative reread; a same-day restart that wins that race is
+  // returned as a conflict rather than a misleading discarded ACK.
   if (transition!.meta.changes === 0) {
-    const current = await db
-      .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
-      .bind(canonicalSessionId, userId)
-      .first<SessionRow>();
+    const current = authoritative;
     if (current && !attemptScoped && current.write_protocol !== 'legacy') {
       return sessionProtocolConflict(current);
     }
     if (current && current.attempt !== casAttempt) {
       return sessionAttemptConflict(casAttempt, current);
     }
-    return { ...s, status: 'discarded', updated_at: ts };
+    if (current?.status === 'discarded') {
+      return acceptDiscardedWinner(current);
+    }
+    if (current) return sessionAttemptConflict(casAttempt, current);
+    return null;
   }
   const discardedSets = tombstones!.meta.changes;
   await writeAudit(
@@ -3478,11 +3561,11 @@ export async function discardSession(
     },
     `discarded:${discardedSets}_sets`,
   );
-  return {
+  return authoritative ?? {
     ...s,
     status: 'discarded',
     updated_at: ts,
-    write_protocol: attemptScoped ? 'attempt-v1' : s.write_protocol,
+    write_protocol: claimAttemptProtocol ? 'attempt-v1' : s.write_protocol,
   };
 }
 
@@ -3511,6 +3594,9 @@ export async function logSet(
     /** Optional generation CAS. New durable clients persist and reuse it;
      *  omitted legacy/MCP calls still snapshot the pre-write attempt below. */
     expected_attempt?: number;
+    /** Capability declaration is separate from generation CAS. MCP supplies
+     * an observed attempt but never claims the client protocol. */
+    claim_attempt_protocol?: boolean;
     source: 'ios' | 'mcp';
   },
 ): Promise<{ set: SetLogRow; deduped: boolean; session: SessionRow }> {
@@ -3553,6 +3639,10 @@ export async function logSet(
     return { set: existing, deduped: true, session: targetSession };
   }
   const attemptScoped = input.expected_attempt !== undefined;
+  const claimAttemptProtocol = input.claim_attempt_protocol === true;
+  if (claimAttemptProtocol && !attemptScoped) {
+    throw new Error('session_expected_attempt_missing');
+  }
   if (!attemptScoped && targetSession.write_protocol !== 'legacy') {
     throw new SessionWriteConflictError(
       'session_attempt_required',
@@ -3691,7 +3781,7 @@ export async function logSet(
   // still covers a concurrent same-id retry (idempotency).
   const insertAndStart = () => {
     const ts = now();
-    return db.batch([
+    return runWorkoutWriteBatch(db, [
       db
         .prepare(
           `INSERT INTO set_logs
@@ -3728,7 +3818,7 @@ export async function logSet(
               AND status != 'discarded'
               AND status != 'skipped'
               AND attempt = ?3
-              AND (?4 = 1 OR write_protocol = 'legacy')
+              AND (?6 = 1 OR write_protocol = 'legacy')
               AND EXISTS (
                 SELECT 1 FROM set_logs
                  WHERE id = ?5 AND session_id = ?1
@@ -3738,8 +3828,9 @@ export async function logSet(
           canonicalSessionId,
           ts,
           casAttempt,
-          attemptScoped ? 1 : 0,
+          claimAttemptProtocol ? 1 : 0,
           row.id,
+          attemptScoped ? 1 : 0,
         ),
       // Capture both the target generation and the canonical current row at
       // the same linearization point. The latter gives a stable conflict body
@@ -3944,10 +4035,12 @@ export async function patchSet(
   if (has('duration_s')) assign('duration_s', patch.duration_s);
   if (has('deleted')) assign('deleted_at', deletedAt);
   if (assignments.length > 0) {
-    await db
-      .prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1`)
-      .bind(...values)
-      .run();
+    await runWorkoutWriteStatement(
+      db,
+      db
+        .prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1`)
+        .bind(...values),
+    );
   }
   // Phantom-session guard. Logging a set promotes a session 'planned' ->
   // 'in_progress' (see logSet). Deleting the LAST live set must do the
@@ -3967,8 +4060,9 @@ export async function patchSet(
     // false; if this demotion wins first, logSet's ordered batch promotes the
     // same attempt back to in_progress. A discard/restart advances `attempt`,
     // so a stale deletion can never demote the newer workout.
-    await db
-      .prepare(
+    await runWorkoutWriteStatement(
+      db,
+      db.prepare(
         `UPDATE sessions
             SET status = 'planned', started_at = NULL, updated_at = ?2
           WHERE id = ?1
@@ -3979,8 +4073,8 @@ export async function patchSet(
                WHERE session_id = ?1 AND deleted_at IS NULL
             )`,
       )
-      .bind(row.session_id, now(), row.session_attempt)
-      .run();
+      .bind(row.session_id, now(), row.session_attempt),
+    );
   }
   // Return a fresh row so the caller sees any disjoint concurrent correction
   // or delete that committed alongside this field-only update.
@@ -4819,7 +4913,7 @@ export async function updatePlanTree(
   // transient inserts, remaps, or deletes can leak through before the final
   // compare-and-swap. This applies even when the caller omitted
   // expected_version; the version we actually read is always the CAS token.
-  const results = await db.batch(stmts);
+  const results = await runWorkoutWriteBatch(db, stmts);
   const finalUpdate = results[results.length - 1];
   if (!finalUpdate || finalUpdate.meta.changes === 0) {
     const current = await getActivePlan(db, userId);
@@ -4974,13 +5068,15 @@ export async function deleteTemplateExercise(
 ): Promise<TemplateExerciseRow | null> {
   const slot = await findSlot(db, userId, ref);
   if (!slot) return null;
-  await db
-    .batch([
+  await runWorkoutWriteBatch(
+    db,
+    [
       db
         .prepare('UPDATE set_logs SET template_exercise_id = NULL WHERE template_exercise_id = ?1')
         .bind(slot.id),
       db.prepare('DELETE FROM template_exercises WHERE id = ?1').bind(slot.id),
-    ]);
+    ],
+  );
   await bumpPlanVersionByDay(db, slot.day_template_id);
   return slot;
 }
@@ -5635,8 +5731,9 @@ export async function setPlannedSession(
     const newFatigue = reviving ? null : existing.perceived_fatigue;
     const newNotes = reviving ? null : existing.notes;
     const newAttempt = reviving ? casAttempt + 1 : casAttempt;
-    const updated = await db
-      .prepare(
+    const updated = await runWorkoutWriteStatement(
+      db,
+      db.prepare(
         `UPDATE sessions
             SET day_template_id = ?2,
                 status = ?3,
@@ -5645,8 +5742,7 @@ export async function setPlannedSession(
                 perceived_fatigue = ?11,
                 notes = ?12,
                 updated_at = ?6,
-                attempt = ?7,
-                write_protocol = 'attempt-v1'
+                attempt = ?7
           WHERE id = ?1
             AND user_id = ?8
             AND status = ?9
@@ -5665,8 +5761,8 @@ export async function setPlannedSession(
         casAttempt,
         newFatigue,
         newNotes,
-      )
-      .run();
+      ),
+    );
     if (updated.meta.changes === 0) {
       const current = await readExisting();
       if (!current) throw new Error('session_update_conflict_without_winner');
@@ -5685,7 +5781,7 @@ export async function setPlannedSession(
       notes: newNotes,
       updated_at: ts,
       attempt: newAttempt,
-      write_protocol: 'attempt-v1',
+      write_protocol: existing.write_protocol,
     };
     return { ok: true, session };
   };
@@ -5707,10 +5803,11 @@ export async function setPlannedSession(
     created_at: ts,
     updated_at: ts,
     attempt: 0,
-    write_protocol: 'attempt-v1',
+    write_protocol: 'legacy',
   };
-  const inserted = await db
-    .prepare(
+  const inserted = await runWorkoutWriteStatement(
+    db,
+    db.prepare(
       `INSERT INTO sessions
        (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
@@ -5731,8 +5828,8 @@ export async function setPlannedSession(
       s.updated_at,
       s.attempt,
       s.write_protocol,
-    )
-    .run();
+    ),
+  );
   if (inserted.meta.changes > 0) return { ok: true, session: s };
 
   const winner = await readExisting();
@@ -5790,19 +5887,19 @@ export async function skipPlannedSession(
       };
     }
     const ts = now();
-    const updated = await db
-      .prepare(
+    const updated = await runWorkoutWriteStatement(
+      db,
+      db.prepare(
         `UPDATE sessions
             SET status = 'skipped',
-                updated_at = ?2,
-                write_protocol = 'attempt-v1'
+                updated_at = ?2
           WHERE id = ?1
             AND user_id = ?3
             AND status = ?4
             AND attempt = ?5`,
       )
-      .bind(existing.id, ts, userId, casStatus, casAttempt)
-      .run();
+      .bind(existing.id, ts, userId, casStatus, casAttempt),
+    );
     if (updated.meta.changes === 0) {
       const current = await readExisting();
       if (!current) throw new Error('session_update_conflict_without_winner');
@@ -5823,7 +5920,7 @@ export async function skipPlannedSession(
         ...existing,
         status: 'skipped',
         updated_at: ts,
-        write_protocol: 'attempt-v1',
+        write_protocol: existing.write_protocol,
       },
     };
   };
@@ -5845,10 +5942,11 @@ export async function skipPlannedSession(
     created_at: ts,
     updated_at: ts,
     attempt: 0,
-    write_protocol: 'attempt-v1',
+    write_protocol: 'legacy',
   };
-  const inserted = await db
-    .prepare(
+  const inserted = await runWorkoutWriteStatement(
+    db,
+    db.prepare(
       `INSERT INTO sessions
        (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
@@ -5869,8 +5967,8 @@ export async function skipPlannedSession(
       s.updated_at,
       s.attempt,
       s.write_protocol,
-    )
-    .run();
+    ),
+  );
   if (inserted.meta.changes > 0) return { ok: true, session: s };
 
   const winner = await readExisting();

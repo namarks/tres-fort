@@ -19,6 +19,15 @@ beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 });
 
+async function activateWorkoutWriteFence(): Promise<void> {
+  await env.DB
+    .prepare(
+      'UPDATE workout_write_fence SET enabled=1, activated_at=?1 WHERE id=1',
+    )
+    .bind(Date.now())
+    .run();
+}
+
 async function seedUserAndPlan(label: string): Promise<{ userId: string; planId: string }> {
   const userId = crypto.randomUUID();
   const planId = crypto.randomUUID();
@@ -100,9 +109,11 @@ function databasesWithSharedReadBarrier(sqlNeedle: string): [D1Database, D1Datab
 }
 
 /**
- * Pause one `.run()` mutation after a matching `.first()` has returned. The
- * caller can let another real-D1 mutation commit in that gap, then release
- * the stale writer and assert its conditional write result.
+ * Pause one mutation after a matching `.first()` has returned. Protected
+ * workout writes execute through `db.batch()` at the database fence, while
+ * older/non-workout paths may still call `.run()` directly. The caller can
+ * let another real-D1 mutation commit in that gap, then release the stale
+ * writer and assert its conditional write result.
  */
 function databaseWithPausedRunAfterRead(
   readNeedle: string,
@@ -127,6 +138,15 @@ function databaseWithPausedRunAfterRead(
   });
   let interceptedRead = false;
   let interceptedRun = false;
+  let interceptedMutation = false;
+  const matchingStatements = new WeakSet<object>();
+
+  const pauseMutation = async (): Promise<void> => {
+    if (interceptedMutation) return;
+    interceptedMutation = true;
+    markRun();
+    await runGate;
+  };
 
   const wrapRead = (statement: D1PreparedStatement): D1PreparedStatement =>
     new Proxy(statement, {
@@ -147,16 +167,15 @@ function databaseWithPausedRunAfterRead(
         return typeof value === 'function' ? value.bind(target) : value;
       },
     });
-  const wrapRun = (statement: D1PreparedStatement): D1PreparedStatement =>
-    new Proxy(statement, {
+  const wrapRun = (statement: D1PreparedStatement): D1PreparedStatement => {
+    const wrapped = new Proxy(statement, {
       get(target, property) {
         if (property === 'bind') {
           return (...values: any[]) => wrapRun(target.bind(...values));
         }
         if (property === 'run') {
           return async (...args: any[]) => {
-            markRun();
-            await runGate;
+            await pauseMutation();
             return (target.run as (...callArgs: any[]) => Promise<unknown>)(...args);
           };
         }
@@ -164,6 +183,9 @@ function databaseWithPausedRunAfterRead(
         return typeof value === 'function' ? value.bind(target) : value;
       },
     });
+    matchingStatements.add(wrapped);
+    return wrapped;
+  };
 
   const db = new Proxy(env.DB, {
     get(target, property) {
@@ -179,6 +201,14 @@ function databaseWithPausedRunAfterRead(
             return wrapRun(statement);
           }
           return statement;
+        };
+      }
+      if (property === 'batch') {
+        return async (statements: D1PreparedStatement[]) => {
+          if (statements.some((statement) => matchingStatements.has(statement))) {
+            await pauseMutation();
+          }
+          return target.batch(statements);
         };
       }
       const value = Reflect.get(target, property, target);
@@ -521,6 +551,161 @@ describe('session create concurrency', () => {
     );
     expect(repeated.id).toBe(resultA.id);
     expect(repeated.day_template_id).toBe(resultA.day_template_id);
+  });
+
+  it('keeps the first pin when two scoped callers race on a pre-existing null row', async () => {
+    const { userId, planId } = await seedUserAndPlan('existing-null-pin-race');
+    const ts = Date.now();
+    const dayA = crypto.randomUUID();
+    const dayB = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB
+        .prepare(
+          `INSERT INTO day_templates
+           (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+           VALUES (?1,?2,'Pinned A','A',0,NULL,?3,?3)`,
+        )
+        .bind(dayA, planId, ts),
+      env.DB
+        .prepare(
+          `INSERT INTO day_templates
+           (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+           VALUES (?1,?2,'Pinned B','B',1,NULL,?3,?3)`,
+        )
+        .bind(dayB, planId, ts),
+    ]);
+    const date = '2037-02-01';
+    const existing = await getOrCreateSession(env.DB, userId, planId, date, null);
+    await activateWorkoutWriteFence();
+    const [dbA, dbB] = databasesWithSharedReadBarrier(
+      'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
+    );
+
+    const [a, b] = await Promise.all([
+      getOrCreateSession(dbA, userId, planId, date, dayA, {
+        expectedAttempt: 0,
+        claimAttemptProtocol: true,
+      }),
+      getOrCreateSession(dbB, userId, planId, date, dayB, {
+        expectedAttempt: 0,
+        claimAttemptProtocol: true,
+      }),
+    ]);
+
+    expect(a).toMatchObject({ id: existing.id, write_protocol: 'attempt-v1' });
+    expect(b).toMatchObject({ id: existing.id, write_protocol: 'attempt-v1' });
+    expect(a.day_template_id).toBe(b.day_template_id);
+    expect([dayA, dayB]).toContain(a.day_template_id);
+    expect(
+      await env.DB
+        .prepare('SELECT day_template_id,write_protocol FROM sessions WHERE id=?1')
+        .bind(existing.id)
+        .first(),
+    ).toEqual({
+      day_template_id: a.day_template_id,
+      write_protocol: 'attempt-v1',
+    });
+  });
+
+  it('claims the legacy pin winner without overwriting its first-writer day', async () => {
+    const { userId, planId } = await seedUserAndPlan('legacy-pin-v1-claim-race');
+    const ts = Date.now();
+    const dayA = crypto.randomUUID();
+    const dayB = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB
+        .prepare(
+          `INSERT INTO day_templates
+           (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+           VALUES (?1,?2,'Claim contender','A',0,NULL,?3,?3)`,
+        )
+        .bind(dayA, planId, ts),
+      env.DB
+        .prepare(
+          `INSERT INTO day_templates
+           (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+           VALUES (?1,?2,'Legacy winner','B',1,NULL,?3,?3)`,
+        )
+        .bind(dayB, planId, ts),
+    ]);
+    const date = '2037-02-05';
+    const existing = await getOrCreateSession(env.DB, userId, planId, date, null);
+    await activateWorkoutWriteFence();
+    const paused = databaseWithPausedRunAfterRead(
+      'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2',
+      'SET day_template_id = CASE',
+    );
+
+    const explicitClaim = getOrCreateSession(
+      paused.db,
+      userId,
+      planId,
+      date,
+      dayA,
+      { expectedAttempt: 0, claimAttemptProtocol: true },
+    );
+    await paused.runReached;
+    expect(
+      await setPlannedSession(env.DB, userId, date, 'B', 0),
+    ).toMatchObject({
+      ok: true,
+      session: {
+        id: existing.id,
+        day_template_id: dayB,
+        write_protocol: 'legacy',
+      },
+    });
+    paused.releaseRun();
+
+    expect(await explicitClaim).toMatchObject({
+      id: existing.id,
+      status: 'planned',
+      attempt: 0,
+      day_template_id: dayB,
+      write_protocol: 'attempt-v1',
+    });
+  });
+
+  it('does not pin or claim from a stale planned read after completion wins', async () => {
+    const { userId, planId } = await seedUserAndPlan('pin-claim-terminal-race');
+    const dayId = crypto.randomUUID();
+    const ts = Date.now();
+    await env.DB
+      .prepare(
+        `INSERT INTO day_templates
+         (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+         VALUES (?1,?2,'Race pin','R',0,NULL,?3,?3)`,
+      )
+      .bind(dayId, planId, ts)
+      .run();
+    const date = '2037-02-02';
+    const session = await getOrCreateSession(env.DB, userId, planId, date, null);
+    await activateWorkoutWriteFence();
+    const paused = databaseWithPausedRunAfterRead(
+      'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2',
+      'SET day_template_id = CASE',
+    );
+    const staleClaim = getOrCreateSession(
+      paused.db,
+      userId,
+      planId,
+      date,
+      dayId,
+      { expectedAttempt: 0, claimAttemptProtocol: true },
+    );
+    await paused.runReached;
+    expect(
+      await patchSession(env.DB, userId, session.id, { status: 'completed' }, 0),
+    ).toMatchObject({ status: 'completed', write_protocol: 'legacy' });
+    paused.releaseRun();
+
+    expect(await staleClaim).toMatchObject({
+      id: session.id,
+      status: 'completed',
+      attempt: 0,
+      day_template_id: null,
+      write_protocol: 'legacy',
+    });
   });
 
   it('applies a planned-day override after losing an insert race', async () => {
@@ -923,6 +1108,146 @@ describe('discard terminal-state concurrency', () => {
     ).toBeNull();
   });
 
+  it('does not ACK a live protocol claim after same-attempt discard wins', async () => {
+    const { userId, planId } = await seedUserAndPlan('revival-claim-discard-race');
+    const session = await getOrCreateSession(
+      env.DB,
+      userId,
+      planId,
+      '2037-02-03',
+      null,
+    );
+    await discardSession(env.DB, userId, session.id);
+    const restarted = await reviveDiscardedSession(
+      env.DB,
+      userId,
+      session.id,
+      0,
+      null,
+    );
+    expect(restarted).toMatchObject({
+      status: 'planned',
+      attempt: 1,
+      write_protocol: 'legacy',
+    });
+    await activateWorkoutWriteFence();
+
+    const paused = databaseWithPausedRunAfterRead(
+      'SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2',
+      "SET write_protocol = 'attempt-v1'",
+    );
+    const staleClaim = reviveDiscardedSession(
+      paused.db,
+      userId,
+      session.id,
+      0,
+      null,
+      true,
+    );
+    await paused.runReached;
+    expect(await discardSession(env.DB, userId, session.id, 1)).toMatchObject({
+      status: 'discarded',
+      attempt: 1,
+      write_protocol: 'legacy',
+    });
+    paused.releaseRun();
+
+    expect(await staleClaim).toMatchObject({
+      error: 'session_attempt_conflict',
+      expected_attempt: 0,
+      current_attempt: 1,
+      current_session: {
+        id: session.id,
+        status: 'discarded',
+        attempt: 1,
+        write_protocol: 'legacy',
+      },
+    });
+  });
+
+  it('does not ACK an obsolete discarded barrier after restart wins', async () => {
+    const { userId, planId } = await seedUserAndPlan('discard-claim-restart-race');
+    const session = await getOrCreateSession(
+      env.DB,
+      userId,
+      planId,
+      '2037-02-04',
+      null,
+    );
+    await discardSession(env.DB, userId, session.id);
+    await activateWorkoutWriteFence();
+
+    const paused = databaseWithPausedRunAfterRead(
+      'SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2',
+      "SET write_protocol = 'attempt-v1'",
+    );
+    const staleDiscardAck = discardSession(
+      paused.db,
+      userId,
+      session.id,
+      0,
+      true,
+    );
+    await paused.runReached;
+    expect(
+      await reviveDiscardedSession(env.DB, userId, session.id, 0, null),
+    ).toMatchObject({ status: 'planned', attempt: 1, write_protocol: 'legacy' });
+    paused.releaseRun();
+
+    expect(await staleDiscardAck).toMatchObject({
+      error: 'session_attempt_conflict',
+      expected_attempt: 0,
+      current_attempt: 1,
+      current_session: {
+        id: session.id,
+        status: 'planned',
+        attempt: 1,
+        write_protocol: 'legacy',
+      },
+    });
+  });
+
+  it('claims a same-attempt legacy discard winner before acknowledging it', async () => {
+    const { userId, planId } = await seedUserAndPlan('discard-claim-loser-race');
+    const date = '2037-02-06';
+    const session = await getOrCreateSession(env.DB, userId, planId, date, null);
+    await activateWorkoutWriteFence();
+    const paused = databaseWithPausedRunAfterRead(
+      'SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2',
+      "SET status = 'discarded'",
+    );
+
+    const explicitDiscard = discardSession(
+      paused.db,
+      userId,
+      session.id,
+      0,
+      true,
+    );
+    await paused.runReached;
+    expect(await discardSession(env.DB, userId, session.id, 0)).toMatchObject({
+      status: 'discarded',
+      attempt: 0,
+      write_protocol: 'legacy',
+    });
+    paused.releaseRun();
+
+    expect(await explicitDiscard).toMatchObject({
+      id: session.id,
+      status: 'discarded',
+      attempt: 0,
+      write_protocol: 'attempt-v1',
+    });
+    expect(
+      await getOrCreateSession(env.DB, userId, planId, date, null),
+    ).toMatchObject({
+      id: session.id,
+      status: 'discarded',
+      attempt: 0,
+      write_protocol: 'attempt-v1',
+    });
+  });
+
   it('returns the authoritative started session to an exact-UUID race loser', async () => {
     const { userId, planId } = await seedUserAndPlan('exact-uuid-winner-race');
     const session = await getOrCreateSession(
@@ -959,7 +1284,7 @@ describe('discard terminal-state concurrency', () => {
         id: session.id,
         status: 'in_progress',
         attempt: 0,
-        write_protocol: 'attempt-v1',
+        write_protocol: 'legacy',
       },
     });
   });
@@ -999,7 +1324,7 @@ describe('discard terminal-state concurrency', () => {
         id: session.id,
         status: 'planned',
         attempt: 1,
-        write_protocol: 'attempt-v1',
+        write_protocol: 'legacy',
       },
     });
     expect(

@@ -412,10 +412,6 @@ const TOOLS: Record<string, Tool> = {
       const date = typeof a.session_date === 'string' ? a.session_date : today;
       const ex = await resolveExercise(env.DB, String(a.exercise));
       if (!ex) return { error: 'unknown_exercise', query: a.exercise };
-      // Resolve validation-only input before touching the date row. In
-      // particular, an unknown exercise must not revive a discarded session
-      // and then return without logging anything.
-      const session = await getOrCreateSession(env.DB, userId, plan.id, date, null);
       const exId = (ex as { id: string }).id;
       const isWarmup = a.is_warmup === true;
       const requestedSetIndex = typeof a.set_index === 'number' ? a.set_index : null;
@@ -455,6 +451,10 @@ const TOOLS: Record<string, Tool> = {
           existing_set: recent,
         };
       }
+      // All rejection-only validation must finish before touching the date
+      // row. In particular, a recent cross-channel duplicate must not revive
+      // a discarded target session when no set will be written.
+      const session = await getOrCreateSession(env.DB, userId, plan.id, date, null);
       const existing = await getSetsForSession(env.DB, session.id);
       const setIndex =
         requestedSetIndex != null

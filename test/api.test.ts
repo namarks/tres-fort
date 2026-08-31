@@ -22,6 +22,15 @@ const auth = (jwt: string) => ({
   Authorization: `Bearer ${jwt}`,
 });
 
+async function activateWorkoutWriteFence(): Promise<void> {
+  await env.DB
+    .prepare(
+      'UPDATE workout_write_fence SET enabled=1, activated_at=?1 WHERE id=1',
+    )
+    .bind(Date.now())
+    .run();
+}
+
 describe('health + auth', () => {
   it('health is public', async () => {
     const r = await SELF.fetch(`${BASE}/health`);
@@ -474,6 +483,19 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
       write_protocol: 'legacy',
     });
 
+    const beforeActivation = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: V1,
+      body: JSON.stringify({ date, expected_attempt: 1 }),
+    });
+    expect(beforeActivation.status).toBe(503);
+    expect(await beforeActivation.json()).toEqual({
+      error: 'write_protocol_not_active',
+      protocol: 'attempt-v1',
+      retryable: true,
+    });
+    await activateWorkoutWriteFence();
+
     // The upgraded app's first scoped resolver fences this exact generation.
     const claimed = await SELF.fetch(`${BASE}/api/sessions`, {
       method: 'POST',
@@ -544,6 +566,7 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
       body: JSON.stringify({ name: 'Missing Attempt Plan' }),
     });
     expect(plan.status).toBe(201);
+    await activateWorkoutWriteFence();
     const response = await SELF.fetch(`${BASE}/api/sessions`, {
       method: 'POST',
       headers: { ...H, 'X-TresFort-Write-Protocol': 'attempt-v1' },
@@ -582,6 +605,7 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
         .first(),
     ).toEqual({ status: 'planned', attempt: 1, write_protocol: 'legacy' });
 
+    await activateWorkoutWriteFence();
     // The new app may be retrying the explicit restart whose response was
     // lost during that window. It must adopt and claim the trigger-advanced
     // winner rather than leaving tokenless legacy writes enabled.

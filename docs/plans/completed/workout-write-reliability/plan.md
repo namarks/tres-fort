@@ -38,13 +38,20 @@ never present a failed write as completed or silently drop the user's intent.
 
 ## Next step
 
-No further repository-executable step. Any production rollout is a separately
-authorized, ordered operation: first run the existing Worker release path so
-migration 0032 lands before the compatibility Worker; only after that Worker is
-live may the attempt-aware iOS app be released. App-first rollout is unsupported.
-Retire the tokenless `legacy` mode only after a separately chosen minimum-app-
-version or adoption gate. No migration, deploy, App Store/TestFlight release,
-or legacy-mode retirement was performed during closeout.
+No further repository-executable slice. Any production rollout is a separately
+authorized, one-way cutover: run `npm run release` so the local preflight passes,
+migration 0032 lands with its database fence disabled, and the compatibility
+Worker finishes deploying; then confirm
+`npm run db:workout-write-fence:status:remote` reports `enabled=0`, a null
+activation time, and zero permits. Only a separate production authorization may
+run `npm run db:workout-write-fence:activate:remote`; verify the status becomes
+`enabled=1` with zero permits and collect both new-protocol admission and
+pre-fence-writer rejection evidence. Activation is irreversible: after it,
+never roll back to a Worker that lacks the permit batches—forward-fix instead.
+Only then may a separately authorized attempt-aware TestFlight/App Store release
+begin. Retire tokenless `legacy` mode only after a separately chosen minimum-app-
+version or adoption gate. No migration, activation, deploy, app release, or
+legacy-mode retirement was performed during closeout.
 
 ## Notes / open questions
 
@@ -82,15 +89,22 @@ or legacy-mode retirement was performed during closeout.
 - P2 completes recovery and the cross-surface write contract. Migration 0032
   assigns every session an attempt generation plus a persisted write protocol.
   The compatibility Worker accepts released tokenless writes only while that
-  generation is `legacy`; the first attempt-scoped create, set, finish, discard,
-  or reopen atomically claims `attempt-v1`, after which tokenless mutation is a
-  visible conflict. The migration trigger advances a legacy restart made by the
-  old Worker during the migration-before-deploy window, and an idempotent new-app
-  retry claims that already-advanced winner. REST and MCP mutations carry the
-  generation they observed across awaits and return structured current-session
-  conflicts. Exact set UUID retries remain idempotent across a discard/restart,
-  while stale work is retired rather than retargeted; public undelete is rejected
-  so old-attempt tombstones cannot rejoin a later workout. The account-scoped iOS
+  generation is `legacy`; expected-attempt checks are generation CAS tokens but
+  do not themselves claim a protocol. Only a REST request that explicitly
+  declares the iOS `attempt-v1` header can claim the generation, after which
+  tokenless mutation is a visible conflict; MCP set, finish, and one-off calendar
+  writes preserve `legacy`. The migration trigger advances a legacy restart made
+  by the old Worker during the migration-before-deploy window, and an idempotent
+  new-app retry can claim that already-advanced winner. Migration 0032 also lands
+  a disabled, monotonic database fence: before activation it rejects premature
+  `attempt-v1` rows; after activation it admits every `sessions`/`set_logs`
+  insert or update only inside the compatibility Worker's transaction-local D1
+  permit batch, so an old or rolled-back Worker fails closed. REST and MCP
+  mutations carry the generation they observed across awaits and return
+  structured current-session conflicts. Exact set UUID retries remain idempotent
+  across a discard/restart, while stale work is retired rather than retargeted;
+  public undelete is rejected so old-attempt tombstones cannot rejoin a later
+  workout. The account-scoped iOS
   snapshot store uses local revision tickets so stale full-state pulls cannot
   overwrite acknowledgements from another model, and durable runner checkpoints
   retain session/restart identity across process death. Cached state stays
@@ -102,17 +116,23 @@ or legacy-mode retirement was performed during closeout.
   share the rule that only real logged sessions survive a hard blackout, without
   manufacturing ride conflicts.
 - Final verification passed TypeScript typecheck, the complete Workers/D1 suite
-  (`38` files, `472` tests), and the complete iOS simulator suite (`141` tests)
+  (`39` files, `482` tests), and the complete iOS simulator suite (`141` tests)
   from clean derived data on an iPhone 17 Pro simulator (iOS 26.3.1). Focused
   compatibility, MCP observation, exact-UUID concurrency, recovery,
   calendar-parity, selected-day reopen, legacy-attempt, and persistence
-  regressions also passed. Migration 0032 was authored and locally exercised
-  but was not applied remotely.
+  regressions also passed. The exact `npm run release:preflight` command passed,
+  including a repeat of the complete Workers/D1 suite and Wrangler's deploy
+  dry-run build. Migration 0032 was authored and locally exercised but was not
+  applied remotely.
 - Independent exact-head review is a delivery gate for the final tree. The
   initial review of commit `a90fd118d00df22b21c33dab9bb6ab415084219e`
-  surfaced six attempt-rollout and concurrency findings; this follow-up addresses
-  all six with the compatibility protocol and focused regressions above. Do not
-  reuse that earlier review after the head changes; require a fresh exact-head
+  surfaced six attempt-rollout and concurrency findings; the next review at
+  `235621cf3afd4c69d8758641d8319ba5fa7a3ece` found five remaining protocol,
+  stale-ACK, first-writer, duplicate-rejection, and rollout-cutover gaps. This
+  follow-up separates generation CAS from explicit iOS protocol claims, makes
+  stale outcomes authoritative, protects the null first-writer race, rejects
+  MCP duplicates before mutation, and adds the one-way database fence. Do not
+  reuse either earlier review after the head changes; require a fresh exact-head
   review before any delivery action.
 - Set bodies, retry state, and drain behavior remain owned here. Coordinate only
   the user-keyed namespace and account-switch boundary with the completed P0

@@ -27,4 +27,14 @@ enum RestLiveActivity {
         current = nil
         Task { await activity.end(nil, dismissalPolicy: .immediate) }
     }
+
+    /// ActivityKit restores active records independently of our process. End
+    /// every orphan before launch recovery so a rest countdown left by an app
+    /// kill cannot remain on the Lock Screen beside the recovered runner.
+    static func endStaleActivities() async {
+        current = nil
+        for activity in Activity<RestActivityAttributes>.activities {
+            await activity.end(nil, dismissalPolicy: .immediate)
+        }
+    }
 }

@@ -38,7 +38,6 @@ and timing aids, and finish with an accurate summary.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | coordinates_with | plan:workout-write-reliability#P0 | Runner corrections and reliable set intents touch the same logging surface and should share tests without forcing serial delivery. |
 | P2 | feeds | plan:coaching-feedback-loop#P2 | The persisted completion summary provides context for coaching; it does not block runner delivery. |
 
 ## Next step
@@ -51,5 +50,8 @@ reliability phase to finish.
 
 - Apple Watch execution, custom exercises, advanced readiness scoring, and
   automatic programming are outside this plan.
+- Reuse the durable set-intent, checkpoint, and recovery boundary completed in
+  [Workout Write Reliability](../completed/workout-write-reliability/plan.md);
+  it is historical foundation rather than an unresolved dependency.
 - Each phase should batch a coherent gym task. Individual steppers, labels,
   cues, or PR badges are acceptance details, not separate workstreams.

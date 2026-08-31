@@ -120,8 +120,33 @@ struct APIClient {
     /// the calendar/agenda resolve the one-off session as the right workout.
     func createSession(date: String, dayTemplateID: String? = nil,
                        jwt: String) async throws -> SessionRow {
+        try await createSession(
+            date: date,
+            dayTemplateID: dayTemplateID,
+            expectedAttempt: nil,
+            restartDiscardedAttempt: nil,
+            jwt: jwt)
+    }
+
+    /// A discarded date is revived only when the runner persisted explicit
+    /// user restart provenance. The prior attempt is a compare-and-swap token:
+    /// a commit-then-timeout retry returns the same next generation, while a
+    /// delayed request can never revive a later discard.
+    func createSession(
+        date: String,
+        dayTemplateID: String? = nil,
+        expectedAttempt: Int?,
+        restartDiscardedAttempt: Int?,
+        jwt: String
+    ) async throws -> SessionRow {
         var body: [String: Any] = ["date": date]
         if let dayTemplateID { body["day_template_id"] = dayTemplateID }
+        if let restartDiscardedAttempt {
+            body["restart_discarded"] = true
+            body["expected_attempt"] = restartDiscardedAttempt
+        } else if let expectedAttempt {
+            body["expected_attempt"] = expectedAttempt
+        }
         return try await post("api/sessions", body: body, jwt: jwt)
     }
 
@@ -135,10 +160,54 @@ struct APIClient {
         try await post("api/sessions/\(sessionId)/sets", body: body, jwt: jwt)
     }
 
-    struct SetLogResult: Decodable { let set: SetLog; let deduped: Bool }
+    struct SetLogResult: Decodable {
+        let set: SetLog
+        let deduped: Bool
+        /// Canonical session observed in the same D1 batch/read as the set
+        /// acknowledgement. Optional only for rolling compatibility with an
+        /// older Worker; the client never infers a terminal-sensitive status
+        /// when it is absent.
+        let session: SessionRow?
+
+        init(set: SetLog, deduped: Bool, session: SessionRow? = nil) {
+            self.set = set
+            self.deduped = deduped
+            self.session = session
+        }
+    }
 
     func completeSession(sessionId: String, jwt: String) async throws -> SessionRow {
         try await patch("api/sessions/\(sessionId)", body: ["status": "completed"], jwt: jwt)
+    }
+
+    /// Explicitly reopen a skipped/rest override. The Worker advances the
+    /// reused date row's attempt, so delayed writes from the prior skipped
+    /// generation cannot join this newly started workout.
+    func reopenSkippedSession(
+        sessionId: String,
+        dayTemplateID: String?,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> SessionRow {
+        var body: [String: Any] = ["status": "planned"]
+        if let dayTemplateID { body["day_template_id"] = dayTemplateID }
+        return try await patch(
+            attemptScopedPath(
+                "api/sessions/\(sessionId)", expectedAttempt: expectedAttempt),
+            body: body,
+            jwt: jwt)
+    }
+
+    func completeSession(
+        sessionId: String,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> SessionRow {
+        try await patch(
+            attemptScopedPath(
+                "api/sessions/\(sessionId)", expectedAttempt: expectedAttempt),
+            body: ["status": "completed"],
+            jwt: jwt)
     }
 
     /// Discard a session — "I didn't really do this." Soft-deletes its sets
@@ -146,6 +215,27 @@ struct APIClient {
     /// Restarting the same day resurrects a fresh planned session.
     func discardSession(sessionId: String, jwt: String) async throws -> SessionRow {
         try await post("api/sessions/\(sessionId)/discard", body: [:], jwt: jwt)
+    }
+
+    func discardSession(
+        sessionId: String,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> SessionRow {
+        try await post(
+            attemptScopedPath(
+                "api/sessions/\(sessionId)/discard",
+                expectedAttempt: expectedAttempt),
+            body: [:],
+            jwt: jwt)
+    }
+
+    private func attemptScopedPath(
+        _ path: String,
+        expectedAttempt: Int?
+    ) -> String {
+        guard let expectedAttempt else { return path }
+        return "\(path)?expected_attempt=\(expectedAttempt)"
     }
 
     struct EmptyResponse: Decodable {}
@@ -300,9 +390,10 @@ protocol AuthAPI {
 
 extension APIClient: AuthAPI {}
 
-/// Only the three calls required to settle a set intent are injectable. The
-/// rest of SyncModel continues using APIClient directly, avoiding a broad sync
-/// abstraction while making persist-before-network and retry identity testable.
+/// Only the calls required to settle a set intent and the shared full-state
+/// pull are injectable. The rest of SyncModel continues using APIClient
+/// directly, avoiding a broad sync abstraction while making persistence,
+/// retry identity, and response-ordering deterministic in model tests.
 @MainActor
 protocol SetWriteAPI {
     func createSession(
@@ -310,15 +401,76 @@ protocol SetWriteAPI {
         dayTemplateID: String?,
         jwt: String
     ) async throws -> SessionRow
+    func createSession(
+        date: String,
+        dayTemplateID: String?,
+        expectedAttempt: Int?,
+        restartDiscardedAttempt: Int?,
+        jwt: String
+    ) async throws -> SessionRow
     func logSet(
         sessionId: String,
         body: SetRequestBody,
         jwt: String
     ) async throws -> APIClient.SetLogResult
+    func reopenSkippedSession(
+        sessionId: String,
+        dayTemplateID: String?,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> SessionRow
+    func logSet(
+        sessionId: String,
+        body: SetRequestBody,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> APIClient.SetLogResult
+    func deleteSet(setId: String, jwt: String) async throws
     func getState(jwt: String) async throws -> StateResponse
 }
 
+extension SetWriteAPI {
+    func createSession(
+        date: String,
+        dayTemplateID: String?,
+        expectedAttempt: Int?,
+        restartDiscardedAttempt: Int?,
+        jwt: String
+    ) async throws -> SessionRow {
+        try await createSession(
+            date: date, dayTemplateID: dayTemplateID, jwt: jwt)
+    }
+
+    func logSet(
+        sessionId: String,
+        body: SetRequestBody,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> APIClient.SetLogResult {
+        try await logSet(
+            sessionId: sessionId,
+            body: body.scoped(to: expectedAttempt),
+            jwt: jwt)
+    }
+
+    func reopenSkippedSession(
+        sessionId: String,
+        dayTemplateID: String?,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> SessionRow {
+        throw APIError.decoding("Skipped-session reopen is unavailable")
+    }
+}
+
 extension APIClient: SetWriteAPI {}
+
+@MainActor
+protocol ExerciseCatalogAPI {
+    func getExercises(jwt: String) async throws -> [ExerciseCatalog]
+}
+
+extension APIClient: ExerciseCatalogAPI {}
 
 /// Narrow terminal-session seam used only to prove the P0 exclusion between
 /// destructive/completing session mutations and new set persistence.
@@ -326,6 +478,34 @@ extension APIClient: SetWriteAPI {}
 protocol WorkoutTerminalAPI {
     func completeSession(sessionId: String, jwt: String) async throws -> SessionRow
     func discardSession(sessionId: String, jwt: String) async throws -> SessionRow
+    func completeSession(
+        sessionId: String,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> SessionRow
+    func discardSession(
+        sessionId: String,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> SessionRow
+}
+
+extension WorkoutTerminalAPI {
+    func completeSession(
+        sessionId: String,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> SessionRow {
+        try await completeSession(sessionId: sessionId, jwt: jwt)
+    }
+
+    func discardSession(
+        sessionId: String,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> SessionRow {
+        try await discardSession(sessionId: sessionId, jwt: jwt)
+    }
 }
 
 extension APIClient: WorkoutTerminalAPI {}

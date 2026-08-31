@@ -31,7 +31,7 @@ struct UserDTO: Decodable {
     let email: String?
 }
 
-struct TemplateExercise: Decodable, Identifiable, Equatable {
+struct TemplateExercise: Codable, Identifiable, Equatable {
     let id: String
     let exercise_id: String
     let exercise_name: String
@@ -118,7 +118,7 @@ struct TemplateExercise: Decodable, Identifiable, Equatable {
     }
 }
 
-struct DayTemplate: Decodable, Identifiable, Equatable {
+struct DayTemplate: Codable, Identifiable, Equatable {
     let id: String
     let name: String
     let day_label: String?
@@ -151,7 +151,7 @@ struct PlanSchedule: Decodable, Equatable {
     }
 }
 
-struct PlanTree: Decodable {
+struct PlanTree: Codable {
     let id: String
     let name: String
     let version: Int
@@ -192,7 +192,7 @@ struct PlanTree: Decodable {
     }
 }
 
-struct SessionRow: Decodable, Identifiable {
+struct SessionRow: Codable, Identifiable {
     let id: String
     let date: String
     let status: String
@@ -200,9 +200,16 @@ struct SessionRow: Decodable, Identifiable {
     /// real planned/in-progress session resolve to its template in the
     /// agenda. Optional so older payloads still decode.
     let day_template_id: String?
+    /// Server mutation ordering for this canonical session. Optional for
+    /// rolling compatibility, but new Workers return it on state, set, finish,
+    /// and discard responses so delayed callbacks cannot outrank later state.
+    var updated_at: Int? = nil
+    /// Monotonic generation of the single (user,date) row. Discard retains the
+    /// current attempt; explicit same-day revival increments it.
+    var attempt: Int? = nil
 }
 
-struct SetLog: Decodable, Identifiable {
+struct SetLog: Codable, Identifiable {
     let id: String
     let session_id: String
     let exercise_id: String
@@ -244,7 +251,7 @@ extension SetLog {
     }
 }
 
-struct ExerciseCatalog: Decodable, Identifiable {
+struct ExerciseCatalog: Codable, Identifiable {
     let id: String
     let name: String
     let primary_muscle: String
@@ -278,7 +285,7 @@ struct ExerciseCatalog: Decodable, Identifiable {
 ///
 /// `deleted_at` non-null ⇒ the event is tombstoned and must be hidden.
 /// All optional fields are tolerant: a thin/older payload still decodes.
-struct ExternalEvent: Decodable, Identifiable, Equatable {
+struct ExternalEvent: Codable, Identifiable, Equatable {
     let id: String
     let source: String
     let external_id: String
@@ -328,7 +335,7 @@ struct ExternalEvent: Decodable, Identifiable, Equatable {
 ///
 /// `deleted_at` non-null ⇒ tombstoned and must be hidden. All actuals are
 /// optional: a thin/older payload still decodes.
-struct ExternalActivity: Decodable, Identifiable, Equatable {
+struct ExternalActivity: Codable, Identifiable, Equatable {
     let id: String
     let source: String
     let external_id: String
@@ -430,7 +437,7 @@ struct ExternalActivity: Decodable, Identifiable, Equatable {
     }
 }
 
-struct StateResponse: Decodable {
+struct StateResponse: Codable {
     let plan: PlanTree?
     let plan_version: Int
     let sessions: [SessionRow]
@@ -455,6 +462,26 @@ struct StateResponse: Decodable {
         case external_events, external_activities, activities, server_time
     }
 
+    init(
+        plan: PlanTree?,
+        plan_version: Int,
+        sessions: [SessionRow],
+        sets: [SetLog],
+        external_events: [ExternalEvent],
+        external_activities: [ExternalActivity],
+        activities: [ActivityRow],
+        server_time: Int
+    ) {
+        self.plan = plan
+        self.plan_version = plan_version
+        self.sessions = sessions
+        self.sets = sets
+        self.external_events = external_events
+        self.external_activities = external_activities
+        self.activities = activities
+        self.server_time = server_time
+    }
+
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         plan = try c.decodeIfPresent(PlanTree.self, forKey: .plan)
@@ -472,5 +499,17 @@ struct StateResponse: Decodable {
             (try? c.decodeIfPresent([ActivityRow].self, forKey: .activities))
             .flatMap { $0 } ?? []
         server_time = try c.decode(Int.self, forKey: .server_time)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(plan, forKey: .plan)
+        try c.encode(plan_version, forKey: .plan_version)
+        try c.encode(sessions, forKey: .sessions)
+        try c.encode(sets, forKey: .sets)
+        try c.encode(external_events, forKey: .external_events)
+        try c.encode(external_activities, forKey: .external_activities)
+        try c.encode(activities, forKey: .activities)
+        try c.encode(server_time, forKey: .server_time)
     }
 }

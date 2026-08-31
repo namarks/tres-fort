@@ -1,5 +1,10 @@
 import SwiftUI
 
+private struct SessionWriteConflictPayload: Decodable {
+    let error: String
+    let current_session: SessionRow
+}
+
 @MainActor
 final class SyncModel: ObservableObject {
     @Published var plan: PlanTree?
@@ -21,6 +26,12 @@ final class SyncModel: ObservableObject {
     @Published var selectedDayID: String?
     @Published var loadError: String?
     @Published var isLoading = false
+    /// True while the visible plan/calendar came from the last successful
+    /// account-scoped snapshot rather than a live `/api/state` response.
+    @Published private(set) var isUsingCachedState = false
+    /// A persisted runner becomes actionable only after a live state pull
+    /// confirms that today's server session is still in progress.
+    @Published private(set) var resumableCheckpoint: WorkoutRunnerCheckpoint?
     /// Durable set intents are separate from acknowledged `sets`. Publishing
     /// the account queue makes relaunch state visible on Today even when the
     /// workout runner is not mounted.
@@ -32,6 +43,7 @@ final class SyncModel: ObservableObject {
     @Published private(set) var sendingSetIntentIDs: Set<String> = []
     @Published private(set) var setSlotsInFlight: Set<String> = []
     @Published private(set) var isTerminalMutationInFlight = false
+    @Published private(set) var isReopeningSkippedWorkout = false
 
     // Rest timer (local Live Activity arrives in milestone g).
     @Published var restEndDate: Date?
@@ -61,20 +73,39 @@ final class SyncModel: ObservableObject {
     private let api = APIClient()
     private let setWriteAPI: any SetWriteAPI
     private let terminalAPI: any WorkoutTerminalAPI
+    private let catalogAPI: any ExerciseCatalogAPI
     private unowned let auth: AuthModel
     private let accountID: String?
     private let defaults: UserDefaults
     private let uuidFactory: () -> UUID
     private let now: () -> Date
+    private var persistedRunnerCheckpoint: WorkoutRunnerCheckpoint?
+    /// Restart authorization belongs to the mounted runner, not a generic
+    /// date-level create. It is persisted in the checkpoint until creation
+    /// binds the new session attempt.
+    private var runnerRestartDiscardedAttempt: Int?
+    /// Durable queues are shared for truthful presentation, but each model
+    /// sends only intents it loaded at construction or enqueued itself. An old
+    /// reauthentication model must not become a second sender for work created
+    /// by its replacement.
+    private var ownedSetIntentIDs: Set<String>
+    private var ownedTerminalIntentIDs: Set<String>
     private var sendingTerminalIntentID: String?
     private var isDrainingWorkoutWrites = false
     private var workoutWriteDrainRequested = false
     private var workoutWriteDrainWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Loading presentation is tracked separately from full-state freshness:
+    /// account-scoped snapshot tickets own freshness, while an outbox
+    /// reconciliation can supersede a load without owning its spinner.
+    private var loadGeneration = 0
+    private var statePlanVersion = 0
+    private var stateServerTime = 0
 
     init(
         auth: AuthModel,
         setWriteAPI: any SetWriteAPI = APIClient(),
         terminalAPI: any WorkoutTerminalAPI = APIClient(),
+        catalogAPI: any ExerciseCatalogAPI = APIClient(),
         defaults: UserDefaults = .standard,
         uuidFactory: @escaping () -> UUID = UUID.init,
         now: @escaping () -> Date = Date.init
@@ -83,9 +114,15 @@ final class SyncModel: ObservableObject {
         self.accountID = auth.userID
         self.setWriteAPI = setWriteAPI
         self.terminalAPI = terminalAPI
+        self.catalogAPI = catalogAPI
         self.defaults = defaults
         self.uuidFactory = uuidFactory
         self.now = now
+        let persistedCheckpoint = WorkoutRunnerCheckpointStore.load(
+            userID: auth.userID, defaults: defaults)
+        self.persistedRunnerCheckpoint = persistedCheckpoint
+        self.runnerRestartDiscardedAttempt =
+            persistedCheckpoint?.restartDiscardedAttempt
         var persistedSets = SetOutboxStore.load(
             userID: auth.userID, defaults: defaults)
         let persistedTerminals = WorkoutTerminalOutboxStore.load(
@@ -98,9 +135,22 @@ final class SyncModel: ObservableObject {
         }
         self.setOutbox = persistedSets
         self.terminalOutbox = persistedTerminals
+        self.ownedSetIntentIDs = Set(persistedSets.pending.map(\.id))
+        self.ownedTerminalIntentIDs = Set(
+            persistedTerminals.intents.map(\.id))
         for intent in persistedTerminals.intents where intent.action == .discard {
             SetOutboxStore.remove(
                 date: intent.date, userID: auth.userID, defaults: defaults)
+        }
+        self.catalog = ExerciseCatalogSnapshotStore.load(
+            userID: auth.userID, defaults: defaults) ?? []
+        // Cache is presentation-only. It must not acknowledge an outbox or
+        // make a runner resumable; both decisions wait for a live pull.
+        if let cached = StateSnapshotStore.load(
+            userID: auth.userID, defaults: defaults)
+        {
+            replaceState(with: cached.state, isLiveResponse: false)
+            isUsingCachedState = true
         }
     }
 
@@ -142,16 +192,56 @@ final class SyncModel: ObservableObject {
 
     func load() async {
         guard let jwt = currentJWT else { return }
+        loadGeneration += 1
+        let thisLoadGeneration = loadGeneration
+        guard let snapshotTicket = StateSnapshotStore.reserveFullStateRequest(
+            userID: accountID, defaults: defaults)
+        else {
+            loadError = "Couldn't reserve local sync state."
+            return
+        }
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            if thisLoadGeneration == loadGeneration { isLoading = false }
+        }
         do {
-            let state = try await api.getState(jwt: jwt)
-            replaceState(with: state)
-            if catalog.isEmpty {
-                catalog = (try? await api.getExercises(jwt: jwt)) ?? []
+            let state = try await setWriteAPI.getState(jwt: jwt)
+            guard isCurrentAccount(using: jwt), canMutateBoundSetAccount else { return }
+            guard applyLiveStateResponse(
+                state,
+                ticket: snapshotTicket
+            ) else { return }
+            // A cached catalog is presentation-only too: always attempt a live
+            // replacement after state succeeds so renamed exercises and changed
+            // load semantics do not freeze forever. A catalog failure retains
+            // the last successful rows, matching the pre-cache best-effort load.
+            if let rows = try? await catalogAPI.getExercises(jwt: jwt) {
+                guard isCurrentAccount(using: jwt), canMutateBoundSetAccount,
+                      StateSnapshotStore.isCurrent(
+                          snapshotTicket, defaults: defaults)
+                else { return }
+                catalog = rows
+                ExerciseCatalogSnapshotStore.save(
+                    rows, userID: accountID, defaults: defaults)
             }
             loadError = nil
         } catch {
+            guard StateSnapshotStore.isCurrent(
+                      snapshotTicket, defaults: defaults),
+                  isCurrentAccount(using: jwt), canMutateBoundSetAccount
+            else { return }
+            let isUnauthorized: Bool
+            if case let APIError.http(code, _) = error {
+                isUnauthorized = code == 401
+            } else {
+                isUnauthorized = false
+            }
+            if isCurrentAccount(using: jwt), plan != nil,
+               !(error is CancellationError),
+               !isUnauthorized
+            {
+                isUsingCachedState = true
+            }
             handle(error, jwt: jwt)
         }
     }
@@ -159,19 +249,76 @@ final class SyncModel: ObservableObject {
     /// Apply a full `/api/state` response atomically at the cache boundary.
     /// `getState` always uses zero watermarks, so every collection is a full
     /// replacement rather than a delta merge.
-    func replaceState(with state: StateResponse, preferredTodaySessionID: String? = nil) {
+    func replaceState(
+        with state: StateResponse,
+        preferredTodaySessionID: String? = nil,
+        isLiveResponse: Bool = true
+    ) {
+        // Direct live applications are used by deterministic model tests. They
+        // reserve the same account-scoped ticket as a network pull so they also
+        // invalidate older responses from another SyncModel instance.
+        if isLiveResponse {
+            guard let ticket = StateSnapshotStore.reserveFullStateRequest(
+                userID: accountID, defaults: defaults)
+            else { return }
+            _ = applyLiveStateResponse(
+                state,
+                ticket: ticket,
+                preferredTodaySessionID: preferredTodaySessionID)
+        } else {
+            applyState(
+                state,
+                preferredTodaySessionID: preferredTodaySessionID,
+                isLiveResponse: false)
+        }
+    }
+
+    /// Single freshness gate for every fetched full-state response. Keeping the
+    /// check immediately beside the shared apply/persist boundary prevents a
+    /// future caller from updating presentation but forgetting the snapshot (or
+    /// vice versa).
+    @discardableResult
+    private func applyLiveStateResponse(
+        _ state: StateResponse,
+        ticket: StateSnapshotTicket,
+        preferredTodaySessionID: String? = nil
+    ) -> Bool {
+        guard canMutateBoundSetAccount,
+              StateSnapshotStore.commitFullState(
+                  state, ticket: ticket, defaults: defaults) != nil
+        else { return false }
+        applyState(
+            state,
+            preferredTodaySessionID: preferredTodaySessionID,
+            isLiveResponse: true)
+        return true
+    }
+
+    private func applyState(
+        _ state: StateResponse,
+        preferredTodaySessionID: String?,
+        isLiveResponse: Bool
+    ) {
         let previousSelectedDayID = selectedDayID
         let runnerWasActive = running
         let activeSlotID = activeRunnerSlotID()
+        statePlanVersion = state.plan_version
+        stateServerTime = state.server_time
         plan = state.plan
-        reconcileTerminalOutbox(with: state.sessions)
+        if isLiveResponse {
+            // A replacement model may have cleared or superseded this
+            // instance's in-memory writes. Adopt the account store before a
+            // live response is allowed to acknowledge or requeue anything.
+            adoptDurableWorkoutWriteOutboxes()
+            reconcileTerminalOutbox(with: state.sessions)
+        }
         let maskedDates = discardBarrierDates
         let maskedSessionIDs = Set(state.sessions.lazy.filter {
             maskedDates.contains($0.date)
         }.map(\.id))
         sessions = state.sessions.filter { !maskedDates.contains($0.date) }
         sets = state.sets.filter { !maskedSessionIDs.contains($0.session_id) }
-        reconcileSetOutboxWithServerSets()
+        if isLiveResponse { reconcileSetOutboxWithServerSets() }
         // The server returns the full current non-deleted external_events set;
         // defensively drop any tombstones so calendar surfaces never see them.
         rides = state.external_events.filter { !$0.isDeleted }
@@ -197,6 +344,436 @@ final class SyncModel: ObservableObject {
             previousSelectedDayID: previousSelectedDayID,
             activeSlotID: activeSlotID,
             runnerWasActive: runnerWasActive)
+        if isLiveResponse {
+            isUsingCachedState = false
+            validatePersistedRunnerCheckpoint()
+        }
+    }
+
+    /// Fallback only for the first accepted mutation before this install has a
+    /// snapshot. ACK persistence always transforms the newest account snapshot,
+    /// never blindly overwrites it with this model's projection.
+    private func currentStateResponse() -> StateResponse {
+        StateResponse(
+            plan: plan,
+            plan_version: max(statePlanVersion, plan?.version ?? 0),
+            sessions: sessions,
+            sets: sets,
+            external_events: rides,
+            external_activities: activities,
+            activities: manualActivities,
+            // Mutation responses carry no replacement state watermark.
+            server_time: stateServerTime)
+    }
+
+    /// Another same-account model removes an intent only after merging its ACK
+    /// into the shared snapshot. When this model discovers that removal, adopt
+    /// that snapshot immediately so the retained UI cannot offer a duplicate
+    /// set or keep a runner mounted against a terminal session.
+    @discardableResult
+    private func adoptLatestAcknowledgedSnapshot(for date: String) -> Bool {
+        guard let snapshot = StateSnapshotStore.load(
+            userID: accountID, defaults: defaults)
+        else { return false }
+        let terminalStatuses = Set(["completed", "skipped", "discarded"])
+        let terminal = snapshot.state.sessions.first {
+            $0.date == date && terminalStatuses.contains($0.status)
+        }
+        applyState(
+            snapshot.state,
+            preferredTodaySessionID: nil,
+            isLiveResponse: false)
+        if terminal != nil,
+           persistedRunnerCheckpoint?.date == date || (running && date == todayString)
+        {
+            stopRunnerForStateChange()
+        } else {
+            normalizeMountedRunnerProgress(for: date)
+        }
+        return true
+    }
+
+    private func persistSetAcknowledgement(
+        _ result: APIClient.SetLogResult,
+        submittedSession: SessionRow
+    ) -> Bool {
+        guard canMutateBoundSetAccount else { return false }
+        let acknowledgedSession = Self.sessionAcknowledgedBySet(
+            result, submittedSession: submittedSession)
+        return StateSnapshotStore.mergeAcknowledgement(
+            userID: accountID,
+            fallback: currentStateResponse(),
+            defaults: defaults
+        ) { newest in
+            Self.mergingSetAcknowledgement(
+                into: newest,
+                acceptedSet: result.set,
+                acknowledgedSession: acknowledgedSession)
+        } != nil
+    }
+
+    private func persistTerminalAcknowledgement(
+        _ response: SessionRow,
+        action: WorkoutTerminalAction
+    ) -> Bool {
+        guard canMutateBoundSetAccount else { return false }
+        return StateSnapshotStore.mergeAcknowledgement(
+            userID: accountID,
+            fallback: currentStateResponse(),
+            defaults: defaults
+        ) { newest in
+            Self.mergingTerminalAcknowledgement(
+                into: newest, response: response, action: action)
+        } != nil
+    }
+
+    /// Session creation/revival is itself an attempt mutation. Merge it into
+    /// the shared snapshot before any later await or durable intent binding so
+    /// a full-state request that started before the create cannot overwrite the
+    /// new generation. Returns the newest same-attempt session from that merge.
+    private func acceptSessionResolution(_ response: SessionRow) -> SessionRow? {
+        guard canMutateBoundSetAccount,
+              let merged = StateSnapshotStore.mergeAcknowledgement(
+                userID: accountID,
+                fallback: currentStateResponse(),
+                defaults: defaults,
+                transform: { newest in
+                    Self.mergingSessionResolution(
+                        into: newest, response: response)
+                })
+        else { return nil }
+        guard let authoritative = Self.newestSession(
+            in: merged.state.sessions.filter { $0.date == response.date }),
+              authoritative.id == response.id,
+              response.attempt == nil
+                || authoritative.attempt == nil
+                || authoritative.attempt == response.attempt
+        else { return nil }
+        applyState(
+            merged.state,
+            preferredTodaySessionID: authoritative.id,
+            isLiveResponse: false)
+        return authoritative
+    }
+
+    /// Merge only the facts proved by a set response into the newest account
+    /// snapshot. Every unrelated plan/session/activity remains from that newest
+    /// baseline, which may belong to a replacement SyncModel instance.
+    private enum SessionResponseKind {
+        case set
+        case finish
+        case discard
+        case resolution
+    }
+
+    private static func responseCanReplaceSession(
+        _ current: SessionRow,
+        with response: SessionRow,
+        kind: SessionResponseKind
+    ) -> Bool {
+        // Migration 0032 assigns every legacy row generation zero. Normalize
+        // a rolling-old-Worker nil the same way before status precedence: an
+        // explicit attempt 0 is not evidence that a same-generation terminal
+        // observation may be demoted to planned.
+        let currentAttempt = current.attempt ?? 0
+        let responseAttempt = response.attempt ?? 0
+        if currentAttempt != responseAttempt {
+            return responseAttempt > currentAttempt
+        }
+
+        switch kind {
+        case .set:
+            if ["completed", "skipped", "discarded"].contains(current.status),
+               current.status != response.status
+            {
+                return false
+            }
+        case .finish:
+            if current.status == "discarded",
+               response.status != "discarded"
+            {
+                return false
+            }
+        case .discard:
+            // Within one attempt, discard is the sanctioned transition that
+            // overrides every other status. A later restart has a greater
+            // attempt and was handled above.
+            return true
+        case .resolution:
+            // Date resolution and 409 current_session observations can be
+            // captured before a later set/terminal acknowledgement reaches
+            // the shared snapshot. Within one attempt they may advance state,
+            // but never demote it merely because equal-millisecond timestamps
+            // make the stale observation look tied.
+            if ["completed", "skipped", "discarded"].contains(current.status),
+               current.status != response.status
+            {
+                return false
+            }
+            if current.status == "in_progress", response.status == "planned" {
+                return false
+            }
+        }
+
+        switch (current.updated_at, response.updated_at) {
+        case let (currentTS?, responseTS?):
+            return responseTS >= currentTS
+        case (nil, _?):
+            return true
+        case (_?, nil):
+            return false
+        case (nil, nil):
+            // Rolling old Workers cannot prove causality. Preserve a terminal
+            // observation; otherwise retain the pre-timestamp behavior.
+            return !["completed", "skipped", "discarded"].contains(
+                current.status)
+        }
+    }
+
+    private static func sessionAcknowledgedBySet(
+        _ result: APIClient.SetLogResult,
+        submittedSession: SessionRow
+    ) -> SessionRow {
+        if let session = result.session { return session }
+        // Rolling old Workers did not echo the session, but a successful set
+        // ACK has always atomically promoted planned -> in_progress. Infer only
+        // that one transition; merge precedence still protects any terminal
+        // session already observed in the newest snapshot.
+        guard submittedSession.status == "planned" else {
+            return submittedSession
+        }
+        return SessionRow(
+            id: result.set.session_id,
+            date: submittedSession.date,
+            status: "in_progress",
+            day_template_id: submittedSession.day_template_id,
+            updated_at: submittedSession.updated_at,
+            attempt: submittedSession.attempt)
+    }
+
+    private static func newestSession(
+        in rows: [SessionRow]
+    ) -> SessionRow? {
+        let terminalStatuses = Set(["completed", "skipped", "discarded"])
+        return rows.max { lhs, rhs in
+            let lhsTS = lhs.updated_at ?? Int.min
+            let rhsTS = rhs.updated_at ?? Int.min
+            if lhsTS != rhsTS { return lhsTS < rhsTS }
+            return !terminalStatuses.contains(lhs.status)
+                && terminalStatuses.contains(rhs.status)
+        }
+    }
+
+    private static func mergingSetAcknowledgement(
+        into state: StateResponse,
+        acceptedSet: SetLog,
+        acknowledgedSession: SessionRow
+    ) -> StateResponse {
+        var sessions = state.sessions
+        var sets = state.sets
+        let sameDateSessions = sessions.filter {
+            $0.date == acknowledgedSession.date
+        }
+        let current = newestSession(in: sameDateSessions)
+        let responseWins = current == nil
+            || responseCanReplaceSession(
+                current!, with: acknowledgedSession, kind: .set)
+        let source = responseWins
+            ? acknowledgedSession
+            : current ?? acknowledgedSession
+        var aliasIDs = Set(sameDateSessions.map(\.id))
+        aliasIDs.insert(acknowledgedSession.id)
+        aliasIDs.insert(acceptedSet.session_id)
+        let canonical = SessionRow(
+            id: acceptedSet.session_id,
+            date: acknowledgedSession.date,
+            status: source.status,
+            day_template_id: source.day_template_id,
+            updated_at: source.updated_at,
+            attempt: source.attempt)
+        sessions.removeAll { $0.date == acknowledgedSession.date }
+        sessions.append(canonical)
+        sets = sets.map { row in
+            aliasIDs.contains(row.session_id)
+                ? row.replacingSessionID(with: acceptedSet.session_id)
+                : row
+        }
+        let effectiveDiscard = source.status == "discarded"
+        if effectiveDiscard {
+            // A newer/canonical discarded session proves the backend
+            // tombstoned the whole workout, not only this exact retry.
+            sets.removeAll { $0.session_id == acceptedSet.session_id }
+        }
+
+        if effectiveDiscard {
+            // The session outcome owns visibility. A rolling/inconsistent live
+            // set row must never resurrect work beneath a discarded session.
+        } else if acceptedSet.deleted_at != nil {
+            // An exact old-UUID retry can settle after discard/restart. Its
+            // tombstone is authoritative for that UUID but is not live work in
+            // the newer session generation.
+            sets.removeAll { $0.id == acceptedSet.id }
+        } else if let index = sets.firstIndex(where: { $0.id == acceptedSet.id }) {
+            // A newer cached tombstone must not be resurrected by a delayed
+            // deduped ACK from an older model.
+            if sets[index].deleted_at == nil { sets[index] = acceptedSet }
+        } else {
+            sets.append(acceptedSet)
+        }
+        return StateResponse(
+            plan: state.plan,
+            plan_version: state.plan_version,
+            sessions: sessions,
+            sets: sets,
+            external_events: state.external_events,
+            external_activities: state.external_activities,
+            activities: state.activities,
+            server_time: state.server_time)
+    }
+
+    private static func mergingTerminalAcknowledgement(
+        into state: StateResponse,
+        response: SessionRow,
+        action: WorkoutTerminalAction
+    ) -> StateResponse {
+        var sessions = state.sessions
+        var sets = state.sets
+        let sameDateSessions = sessions.filter { $0.date == response.date }
+        if let current = newestSession(in: sameDateSessions),
+           !responseCanReplaceSession(
+               current,
+               with: response,
+               kind: action == .discard ? .discard : .finish)
+        {
+            return state
+        }
+        let sameDateSessionIDs = Set(
+            sameDateSessions.map(\.id))
+            .union([response.id])
+        sessions.removeAll { $0.date == response.date }
+        sessions.append(response)
+        if action == .discard {
+            sets.removeAll { sameDateSessionIDs.contains($0.session_id) }
+        } else {
+            sets = sets.map { row in
+                sameDateSessionIDs.contains(row.session_id)
+                    ? row.replacingSessionID(with: response.id)
+                    : row
+            }
+        }
+        return StateResponse(
+            plan: state.plan,
+            plan_version: state.plan_version,
+            sessions: sessions,
+            sets: sets,
+            external_events: state.external_events,
+            external_activities: state.external_activities,
+            activities: state.activities,
+            server_time: state.server_time)
+    }
+
+    /// Merge a date-level create/revive response without allowing its
+    /// necessarily pre-write `planned` view to regress a same-attempt set or
+    /// terminal acknowledgement. A greater attempt starts a clean generation;
+    /// a lower attempt is stale; the same attempt preserves the newest status.
+    private static func mergingSessionResolution(
+        into state: StateResponse,
+        response: SessionRow
+    ) -> StateResponse {
+        var sessions = state.sessions
+        var sets = state.sets
+        let sameDate = sessions.filter { $0.date == response.date }
+        let current = newestSession(in: sameDate)
+        if let currentAttempt = current?.attempt,
+           let responseAttempt = response.attempt,
+           responseAttempt < currentAttempt
+        {
+            return state
+        }
+        let advancesAttempt: Bool
+        if let currentAttempt = current?.attempt,
+           let responseAttempt = response.attempt
+        {
+            advancesAttempt = responseAttempt > currentAttempt
+        } else {
+            // Migration 0032 assigns every pre-attempt row generation zero.
+            // A cached rolling-old-Worker row therefore means attempt 0, not
+            // "unknown generation": an ordinary new-Worker create response at
+            // attempt 0 must retain its already-acknowledged sets. Only a
+            // positive response attempt proves an actual restart advance.
+            advancesAttempt = current != nil && (response.attempt ?? 0) > 0
+        }
+        let responseWins = current == nil
+            || responseCanReplaceSession(
+                current!, with: response, kind: .resolution)
+        let source = advancesAttempt || responseWins ? response : current!
+        let canonical = SessionRow(
+            id: response.id,
+            date: response.date,
+            status: source.status,
+            day_template_id: source.day_template_id ?? response.day_template_id,
+            updated_at: source.updated_at,
+            attempt: source.attempt ?? response.attempt)
+        let aliases = Set(sameDate.map(\.id)).union([response.id])
+        sessions.removeAll { $0.date == response.date }
+        sessions.append(canonical)
+        if advancesAttempt {
+            sets.removeAll { aliases.contains($0.session_id) }
+        } else {
+            sets = sets.map { row in
+                aliases.contains(row.session_id)
+                    ? row.replacingSessionID(with: response.id)
+                    : row
+            }
+            if canonical.status == "discarded" {
+                sets.removeAll { $0.session_id == response.id }
+            }
+        }
+        return StateResponse(
+            plan: state.plan,
+            plan_version: state.plan_version,
+            sessions: sessions,
+            sets: sets,
+            external_events: state.external_events,
+            external_activities: state.external_activities,
+            activities: state.activities,
+            server_time: state.server_time)
+    }
+
+    /// Apply a terminal response to the mounted model using the same alias and
+    /// date-scoped rules as snapshot persistence. This keeps the immediate
+    /// completion recap correct even when a stale migration id resolves to the
+    /// canonical session and no follow-up state pull succeeds.
+    @discardableResult
+    private func applyTerminalAcknowledgementLocally(
+        _ response: SessionRow,
+        action: WorkoutTerminalAction
+    ) -> Bool {
+        if let current = Self.newestSession(
+            in: sessions.filter { $0.date == response.date }),
+           !Self.responseCanReplaceSession(
+               current,
+               with: response,
+               kind: action == .discard ? .discard : .finish)
+        {
+            return false
+        }
+        let sameDateSessionIDs = Set(
+            sessions.lazy.filter { $0.date == response.date }.map(\.id))
+            .union([response.id])
+        sessions.removeAll { $0.date == response.date }
+        sessions.append(response)
+        if action == .discard {
+            sets.removeAll { sameDateSessionIDs.contains($0.session_id) }
+        } else {
+            sets = sets.map { row in
+                sameDateSessionIDs.contains(row.session_id)
+                    ? row.replacingSessionID(with: response.id)
+                    : row
+            }
+        }
+        if response.date == todayString { todaySession = response }
+        return true
     }
 
     /// Full state is an independent acknowledgement path for commit-then-
@@ -206,7 +783,8 @@ final class SyncModel: ObservableObject {
     /// discard and stays masked.
     private func reconcileTerminalOutbox(with serverSessions: [SessionRow]) {
         guard canMutateBoundSetAccount else { return }
-        for var intent in terminalOutbox.intents {
+        for var intent in terminalOutbox.intents
+        where ownedTerminalIntentIDs.contains(intent.id) {
             let row = intent.resolvedSessionID.flatMap { id in
                 serverSessions.first { $0.id == id }
             } ?? serverSessions.first { $0.date == intent.date }
@@ -217,24 +795,57 @@ final class SyncModel: ObservableObject {
                 persistRemovedTerminalIntent(id: intent.id)
                 if intent.date == todayString { stopRunnerAfterTerminalAck() }
             case .discard:
-                if row?.status == "discarded" {
-                    guard intent.deliveryState != .acknowledged else { continue }
-                    intent.deliveryState = .acknowledged
-                    intent.failedHTTPStatus = nil
-                    intent.resolvedSessionID = row?.id ?? intent.resolvedSessionID
-                    terminalOutbox.replace(intent)
-                    persistReplacedTerminalIntent(intent)
+                if let row, row.status == "discarded" {
+                    // The server outcome is authoritative even when another
+                    // device discarded a later generation before this queued
+                    // intent sent. Rebind the barrier to that exact attempt so
+                    // the next explicit restart can advance it once.
+                    terminalOutbox.acknowledgeDiscard(
+                        id: intent.id,
+                        resolvedSessionID: row.id,
+                        expectedAttempt: row.attempt)
+                    WorkoutTerminalOutboxStore.acknowledgeDiscard(
+                        id: intent.id,
+                        resolvedSessionID: row.id,
+                        expectedAttempt: row.attempt,
+                        userID: accountID,
+                        defaults: defaults)
                 } else if intent.deliveryState == .acknowledged, row != nil {
-                    // A stale pre-discard create reached the server after the
-                    // acknowledgement. Keep it invisible and reassert the
-                    // existing idempotent discard endpoint on this lifecycle.
-                    guard let revivedSessionID = row?.id else { continue }
+                    guard let revivedSession = row else { continue }
+                    // A greater attempt is an explicit restart boundary. The
+                    // old device's acknowledged barrier must not mask or
+                    // discard a new workout created on another device.
+                    if let revivedAttempt = revivedSession.attempt {
+                        // Every pre-0032 barrier necessarily belongs to the
+                        // migration-default attempt 0. A greater live attempt
+                        // is therefore definitive restart evidence even when
+                        // the decoded legacy intent has no stored token.
+                        let barrierAttempt = intent.expectedAttempt ?? 0
+                        if revivedAttempt > barrierAttempt {
+                            terminalOutbox.clearAcknowledgedDiscard(
+                                date: intent.date)
+                            WorkoutTerminalOutboxStore.clearAcknowledgedDiscard(
+                                date: intent.date,
+                                userID: accountID,
+                                defaults: defaults)
+                            ownedTerminalIntentIDs.remove(intent.id)
+                            continue
+                        }
+                        // A lower generation is stale evidence; retain the
+                        // mask but do not send a mutation that will conflict.
+                        if revivedAttempt < barrierAttempt { continue }
+                    }
+                    // Same-attempt (or rolling-version unknown) revival can
+                    // only be a late pre-discard mutation. Reassert discard.
+                    let revivedSessionID = revivedSession.id
                     terminalOutbox.requeueAcknowledgedDiscard(
                         date: intent.date,
-                        resolvedSessionID: revivedSessionID)
+                        resolvedSessionID: revivedSessionID,
+                        expectedAttempt: revivedSession.attempt)
                     WorkoutTerminalOutboxStore.requeueAcknowledgedDiscard(
                         date: intent.date,
                         resolvedSessionID: revivedSessionID,
+                        expectedAttempt: revivedSession.attempt,
                         userID: accountID,
                         defaults: defaults)
                 }
@@ -267,7 +878,277 @@ final class SyncModel: ObservableObject {
         timedEndDate = nil
         timedStartDate = nil
         skipped = []
+        clearRunnerCheckpoint()
         skipRest()
+    }
+
+    private func validatePersistedRunnerCheckpoint() {
+        guard var checkpoint = persistedRunnerCheckpoint else {
+            resumableCheckpoint = nil
+            return
+        }
+        // The mounted runner already owns this checkpoint and must not expose
+        // a second resume CTA. A live pull still owns terminal precedence:
+        // once a bound server session is no longer planned/in progress, the
+        // local runner cannot keep accepting sets into that completed,
+        // skipped, or discarded attempt. A nil session id is the intentional
+        // pre-first-write state (including an explicit restart after discard),
+        // so there is no server attempt to validate yet.
+        guard !running else {
+            resumableCheckpoint = nil
+            let serverSession = checkpoint.sessionID.flatMap { boundSessionID in
+                sessions.first {
+                    $0.id == boundSessionID
+                }
+            } ?? sessions.first { $0.date == checkpoint.date }
+            if let serverSession {
+                if let checkpointAttempt = checkpoint.sessionAttempt,
+                   let serverAttempt = serverSession.attempt,
+                   checkpointAttempt != serverAttempt
+                {
+                    stopRunnerForStateChange()
+                    return
+                }
+                // A nil-bound runner plus a discarded row is the accepted
+                // explicit-restart boundary: the new local attempt has not
+                // written its first set yet, so the old discarded row remains
+                // visible until date-level create revives it. Every other
+                // terminal row wins immediately, including one created and
+                // completed remotely after this runner started.
+                if checkpoint.sessionID == nil,
+                   serverSession.status == "discarded"
+                {
+                    if checkpoint.restartDiscardedAttempt != nil,
+                       checkpoint.restartDiscardedAttempt
+                        == serverSession.attempt
+                    {
+                        persistRunnerCheckpoint()
+                        return
+                    }
+                    stopRunnerForStateChange()
+                    return
+                }
+                guard serverSession.status == "planned"
+                        || serverSession.status == "in_progress"
+                else {
+                    stopRunnerForStateChange()
+                    return
+                }
+            }
+            persistRunnerCheckpoint()
+            return
+        }
+        let checkpointSession = checkpoint.sessionID.flatMap { sessionID in
+            sessions.first { $0.id == sessionID }
+        } ?? sessions.first { $0.date == checkpoint.date }
+        if let checkpointAttempt = checkpoint.sessionAttempt,
+           let serverAttempt = checkpointSession?.attempt,
+           checkpointAttempt != serverAttempt
+        {
+            clearRunnerCheckpoint()
+            return
+        }
+        let hasPendingFirstSet = setOutbox.pending.contains {
+            $0.date == checkpoint.date
+        }
+        // A successfully-created session remains `planned` until its first set
+        // lands. If that second request is still durable, preserve (and bind)
+        // the runner checkpoint rather than mistaking `planned` for a remote
+        // cancellation. It becomes resumable only after a later live pull sees
+        // `in_progress`; until then the pending intent blocks alternate starts.
+        if checkpoint.date == todayString,
+           terminalOutbox.intent(for: checkpoint.date) == nil,
+           (checkpointSession == nil
+                || checkpointSession?.status == "planned"
+                || (checkpoint.sessionID == nil
+                    && checkpoint.restartDiscardedAttempt != nil
+                    && checkpoint.restartDiscardedAttempt
+                        == checkpointSession?.attempt
+                    && checkpointSession?.status == "discarded")),
+           hasPendingFirstSet
+        {
+            if let checkpointSession,
+               checkpointSession.status != "discarded"
+            {
+                bindRunnerCheckpoint(to: checkpointSession)
+            }
+            resumableCheckpoint = nil
+            return
+        }
+        guard checkpoint.date == todayString,
+              terminalOutbox.intent(for: checkpoint.date) == nil,
+              let serverSession = checkpointSession,
+              serverSession.status == "in_progress",
+              let day = plan?.days.first(where: {
+                  $0.id == checkpoint.selectedDayID
+              }),
+              !day.exercises.isEmpty,
+              checkpoint.workoutStartedAtMS > 0,
+              let currentSlotID = checkpoint.currentSlotID,
+              let currentIndex = day.exercises.firstIndex(where: {
+                  $0.id == currentSlotID
+              })
+        else {
+            clearRunnerCheckpoint()
+            return
+        }
+
+        let liveSlotIDs = Set(day.exercises.map(\.id))
+        let normalizedSkipped = checkpoint.skippedSlotIDs
+            .filter { liveSlotIDs.contains($0) }
+            .sorted()
+        let skippedIDs = Set(normalizedSkipped)
+        let unresolvedIndices = Set(day.exercises.indices.filter { index in
+            let slot = day.exercises[index]
+            return !skippedIDs.contains(slot.id)
+                && slotSets(
+                    slot,
+                    sessionID: serverSession.id,
+                    dayExercises: day.exercises
+                ).count < slot.target_sets
+        })
+        let normalizedFinished = unresolvedIndices.isEmpty
+        let normalizedCurrentSlotID: String
+        if normalizedFinished || unresolvedIndices.contains(currentIndex) {
+            normalizedCurrentSlotID = currentSlotID
+        } else {
+            // Mirror the mounted runner's wrapped next-unresolved rule. This
+            // advances a checkpoint left behind while its set request awaited
+            // the network and lands an all-resolved workout on FinishedView.
+            let nextIndex = (1...day.exercises.count)
+                .map { (currentIndex + $0) % day.exercises.count }
+                .first(where: unresolvedIndices.contains)!
+            normalizedCurrentSlotID = day.exercises[nextIndex].id
+        }
+        let normalized = WorkoutRunnerCheckpoint(
+            date: checkpoint.date,
+            sessionID: serverSession.id,
+            selectedDayID: checkpoint.selectedDayID,
+            currentSlotID: normalizedCurrentSlotID,
+            skippedSlotIDs: normalizedSkipped,
+            workoutStartedAtMS: checkpoint.workoutStartedAtMS,
+            finished: normalizedFinished,
+            sessionAttempt: serverSession.attempt ?? checkpoint.sessionAttempt,
+            restartDiscardedAttempt: nil)
+        if normalized != checkpoint {
+            guard replaceRunnerCheckpoint(
+                normalized, ifCurrent: checkpoint)
+            else {
+                relinquishStaleRunnerCheckpoint()
+                return
+            }
+        }
+        persistedRunnerCheckpoint = normalized
+        runnerRestartDiscardedAttempt = nil
+        // A recovered explicit override can legitimately differ from the
+        // server session's immutable day pin. Align Today and its Resume CTA to
+        // the validated checkpoint before mounting the runner.
+        selectedDayID = normalized.selectedDayID
+        resumableCheckpoint = normalized
+    }
+
+    private func persistRunnerCheckpoint() {
+        guard canMutateBoundSetAccount,
+              running,
+              let selectedDayID,
+              let workoutStart,
+              let currentSlotID = activeRunnerSlotID()
+        else { return }
+        let checkpoint = WorkoutRunnerCheckpoint(
+            date: todaySession?.date ?? todayString,
+            sessionID: todaySession?.id,
+            selectedDayID: selectedDayID,
+            currentSlotID: currentSlotID,
+            skippedSlotIDs: skipped.sorted(),
+            workoutStartedAtMS: Int(
+                (workoutStart.timeIntervalSince1970 * 1_000).rounded(.down)),
+            finished: finished,
+            sessionAttempt: todaySession?.attempt,
+            restartDiscardedAttempt: runnerRestartDiscardedAttempt)
+        let expected = persistedRunnerCheckpoint
+        guard replaceRunnerCheckpoint(checkpoint, ifCurrent: expected) else {
+            relinquishStaleRunnerCheckpoint()
+            return
+        }
+        persistedRunnerCheckpoint = checkpoint
+        resumableCheckpoint = nil
+    }
+
+    /// Session creation and the first set write are separate requests. Bind the
+    /// durable runner checkpoint as soon as creation succeeds so a transient
+    /// first-set failure cannot strand a nil-session checkpoint on relaunch.
+    private func bindRunnerCheckpoint(to session: SessionRow) {
+        guard canMutateBoundSetAccount,
+              let checkpoint = persistedRunnerCheckpoint,
+              checkpoint.date == session.date,
+              checkpoint.sessionID != session.id
+                || (checkpoint.sessionAttempt == nil && session.attempt != nil),
+              checkpoint.sessionAttempt == nil
+                || session.attempt == nil
+                || checkpoint.sessionAttempt == session.attempt
+        else { return }
+        let bound = WorkoutRunnerCheckpoint(
+            date: checkpoint.date,
+            sessionID: session.id,
+            selectedDayID: checkpoint.selectedDayID,
+            currentSlotID: checkpoint.currentSlotID,
+            skippedSlotIDs: checkpoint.skippedSlotIDs,
+            workoutStartedAtMS: checkpoint.workoutStartedAtMS,
+            finished: checkpoint.finished,
+            sessionAttempt: session.attempt ?? checkpoint.sessionAttempt,
+            restartDiscardedAttempt: nil)
+        guard replaceRunnerCheckpoint(bound, ifCurrent: checkpoint) else {
+            relinquishStaleRunnerCheckpoint()
+            return
+        }
+        persistedRunnerCheckpoint = bound
+        runnerRestartDiscardedAttempt = nil
+        resumableCheckpoint = nil
+    }
+
+    @discardableResult
+    private func clearRunnerCheckpoint() -> Bool {
+        let expected = persistedRunnerCheckpoint
+        persistedRunnerCheckpoint = nil
+        runnerRestartDiscardedAttempt = nil
+        resumableCheckpoint = nil
+        return WorkoutRunnerCheckpointStore.clear(
+            ifCurrent: expected,
+            userID: accountID,
+            defaults: defaults)
+    }
+
+    private func replaceRunnerCheckpoint(
+        _ checkpoint: WorkoutRunnerCheckpoint,
+        ifCurrent expected: WorkoutRunnerCheckpoint?
+    ) -> Bool {
+        if WorkoutRunnerCheckpointStore.replace(
+            checkpoint,
+            ifCurrent: expected,
+            userID: accountID,
+            defaults: defaults)
+        {
+            return true
+        }
+        // Two models can independently normalize to an identical checkpoint;
+        // accepting that exact stored value is equivalent to a successful CAS.
+        return WorkoutRunnerCheckpointStore.load(
+            userID: accountID, defaults: defaults) == checkpoint
+    }
+
+    /// Stop only this stale model. Do not clear the durable checkpoint or rest
+    /// cues: a newer same-account model owns them now.
+    private func relinquishStaleRunnerCheckpoint() {
+        persistedRunnerCheckpoint = nil
+        resumableCheckpoint = nil
+        running = false
+        finished = false
+        workoutStart = nil
+        timedActive = false
+        timedEndDate = nil
+        timedStartDate = nil
+        skipped = []
+        loadError = "This workout continued in another app view. Refresh to continue."
     }
 
     /// The runner's current physical slot without `selectedDay`'s first-day
@@ -332,6 +1213,7 @@ final class SyncModel: ObservableObject {
         timedEndDate = nil
         timedStartDate = nil
         skipped = []
+        clearRunnerCheckpoint()
         skipRest()
     }
 
@@ -354,7 +1236,9 @@ final class SyncModel: ObservableObject {
             id: committedSet.session_id,
             date: staleSession.date,
             status: staleSession.status,
-            day_template_id: staleSession.day_template_id)
+            day_template_id: staleSession.day_template_id,
+            updated_at: staleSession.updated_at,
+            attempt: staleSession.attempt)
 
         sessions.removeAll { $0.date == staleSession.date }
         sessions.append(canonicalSession)
@@ -363,7 +1247,9 @@ final class SyncModel: ObservableObject {
                 ? row.replacingSessionID(with: committedSet.session_id)
                 : row
         }
-        if let i = sets.firstIndex(where: { $0.id == committedSet.id }) {
+        if committedSet.deleted_at != nil {
+            sets.removeAll { $0.id == committedSet.id }
+        } else if let i = sets.firstIndex(where: { $0.id == committedSet.id }) {
             sets[i] = committedSet
         } else {
             sets.append(committedSet)
@@ -414,6 +1300,17 @@ final class SyncModel: ObservableObject {
     /// exercise_id + warm-up parity so they still count toward the right slot.
     func todaySlotSets(_ ex: TemplateExercise) -> [SetLog] {
         guard let sid = todaySession?.id else { return [] }
+        return slotSets(ex, sessionID: sid, dayExercises: exercises)
+    }
+
+    /// Slot attribution with explicit session/day inputs. Recovery uses the
+    /// checkpoint's override day before `selectedDayID` is realigned, while the
+    /// mounted runner delegates through `todaySlotSets` above.
+    private func slotSets(
+        _ ex: TemplateExercise,
+        sessionID: String,
+        dayExercises: [TemplateExercise]
+    ) -> [SetLog] {
         let warm = ex.isWarmup ? 1 : 0
         // Sets carrying a template_exercise_id attribute to that slot exactly.
         // The exercise_id + warm-up *fallback* (for slot-less sets — MCP-,
@@ -430,11 +1327,11 @@ final class SyncModel: ObservableObject {
         // instead wrongly dropped legacy iOS sets that never had a slot id. The
         // iOS logger always sends a slot id now, so this only affects that
         // specific delete-then-re-add edit path.
-        let unique = exercises.filter {
+        let unique = dayExercises.filter {
             $0.exercise_id == ex.exercise_id && ($0.isWarmup ? 1 : 0) == warm
         }.count == 1
         return sets.filter { s in
-            guard s.session_id == sid, s.deleted_at == nil else { return false }
+            guard s.session_id == sessionID, s.deleted_at == nil else { return false }
             // Slot-linked set: attribute to this slot ONLY when the movement AND
             // the warm-up class also match. The slot id alone is not trusted — a
             // stale/swapped link (slot since changed to a different exercise) or
@@ -616,6 +1513,50 @@ final class SyncModel: ObservableObject {
         }.map(\.date))
     }
 
+    /// UserDefaults is the same-account coordination boundary across multiple
+    /// SyncModel instances. In-memory queues are presentation mirrors only;
+    /// always adopt the granular durable stores before reconciliation or a
+    /// network write so an older model cannot replay work a newer model
+    /// cleared during discard/restart.
+    private func adoptDurableWorkoutWriteOutboxes() {
+        guard canMutateBoundSetAccount else { return }
+        terminalOutbox = WorkoutTerminalOutboxStore.load(
+            userID: accountID, defaults: defaults)
+        setOutbox = SetOutboxStore.load(
+            userID: accountID, defaults: defaults)
+        ownedTerminalIntentIDs.formIntersection(
+            terminalOutbox.intents.map(\.id))
+        ownedSetIntentIDs.formIntersection(setOutbox.pending.map(\.id))
+    }
+
+    private func durableTerminalIntent(
+        matching expected: WorkoutTerminalIntent
+    ) -> WorkoutTerminalIntent? {
+        guard canMutateBoundSetAccount,
+              ownedTerminalIntentIDs.contains(expected.id)
+        else { return nil }
+        adoptDurableWorkoutWriteOutboxes()
+        guard let current = terminalOutbox.intent(for: expected.date),
+              current.id == expected.id
+        else { return nil }
+        return current
+    }
+
+    private func durableSetIntent(
+        matching expected: PendingSetIntent
+    ) -> PendingSetIntent? {
+        guard canMutateBoundSetAccount,
+              ownedSetIntentIDs.contains(expected.id)
+        else { return nil }
+        adoptDurableWorkoutWriteOutboxes()
+        guard terminalOutbox.intent(for: expected.date)?.action != .discard,
+              let current = setOutbox.pending.first(where: {
+                  $0.id == expected.id
+              })
+        else { return nil }
+        return current
+    }
+
     func pendingSetIntents(for ex: TemplateExercise) -> [PendingSetIntent] {
         let date = todaySession?.date ?? todayString
         return setOutbox.pending.filter {
@@ -644,6 +1585,7 @@ final class SyncModel: ObservableObject {
         guard canMutateBoundSetAccount else { return }
         SetOutboxStore.enqueue(
             intent, userID: accountID, defaults: defaults)
+        ownedSetIntentIDs.insert(intent.id)
     }
 
     private func persistReplacedSetIntent(_ intent: PendingSetIntent) {
@@ -656,12 +1598,18 @@ final class SyncModel: ObservableObject {
         guard canMutateBoundSetAccount else { return }
         SetOutboxStore.remove(
             ids: ids, userID: accountID, defaults: defaults)
+        ownedSetIntentIDs.subtract(ids)
     }
 
     private func persistEnqueuedTerminalIntent(_ intent: WorkoutTerminalIntent) {
         guard canMutateBoundSetAccount else { return }
         WorkoutTerminalOutboxStore.enqueue(
             intent, userID: accountID, defaults: defaults)
+        if WorkoutTerminalOutboxStore.load(
+            userID: accountID, defaults: defaults
+        ).intent(for: intent.date)?.id == intent.id {
+            ownedTerminalIntentIDs.insert(intent.id)
+        }
     }
 
     private func persistReplacedTerminalIntent(_ intent: WorkoutTerminalIntent) {
@@ -674,6 +1622,7 @@ final class SyncModel: ObservableObject {
         guard canMutateBoundSetAccount else { return }
         WorkoutTerminalOutboxStore.remove(
             id: id, userID: accountID, defaults: defaults)
+        ownedTerminalIntentIDs.remove(id)
     }
 
     /// A full state pull is also authoritative acknowledgement of an exact
@@ -686,8 +1635,14 @@ final class SyncModel: ObservableObject {
         let acknowledgedPendingIDs = Set(
             setOutbox.pending.lazy.map(\.id).filter(serverIDs.contains))
         guard !acknowledgedPendingIDs.isEmpty else { return }
+        let acknowledgedDates = Set(setOutbox.pending.lazy.filter {
+            acknowledgedPendingIDs.contains($0.id)
+        }.map(\.date))
         for id in acknowledgedPendingIDs { setOutbox.remove(id: id) }
         persistRemovedSetIntentIDs(acknowledgedPendingIDs)
+        for date in acknowledgedDates {
+            normalizeMountedRunnerProgress(for: date)
+        }
     }
 
     /// Explicitly re-arm one permanent 4xx failure. The request body remains
@@ -754,7 +1709,9 @@ final class SyncModel: ObservableObject {
             dayTemplateID: selectedDay?.id,
             resolvedSessionID: todaySession?.id,
             deliveryState: .queued,
-            failedHTTPStatus: nil)
+            failedHTTPStatus: nil,
+            expectedAttempt: todaySession?.attempt,
+            restartDiscardedAttempt: runnerRestartDiscardedAttempt)
 
         // No network await may occur above this save. A failed/lost session
         // create therefore leaves the complete intent available on relaunch.
@@ -775,6 +1732,9 @@ final class SyncModel: ObservableObject {
         case acknowledged(setID: String, canonicalSessionID: String, date: String)
         case permanentFailure
         case transientFailure(attemptedJWT: String, wasUnauthorized: Bool)
+        /// Another same-account model removed or superseded this exact intent.
+        /// The current drain should adopt the durable queue and continue.
+        case superseded
         case staleAccount
     }
 
@@ -837,11 +1797,15 @@ final class SyncModel: ObservableObject {
     }
 
     private var hasImmediatelyDeliverableWorkoutWrite: Bool {
-        if setOutbox.pending.contains(where: { $0.deliveryState == .queued }) {
+        if setOutbox.pending.contains(where: {
+            $0.deliveryState == .queued && ownedSetIntentIDs.contains($0.id)
+        }) {
             return true
         }
         return terminalOutbox.intents.contains { intent in
-            guard intent.deliveryState == .queued else { return false }
+            guard ownedTerminalIntentIDs.contains(intent.id),
+                  intent.deliveryState == .queued
+            else { return false }
             if intent.action == .discard { return true }
             return !setOutbox.pending.contains { $0.date == intent.date }
         }
@@ -852,6 +1816,9 @@ final class SyncModel: ObservableObject {
     /// between saving the terminal barrier and pruning the older set key.
     private func supersedeSetIntentsForDiscardBarriers() {
         guard canMutateBoundSetAccount else { return }
+        // Never let a stale in-memory acknowledged discard erase sets from an
+        // explicit restart performed by a replacement model.
+        adoptDurableWorkoutWriteOutboxes()
         for date in discardBarrierDates {
             guard setOutbox.pending.contains(where: { $0.date == date }) else {
                 continue
@@ -860,6 +1827,8 @@ final class SyncModel: ObservableObject {
             SetOutboxStore.remove(
                 date: date, userID: accountID, defaults: defaults)
         }
+        setOutbox = SetOutboxStore.load(
+            userID: accountID, defaults: defaults)
         applyLocalDiscardMask()
     }
 
@@ -869,7 +1838,9 @@ final class SyncModel: ObservableObject {
     private func performWorkoutWriteDrain() async -> Bool {
         supersedeSetIntentsForDiscardBarriers()
         if let discard = terminalOutbox.intents.first(where: {
-            $0.action == .discard && $0.deliveryState == .queued
+            ownedTerminalIntentIDs.contains($0.id)
+                && $0.action == .discard
+                && $0.deliveryState == .queued
         }) {
             return await sendPersistedTerminalIntent(discard)
         }
@@ -879,7 +1850,9 @@ final class SyncModel: ObservableObject {
         supersedeSetIntentsForDiscardBarriers()
 
         guard let terminal = terminalOutbox.intents.first(where: { intent in
-            guard intent.deliveryState == .queued else { return false }
+            guard ownedTerminalIntentIDs.contains(intent.id),
+                  intent.deliveryState == .queued
+            else { return false }
             if intent.action == .discard { return true }
             return !setOutbox.pending.contains { $0.date == intent.date }
         }) else { return false }
@@ -897,7 +1870,8 @@ final class SyncModel: ObservableObject {
 
         while canMutateBoundSetAccount,
               let intent = setOutbox.pending.first(where: {
-                  $0.deliveryState == .queued
+                  ownedSetIntentIDs.contains($0.id)
+                      && $0.deliveryState == .queued
               }) {
             supersedeSetIntentsForDiscardBarriers()
             guard setOutbox.pending.contains(where: { $0.id == intent.id }) else {
@@ -912,6 +1886,11 @@ final class SyncModel: ObservableObject {
             case .permanentFailure:
                 // Keep the failed row visible and continue with later FIFO
                 // entries; retrying it later still reuses its exact body.
+                continue
+            case .superseded:
+                // `sendPersistedSetIntent` already adopted the replacement
+                // account queue. It may contain other immediately deliverable
+                // work, so continue rather than treating this as sign-out.
                 continue
             case let .transientFailure(attemptedJWT, wasUnauthorized):
                 // A stale-token 401 can race same-account renewal. If renewal
@@ -938,20 +1917,38 @@ final class SyncModel: ObservableObject {
               canMutateBoundSetAccount,
               let jwt = currentJWT
         else { return stoppedForRetryableFailure }
+        guard let snapshotTicket = StateSnapshotStore.reserveFullStateRequest(
+            userID: accountID, defaults: defaults)
+        else {
+            loadError = "Couldn't reserve local reconciliation state."
+            return true
+        }
         do {
             let state = try await setWriteAPI.getState(jwt: jwt)
             guard canMutateBoundSetAccount else { return true }
+            guard StateSnapshotStore.isCurrent(
+                snapshotTicket, defaults: defaults)
+            else {
+                return stoppedForRetryableFailure
+            }
             let returnedIDs = Set(state.sets.map(\.id))
             guard acknowledgedIDs.allSatisfy(returnedIDs.contains) else {
                 throw APIError.decoding(
                     "Acknowledged set was missing from the reconciliation state")
             }
-            replaceState(
-                with: state,
-                preferredTodaySessionID: preferredSessionID)
+            guard applyLiveStateResponse(
+                state,
+                ticket: snapshotTicket,
+                preferredTodaySessionID: preferredSessionID
+            ) else { return stoppedForRetryableFailure }
             loadError = nil
         } catch {
             guard canMutateBoundSetAccount else { return true }
+            guard StateSnapshotStore.isCurrent(
+                snapshotTicket, defaults: defaults)
+            else {
+                return stoppedForRetryableFailure
+            }
             // The acknowledgement itself remains authoritative and is already
             // reflected locally. A later full sync will reconcile the cache.
             handle(error, jwt: jwt)
@@ -964,20 +1961,24 @@ final class SyncModel: ObservableObject {
     private func sendPersistedTerminalIntent(
         _ original: WorkoutTerminalIntent
     ) async -> Bool {
-        guard canMutateBoundSetAccount, currentJWT != nil,
-              terminalOutbox.intent(for: original.date)?.id == original.id
-        else { return true }
+        guard canMutateBoundSetAccount, currentJWT != nil else { return true }
+        guard var intent = durableTerminalIntent(matching: original) else {
+            // The account remains valid, but a newer model owns (or cleared)
+            // this date. The durable adoption above is the authoritative local
+            // state; there is nothing for this stale sender to retry.
+            _ = adoptLatestAcknowledgedSnapshot(for: original.date)
+            return false
+        }
 
-        sendingTerminalIntentID = original.id
+        sendingTerminalIntentID = intent.id
         isTerminalMutationInFlight = true
         defer {
-            if sendingTerminalIntentID == original.id {
+            if sendingTerminalIntentID == intent.id {
                 sendingTerminalIntentID = nil
             }
             isTerminalMutationInFlight = sendingTerminalIntentID != nil
         }
 
-        var intent = original
         if intent.resolvedSessionID == nil {
             guard let jwt = currentJWT else { return true }
             let session: SessionRow
@@ -985,6 +1986,8 @@ final class SyncModel: ObservableObject {
                 session = try await setWriteAPI.createSession(
                     date: intent.date,
                     dayTemplateID: intent.dayTemplateID,
+                    expectedAttempt: intent.expectedAttempt ?? 0,
+                    restartDiscardedAttempt: intent.restartDiscardedAttempt,
                     jwt: jwt)
             } catch {
                 // Match set recovery: update_plan can invalidate the optional
@@ -1000,16 +2003,20 @@ final class SyncModel: ObservableObject {
                 }
                 do {
                     session = try await setWriteAPI.createSession(
-                        date: intent.date, dayTemplateID: nil, jwt: fallbackJWT)
+                        date: intent.date,
+                        dayTemplateID: nil,
+                        expectedAttempt: intent.expectedAttempt ?? 0,
+                        restartDiscardedAttempt: intent.restartDiscardedAttempt,
+                        jwt: fallbackJWT)
                 } catch {
                     return classifyTerminalIntentFailure(
                         original, error: error, attemptedJWT: fallbackJWT)
                 }
             }
 
-            guard canMutateBoundSetAccount,
-                  terminalOutbox.intent(for: intent.date)?.id == intent.id
-            else { return false }
+            guard durableTerminalIntent(matching: intent) != nil else {
+                return false
+            }
             guard session.date == intent.date else {
                 return classifyTerminalIntentFailure(
                     intent,
@@ -1017,15 +2024,60 @@ final class SyncModel: ObservableObject {
                         "Session resolution did not match the terminal date"),
                     attemptedJWT: jwt)
             }
-            intent.resolvedSessionID = session.id
+            let createdAttempt = intent.restartDiscardedAttempt.map { $0 + 1 }
+                ?? intent.expectedAttempt
+                ?? 0
+            guard session.attempt == nil || session.attempt == createdAttempt else {
+                return classifyTerminalIntentFailure(
+                    intent,
+                    error: APIError.decoding(
+                        "Session resolution crossed workout attempts"),
+                    attemptedJWT: jwt)
+            }
+            guard let resolvedSession = acceptSessionResolution(session) else {
+                return classifyTerminalIntentFailure(
+                    intent,
+                    error: APIError.decoding(
+                        "Session resolution was superseded locally"),
+                    attemptedJWT: jwt)
+            }
+            // Bind the runner before persisting the outbox resolution. A kill
+            // before this point leaves the intent safely unresolved and the
+            // create retry idempotent; after it, both durable records name the
+            // same generation.
+            bindRunnerCheckpoint(to: resolvedSession)
+            intent.resolvedSessionID = resolvedSession.id
+            intent.expectedAttempt = resolvedSession.attempt ?? createdAttempt
             terminalOutbox.replace(intent)
             persistReplacedTerminalIntent(intent)
-            upsertSessionAfterCreate(session)
+            guard let durable = durableTerminalIntent(matching: intent) else {
+                return false
+            }
+            intent = durable
         }
 
-        guard let sessionID = intent.resolvedSessionID,
+        // Session creation is an await too. Revalidate the exact account
+        // intent immediately before the destructive/completing request; a
+        // newer model may have discarded, restarted, or cleared it meanwhile.
+        guard let durable = durableTerminalIntent(matching: intent) else {
+            return false
+        }
+        guard let sessionID = durable.resolvedSessionID,
               let jwt = currentJWT
         else { return true }
+        intent = durable
+        if intent.expectedAttempt == nil {
+            // Migration 0032 gives every preexisting session and durable
+            // intent generation zero. Never retarget a decoded legacy intent
+            // to the currently observed generation.
+            intent.expectedAttempt = 0
+            terminalOutbox.replace(intent)
+            persistReplacedTerminalIntent(intent)
+            guard let rebound = durableTerminalIntent(matching: intent) else {
+                return false
+            }
+            intent = rebound
+        }
         do {
             let response: SessionRow
             switch intent.action {
@@ -1036,13 +2088,33 @@ final class SyncModel: ObservableObject {
                     $0.date == intent.date
                 }) else { return false }
                 response = try await terminalAPI.completeSession(
-                    sessionId: sessionID, jwt: jwt)
+                    sessionId: sessionID,
+                    expectedAttempt: intent.expectedAttempt,
+                    jwt: jwt)
             case .discard:
                 response = try await terminalAPI.discardSession(
-                    sessionId: sessionID, jwt: jwt)
+                    sessionId: sessionID,
+                    expectedAttempt: intent.expectedAttempt,
+                    jwt: jwt)
             }
 
             guard canMutateBoundSetAccount else { return true }
+            // Another same-account model may have replaced this durable choice
+            // while the request was in flight (most importantly finish →
+            // discard). The account store, not this stale instance's in-memory
+            // copy, decides whether the callback is still current.
+            guard WorkoutTerminalOutboxStore.load(
+                    userID: accountID, defaults: defaults
+                  ).intent(for: intent.date)?.id == intent.id
+            else {
+                // This instance is no longer the owner. Drop only its stale
+                // in-memory copy; the granular durable store already contains
+                // either the replacement choice or no work at all. Adopting the
+                // replacement here would create a second sender.
+                terminalOutbox.remove(id: intent.id)
+                _ = adoptLatestAcknowledgedSnapshot(for: intent.date)
+                return false
+            }
             // Discard may have replaced an in-flight finish. Its response is
             // real server history, but the stale callback cannot touch the
             // newer local intent; the coordinator will send discard next.
@@ -1051,7 +2123,10 @@ final class SyncModel: ObservableObject {
             }
             let expectedStatus = intent.action == .finish ? "completed" : "discarded"
             guard response.date == intent.date,
-                  response.status == expectedStatus
+                  response.status == expectedStatus,
+                  intent.expectedAttempt == nil
+                    || response.attempt == nil
+                    || response.attempt == intent.expectedAttempt
             else {
                 throw APIError.decoding(
                     "Terminal acknowledgement did not match the persisted intent")
@@ -1059,17 +2134,34 @@ final class SyncModel: ObservableObject {
 
             switch intent.action {
             case .finish:
+                let applied = applyTerminalAcknowledgementLocally(
+                    response, action: .finish)
+                guard persistTerminalAcknowledgement(
+                    response, action: .finish)
+                else {
+                    loadError = "Workout finished on the server, but its local recovery snapshot couldn't be saved. It will retry safely."
+                    return true
+                }
                 terminalOutbox.remove(id: intent.id)
                 persistRemovedTerminalIntent(id: intent.id)
-                upsertSessionAfterCreate(response)
-                if intent.date == todayString { stopRunnerAfterTerminalAck() }
+                if applied, intent.date == todayString {
+                    stopRunnerAfterTerminalAck()
+                }
             case .discard:
+                applyTerminalAcknowledgementLocally(response, action: .discard)
+                applyLocalDiscardMask()
+                guard persistTerminalAcknowledgement(
+                    response, action: .discard)
+                else {
+                    loadError = "Workout was discarded on the server, but its local recovery snapshot couldn't be saved. It will retry safely."
+                    return true
+                }
                 intent.resolvedSessionID = response.id
+                intent.expectedAttempt = response.attempt
                 intent.deliveryState = .acknowledged
                 intent.failedHTTPStatus = nil
                 terminalOutbox.replace(intent)
                 persistReplacedTerminalIntent(intent)
-                applyLocalDiscardMask()
             }
             loadError = nil
             return false
@@ -1090,6 +2182,25 @@ final class SyncModel: ObservableObject {
         guard var current = terminalOutbox.intent(for: attempted.date),
               current.id == attempted.id
         else { return false }
+        if let conflict = sessionWriteConflict(from: error),
+           conflict.current_session.date == attempted.date
+        {
+            switch current.action {
+            case .finish:
+                terminalOutbox.remove(id: current.id)
+                persistRemovedTerminalIntent(id: current.id)
+            case .discard:
+                terminalOutbox.retireSupersededDiscard(id: current.id)
+                WorkoutTerminalOutboxStore.retireSupersededDiscard(
+                    id: current.id,
+                    userID: accountID,
+                    defaults: defaults)
+                ownedTerminalIntentIDs.remove(current.id)
+            }
+            adoptSessionWriteConflict(conflict.current_session)
+            loadError = nil
+            return false
+        }
         if isPermanentSetClientError(error),
            case let APIError.http(code, _) = error {
             current.deliveryState = .failed
@@ -1113,10 +2224,13 @@ final class SyncModel: ObservableObject {
         guard canMutateBoundSetAccount, currentJWT != nil else {
             return .staleAccount
         }
-        sendingSetIntentIDs.insert(original.id)
-        defer { sendingSetIntentIDs.remove(original.id) }
+        guard var intent = durableSetIntent(matching: original) else {
+            _ = adoptLatestAcknowledgedSnapshot(for: original.date)
+            return .superseded
+        }
+        sendingSetIntentIDs.insert(intent.id)
+        defer { sendingSetIntentIDs.remove(intent.id) }
 
-        var intent = original
         let session: SessionRow
         if let sessionID = intent.resolvedSessionID {
             session = sessions.first(where: { $0.id == sessionID })
@@ -1132,6 +2246,8 @@ final class SyncModel: ObservableObject {
                 createdSession = try await setWriteAPI.createSession(
                     date: intent.date,
                     dayTemplateID: intent.dayTemplateID,
+                    expectedAttempt: intent.expectedAttempt ?? 0,
+                    restartDiscardedAttempt: intent.restartDiscardedAttempt,
                     jwt: jwt)
             } catch {
                 // update_plan may rebuild every day UUID while this offline
@@ -1142,7 +2258,8 @@ final class SyncModel: ObservableObject {
                 guard intent.dayTemplateID != nil,
                       isPermanentSetClientError(error),
                       canMutateBoundSetAccount,
-                      let fallbackJWT = currentJWT
+                      let fallbackJWT = currentJWT,
+                      durableSetIntent(matching: intent) != nil
                 else {
                     return classifySetIntentFailure(
                         intentID: intent.id,
@@ -1156,6 +2273,8 @@ final class SyncModel: ObservableObject {
                     createdSession = try await setWriteAPI.createSession(
                         date: intent.date,
                         dayTemplateID: nil,
+                        expectedAttempt: intent.expectedAttempt ?? 0,
+                        restartDiscardedAttempt: intent.restartDiscardedAttempt,
                         jwt: fallbackJWT)
                 } catch {
                     return classifySetIntentFailure(
@@ -1165,32 +2284,144 @@ final class SyncModel: ObservableObject {
                 }
             }
             guard canMutateBoundSetAccount else { return .staleAccount }
-            session = createdSession
-            intent.resolvedSessionID = session.id
+            guard let durable = durableSetIntent(matching: intent) else {
+                return .superseded
+            }
+            intent = durable
+            let createdAttempt = intent.restartDiscardedAttempt.map { $0 + 1 }
+                ?? intent.expectedAttempt
+                ?? 0
+            guard createdSession.attempt == nil
+                    || createdSession.attempt == createdAttempt
+            else {
+                return classifySetIntentFailure(
+                    intentID: intent.id,
+                    error: APIError.decoding(
+                        "Session resolution crossed workout attempts"),
+                    attemptedJWT: jwt)
+            }
+            guard let resolvedSession = acceptSessionResolution(createdSession) else {
+                return classifySetIntentFailure(
+                    intentID: intent.id,
+                    error: APIError.decoding(
+                        "Session resolution was superseded locally"),
+                    attemptedJWT: jwt)
+            }
+            bindRunnerCheckpoint(to: resolvedSession)
+            session = resolvedSession
+            intent.resolvedSessionID = resolvedSession.id
+            intent.expectedAttempt = resolvedSession.attempt ?? createdAttempt
             setOutbox.replace(intent)
             persistReplacedSetIntent(intent)
-            upsertSessionAfterCreate(session)
+            guard let durable = durableSetIntent(matching: intent) else {
+                return .superseded
+            }
+            intent = durable
         }
+
+        // Creation and fallback creation are awaits. Confirm that the exact
+        // durable set still exists and no discard barrier has superseded it
+        // immediately before logging. If another model already resolved the
+        // session, adopt that canonical id as well.
+        guard let durable = durableSetIntent(matching: intent) else {
+            return .superseded
+        }
+        intent = durable
+        let writeSession: SessionRow
+        if durable.resolvedSessionID == session.id {
+            writeSession = session
+        } else if let resolvedSessionID = durable.resolvedSessionID {
+            writeSession = sessions.first(where: { $0.id == resolvedSessionID })
+                ?? SessionRow(
+                    id: resolvedSessionID,
+                    date: intent.date,
+                    status: "in_progress",
+                    day_template_id: intent.dayTemplateID)
+        } else {
+            return .superseded
+        }
+
+        // Queues written by an older app build may already have a resolved
+        // session id but no generation. Migration 0032 assigns them attempt
+        // zero; binding to a currently-observed later attempt would retarget
+        // stale work across another device's discard/restart.
+        if intent.expectedAttempt == nil {
+            intent.expectedAttempt = 0
+            setOutbox.replace(intent)
+            persistReplacedSetIntent(intent)
+            guard let rebound = durableSetIntent(matching: intent) else {
+                return .superseded
+            }
+            intent = rebound
+        }
+
+        bindRunnerCheckpoint(to: writeSession)
 
         // The original body was persisted before session creation, and the
         // resolved session id is persisted above before this POST await.
         guard let jwt = currentJWT else { return .staleAccount }
         do {
             let result = try await setWriteAPI.logSet(
-                sessionId: session.id,
+                sessionId: writeSession.id,
                 body: intent.body,
+                expectedAttempt: intent.expectedAttempt,
                 jwt: jwt)
             guard canMutateBoundSetAccount else { return .staleAccount }
             guard result.set.id == intent.id else {
                 throw APIError.decoding(
                     "Set acknowledgement did not match the persisted intent")
             }
+            if let acknowledgedSession = result.session {
+                let settlesSupersededAttempt = result.deduped
+                    && result.set.deleted_at != nil
+                    && intent.expectedAttempt != nil
+                    && acknowledgedSession.attempt != nil
+                    && acknowledgedSession.attempt! > intent.expectedAttempt!
+                guard acknowledgedSession.id == result.set.session_id,
+                      acknowledgedSession.date == intent.date,
+                      intent.expectedAttempt == nil
+                        || acknowledgedSession.attempt == nil
+                        || acknowledgedSession.attempt == intent.expectedAttempt
+                        || settlesSupersededAttempt
+                else {
+                    throw APIError.decoding(
+                        "Set acknowledgement returned a mismatched session")
+                }
+            }
+            let durableTerminal = WorkoutTerminalOutboxStore.load(
+                userID: accountID, defaults: defaults).intent(for: intent.date)
+            if durableTerminal?.action == .discard {
+                // A newer discard barrier superseded this older callback. It
+                // owns both cache visibility and eventual server ordering.
+                adoptDurableWorkoutWriteOutboxes()
+                return .superseded
+            }
+            let durableSets = SetOutboxStore.load(
+                userID: accountID, defaults: defaults)
+            guard durableSets.pending.contains(where: { $0.id == intent.id }) else {
+                // A replacement model already settled this exact idempotent
+                // write and persisted its ACK. Do not re-merge stale context.
+                setOutbox.remove(id: intent.id)
+                _ = adoptLatestAcknowledgedSnapshot(for: intent.date)
+                return .acknowledged(
+                    setID: result.set.id,
+                    canonicalSessionID: result.set.session_id,
+                    date: intent.date)
+            }
             applySetAcknowledgement(
                 result,
                 intent: intent,
-                submittedSession: session)
+                submittedSession: writeSession)
+            guard persistSetAcknowledgement(
+                result, submittedSession: writeSession)
+            else {
+                loadError = "Set was saved on the server, but its local recovery snapshot couldn't be saved. It will retry safely."
+                return .transientFailure(
+                    attemptedJWT: jwt, wasUnauthorized: false)
+            }
             setOutbox.remove(id: intent.id)
             persistRemovedSetIntentIDs(Set([intent.id]))
+            normalizeMountedRunnerProgress(for: intent.date)
             return .acknowledged(
                 setID: result.set.id,
                 canonicalSessionID: result.set.session_id,
@@ -1207,6 +2438,16 @@ final class SyncModel: ObservableObject {
         attemptedJWT: String
     ) -> SetSendOutcome {
         guard canMutateBoundSetAccount else { return .staleAccount }
+        if let intent = setOutbox.pending.first(where: { $0.id == intentID }),
+           let conflict = sessionWriteConflict(from: error),
+           conflict.current_session.date == intent.date
+        {
+            setOutbox.remove(id: intent.id)
+            persistRemovedSetIntentIDs(Set([intent.id]))
+            adoptSessionWriteConflict(conflict.current_session)
+            loadError = nil
+            return .superseded
+        }
         if isPermanentSetClientError(error),
            case let APIError.http(code, _) = error {
             if var intent = setOutbox.pending.first(where: { $0.id == intentID }) {
@@ -1232,6 +2473,64 @@ final class SyncModel: ObservableObject {
         return (400..<500).contains(code) && ![401, 408, 429].contains(code)
     }
 
+    private func sessionWriteConflict(
+        from error: Error
+    ) -> SessionWriteConflictPayload? {
+        guard case let APIError.http(code, body) = error,
+              code == 409,
+              let data = body.data(using: .utf8),
+              let payload = try? JSONDecoder().decode(
+                  SessionWriteConflictPayload.self, from: data),
+              payload.error == "session_attempt_conflict"
+                || payload.error == "session_discarded"
+                || payload.error == "session_state_conflict"
+        else { return nil }
+        return payload
+    }
+
+    /// A 409 with `current_session` is authoritative proof that this durable
+    /// write belongs to an obsolete workout attempt. Advance the shared cache
+    /// before allowing another model/load to act, then mirror that state here.
+    private func adoptSessionWriteConflict(_ session: SessionRow) {
+        guard canMutateBoundSetAccount else { return }
+        let transform: (StateResponse) -> StateResponse = { newest in
+            if session.status == "discarded" {
+                return Self.mergingTerminalAcknowledgement(
+                    into: newest, response: session, action: .discard)
+            }
+            return Self.mergingSessionResolution(
+                into: newest, response: session)
+        }
+        let persisted = StateSnapshotStore.mergeAcknowledgement(
+            userID: accountID,
+            fallback: currentStateResponse(),
+            defaults: defaults,
+            transform: transform)
+        // Explicit cache invalidation deliberately makes the persistence
+        // merge return nil. The 409 current_session is still authoritative
+        // for this mounted model: apply it in memory and retire the obsolete
+        // runner without recreating the invalidated snapshot.
+        let resolvedState = persisted?.state
+            ?? transform(currentStateResponse())
+        applyState(
+            resolvedState,
+            preferredTodaySessionID: nil,
+            isLiveResponse: false)
+        if let checkpoint = persistedRunnerCheckpoint,
+           checkpoint.date == session.date
+        {
+            // The rejected durable write belonged to this runner's date. A
+            // nil attempt is legacy/unknown, not permission to join the newer
+            // workout, so retire the runner regardless of whether both tokens
+            // can be compared.
+            stopRunnerForStateChange()
+        } else if ["completed", "skipped", "discarded"].contains(session.status),
+                  session.date == todayString
+        {
+            stopRunnerForStateChange()
+        }
+    }
+
     private func upsertSessionAfterCreate(_ session: SessionRow) {
         guard canMutateBoundSetAccount else { return }
         if let index = sessions.firstIndex(where: { $0.id == session.id }) {
@@ -1247,21 +2546,95 @@ final class SyncModel: ObservableObject {
         intent: PendingSetIntent,
         submittedSession: SessionRow
     ) {
-        if result.set.session_id == submittedSession.id {
-            upsertSessionAfterCreate(submittedSession)
+        // New Workers echo the canonical session/status. Rolling old Workers
+        // still prove the narrow planned -> in_progress transition.
+        let acknowledgedSession = Self.sessionAcknowledgedBySet(
+            result, submittedSession: submittedSession)
+        let current = Self.newestSession(in: sessions.filter {
+            $0.date == acknowledgedSession.date
+        })
+        let responseWins = current == nil
+            || Self.responseCanReplaceSession(
+                current!, with: acknowledgedSession, kind: .set)
+        let effectiveSession = responseWins
+            ? acknowledgedSession
+            : current ?? acknowledgedSession
+        let effectiveDiscard = effectiveSession.status == "discarded"
+        if result.set.deleted_at != nil {
+            sets.removeAll { $0.id == result.set.id }
+        }
+        if effectiveDiscard {
+            let sameDateSessionIDs = Set(
+                sessions.lazy.filter {
+                    $0.date == effectiveSession.date
+                }.map(\.id))
+                .union([
+                    submittedSession.id,
+                    acknowledgedSession.id,
+                    result.set.session_id,
+                ])
+            sessions.removeAll { $0.date == effectiveSession.date }
+            sessions.append(effectiveSession)
+            sets.removeAll { sameDateSessionIDs.contains($0.session_id) }
+            if effectiveSession.date == todayString {
+                todaySession = effectiveSession
+            }
+        } else if result.set.deleted_at != nil {
+            if responseWins { upsertSessionAfterCreate(effectiveSession) }
+        } else if responseWins,
+                  result.set.session_id == submittedSession.id
+        {
+            upsertSessionAfterCreate(effectiveSession)
             if let index = sets.firstIndex(where: { $0.id == result.set.id }) {
                 sets[index] = result.set
             } else {
                 sets.append(result.set)
             }
-        } else {
+        } else if responseWins {
             // Preserve migration-0029 alias healing even when reconciliation
             // later fails: collapse the stale local session immediately onto
             // the canonical id echoed by the acknowledged set.
             adoptSessionAliasLocally(
-                staleSession: submittedSession,
+                staleSession: effectiveSession,
                 committedSet: result.set,
                 submittedSlotID: intent.slotID)
+        } else {
+            // A later full state owns the session fields. The set itself is
+            // still an accepted immutable fact unless that newer state is a
+            // discard, handled above.
+            if let index = sets.firstIndex(where: { $0.id == result.set.id }) {
+                if sets[index].deleted_at == nil { sets[index] = result.set }
+            } else {
+                sets.append(result.set)
+            }
+        }
+        if ["completed", "skipped", "discarded"].contains(
+               effectiveSession.status),
+           effectiveSession.date == todayString
+        {
+            // A deduped retry can reveal that another client already closed
+            // the workout. Enforce terminal precedence now; reconciliation is
+            // best effort and may fail while offline.
+            stopRunnerForStateChange()
+        }
+    }
+
+    /// A foreground recovery may settle a set after the original runner tap
+    /// already returned false on timeout. Advance the mounted runner from the
+    /// acknowledged set exactly as the original tap would have; the caller's
+    /// post-await check is idempotent because it sees the new current slot (or
+    /// the already-finished flag).
+    private func normalizeMountedRunnerProgress(for date: String) {
+        guard running,
+              date == todayString,
+              let current = currentExercise,
+              isComplete(current)
+        else { return }
+        if let next = nextIncompleteIndex {
+            jump(to: next)
+        } else {
+            finished = true
+            persistRunnerCheckpoint()
         }
     }
 
@@ -1277,8 +2650,32 @@ final class SyncModel: ObservableObject {
         return todaySlotSets(ex).count + pendingSetIntents(for: ex).count + 1
     }
 
+    private func allowNewWorkoutStart() -> Bool {
+        guard !todayIsCompleted else {
+            loadError = "Today's workout is already completed."
+            return false
+        }
+        guard !blocksNewWorkoutStart else {
+            if needsLiveWorkoutValidation {
+                loadError = hasSavedRunnerAwaitingValidation
+                    ? "Connect to validate and resume your saved workout before starting another."
+                    : "Connect to verify today's in-progress workout before starting another."
+            } else if hasRunnerAwaitingSetRecovery {
+                loadError = "Your saved workout is still waiting for its first set to sync."
+            } else {
+                loadError = "Resume your saved workout before starting another."
+            }
+            return false
+        }
+        return true
+    }
+
     func startWorkout() {
+        guard allowNewWorkoutStart() else { return }
         let date = todaySession?.date ?? todayString
+        var restartDiscardedAttempt = sessions.first(where: {
+            $0.date == date && $0.status == "discarded"
+        })?.attempt
         if let terminal = terminalOutbox.intent(for: date) {
             guard terminal.action == .discard,
                   terminal.deliveryState == .acknowledged
@@ -1286,16 +2683,110 @@ final class SyncModel: ObservableObject {
                 loadError = "This workout still has a finish or discard waiting to sync."
                 return
             }
+            // A legacy acknowledged barrier belongs to migration-default
+            // generation zero. Capture this authorization before clearing the
+            // barrier so only the user's explicit start can revive the date.
+            restartDiscardedAttempt = restartDiscardedAttempt
+                ?? terminal.expectedAttempt
+                ?? 0
             terminalOutbox.clearAcknowledgedDiscard(date: date)
             WorkoutTerminalOutboxStore.clearAcknowledgedDiscard(
                 date: date, userID: accountID, defaults: defaults)
+            ownedTerminalIntentIDs.remove(terminal.id)
         }
+        guard clearRunnerCheckpoint() else {
+            loadError = "This workout is already active in another app view. Refresh to continue."
+            return
+        }
+        runnerRestartDiscardedAttempt = restartDiscardedAttempt
         running = true
         finished = false
         exerciseIndex = 0
         skipped = []
-        workoutStart = Date()
+        workoutStart = now()
         seedInputs()
+        persistRunnerCheckpoint()
+    }
+
+    var hasResumableWorkout: Bool { resumableCheckpoint != nil }
+    private var hasSavedRunnerAwaitingValidation: Bool {
+        persistedRunnerCheckpoint?.date == todayString
+    }
+    var needsLiveWorkoutValidation: Bool {
+        // A disk snapshot is browse-only. Another device may have completed or
+        // discarded the date, or rebuilt its slot IDs, since this payload was
+        // saved. Every new start/override therefore waits for one live state.
+        isUsingCachedState
+    }
+    private var hasRunnerAwaitingSetRecovery: Bool {
+        guard hasSavedRunnerAwaitingValidation else { return false }
+        return setOutbox.pending.contains { $0.date == todayString }
+    }
+    var canAbandonRecoveredWorkout: Bool {
+        !running
+            && !isUsingCachedState
+            && hasRunnerAwaitingSetRecovery
+            && setOutbox.pending.contains {
+                $0.date == todayString && $0.deliveryState == .failed
+            }
+    }
+    var blocksNewWorkoutStart: Bool {
+        needsLiveWorkoutValidation
+            || hasResumableWorkout
+            || hasRunnerAwaitingSetRecovery
+            || isReopeningSkippedWorkout
+    }
+    var liveWorkoutValidationActionTitle: String {
+        hasSavedRunnerAwaitingValidation
+            ? "CONNECT TO RESUME"
+            : "CONNECT TO VERIFY"
+    }
+    var liveWorkoutValidationBlockTitle: String {
+        hasSavedRunnerAwaitingValidation
+            ? "Connect to resume first"
+            : "Connect to verify workout first"
+    }
+
+    /// Restore only a checkpoint that a live `/api/state` response already
+    /// validated against today's still-in-progress server session and current
+    /// plan slot ids. Timed-set progress is intentionally not restored: the
+    /// current slot restarts from its stable boundary.
+    func resumeWorkout() {
+        guard !running,
+              let checkpoint = resumableCheckpoint,
+              let session = sessions.first(where: {
+                  $0.id == checkpoint.sessionID
+                      && $0.date == checkpoint.date
+                      && $0.status == "in_progress"
+              }),
+              let day = plan?.days.first(where: {
+                  $0.id == checkpoint.selectedDayID
+              }),
+              let currentSlotID = checkpoint.currentSlotID,
+              let index = day.exercises.firstIndex(where: {
+                  $0.id == currentSlotID
+              })
+        else {
+            clearRunnerCheckpoint()
+            return
+        }
+
+        let liveSlotIDs = Set(day.exercises.map(\.id))
+        todaySession = session
+        runnerRestartDiscardedAttempt = nil
+        selectedDayID = day.id
+        exerciseIndex = index
+        skipped = Set(checkpoint.skippedSlotIDs.filter {
+            liveSlotIDs.contains($0)
+        })
+        workoutStart = Date(
+            timeIntervalSince1970:
+                TimeInterval(checkpoint.workoutStartedAtMS) / 1_000)
+        running = true
+        finished = checkpoint.finished
+        skipRest()
+        seedInputs()
+        persistRunnerCheckpoint()
     }
 
     /// Seed weight/reps from last time → plan target → default.
@@ -1368,12 +2859,17 @@ final class SyncModel: ObservableObject {
         timedEndDate = nil
         timedStartDate = nil
         skipped.remove(ex.id)   // logging work un-skips this slot
+        persistRunnerCheckpoint()
         let secs = max(1, held)
-        guard await logSet(ex, weight: 0, reps: secs, durationOverride: secs) else { return }
+        guard await logSet(ex, weight: 0, reps: secs, durationOverride: secs) else {
+            persistRunnerCheckpoint()
+            return
+        }
         guard running, let current = currentExercise else { return }
         if isComplete(current) {
             if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
         }
+        persistRunnerCheckpoint()
     }
 
     func adjustWeight(_ delta: Double) { weight = max(0, weight + delta) }
@@ -1409,17 +2905,23 @@ final class SyncModel: ObservableObject {
         guard exercises.indices.contains(index) else { return }
         exerciseIndex = index
         seedInputs()
+        persistRunnerCheckpoint()
     }
 
     func logCurrentSet() async {
         guard let ex = currentExercise else { return }
         skipped.remove(ex.id)   // logging work un-skips this slot
-        guard await logSet(ex, weight: weight, reps: reps) else { return } // also starts rest timer
+        persistRunnerCheckpoint()
+        guard await logSet(ex, weight: weight, reps: reps) else {
+            persistRunnerCheckpoint()
+            return
+        } // also starts rest timer
         guard running, let current = currentExercise else { return }
         if isComplete(current) {
             if let next = nextIncompleteIndex { jump(to: next) }
             else { finished = true }
         }
+        persistRunnerCheckpoint()
     }
 
     /// Manual "move on" — marks the current exercise skipped for this
@@ -1428,12 +2930,14 @@ final class SyncModel: ObservableObject {
     func skip() {
         if let ex = currentExercise { skipped.insert(ex.id) }
         if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
+        persistRunnerCheckpoint()
     }
 
     func previous() {
         guard exerciseIndex > 0 else { return }
         exerciseIndex -= 1
         seedInputs()
+        persistRunnerCheckpoint()
     }
 
     /// Non-destructive forward navigation — move to the next exercise in order
@@ -1445,10 +2949,12 @@ final class SyncModel: ObservableObject {
         guard exerciseIndex < exercises.count - 1 else { return }
         exerciseIndex += 1
         seedInputs()
+        persistRunnerCheckpoint()
     }
 
     func finishWorkout() async {
         guard canMutateBoundSetAccount, currentJWT != nil else { return }
+        persistRunnerCheckpoint()
         let date = todaySession?.date ?? todayString
         if terminalOutbox.intent(for: date) == nil {
             let intent = WorkoutTerminalIntent(
@@ -1458,7 +2964,9 @@ final class SyncModel: ObservableObject {
                 dayTemplateID: todaySession?.day_template_id ?? selectedDay?.id,
                 resolvedSessionID: todaySession?.id,
                 deliveryState: .queued,
-                failedHTTPStatus: nil)
+                failedHTTPStatus: nil,
+                expectedAttempt: todaySession?.attempt,
+                restartDiscardedAttempt: runnerRestartDiscardedAttempt)
             // The complete user choice is durable before the coordinator can
             // await set delivery, session resolution, or the terminal PATCH.
             terminalOutbox.enqueue(intent)
@@ -1483,13 +2991,16 @@ final class SyncModel: ObservableObject {
             dayTemplateID: todaySession?.day_template_id ?? selectedDay?.id,
             resolvedSessionID: todaySession?.id,
             deliveryState: .queued,
-            failedHTTPStatus: nil)
+            failedHTTPStatus: nil,
+            expectedAttempt: todaySession?.attempt,
+            restartDiscardedAttempt: runnerRestartDiscardedAttempt)
 
         // Saving the discard first is the atomic semantic commit. If the app
         // dies before the following physical set-key cleanup, init observes
         // this barrier and performs the same supersession before any drain.
         terminalOutbox.enqueue(intent)
         persistEnqueuedTerminalIntent(intent)
+        clearRunnerCheckpoint()
         supersedeSetIntentsForDiscardBarriers()
         applyLocalDiscardMask()
         await drainWorkoutWriteOutboxes()
@@ -1594,6 +3105,7 @@ final class SyncModel: ObservableObject {
             running = false
             finished = false
             workoutStart = nil
+            clearRunnerCheckpoint()
             skipRest()
             return
         }
@@ -1603,6 +3115,7 @@ final class SyncModel: ObservableObject {
             exerciseIndex = exercises.count - 1
         }
         seedInputs()
+        persistRunnerCheckpoint()
     }
 
     // MARK: rest timer
@@ -1616,8 +3129,18 @@ final class SyncModel: ObservableObject {
     func removeSet(_ set: SetLog) async {
         guard let jwt = currentJWT else { return }
         do {
-            try await api.deleteSet(setId: set.id, jwt: jwt)
+            try await setWriteAPI.deleteSet(setId: set.id, jwt: jwt)
             sets.removeAll { $0.id == set.id }
+            // The endpoint can also revert the last-set session to `planned`,
+            // but it does not return that session. Invalidate rather than
+            // guessing; a cold offline launch must never resurrect this set.
+            if !StateSnapshotStore.invalidate(
+                userID: accountID, defaults: defaults),
+               let accountID
+            {
+                StateSnapshotStore.clear(
+                    userID: accountID, defaults: defaults)
+            }
         } catch { handle(error, jwt: jwt) }
     }
 
@@ -1807,7 +3330,11 @@ final class SyncModel: ObservableObject {
         RideConflict.severity(
             forLiftDate: dateString,
             hasLift: { [self] in dateHasLift($0) },
-            ridesOn: { [self] in rides(on: $0) })
+            ridesOn: { [self] eventDate in
+                projection(for: eventDate).suppressesScheduleAndEndurance
+                    ? []
+                    : rides(on: eventDate)
+            })
     }
 
     /// Resolve one calendar day via the frozen projection algorithm,
@@ -1921,28 +3448,31 @@ final class SyncModel: ObservableObject {
         let isWorkout: Bool
         switch proj {
         case .projected:      isWorkout = true
-        case .session(let s): isWorkout = Self.isWorkoutStatus(s)
+        case .session(let s, _): isWorkout = Self.isWorkoutStatus(s)
         // M4 (multisport) — a trip day is not a scheduled strength workout
         // (unavailable = blacked out; light = unstructured travel training).
         case .rest, .none, .unavailable, .light: isWorkout = false
         }
         guard isWorkout else { return nil }
+        if let checkpoint = resumableCheckpoint,
+           checkpoint.date == today,
+           let checkpointDay = dayTemplate(id: checkpoint.selectedDayID)
+        {
+            return checkpointDay
+        }
         switch proj {
         case .projected(let tid):
             // Schedule projection: the template id IS the schedule's.
             return dayTemplate(id: tid) ?? selectedDay ?? plan?.days.first
-        case .session:
-            // Real workout-status session. Shared session→schedule
-            // inference, then selected/first so Today always has something
-            // to render. `allowScheduleInference: true` is passed
-            // EXPLICITLY (matching the documented caller convention) so
-            // the intent — today MUST schedule-infer its null-template
-            // session (the BLOCKER fix) — is visible and a future
-            // refactor of the default can't silently mis-gate it. The
-            // captured `today` is by definition `todayString`, so the
-            // resolver's `ymd >= today` boundary holds.
-            return sessionDisplayTemplate(forDateString: today,
-                                          allowScheduleInference: true)
+        case .session(_, let hardBlackoutTripType):
+            // Real workout-status session. Outside a hard blackout, the
+            // shared session→schedule inference preserves the existing
+            // null-template fallback. During a hard blackout the schedule is
+            // suppressed on both platforms, so only an explicit session day
+            // is eligible before the selected/first display fallback.
+            return sessionDisplayTemplate(
+                forDateString: today,
+                allowScheduleInference: hardBlackoutTripType == nil)
                 ?? selectedDay ?? plan?.days.first
         case .rest, .none, .unavailable, .light:
             return nil   // unreachable (guarded by isWorkout)
@@ -1953,7 +3483,7 @@ final class SyncModel: ObservableObject {
     /// CTA wording — e.g. "completed" vs "in_progress"). nil ⇒ no real
     /// session today (pure schedule projection or rest).
     var todaySessionStatus: String? {
-        if case .session(let s) = todayProjection { return s }
+        if case .session(let s, _) = todayProjection { return s }
         return nil
     }
 
@@ -2031,24 +3561,21 @@ final class SyncModel: ObservableObject {
                 // Real next workout — return THIS date even if the
                 // template isn't cached (day == nil), never skip past it.
                 return NextWorkout(dateString: ymd, day: dayTemplate(id: tid))
-            case .session(let status):
+            case .session(let status, let hardBlackoutTripType):
                 if status == "planned" || status == "in_progress" {
                     // Use the SHARED session→schedule resolver (the same one
                     // Today/calendar use), not a bare day_template_id read:
                     // a real planned/in_progress session with a null
-                    // day_template_id (server drops it for an existing
-                    // same-date row) still resolves its template via the
-                    // weekly schedule. `ymd` is strictly in the future
-                    // here (offset 1...maxDays off the single `start`
-                    // anchor, which derives from the one `today` capture),
-                    // so `allowScheduleInference` is unconditionally
-                    // valid; passed EXPLICITLY to match the documented
-                    // caller convention. Stays nil-graceful for genuinely
-                    // unresolvable days.
+                    // day_template_id normally resolves via the weekly
+                    // schedule. A hard blackout is the one exception: its
+                    // schedule is suppressed, so only the session's explicit
+                    // template can be returned. Stays nil-graceful for a
+                    // genuinely unresolvable day.
                     return NextWorkout(
                         dateString: ymd,
-                        day: sessionDisplayTemplate(forDateString: ymd,
-                                                    allowScheduleInference: true))
+                        day: sessionDisplayTemplate(
+                            forDateString: ymd,
+                            allowScheduleInference: hardBlackoutTripType == nil))
                 }
                 // A COMPLETED future session (e.g. pre-logged via MCP) is
                 // intentionally NOT surfaced as the "next workout" — it's
@@ -2091,6 +3618,7 @@ final class SyncModel: ObservableObject {
     /// `todayResolvedDay`, i.e. the SAME CalendarProjection the calendar
     /// uses). Reuses the EXISTING session-start path verbatim.
     func startToday() {
+        guard allowNewWorkoutStart() else { return }
         if let id = todayResolvedDay?.id { selectedDayID = id }
         startWorkout()
     }
@@ -2101,8 +3629,54 @@ final class SyncModel: ObservableObject {
     /// session row is created lazily on the first logged set. This is a
     /// one-off `sessions` write only — it never touches `plans.meta.schedule`.
     func startOverride(dayID: String) {
+        guard allowNewWorkoutStart() else { return }
         selectedDayID = dayID
+        if let skipped = todaySession, skipped.status == "skipped" {
+            guard !isReopeningSkippedWorkout else { return }
+            isReopeningSkippedWorkout = true
+            Task { await reopenSkippedWorkoutAndStart(skipped) }
+            return
+        }
         startWorkout()
+    }
+
+    private func reopenSkippedWorkoutAndStart(_ skipped: SessionRow) async {
+        defer { isReopeningSkippedWorkout = false }
+        guard canMutateBoundSetAccount, let jwt = currentJWT else { return }
+        do {
+            let response = try await setWriteAPI.reopenSkippedSession(
+                sessionId: skipped.id,
+                dayTemplateID: selectedDayID,
+                expectedAttempt: skipped.attempt ?? 0,
+                jwt: jwt)
+            guard canMutateBoundSetAccount,
+                  response.id == skipped.id,
+                  response.date == skipped.date,
+                  response.status == "planned",
+                  response.attempt == nil
+                    || response.attempt == (skipped.attempt ?? 0) + 1,
+                  let accepted = acceptSessionResolution(response),
+                  accepted.status == "planned"
+            else {
+                throw APIError.decoding(
+                    "Skipped-session reopen did not advance the workout")
+            }
+            loadError = nil
+            // The network gate has completed; clear it before entering the
+            // shared start guard, which intentionally blocks while a reopen
+            // is still in flight.
+            isReopeningSkippedWorkout = false
+            startWorkout()
+        } catch {
+            if let conflict = sessionWriteConflict(from: error),
+               conflict.current_session.date == skipped.date
+            {
+                adoptSessionWriteConflict(conflict.current_session)
+                loadError = "Today's session changed elsewhere. Review it before starting."
+                return
+            }
+            handle(error, jwt: jwt)
+        }
     }
 
     /// Plan day for a template id (agenda exercise targets).

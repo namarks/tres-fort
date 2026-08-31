@@ -189,6 +189,7 @@ export interface SessionRow {
   notes: string | null;
   created_at: number;
   updated_at: number;
+  attempt: number;
 }
 
 export interface SetLogRow {

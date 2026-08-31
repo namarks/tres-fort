@@ -12,6 +12,7 @@ private struct EditDayTarget: Identifiable { let id: String }
 
 private struct PendingSetBanner: View {
     @ObservedObject var sync: SyncModel
+    @State private var showAbandonConfirm = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -32,14 +33,49 @@ private struct PendingSetBanner: View {
             }
             Spacer()
             if sync.failedSetIntentCount > 0 {
-                Button("RETRY") {
-                    Task { await sync.retryFailedSetIntents() }
+                HStack(spacing: 10) {
+                    Button("RETRY") {
+                        Task { await sync.retryFailedSetIntents() }
+                    }
+                    .foregroundStyle(Theme.accent)
+                    if sync.canAbandonRecoveredWorkout {
+                        Button("DISCARD") { showAbandonConfirm = true }
+                            .foregroundStyle(Theme.danger)
+                    }
                 }
                 .font(Theme.mono(10, .bold))
-                .foregroundStyle(Theme.accent)
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
+        .background(Theme.surface)
+        .overlay(alignment: .bottom) { Divider().overlay(Theme.surface2) }
+        .confirmationDialog(
+            "Discard this recovered workout?",
+            isPresented: $showAbandonConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Discard workout", role: .destructive) {
+                Task { await sync.discardWorkout() }
+            }
+            Button("Keep workout", role: .cancel) {}
+        } message: {
+            Text("The failed saved sets will be removed and the server session will be discarded so you can start again.")
+        }
+    }
+}
+
+struct CachedStateBanner: View {
+    var body: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "wifi.slash")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(Theme.muted)
+            Text("OFFLINE · SHOWING LAST SAVED DATA")
+                .font(Theme.mono(10, .bold)).tracking(1)
+                .foregroundStyle(Theme.muted)
+            Spacer()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
         .background(Theme.surface)
         .overlay(alignment: .bottom) { Divider().overlay(Theme.surface2) }
     }
@@ -112,6 +148,9 @@ struct TodayView: View {
             ZStack(alignment: .top) {
                 Theme.background
                 VStack(spacing: 0) {
+                    if sync.isUsingCachedState {
+                        CachedStateBanner()
+                    }
                     if sync.pendingTerminalIntentCount > 0 {
                         PendingTerminalBanner(sync: sync)
                     }
@@ -193,6 +232,7 @@ struct TodayView: View {
             ) {
                 ForEach(sync.plan?.days ?? []) { d in
                     Button(d.title) { sync.startOverride(dayID: d.id) }
+                        .disabled(sync.blocksNewWorkoutStart)
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
@@ -305,11 +345,16 @@ private struct RestDayView: View {
             // discard fall-through) is never stranded — one tap to pick a
             // template and start. Same picker the workout-day "different
             // day" override uses (`onOverride` → showOverridePicker).
-            StartWorkoutCTA(onOverride: onOverride)
+            StartWorkoutCTA(
+                onOverride: onOverride,
+                connectionTitle: sync.needsLiveWorkoutValidation
+                    ? sync.liveWorkoutValidationActionTitle
+                    : nil)
                 .padding(16)
                 .disabled(
                     (sync.plan?.days.isEmpty ?? true)
-                        || sync.hasUnacknowledgedDiscardForToday)
+                        || sync.hasUnacknowledgedDiscardForToday
+                        || sync.blocksNewWorkoutStart)
         }
     }
 }
@@ -528,14 +573,26 @@ private struct TodayWorkoutView: View {
                         Text(err).font(Theme.mono(12)).foregroundStyle(Theme.danger)
                     }
                     EditWorkoutButton(onEdit: onEdit).padding(.top, 6)
-                    OverrideButton(onOverride: onOverride)
+                    OverrideButton(
+                        onOverride: onOverride,
+                        blocked: sync.blocksNewWorkoutStart,
+                        connectionTitle: sync.needsLiveWorkoutValidation
+                            ? sync.liveWorkoutValidationBlockTitle
+                            : nil)
                 }
                 .padding(16)
             }
             .refreshable { await sync.load() }
 
-            Button { sync.startToday() } label: {
-                Text("START WORKOUT")
+            Button {
+                if sync.hasResumableWorkout { sync.resumeWorkout() }
+                else { sync.startToday() }
+            } label: {
+                Text(sync.hasResumableWorkout
+                    ? "RESUME WORKOUT"
+                    : (sync.needsLiveWorkoutValidation
+                        ? sync.liveWorkoutValidationActionTitle
+                        : "START WORKOUT"))
                     .font(Theme.display(26)).tracking(1.5)
                     .frame(maxWidth: .infinity).padding(.vertical, 18)
             }
@@ -543,7 +600,10 @@ private struct TodayWorkoutView: View {
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
             .disabled(
-                day.exercises.isEmpty || sync.hasUnacknowledgedDiscardForToday)
+                day.exercises.isEmpty
+                    || sync.hasUnacknowledgedDiscardForToday
+                    || (sync.blocksNewWorkoutStart
+                        && !sync.hasResumableWorkout))
             .padding(16)
         }
         .sheet(item: $demoFor) { ex in
@@ -573,9 +633,10 @@ private struct TodayWorkoutView: View {
 /// `showOverridePicker` confirmationDialog on TodayView.
 private struct StartWorkoutCTA: View {
     let onOverride: () -> Void
+    let connectionTitle: String?
     var body: some View {
         Button(action: onOverride) {
-            Text("START A WORKOUT")
+            Text(connectionTitle ?? "START A WORKOUT")
                 .font(Theme.display(26)).tracking(1.5)
                 .frame(maxWidth: .infinity).padding(.vertical, 18)
         }
@@ -587,10 +648,15 @@ private struct StartWorkoutCTA: View {
 
 private struct OverrideButton: View {
     let onOverride: () -> Void
+    let blocked: Bool
+    let connectionTitle: String?
     var body: some View {
         Button(action: onOverride) {
             HStack(spacing: 6) {
-                Text("Train a different day")
+                Text(connectionTitle
+                    ?? (blocked
+                        ? "Resume saved workout first"
+                        : "Train a different day"))
                     .font(Theme.mono(13, .bold))
                 Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold))
             }
@@ -600,6 +666,7 @@ private struct OverrideButton: View {
             .background(Theme.surface.opacity(0.6))
             .clipShape(RoundedRectangle(cornerRadius: 10))
         }
+        .disabled(blocked)
     }
 }
 

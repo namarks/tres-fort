@@ -14,6 +14,51 @@ struct SetRequestBody: Codable, Equatable {
     let logged_at: Int
     let duration_s: Int?
     let is_timed: Bool
+    /// Attempt-scoped CAS token. Stored outbox envelopes own the durable value
+    /// separately because the session may not exist when the tap is first
+    /// saved; APIClient binds it into the otherwise immutable request on send.
+    let expected_attempt: Int?
+
+    init(
+        id: String,
+        exercise_id: String,
+        template_exercise_id: String,
+        set_index: Int,
+        weight: Double,
+        reps: Int,
+        is_warmup: Bool,
+        logged_at: Int,
+        duration_s: Int?,
+        is_timed: Bool,
+        expected_attempt: Int? = nil
+    ) {
+        self.id = id
+        self.exercise_id = exercise_id
+        self.template_exercise_id = template_exercise_id
+        self.set_index = set_index
+        self.weight = weight
+        self.reps = reps
+        self.is_warmup = is_warmup
+        self.logged_at = logged_at
+        self.duration_s = duration_s
+        self.is_timed = is_timed
+        self.expected_attempt = expected_attempt
+    }
+
+    func scoped(to expectedAttempt: Int?) -> SetRequestBody {
+        SetRequestBody(
+            id: id,
+            exercise_id: exercise_id,
+            template_exercise_id: template_exercise_id,
+            set_index: set_index,
+            weight: weight,
+            reps: reps,
+            is_warmup: is_warmup,
+            logged_at: logged_at,
+            duration_s: duration_s,
+            is_timed: is_timed,
+            expected_attempt: expectedAttempt ?? expected_attempt)
+    }
 }
 
 enum SetIntentDeliveryState: String, Codable, Equatable {
@@ -33,8 +78,34 @@ struct PendingSetIntent: Codable, Identifiable, Equatable {
     let date: String
     var dayTemplateID: String?
     var resolvedSessionID: String?
+    /// Bound once the target session is known. Optional only for decoding
+    /// queues written by older app builds / rolling old Worker responses.
+    var expectedAttempt: Int?
+    /// Prior discarded generation that the user explicitly chose to restart.
+    /// Nil for ordinary unresolved writes, which must never revive a tombstone.
+    let restartDiscardedAttempt: Int?
     var deliveryState: SetIntentDeliveryState
     var failedHTTPStatus: Int?
+
+    init(
+        body: SetRequestBody,
+        date: String,
+        dayTemplateID: String?,
+        resolvedSessionID: String?,
+        deliveryState: SetIntentDeliveryState,
+        failedHTTPStatus: Int?,
+        expectedAttempt: Int? = nil,
+        restartDiscardedAttempt: Int? = nil
+    ) {
+        self.body = body
+        self.date = date
+        self.dayTemplateID = dayTemplateID
+        self.resolvedSessionID = resolvedSessionID
+        self.expectedAttempt = expectedAttempt
+        self.restartDiscardedAttempt = restartDiscardedAttempt
+        self.deliveryState = deliveryState
+        self.failedHTTPStatus = failedHTTPStatus
+    }
 
     var id: String { body.id }
     var slotID: String { body.template_exercise_id }
@@ -55,7 +126,14 @@ struct SetOutbox: Codable, Equatable {
         guard let index = pending.firstIndex(where: { $0.id == intent.id }) else {
             return
         }
-        pending[index] = intent
+        var replacement = intent
+        // The attempt token is write-once for one immutable set UUID. A stale
+        // same-account model may fill nil, but it can never regress or retarget
+        // an intent that another model already bound.
+        if let expectedAttempt = pending[index].expectedAttempt {
+            replacement.expectedAttempt = expectedAttempt
+        }
+        pending[index] = replacement
     }
 
     mutating func remove(id: String) {

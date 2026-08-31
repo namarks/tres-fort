@@ -1,6 +1,6 @@
 # Workout Write Reliability
 
-Slug: workout-write-reliability · Status: active · Updated: 2026-08-30 · Theme: training-trust
+Slug: workout-write-reliability · Status: done · Archived: completed · Updated: 2026-08-30 · Theme: training-trust
 
 ## Goal
 
@@ -25,7 +25,7 @@ never present a failed write as completed or silently drop the user's intent.
     its pending set/finish intents so a locally discarded workout cannot return.
   - Retry the existing idempotent endpoints and keep the UI truthful until the
     server acknowledges the terminal state.
-- [ ] **P2 — Recover the workout and last known state**
+- [x] **P2 — Recover the workout and last known state**
   - Persist the minimal runner checkpoint and last successful state snapshot,
     then offer resume when today's server session is still in progress.
   - Refresh and drain on foreground, show cached plan data with an offline label
@@ -36,15 +36,12 @@ never present a failed write as completed or silently drop the user's intent.
   - Verify relaunch recovery without introducing a second plan projection or a
     general-purpose sync framework.
 
-## Execution frontier
-
-- P2
-
 ## Next step
 
-**Now (@agent):** Implement P2 by persisting the minimal runner checkpoint and
-last successful state snapshot, recovering an in-progress workout on relaunch,
-and bringing the iOS/backend blackout-trip projection rule into covered parity.
+No further executable step. The implementation and local migration replay are
+complete; applying migration 0032 remotely, deploying the Worker, or releasing
+the iOS app remains outside this workstream's authority and was not performed
+during closeout.
 
 ## Notes / open questions
 
@@ -71,16 +68,41 @@ and bringing the iOS/backend blackout-trip projection rule into covered parity.
   final for stale session-addressed writes with conditional updates and ordered
   D1 batches, returns a stable `409 session_discarded`, preserves exact set-UUID
   retry semantics, and emits one discard audit under concurrent retries. The
-  accepted no-migration restart boundary remains explicit: starting the date
-  clears the acknowledged barrier, and discarded history is retained for
-  projection but cannot become the runner's live `todaySession`, so the first
-  post-restart set or finish revives through the date-level session endpoint.
+  P1 initially retained a no-migration restart boundary: starting the date
+  cleared the acknowledged barrier, while discarded history remained available
+  for projection but could not become the runner's live `todaySession`.
   Verification passed TypeScript typecheck, all 441 Worker tests, 82/82 iOS
   tests from clean derived data, a full simulator app build, and independent
-  backend and iOS review.
+  backend and iOS review. P2 superseded P1's initial no-migration restart seam
+  with an explicit generation contract so a delayed write from an older workout
+  cannot attach to a later restart of the same civil date.
+- P2 completes recovery and the cross-surface write contract. Migration 0032
+  assigns every session an attempt generation; set, finish, discard, create,
+  skipped-reopen, REST, and MCP mutations use attempt-scoped compare-and-set
+  semantics with structured current-session conflicts. Exact set UUID retries
+  remain idempotent across a discard/restart, while stale work is retired rather
+  than retargeted. The account-scoped iOS snapshot store uses local revision
+  tickets so stale full-state pulls cannot overwrite acknowledgements from
+  another model, and durable runner checkpoints retain session/restart identity
+  across process death. Cached state stays browse-only until live validation;
+  successful deletion invalidates it, authoritative conflicts still repair the
+  mounted model, and terminal precedence normalizes legacy nil attempts to
+  generation zero. Explicit skipped overrides reopen a fresh attempt pinned to
+  the user's chosen day before the runner starts. Server and iOS blackout-trip
+  projections now share the rule that only real logged sessions survive a hard
+  blackout, without manufacturing ride conflicts.
+- Final verification passed TypeScript typecheck, the complete Workers/D1 suite
+  (`38` files, `462` tests), and the complete iOS simulator suite (`140` tests)
+  from clean derived data on an iPhone 17 Pro simulator (iOS 26.3.1). Focused
+  concurrency, recovery, calendar-parity, selected-day reopen, legacy-attempt,
+  and persistence regressions also passed. Migration 0032 was authored and
+  locally exercised but was not applied remotely.
+- Independent implementation review found no remaining actionable P1/P2
+  findings across attempt CAS, write ordering, snapshot recovery, account
+  scoping, skipped override, calendar parity, and backward compatibility.
 - Set bodies, retry state, and drain behavior remain owned here. Coordinate only
   the user-keyed namespace and account-switch boundary with the completed P0
-  contracts in [Identity and Account Lifecycle](../identity-account-lifecycle/plan.md).
+  contracts in [Identity and Account Lifecycle](../../identity-account-lifecycle/plan.md).
 - Store only the pending request bodies and small UI checkpoint needed for
   recovery. Do not build event sourcing, background-server infrastructure, or a
   new synchronization protocol for this workstream.

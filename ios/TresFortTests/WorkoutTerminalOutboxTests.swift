@@ -19,7 +19,9 @@ final class WorkoutTerminalOutboxTests: XCTestCase {
         dayTemplateID: String? = "day-a",
         resolvedSessionID: String? = nil,
         deliveryState: WorkoutTerminalDeliveryState = .queued,
-        failedHTTPStatus: Int? = nil
+        failedHTTPStatus: Int? = nil,
+        expectedAttempt: Int? = nil,
+        restartDiscardedAttempt: Int? = nil
     ) -> WorkoutTerminalIntent {
         WorkoutTerminalIntent(
             id: id,
@@ -28,12 +30,17 @@ final class WorkoutTerminalOutboxTests: XCTestCase {
             dayTemplateID: dayTemplateID,
             resolvedSessionID: resolvedSessionID,
             deliveryState: deliveryState,
-            failedHTTPStatus: failedHTTPStatus)
+            failedHTTPStatus: failedHTTPStatus,
+            expectedAttempt: expectedAttempt,
+            restartDiscardedAttempt: restartDiscardedAttempt)
     }
 
     func testPersistsFinishIntentAcrossRelaunchAndGranularUpdate() {
         let defaults = defaults()
-        let queued = intent(id: "finish-a")
+        let queued = intent(
+            id: "finish-a",
+            expectedAttempt: 7,
+            restartDiscardedAttempt: 6)
         WorkoutTerminalOutboxStore.enqueue(
             queued, userID: "user-a", defaults: defaults)
 
@@ -52,7 +59,13 @@ final class WorkoutTerminalOutboxTests: XCTestCase {
 
         let relaunched = WorkoutTerminalOutboxStore.load(
             userID: "user-a", defaults: defaults)
-        XCTAssertEqual(relaunched.intents, [failed])
+        let persisted = relaunched.intent(for: date)
+        XCTAssertEqual(persisted?.id, failed.id)
+        XCTAssertEqual(persisted?.resolvedSessionID, failed.resolvedSessionID)
+        XCTAssertEqual(persisted?.deliveryState, failed.deliveryState)
+        XCTAssertEqual(persisted?.failedHTTPStatus, failed.failedHTTPStatus)
+        XCTAssertEqual(persisted?.expectedAttempt, 7)
+        XCTAssertEqual(persisted?.restartDiscardedAttempt, 6)
         XCTAssertEqual(relaunched.count, 1)
     }
 
@@ -204,6 +217,7 @@ final class WorkoutTerminalOutboxTests: XCTestCase {
         WorkoutTerminalOutboxStore.requeueAcknowledgedDiscard(
             date: date,
             resolvedSessionID: "session-new",
+            expectedAttempt: 0,
             userID: "user-a",
             defaults: defaults)
 

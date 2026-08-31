@@ -41,7 +41,6 @@ surfaces without adding AI to the Worker or creating a second coaching record.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | coordinates_with | plan:workout-write-reliability#P1 | Feedback and workout completion share the terminal session-write path, but either slice may land first. |
 | P1 | coordinates_with | plan:reversible-plan-management#P2 | Reuse one plan-history projection for visibility and reversion rather than building a second change feed. |
 
 ## Next step
@@ -58,3 +57,6 @@ executable backlog; it does not require the later change-history work to start.
   P0 does not add a separate session-RPE field.
 - The Worker remains deterministic data infrastructure. Claude interprets the
   feedback in conversation; the backend stores and returns it.
+- Reuse the durable terminal session-write path completed in
+  [Workout Write Reliability](../completed/workout-write-reliability/plan.md);
+  it is historical foundation rather than an unresolved dependency.

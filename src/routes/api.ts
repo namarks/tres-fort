@@ -24,6 +24,7 @@ import {
   getGroupWithMembers,
   getHistory,
   getOrCreateSession,
+  getOwnedSessionByDate,
   getDayTemplateInPlan,
   getPlanTree,
   getState,
@@ -47,6 +48,8 @@ import {
   setUserMcpPassphrase,
   setHealthActivitySharing,
   softDeleteActivity,
+  reviveDiscardedSession,
+  SessionWriteConflictError,
   todayInTz,
   updateExercise,
   upsertHealthKitActivity,
@@ -121,6 +124,18 @@ function invalidMutationFields(
     if (hasOwn(body, field) && !rule(body[field])) invalid.push(field);
   }
   return invalid;
+}
+
+function readExpectedAttemptQuery(
+  c: Context<HonoEnv>,
+): { ok: true; value?: number } | { ok: false } {
+  const raw = c.req.query('expected_attempt');
+  if (raw === undefined) return { ok: true };
+  if (raw.trim() === '') return { ok: false };
+  const value = Number(raw);
+  return isNonNegativeInteger(value)
+    ? { ok: true, value }
+    : { ok: false };
 }
 
 // ---- sync pull -----------------------------------------------------------
@@ -291,7 +306,14 @@ apiRoutes.get('/today', async (c) => {
   const plan = await getActivePlan(c.env.DB, userId);
   if (!plan) return c.json({ error: 'no_active_plan' }, 400);
   const date = todayInTz(await getUserTimezone(c.env.DB, userId));
-  const session = await getOrCreateSession(c.env.DB, userId, plan.id, date, null);
+  const session = await getOrCreateSession(
+    c.env.DB,
+    userId,
+    plan.id,
+    date,
+    null,
+    { reviveDiscarded: false },
+  );
   const sets = await c.env.DB
     .prepare('SELECT * FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL ORDER BY logged_at')
     .bind(session.id)
@@ -309,8 +331,20 @@ apiRoutes.post('/sessions', async (c) => {
   const invalid = invalidMutationFields(b, {}, {
     date: (value) => typeof value === 'string' && ISO_DATE_RE.test(value),
     day_template_id: (value) => value === null || isNonEmptyString(value),
+    restart_discarded: (value) => typeof value === 'boolean',
+    expected_attempt: isNonNegativeInteger,
   });
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const restartDiscarded = b.restart_discarded === true;
+  if (restartDiscarded && !hasOwn(b, 'expected_attempt')) {
+    return c.json(
+      {
+        error: 'invalid_fields',
+        fields: ['expected_attempt'],
+      },
+      400,
+    );
+  }
   const date =
     typeof b.date === 'string'
       ? b.date
@@ -327,17 +361,83 @@ apiRoutes.post('/sessions', async (c) => {
   ) {
     return c.json({ error: 'unknown_day' }, 422);
   }
-  const s = await getOrCreateSession(
-    c.env.DB,
-    userId,
-    plan.id,
-    date,
-    dayTemplateId,
-  );
+  let s;
+  if (restartDiscarded) {
+    const expectedAttempt = b.expected_attempt as number;
+    const existing = await getOwnedSessionByDate(c.env.DB, userId, date);
+    if (!existing) {
+      return c.json(
+        { error: 'restart_target_missing', expected_attempt: expectedAttempt },
+        409,
+      );
+    }
+    s = existing;
+    if (existing.status === 'discarded') {
+      const revived = await reviveDiscardedSession(
+        c.env.DB,
+        userId,
+        existing.id,
+        expectedAttempt,
+        dayTemplateId,
+      );
+      if (!revived) return c.json({ error: 'not_found' }, 404);
+      if ('error' in revived) return c.json(revived, 409);
+      s = revived;
+    } else if (existing.attempt !== expectedAttempt + 1) {
+      return c.json(
+        {
+          error: 'session_attempt_conflict',
+          status: existing.status,
+          expected_attempt: expectedAttempt,
+          current_attempt: existing.attempt,
+          current_session: existing,
+        },
+        409,
+      );
+    }
+  } else {
+    const expectedAttempt = hasOwn(b, 'expected_attempt')
+      ? (b.expected_attempt as number)
+      : undefined;
+    s = await getOrCreateSession(
+      c.env.DB,
+      userId,
+      plan.id,
+      date,
+      dayTemplateId,
+      { reviveDiscarded: false, expectedAttempt },
+    );
+  }
+  if (!restartDiscarded && s.status === 'discarded') {
+    return c.json(
+      { error: 'session_discarded', status: 'discarded', current_session: s },
+      409,
+    );
+  } else if (
+    !restartDiscarded &&
+    hasOwn(b, 'expected_attempt') &&
+    s.attempt !== (b.expected_attempt as number)
+  ) {
+    const expectedAttempt = b.expected_attempt as number;
+    return c.json(
+      {
+        error: 'session_attempt_conflict',
+        status: s.status,
+        expected_attempt: expectedAttempt,
+        current_attempt: s.attempt,
+        current_session: s,
+      },
+      409,
+    );
+  }
   return c.json(s, 201);
 });
 
 apiRoutes.patch('/sessions/:id', async (c) => {
+  const expected = readExpectedAttemptQuery(c);
+  if (!expected.ok) {
+    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
+  }
   const parsed = await readMutationBody(c);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
@@ -346,9 +446,28 @@ apiRoutes.patch('/sessions/:id', async (c) => {
     // status allowlist and stable invalid_status response.
     perceived_fatigue: isNonNegativeInteger,
     notes: (value) => typeof value === 'string',
+    day_template_id: (value) => value === null || isNonEmptyString(value),
   });
+  if (
+    hasOwn(b, 'day_template_id') &&
+    !(typeof b.status === 'string' && b.status.trim().toLowerCase() === 'planned')
+  ) {
+    invalid.push('day_template_id');
+  }
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
-  const s = await patchSession(c.env.DB, c.get('userId'), c.req.param('id'), b);
+  if (typeof b.day_template_id === 'string') {
+    const plan = await getActivePlan(c.env.DB, c.get('userId'));
+    if (!plan || !(await getDayTemplateInPlan(c.env.DB, plan.id, b.day_template_id))) {
+      return c.json({ error: 'unknown_day' }, 422);
+    }
+  }
+  const s = await patchSession(
+    c.env.DB,
+    c.get('userId'),
+    c.req.param('id'),
+    b,
+    expected.value,
+  );
   if (!s) return c.json({ error: 'not_found' }, 404);
   if ('error' in s) {
     // Exhaustive: invalid_status → 400 (bad request, nothing persisted);
@@ -361,11 +480,21 @@ apiRoutes.patch('/sessions/:id', async (c) => {
 
 // Discard a session — "I didn't really do this." Soft-deletes its sets
 // and marks it 'discarded' (vanishes from the projection; excluded from
-// history/volume/conflicts). Idempotent. Restarting the same date via
-// GET /today or POST /sessions resurrects a fresh planned session.
+// history/volume/conflicts). Idempotent. Restarting the same date requires
+// the explicit attempt-scoped POST /sessions restart protocol.
 apiRoutes.post('/sessions/:id/discard', async (c) => {
-  const s = await discardSession(c.env.DB, c.get('userId'), c.req.param('id'));
+  const expected = readExpectedAttemptQuery(c);
+  if (!expected.ok) {
+    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
+  }
+  const s = await discardSession(
+    c.env.DB,
+    c.get('userId'),
+    c.req.param('id'),
+    expected.value,
+  );
   if (!s) return c.json({ error: 'not_found' }, 404);
+  if ('error' in s) return c.json(s, 409);
   return c.json(s);
 });
 
@@ -393,6 +522,7 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
       logged_at: isNonNegativeInteger,
       duration_s: isNullableNonNegativeInteger,
       is_timed: (value) => typeof value === 'boolean',
+      expected_attempt: isNonNegativeInteger,
     },
   );
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
@@ -411,12 +541,21 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
       logged_at: b.logged_at as number | undefined,
       duration_s: b.duration_s as number | null | undefined,
       is_timed: b.is_timed as boolean | undefined,
+      expected_attempt: b.expected_attempt as number | undefined,
       source: 'ios',
     });
     return c.json(result, result.deduped ? 200 : 201);
   } catch (e) {
+    if (e instanceof SessionWriteConflictError) {
+      return c.json(e.response(), 409);
+    }
     const error = (e as Error).message;
-    return c.json({ error }, error === 'session_discarded' ? 409 : 404);
+    return c.json(
+      { error },
+      error === 'session_discarded' || error === 'session_attempt_conflict'
+        ? 409
+        : 404,
+    );
   }
 });
 

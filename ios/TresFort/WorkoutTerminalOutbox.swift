@@ -28,8 +28,36 @@ struct WorkoutTerminalIntent: Codable, Identifiable, Equatable {
     let date: String
     let dayTemplateID: String?
     var resolvedSessionID: String?
+    /// Session generation this user choice targets. It is bound before the
+    /// terminal request and retained across retries/relaunches.
+    var expectedAttempt: Int?
+    /// Prior discarded generation explicitly restarted by the mounted runner.
+    /// Only that durable user action may authorize date-level revival.
+    let restartDiscardedAttempt: Int?
     var deliveryState: WorkoutTerminalDeliveryState
     var failedHTTPStatus: Int?
+
+    init(
+        id: String,
+        action: WorkoutTerminalAction,
+        date: String,
+        dayTemplateID: String?,
+        resolvedSessionID: String?,
+        deliveryState: WorkoutTerminalDeliveryState,
+        failedHTTPStatus: Int?,
+        expectedAttempt: Int? = nil,
+        restartDiscardedAttempt: Int? = nil
+    ) {
+        self.id = id
+        self.action = action
+        self.date = date
+        self.dayTemplateID = dayTemplateID
+        self.resolvedSessionID = resolvedSessionID
+        self.expectedAttempt = expectedAttempt
+        self.restartDiscardedAttempt = restartDiscardedAttempt
+        self.deliveryState = deliveryState
+        self.failedHTTPStatus = failedHTTPStatus
+    }
 }
 
 /// Account-local terminal intents, with at most one current intent or discard
@@ -88,6 +116,28 @@ struct WorkoutTerminalOutbox: Codable, Equatable {
         if replacement.resolvedSessionID == nil {
             replacement.resolvedSessionID = current.resolvedSessionID
         }
+        if replacement.expectedAttempt == nil {
+            replacement.expectedAttempt = current.expectedAttempt
+        } else if current.expectedAttempt != nil {
+            replacement.expectedAttempt = current.expectedAttempt
+        }
+        if replacement.restartDiscardedAttempt
+            != current.restartDiscardedAttempt
+        {
+            // The restart authorization is part of the immutable user intent,
+            // not delivery metadata. A callback built from an older/minimal
+            // payload may omit it, but may never erase or retarget it.
+            replacement = WorkoutTerminalIntent(
+                id: replacement.id,
+                action: replacement.action,
+                date: replacement.date,
+                dayTemplateID: replacement.dayTemplateID,
+                resolvedSessionID: replacement.resolvedSessionID,
+                deliveryState: replacement.deliveryState,
+                failedHTTPStatus: replacement.failedHTTPStatus,
+                expectedAttempt: replacement.expectedAttempt,
+                restartDiscardedAttempt: current.restartDiscardedAttempt)
+        }
         intentsByDate[intent.date] = replacement
     }
 
@@ -111,19 +161,49 @@ struct WorkoutTerminalOutbox: Codable, Equatable {
         intentsByDate.removeValue(forKey: date)
     }
 
+    /// Retire an exact stale discard after the Worker proves that its attempt
+    /// was superseded. Unlike generic removal, this evidence-bound path may
+    /// remove a queued/failed discard; it cannot touch a replacement id.
+    mutating func retireSupersededDiscard(id: String) {
+        guard let match = intentsByDate.first(where: { $0.value.id == id }),
+              match.value.action == .discard
+        else { return }
+        intentsByDate.removeValue(forKey: match.key)
+    }
+
+    /// Bind an exact discard barrier to an authoritative discarded server row.
+    /// This may advance the attempt when another device already discarded a
+    /// later generation; generic `replace` intentionally remains write-once.
+    mutating func acknowledgeDiscard(
+        id: String,
+        resolvedSessionID: String,
+        expectedAttempt: Int?
+    ) {
+        guard var current = intentsByDate.values.first(where: {
+            $0.id == id && $0.action == .discard
+        }) else { return }
+        current.resolvedSessionID = resolvedSessionID
+        current.expectedAttempt = expectedAttempt
+        current.deliveryState = .acknowledged
+        current.failedHTTPStatus = nil
+        intentsByDate[current.date] = current
+    }
+
     /// The one intentional acknowledgement-regression path. A full state pull
     /// may prove that a late session create revived a date after discard was
     /// acknowledged. In that evidence-backed case, retain the same barrier id
     /// and requeue it against the newly observed canonical session.
     mutating func requeueAcknowledgedDiscard(
         date: String,
-        resolvedSessionID: String
+        resolvedSessionID: String,
+        expectedAttempt: Int?
     ) {
         guard var current = intentsByDate[date],
               current.action == .discard,
               current.deliveryState == .acknowledged
         else { return }
         current.resolvedSessionID = resolvedSessionID
+        current.expectedAttempt = expectedAttempt
         current.deliveryState = .queued
         current.failedHTTPStatus = nil
         intentsByDate[date] = current
@@ -198,16 +278,43 @@ enum WorkoutTerminalOutboxStore {
         }
     }
 
+    static func retireSupersededDiscard(
+        id: String,
+        userID: String?,
+        defaults: UserDefaults = .standard
+    ) {
+        update(userID: userID, defaults: defaults) {
+            $0.retireSupersededDiscard(id: id)
+        }
+    }
+
+    static func acknowledgeDiscard(
+        id: String,
+        resolvedSessionID: String,
+        expectedAttempt: Int?,
+        userID: String?,
+        defaults: UserDefaults = .standard
+    ) {
+        update(userID: userID, defaults: defaults) {
+            $0.acknowledgeDiscard(
+                id: id,
+                resolvedSessionID: resolvedSessionID,
+                expectedAttempt: expectedAttempt)
+        }
+    }
+
     static func requeueAcknowledgedDiscard(
         date: String,
         resolvedSessionID: String,
+        expectedAttempt: Int?,
         userID: String?,
         defaults: UserDefaults = .standard
     ) {
         update(userID: userID, defaults: defaults) {
             $0.requeueAcknowledgedDiscard(
                 date: date,
-                resolvedSessionID: resolvedSessionID)
+                resolvedSessionID: resolvedSessionID,
+                expectedAttempt: expectedAttempt)
         }
     }
 

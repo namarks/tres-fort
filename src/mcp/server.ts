@@ -409,9 +409,12 @@ const TOOLS: Record<string, Tool> = {
       if (!plan) return { error: 'no_active_plan' };
       const today = await ownerToday(env, userId);
       const date = typeof a.session_date === 'string' ? a.session_date : today;
-      const session = await getOrCreateSession(env.DB, userId, plan.id, date, null);
       const ex = await resolveExercise(env.DB, String(a.exercise));
       if (!ex) return { error: 'unknown_exercise', query: a.exercise };
+      // Resolve validation-only input before touching the date row. In
+      // particular, an unknown exercise must not revive a discarded session
+      // and then return without logging anything.
+      const session = await getOrCreateSession(env.DB, userId, plan.id, date, null);
       const exId = (ex as { id: string }).id;
       const isWarmup = a.is_warmup === true;
       const requestedSetIndex = typeof a.set_index === 'number' ? a.set_index : null;
@@ -1014,29 +1017,45 @@ const TOOLS: Record<string, Tool> = {
   },
   set_planned_session: {
     description:
-      'Pin ONE specific calendar date to a training day (a single-date override, NOT a recurring change). Use this for "next Saturday do legs" — it does not alter the standing weekly pattern and does not bump the plan version. `day` accepts a day template id, day_label, or name. For the permanent weekly routine use set_schedule.',
+      'Pin ONE specific calendar date to a training day (a single-date override, NOT a recurring change). Use this for "next Saturday do legs" — it does not alter the standing weekly pattern and does not bump the plan version. `day` accepts a day template id, day_label, or name. Pass expected_attempt from the current session when one exists; a mismatch returns a conflict so this calendar edit cannot rewrite a newer workout attempt. For the permanent weekly routine use set_schedule.',
     inputSchema: obj(
       {
         date: { type: 'string', description: 'YYYY-MM-DD (device-local)' },
         day: { type: 'string', description: 'day template id, label, or name' },
+        expected_attempt: { type: 'integer', minimum: 0 },
       },
       ['date', 'day'],
     ),
     write: true,
     handler: async (a, env, userId) =>
-      setPlannedSession(env.DB, userId, String(a.date), String(a.day)),
+      setPlannedSession(
+        env.DB,
+        userId,
+        String(a.date),
+        String(a.day),
+        typeof a.expected_attempt === 'number' ? a.expected_attempt : undefined,
+      ),
     note: (a, r) =>
       r?.ok ? `Planned ${a.date} → day "${a.day}" (one-off, no plan change).` : null,
   },
   skip_planned_session: {
     description:
-      'Mark ONE specific calendar date as a rest/skip day (single-date override, NOT recurring). Use for "skip this Friday". Does not change the standing weekly pattern and does not bump the plan version.',
+      'Mark ONE specific calendar date as a rest/skip day (single-date override, NOT recurring). Use for "skip this Friday". Pass expected_attempt from the current session when one exists; a mismatch returns a conflict so this calendar edit cannot hide a newer workout attempt. Does not change the standing weekly pattern and does not bump the plan version.',
     inputSchema: obj(
-      { date: { type: 'string', description: 'YYYY-MM-DD (device-local)' } },
+      {
+        date: { type: 'string', description: 'YYYY-MM-DD (device-local)' },
+        expected_attempt: { type: 'integer', minimum: 0 },
+      },
       ['date'],
     ),
     write: true,
-    handler: async (a, env, userId) => skipPlannedSession(env.DB, userId, String(a.date)),
+    handler: async (a, env, userId) =>
+      skipPlannedSession(
+        env.DB,
+        userId,
+        String(a.date),
+        typeof a.expected_attempt === 'number' ? a.expected_attempt : undefined,
+      ),
     note: (a, r) => (r?.ok ? `Skipped ${a.date} (one-off rest, no plan change).` : null),
   },
   set_race: {

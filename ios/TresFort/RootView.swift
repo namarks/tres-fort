@@ -32,6 +32,16 @@ struct RootView: View {
                 .preferredColorScheme(.dark)
             }
         }
+        // ActivityKit restores records independently of authentication and
+        // onboarding. RootView is always mounted, so process-death cleanup also
+        // runs for signed-out, expired-credential, and first-run launches.
+        .task {
+            // A process-death rest owns both ActivityKit UI and a local
+            // notification. Neither has a recoverable timer in the new model,
+            // so clear the pair at the same always-mounted launch boundary.
+            RestCue.cancelNotification()
+            await RestLiveActivity.endStaleActivities()
+        }
         // Universal Link entry: a tapped https://…/join/<code> routes here
         // (onOpenURL on iOS 14+, plus the canonical web-browsing activity
         // hook for belt-and-suspenders). Both funnel into AuthModel, which

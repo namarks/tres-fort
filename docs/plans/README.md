@@ -91,8 +91,6 @@ until their named authority, evidence, or activation condition is satisfied.
 Make every workout and plan mutation authorized, validated, durable, and
 recoverable before adding product depth.
 
-- [Workout write reliability](workout-write-reliability/plan.md) — **active**;
-  make offline and interrupted workout writes durable and recoverable.
 - [Identity and account lifecycle](identity-account-lifecycle/plan.md) —
   **gated**; the tested Sign in with Apple revocation path is implemented, while
   owner-managed signing credentials and live provider/deployment proof remain.

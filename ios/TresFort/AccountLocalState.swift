@@ -71,10 +71,14 @@ enum AccountLocalState {
         defaults.removeObject(forKey: legacyKey)
     }
 
+    @MainActor
     static func clear(userID: String, defaults: UserDefaults = .standard) {
         ActivityOutboxStore.clear(userID: userID, defaults: defaults)
         SetOutboxStore.clear(userID: userID, defaults: defaults)
         WorkoutTerminalOutboxStore.clear(userID: userID, defaults: defaults)
+        WorkoutRunnerCheckpointStore.clear(userID: userID, defaults: defaults)
+        StateSnapshotStore.clear(userID: userID, defaults: defaults)
+        ExerciseCatalogSnapshotStore.clear(userID: userID, defaults: defaults)
         defaults.removeObject(forKey: intervalsConnectionKey(userID: userID))
         defaults.removeObject(forKey: healthEnabledKey(userID: userID))
         defaults.removeObject(forKey: healthAnchorKey(userID: userID))

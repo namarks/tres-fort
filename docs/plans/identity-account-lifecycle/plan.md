@@ -66,8 +66,13 @@ iOS verification.
       revocation outcome for receipt retries, and keep the manual handoff as the
       fail-safe for existing accounts without a stored token.
   - [ ] **(c) Owner-provisioned live revocation proof**
-    - Verify the token exchange and deletion-time revoke flow with owner-managed
-      Apple client-signing credentials before deployment or release.
+    - Deploy the combined Worker only under explicit proof/deployment authority,
+      then verify the token exchange and deletion-time revoke flow with
+      owner-managed Apple client-signing credentials before any app release or
+      production closeout.
+    - Coordinate the shared Worker/migration release with the completed workout
+      write cutover: this branch deploys migrations 0030–0032 together, so a
+      narrow identity-only or workout-only authorization is insufficient.
 
 ## Execution frontier
 
@@ -79,14 +84,22 @@ iOS verification.
 |---|---|---|---|
 | P2(c) | gated_by | external:apple-sign-in-revocation-credentials | The owner must provision the Apple Team ID, key ID, and private signing key directly through the deployment secret surface. |
 | P2(c) | gated_by | external:deployment-authorization | Live provider proof requires separately authorized deployment; merge alone is not production authority. |
+| P2(c) | gated_by | external:workout-write-cutover-authorization | The shared release also applies migration 0032 and deploys the workout compatibility Worker; the workout fence cutover must be explicitly authorized in the same coordinated release window. |
 
 ## Next step
 
 **Now (@owner):** Provision the Apple Team ID, key ID, and private signing key
-directly through the deployment secret surface, then separately authorize the
-controlled P2(c) live provider proof and deployment. Do not send credentials to
-an agent, apply migration `0031`, delete a real account, merge, or deploy under
-the completed P2(b) implementation authority.
+directly through the deployment secret surface, then explicitly authorize one
+coordinated release window covering the controlled P2(c) live provider proof,
+the combined Worker deployment, and the workout write cutover. On this branch,
+`npm run release` applies pending migrations `0030`, `0031`, and `0032` before
+deploying their combined Worker; neither a narrow identity authorization nor a
+narrow workout authorization permits that command. Within the authorized
+window, deploy first, perform the controlled live Apple proof against that
+Worker, and proceed to workout-fence activation only if the proof succeeds. Do
+not send credentials to an agent, apply any of those migrations, activate the
+workout database fence, delete a real account, merge, or deploy under the
+completed P2(b) implementation authority.
 
 ## Notes / open questions
 
@@ -104,9 +117,9 @@ the completed P2(b) implementation authority.
   apply a stale 401 to a renewed/switched session. While deletion is pending,
   only AuthModel can retain the bearer for a receipt retry; feature models are
   denied access, and post-await persistence guards prevent an in-flight task
-  from recreating cleared outbox, intervals, or HealthKit state. This host has
-  no installed iOS simulator runtime, so the checked-in XCTest target could not
-  run through `xcodebuild` here.
+  from recreating cleared outbox, intervals, or HealthKit state. At that P0
+  checkpoint the host lacked an installed simulator runtime; the later combined
+  exact-head runtime proof is recorded in the current verification note below.
 - Runtime account deletion remains destructive and must always require the
   authenticated user's explicit in-app confirmation. Development and CI must
   exercise only seeded users.
@@ -187,13 +200,15 @@ the completed P2(b) implementation authority.
   `{"error":"account_not_found"}` response iOS alone treats as cross-device
   completion; the Worker's generic `{"error":"not_found"}` fallback preserves
   local data and the retry credential. Provider failure never retains local
-  data. No Apple request, credential handling,
+  data. No live Apple request, owner credential handling, remote/production
   migration application, real-account deletion, merge, or deployment was run.
-- Verification at this gate: the full Workers suite passed 434/434, and the
-  TypeScript and plan compilers pass. The full iOS production source typecheck,
-  app-module emission, and XCTest source typecheck pass, including stale
-  renewal, stale Apple-credential callback, account-switch-during-deletion,
-  in-flight deletion/outbox cleanup, durable owner recovery, lost-response
-  retry/bearer, and account-switch-during-export coverage. This host lacks the
-  installed iOS 26.2 platform/runtime required by `xcodebuild`, so XCTest
-  execution remains unavailable locally.
+- At the initial P2(b) gate, the full Workers suite passed 434/434 and the
+  TypeScript, plan, iOS production-source, app-module, and XCTest-source
+  compilers passed. The current combined code tree has since passed the full
+  Workers/D1 suite (482/482), TypeScript and plan validation, and the complete
+  iOS simulator suite (141/141) on an iPhone 17 Pro simulator running iOS
+  26.3.1. That runtime proof includes stale renewal, stale Apple-credential
+  callback, account-switch-during-deletion, in-flight deletion/outbox cleanup,
+  durable owner recovery, lost-response retry/bearer, and
+  account-switch-during-export coverage. The live Apple provider proof remains
+  gated and was not run.

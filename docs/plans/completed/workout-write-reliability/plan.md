@@ -38,10 +38,18 @@ never present a failed write as completed or silently drop the user's intent.
 
 ## Next step
 
-No further repository-executable slice. Any production rollout is a separately
-authorized, one-way cutover: run `npm run release` so the local preflight passes,
-migration 0032 lands with its database fence disabled, and the compatibility
-Worker finishes deploying; then confirm
+No further repository-executable slice. This branch has no workout-only release:
+`npm run release` applies pending identity migrations 0030/0031 together with
+workout migration 0032 and deploys their combined Worker. A narrow workout
+authorization is therefore insufficient. Before that command, satisfy the
+owner-managed Apple credential gate and obtain explicit combined authority for
+the deployment, live revocation proof, and workout cutover defined in
+[Identity and Account Lifecycle](../../identity-account-lifecycle/plan.md), and
+use one coordinated release window covering both workstreams. Within that
+authorized window, run `npm run release` so the local preflight passes,
+migrations 0030–0032 land with the workout database fence disabled, and the
+combined compatibility Worker finishes deploying. Next complete the controlled
+live Apple proof against that Worker; stop if it does not succeed. Then confirm
 `npm run db:workout-write-fence:status:remote` reports `enabled=0`, a null
 activation time, and zero permits. Only a separate production authorization may
 run `npm run db:workout-write-fence:activate:remote`; verify the status becomes
@@ -92,10 +100,13 @@ legacy-mode retirement was performed during closeout.
   generation is `legacy`; expected-attempt checks are generation CAS tokens but
   do not themselves claim a protocol. Only a REST request that explicitly
   declares the iOS `attempt-v1` header can claim the generation, after which
-  tokenless mutation is a visible conflict; MCP set, finish, and one-off calendar
-  writes preserve `legacy`. The migration trigger advances a legacy restart made
-  by the old Worker during the migration-before-deploy window, and an idempotent
-  new-app retry can claim that already-advanced winner. Migration 0032 also lands
+  tokenless session creation, set logging, finish, discard, and other
+  generation-scoped session mutations are visible conflicts; exact set-ID
+  correction or soft-deletion remains tokenless-safe because it cannot retarget
+  or undelete a prior attempt. MCP set, finish, and one-off calendar writes
+  preserve `legacy`. The migration trigger advances a legacy restart made by the
+  old Worker during the migration-before-deploy window, and an idempotent new-app
+  retry can claim that already-advanced winner. Migration 0032 also lands
   a disabled, monotonic database fence: before activation it rejects premature
   `attempt-v1` rows; after activation it admits every `sessions`/`set_logs`
   insert or update only inside the compatibility Worker's transaction-local D1

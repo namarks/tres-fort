@@ -58,8 +58,10 @@ pending set/finish intents while the UI remains queued until server acknowledgem
   runtime verification on an iPhone 17 Pro simulator (iOS 26.3.1) produced a
   successful full app build, 23/23 focused `SetOutboxTests`, and 61/61 complete
   `TresFortTests`; the broader run also exposed and verified a small pre-existing
-  auth-integrity error-label fix. TypeScript typecheck, all 434 Worker tests,
-  direct source compilation, and exact-diff review also pass.
+  auth-integrity error-label fix. A production endpoint regression now also
+  proves stale day-template recovery returns the permanent 422 contract the
+  outbox uses before retrying without the removed association. TypeScript
+  typecheck, all 435 Worker tests, and direct source compilation pass.
 - Set bodies, retry state, and drain behavior remain owned here. Coordinate only
   the user-keyed namespace and account-switch boundary with the completed P0
   contracts in [Identity and Account Lifecycle](../identity-account-lifecycle/plan.md).

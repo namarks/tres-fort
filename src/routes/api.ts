@@ -315,12 +315,24 @@ apiRoutes.post('/sessions', async (c) => {
     typeof b.date === 'string'
       ? b.date
       : todayInTz(await getUserTimezone(c.env.DB, userId));
+  const dayTemplateId =
+    (b.day_template_id as string | null | undefined) ?? null;
+  // An offline intent may retain a day UUID that update_plan has since
+  // rebuilt away. Resolve the optional pin through this user's active plan
+  // before it reaches the sessions FK, both to keep tenant/plan boundaries
+  // closed and to give iOS a stable permanent-client-error fallback.
+  if (
+    dayTemplateId !== null &&
+    !(await getDayTemplateInPlan(c.env.DB, plan.id, dayTemplateId))
+  ) {
+    return c.json({ error: 'unknown_day' }, 422);
+  }
   const s = await getOrCreateSession(
     c.env.DB,
     userId,
     plan.id,
     date,
-    (b.day_template_id as string | null | undefined) ?? null,
+    dayTemplateId,
   );
   return c.json(s, 201);
 });

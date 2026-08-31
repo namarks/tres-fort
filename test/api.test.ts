@@ -133,6 +133,51 @@ describe('plan tree + versioned sync', () => {
 });
 
 describe('sessions, idempotent set logging, history, volume', () => {
+  it('rejects a removed day template with a stable non-retryable response', async () => {
+    const H = auth(await devJwt());
+
+    await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Stale Day Contract' }),
+    });
+    const day = await (
+      await SELF.fetch(`${BASE}/api/days`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ name: 'Removed Day', order_index: 0 }),
+      })
+    ).json<{ id: string }>();
+
+    // update_plan rebuilds day UUIDs. Deleting this unused row reproduces the
+    // stale optional FK an offline iOS set intent can retain across that
+    // rebuild, without involving the client-side fallback under test.
+    const removed = await env.DB.prepare('DELETE FROM day_templates WHERE id = ?1')
+      .bind(day.id)
+      .run();
+    expect(removed.meta.changes).toBe(1);
+
+    const response = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        date: '2026-05-17',
+        day_template_id: day.id,
+      }),
+    });
+
+    // 422 is intentionally permanent to the iOS outbox (unlike 408/429), so
+    // it clears only the stale association and retries the set as ad-hoc.
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error: 'unknown_day' });
+    const persisted = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM sessions WHERE date = ?1',
+    )
+      .bind('2026-05-17')
+      .first<{ n: number }>();
+    expect(persisted?.n).toBe(0);
+  });
+
   it('logs sets idempotently and computes history + volume', async () => {
     const jwt = await devJwt();
     const H = auth(jwt);

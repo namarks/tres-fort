@@ -15,11 +15,11 @@ beforeAll(async () => {
 describe('single-owner claim (MCP bootstrap -> Sign in with Apple)', () => {
   it('claims the MCP bootstrap row so MCP-seeded data stays on one user', async () => {
     // MCP created the owner + a plan before any iOS sign-in.
-    const boot = await ensureOwnerUser(env.DB, undefined);
+    const boot = (await ensureOwnerUser(env.DB, undefined))!;
     await createPlan(env.DB, boot.id, 'Starter');
 
     // First Sign in with Apple (owner not locked) claims that same row.
-    const claimed = await claimOrCreateOwner(env.DB, 'apple-sub-real', 'me@x.com', 'Me', false);
+    const claimed = (await claimOrCreateOwner(env.DB, 'apple-sub-real', 'me@x.com', 'Me', false))!;
     expect(claimed.id).toBe(boot.id);
     expect(claimed.apple_sub).toBe('apple-sub-real');
 
@@ -33,13 +33,13 @@ describe('single-owner claim (MCP bootstrap -> Sign in with Apple)', () => {
     expect(plan).not.toBeNull(); // seeded plan preserved under the claimed id
 
     // Idempotent: same Apple sub returns the same user.
-    const again = await claimOrCreateOwner(env.DB, 'apple-sub-real', null, null, false);
+    const again = (await claimOrCreateOwner(env.DB, 'apple-sub-real', null, null, false))!;
     expect(again.id).toBe(boot.id);
   });
 
   it('does not silently claim when the owner is locked', async () => {
     await ensureOwnerUser(env.DB, undefined); // one bootstrap user
-    const created = await claimOrCreateOwner(env.DB, 'other-sub', null, null, true);
+    const created = (await claimOrCreateOwner(env.DB, 'other-sub', null, null, true))!;
     const users = await env.DB.prepare('SELECT COUNT(*) AS c FROM users').first<{ c: number }>();
     expect(users!.c).toBe(2); // locked -> new user, not a claim
     expect(created.apple_sub).toBe('other-sub');
@@ -64,6 +64,10 @@ describe('open sign-in does not capture owner state (Codex PR#38 P1)', () => {
   // tests in OTHER files seeding dependents into the shared D1 too.
   beforeEach(async () => {
     await env.DB.batch([
+      // Reset terminal owner-deletion state before exercising fresh-install
+      // owner semantics in this suite.
+      env.DB.prepare('DELETE FROM account_deletion_receipts'),
+      env.DB.prepare('DELETE FROM owner_deletion_tombstone'),
       // Append-only logs that reference users directly.
       env.DB.prepare('DELETE FROM set_logs'),
       env.DB.prepare('DELETE FROM notes'),
@@ -98,7 +102,7 @@ describe('open sign-in does not capture owner state (Codex PR#38 P1)', () => {
 
     // Pre-fix: ensureOwnerUser returns the reviewer row (earliest by
     // created_at). Post-fix: it CREATES the owner row under OWNER_APPLE_SUB.
-    const owner = await ensureOwnerUser(env.DB, 'configured-owner-sub');
+    const owner = (await ensureOwnerUser(env.DB, 'configured-owner-sub'))!;
     expect(owner.apple_sub).toBe('configured-owner-sub');
     expect(owner.id).not.toBe(reviewer.id);
 

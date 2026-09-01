@@ -49,7 +49,7 @@ struct DayAgendaView: View {
                     // On a can_train_light=false blackout the backend projects
                     // items: [] — so suppress the endurance cards here too, or a
                     // blackout day would still show training to do (Codex #61 P2).
-                    if proj.kind != .unavailable {
+                    if !proj.suppressesScheduleAndEndurance {
                         loggedActivitiesSection
                         completedActivitiesSection
                         ridesSection
@@ -77,19 +77,33 @@ struct DayAgendaView: View {
 
     private func title(_ proj: DayProjection, today: String) -> String {
         switch proj {
-        case .session(let s):
+        case .session(let s, let hardBlackoutTripType):
+            let compositeTitle: (String) -> String = { title in
+                hardBlackoutTripType == nil ? withBike(title) : title
+            }
             switch s {
-            case "completed":   return withBike("COMPLETED")
+            case "completed":   return compositeTitle("COMPLETED")
             // An in-progress session with nothing logged yet records no work
             // — it's the upcoming workout, not an active one. Show its name.
             case "in_progress":
-                return withBike(liveSetCount > 0 ? "IN PROGRESS" : (planTitle(today: today) ?? "WORKOUT"))
+                return compositeTitle(
+                    liveSetCount > 0
+                        ? "IN PROGRESS"
+                        : (planTitle(
+                            today: today,
+                            allowScheduleInference: hardBlackoutTripType == nil)
+                            ?? "WORKOUT"))
             // Planned + projected collapse to one user-facing "WORKOUT"
             // (no "Planned"/"Projected" wording); prefer the template name.
-            case "planned":     return withBike(planTitle(today: today) ?? "WORKOUT")
+            case "planned":
+                return compositeTitle(
+                    planTitle(
+                        today: today,
+                        allowScheduleInference: hardBlackoutTripType == nil)
+                        ?? "WORKOUT")
             // Skipped lift was NOT performed → not "lift + bike"; no suffix.
             case "skipped":     return "SKIPPED"
-            default:            return withBike(s.uppercased())
+            default:            return compositeTitle(s.uppercased())
             }
         case .projected(let tid):
             return withBike(sync.dayTemplate(id: tid)?.title.uppercased() ?? "WORKOUT")
@@ -133,7 +147,8 @@ struct DayAgendaView: View {
     /// calendar / `nextWorkout` use (FIX5's class), not a bare
     /// `day_template_id` read. When the session's own `day_template_id`
     /// is null (server drops it for an existing same-date row) this still
-    /// recovers the template via the weekly schedule.
+    /// recovers the template via the weekly schedule unless a hard blackout
+    /// suppresses that schedule alongside endurance content.
     ///
     /// The schedule-inference fallback is gated EXACTLY as FIX6 gates it
     /// in `CalendarMonthView.dayCell`: `dateString >= today` — the same
@@ -141,20 +156,30 @@ struct DayAgendaView: View {
     /// (`dateString < today`). For a PAST date with a null
     /// `day_template_id` this returns nil (no schedule-inferred relabel —
     /// don't reintroduce the FIX6 class in the agenda); for today/future
-    /// the gate is true so a planned session resolves its template.
+    /// the gate is true so a planned session resolves its template, except
+    /// when `allowScheduleInference` is false for a hard blackout.
     /// `today` is supplied by the caller (captured ONCE per render in
     /// `body`, midnight-TOCTOU discipline) — title + content body share
     /// that single value rather than re-reading the computed clock.
-    private func plannedDisplayDay(today: String) -> DayTemplate? {
+    private func plannedDisplayDay(
+        today: String,
+        allowScheduleInference: Bool = true
+    ) -> DayTemplate? {
         sync.sessionDisplayTemplate(
             forDateString: dateString,
-            allowScheduleInference: dateString >= today)
+            allowScheduleInference:
+                allowScheduleInference && dateString >= today)
     }
 
     /// Template title for a real planned session (via the shared,
     /// FIX6-gated resolver above — not a bare `day_template_id`).
-    private func planTitle(today: String) -> String? {
-        plannedDisplayDay(today: today)?.title.uppercased()
+    private func planTitle(
+        today: String,
+        allowScheduleInference: Bool = true
+    ) -> String? {
+        plannedDisplayDay(
+            today: today,
+            allowScheduleInference: allowScheduleInference)?.title.uppercased()
     }
 
     private var realSession: SessionRow? {
@@ -165,19 +190,23 @@ struct DayAgendaView: View {
 
     @ViewBuilder private func content(_ proj: DayProjection, today: String) -> some View {
         switch proj {
-        case .session(let status):
+        case .session(let status, let hardBlackoutTripType):
             if status == "in_progress" && liveSetCount == 0 {
                 // Phantom in-progress (sets logged then all deleted): nothing
                 // was recorded, so show the planned workout's targets — not a
                 // bare "no sets logged" under an "in progress" header.
-                plannedContent(today: today)
+                plannedContent(
+                    today: today,
+                    allowScheduleInference: hardBlackoutTripType == nil)
             } else if status == "completed" || status == "in_progress" {
                 loggedSets
             } else if status == "skipped" {
                 note("This workout was skipped.")
             } else {
                 // planned real session → show its template targets.
-                plannedContent(today: today)
+                plannedContent(
+                    today: today,
+                    allowScheduleInference: hardBlackoutTripType == nil)
             }
         case .projected(let tid):
             if let day = sync.dayTemplate(id: tid) {
@@ -213,8 +242,14 @@ struct DayAgendaView: View {
     // template via the weekly schedule when the session's own id is null,
     // for today/future only. Past planned w/ null id stays the graceful
     // no-template note (no schedule-inferred relabel — FIX6 class preserved).
-    @ViewBuilder private func plannedContent(today: String) -> some View {
-        if let day = plannedDisplayDay(today: today) {
+    @ViewBuilder private func plannedContent(
+        today: String,
+        allowScheduleInference: Bool = true
+    ) -> some View {
+        if let day = plannedDisplayDay(
+            today: today,
+            allowScheduleInference: allowScheduleInference)
+        {
             templateTargets(day)
         } else {
             note("Workout — no template details cached.")

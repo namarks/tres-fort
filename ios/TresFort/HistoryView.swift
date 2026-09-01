@@ -28,11 +28,16 @@ struct HistoryView: View {
         NavigationStack {
             ZStack {
                 Theme.background
-                switch segment {
-                case .calendar:
-                    CalendarMonthView(sync: sync)
-                case .exercises:
-                    ExerciseHistoryList(sync: sync)
+                VStack(spacing: 0) {
+                    if sync.isUsingCachedState {
+                        CachedStateBanner()
+                    }
+                    switch segment {
+                    case .calendar:
+                        CalendarMonthView(sync: sync)
+                    case .exercises:
+                        ExerciseHistoryList(sync: sync)
+                    }
                 }
             }
             .navigationBarTitleDisplayMode(.inline)

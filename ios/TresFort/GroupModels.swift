@@ -449,7 +449,8 @@ struct MeProfile: Decodable, Equatable {
 /// Local mirror of the user's intervals.icu connection state. There's no
 /// GET endpoint today — the backend simply UPDATEs columns on `users` —
 /// so iOS tracks this from the PATCH response plus the input the user
-/// typed. Persist in @AppStorage so a sign-out/in retains it.
+/// typed. Persist in the current user's scoped UserDefaults namespace so a
+/// sign-out/in retains it without exposing it to another Apple account.
 struct IntervalsConnection: Codable, Equatable {
     /// The athlete id the user supplied. iOS never re-reads the api_key
     /// (it's write-only on the wire — SecureField on the form).

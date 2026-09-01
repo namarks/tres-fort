@@ -7,6 +7,9 @@ declare module 'cloudflare:test' {
     DEV_AUTH_SECRET: string;
     OWNER_AUTH_PASSPHRASE: string;
     APPLE_BUNDLE_ID: string;
+    APPLE_TEAM_ID?: string;
+    APPLE_KEY_ID?: string;
+    APPLE_PRIVATE_KEY?: string;
     OWNER_APPLE_SUB?: string;
     /** intervals.icu key — wired in vitest.config.ts so tests are not dormant. */
     INTERVALS_ICU_API_KEY?: string;

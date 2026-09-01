@@ -22,6 +22,15 @@ const auth = (jwt: string) => ({
   Authorization: `Bearer ${jwt}`,
 });
 
+async function activateWorkoutWriteFence(): Promise<void> {
+  await env.DB
+    .prepare(
+      'UPDATE workout_write_fence SET enabled=1, activated_at=?1 WHERE id=1',
+    )
+    .bind(Date.now())
+    .run();
+}
+
 describe('health + auth', () => {
   it('health is public', async () => {
     const r = await SELF.fetch(`${BASE}/health`);
@@ -133,6 +142,51 @@ describe('plan tree + versioned sync', () => {
 });
 
 describe('sessions, idempotent set logging, history, volume', () => {
+  it('rejects a removed day template with a stable non-retryable response', async () => {
+    const H = auth(await devJwt());
+
+    await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Stale Day Contract' }),
+    });
+    const day = await (
+      await SELF.fetch(`${BASE}/api/days`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ name: 'Removed Day', order_index: 0 }),
+      })
+    ).json<{ id: string }>();
+
+    // update_plan rebuilds day UUIDs. Deleting this unused row reproduces the
+    // stale optional FK an offline iOS set intent can retain across that
+    // rebuild, without involving the client-side fallback under test.
+    const removed = await env.DB.prepare('DELETE FROM day_templates WHERE id = ?1')
+      .bind(day.id)
+      .run();
+    expect(removed.meta.changes).toBe(1);
+
+    const response = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        date: '2026-05-17',
+        day_template_id: day.id,
+      }),
+    });
+
+    // 422 is intentionally permanent to the iOS outbox (unlike 408/429), so
+    // it clears only the stale association and retries the set as ad-hoc.
+    expect(response.status).toBe(422);
+    expect(await response.json()).toEqual({ error: 'unknown_day' });
+    const persisted = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM sessions WHERE date = ?1',
+    )
+      .bind('2026-05-17')
+      .first<{ n: number }>();
+    expect(persisted?.n).toBe(0);
+  });
+
   it('logs sets idempotently and computes history + volume', async () => {
     const jwt = await devJwt();
     const H = auth(jwt);
@@ -168,7 +222,10 @@ describe('sessions, idempotent set logging, history, volume', () => {
       body: JSON.stringify(setBody),
     });
     expect(first.status).toBe(201);
-    expect(await first.json<{ deduped: boolean }>()).toMatchObject({ deduped: false });
+    expect(await first.json()).toMatchObject({
+      deduped: false,
+      session: { id: session.id, status: 'in_progress', attempt: 0 },
+    });
 
     // same id again (offline retry) -> deduped, no duplicate row
     const retry = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
@@ -177,7 +234,10 @@ describe('sessions, idempotent set logging, history, volume', () => {
       body: JSON.stringify(setBody),
     });
     expect(retry.status).toBe(200);
-    expect(await retry.json<{ deduped: boolean }>()).toMatchObject({ deduped: true });
+    expect(await retry.json()).toMatchObject({
+      deduped: true,
+      session: { id: session.id, status: 'in_progress', attempt: 0 },
+    });
 
     // logging into someone else's / unknown session -> 404
     const orphan = await SELF.fetch(`${BASE}/api/sessions/nope/sets`, {
@@ -384,6 +444,189 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
     return s.id;
   }
 
+  it('bridges released tokenless writes until attempt-v1 atomically claims the generation', async () => {
+    const H = auth(await devJwt());
+    const V1 = { ...H, 'X-TresFort-Write-Protocol': 'attempt-v1' };
+    const date = '2026-08-20';
+    const id = await freshSession(H, date);
+
+    // Compatibility Worker first: the released app can log, discard, and
+    // explicitly start the date again without an attempt field.
+    const legacySetId = crypto.randomUUID();
+    const legacySet = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        id: legacySetId,
+        exercise_id: 'ex_bench',
+        set_index: 1,
+        weight: 135,
+        reps: 5,
+      }),
+    });
+    expect(legacySet.status).toBe(201);
+    const legacyDiscard = await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, {
+      method: 'POST',
+      headers: H,
+    });
+    expect(legacyDiscard.status).toBe(200);
+    const legacyRestart = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ date }),
+    });
+    expect(legacyRestart.status).toBe(201);
+    expect(await legacyRestart.json()).toMatchObject({
+      id,
+      status: 'planned',
+      attempt: 1,
+      write_protocol: 'legacy',
+    });
+
+    const beforeActivation = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: V1,
+      body: JSON.stringify({ date, expected_attempt: 1 }),
+    });
+    expect(beforeActivation.status).toBe(503);
+    expect(await beforeActivation.json()).toEqual({
+      error: 'write_protocol_not_active',
+      protocol: 'attempt-v1',
+      retryable: true,
+    });
+    await activateWorkoutWriteFence();
+
+    // The upgraded app's first scoped resolver fences this exact generation.
+    const claimed = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: V1,
+      body: JSON.stringify({ date, expected_attempt: 1 }),
+    });
+    expect(claimed.status).toBe(201);
+    expect(await claimed.json()).toMatchObject({
+      id,
+      attempt: 1,
+      write_protocol: 'attempt-v1',
+    });
+
+    const staleLegacySetId = crypto.randomUUID();
+    const staleLegacySet = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        id: staleLegacySetId,
+        exercise_id: 'ex_bench',
+        set_index: 1,
+        weight: 145,
+        reps: 5,
+      }),
+    });
+    expect(staleLegacySet.status).toBe(409);
+    expect(await staleLegacySet.json()).toMatchObject({
+      error: 'session_attempt_required',
+      current_attempt: 1,
+      current_session: { id, write_protocol: 'attempt-v1' },
+    });
+    expect(
+      await env.DB.prepare('SELECT id FROM set_logs WHERE id=?1')
+        .bind(staleLegacySetId)
+        .first(),
+    ).toBeNull();
+
+    for (const response of [
+      await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+        method: 'PATCH',
+        headers: H,
+        body: JSON.stringify({ status: 'completed' }),
+      }),
+      await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, {
+        method: 'POST',
+        headers: H,
+      }),
+      await SELF.fetch(`${BASE}/api/sessions`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ date }),
+      }),
+    ]) {
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        error: 'session_attempt_required',
+        current_attempt: 1,
+      });
+    }
+  });
+
+  it('rejects a nonzero create token without leaving a phantom session', async () => {
+    const H = auth(await devJwt());
+    const date = '2026-08-21';
+    const plan = await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Missing Attempt Plan' }),
+    });
+    expect(plan.status).toBe(201);
+    await activateWorkoutWriteFence();
+    const response = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: { ...H, 'X-TresFort-Write-Protocol': 'attempt-v1' },
+      body: JSON.stringify({ date, expected_attempt: 4 }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({
+      error: 'session_attempt_missing',
+      expected_attempt: 4,
+    });
+    expect(
+      await env.DB.prepare('SELECT id FROM sessions WHERE date=?1').bind(date).first(),
+    ).toBeNull();
+  });
+
+  it('advances legacy restarts during the migration-before-Worker window', async () => {
+    const H = auth(await devJwt());
+    const date = '2026-08-22';
+    const id = await freshSession(H, date);
+    await env.DB.prepare("UPDATE sessions SET status='discarded' WHERE id=?1")
+      .bind(id)
+      .run();
+
+    // This is the old Worker's restart UPDATE: it knows neither column added
+    // by migration 0032. The trigger supplies the missing generation advance.
+    await env.DB.prepare(
+      `UPDATE sessions
+          SET status='planned', started_at=NULL, completed_at=NULL, updated_at=?2
+        WHERE id=?1`,
+    )
+      .bind(id, Date.now())
+      .run();
+    expect(
+      await env.DB.prepare('SELECT status,attempt,write_protocol FROM sessions WHERE id=?1')
+        .bind(id)
+        .first(),
+    ).toEqual({ status: 'planned', attempt: 1, write_protocol: 'legacy' });
+
+    await activateWorkoutWriteFence();
+    // The new app may be retrying the explicit restart whose response was
+    // lost during that window. It must adopt and claim the trigger-advanced
+    // winner rather than leaving tokenless legacy writes enabled.
+    const claimed = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: { ...H, 'X-TresFort-Write-Protocol': 'attempt-v1' },
+      body: JSON.stringify({
+        date,
+        restart_discarded: true,
+        expected_attempt: 0,
+      }),
+    });
+    expect(claimed.status).toBe(201);
+    expect(await claimed.json()).toMatchObject({
+      id,
+      status: 'planned',
+      attempt: 1,
+      write_protocol: 'attempt-v1',
+    });
+  });
+
   it('REJECTS skipped on a completed session (409); row + logged sets intact', async () => {
     const H = auth(await devJwt());
     const id = await freshSession(H, '2026-07-01');
@@ -454,6 +697,98 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
     });
     expect(r.status).toBe(200);
     expect(await r.json<{ status: string }>()).toMatchObject({ status: 'skipped' });
+  });
+
+  it('explicitly reopens skipped to a fresh planned attempt before logging', async () => {
+    const H = auth(await devJwt());
+    const id = await freshSession(H, '2026-07-11');
+    const overrideDay = await (
+      await SELF.fetch(`${BASE}/api/days`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ name: 'Override Day', day_label: 'B', order_index: 0 }),
+      })
+    ).json<{ id: string }>();
+    const skipped = await SELF.fetch(
+      `${BASE}/api/sessions/${id}?expected_attempt=0`, {
+        method: 'PATCH',
+        headers: H,
+        body: JSON.stringify({ status: 'skipped' }),
+      });
+    expect(skipped.status).toBe(200);
+    expect(await skipped.json()).toMatchObject({
+      id,
+      status: 'skipped',
+      attempt: 0,
+    });
+
+    const blockedSetId = crypto.randomUUID();
+    const blocked = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        id: blockedSetId,
+        exercise_id: 'ex_bench',
+        set_index: 1,
+        weight: 135,
+        reps: 5,
+        expected_attempt: 0,
+      }),
+    });
+    expect(blocked.status).toBe(409);
+    expect(await blocked.json()).toMatchObject({
+      error: 'session_state_conflict',
+      current_session: { id, status: 'skipped', attempt: 0 },
+    });
+
+    const reopened = await SELF.fetch(
+      `${BASE}/api/sessions/${id}?expected_attempt=0`, {
+        method: 'PATCH',
+        headers: H,
+        body: JSON.stringify({
+          status: 'planned',
+          day_template_id: overrideDay.id,
+        }),
+      });
+    expect(reopened.status).toBe(200);
+    expect(await reopened.json()).toMatchObject({
+      id,
+      status: 'planned',
+      attempt: 1,
+      day_template_id: overrideDay.id,
+    });
+
+    const logged = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        id: crypto.randomUUID(),
+        exercise_id: 'ex_bench',
+        set_index: 1,
+        weight: 135,
+        reps: 5,
+        expected_attempt: 1,
+      }),
+    });
+    expect(logged.status).toBe(201);
+    expect(await logged.json()).toMatchObject({
+      session: {
+        id,
+        status: 'in_progress',
+        attempt: 1,
+        day_template_id: overrideDay.id,
+      },
+    });
+    expect(
+      await env.DB.prepare('SELECT day_template_id FROM sessions WHERE id=?1')
+        .bind(id)
+        .first<{ day_template_id: string | null }>(),
+    ).toEqual({ day_template_id: overrideDay.id });
+    expect(
+      await env.DB.prepare('SELECT id FROM set_logs WHERE id=?1')
+        .bind(blockedSetId)
+        .first(),
+    ).toBeNull();
   });
 
   it('non-skipped status patch and field-only patch on a completed session are unchanged', async () => {
@@ -893,7 +1228,10 @@ describe('POST /api/sessions/:id/discard — the explicit escape hatch', () => {
       headers: H,
       body: JSON.stringify({ id: setId, exercise_id: 'ex_bench', set_index: 1, weight: 115, reps: 5 }),
     });
-    await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, { method: 'POST', headers: H });
+    await SELF.fetch(`${BASE}/api/sessions/${id}/discard?expected_attempt=0`, {
+      method: 'POST',
+      headers: H,
+    });
 
     const state = await (
       await SELF.fetch(`${BASE}/api/state?since=0&sets_since=0`, { headers: H })
@@ -911,29 +1249,239 @@ describe('POST /api/sessions/:id/discard — the explicit escape hatch', () => {
     expect(tomb!.deleted_at).not.toBeNull();
   });
 
+  it('rejects stale completion and brand-new sets after discard while preserving exact set retries', async () => {
+    const H = auth(await devJwt());
+    const id = await freshSession(H, '2026-08-07');
+    const priorSetId = crypto.randomUUID();
+    const priorSet = {
+      id: priorSetId,
+      exercise_id: 'ex_bench',
+      set_index: 1,
+      weight: 125,
+      reps: 5,
+    };
+    const logged = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify(priorSet),
+    });
+    expect(logged.status).toBe(201);
+
+    const discarded = await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, {
+      method: 'POST',
+      headers: H,
+    });
+    expect(discarded.status).toBe(200);
+
+    const staleCompletion = await SELF.fetch(`${BASE}/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    expect(staleCompletion.status).toBe(409);
+    expect(await staleCompletion.json()).toMatchObject({
+      error: 'session_discarded',
+      status: 'discarded',
+      current_session: { id, status: 'discarded', attempt: 0 },
+    });
+
+    const newSetId = crypto.randomUUID();
+    const staleNewSet = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ ...priorSet, id: newSetId, set_index: 2 }),
+    });
+    expect(staleNewSet.status).toBe(409);
+    expect(await staleNewSet.json()).toMatchObject({
+      error: 'session_discarded',
+      current_session: { id, status: 'discarded', attempt: 0 },
+    });
+
+    // A lost-response retry for the exact pre-discard UUID remains readable
+    // and idempotent, including its tombstone, so the client can settle it.
+    const exactRetry = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify(priorSet),
+    });
+    expect(exactRetry.status).toBe(200);
+    expect(await exactRetry.json()).toMatchObject({
+      deduped: true,
+      set: { id: priorSetId, session_id: id, deleted_at: expect.any(Number) },
+      session: { id, status: 'discarded', attempt: 0 },
+    });
+
+    const session = await env.DB
+      .prepare('SELECT status FROM sessions WHERE id = ?1')
+      .bind(id)
+      .first<{ status: string }>();
+    const prior = await env.DB
+      .prepare('SELECT deleted_at FROM set_logs WHERE id = ?1')
+      .bind(priorSetId)
+      .first<{ deleted_at: number | null }>();
+    expect(session?.status).toBe('discarded');
+    expect(prior?.deleted_at).not.toBeNull();
+    expect(
+      await env.DB.prepare('SELECT id FROM set_logs WHERE id = ?1').bind(newSetId).first(),
+    ).toBeNull();
+  });
+
   it('restart after discard resurrects a fresh planned session (same date, reusable)', async () => {
     const H = auth(await devJwt());
     const date = '2026-08-10';
     const id = await freshSession(H, date);
+    const discardedSet = {
+      id: crypto.randomUUID(),
+      exercise_id: 'ex_bench',
+      set_index: 1,
+      weight: 95,
+      reps: 5,
+      expected_attempt: 0,
+    };
     await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
       method: 'POST',
       headers: H,
-      body: JSON.stringify({ id: crypto.randomUUID(), exercise_id: 'ex_bench', set_index: 1, weight: 95, reps: 5 }),
+      body: JSON.stringify(discardedSet),
     });
-    await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, { method: 'POST', headers: H });
+    const discardResponse = await SELF.fetch(
+      `${BASE}/api/sessions/${id}/discard?expected_attempt=0`,
+      { method: 'POST', headers: H },
+    );
+    expect(discardResponse.status).toBe(200);
 
-    // Re-acquire the session for the same date → must be the SAME row id
-    // (idempotency key) but revived to a clean planned state.
-    const revived = await (
-      await SELF.fetch(`${BASE}/api/sessions`, {
-        method: 'POST',
-        headers: H,
-        body: JSON.stringify({ date }),
-      })
-    ).json<{ id: string; status: string; started_at: number | null }>();
+    // An ordinary delayed creator has no restart provenance and fails closed.
+    const staleCreate = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ date, expected_attempt: 0 }),
+    });
+    expect(staleCreate.status).toBe(409);
+    expect(await staleCreate.json()).toMatchObject({
+      error: 'session_discarded',
+      current_session: { id, status: 'discarded', attempt: 0 },
+    });
+
+    // Explicit restart carries the prior generation and advances exactly once.
+    const restartRequest = {
+      date,
+      restart_discarded: true,
+      expected_attempt: 0,
+    };
+    const revivedResponse = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify(restartRequest),
+    });
+    expect(revivedResponse.status).toBe(201);
+    const revived = await revivedResponse.json<{
+      id: string;
+      status: string;
+      started_at: number | null;
+      attempt: number;
+    }>();
     expect(revived.id).toBe(id);
     expect(revived.status).toBe('planned');
     expect(revived.started_at).toBeNull();
+    expect(revived.attempt).toBe(1);
+
+    // Commit-then-timeout retry returns the same generation.
+    const retriedRestart = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify(restartRequest),
+    });
+    expect(retriedRestart.status).toBe(201);
+    expect(await retriedRestart.json()).toMatchObject({
+      id,
+      status: 'planned',
+      attempt: 1,
+    });
+
+    // Restart is the explicit attempt boundary: fresh work and completion
+    // are accepted again only after POST /sessions performed the revival.
+    const freshSet = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        id: crypto.randomUUID(),
+        exercise_id: 'ex_bench',
+        set_index: 1,
+        weight: 105,
+        reps: 5,
+        expected_attempt: 1,
+      }),
+    });
+    expect(freshSet.status).toBe(201);
+
+    // The exact old UUID settles idempotently after restart. It remains a
+    // tombstone and echoes the authoritative current attempt without applying
+    // any old work to that attempt.
+    const oldRetry = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify(discardedSet),
+    });
+    expect(oldRetry.status).toBe(200);
+    expect(await oldRetry.json()).toMatchObject({
+      deduped: true,
+      set: { id: discardedSet.id, deleted_at: expect.any(Number) },
+      session: { id, status: 'in_progress', attempt: 1 },
+    });
+
+    const staleSetId = crypto.randomUUID();
+    const staleSet = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({
+        id: staleSetId,
+        exercise_id: 'ex_bench',
+        set_index: 2,
+        weight: 115,
+        reps: 5,
+        expected_attempt: 0,
+      }),
+    });
+    expect(staleSet.status).toBe(409);
+    expect(await staleSet.json()).toMatchObject({
+      error: 'session_attempt_conflict',
+      expected_attempt: 0,
+      current_attempt: 1,
+      current_session: { id, status: 'in_progress', attempt: 1 },
+    });
+    const staleFinish = await SELF.fetch(
+      `${BASE}/api/sessions/${id}?expected_attempt=0`, {
+        method: 'PATCH',
+        headers: H,
+        body: JSON.stringify({ status: 'completed' }),
+      });
+    expect(staleFinish.status).toBe(409);
+    expect(await staleFinish.json()).toMatchObject({
+      error: 'session_attempt_conflict',
+      current_session: { id, status: 'in_progress', attempt: 1 },
+    });
+    const staleDiscard = await SELF.fetch(
+      `${BASE}/api/sessions/${id}/discard?expected_attempt=0`, {
+        method: 'POST',
+        headers: H,
+      });
+    expect(staleDiscard.status).toBe(409);
+    expect(await staleDiscard.json()).toMatchObject({
+      error: 'session_attempt_conflict',
+      current_session: { id, status: 'in_progress', attempt: 1 },
+    });
+    expect(
+      await env.DB.prepare('SELECT id FROM set_logs WHERE id=?1')
+        .bind(staleSetId)
+        .first(),
+    ).toBeNull();
+    const completed = await SELF.fetch(
+      `${BASE}/api/sessions/${id}?expected_attempt=1`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ status: 'completed' }),
+    });
+    expect(completed.status).toBe(200);
+    expect(await completed.json()).toMatchObject({ id, status: 'completed' });
   });
 
   it('idempotent: re-discarding an already-discarded session is a clean no-op', async () => {
@@ -944,6 +1492,14 @@ describe('POST /api/sessions/:id/discard — the explicit escape hatch', () => {
     const b = await SELF.fetch(`${BASE}/api/sessions/${id}/discard`, { method: 'POST', headers: H });
     expect(b.status).toBe(200);
     expect((await b.json<{ status: string }>()).status).toBe('discarded');
+    const audits = await env.DB
+      .prepare("SELECT args FROM audit_log WHERE tool = 'discard_session'")
+      .all<{ args: string }>();
+    expect(
+      audits.results.filter(
+        (row) => (JSON.parse(row.args) as { session_id?: string }).session_id === id,
+      ),
+    ).toHaveLength(1);
   });
 
   it('discarding an unknown session id → 404', async () => {
@@ -1007,6 +1563,7 @@ describe('migration 0029 session aliases — stale REST mutations self-heal', ()
     expect(await first.json()).toMatchObject({
       deduped: false,
       set: { id: setId, session_id: canonicalId },
+      session: { id: canonicalId, status: 'in_progress', attempt: 0 },
     });
 
     // The offline retry still uses the stale path id, but the stored and
@@ -1020,6 +1577,7 @@ describe('migration 0029 session aliases — stale REST mutations self-heal', ()
     expect(await retry.json()).toMatchObject({
       deduped: true,
       set: { id: setId, session_id: canonicalId },
+      session: { id: canonicalId, status: 'in_progress', attempt: 0 },
     });
 
     const complete = await SELF.fetch(`${BASE}/api/sessions/${aliasId}`, {
@@ -1142,6 +1700,11 @@ describe('migration 0029 session aliases — stale REST mutations self-heal', ()
     });
     expect(foreignSetRetry.status).toBe(404);
     expect(await foreignSetRetry.json()).toEqual({ error: 'session_not_found' });
+    const ownedAfterCollision = await env.DB
+      .prepare('SELECT status FROM sessions WHERE id = ?1')
+      .bind(owned.canonicalId)
+      .first<{ status: string }>();
+    expect(ownedAfterCollision?.status).toBe('planned');
 
     expect(
       await env.DB.prepare('SELECT id FROM set_logs WHERE id = ?1').bind(setId).first(),

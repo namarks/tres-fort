@@ -32,6 +32,16 @@ struct RootView: View {
                 .preferredColorScheme(.dark)
             }
         }
+        // ActivityKit restores records independently of authentication and
+        // onboarding. RootView is always mounted, so process-death cleanup also
+        // runs for signed-out, expired-credential, and first-run launches.
+        .task {
+            // A process-death rest owns both ActivityKit UI and a local
+            // notification. Neither has a recoverable timer in the new model,
+            // so clear the pair at the same always-mounted launch boundary.
+            RestCue.cancelNotification()
+            await RestLiveActivity.endStaleActivities()
+        }
         // Universal Link entry: a tapped https://…/join/<code> routes here
         // (onOpenURL on iOS 14+, plus the canonical web-browsing activity
         // hook for belt-and-suspenders). Both funnel into AuthModel, which
@@ -40,6 +50,23 @@ struct RootView: View {
         .onOpenURL { model.handleDeepLink($0) }
         .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
             if let url = activity.webpageURL { model.handleDeepLink(url) }
+        }
+        .alert(
+            "Finish disconnecting Apple sign-in",
+            isPresented: Binding(
+                get: { model.postDeletionAppleRevocationRequired },
+                set: { isPresented in
+                    if !isPresented {
+                        model.dismissPostDeletionAppleRevocationHandoff()
+                    }
+                }
+            )
+        ) {
+            Button("Done") {
+                model.dismissPostDeletionAppleRevocationHandoff()
+            }
+        } message: {
+            Text("The account deletion completed, but Apple could not confirm that its Sign in with Apple access was revoked. To remove it manually, open Settings > [your name] > Sign in with Apple > Tres Fort > Delete.")
         }
     }
 
@@ -60,6 +87,13 @@ private struct SignedOutView: View {
             Text("Your coach owns the plan.\nSign in to sync.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
+
+            if let reason = model.reauthenticationReason {
+                Text(reason)
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.orange)
+            }
 
             SignInWithAppleButton(.signIn,
                                   onRequest: { req in

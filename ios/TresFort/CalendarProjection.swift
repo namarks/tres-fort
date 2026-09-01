@@ -20,8 +20,11 @@ import Foundation
 //                    session, which never executed (logging flips it to
 //                    in_progress/completed) and so VANISHES like 'discarded'
 //                    (#48). A FUTURE 'planned' still wins.
-//   date >= today  → a real session WINS (planned / in_progress /
-//                     completed / skipped). Otherwise:
+//   date >= today  → during a canTrainLight=false blackout, only a real
+//                     in_progress/completed session wins; planned/skipped/
+//                     other sessions are suppressed with schedule/endurance.
+//                     Outside a blackout, a real session WINS (planned /
+//                     in_progress / completed / skipped). Otherwise:
 //                       weekday(date) → schedule.week → day_template_id
 //                       resolvable     → .projected(template)
 //                       null/missing/dangling → .rest
@@ -58,7 +61,12 @@ struct TripRange: Equatable {
 enum DayProjection: Equatable {
     /// A real session exists for this date. `status` is its raw status
     /// (`planned` / `in_progress` / `completed` / `skipped` / other).
-    case session(status: String)
+    /// `hardBlackoutTripType` stays non-nil when a logged in-progress or
+    /// completed session survives a canTrainLight=false trip. The strength
+    /// state remains visible, while composite consumers still suppress the
+    /// schedule and every endurance item just as the backend's `trip_type`
+    /// plus `items: []` result does.
+    case session(status: String, hardBlackoutTripType: String? = nil)
     /// No real session; the weekly schedule projects this template here
     /// (today or future only).
     case projected(templateID: String)
@@ -79,7 +87,7 @@ enum DayProjection: Equatable {
 
     var kind: Kind {
         switch self {
-        case .session(let s):
+        case .session(let s, _):
             switch s {
             case "completed":   return .completed
             case "in_progress": return .inProgress
@@ -92,6 +100,18 @@ enum DayProjection: Equatable {
         case .unavailable: return .unavailable
         case .light:       return .light
         case .none:        return .none
+        }
+    }
+
+    /// Hard blackout is orthogonal to the visible strength status. Both an
+    /// unavailable day and a real logged session that survives the blackout
+    /// must suppress schedule-derived detail and endurance composites.
+    var suppressesScheduleAndEndurance: Bool {
+        switch self {
+        case .session(_, .some), .unavailable:
+            return true
+        case .session(_, .none), .projected, .rest, .light, .none:
+            return false
         }
     }
 }
@@ -189,13 +209,22 @@ enum CalendarProjection {
         // TODAY or FUTURE. A covering trip is consulted first.
         let trip = trips.first { $0.covers(dateString) }
 
-        // can_train_light=false → blacked out, regardless of schedule.
+        // BLACKOUT TRUTH TABLE — keep byte-for-byte in backend and iOS:
+        //   real in_progress/completed → surface the real session;
+        //   real planned/skipped/other, or no real → unavailable.
+        // In every case the blackout suppresses schedule and endurance items.
         if let trip, trip.canTrainLight == false {
+            if let real, real.status == "in_progress" || real.status == "completed" {
+                return .session(
+                    status: real.status,
+                    hardBlackoutTripType: trip.type)
+            }
             return .unavailable(tripType: trip.type)
         }
 
-        // A real session always wins (even during a light trip — a pinned
-        // session keeps its own status). Mirror of `if (real) status = ...`.
+        // Outside a hard blackout, a real session always wins (even during a
+        // light trip — a pinned session keeps its own status). Mirror of
+        // `if (real) status = ...`.
         if let real { return .session(status: real.status) }
 
         // No real session. Under a (light) trip the recurring schedule is
@@ -278,6 +307,10 @@ enum RideConflict {
     /// completed). `.rest`/`.none` are not lifts. Keep this set byte-for-
     /// byte aligned with the backend.
     static func dateHasLift(_ proj: DayProjection) -> Bool {
+        // A hard blackout is orthogonal to the visible strength status. The
+        // backend excludes even a surviving real session from conflict input
+        // on that date; mirror its suppression discriminator here.
+        guard !proj.suppressesScheduleAndEndurance else { return false }
         switch proj.kind {
         case .completed, .inProgress, .planned, .projected:
             return true

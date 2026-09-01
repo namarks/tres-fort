@@ -66,6 +66,37 @@ describe('GET /api/me', () => {
     expect(me.intervals.api_key).toBeUndefined();
   });
 
+  it('authentication responses expose only the public user projection', async () => {
+    const a = await devJwt();
+    await env.DB.prepare(
+      `UPDATE users SET
+         intervals_api_key = 'private-api-key',
+         intervals_oauth_access_token = 'private-access-token',
+         intervals_oauth_refresh_token = 'private-refresh-token',
+         mcp_passphrase_hash = 'private-hash',
+         mcp_passphrase_salt = 'private-salt'
+       WHERE id = ?1`,
+    )
+      .bind(a.id)
+      .run();
+
+    const r = await SELF.fetch(`${BASE}/auth/dev`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: 'test-dev' }),
+    });
+    expect(r.status).toBe(200);
+    const body = await r.json<any>();
+    expect(body.user).toEqual({
+      id: a.id,
+      email: 'dev@local',
+      display_name: 'Dev Owner',
+    });
+    expect(JSON.stringify(body)).not.toContain('private-');
+    expect(body.user.apple_sub).toBeUndefined();
+    expect(body.user.created_at).toBeUndefined();
+  });
+
   it('intervals.connected reflects the user row athlete_id', async () => {
     const a = await devJwt();
     await env.DB.prepare(
@@ -152,5 +183,84 @@ describe('GET /api/me', () => {
 
     const me = await (await getMe(a.jwt)).json<any>();
     expect(me.claude.last_active).toBe(mcpAt);
+  });
+});
+
+describe('PATCH /api/me/profile', () => {
+  it('requires an authenticated app session', async () => {
+    const response = await SELF.fetch(`${BASE}/api/me/profile`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ display_name: 'No session' }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it('trims and updates only the caller without auditing the name value', async () => {
+    const caller = await makeUser('profile-caller');
+    const other = await makeUser('profile-other');
+
+    const response = await SELF.fetch(`${BASE}/api/me/profile`, {
+      method: 'PATCH',
+      headers: {
+        ...auth(caller.jwt),
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ display_name: '  Renée Test  ' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect((await response.json<any>()).display_name).toBe('Renée Test');
+    expect(
+      await env.DB.prepare('SELECT display_name FROM users WHERE id = ?1')
+        .bind(caller.id)
+        .first<{ display_name: string }>('display_name'),
+    ).toBe('Renée Test');
+    expect(
+      await env.DB.prepare('SELECT display_name FROM users WHERE id = ?1')
+        .bind(other.id)
+        .first<{ display_name: string }>('display_name'),
+    ).toBe('profile-other');
+
+    const audit = await env.DB.prepare(
+      "SELECT actor, args, result FROM audit_log WHERE user_id = ?1 AND tool = 'update_profile' ORDER BY created_at DESC LIMIT 1",
+    )
+      .bind(caller.id)
+      .first<{ actor: string; args: string; result: string }>();
+    expect(audit).toEqual({
+      actor: 'ios',
+      args: JSON.stringify({ field: 'display_name' }),
+      result: 'ok',
+    });
+    expect(audit?.args).not.toContain('Renée Test');
+  });
+
+  it('rejects malformed, blank, non-string, and overlong names', async () => {
+    const caller = await makeUser('profile-invalid');
+    const requests: Array<{ body: string; contentType?: string }> = [
+      { body: '{', contentType: 'application/json' },
+      { body: 'null' },
+      { body: JSON.stringify({ display_name: '   ' }) },
+      { body: JSON.stringify({ display_name: 42 }) },
+      { body: JSON.stringify({ display_name: 'x'.repeat(81) }) },
+    ];
+
+    for (const request of requests) {
+      const response = await SELF.fetch(`${BASE}/api/me/profile`, {
+        method: 'PATCH',
+        headers: {
+          ...auth(caller.jwt),
+          'content-type': request.contentType ?? 'application/json',
+        },
+        body: request.body,
+      });
+      expect(response.status).toBe(400);
+    }
+
+    expect(
+      await env.DB.prepare('SELECT display_name FROM users WHERE id = ?1')
+        .bind(caller.id)
+        .first<{ display_name: string }>('display_name'),
+    ).toBe('profile-invalid');
   });
 });

@@ -32,6 +32,8 @@ const sess = (date: string, status: string, day: string | null = null): SessionR
   notes: null,
   created_at: 0,
   updated_at: 0,
+  attempt: 0,
+  write_protocol: 'legacy',
 });
 
 // Mon..Sun schedule: Mon=push, Wed=pull, Fri=legs, rest otherwise.
@@ -420,6 +422,94 @@ describe('projectCalendar — composite (bricks / trips / endurance)', () => {
       expect(byDate[d]!.items).toEqual([]);
     }
   });
+
+  it.each(['in_progress', 'completed'])(
+    'BLACKOUT: a real logged %s session stays visible while endurance stays suppressed',
+    (status) => {
+      const cells = projectCalendar(
+        { id: 'p' },
+        SCHED,
+        // Wed normally projects d_pull; the real logged session intentionally
+        // carries d_push so this assertion cannot pass via the schedule.
+        [sess('2026-05-20', status, 'd_push')],
+        '2026-05-20',
+        '2026-05-20',
+        today,
+        LIVE,
+        [trip({ start: '2026-05-20', end: '2026-05-20', can_train_light: false })],
+        [ev('intervals:suppressed', '2026-05-20', { training_load: 50 })],
+      );
+
+      expect(cells).toEqual([
+        {
+          date: '2026-05-20',
+          status,
+          day_template_id: 'd_push',
+          real: true,
+          items: [],
+          trip_type: 'travel',
+          suppresses_schedule_and_endurance: true,
+        },
+      ]);
+    },
+  );
+
+  it('BLACKOUT: a logged session keeps a null template without schedule inference', () => {
+    const cells = projectCalendar(
+      { id: 'p' },
+      SCHED,
+      // Wednesday normally projects d_pull. The real session has no template,
+      // so preserving null proves the blackout path never consults schedule.
+      [sess('2026-05-20', 'in_progress', null)],
+      '2026-05-20',
+      '2026-05-20',
+      today,
+      LIVE,
+      [trip({ start: '2026-05-20', end: '2026-05-20', can_train_light: false })],
+      [ev('intervals:suppressed', '2026-05-20')],
+    );
+
+    expect(cells).toEqual([
+      {
+        date: '2026-05-20',
+        status: 'in_progress',
+        day_template_id: null,
+        real: true,
+        items: [],
+        trip_type: 'travel',
+        suppresses_schedule_and_endurance: true,
+      },
+    ]);
+  });
+
+  it.each(['planned', 'skipped', 'discarded', 'unknown_non_training'])(
+    'BLACKOUT: a merely %s session cannot defeat the blackout',
+    (status) => {
+      const cells = projectCalendar(
+        { id: 'p' },
+        SCHED,
+        [sess('2026-05-20', status, 'd_push')],
+        '2026-05-20',
+        '2026-05-20',
+        today,
+        LIVE,
+        [trip({ start: '2026-05-20', end: '2026-05-20', can_train_light: false })],
+        [ev('intervals:suppressed', '2026-05-20')],
+      );
+
+      expect(cells).toEqual([
+        {
+          date: '2026-05-20',
+          status: 'unavailable',
+          day_template_id: null,
+          real: false,
+          items: [],
+          trip_type: 'travel',
+          suppresses_schedule_and_endurance: true,
+        },
+      ]);
+    },
+  );
 
   it('TRAVEL WEEK (can_train_light=true): days are light; endurance items still ride along', () => {
     const cells = projectCalendar(
@@ -1067,5 +1157,70 @@ describe('getRideConflicts — cancelled (skipped) sessions produce no conflict'
       '2026-06-19',
     );
     expect(conflicts.map((c) => c.date)).not.toContain('2026-06-20');
+  });
+
+  it('hard blackout suppresses both same-day and previous-day ride conflicts', async () => {
+    const { userId, planId } = await freshUserAndPlan();
+    await env.DB.prepare('UPDATE plans SET meta=?2 WHERE id=?1')
+      .bind(
+        planId,
+        JSON.stringify({
+          trips: [
+            {
+              id: 'blackout',
+              start: '2026-06-26',
+              end: '2026-06-26',
+              type: 'travel',
+              can_train_light: false,
+            },
+          ],
+        }),
+      )
+      .run();
+    await insertSession(userId, planId, '2026-06-25', 'completed');
+    await insertSession(userId, planId, '2026-06-26', 'in_progress');
+    await insertRide(userId, 'intervals:blackout-hard', '2026-06-26');
+
+    const conflicts = await getRideConflicts(
+      env.DB,
+      userId,
+      '2026-06-25',
+      '2026-06-26',
+      '2026-06-25',
+    );
+    expect(conflicts).toEqual([]);
+  });
+
+  it('max range still projects boundary blackout for next-day suppression', async () => {
+    const { userId, planId } = await freshUserAndPlan();
+    await env.DB.prepare('UPDATE plans SET meta=?2 WHERE id=?1')
+      .bind(
+        planId,
+        JSON.stringify({
+          trips: [
+            {
+              id: 'range-boundary-blackout',
+              start: '2026-04-01',
+              end: '2026-04-01',
+              type: 'travel',
+              can_train_light: false,
+            },
+          ],
+        }),
+      )
+      .run();
+    // Jan 1 + 89 days = Mar 31 (the last cell of the clamped projection);
+    // Apr 1 is the conflict lookahead day outside that first projection call.
+    await insertSession(userId, planId, '2026-03-31', 'completed');
+    await insertRide(userId, 'intervals:boundary-hard', '2026-04-01');
+
+    const conflicts = await getRideConflicts(
+      env.DB,
+      userId,
+      '2026-01-01',
+      '2026-04-01',
+      '2026-01-01',
+    );
+    expect(conflicts).toEqual([]);
   });
 });

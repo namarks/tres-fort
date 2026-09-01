@@ -1,6 +1,12 @@
 export interface Env {
   DB: D1Database;
   APPLE_BUNDLE_ID: string;
+  /** Apple Developer Team ID used to sign the server-to-server client secret. */
+  APPLE_TEAM_ID?: string;
+  /** Sign in with Apple private-key identifier (`wrangler secret put`). */
+  APPLE_KEY_ID?: string;
+  /** PKCS#8 EC private signing key (`wrangler secret put`; never committed). */
+  APPLE_PRIVATE_KEY?: string;
   APP_JWT_SECRET: string;
   MCP_STATIC_TOKEN?: string;
   /** Allowlisted Apple `sub`. If set, only this user may sign in. */
@@ -63,7 +69,7 @@ export interface Env {
 
 export type HonoEnv = {
   Bindings: Env;
-  Variables: { userId: string };
+  Variables: { userId: string; appAuthTime: number };
 };
 
 export interface User {
@@ -113,6 +119,13 @@ export interface User {
    */
   mcp_passphrase_hash: string | null;
   mcp_passphrase_salt: string | null;
+}
+
+/** Public account identity returned by Sign in with Apple. */
+export interface PublicUser {
+  id: string;
+  email: string | null;
+  display_name: string | null;
 }
 
 export interface PlanRow {
@@ -176,6 +189,11 @@ export interface SessionRow {
   notes: string | null;
   created_at: number;
   updated_at: number;
+  attempt: number;
+  /** Rolling-release mode for the current generation. `legacy` accepts the
+   * released app's tokenless writes; the first attempt-aware mutation claims
+   * `attempt-v1`, after which tokenless writes fail visibly. */
+  write_protocol: 'legacy' | 'attempt-v1';
 }
 
 export interface SetLogRow {

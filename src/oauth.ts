@@ -5,7 +5,11 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env, HonoEnv } from './types';
-import { ensureOwnerUser, findUserByMcpPassphrase } from './db';
+import {
+  ensureOwnerUser,
+  findUserByMcpPassphrase,
+  isAccountDeletionInProgress,
+} from './db';
 
 const ACCESS_TTL = 60 * 60 * 24 * 30; // 30 days
 const CODE_TTL_MS = 10 * 60 * 1000; // 10 min
@@ -33,7 +37,10 @@ async function s256(verifier: string): Promise<string> {
 export async function validateBearer(env: Env, token: string): Promise<string | null> {
   if (!token) return null;
   if (env.MCP_STATIC_TOKEN && token === env.MCP_STATIC_TOKEN) {
-    return (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB)).id;
+    const owner = await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB);
+    return owner && !(await isAccountDeletionInProgress(env.DB, owner.id))
+      ? owner.id
+      : null;
   }
   const row = await env.DB.prepare(
     'SELECT user_id, expires_at FROM oauth_tokens WHERE access_token = ?1',
@@ -41,7 +48,28 @@ export async function validateBearer(env: Env, token: string): Promise<string | 
     .bind(token)
     .first<{ user_id: string | null; expires_at: number }>();
   if (!row || row.expires_at <= Math.floor(Date.now() / 1000)) return null;
-  return row.user_id ?? (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB)).id;
+  if (row.user_id) {
+    const principal = await env.DB
+      .prepare(
+        `SELECT 1 AS x FROM users
+          WHERE id = ?1
+            AND NOT EXISTS (
+                  SELECT 1 FROM account_deletion_intents
+                   WHERE user_id = ?1
+                )
+            AND NOT EXISTS (
+                  SELECT 1 FROM account_deletion_receipts
+                   WHERE user_id = ?1
+                )`,
+      )
+      .bind(row.user_id)
+      .first<{ x: number }>();
+    return principal ? row.user_id : null;
+  }
+  const owner = await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB);
+  return owner && !(await isAccountDeletionInProgress(env.DB, owner.id))
+    ? owner.id
+    : null;
 }
 
 export const oauthRoutes = new Hono<HonoEnv>();
@@ -193,7 +221,7 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
   const pass = f('passphrase').trim();
   let userId: string | null = null;
   if (c.env.OWNER_AUTH_PASSPHRASE && pass === c.env.OWNER_AUTH_PASSPHRASE) {
-    userId = (await ensureOwnerUser(c.env.DB, c.env.OWNER_APPLE_SUB)).id;
+    userId = (await ensureOwnerUser(c.env.DB, c.env.OWNER_APPLE_SUB))?.id ?? null;
   } else if (pass) {
     userId = await findUserByMcpPassphrase(c.env.DB, pass);
   }
@@ -203,10 +231,26 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
       401,
     );
   }
+  if (await isAccountDeletionInProgress(c.env.DB, userId)) {
+    return c.html(
+      consentPage(params, 'That account is being deleted and cannot be connected.'),
+      401,
+    );
+  }
 
   const code = rand();
-  await c.env.DB.prepare(
-    'INSERT INTO oauth_codes (code, client_id, redirect_uri, code_challenge, code_challenge_method, scope, resource, expires_at, created_at, user_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)',
+  const inserted = await c.env.DB.prepare(
+    `INSERT INTO oauth_codes
+       (code, client_id, redirect_uri, code_challenge, code_challenge_method,
+        scope, resource, expires_at, created_at, user_id)
+     SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10
+      WHERE EXISTS (SELECT 1 FROM users WHERE id = ?10)
+        AND NOT EXISTS (
+              SELECT 1 FROM account_deletion_intents WHERE user_id = ?10
+            )
+        AND NOT EXISTS (
+              SELECT 1 FROM account_deletion_receipts WHERE user_id = ?10
+            )`,
   )
     .bind(
       code,
@@ -221,6 +265,12 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
       userId,
     )
     .run();
+  if (inserted.meta.changes !== 1) {
+    return c.html(
+      consentPage(params, 'That account is being deleted and cannot be connected.'),
+      401,
+    );
+  }
   const url = new URL(params.redirect_uri);
   url.searchParams.set('code', code);
   if (params.state) url.searchParams.set('state', params.state);
@@ -229,15 +279,44 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
 
 // ---- token ---------------------------------------------------------------
 
-async function issueTokens(env: Env, clientId: string, scope: string, userId: string | null) {
+async function issueTokens(
+  env: Env,
+  clientId: string,
+  scope: string,
+  userId: string | null,
+) {
+  // Pre-M3 codes/tokens carried no principal. Resolve those to the current
+  // owner before issuing the replacement so the same intent/receipt guards
+  // apply and the newly minted row is no longer legacy-unscoped.
+  const effectiveUserId =
+    userId ?? (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB))?.id ?? null;
+  if (!effectiveUserId) return null;
   const access = rand();
   const refresh = rand();
   const nowSec = Math.floor(Date.now() / 1000);
-  await env.DB.prepare(
-    'INSERT INTO oauth_tokens (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id) VALUES (?1,?2,?3,?4,?5,?6,?7)',
+  const inserted = await env.DB.prepare(
+    `INSERT INTO oauth_tokens
+       (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id)
+     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+      WHERE EXISTS (SELECT 1 FROM users WHERE id = ?7)
+        AND NOT EXISTS (
+              SELECT 1 FROM account_deletion_intents WHERE user_id = ?7
+            )
+        AND NOT EXISTS (
+              SELECT 1 FROM account_deletion_receipts WHERE user_id = ?7
+            )`,
   )
-    .bind(access, refresh, clientId, scope, nowSec + ACCESS_TTL, nowSec, userId)
+    .bind(
+      access,
+      refresh,
+      clientId,
+      scope,
+      nowSec + ACCESS_TTL,
+      nowSec,
+      effectiveUserId,
+    )
     .run();
+  if (inserted.meta.changes !== 1) return null;
   return {
     access_token: access,
     token_type: 'Bearer',
@@ -266,7 +345,14 @@ oauthRoutes.post('/oauth/token', async (c) => {
     if ((await s256(f('code_verifier'))) !== code.code_challenge) {
       return c.json({ error: 'invalid_grant', detail: 'pkce' }, 400);
     }
-    return c.json(await issueTokens(c.env, code.client_id, code.scope ?? 'mcp', code.user_id ?? null));
+    const tokens = await issueTokens(
+      c.env,
+      code.client_id,
+      code.scope ?? 'mcp',
+      code.user_id ?? null,
+    );
+    if (!tokens) return c.json({ error: 'invalid_grant' }, 400);
+    return c.json(tokens);
   }
 
   if (grant === 'refresh_token') {
@@ -279,7 +365,14 @@ oauthRoutes.post('/oauth/token', async (c) => {
     await c.env.DB.prepare('DELETE FROM oauth_tokens WHERE refresh_token = ?1')
       .bind(f('refresh_token'))
       .run();
-    return c.json(await issueTokens(c.env, row.client_id, row.scope ?? 'mcp', row.user_id ?? null));
+    const tokens = await issueTokens(
+      c.env,
+      row.client_id,
+      row.scope ?? 'mcp',
+      row.user_id ?? null,
+    );
+    if (!tokens) return c.json({ error: 'invalid_grant' }, 400);
+    return c.json(tokens);
   }
 
   return c.json({ error: 'unsupported_grant_type' }, 400);

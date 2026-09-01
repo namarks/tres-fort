@@ -190,13 +190,25 @@ struct CalendarMonthView: View {
     /// or a user-logged manual activity — newest first.
     private var activityDays: [String] {
         var set = Set<String>()
+        let today = sync.todayString
         for (date, s) in sync.sessionsByDate
         where s.status == "completed" || s.status == "in_progress" {
             if sync.loggedSetCount(forDate: date) > 0 { set.insert(date) }
         }
-        for a in sync.activities where !a.isDeleted { set.insert(a.date) }
-        for m in sync.manualActivities where m.deleted_at == nil { set.insert(m.date) }
-        let today = sync.todayString
+        for a in sync.activities where !a.isDeleted {
+            if !sync.projection(for: a.date, today: today)
+                .suppressesScheduleAndEndurance
+            {
+                set.insert(a.date)
+            }
+        }
+        for m in sync.manualActivities where m.deleted_at == nil {
+            if !sync.projection(for: m.date, today: today)
+                .suppressesScheduleAndEndurance
+            {
+                set.insert(m.date)
+            }
+        }
         return set.filter { $0 <= today }.sorted(by: >)
     }
 
@@ -375,7 +387,10 @@ struct CalendarMonthView: View {
         let isSkipped = proj.kind == .skipped
         let isToday = ymd == today
         let dayNum = cal.component(.day, from: date)
-        let conflict = sync.rideConflict(for: ymd)   // .none on non-lift days
+        let suppressesEndurance = proj.suppressesScheduleAndEndurance
+        let conflict = suppressesEndurance
+            ? RideConflict.Severity.none
+            : sync.rideConflict(for: ymd)   // .none on non-lift days
         // Endurance overlay (read-only). A COMPLETED activity (accent,
         // kind-specific glyph) outranks a PLANNED ride (muted bicycle). On a
         // NO-LIFT day the endurance glyph IS the day's identity (a bike day,
@@ -394,7 +409,8 @@ struct CalendarMonthView: View {
         // the backend projects items: [] and the agenda hides the cards, so the
         // cell must render the "Away" state — not fall through to a bike/activity
         // glyph (Codex #64 P2). `.light` is unaffected — endurance coexists there.
-        let hasEndurance = (hasActivity || hasRide || hasManual) && proj.kind != .unavailable
+        let hasEndurance = (hasActivity || hasRide || hasManual)
+            && !suppressesEndurance
         let enduranceGlyph = hasActivity
             ? (dayActivities.first?.glyph ?? "figure.run")
             : (hasManual
@@ -428,12 +444,15 @@ struct CalendarMonthView: View {
             var out: [Color] = []
             if isWorkout, let c = st?.color { out.append(c) }
             else if isSkipped { out.append(Theme.danger) }
-            if hasActivity { out.append(WorkoutCategory.endurance.color) }
-            if hasManual {
-                let c = WorkoutCategory.forActivityKind(dayManual.first?.type ?? "other").color
-                if !out.contains(c) { out.append(c) }
+            if hasEndurance {
+                if hasActivity { out.append(WorkoutCategory.endurance.color) }
+                if hasManual {
+                    let c = WorkoutCategory.forActivityKind(
+                        dayManual.first?.type ?? "other").color
+                    if !out.contains(c) { out.append(c) }
+                }
+                if out.isEmpty && hasRide { out.append(Theme.muted) }
             }
-            if out.isEmpty && hasRide { out.append(Theme.muted) }
             return out
         }()
 
@@ -604,6 +623,8 @@ private struct ActivityFeedRow: View {
 
     private var items: [Item] {
         var out: [Item] = []
+        let suppressesEndurance = sync.projection(for: ymd)
+            .suppressesScheduleAndEndurance
         if let s = sync.sessionsByDate[ymd],
            s.status == "completed" || s.status == "in_progress",
            sync.loggedSetCount(forDate: ymd) > 0 {
@@ -614,18 +635,28 @@ private struct ActivityFeedRow: View {
                             text: "\(title) · \(n) set\(n == 1 ? "" : "s")",
                             color: WorkoutCategory.lift.color))
         }
-        for a in sync.activities(on: ymd) {
-            var t = a.displayTitle
-            if let d = a.durationLabel { t += " · \(d)" }
-            out.append(Item(glyph: a.glyph, text: t, color: WorkoutCategory.endurance.color))
-        }
-        for m in sync.manualActivities(on: ymd) {
-            let label = (m.title?.isEmpty == false) ? m.title! : PendingActivity.label(for: m.type)
-            var t = label
-            if let mins = m.duration_minutes, mins > 0 { t += " · \(mins) min" }
-            out.append(Item(glyph: PendingActivity.glyph(for: m.type),
-                            text: t,
-                            color: WorkoutCategory.forActivityKind(m.type).color))
+        if !suppressesEndurance {
+            for a in sync.activities(on: ymd) {
+                var t = a.displayTitle
+                if let d = a.durationLabel { t += " · \(d)" }
+                out.append(Item(
+                    glyph: a.glyph,
+                    text: t,
+                    color: WorkoutCategory.endurance.color))
+            }
+            for m in sync.manualActivities(on: ymd) {
+                let label = (m.title?.isEmpty == false)
+                    ? m.title!
+                    : PendingActivity.label(for: m.type)
+                var t = label
+                if let mins = m.duration_minutes, mins > 0 {
+                    t += " · \(mins) min"
+                }
+                out.append(Item(
+                    glyph: PendingActivity.glyph(for: m.type),
+                    text: t,
+                    color: WorkoutCategory.forActivityKind(m.type).color))
+            }
         }
         return out
     }

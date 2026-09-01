@@ -295,7 +295,7 @@ describe('syncExternalEvents — reconciled cache, the failed-fetch guard', () =
   });
 
   it('ensureOwnerUser is the default principal when userId omitted', async () => {
-    const owner = await ensureOwnerUser(env.DB, undefined);
+    const owner = (await ensureOwnerUser(env.DB, undefined))!;
     const r = await syncExternalEvents(env.DB, env as unknown as Env, {
       today: TODAY,
       fetcher: payload([ev({ id: 'owner-ride' })]),

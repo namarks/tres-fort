@@ -11,7 +11,10 @@
     "test:watch": "vitest",
     "db:migrate:local": "wrangler d1 migrations apply tres-fort-db --local",
     "db:migrate:remote": "wrangler d1 migrations apply tres-fort-db --remote",
-    "release": "npm run db:migrate:remote && npm run deploy",
+    "db:workout-write-fence:status:remote": "wrangler d1 execute tres-fort-db --remote --command \"SELECT enabled, activated_at, (SELECT COUNT(*) FROM workout_write_permit) AS permits FROM workout_write_fence WHERE id = 1\"",
+    "db:workout-write-fence:activate:remote": "wrangler d1 execute tres-fort-db --remote --command \"UPDATE workout_write_fence SET enabled = 1, activated_at = CAST(strftime('%s', 'now') AS INTEGER) * 1000 WHERE id = 1 AND enabled = 0\"",
+    "release:preflight": "npm run typecheck && npm test && wrangler deploy --dry-run",
+    "release": "npm run release:preflight && npm run db:migrate:remote && npm run deploy",
     "ios:testflight": "./scripts/upload-testflight.sh",
     "beta:feedback": "node scripts/beta-feedback-to-issues.mjs"
   },

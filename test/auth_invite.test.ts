@@ -22,10 +22,12 @@ import {
   countUsers,
   createGroup,
   createInvite,
+  deleteUserAccount,
   ensureOwnerUser,
   isBootstrapClaimEligible,
   isGroupMember,
   redeemInvite,
+  storeAppleRefreshToken,
   upsertUser,
 } from '../src/db';
 
@@ -83,7 +85,7 @@ describe('/auth/apple bad-input branches (no JWKS network needed)', () => {
 // proving the back-compat sequence is well-behaved at all branches.
 describe('Path 4 back-compat: legacy invite_code shim (Codex PR#38 P2)', () => {
   it('valid code → user created, joined to inviter\'s group, group_id returned', async () => {
-    const owner = await ensureOwnerUser(env.DB, undefined);
+    const owner = (await ensureOwnerUser(env.DB, undefined))!;
     const group = await createGroup(env.DB, owner.id, 'BackCompat');
     const invite = await createInvite(env.DB, owner.id, group.id);
 
@@ -106,6 +108,140 @@ describe('Path 4 back-compat: legacy invite_code shim (Codex PR#38 P2)', () => {
     expect(inv!.used_at).not.toBeNull();
   });
 
+  it('does not consume an invite when account deletion wins before the redemption transaction', async () => {
+    const owner = (await ensureOwnerUser(env.DB, undefined))!;
+    const group = await createGroup(env.DB, owner.id, 'Deletion Race');
+    const invite = await createInvite(env.DB, owner.id, group.id);
+    const user = await upsertUser(
+      env.DB,
+      `redeem-delete-${crypto.randomUUID()}`,
+      null,
+      'Leaving',
+    );
+    let deletionRan = false;
+    const raceDb = {
+      prepare(sql: string) {
+        return env.DB.prepare(sql);
+      },
+      async batch(statements: D1PreparedStatement[]) {
+        deletionRan = true;
+        const deleted = await deleteUserAccount(
+          env.DB,
+          user.id,
+          owner.apple_sub,
+          crypto.randomUUID(),
+        );
+        expect(deleted).toMatchObject({ ok: true });
+        return env.DB.batch(statements);
+      },
+    } as unknown as D1Database;
+
+    const result = await redeemInvite(raceDb, invite.code, user.id);
+
+    expect(deletionRan).toBe(true);
+    expect(result).toEqual({ error: 'unknown' });
+    const storedInvite = await env.DB
+      .prepare('SELECT used_at, used_by FROM group_invites WHERE code = ?1')
+      .bind(invite.code)
+      .first<{ used_at: number | null; used_by: string | null }>();
+    expect(storedInvite).toEqual({ used_at: null, used_by: null });
+    expect(await isGroupMember(env.DB, user.id, group.id)).toBe(false);
+    const audits = await env.DB
+      .prepare(
+        `SELECT COUNT(*) AS count FROM audit_log
+          WHERE user_id = ?1 AND tool = 'redeem_invite'`,
+      )
+      .bind(user.id)
+      .first<{ count: number }>();
+    expect(audits?.count).toBe(0);
+  });
+
+  it('does not consume an invite while deletion is paused in provider revocation', async () => {
+    const owner = (await ensureOwnerUser(env.DB, undefined))!;
+    const group = await createGroup(env.DB, owner.id, 'Deletion Intent Race');
+    const invite = await createInvite(env.DB, owner.id, group.id);
+    const user = await upsertUser(
+      env.DB,
+      `redeem-intent-${crypto.randomUUID()}`,
+      null,
+      'Leaving During Revoke',
+    );
+    expect(
+      await storeAppleRefreshToken(
+        env.DB,
+        user.id,
+        'invite-race-refresh-token',
+      ),
+    ).toBe(true);
+
+    let providerStarted!: () => void;
+    const providerStart = new Promise<void>((resolve) => {
+      providerStarted = resolve;
+    });
+    let releaseProvider!: () => void;
+    const providerRelease = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    const deletion = deleteUserAccount(
+      env.DB,
+      user.id,
+      owner.apple_sub,
+      crypto.randomUUID(),
+      {
+        appleConfig: {
+          clientId: 'com.example.tresfort',
+          teamId: 'test-team',
+          keyId: 'test-key',
+          privateKey: 'not-used-by-injected-revoker',
+        },
+        revokeAppleToken: async () => {
+          providerStarted();
+          await providerRelease;
+        },
+      },
+    );
+    await providerStart;
+
+    // Models a request that passed app-JWT middleware immediately before the
+    // deletion intent won. The service predicate must keep all three writes
+    // out of the redemption batch while the users row is still present.
+    expect(await redeemInvite(env.DB, invite.code, user.id)).toEqual({
+      error: 'unknown',
+    });
+    expect(
+      await env.DB
+        .prepare('SELECT used_at, used_by FROM group_invites WHERE code = ?1')
+        .bind(invite.code)
+        .first(),
+    ).toEqual({ used_at: null, used_by: null });
+    expect(await isGroupMember(env.DB, user.id, group.id)).toBe(false);
+    expect(
+      await env.DB
+        .prepare(
+          `SELECT COUNT(*) AS count FROM audit_log
+            WHERE user_id = ?1 AND tool = 'redeem_invite'`,
+        )
+        .bind(user.id)
+        .first<{ count: number }>(),
+    ).toEqual({ count: 0 });
+
+    // Defense in depth: a future direct invite mutation cannot bypass the
+    // service predicate during the same deletion-intent window.
+    await expect(
+      env.DB
+        .prepare(
+          `UPDATE group_invites
+              SET used_at = ?2, used_by = ?3
+            WHERE code = ?1`,
+        )
+        .bind(invite.code, Date.now(), user.id)
+        .run(),
+    ).rejects.toThrow('deleting_user');
+
+    releaseProvider();
+    await expect(deletion).resolves.toMatchObject({ ok: true });
+  });
+
   it('bad code → user STILL signed in (sign-in is not blocked)', async () => {
     const sub = `bad-${crypto.randomUUID()}`;
     const user = await upsertUser(env.DB, sub, null, null);
@@ -124,7 +260,7 @@ describe('Path 4 back-compat: legacy invite_code shim (Codex PR#38 P2)', () => {
   });
 
   it('expired code → user STILL signed in, code stays unused', async () => {
-    const owner = await ensureOwnerUser(env.DB, undefined);
+    const owner = (await ensureOwnerUser(env.DB, undefined))!;
     const group = await createGroup(env.DB, owner.id, 'Stale');
     const invite = await createInvite(env.DB, owner.id, group.id, Date.now() - 1000);
 
@@ -199,7 +335,7 @@ describe('bootstrap path: claimOrCreateOwner + countUsers', () => {
     // The route would call claimOrCreateOwner(unlocked) when both
     // OWNER_APPLE_SUB is unset and countUsers===0. We mirror that.
     const sub = `sub-fresh-${crypto.randomUUID()}`;
-    const user = await claimOrCreateOwner(env.DB, sub, 'fresh@test', 'Fresh', false);
+    const user = (await claimOrCreateOwner(env.DB, sub, 'fresh@test', 'Fresh', false))!;
     expect(user.apple_sub).toBe(sub);
     expect(await countUsers(env.DB)).toBe(1);
   });
@@ -220,7 +356,7 @@ describe('bootstrap path: claimOrCreateOwner + countUsers', () => {
 
     // Simulate MCP/OAuth seeding the owner row before any iOS sign-in.
     // ensureOwnerUser(undefined) writes apple_sub = BOOTSTRAP_APPLE_SUB.
-    const seeded = await ensureOwnerUser(env.DB, undefined);
+    const seeded = (await ensureOwnerUser(env.DB, undefined))!;
     expect(seeded.apple_sub).toBe(BOOTSTRAP_APPLE_SUB);
     expect(await countUsers(env.DB)).toBe(1);
 
@@ -232,10 +368,41 @@ describe('bootstrap path: claimOrCreateOwner + countUsers', () => {
     // Sign-in path then calls claimOrCreateOwner(unlocked), which rebinds
     // the seeded row to the real Apple sub (no duplicate user created).
     const realSub = `sub-real-${crypto.randomUUID()}`;
-    const claimed = await claimOrCreateOwner(env.DB, realSub, 'real@test', 'Real', false);
+    const claimed = (await claimOrCreateOwner(env.DB, realSub, 'real@test', 'Real', false))!;
     expect(claimed.id).toBe(seeded.id);
     expect(claimed.apple_sub).toBe(realSub);
     expect(await countUsers(env.DB)).toBe(1); // no duplicate
+  });
+
+  it('a concurrent bootstrap-claim loser becomes an ordinary user', async () => {
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM group_invites'),
+      env.DB.prepare('DELETE FROM group_members'),
+      env.DB.prepare('DELETE FROM groups'),
+      env.DB.prepare('DELETE FROM audit_log'),
+      env.DB.prepare('DELETE FROM account_deletion_receipts'),
+      env.DB.prepare('DELETE FROM owner_deletion_tombstone'),
+      env.DB.prepare('DELETE FROM users'),
+    ]);
+    const seeded = (await ensureOwnerUser(env.DB, undefined))!;
+    const firstSub = `claim-first-${crypto.randomUUID()}`;
+    const secondSub = `claim-second-${crypto.randomUUID()}`;
+
+    const [first, second] = await Promise.all([
+      claimOrCreateOwner(env.DB, firstSub, 'first@test', 'First', false),
+      claimOrCreateOwner(env.DB, secondSub, 'second@test', 'Second', false),
+    ]);
+    if (!first || !second) throw new Error('expected both sign-ins to succeed');
+
+    expect(new Set([first.id, second.id]).size).toBe(2);
+    expect([first.id, second.id]).toContain(seeded.id);
+    const rows = await env.DB
+      .prepare('SELECT id, apple_sub FROM users ORDER BY apple_sub')
+      .all<{ id: string; apple_sub: string }>();
+    expect(rows.results.map((row) => row.apple_sub).sort()).toEqual(
+      [firstSub, secondSub].sort(),
+    );
+    expect(rows.results).toHaveLength(2);
   });
 
   it('NOT claim-eligible once the sole row has been claimed by a real apple_sub', async () => {
@@ -287,31 +454,31 @@ describe('bootstrap path: claimOrCreateOwner + countUsers', () => {
     // Seed an MCP bootstrap row (simulates Claude creating the owner before
     // any iOS sign-in). With ownerSubLocked=true, the claim path does NOT
     // claim that row — a new user is created for any other sub.
-    const seeded = await ensureOwnerUser(env.DB, 'sub-owner');
+    const seeded = (await ensureOwnerUser(env.DB, 'sub-owner'))!;
     expect(seeded.apple_sub).toBe('sub-owner');
 
     // Owner sub signs in -> idempotent return of the seeded row.
-    const ownerLogin = await claimOrCreateOwner(
+    const ownerLogin = (await claimOrCreateOwner(
       env.DB,
       'sub-owner',
       'owner@test',
       'Owner',
       true,
-    );
+    ))!;
     expect(ownerLogin.id).toBe(seeded.id);
   });
 
   it('existing apple_sub -> returns the existing row (no invite needed)', async () => {
     // Seed.
-    const seeded = await claimOrCreateOwner(
+    const seeded = (await claimOrCreateOwner(
       env.DB,
       `sub-existing-${crypto.randomUUID()}`,
       'e@test',
       'E',
       false,
-    );
+    ))!;
     // Idempotent.
-    const again = await claimOrCreateOwner(env.DB, seeded.apple_sub, null, null, false);
+    const again = (await claimOrCreateOwner(env.DB, seeded.apple_sub, null, null, false))!;
     expect(again.id).toBe(seeded.id);
   });
 });

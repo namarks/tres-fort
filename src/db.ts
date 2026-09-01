@@ -36,11 +36,341 @@ import {
   type FetchDeps,
   type Fetcher,
 } from './intervals';
-
+import {
+  hasAppleProviderSigningConfig,
+  revokeAppleRefreshToken,
+  type AppleProviderConfig,
+} from './apple';
+import {
+  runWorkoutWriteBatch,
+  runWorkoutWriteStatement,
+} from './workout-write-fence';
 const now = () => Date.now();
 const uuid = () => crypto.randomUUID();
 
 // ---- users ---------------------------------------------------------------
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(value),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export function isAccountDeletionKey(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value,
+  );
+}
+
+/**
+ * Match the second half of a durable deletion-receipt credential without
+ * exposing the stored digest. Used by app-JWT middleware only for the narrow
+ * case where the signed bearer has expired after deletion already committed.
+ */
+export async function accountDeletionReceiptMatches(
+  db: D1Database,
+  userId: string,
+  idempotencyKey: string,
+): Promise<boolean> {
+  if (!isAccountDeletionKey(idempotencyKey)) return false;
+  const receipt = await db
+    .prepare(
+      `SELECT idempotency_key_sha256
+         FROM account_deletion_receipts WHERE user_id = ?1`,
+    )
+    .bind(userId)
+    .first<{ idempotency_key_sha256: string }>();
+  if (!receipt) return false;
+  return receipt.idempotency_key_sha256 === (await sha256Hex(idempotencyKey));
+}
+
+/**
+ * A signed, expired app bearer may continue only a deletion that was already
+ * claimed while authentication was recent, or acknowledge its committed
+ * receipt. The exact high-entropy key must match either durable row.
+ */
+export async function accountDeletionContinuationMatches(
+  db: D1Database,
+  userId: string,
+  idempotencyKey: string,
+): Promise<boolean> {
+  if (!isAccountDeletionKey(idempotencyKey)) return false;
+  const row = await db
+    .prepare(
+      `SELECT idempotency_key_sha256
+         FROM account_deletion_intents WHERE user_id = ?1
+       UNION ALL
+       SELECT idempotency_key_sha256
+         FROM account_deletion_receipts WHERE user_id = ?1
+       LIMIT 1`,
+    )
+    .bind(userId)
+    .first<{ idempotency_key_sha256: string }>();
+  return Boolean(
+    row && row.idempotency_key_sha256 === (await sha256Hex(idempotencyKey)),
+  );
+}
+
+/** True while the provider/local deletion operation owns this principal. */
+export async function isAccountDeletionInProgress(
+  db: D1Database,
+  userId: string,
+): Promise<boolean> {
+  return (
+    (await db
+      .prepare(
+        'SELECT 1 AS x FROM account_deletion_intents WHERE user_id = ?1',
+      )
+      .bind(userId)
+      .first<{ x: number }>()) !== null
+  );
+}
+
+/**
+ * Store only the caller-scoped Apple refresh token. The conditional upsert and
+ * migration triggers serialize replacement against deletion intent creation.
+ */
+export async function storeAppleRefreshToken(
+  db: D1Database,
+  userId: string,
+  refreshToken: string,
+): Promise<boolean> {
+  if (!refreshToken) return false;
+  const result = await db
+    .prepare(
+      `INSERT INTO apple_refresh_tokens (user_id, refresh_token, updated_at)
+       SELECT ?1, ?2, ?3
+        WHERE EXISTS (SELECT 1 FROM users WHERE id = ?1)
+          AND NOT EXISTS (
+                SELECT 1 FROM account_deletion_intents WHERE user_id = ?1
+              )
+          AND NOT EXISTS (
+                SELECT 1 FROM account_deletion_receipts WHERE user_id = ?1
+              )
+          AND NOT EXISTS (
+                SELECT 1 FROM apple_grant_exchange_state WHERE user_id = ?1
+              )
+       ON CONFLICT(user_id) DO UPDATE SET
+         refresh_token = excluded.refresh_token,
+         updated_at = excluded.updated_at`,
+    )
+    .bind(userId, refreshToken, now())
+    .run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+const APPLE_GRANT_EXCHANGE_FRESH_MS = 60_000;
+
+/**
+ * Reserve the provider-I/O gap for one Sign in with Apple code exchange.
+ * A fresh active reservation wins. An abandoned active reservation may be
+ * replaced after 60 seconds, but doing so permanently records revocation
+ * uncertainty because Apple may have issued a grant to the abandoned call.
+ */
+export async function beginAppleGrantExchange(
+  db: D1Database,
+  userId: string,
+  reservationId: string,
+  nowMs = now(),
+): Promise<boolean> {
+  if (!isAccountDeletionKey(reservationId)) return false;
+  const staleBefore = nowMs - APPLE_GRANT_EXCHANGE_FRESH_MS;
+  const result = await db
+    .prepare(
+      `INSERT INTO apple_grant_exchange_state
+         (user_id, reservation_id, active_since, revocation_uncertain)
+       SELECT id, ?2, ?3, 0 FROM users
+        WHERE id = ?1
+          AND NOT EXISTS (
+                SELECT 1 FROM account_deletion_intents WHERE user_id = ?1
+              )
+          AND NOT EXISTS (
+                SELECT 1 FROM account_deletion_receipts WHERE user_id = ?1
+              )
+       ON CONFLICT(user_id) DO UPDATE SET
+         reservation_id = excluded.reservation_id,
+         active_since = excluded.active_since,
+         revocation_uncertain = CASE
+           WHEN apple_grant_exchange_state.reservation_id IS NOT NULL
+            AND apple_grant_exchange_state.active_since < ?4
+           THEN 1
+           ELSE apple_grant_exchange_state.revocation_uncertain
+         END
+       WHERE (
+               apple_grant_exchange_state.reservation_id IS NULL
+            OR apple_grant_exchange_state.active_since < ?4
+             )
+         AND NOT EXISTS (
+               SELECT 1 FROM account_deletion_intents WHERE user_id = ?1
+             )
+         AND NOT EXISTS (
+               SELECT 1 FROM account_deletion_receipts WHERE user_id = ?1
+             )`,
+    )
+    .bind(userId, reservationId, nowMs, staleBefore)
+    .run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+/**
+ * Record that Apple may have accepted the matching exchange even though the
+ * caller did not receive a trustworthy token response. Uncertainty survives
+ * every later exchange and forces manual provider cleanup at deletion.
+ */
+export async function markAppleGrantExchangeUncertain(
+  db: D1Database,
+  userId: string,
+  reservationId: string,
+): Promise<boolean> {
+  if (!isAccountDeletionKey(reservationId)) return false;
+  const result = await db
+    .prepare(
+      `UPDATE apple_grant_exchange_state
+          SET reservation_id = NULL,
+              active_since = NULL,
+              revocation_uncertain = 1
+        WHERE user_id = ?1 AND reservation_id = ?2`,
+    )
+    .bind(userId, reservationId)
+    .run();
+  return (result.meta.changes ?? 0) === 1;
+}
+
+/**
+ * Store the newly returned refresh token while retaining exactly its active
+ * reservation. Keeping that row through the storage commit is deliberate: if
+ * D1 commits and the binding then throws, the route can still mark the exact
+ * exchange uncertain and deletion remains blocked until it does. A separate
+ * acknowledgement clears the reservation only after this call returns.
+ */
+export async function finishAppleGrantExchange(
+  db: D1Database,
+  userId: string,
+  reservationId: string,
+  refreshToken: string,
+): Promise<boolean> {
+  if (!isAccountDeletionKey(reservationId) || !refreshToken) return false;
+  const ts = now();
+  const [stored, retained] = await db.batch([
+    db
+      .prepare(
+        `INSERT INTO apple_refresh_tokens (user_id, refresh_token, updated_at)
+         SELECT s.user_id, ?3, ?4
+           FROM apple_grant_exchange_state s
+          WHERE s.user_id = ?1
+            AND s.reservation_id = ?2
+            AND EXISTS (SELECT 1 FROM users WHERE id = ?1)
+            AND NOT EXISTS (
+                  SELECT 1 FROM account_deletion_intents WHERE user_id = ?1
+                )
+            AND NOT EXISTS (
+                  SELECT 1 FROM account_deletion_receipts WHERE user_id = ?1
+                )
+         ON CONFLICT(user_id) DO UPDATE SET
+           refresh_token = excluded.refresh_token,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(userId, reservationId, refreshToken, ts),
+    db
+      .prepare(
+        `UPDATE apple_grant_exchange_state
+            SET active_since = ?3
+          WHERE user_id = ?1
+            AND reservation_id = ?2
+            AND changes() = 1`,
+      )
+      .bind(userId, reservationId, ts),
+  ]);
+  return (
+    (stored?.meta.changes ?? 0) === 1 &&
+    (retained?.meta.changes ?? 0) === 1
+  );
+}
+
+/**
+ * Acknowledge a refresh-token store that the caller observed as successful.
+ * Clearing and clean-row deletion remain exact-reservation conditional; any
+ * prior sticky uncertainty survives for deletion to consume. If this call is
+ * ambiguous, the route can safely attempt the exact uncertainty marker: a
+ * committed acknowledgement means the token is known, while an uncommitted
+ * acknowledgement still has the reservation available to mark fail-closed.
+ */
+export async function acknowledgeAppleGrantExchange(
+  db: D1Database,
+  userId: string,
+  reservationId: string,
+): Promise<boolean> {
+  if (!isAccountDeletionKey(reservationId)) return false;
+  const [cleared, removed] = await db.batch([
+    db
+      .prepare(
+        `UPDATE apple_grant_exchange_state
+            SET reservation_id = NULL, active_since = NULL
+          WHERE user_id = ?1 AND reservation_id = ?2`,
+      )
+      .bind(userId, reservationId),
+    db
+      .prepare(
+        `DELETE FROM apple_grant_exchange_state
+          WHERE user_id = ?1
+            AND reservation_id IS NULL
+            AND revocation_uncertain = 0
+            AND changes() = 1`,
+      )
+      .bind(userId),
+  ]);
+  const clearedCount = cleared?.meta.changes ?? 0;
+  const removedCount = removed?.meta.changes ?? 0;
+  return clearedCount === 1 && (removedCount === 0 || removedCount === 1);
+}
+
+/**
+ * Account deletion is terminal for the distinguished owner until an
+ * administrator deliberately clears the singleton tombstone. Keeping this
+ * check independent of the users table prevents static MCP/bootstrap traffic
+ * from recreating the owner or promoting the earliest surviving member.
+ */
+export async function isOwnerDeletionTombstoned(
+  db: D1Database,
+): Promise<boolean> {
+  const row = await db
+    .prepare('SELECT 1 AS x FROM owner_deletion_tombstone WHERE singleton = 1')
+    .first<{ x: number }>();
+  return row !== null;
+}
+
+/**
+ * Durable owner-deletion history survives administrative removal of the
+ * identity tombstone. It prevents the legacy OWNER_APPLE_SUB-unset fallback
+ * from treating the earliest surviving member as the new distinguished owner.
+ */
+async function hasOwnerDeletionReceipt(db: D1Database): Promise<boolean> {
+  const row = await db
+    .prepare(
+      `SELECT 1 AS x FROM account_deletion_receipts
+        WHERE owner_tombstoned = 1 LIMIT 1`,
+    )
+    .first<{ x: number }>();
+  return row !== null;
+}
+
+/** True only for the Apple identity that deleted the owner account. */
+export async function isDeletedOwnerAppleSub(
+  db: D1Database,
+  appleSub: string,
+): Promise<boolean> {
+  const row = await db
+    .prepare(
+      'SELECT apple_sub_sha256 FROM owner_deletion_tombstone WHERE singleton = 1',
+    )
+    .first<{ apple_sub_sha256: string }>();
+  if (!row) return false;
+  return row.apple_sub_sha256 === (await sha256Hex(appleSub));
+}
 
 export async function upsertUser(
   db: D1Database,
@@ -88,11 +418,112 @@ export async function upsertUser(
 }
 
 /**
+ * Open-sign-in creation path that cannot recreate the deliberately deleted
+ * owner identity. The one-way identity comparison and INSERT share one SQLite
+ * statement, so a concurrent owner deletion that wins the write lock also
+ * prevents a stale sign-in request from inserting the same Apple subject.
+ */
+export async function upsertUserUnlessDeletedOwner(
+  db: D1Database,
+  appleSub: string,
+  email: string | null,
+  displayName: string | null,
+): Promise<User | null> {
+  const candidateId = uuid();
+  const createdAt = now();
+  const appleSubHash = await sha256Hex(appleSub);
+  await db
+    .prepare(
+      `INSERT INTO users (id, apple_sub, email, display_name, created_at)
+       SELECT ?1, ?2, ?3, ?4, ?5
+        WHERE NOT EXISTS (
+                SELECT 1 FROM owner_deletion_tombstone
+                 WHERE singleton = 1 AND apple_sub_sha256 = ?6
+              )
+       ON CONFLICT(apple_sub) DO NOTHING`,
+    )
+    .bind(candidateId, appleSub, email, displayName, createdAt, appleSubHash)
+    .run();
+  return db
+    .prepare(
+      `SELECT u.* FROM users u
+        WHERE u.apple_sub = ?1
+          AND NOT EXISTS (
+                SELECT 1 FROM owner_deletion_tombstone
+                 WHERE singleton = 1 AND apple_sub_sha256 = ?2
+              )`,
+    )
+    .bind(appleSub, appleSubHash)
+    .first<User>();
+}
+
+/**
+ * Create the distinguished owner only while no terminal owner tombstone
+ * exists. The predicate and INSERT share one SQLite statement, so a deletion
+ * that wins the write lock cannot be followed by a stale bootstrap request
+ * recreating the owner.
+ */
+async function insertOwnerUnlessTombstoned(
+  db: D1Database,
+  appleSub: string,
+  email: string | null,
+  displayName: string | null,
+  requireEmptyUsers: boolean,
+): Promise<User | null> {
+  const candidate: User = {
+    id: uuid(),
+    apple_sub: appleSub,
+    email,
+    display_name: displayName,
+    created_at: now(),
+    timezone: null,
+    intervals_api_key: null,
+    intervals_athlete_id: null,
+    intervals_oauth_access_token: null,
+    intervals_oauth_refresh_token: null,
+    intervals_oauth_expires_at: null,
+    intervals_auth_error_at: null,
+    mcp_passphrase_hash: null,
+    mcp_passphrase_salt: null,
+  };
+  await db
+    .prepare(
+      `INSERT INTO users (id, apple_sub, email, display_name, created_at)
+       SELECT ?1, ?2, ?3, ?4, ?5
+        WHERE NOT EXISTS (
+                SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+              )
+          AND (?6 = 0 OR NOT EXISTS (SELECT 1 FROM users))
+       ON CONFLICT(apple_sub) DO NOTHING`,
+    )
+    .bind(
+      candidate.id,
+      candidate.apple_sub,
+      candidate.email,
+      candidate.display_name,
+      candidate.created_at,
+      requireEmptyUsers ? 1 : 0,
+    )
+    .run();
+  return db
+    .prepare(
+      `SELECT u.* FROM users u
+        WHERE u.apple_sub = ?1
+          AND NOT EXISTS (
+                SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+              )`,
+    )
+    .bind(appleSub)
+    .first<User>();
+}
+
+/**
  * Sign in with Apple owner resolution. Single-user invariant: there is
  * exactly one user row. If this Apple sub is unseen and the only existing
- * user is a bootstrap row (e.g. the MCP-created 'mcp-owner'), *claim* that
- * row — rebinding it to the real Apple identity — so MCP-seeded data and
- * iOS stay on one user_id. Otherwise create the first user.
+ * user is the MCP bootstrap sentinel, *claim* that row — rebinding it to the
+ * real Apple identity — so MCP-seeded data and iOS stay on one user_id.
+ * The claim is a compare-and-swap: a concurrent sign-in that loses the
+ * sentinel creates an ordinary user instead of stealing the winner's row.
  */
 export async function claimOrCreateOwner(
   db: D1Database,
@@ -100,25 +531,58 @@ export async function claimOrCreateOwner(
   email: string | null,
   displayName: string | null,
   ownerSubLocked: boolean,
-): Promise<User> {
+): Promise<User | null> {
   const byApple = await db
-    .prepare('SELECT * FROM users WHERE apple_sub = ?1')
+    .prepare(
+      `SELECT u.* FROM users u
+        WHERE u.apple_sub = ?1
+          AND NOT EXISTS (
+                SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+              )`,
+    )
     .bind(appleSub)
     .first<User>();
   if (byApple) return byApple;
 
   if (!ownerSubLocked) {
-    const all = await db.prepare('SELECT * FROM users').all<User>();
-    if (all.results.length === 1) {
-      const row = all.results[0]!;
-      await db
-        .prepare('UPDATE users SET apple_sub = ?2, email = ?3, display_name = ?4 WHERE id = ?1')
-        .bind(row.id, appleSub, email ?? row.email, displayName ?? row.display_name)
+    const bootstrap = await db
+      .prepare('SELECT * FROM users WHERE apple_sub = ?1')
+      .bind(BOOTSTRAP_APPLE_SUB)
+      .first<User>();
+    if (bootstrap) {
+      const claimed = await db
+        .prepare(
+          `UPDATE users
+              SET apple_sub = ?2, email = ?3, display_name = ?4
+            WHERE id = ?1
+              AND apple_sub = ?5
+              AND NOT EXISTS (
+                    SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+                  )`,
+        )
+        .bind(
+          bootstrap.id,
+          appleSub,
+          email ?? bootstrap.email,
+          displayName ?? bootstrap.display_name,
+          BOOTSTRAP_APPLE_SUB,
+        )
         .run();
-      return { ...row, apple_sub: appleSub, email: email ?? row.email, display_name: displayName ?? row.display_name };
+      if ((claimed.meta.changes ?? 0) === 1) {
+        return db
+          .prepare(
+            `SELECT u.* FROM users u
+              WHERE u.id = ?1 AND u.apple_sub = ?2
+                AND NOT EXISTS (
+                      SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+                    )`,
+          )
+          .bind(bootstrap.id, appleSub)
+          .first<User>();
+      }
     }
   }
-  return upsertUser(db, appleSub, email, displayName);
+  return insertOwnerUnlessTombstoned(db, appleSub, email, displayName, false);
 }
 
 /**
@@ -138,10 +602,21 @@ export const BOOTSTRAP_APPLE_SUB = 'mcp-owner';
 export async function ensureOwnerUser(
   db: D1Database,
   ownerAppleSub: string | undefined,
-): Promise<User> {
+): Promise<User | null> {
   const existing = await findOwnerRow(db, ownerAppleSub);
   if (existing) return existing;
-  return upsertUser(db, ownerAppleSub ?? BOOTSTRAP_APPLE_SUB, null, 'Owner');
+  // Clearing the identity tombstone re-enables explicit recovery, but it must
+  // not restore the old implicit bootstrap/earliest-user behavior. Configure
+  // a replacement OWNER_APPLE_SUB or deliberately insert the bootstrap
+  // sentinel before calling this path.
+  if (!ownerAppleSub && (await hasOwnerDeletionReceipt(db))) return null;
+  return insertOwnerUnlessTombstoned(
+    db,
+    ownerAppleSub ?? BOOTSTRAP_APPLE_SUB,
+    null,
+    'Owner',
+    !ownerAppleSub,
+  );
 }
 
 /**
@@ -155,10 +630,10 @@ export async function ensureOwnerUser(
  *    ever signs in or MCP seeds the row. Treating a reviewer/new-user
  *    row as the owner would attribute Claude's plan + sets + intervals
  *    creds to the wrong user. (Codex PR #38 P1.)
- *  - ownerAppleSub UNSET → fall back to "earliest by created_at." The
- *    fresh-install/claim path (Path 3) ensures the earliest row is
- *    always the rightful owner in this mode (no other path can create
- *    a user before the owner has signed in or been bootstrap-seeded).
+ *  - ownerAppleSub UNSET → fall back to "earliest by created_at" only before
+ *    any distinguished-owner deletion. After deletion history exists, an
+ *    explicitly inserted bootstrap sentinel is the only owner row this mode
+ *    will resolve; ordinary surviving members are never promoted.
  *
  * Returns null when no matching row exists; the caller chooses whether
  * to seed (ensureOwnerUser) or no-op (seedOwnerIntervalsCredsFromEnv).
@@ -169,12 +644,37 @@ export async function findOwnerRow(
 ): Promise<User | null> {
   if (ownerAppleSub) {
     return await db
-      .prepare('SELECT * FROM users WHERE apple_sub = ?1')
+      .prepare(
+        `SELECT u.* FROM users u
+          WHERE u.apple_sub = ?1
+            AND NOT EXISTS (
+                  SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+                )`,
+      )
       .bind(ownerAppleSub)
       .first<User>();
   }
+  if (await hasOwnerDeletionReceipt(db)) {
+    return await db
+      .prepare(
+        `SELECT u.* FROM users u
+          WHERE u.apple_sub = ?1
+            AND NOT EXISTS (
+                  SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+                )
+          LIMIT 1`,
+      )
+      .bind(BOOTSTRAP_APPLE_SUB)
+      .first<User>();
+  }
   return await db
-    .prepare('SELECT * FROM users ORDER BY created_at LIMIT 1')
+    .prepare(
+      `SELECT u.* FROM users u
+        WHERE NOT EXISTS (
+                SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
+              )
+        ORDER BY u.created_at LIMIT 1`,
+    )
     .first<User>();
 }
 
@@ -186,6 +686,12 @@ export async function findOwnerRow(
  * bound to a real apple_sub, hence the strict sentinel match.
  */
 export async function isBootstrapClaimEligible(db: D1Database): Promise<boolean> {
+  if (
+    (await isOwnerDeletionTombstoned(db)) ||
+    (await hasOwnerDeletionReceipt(db))
+  ) {
+    return false;
+  }
   const rows = await db
     .prepare('SELECT apple_sub FROM users')
     .all<{ apple_sub: string }>();
@@ -194,6 +700,398 @@ export async function isBootstrapClaimEligible(db: D1Database): Promise<boolean>
     return rows.results[0]!.apple_sub === BOOTSTRAP_APPLE_SUB;
   }
   return false;
+}
+
+export type AppleRevocationOutcome = 'revoked' | 'manual_required';
+
+export type DeleteUserAccountResult =
+  | {
+      ok: true;
+      owner_tombstoned: boolean;
+      apple_revocation: AppleRevocationOutcome;
+    }
+  | { error: 'not_found' | 'conflict' };
+
+export interface DeleteUserAccountDeps {
+  appleConfig?: AppleProviderConfig;
+  /** Test seam for deterministic provider success, failure, and race cases. */
+  revokeAppleToken?: (
+    config: AppleProviderConfig,
+    refreshToken: string,
+  ) => Promise<void>;
+}
+
+interface AccountDeletionReceiptRow {
+  idempotency_key_sha256: string;
+  owner_tombstoned: number;
+  apple_revocation: AppleRevocationOutcome;
+}
+
+async function getAccountDeletionReceipt(
+  db: D1Database,
+  userId: string,
+): Promise<AccountDeletionReceiptRow | null> {
+  return db
+    .prepare(
+      `SELECT idempotency_key_sha256, owner_tombstoned, apple_revocation
+         FROM account_deletion_receipts WHERE user_id = ?1`,
+    )
+    .bind(userId)
+    .first<AccountDeletionReceiptRow>();
+}
+
+function receiptResult(
+  receipt: AccountDeletionReceiptRow,
+): Extract<DeleteUserAccountResult, { ok: true }> {
+  return {
+    ok: true,
+    owner_tombstoned: receipt.owner_tombstoned === 1,
+    apple_revocation: receipt.apple_revocation,
+  };
+}
+
+/**
+ * Permanently remove one authenticated account and every row it owns.
+ *
+ * D1 batch execution is transactional: the owner tombstone, group transfer,
+ * descendant cleanup, credential/token revocation, and final users-row delete
+ * either all commit or none do. Exercises and shared groups/member data are
+ * intentionally retained. A creator's surviving group transfers to its
+ * longest-tenured remaining member (user id is the deterministic tie-breaker);
+ * a group with no remaining member is removed.
+ */
+export async function deleteUserAccount(
+  db: D1Database,
+  userId: string,
+  ownerAppleSub: string | undefined,
+  idempotencyKey: string,
+  deps: DeleteUserAccountDeps = {},
+): Promise<DeleteUserAccountResult> {
+  const idempotencyKeyHash = await sha256Hex(idempotencyKey);
+  const claimTime = now();
+  const staleExchangeBefore =
+    claimTime - APPLE_GRANT_EXCHANGE_FRESH_MS;
+  // Claim the destructive operation under D1's write lock before provider
+  // I/O. INSERT OR IGNORE makes a different key lose without changing the
+  // winner; a matching key may safely resume an interrupted intent. A fresh
+  // Apple exchange reservation blocks the claim. Sticky uncertainty or a
+  // stale active exchange is consumed into an immediately-sticky manual
+  // outcome, so deletion can never report revocation of only an older grant.
+  await db.batch([
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO account_deletion_intents
+           (user_id, idempotency_key_sha256, apple_revocation, created_at)
+         SELECT u.id,
+                ?2,
+                CASE
+                  WHEN COALESCE(s.revocation_uncertain, 0) = 1
+                    OR (
+                      s.reservation_id IS NOT NULL
+                      AND s.active_since < ?4
+                    )
+                  THEN 'manual_required'
+                  ELSE NULL
+                END,
+                ?3
+           FROM users u
+           LEFT JOIN apple_grant_exchange_state s ON s.user_id = u.id
+          WHERE u.id = ?1
+            AND NOT EXISTS (
+                  SELECT 1 FROM account_deletion_receipts WHERE user_id = ?1
+                )
+            AND NOT (
+                  s.reservation_id IS NOT NULL
+                  AND s.active_since >= ?4
+                )`,
+      )
+      .bind(userId, idempotencyKeyHash, claimTime, staleExchangeBefore),
+    db
+      .prepare(
+        `DELETE FROM apple_grant_exchange_state
+          WHERE user_id = ?1
+            AND EXISTS (
+                  SELECT 1 FROM account_deletion_intents
+                   WHERE user_id = ?1
+                     AND idempotency_key_sha256 = ?2
+                )`,
+      )
+      .bind(userId, idempotencyKeyHash),
+  ]);
+
+  const priorReceipt = await getAccountDeletionReceipt(db, userId);
+  if (priorReceipt) {
+    return priorReceipt.idempotency_key_sha256 === idempotencyKeyHash
+      ? receiptResult(priorReceipt)
+      : { error: 'not_found' };
+  }
+
+  let intent = await db
+    .prepare(
+      `SELECT idempotency_key_sha256, apple_revocation
+         FROM account_deletion_intents WHERE user_id = ?1`,
+    )
+    .bind(userId)
+    .first<{
+      idempotency_key_sha256: string;
+      apple_revocation: AppleRevocationOutcome | null;
+    }>();
+  if (!intent || intent.idempotency_key_sha256 !== idempotencyKeyHash) {
+    // A live intent bound to another high-entropy key is a collision, not
+    // proof that the account disappeared. iOS reserves 404 for cross-device
+    // completion and must not erase local state for this case.
+    if (intent) return { error: 'conflict' };
+    const liveUser = await db
+      .prepare('SELECT 1 AS x FROM users WHERE id = ?1')
+      .bind(userId)
+      .first<{ x: number }>();
+    return liveUser ? { error: 'conflict' } : { error: 'not_found' };
+  }
+
+  let appleRevocation = intent.apple_revocation;
+  if (appleRevocation === null) {
+    const credential = await db
+      .prepare(
+        'SELECT refresh_token FROM apple_refresh_tokens WHERE user_id = ?1',
+      )
+      .bind(userId)
+      .first<{ refresh_token: string }>();
+    appleRevocation = 'manual_required';
+    if (
+      credential &&
+      deps.appleConfig &&
+      hasAppleProviderSigningConfig(deps.appleConfig)
+    ) {
+      try {
+        await (deps.revokeAppleToken ?? revokeAppleRefreshToken)(
+          deps.appleConfig,
+          credential.refresh_token,
+        );
+        appleRevocation = 'revoked';
+      } catch {
+        // Provider unavailability must never retain the user's local account.
+        // The value-free outcome sends iOS to Apple's manual revocation path.
+        appleRevocation = 'manual_required';
+      }
+    }
+
+    // Persist provider truth on the intent immediately. If local finalization
+    // is interrupted, a matching retry skips provider I/O and carries this
+    // exact outcome into the durable receipt.
+    await db
+      .prepare(
+        `UPDATE account_deletion_intents
+            SET apple_revocation = ?3
+          WHERE user_id = ?1
+            AND idempotency_key_sha256 = ?2
+            AND apple_revocation IS NULL`,
+      )
+      .bind(userId, idempotencyKeyHash, appleRevocation)
+      .run();
+    intent = await db
+      .prepare(
+        `SELECT idempotency_key_sha256, apple_revocation
+           FROM account_deletion_intents WHERE user_id = ?1`,
+      )
+      .bind(userId)
+      .first<{
+        idempotency_key_sha256: string;
+        apple_revocation: AppleRevocationOutcome | null;
+      }>();
+    if (!intent) {
+      const committed = await getAccountDeletionReceipt(db, userId);
+      return committed?.idempotency_key_sha256 === idempotencyKeyHash
+        ? receiptResult(committed)
+        : { error: 'not_found' };
+    }
+    if (
+      intent.idempotency_key_sha256 !== idempotencyKeyHash ||
+      intent.apple_revocation === null
+    ) {
+      return { error: 'not_found' };
+    }
+    appleRevocation = intent.apple_revocation;
+  }
+
+  const user = await db
+    .prepare('SELECT * FROM users WHERE id = ?1')
+    .bind(userId)
+    .first<User>();
+  if (!user) {
+    const committed = await getAccountDeletionReceipt(db, userId);
+    return committed?.idempotency_key_sha256 === idempotencyKeyHash
+      ? receiptResult(committed)
+      : { error: 'not_found' };
+  }
+
+  const owner = await findOwnerRow(db, ownerAppleSub);
+  const deletingOwner = owner?.id === userId;
+  const deletionTime = now();
+  const statements: D1PreparedStatement[] = [
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO account_deletion_receipts
+           (user_id, idempotency_key_sha256, owner_tombstoned, deleted_at,
+            apple_revocation)
+         VALUES (?1, ?2, ?3, ?4, ?5)`,
+      )
+      .bind(
+        userId,
+        idempotencyKeyHash,
+        deletingOwner ? 1 : 0,
+        deletionTime,
+        appleRevocation,
+      ),
+  ];
+
+  if (deletingOwner) {
+    statements.push(
+      db
+        .prepare(
+          `INSERT INTO owner_deletion_tombstone
+             (singleton, apple_sub_sha256, deleted_at)
+           VALUES (1, ?1, ?2)
+           ON CONFLICT(singleton) DO UPDATE SET
+             apple_sub_sha256 = excluded.apple_sub_sha256,
+             deleted_at = excluded.deleted_at`,
+        )
+        .bind(await sha256Hex(user.apple_sub), deletionTime),
+    );
+  }
+
+  // Empty groups owned by the caller have no shared state to preserve.
+  statements.push(
+    db
+      .prepare(
+        `DELETE FROM group_invites
+          WHERE group_id IN (
+            SELECT g.id FROM groups g
+             WHERE g.created_by = ?1
+               AND NOT EXISTS (
+                 SELECT 1 FROM group_members gm
+                  WHERE gm.group_id = g.id AND gm.user_id <> ?1
+               )
+          )`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `DELETE FROM group_members
+          WHERE group_id IN (
+            SELECT g.id FROM groups g
+             WHERE g.created_by = ?1
+               AND NOT EXISTS (
+                 SELECT 1 FROM group_members gm
+                  WHERE gm.group_id = g.id AND gm.user_id <> ?1
+               )
+          )`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `DELETE FROM groups
+          WHERE created_by = ?1
+            AND NOT EXISTS (
+              SELECT 1 FROM group_members gm
+               WHERE gm.group_id = groups.id AND gm.user_id <> ?1
+            )`,
+      )
+      .bind(userId),
+
+    // Preserve a shared group by transferring its creator anchor before the
+    // deleting user's membership and users row disappear.
+    db
+      .prepare(
+        `UPDATE groups
+            SET created_by = (
+              SELECT gm.user_id FROM group_members gm
+               WHERE gm.group_id = groups.id AND gm.user_id <> ?1
+               ORDER BY gm.joined_at, gm.user_id
+               LIMIT 1
+            )
+          WHERE created_by = ?1
+            AND EXISTS (
+              SELECT 1 FROM group_members gm
+               WHERE gm.group_id = groups.id AND gm.user_id <> ?1
+            )`,
+      )
+      .bind(userId),
+
+    // Invites created by the account are credentials and are revoked. Invites
+    // another member created remain, but no longer retain used_by attribution
+    // to the deleted account.
+    db.prepare('DELETE FROM group_invites WHERE created_by = ?1').bind(userId),
+    db.prepare('UPDATE group_invites SET used_by = NULL WHERE used_by = ?1').bind(userId),
+    db.prepare('DELETE FROM group_members WHERE user_id = ?1').bind(userId),
+
+    // Session-dependent ledgers and logs must go before their canonical
+    // sessions; the plan tree follows sessions because those rows hold plan/day
+    // references under strict foreign keys.
+    db
+      .prepare(
+        `DELETE FROM session_aliases
+          WHERE canonical_session_id IN (
+            SELECT id FROM sessions WHERE user_id = ?1
+          )`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `DELETE FROM session_load_exports
+          WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?1)`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `DELETE FROM set_logs
+          WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?1)`,
+      )
+      .bind(userId),
+    db.prepare('DELETE FROM sessions WHERE user_id = ?1').bind(userId),
+    db
+      .prepare(
+        `DELETE FROM template_exercises
+          WHERE day_template_id IN (
+            SELECT d.id FROM day_templates d
+            JOIN plans p ON p.id = d.plan_id
+            WHERE p.user_id = ?1
+          )`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `DELETE FROM day_templates
+          WHERE plan_id IN (SELECT id FROM plans WHERE user_id = ?1)`,
+      )
+      .bind(userId),
+    db.prepare('DELETE FROM plans WHERE user_id = ?1').bind(userId),
+
+    db.prepare('DELETE FROM activities WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM external_events WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM external_activities WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM notes WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM audit_log WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM intervals_oauth_states WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM oauth_codes WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM oauth_tokens WHERE user_id = ?1').bind(userId),
+  );
+
+  // Tokens issued before multi-user MCP have a NULL principal and resolve to
+  // the owner. Revoke them only when the distinguished owner is deleted.
+  if (deletingOwner) {
+    statements.push(
+      db.prepare('DELETE FROM oauth_codes WHERE user_id IS NULL'),
+      db.prepare('DELETE FROM oauth_tokens WHERE user_id IS NULL'),
+    );
+  }
+
+  statements.push(db.prepare('DELETE FROM users WHERE id = ?1').bind(userId));
+  await db.batch(statements);
+  const receipt = await getAccountDeletionReceipt(db, userId);
+  if (!receipt || receipt.idempotency_key_sha256 !== idempotencyKeyHash) {
+    return { error: 'not_found' };
+  }
+  return receiptResult(receipt);
 }
 
 // ---- per-user MCP passphrase (M3 multi-tenant auth) -----------------------
@@ -776,6 +1674,196 @@ export async function getMeProfile(
 }
 
 /**
+ * Portable, caller-scoped snapshot of authoritative account and training data.
+ * This projection is intentionally not mounted on a network route until the
+ * sensitive export surface receives explicit product/security authorization.
+ * Secret material (intervals credentials, MCP passphrase hashes, OAuth tokens,
+ * and group-invite capabilities) is deliberately excluded; connection metadata
+ * and the Apple subject remain because they are the user's own account data.
+ * Shared group exports contain only the caller's membership row and group name,
+ * never another member's profile or activity.
+ */
+export async function exportUserData(
+  db: D1Database,
+  userId: string,
+): Promise<Record<string, unknown> | null> {
+  // D1 batches are transactional, including read-only batches. Reading the
+  // complete projection through one batch keeps the account, plan tree, logs,
+  // and memberships on one coherent database snapshot while writes continue.
+  const projection = await db.batch<Record<string, unknown>>([
+    db
+      .prepare(
+        `SELECT id, apple_sub, email, display_name, created_at, timezone,
+                intervals_athlete_id, intervals_auth_error_at,
+                share_health_activities
+           FROM users WHERE id = ?1`,
+      )
+      .bind(userId),
+    db
+      .prepare('SELECT * FROM plans WHERE user_id = ?1 ORDER BY created_at, id')
+      .bind(userId),
+    db
+      .prepare(
+        `SELECT d.* FROM day_templates d
+         JOIN plans p ON p.id = d.plan_id
+         WHERE p.user_id = ?1
+         ORDER BY d.plan_id, d.order_index, d.created_at, d.id`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `SELECT te.* FROM template_exercises te
+         JOIN day_templates d ON d.id = te.day_template_id
+         JOIN plans p ON p.id = d.plan_id
+         WHERE p.user_id = ?1
+         ORDER BY te.day_template_id, te.order_index, te.created_at, te.id`,
+      )
+      .bind(userId),
+    db
+      .prepare('SELECT * FROM sessions WHERE user_id = ?1 ORDER BY date, created_at, id')
+      .bind(userId),
+    db
+      .prepare(
+        `SELECT sl.* FROM set_logs sl
+         JOIN sessions s ON s.id = sl.session_id
+         WHERE s.user_id = ?1
+         ORDER BY sl.logged_at, sl.id`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `SELECT e.* FROM exercises e
+         WHERE e.id IN (
+           SELECT te.exercise_id FROM template_exercises te
+           JOIN day_templates d ON d.id = te.day_template_id
+           JOIN plans p ON p.id = d.plan_id
+           WHERE p.user_id = ?1
+           UNION
+           SELECT sl.exercise_id FROM set_logs sl
+           JOIN sessions s ON s.id = sl.session_id
+           WHERE s.user_id = ?1
+         )
+         ORDER BY e.name, e.id`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `SELECT sa.* FROM session_aliases sa
+         JOIN sessions s ON s.id = sa.canonical_session_id
+         WHERE s.user_id = ?1
+         ORDER BY sa.alias_session_id`,
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `SELECT sle.* FROM session_load_exports sle
+         JOIN sessions s ON s.id = sle.session_id
+         WHERE s.user_id = ?1
+         ORDER BY sle.updated_at, sle.session_id`,
+      )
+      .bind(userId),
+    db
+      .prepare('SELECT * FROM notes WHERE user_id = ?1 ORDER BY created_at, id')
+      .bind(userId),
+    db
+      .prepare('SELECT * FROM audit_log WHERE user_id = ?1 ORDER BY created_at, id')
+      .bind(userId),
+    db
+      .prepare('SELECT * FROM external_events WHERE user_id = ?1 ORDER BY date, id')
+      .bind(userId),
+    db
+      .prepare(
+        'SELECT * FROM external_activities WHERE user_id = ?1 ORDER BY date, id',
+      )
+      .bind(userId),
+    db
+      .prepare(
+        'SELECT * FROM activities WHERE user_id = ?1 ORDER BY date, logged_at, id',
+      )
+      .bind(userId),
+    db
+      .prepare(
+        `SELECT gm.group_id, g.name AS group_name, gm.display_name, gm.joined_at
+           FROM group_members gm
+           JOIN groups g ON g.id = gm.group_id
+          WHERE gm.user_id = ?1
+          ORDER BY gm.joined_at, gm.group_id`,
+      )
+      .bind(userId),
+  ]);
+  const rowsAt = (index: number): Record<string, unknown>[] =>
+    projection[index]?.results ?? [];
+  const account = rowsAt(0)[0] ?? null;
+  if (!account) return null;
+  const plans = rowsAt(1);
+  const days = rowsAt(2);
+  const templateExercises = rowsAt(3);
+  const sessions = rowsAt(4);
+  const sets = rowsAt(5);
+  const exercises = rowsAt(6);
+  const aliases = rowsAt(7);
+  const loadExports = rowsAt(8);
+  const notes = rowsAt(9);
+  const audit = rowsAt(10);
+  const events = rowsAt(11);
+  const externalActivities = rowsAt(12);
+  const activities = rowsAt(13);
+  const memberships = rowsAt(14);
+
+  const auditRows = audit.map((row) => {
+    if (row.tool !== 'create_invite' && row.tool !== 'redeem_invite') {
+      return row;
+    }
+    if (typeof row.args !== 'string') return { ...row, args: '{}' };
+    try {
+      const args = JSON.parse(row.args) as unknown;
+      if (args === null || Array.isArray(args) || typeof args !== 'object') {
+        return { ...row, args: '{}' };
+      }
+      delete (args as Record<string, unknown>).code;
+      return { ...row, args: JSON.stringify(args) };
+    } catch {
+      // Known invite audit rows fail closed: malformed historical arguments
+      // must not bypass capability redaction.
+      return { ...row, args: '{}' };
+    }
+  });
+  return {
+    schema_version: 1,
+    exported_at: now(),
+    account,
+    training: {
+      plans,
+      day_templates: days,
+      template_exercises: templateExercises,
+      exercises,
+      sessions,
+      set_logs: sets,
+      session_aliases: aliases,
+      session_load_exports: loadExports,
+      notes,
+      audit_log: auditRows,
+      external_events: events,
+      external_activities: externalActivities,
+      activities,
+    },
+    group_memberships: memberships,
+  };
+}
+
+export async function setUserDisplayName(
+  db: D1Database,
+  userId: string,
+  displayName: string,
+): Promise<boolean> {
+  const result = await db
+    .prepare('UPDATE users SET display_name = ?2 WHERE id = ?1')
+    .bind(userId, displayName)
+    .run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+/**
  * Set this user's "share my Apple Health activities in the group feed" opt-in
  * (migration 0028). Off by default; the iOS Apple Health detail toggle calls
  * PATCH /api/me/health-sharing to flip it. When off, the group feed/stats/series
@@ -970,7 +2058,7 @@ export async function createInvite(
     db,
     userId,
     'create_invite',
-    { group_id: groupId, code, expires_at: expires },
+    { group_id: groupId, expires_at: expires },
     'created',
     'ios',
   );
@@ -1030,12 +2118,11 @@ export async function getInvitePreview(
 }
 
 /**
- * Redeem an invite as `userId`. Validates → marks the code used → inserts
- * the group_members row. The check-then-write race window is tolerable in
- * the friends-and-family setting (two redemptions of the same code within
- * a few ms is essentially a non-event), but we still guard against it: the
- * `used_at IS NULL` predicate on the UPDATE means at most one redeemer
- * wins. If a redeemer loses the race they see `used`.
+ * Redeem an invite as `userId`. Validates, claims the code, inserts the
+ * membership, and writes the success audit. The three writes share one D1
+ * transaction, so account deletion or another redemption cannot land between
+ * an invite claim and its membership/audit. The conditional UPDATE means at
+ * most one redeemer wins; a loser is mapped back to the current public error.
  *
  * `already_member` is a soft success-ish case: the user is *already* in
  * the group, the invite is NOT consumed, and the iOS client can show
@@ -1063,34 +2150,69 @@ export async function redeemInvite(
     return { error: 'already_member' };
   }
   const ts = now();
-  // Conditional UPDATE: only mark used if still unused. Returns
-  // info().changes = 1 on the winning redeemer, 0 if someone else just
-  // beat us to it (race-loss → report as `used`).
-  const res = await db
-    .prepare(
-      `UPDATE group_invites
-          SET used_at = ?2, used_by = ?3
-        WHERE code = ?1 AND used_at IS NULL`,
-    )
-    .bind(code, ts, userId)
-    .run();
-  if ((res.meta?.changes ?? 0) !== 1) {
-    return { error: 'used' };
+  const auditId = uuid();
+  const auditArgs = JSON.stringify({ group_id: invite.group_id });
+  const [claim] = await db.batch([
+    // Repeat every mutable validation inside the transaction. In particular,
+    // requiring a live principal with no deletion intent prevents a deletion
+    // that won the database write lock first from consuming the invite, even
+    // while provider revocation intentionally keeps the users row present.
+    db
+      .prepare(
+        `UPDATE group_invites
+            SET used_at = ?2, used_by = ?3
+          WHERE code = ?1
+            AND used_at IS NULL
+            AND (expires_at IS NULL OR expires_at >= ?2)
+            AND EXISTS (SELECT 1 FROM users WHERE id = ?3)
+            AND NOT EXISTS (
+              SELECT 1 FROM account_deletion_intents WHERE user_id = ?3
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM account_deletion_receipts WHERE user_id = ?3
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM group_members gm
+               WHERE gm.group_id = group_invites.group_id
+                 AND gm.user_id = ?3
+            )`,
+      )
+      .bind(code, ts, userId),
+    // changes() observes the immediately preceding conditional UPDATE on this
+    // SQLite connection. A losing batch creates neither an audit attempt nor a
+    // membership; the unique audit id then gates the final INSERT.
+    db
+      .prepare(
+        `INSERT INTO audit_log
+           (id,user_id,actor,tool,args,result,created_at)
+         SELECT ?1,?2,'ios','redeem_invite',?3,'joined',?4
+          WHERE changes() = 1`,
+      )
+      .bind(auditId, userId, auditArgs, ts),
+    db
+      .prepare(
+        `INSERT INTO group_members (group_id,user_id,display_name,joined_at)
+         SELECT group_id,?2,NULL,?3 FROM group_invites
+          WHERE code = ?1
+            AND EXISTS (SELECT 1 FROM audit_log WHERE id = ?4)`,
+      )
+      .bind(code, userId, ts, auditId),
+  ]);
+  if ((claim?.meta.changes ?? 0) !== 1) {
+    const current = await getInviteForRedemption(db, code);
+    if (!current) return { error: 'unknown' };
+    if (current.used_at != null) return { error: 'used' };
+    if (current.expires_at != null && current.expires_at < now()) {
+      return { error: 'expired' };
+    }
+    if (await isGroupMember(db, userId, current.group_id)) {
+      return { error: 'already_member' };
+    }
+    // The only remaining expected case is a principal deleted before this
+    // transaction obtained the write lock. Do not disclose that lifecycle
+    // state through the invite surface.
+    return { error: 'unknown' };
   }
-  await db
-    .prepare(
-      'INSERT INTO group_members (group_id,user_id,display_name,joined_at) VALUES (?1,?2,?3,?4)',
-    )
-    .bind(invite.group_id, userId, null, ts)
-    .run();
-  await writeAudit(
-    db,
-    userId,
-    'redeem_invite',
-    { group_id: invite.group_id, code },
-    'joined',
-    'ios',
-  );
   return { ok: true, group_id: invite.group_id };
 }
 
@@ -1528,8 +2650,21 @@ export async function getOrCreateSession(
   planId: string,
   date: string,
   dayTemplateId: string | null,
+  options: {
+    reviveDiscarded?: boolean;
+    expectedAttempt?: number;
+    /** Only an explicitly capability-declaring REST client may claim v1.
+     * Internal/MCP callers still carry an attempt CAS but preserve the row's
+     * current protocol so the released tokenless app remains compatible. */
+    claimAttemptProtocol?: boolean;
+  } = {},
 ): Promise<SessionRow> {
-  const readExisting = () =>
+  const claimAttemptProtocol = options.claimAttemptProtocol === true;
+  const attemptScoped = options.expectedAttempt !== undefined;
+  if (claimAttemptProtocol && !attemptScoped) {
+    throw new Error('session_expected_attempt_missing');
+  }
+  const selectExisting = () =>
     db
       .prepare(
         'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
@@ -1542,7 +2677,21 @@ export async function getOrCreateSession(
   // the winning row on its initial read: it may fill an unpinned explicit day
   // (first writer wins), and it may revive a discarded session.
   const useExisting = async (existing: SessionRow): Promise<SessionRow> => {
+    // A tokenless legacy resolver may operate only until an attempt-aware
+    // writer claims this generation. Returning the row unchanged lets the
+    // route surface a stable protocol conflict without reviving or pinning it.
+    if (!attemptScoped && existing.write_protocol !== 'legacy') return existing;
+    // A write-scoped resolver must not mutate a later generation before its
+    // caller can report the conflict. This guard precedes both revival and the
+    // optional day-template backfill below.
+    if (
+      options.expectedAttempt !== undefined &&
+      existing.attempt !== options.expectedAttempt
+    ) {
+      return existing;
+    }
     if (existing.status === 'discarded') {
+      if (options.reviveDiscarded === false) return existing;
       // The (user,date) row exists but was DISCARDED. "Discarded" means
       // "this never happened" — so a fresh get/start for the same date must
       // RESURRECT it to a clean planned state rather than hand back the
@@ -1561,14 +2710,57 @@ export async function getOrCreateSession(
         perceived_fatigue: null,
         notes: null,
         updated_at: ts,
+        attempt: existing.attempt + 1,
+        write_protocol: claimAttemptProtocol
+          ? 'attempt-v1'
+          : existing.write_protocol,
       };
-      await db
-        .prepare(
-          'UPDATE sessions SET day_template_id=?2, status=?3, started_at=?4, completed_at=?5, perceived_fatigue=?6, notes=?7, updated_at=?8 WHERE id=?1',
+      const updated = await runWorkoutWriteStatement(
+        db,
+        db.prepare(
+          `UPDATE sessions
+              SET day_template_id=?2,
+                  status=?3,
+                  started_at=?4,
+                  completed_at=?5,
+                  perceived_fatigue=?6,
+                  notes=?7,
+                  updated_at=?8,
+                  attempt=?9,
+                  write_protocol=CASE
+                    WHEN ?11 = 1 THEN 'attempt-v1'
+                    ELSE write_protocol
+                  END
+            WHERE id=?1
+              AND status='discarded'
+              AND attempt=?10
+              AND (?12 = 1 OR write_protocol = 'legacy')`,
         )
-        .bind(revived.id, revived.day_template_id, revived.status, null, null, null, null, ts)
-        .run();
-      return revived;
+        .bind(
+          revived.id,
+          revived.day_template_id,
+          revived.status,
+          null,
+          null,
+          null,
+          null,
+          ts,
+          revived.attempt,
+          existing.attempt,
+          claimAttemptProtocol ? 1 : 0,
+          attemptScoped ? 1 : 0,
+        ),
+      );
+      if (updated.meta.changes > 0) return revived;
+
+      // A competing explicit restart or another resolver advanced the reused
+      // row after our read. Adopt that winner without applying this stale
+      // resolver's day pin or pristine-state reset to the newer generation.
+      const winner = await db
+        .prepare('SELECT * FROM sessions WHERE id = ?1')
+        .bind(existing.id)
+        .first<SessionRow>();
+      return winner ?? existing;
     }
 
     // #926: honor an EXPLICITLY-provided day_template_id on a row that
@@ -1582,24 +2774,50 @@ export async function getOrCreateSession(
     // null-template row is the Today/session impedance mismatch the iOS UX
     // had to paper over. Backfill ONLY a NULL slot; never clobber an
     // existing pin.
-    if (dayTemplateId != null && existing.day_template_id == null) {
+    const shouldPin = dayTemplateId != null && existing.day_template_id == null;
+    const shouldClaim =
+      claimAttemptProtocol && existing.write_protocol !== 'attempt-v1';
+    if (shouldPin || shouldClaim) {
       const ts = now();
-      // Conditional UPDATE guards a read-then-write race: two explicit POSTs
+      // The conditional SET guards a read-then-write race: two explicit POSTs
       // for the same null-template date can both read day_template_id == null,
-      // so an unconditional write would let the second clobber the first pin.
-      // `WHERE … AND day_template_id IS NULL` means only the FIRST writer's
-      // update affects a row; a racing second writer matches 0 rows and falls
-      // through to re-read the winning pin. (Codex P2 on #58.)
-      const res = await db
-        .prepare(
-          'UPDATE sessions SET day_template_id = ?2, updated_at = ?3 WHERE id = ?1 AND day_template_id IS NULL',
+      // but only the first execution sees NULL and installs its pin. Keep the
+      // row eligible after another writer pins it so this request can still
+      // perform its independent explicit protocol claim without clobbering the
+      // winning day. (Codex P2 on #58.)
+      const res = await runWorkoutWriteStatement(
+        db,
+        db.prepare(
+          `UPDATE sessions
+              SET day_template_id = CASE
+                    WHEN ?5 = 1 AND day_template_id IS NULL THEN ?2
+                    ELSE day_template_id
+                  END,
+                  write_protocol = CASE
+                    WHEN ?6 = 1 THEN 'attempt-v1'
+                    ELSE write_protocol
+                  END,
+                  updated_at = ?3
+            WHERE id = ?1
+              AND attempt = ?4
+              AND status = ?7
+              AND (?8 = 1 OR write_protocol = 'legacy')`,
         )
-        .bind(existing.id, dayTemplateId, ts)
-        .run();
-      if (res.meta.changes > 0) {
-        return { ...existing, day_template_id: dayTemplateId, updated_at: ts };
-      }
-      // Lost the race — another writer pinned it first. Return the winner.
+        .bind(
+          existing.id,
+          dayTemplateId,
+          ts,
+          existing.attempt,
+          shouldPin ? 1 : 0,
+          claimAttemptProtocol ? 1 : 0,
+          existing.status,
+          attemptScoped ? 1 : 0,
+        ),
+      );
+      // Always return the authoritative row. A terminal transition can land
+      // immediately after the guarded update; synthesizing from `existing`
+      // would acknowledge stale planned/live state. A zero-change result is
+      // likewise a normal CAS loss (pin, status, generation, or protocol).
       const fresh = await db
         .prepare('SELECT * FROM sessions WHERE id = ?1')
         .bind(existing.id)
@@ -1609,8 +2827,15 @@ export async function getOrCreateSession(
     return existing;
   };
 
-  const existing = await readExisting();
+  const existing = await selectExisting();
   if (existing) return useExisting(existing);
+
+  // A nonzero token asserts that a prior generation already exists. Never
+  // manufacture attempt zero and then reject the response: that phantom row
+  // would still change calendar/state projections.
+  if (options.expectedAttempt !== undefined && options.expectedAttempt !== 0) {
+    throw new Error('session_expected_attempt_missing');
+  }
 
   const ts = now();
   const s: SessionRow = {
@@ -1626,25 +2851,182 @@ export async function getOrCreateSession(
     notes: null,
     created_at: ts,
     updated_at: ts,
+    attempt: 0,
+    write_protocol: claimAttemptProtocol ? 'attempt-v1' : 'legacy',
   };
-  const inserted = await db
-    .prepare(
+  const inserted = await runWorkoutWriteStatement(
+    db,
+    db.prepare(
       `INSERT INTO sessions
-       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
        ON CONFLICT(user_id,date) DO NOTHING`,
     )
-    .bind(s.id, s.user_id, s.plan_id, s.day_template_id, s.date, s.status, s.started_at, s.completed_at, s.perceived_fatigue, s.notes, s.created_at, s.updated_at)
-    .run();
+    .bind(
+      s.id,
+      s.user_id,
+      s.plan_id,
+      s.day_template_id,
+      s.date,
+      s.status,
+      s.started_at,
+      s.completed_at,
+      s.perceived_fatigue,
+      s.notes,
+      s.created_at,
+      s.updated_at,
+      s.attempt,
+      s.write_protocol,
+    ),
+  );
   if (inserted.meta.changes > 0) return s;
 
   // Another creator won after our null read. Do not inspect or parse an
   // engine-specific unique-constraint error: the unique index plus
   // ON CONFLICT makes the outcome explicit, and we re-read the canonical
   // row before applying the same explicit-pin/discarded-revival rules above.
-  const winner = await readExisting();
+  const winner = await selectExisting();
   if (!winner) throw new Error('session_create_conflict_without_winner');
   return useExisting(winner);
+}
+
+/** Read the canonical date row without revival, pin backfill, or creation. */
+export async function getOwnedSessionByDate(
+  db: D1Database,
+  userId: string,
+  date: string,
+): Promise<SessionRow | null> {
+  return db
+    .prepare(
+      'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
+    )
+    .bind(userId, date)
+    .first<SessionRow>();
+}
+
+/**
+ * Explicitly revive one discarded session generation. This is deliberately
+ * separate from ordinary date-level session resolution: a delayed pre-discard
+ * create must never look like a user-authorized restart. The expected attempt
+ * makes the operation idempotent across a commit-then-timeout retry while
+ * preventing that retry from reviving a later discarded generation.
+ */
+export async function reviveDiscardedSession(
+  db: D1Database,
+  userId: string,
+  sessionId: string,
+  expectedAttempt: number,
+  dayTemplateId: string | null,
+  claimAttemptProtocol = false,
+): Promise<SessionRow | SessionAttemptConflict | null> {
+  const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
+  if (!canonicalSessionId) return null;
+  const readCurrent = () =>
+    db
+      .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
+      .bind(canonicalSessionId, userId)
+      .first<SessionRow>();
+  const current = await readCurrent();
+  if (!current) return null;
+
+  const acceptLiveWinner = async (
+    candidate: SessionRow,
+  ): Promise<SessionRow | SessionAttemptConflict | null> => {
+    const revivedAttempt = expectedAttempt + 1;
+    if (
+      candidate.status === 'discarded' ||
+      candidate.attempt !== revivedAttempt
+    ) {
+      return sessionAttemptConflict(expectedAttempt, candidate);
+    }
+    if (!claimAttemptProtocol || candidate.write_protocol === 'attempt-v1') {
+      return candidate;
+    }
+    await runWorkoutWriteStatement(
+      db,
+      db.prepare(
+        `UPDATE sessions
+            SET write_protocol = 'attempt-v1'
+          WHERE id = ?1
+            AND user_id = ?2
+            AND attempt = ?3
+            AND status = ?4
+            AND write_protocol = 'legacy'`,
+      )
+      .bind(
+        canonicalSessionId,
+        userId,
+        revivedAttempt,
+        candidate.status,
+      ),
+    );
+    const authoritative = await readCurrent();
+    if (!authoritative) return null;
+    if (
+      authoritative.status === 'discarded' ||
+      authoritative.attempt !== revivedAttempt ||
+      authoritative.write_protocol !== 'attempt-v1'
+    ) {
+      return sessionAttemptConflict(expectedAttempt, authoritative);
+    }
+    return authoritative;
+  };
+
+  // A retry after the original restart committed observes exactly the next
+  // live generation. Return it as the idempotent result; do not increment it
+  // again. Any later generation is a real conflict.
+  if (current.status !== 'discarded') {
+    if (current.attempt === expectedAttempt + 1) {
+      return acceptLiveWinner(current);
+    }
+    return sessionAttemptConflict(expectedAttempt, current);
+  }
+  if (current.attempt !== expectedAttempt) {
+    return sessionAttemptConflict(expectedAttempt, current);
+  }
+
+  const ts = now();
+  const revivedAttempt = expectedAttempt + 1;
+  const updated = await runWorkoutWriteStatement(
+    db,
+    db.prepare(
+      `UPDATE sessions
+          SET day_template_id = ?2,
+              status = 'planned',
+              started_at = NULL,
+              completed_at = NULL,
+              perceived_fatigue = NULL,
+              notes = NULL,
+              updated_at = ?3,
+              attempt = ?4,
+              write_protocol = CASE
+                WHEN ?7 = 1 THEN 'attempt-v1'
+                ELSE write_protocol
+              END
+        WHERE id = ?1
+          AND user_id = ?5
+          AND status = 'discarded'
+          AND attempt = ?6`,
+    )
+    .bind(
+      canonicalSessionId,
+      dayTemplateId,
+      ts,
+      revivedAttempt,
+      userId,
+      expectedAttempt,
+      claimAttemptProtocol ? 1 : 0,
+    ),
+  );
+  // Reread even after a successful CAS. A same-attempt discard can commit
+  // immediately after the restart/claim; returning a synthesized planned row
+  // would install an obsolete client barrier.
+  const winner = await readCurrent();
+  if (!winner) return null;
+  if (winner.status !== 'discarded' && winner.attempt === revivedAttempt) {
+    return acceptLiveWinner(winner);
+  }
+  return sessionAttemptConflict(expectedAttempt, winner);
 }
 
 /**
@@ -1676,6 +3058,110 @@ async function resolveOwnedSessionId(
   return resolved?.id ?? null;
 }
 
+export type SessionAttemptConflict = {
+  error: 'session_attempt_conflict';
+  status: SessionRow['status'];
+  expected_attempt: number;
+  current_attempt: number;
+  current_session: SessionRow;
+};
+
+export type SessionStateConflict = {
+  error: 'session_state_conflict';
+  expected_status?: SessionRow['status'];
+  current_session: SessionRow;
+};
+
+export type SessionProtocolConflict = {
+  error: 'session_attempt_required';
+  status: SessionRow['status'];
+  current_attempt: number;
+  current_session: SessionRow;
+};
+
+function sessionAttemptConflict(
+  expectedAttempt: number,
+  current: SessionRow,
+): SessionAttemptConflict {
+  return {
+    error: 'session_attempt_conflict',
+    status: current.status,
+    expected_attempt: expectedAttempt,
+    current_attempt: current.attempt,
+    current_session: current,
+  };
+}
+
+function sessionStateConflict(
+  expectedStatus: SessionRow['status'],
+  current: SessionRow,
+): SessionStateConflict {
+  return {
+    error: 'session_state_conflict',
+    expected_status: expectedStatus,
+    current_session: current,
+  };
+}
+
+function sessionProtocolConflict(current: SessionRow): SessionProtocolConflict {
+  return {
+    error: 'session_attempt_required',
+    status: current.status,
+    current_attempt: current.attempt,
+    current_session: current,
+  };
+}
+
+export class SessionWriteConflictError extends Error {
+  readonly currentSession: SessionRow;
+  readonly expectedAttempt?: number;
+  readonly expectedStatus?: SessionRow['status'];
+
+  constructor(
+    error:
+      | 'session_attempt_conflict'
+      | 'session_attempt_required'
+      | 'session_discarded'
+      | 'session_state_conflict',
+    currentSession: SessionRow,
+    expectedAttempt?: number,
+    expectedStatus?: SessionRow['status'],
+  ) {
+    super(error);
+    this.name = 'SessionWriteConflictError';
+    this.currentSession = currentSession;
+    this.expectedAttempt = expectedAttempt;
+    this.expectedStatus = expectedStatus;
+  }
+
+  response():
+    | SessionAttemptConflict
+    | SessionProtocolConflict
+    | SessionStateConflict
+    | { error: 'session_discarded'; status: 'discarded'; current_session: SessionRow } {
+    if (this.message === 'session_attempt_conflict' && this.expectedAttempt !== undefined) {
+      return sessionAttemptConflict(this.expectedAttempt, this.currentSession);
+    }
+    if (this.message === 'session_attempt_required') {
+      return sessionProtocolConflict(this.currentSession);
+    }
+    if (this.message === 'session_state_conflict') {
+      return {
+        error: 'session_state_conflict',
+        ...(this.expectedStatus === undefined
+          ? {}
+          : { expected_status: this.expectedStatus }),
+        current_session: this.currentSession,
+      };
+    }
+    return {
+      error: 'session_discarded',
+      status: 'discarded',
+      current_session: this.currentSession,
+    };
+  }
+}
+
 export async function patchSession(
   db: D1Database,
   userId: string,
@@ -1683,12 +3169,27 @@ export async function patchSession(
   // `status` is `unknown`: the PATCH body is NOT runtime-validated, so a
   // client can send a number/null/bool/object/array here. Typing it
   // honestly forces the type-guard below.
-  patch: { status?: unknown; perceived_fatigue?: number; notes?: string },
+  patch: {
+    status?: unknown;
+    perceived_fatigue?: number;
+    notes?: string;
+    day_template_id?: string | null;
+  },
+  expectedAttempt?: number,
+  claimAttemptProtocol = false,
 ): Promise<
   | SessionRow
   | null
   | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
+  | {
+      error: 'session_discarded';
+      status: 'discarded';
+      current_session: SessionRow;
+    }
   | { error: 'invalid_status'; status: unknown }
+  | SessionAttemptConflict
+  | SessionProtocolConflict
+  | SessionStateConflict
 > {
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
   if (!canonicalSessionId) return null;
@@ -1697,6 +3198,17 @@ export async function patchSession(
     .bind(canonicalSessionId, userId)
     .first<SessionRow>();
   if (!s) return null;
+  const attemptScoped = expectedAttempt !== undefined;
+  if (claimAttemptProtocol && !attemptScoped) {
+    throw new Error('session_expected_attempt_missing');
+  }
+  if (!attemptScoped && s.write_protocol !== 'legacy') {
+    return sessionProtocolConflict(s);
+  }
+  if (expectedAttempt !== undefined && expectedAttempt !== s.attempt) {
+    return sessionAttemptConflict(expectedAttempt, s);
+  }
+  const casAttempt = expectedAttempt ?? s.attempt;
   // Type-guard BEFORE normalizing: a present-but-non-string `status`
   // (e.g. {"status":123|null|true|{}|[]}) must be treated exactly like an
   // invalid status — return the invalid_status arm (→ HTTP 400), never
@@ -1726,6 +3238,18 @@ export async function patchSession(
   ) {
     return { error: 'invalid_status', status: normalizedStatus };
   }
+  // Discard is terminal for mutations that still address this session id.
+  // A deliberate same-day restart goes through getOrCreateSession, which
+  // first revives the row to a fresh `planned` attempt. Keeping that explicit
+  // boundary prevents a delayed completion/status PATCH from silently
+  // resurrecting the attempt the user just threw away.
+  if (s.status === 'discarded') {
+    return {
+      error: 'session_discarded',
+      status: 'discarded',
+      current_session: s,
+    };
+  }
   // History-integrity guard (REST sibling of FIX2's skipPlannedSession
   // guard): a `skipped` patch must not bury a started/finished workout.
   // Setting an in_progress/completed session to 'skipped' would render it
@@ -1742,16 +3266,126 @@ export async function patchSession(
       status: s.status as 'in_progress' | 'completed',
     };
   }
+  const ts = now();
   const status = normalizedStatus ?? s.status;
   const fatigue = patch.perceived_fatigue ?? s.perceived_fatigue;
   const notes = patch.notes ?? s.notes;
-  const completedAt = status === 'completed' ? s.completed_at ?? now() : s.completed_at;
-  const startedAt = status === 'in_progress' ? s.started_at ?? now() : s.started_at;
-  await db
-    .prepare('UPDATE sessions SET status=?2, perceived_fatigue=?3, notes=?4, started_at=?5, completed_at=?6, updated_at=?7 WHERE id=?1')
-    .bind(canonicalSessionId, status, fatigue, notes, startedAt, completedAt, now())
-    .run();
-  return { ...s, status, perceived_fatigue: fatigue, notes, started_at: startedAt, completed_at: completedAt };
+  const completedAt = status === 'completed' ? s.completed_at ?? ts : s.completed_at;
+  const startedAt = status === 'in_progress' ? s.started_at ?? ts : s.started_at;
+  const statusPredicate =
+    normalizedStatus === 'completed'
+      ? "status IN ('planned','in_progress','completed')"
+      : normalizedStatus === 'in_progress'
+        ? "status IN ('planned','in_progress')"
+        : normalizedStatus === 'skipped'
+          ? "status IN ('planned','skipped')"
+          : normalizedStatus === 'planned'
+            ? "status IN ('planned','skipped')"
+            : "status != 'discarded'";
+  // Attempt plus a transition-specific current-state predicate form the
+  // read/write CAS. Completion is allowed to linearize on either side of a
+  // final logSet in the same generation, and SQL COALESCE preserves the
+  // concurrently installed started_at. Skip/planned transitions are stricter:
+  // once a set promoted the row, they cannot hide or demote the live workout.
+  const updated = await runWorkoutWriteStatement(
+    db,
+    db.prepare(
+      `UPDATE sessions
+          SET status = CASE WHEN ?8 = 1 THEN ?2 ELSE status END,
+              perceived_fatigue = CASE
+                WHEN ?2 = 'planned' AND status = 'skipped' THEN NULL
+                WHEN ?10 = 1 THEN ?3
+                ELSE perceived_fatigue
+              END,
+              notes = CASE
+                WHEN ?2 = 'planned' AND status = 'skipped' THEN NULL
+                WHEN ?11 = 1 THEN ?4
+                ELSE notes
+              END,
+              started_at = CASE
+                WHEN ?2 = 'planned' AND status = 'skipped' THEN NULL
+                WHEN ?2 = 'in_progress' THEN COALESCE(started_at, ?5)
+                ELSE started_at
+              END,
+              completed_at = CASE
+                WHEN ?2 = 'planned' AND status = 'skipped' THEN NULL
+                WHEN ?2 = 'completed' THEN COALESCE(completed_at, ?6)
+                ELSE completed_at
+              END,
+              attempt = CASE
+                WHEN ?2 = 'planned' AND status = 'skipped' THEN attempt + 1
+                ELSE attempt
+              END,
+              day_template_id = CASE
+                WHEN ?12 = 1 THEN ?13
+                ELSE day_template_id
+              END,
+              write_protocol = CASE
+                WHEN ?14 = 1 THEN 'attempt-v1'
+                ELSE write_protocol
+              END,
+              updated_at = ?7
+        WHERE id = ?1
+          AND attempt = ?9
+          AND (?15 = 1 OR write_protocol = 'legacy')
+          AND ${statusPredicate}`,
+    )
+    .bind(
+      canonicalSessionId,
+      normalizedStatus ?? '',
+      fatigue,
+      notes,
+      startedAt,
+      completedAt,
+      ts,
+      normalizedStatus === undefined ? 0 : 1,
+      casAttempt,
+      Object.prototype.hasOwnProperty.call(patch, 'perceived_fatigue') ? 1 : 0,
+      Object.prototype.hasOwnProperty.call(patch, 'notes') ? 1 : 0,
+      normalizedStatus === 'planned' &&
+      Object.prototype.hasOwnProperty.call(patch, 'day_template_id')
+        ? 1
+        : 0,
+      patch.day_template_id ?? null,
+      claimAttemptProtocol ? 1 : 0,
+      attemptScoped ? 1 : 0,
+    ),
+  );
+  if (updated.meta.changes === 0) {
+    const current = await db
+      .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
+      .bind(canonicalSessionId, userId)
+      .first<SessionRow>();
+    if (current && !attemptScoped && current.write_protocol !== 'legacy') {
+      return sessionProtocolConflict(current);
+    }
+    if (current && current.attempt !== casAttempt) {
+      return sessionAttemptConflict(casAttempt, current);
+    }
+    if (current?.status === 'discarded') {
+      return {
+        error: 'session_discarded',
+        status: 'discarded',
+        current_session: current,
+      };
+    }
+    if (
+      normalizedStatus === 'skipped' &&
+      current &&
+      (current.status === 'in_progress' || current.status === 'completed')
+    ) {
+      return {
+        error: 'session_already_started',
+        status: current.status,
+      };
+    }
+    if (current) return sessionStateConflict(s.status, current);
+    return null;
+  }
+  return db
+    .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
+    .bind(canonicalSessionId, userId)
+    .first<SessionRow>();
 }
 
 /**
@@ -1780,7 +3414,14 @@ export async function discardSession(
   db: D1Database,
   userId: string,
   sessionId: string,
-): Promise<SessionRow | null> {
+  expectedAttempt?: number,
+  claimAttemptProtocol = false,
+): Promise<
+  | SessionRow
+  | SessionAttemptConflict
+  | SessionProtocolConflict
+  | null
+> {
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
   if (!canonicalSessionId) return null;
   const s = await db
@@ -1788,32 +3429,144 @@ export async function discardSession(
     .bind(canonicalSessionId, userId)
     .first<SessionRow>();
   if (!s) return null;
-  // Already discarded → true no-op: skip the (no-op) UPDATEs AND the audit
-  // write, so a double-tap / retry can't inflate audit_log (which feeds
-  // Claude's coaching context).
-  if (s.status === 'discarded') return s;
+  const attemptScoped = expectedAttempt !== undefined;
+  if (claimAttemptProtocol && !attemptScoped) {
+    throw new Error('session_expected_attempt_missing');
+  }
+  if (!attemptScoped && s.write_protocol !== 'legacy') {
+    return sessionProtocolConflict(s);
+  }
+  if (expectedAttempt !== undefined && expectedAttempt !== s.attempt) {
+    return sessionAttemptConflict(expectedAttempt, s);
+  }
+  const casAttempt = expectedAttempt ?? s.attempt;
+  const acceptDiscardedWinner = async (
+    candidate: SessionRow,
+  ): Promise<SessionRow | SessionAttemptConflict | null> => {
+    if (candidate.attempt !== casAttempt || candidate.status !== 'discarded') {
+      return sessionAttemptConflict(casAttempt, candidate);
+    }
+    if (!claimAttemptProtocol || candidate.write_protocol === 'attempt-v1') {
+      return candidate;
+    }
+    await runWorkoutWriteStatement(
+      db,
+      db.prepare(
+        `UPDATE sessions
+            SET write_protocol = 'attempt-v1'
+          WHERE id = ?1
+            AND user_id = ?2
+            AND attempt = ?3
+            AND status = 'discarded'
+            AND write_protocol = 'legacy'`,
+      )
+      .bind(canonicalSessionId, userId, casAttempt),
+    );
+    const authoritative = await db
+      .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
+      .bind(canonicalSessionId, userId)
+      .first<SessionRow>();
+    if (!authoritative) return null;
+    if (
+      authoritative.attempt !== casAttempt ||
+      authoritative.status !== 'discarded' ||
+      authoritative.write_protocol !== 'attempt-v1'
+    ) {
+      return sessionAttemptConflict(casAttempt, authoritative);
+    }
+    return authoritative;
+  };
+  // Already discarded: skip the terminal/tombstone batch and its audit so a
+  // retry cannot inflate coaching history. An explicit iOS capability claim
+  // may still perform the one guarded legacy→v1 protocol update.
+  if (s.status === 'discarded') {
+    return acceptDiscardedWinner(s);
+  }
   const ts = now();
-  const live = await db
-    .prepare('SELECT COUNT(*) AS n FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL')
-    .bind(canonicalSessionId)
-    .first<{ n: number }>();
-  const discardedSets = live?.n ?? 0;
-  await db
-    .prepare('UPDATE set_logs SET deleted_at = ?2 WHERE session_id = ?1 AND deleted_at IS NULL')
-    .bind(canonicalSessionId, ts)
-    .run();
-  await db
-    .prepare("UPDATE sessions SET status = 'discarded', updated_at = ?2 WHERE id = ?1")
-    .bind(canonicalSessionId, ts)
-    .run();
+  // D1 batches are ordered transactions. Mark the session terminal first,
+  // then tombstone every live set in the same transaction. A concurrent
+  // logSet batch therefore linearizes wholly on one side: if it wins first,
+  // its new set is included in this tombstone; if discard wins first, its
+  // status-guarded insert observes `discarded` and is rejected.
+  const [transition, tombstones, terminalState] = await runWorkoutWriteBatch(db, [
+    db
+      .prepare(
+        `UPDATE sessions
+            SET status = 'discarded',
+                updated_at = ?2,
+                write_protocol = CASE
+                  WHEN ?4 = 1 THEN 'attempt-v1'
+                  ELSE write_protocol
+                END
+          WHERE id = ?1
+            AND status != 'discarded'
+            AND attempt = ?3
+            AND (?5 = 1 OR write_protocol = 'legacy')`,
+      )
+      .bind(
+        canonicalSessionId,
+        ts,
+        casAttempt,
+        claimAttemptProtocol ? 1 : 0,
+        attemptScoped ? 1 : 0,
+      ),
+    db
+      .prepare(
+        `UPDATE set_logs
+            SET deleted_at = ?2
+          WHERE session_id = ?1
+            AND deleted_at IS NULL
+            AND EXISTS (
+              SELECT 1 FROM sessions
+               WHERE id = ?1 AND status = 'discarded' AND attempt = ?3
+            )`,
+      )
+      .bind(canonicalSessionId, ts, casAttempt),
+    db
+      .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
+      .bind(canonicalSessionId, userId),
+  ]);
+  const authoritative = terminalState!.results[0] as SessionRow | undefined;
+  // Another concurrent/retried discard already won. Its transaction also
+  // tombstoned the live sets, so this remains a true audit no-op. Return the
+  // terminal result observed by this batch. If an explicit iOS caller still
+  // needs to claim a legacy winner, acceptDiscardedWinner performs one guarded
+  // claim and authoritative reread; a same-day restart that wins that race is
+  // returned as a conflict rather than a misleading discarded ACK.
+  if (transition!.meta.changes === 0) {
+    const current = authoritative;
+    if (current && !attemptScoped && current.write_protocol !== 'legacy') {
+      return sessionProtocolConflict(current);
+    }
+    if (current && current.attempt !== casAttempt) {
+      return sessionAttemptConflict(casAttempt, current);
+    }
+    if (current?.status === 'discarded') {
+      return acceptDiscardedWinner(current);
+    }
+    if (current) return sessionAttemptConflict(casAttempt, current);
+    return null;
+  }
+  const discardedSets = tombstones!.meta.changes;
   await writeAudit(
     db,
     userId,
     'discard_session',
-    { session_id: canonicalSessionId, date: s.date, prior_status: s.status, sets_discarded: discardedSets },
+    {
+      session_id: canonicalSessionId,
+      date: s.date,
+      attempt: casAttempt,
+      prior_status: s.status,
+      sets_discarded: discardedSets,
+    },
     `discarded:${discardedSets}_sets`,
   );
-  return { ...s, status: 'discarded', updated_at: ts };
+  return authoritative ?? {
+    ...s,
+    status: 'discarded',
+    updated_at: ts,
+    write_protocol: claimAttemptProtocol ? 'attempt-v1' : s.write_protocol,
+  };
 }
 
 /** Idempotent on the client-generated `id` (offline-safe; retries are no-ops). */
@@ -1838,9 +3591,15 @@ export async function logSet(
      *  countdown (e.g. a target_duration_s slot) passes true so the set is
      *  stored as timed regardless of modality. */
     is_timed?: boolean;
+    /** Optional generation CAS. New durable clients persist and reuse it;
+     *  omitted legacy/MCP calls still snapshot the pre-write attempt below. */
+    expected_attempt?: number;
+    /** Capability declaration is separate from generation CAS. MCP supplies
+     * an observed attempt but never claims the client protocol. */
+    claim_attempt_protocol?: boolean;
     source: 'ios' | 'mcp';
   },
-): Promise<{ set: SetLogRow; deduped: boolean }> {
+): Promise<{ set: SetLogRow; deduped: boolean; session: SessionRow }> {
   // Guard + migration compatibility: the requested id must resolve to this
   // user's direct or canonical session. Every operation below uses that
   // canonical id so a stale client heals from the returned SetLogRow.
@@ -1850,7 +3609,7 @@ export async function logSet(
   // A set UUID is idempotent only within the resolved owned session. Never
   // return a globally-matched row from another session/tenant, even if a
   // caller happens to know its UUID.
-  const readExisting = () =>
+  const selectExisting = () =>
     db
       .prepare(
         `SELECT sl.*
@@ -1858,10 +3617,56 @@ export async function logSet(
            JOIN sessions AS s ON s.id = sl.session_id
           WHERE sl.id = ?1 AND sl.session_id = ?2 AND s.user_id = ?3`,
       )
-      .bind(input.id, canonicalSessionId, userId)
-      .first<SetLogRow>();
-  const existing = await readExisting();
-  if (existing) return { set: existing, deduped: true };
+      .bind(input.id, canonicalSessionId, userId);
+  const selectSession = () =>
+    db
+      .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
+      .bind(canonicalSessionId, userId);
+  // Read the UUID winner and its authoritative session from one D1 snapshot.
+  // A retry must never pair an old planned read with a set that won later.
+  const [initialSetState, initialSessionState] = await db.batch([
+    selectExisting(),
+    selectSession(),
+  ]);
+  const targetSession = initialSessionState!.results[0] as SessionRow | undefined;
+  if (!targetSession) throw new Error('session_not_found');
+  // Exact UUID retries remain idempotent even after discard/restart. The
+  // original mutation already happened, so this path settles the old intent
+  // without applying anything to the current generation. Return the current
+  // authoritative session alongside the (possibly tombstoned) old set.
+  const existing = initialSetState!.results[0] as SetLogRow | undefined;
+  if (existing) {
+    return { set: existing, deduped: true, session: targetSession };
+  }
+  const attemptScoped = input.expected_attempt !== undefined;
+  const claimAttemptProtocol = input.claim_attempt_protocol === true;
+  if (claimAttemptProtocol && !attemptScoped) {
+    throw new Error('session_expected_attempt_missing');
+  }
+  if (!attemptScoped && targetSession.write_protocol !== 'legacy') {
+    throw new SessionWriteConflictError(
+      'session_attempt_required',
+      targetSession,
+    );
+  }
+  if (
+    input.expected_attempt !== undefined &&
+    input.expected_attempt !== targetSession.attempt
+  ) {
+    throw new SessionWriteConflictError(
+      'session_attempt_conflict',
+      targetSession,
+      input.expected_attempt,
+    );
+  }
+  const casAttempt = input.expected_attempt ?? targetSession.attempt;
+  if (targetSession.status === 'skipped') {
+    throw new SessionWriteConflictError(
+      'session_state_conflict',
+      targetSession,
+      undefined,
+    );
+  }
 
   // Resolve the plan slot (if a link was provided) ONCE — it drives both the
   // dangling-link guard and the warm-up default.
@@ -1974,32 +3779,141 @@ export async function logSet(
   // contract: on a slot-unique violation, recompute max+1 and retry rather
   // than letting one writer's set be dropped. ON CONFLICT(id) DO NOTHING
   // still covers a concurrent same-id retry (idempotency).
-  const insert = () =>
-    db
-      .prepare(
-        `INSERT INTO set_logs
-         (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL)
-         ON CONFLICT(id) DO NOTHING`,
-      )
-      .bind(
-        row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
-        row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
-        row.duration_s, row.is_timed,
-      )
-      .run();
+  const insertAndStart = () => {
+    const ts = now();
+    return runWorkoutWriteBatch(db, [
+      db
+        .prepare(
+          `INSERT INTO set_logs
+           (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at)
+           SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL
+             FROM sessions
+            WHERE id = ?2
+              AND status != 'discarded'
+              AND status != 'skipped'
+              AND attempt = ?15
+              AND (?16 = 1 OR write_protocol = 'legacy')
+           ON CONFLICT(id) DO NOTHING`,
+        )
+        .bind(
+          row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
+          row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
+          row.duration_s, row.is_timed, casAttempt, attemptScoped ? 1 : 0,
+        ),
+      // Claim/start only when this owned UUID now exists. Keeping the INSERT
+      // first avoids mutating the session for a globally-colliding UUID, while
+      // the enclosing D1 batch remains one atomic linearization point: no
+      // legacy writer can slip between insertion and the protocol fence.
+      db
+        .prepare(
+          `UPDATE sessions
+              SET status = CASE WHEN status = 'planned' THEN 'in_progress' ELSE status END,
+                  started_at = COALESCE(started_at, ?2),
+                  updated_at = ?2,
+                  write_protocol = CASE
+                    WHEN ?4 = 1 THEN 'attempt-v1'
+                    ELSE write_protocol
+                  END
+            WHERE id = ?1
+              AND status != 'discarded'
+              AND status != 'skipped'
+              AND attempt = ?3
+              AND (?6 = 1 OR write_protocol = 'legacy')
+              AND EXISTS (
+                SELECT 1 FROM set_logs
+                 WHERE id = ?5 AND session_id = ?1
+              )`,
+        )
+        .bind(
+          canonicalSessionId,
+          ts,
+          casAttempt,
+          claimAttemptProtocol ? 1 : 0,
+          row.id,
+          attemptScoped ? 1 : 0,
+        ),
+      // Capture both the target generation and the canonical current row at
+      // the same linearization point. The latter gives a stable conflict body
+      // when discard/restart moved the generation during this request.
+      db
+        .prepare('SELECT * FROM sessions WHERE id = ?1 AND attempt = ?2')
+        .bind(canonicalSessionId, casAttempt),
+      db
+        .prepare('SELECT * FROM sessions WHERE id = ?1')
+        .bind(canonicalSessionId),
+      selectExisting(),
+    ]);
+  };
   for (let attempt = 0; ; attempt++) {
     try {
-      const inserted = await insert();
-      if (inserted.meta.changes === 0) {
+      const [inserted, started, sessionState, currentState, winnerState] =
+        await insertAndStart();
+      const sessionAtWrite = sessionState!.results[0] as SessionRow | undefined;
+      const currentSession = currentState!.results[0] as SessionRow | undefined;
+      const winner = winnerState!.results[0] as SetLogRow | undefined;
+      if (inserted!.meta.changes === 0) {
         // A concurrent same-id request won after our pre-read. Return only a
         // winner from this owned canonical session; a UUID already used by a
         // different session remains indistinguishable from a missing target.
-        const winner = await readExisting();
-        if (!winner) throw new Error('session_not_found');
-        return { set: winner, deduped: true };
+        if (winner && (sessionAtWrite || currentSession)) {
+          return {
+            set: winner,
+            deduped: true,
+            session: sessionAtWrite ?? currentSession!,
+          };
+        }
+        if (
+          currentSession &&
+          !attemptScoped &&
+          currentSession.write_protocol !== 'legacy'
+        ) {
+          throw new SessionWriteConflictError(
+            'session_attempt_required',
+            currentSession,
+          );
+        }
+        if (!sessionAtWrite && currentSession) {
+          throw new SessionWriteConflictError(
+            'session_attempt_conflict',
+            currentSession,
+            casAttempt,
+          );
+        }
+        if (sessionAtWrite?.status === 'discarded') {
+          throw new SessionWriteConflictError('session_discarded', sessionAtWrite);
+        }
+        if (sessionAtWrite?.status === 'skipped') {
+          throw new SessionWriteConflictError(
+            'session_state_conflict',
+            sessionAtWrite,
+          );
+        }
+        throw new Error('session_not_found');
       }
-      break;
+      // The claim/start and insert share one transaction, so a successful insert
+      // always has a matching non-discarded session update. Keep this check as
+      // a defensive invariant rather than allowing a stranded live set.
+      if (started!.meta.changes === 0) {
+        if (currentSession && currentSession.attempt !== casAttempt) {
+          throw new SessionWriteConflictError(
+            'session_attempt_conflict',
+            currentSession,
+            casAttempt,
+          );
+        }
+        if (currentSession) {
+          if (currentSession.status === 'skipped') {
+            throw new SessionWriteConflictError(
+              'session_state_conflict',
+              currentSession,
+            );
+          }
+          throw new SessionWriteConflictError('session_discarded', currentSession);
+        }
+        throw new Error('session_not_found');
+      }
+      if (!sessionAtWrite) throw new Error('session_not_found');
+      return { set: row, deduped: false, session: sessionAtWrite };
     } catch (e) {
       const msg = String((e as Error)?.message ?? '');
       const slotConflict = /unique constraint failed/i.test(msg) && /set_index/i.test(msg);
@@ -2015,17 +3929,6 @@ export async function logSet(
       row.set_index = (max?.m ?? 0) + 1;
     }
   }
-  // Logging a set implicitly starts the session. A 'discarded' row is
-  // also revived here (defense-in-depth: getOrCreateSession already
-  // resurrects on the get path, but logging work into a discarded session
-  // must never leave the new set stranded under an invisible/vanished
-  // row). started_at resets off the COALESCE for a revived discard so the
-  // sRPE duration reflects the new attempt, not the thrown-away one.
-  await db
-    .prepare("UPDATE sessions SET status = CASE WHEN status IN ('planned','discarded') THEN 'in_progress' ELSE status END, started_at = CASE WHEN status='discarded' THEN ?2 ELSE COALESCE(started_at, ?2) END, updated_at = ?2 WHERE id = ?1")
-    .bind(canonicalSessionId, now())
-    .run();
-  return { set: row, deduped: false };
 }
 
 /**
@@ -2092,13 +3995,17 @@ export async function patchSet(
     deleted?: boolean;
   },
 ): Promise<SetLogRow | null> {
+  if (patch.deleted === false) {
+    throw new Error('set_undelete_unsupported');
+  }
   const row = await db
     .prepare(
-      `SELECT sl.* FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
+      `SELECT sl.*, s.attempt AS session_attempt
+         FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
        WHERE sl.id = ?1 AND s.user_id = ?2`,
     )
     .bind(setId, userId)
-    .first<SetLogRow>();
+    .first<SetLogRow & { session_attempt: number }>();
   if (!row) return null;
   const has = (field: keyof typeof patch) =>
     Object.prototype.hasOwnProperty.call(patch, field);
@@ -2109,40 +4016,12 @@ export async function patchSet(
   const deletedAt =
     patch.deleted === undefined
       ? row.deleted_at
-      : patch.deleted
-        ? row.deleted_at ?? now()
-        : null;
-  // Undelete collision: the partial unique index ux_set_slot only covers
-  // live rows, so reviving a soft-deleted set whose slot was reused while it
-  // was gone would violate the constraint (→ 500). Renumber the revived row
-  // to max+1 before clearing deleted_at — same "renumber, don't reject"
-  // contract logSet uses.
-  let setIndex = row.set_index;
-  const isUndelete = row.deleted_at !== null && deletedAt === null;
-  if (isUndelete) {
-    const clash = await db
-      .prepare(
-        `SELECT 1 FROM set_logs
-         WHERE session_id = ?1 AND exercise_id = ?2 AND set_index = ?3
-           AND is_warmup = ?4 AND deleted_at IS NULL AND id != ?5 LIMIT 1`,
-      )
-      .bind(row.session_id, row.exercise_id, setIndex, row.is_warmup, setId)
-      .first();
-    if (clash) {
-      const max = await db
-        .prepare(
-          `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
-           WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
-             AND deleted_at IS NULL`,
-        )
-        .bind(row.session_id, row.exercise_id, row.is_warmup)
-        .first<{ m: number }>();
-      setIndex = (max?.m ?? 0) + 1;
-    }
-  }
+      : row.deleted_at ?? now();
   // Build a field-only UPDATE. A duration correction must not rewrite a
   // concurrently changed weight/RPE or resurrect a concurrently deleted row;
-  // deleted_at and set_index are touched only for an explicit delete/undelete.
+  // deleted_at is touched only for an explicit soft-delete. Undelete is not a
+  // public operation: an old-attempt tombstone must never rejoin a restarted
+  // workout generation.
   const values: unknown[] = [setId];
   const assignments: string[] = [];
   const assign = (column: string, value: unknown) => {
@@ -2155,40 +4034,13 @@ export async function patchSet(
   if (has('notes')) assign('notes', patch.notes);
   if (has('duration_s')) assign('duration_s', patch.duration_s);
   if (has('deleted')) assign('deleted_at', deletedAt);
-  let setIndexValuePosition: number | null = null;
-  if (isUndelete) {
-    assign('set_index', setIndex);
-    setIndexValuePosition = values.length - 1;
-  }
-
-  // The clash pre-check above narrows the common case, but a concurrent
-  // undelete/logSet can still race onto the same slot and trip ux_set_slot.
-  // Retry-renumber on conflict (same contract as logSet) so an undelete is
-  // never a 500. Other corrections do not touch set_index and run once.
-  for (let attempt = 0; ; attempt++) {
-    try {
-      if (assignments.length > 0) {
-        await db
-          .prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1`)
-          .bind(...values)
-          .run();
-      }
-      break;
-    } catch (e) {
-      const msg = String((e as Error)?.message ?? '');
-      const slotConflict = /unique constraint failed/i.test(msg) && /set_index/i.test(msg);
-      if (!slotConflict || attempt >= 5) throw e;
-      const max = await db
-        .prepare(
-          `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
-           WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
-             AND deleted_at IS NULL`,
-        )
-        .bind(row.session_id, row.exercise_id, row.is_warmup)
-        .first<{ m: number }>();
-      setIndex = (max?.m ?? 0) + 1;
-      if (setIndexValuePosition !== null) values[setIndexValuePosition] = setIndex;
-    }
+  if (assignments.length > 0) {
+    await runWorkoutWriteStatement(
+      db,
+      db
+        .prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1`)
+        .bind(...values),
+    );
   }
   // Phantom-session guard. Logging a set promotes a session 'planned' ->
   // 'in_progress' (see logSet). Deleting the LAST live set must do the
@@ -2197,23 +4049,32 @@ export async function patchSet(
   // calendar/agenda (and MCP get_today_workout) still surface. Revert it to
   // 'planned' and clear started_at so EVERY client — app, REST, MCP — agrees
   // the day is simply the upcoming workout again. Fires only on a real
-  // live->deleted transition (undeletes / field-only edits never touch
+  // live->deleted transition (field-only edits never touch
   // status), and only for 'in_progress' (a 'completed' session is NOT
   // auto-un-completed — that's a deliberate terminal state).
   const isDelete = row.deleted_at === null && deletedAt !== null;
   if (isDelete) {
-    const remaining = await db
-      .prepare('SELECT COUNT(*) AS c FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL')
-      .bind(row.session_id)
-      .first<{ c: number }>();
-    if ((remaining?.c ?? 0) === 0) {
-      await db
-        .prepare(
-          "UPDATE sessions SET status = 'planned', started_at = NULL, updated_at = ?2 WHERE id = ?1 AND status = 'in_progress'",
-        )
-        .bind(row.session_id, now())
-        .run();
-    }
+    // Check both facts at the write's linearization point: this deletion must
+    // still belong to the generation we read, and no concurrent writer may
+    // have installed another live set. If a new set wins first, NOT EXISTS is
+    // false; if this demotion wins first, logSet's ordered batch promotes the
+    // same attempt back to in_progress. A discard/restart advances `attempt`,
+    // so a stale deletion can never demote the newer workout.
+    await runWorkoutWriteStatement(
+      db,
+      db.prepare(
+        `UPDATE sessions
+            SET status = 'planned', started_at = NULL, updated_at = ?2
+          WHERE id = ?1
+            AND status = 'in_progress'
+            AND attempt = ?3
+            AND NOT EXISTS (
+              SELECT 1 FROM set_logs
+               WHERE session_id = ?1 AND deleted_at IS NULL
+            )`,
+      )
+      .bind(row.session_id, now(), row.session_attempt),
+    );
   }
   // Return a fresh row so the caller sees any disjoint concurrent correction
   // or delete that committed alongside this field-only update.
@@ -3052,7 +4913,7 @@ export async function updatePlanTree(
   // transient inserts, remaps, or deletes can leak through before the final
   // compare-and-swap. This applies even when the caller omitted
   // expected_version; the version we actually read is always the CAS token.
-  const results = await db.batch(stmts);
+  const results = await runWorkoutWriteBatch(db, stmts);
   const finalUpdate = results[results.length - 1];
   if (!finalUpdate || finalUpdate.meta.changes === 0) {
     const current = await getActivePlan(db, userId);
@@ -3207,13 +5068,15 @@ export async function deleteTemplateExercise(
 ): Promise<TemplateExerciseRow | null> {
   const slot = await findSlot(db, userId, ref);
   if (!slot) return null;
-  await db
-    .batch([
+  await runWorkoutWriteBatch(
+    db,
+    [
       db
         .prepare('UPDATE set_logs SET template_exercise_id = NULL WHERE template_exercise_id = ?1')
         .bind(slot.id),
       db.prepare('DELETE FROM template_exercises WHERE id = ?1').bind(slot.id),
-    ]);
+    ],
+  );
   await bumpPlanVersionByDay(db, slot.day_template_id);
   return slot;
 }
@@ -3248,26 +5111,37 @@ export async function logWorkoutComplete(
   date: string,
   perceivedFatigue: number | null,
   notes: string | null,
-): Promise<SessionRow | null> {
+): Promise<
+  | Awaited<ReturnType<typeof patchSession>>
+  | { error: 'session_discarded'; status: 'discarded' }
+> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
-  const session = await getOrCreateSession(db, userId, plan.id, date, null);
-  const r = await patchSession(db, userId, session.id, {
-    status: 'completed',
-    perceived_fatigue: perceivedFatigue ?? undefined,
-    notes: notes ?? undefined,
-  });
-  // logWorkoutComplete ALWAYS passes status:'completed', which is a valid
-  // status and never the skipped-burial case — so neither patchSession
-  // rejection arm ('invalid_status' / 'session_already_started') is
-  // reachable here. Fail LOUD rather than silently return null if that
-  // ever changes (e.g. the guard's scope is widened beyond 'skipped').
-  if (r && 'error' in r) {
-    throw new Error(
-      `unreachable: patchSession returned ${r.error} on the status:'completed' path — guard scope changed`,
-    );
+  const session = await getOrCreateSession(
+    db,
+    userId,
+    plan.id,
+    date,
+    null,
+    { reviveDiscarded: false },
+  );
+  if (session.status === 'discarded') {
+    return { error: 'session_discarded', status: 'discarded' };
   }
-  return r;
+  // Carry the generation observed above across this await. A discard/restart
+  // in between returns a structured conflict instead of retargeting completion
+  // to the newer workout.
+  return patchSession(
+    db,
+    userId,
+    session.id,
+    {
+      status: 'completed',
+      perceived_fatigue: perceivedFatigue ?? undefined,
+      notes: notes ?? undefined,
+    },
+    session.attempt,
+  );
 }
 
 /** "I'm beat — adjust." Scales target day(s) and records the reasoning. */
@@ -3797,9 +5671,12 @@ export async function setPlannedSession(
   userId: string,
   date: string,
   day: string,
+  expectedAttempt?: number,
 ): Promise<
   | { error: 'no_active_plan' }
   | { error: 'unknown_day_ref'; ref: string }
+  | SessionAttemptConflict
+  | SessionStateConflict
   | { ok: true; session: SessionRow }
 > {
   const plan = await getActivePlan(db, userId);
@@ -3820,7 +5697,16 @@ export async function setPlannedSession(
       .first<SessionRow>();
   const useExisting = async (
     existing: SessionRow,
-  ): Promise<{ ok: true; session: SessionRow }> => {
+  ): Promise<
+    | { ok: true; session: SessionRow }
+    | SessionAttemptConflict
+    | SessionStateConflict
+  > => {
+    if (expectedAttempt !== undefined && existing.attempt !== expectedAttempt) {
+      return sessionAttemptConflict(expectedAttempt, existing);
+    }
+    const casAttempt = expectedAttempt ?? existing.attempt;
+    const casStatus = existing.status;
     const ts = now();
     // The SQL CASE already flips the row to a sensible status; the bug was
     // that the response object spread `...existing` and kept the OLD status
@@ -3834,22 +5720,68 @@ export async function setPlannedSession(
       existing.status === 'completed' || existing.status === 'in_progress'
         ? existing.status
         : 'planned';
-    const reviving = existing.status === 'discarded';
+    // Reopening an explicit skip is also a generation boundary. It has no
+    // live sets (skip guards started history), but advancing the token ensures
+    // a delayed skip/set from the prior rest choice cannot target the newly
+    // started override.
+    const reviving =
+      existing.status === 'discarded' || existing.status === 'skipped';
     const newStartedAt = reviving ? null : existing.started_at;
     const newCompletedAt = reviving ? null : existing.completed_at;
-    await db
-      .prepare(
-        'UPDATE sessions SET day_template_id = ?2, status = ?3, started_at = ?4, completed_at = ?5, updated_at = ?6 WHERE id = ?1',
+    const newFatigue = reviving ? null : existing.perceived_fatigue;
+    const newNotes = reviving ? null : existing.notes;
+    const newAttempt = reviving ? casAttempt + 1 : casAttempt;
+    const updated = await runWorkoutWriteStatement(
+      db,
+      db.prepare(
+        `UPDATE sessions
+            SET day_template_id = ?2,
+                status = ?3,
+                started_at = ?4,
+                completed_at = ?5,
+                perceived_fatigue = ?11,
+                notes = ?12,
+                updated_at = ?6,
+                attempt = ?7
+          WHERE id = ?1
+            AND user_id = ?8
+            AND status = ?9
+            AND attempt = ?10`,
       )
-      .bind(existing.id, d.id, newStatus, newStartedAt, newCompletedAt, ts)
-      .run();
+      .bind(
+        existing.id,
+        d.id,
+        newStatus,
+        newStartedAt,
+        newCompletedAt,
+        ts,
+        newAttempt,
+        userId,
+        casStatus,
+        casAttempt,
+        newFatigue,
+        newNotes,
+      ),
+    );
+    if (updated.meta.changes === 0) {
+      const current = await readExisting();
+      if (!current) throw new Error('session_update_conflict_without_winner');
+      if (current.attempt !== casAttempt) {
+        return sessionAttemptConflict(casAttempt, current);
+      }
+      return sessionStateConflict(casStatus, current);
+    }
     const session: SessionRow = {
       ...existing,
       day_template_id: d.id,
       status: newStatus,
       started_at: newStartedAt,
       completed_at: newCompletedAt,
+      perceived_fatigue: newFatigue,
+      notes: newNotes,
       updated_at: ts,
+      attempt: newAttempt,
+      write_protocol: existing.write_protocol,
     };
     return { ok: true, session };
   };
@@ -3870,16 +5802,34 @@ export async function setPlannedSession(
     notes: null,
     created_at: ts,
     updated_at: ts,
+    attempt: 0,
+    write_protocol: 'legacy',
   };
-  const inserted = await db
-    .prepare(
+  const inserted = await runWorkoutWriteStatement(
+    db,
+    db.prepare(
       `INSERT INTO sessions
-       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
        ON CONFLICT(user_id,date) DO NOTHING`,
     )
-    .bind(s.id, s.user_id, s.plan_id, s.day_template_id, s.date, s.status, s.started_at, s.completed_at, s.perceived_fatigue, s.notes, s.created_at, s.updated_at)
-    .run();
+    .bind(
+      s.id,
+      s.user_id,
+      s.plan_id,
+      s.day_template_id,
+      s.date,
+      s.status,
+      s.started_at,
+      s.completed_at,
+      s.perceived_fatigue,
+      s.notes,
+      s.created_at,
+      s.updated_at,
+      s.attempt,
+      s.write_protocol,
+    ),
+  );
   if (inserted.meta.changes > 0) return { ok: true, session: s };
 
   const winner = await readExisting();
@@ -3895,9 +5845,12 @@ export async function skipPlannedSession(
   db: D1Database,
   userId: string,
   date: string,
+  expectedAttempt?: number,
 ): Promise<
   | { error: 'no_active_plan' }
   | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
+  | SessionAttemptConflict
+  | SessionStateConflict
   | { ok: true; session: SessionRow }
 > {
   const plan = await getActivePlan(db, userId);
@@ -3913,8 +5866,15 @@ export async function skipPlannedSession(
     existing: SessionRow,
   ): Promise<
     | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
+    | SessionAttemptConflict
+    | SessionStateConflict
     | { ok: true; session: SessionRow }
   > => {
+    if (expectedAttempt !== undefined && existing.attempt !== expectedAttempt) {
+      return sessionAttemptConflict(expectedAttempt, existing);
+    }
+    const casAttempt = expectedAttempt ?? existing.attempt;
+    const casStatus = existing.status;
     // A skip may only override a planned (or absent) session. If the date
     // already has a started/finished workout, skipping it would hide logged
     // sets and destroy visible history for a mis-dated skip. Reject and
@@ -3927,11 +5887,42 @@ export async function skipPlannedSession(
       };
     }
     const ts = now();
-    await db
-      .prepare("UPDATE sessions SET status = 'skipped', updated_at = ?2 WHERE id = ?1")
-      .bind(existing.id, ts)
-      .run();
-    return { ok: true, session: { ...existing, status: 'skipped', updated_at: ts } };
+    const updated = await runWorkoutWriteStatement(
+      db,
+      db.prepare(
+        `UPDATE sessions
+            SET status = 'skipped',
+                updated_at = ?2
+          WHERE id = ?1
+            AND user_id = ?3
+            AND status = ?4
+            AND attempt = ?5`,
+      )
+      .bind(existing.id, ts, userId, casStatus, casAttempt),
+    );
+    if (updated.meta.changes === 0) {
+      const current = await readExisting();
+      if (!current) throw new Error('session_update_conflict_without_winner');
+      if (current.attempt !== casAttempt) {
+        return sessionAttemptConflict(casAttempt, current);
+      }
+      if (current.status === 'in_progress' || current.status === 'completed') {
+        return {
+          error: 'session_already_started',
+          status: current.status,
+        };
+      }
+      return sessionStateConflict(casStatus, current);
+    }
+    return {
+      ok: true,
+      session: {
+        ...existing,
+        status: 'skipped',
+        updated_at: ts,
+        write_protocol: existing.write_protocol,
+      },
+    };
   };
   const existing = await readExisting();
   if (existing) return useExisting(existing);
@@ -3950,16 +5941,34 @@ export async function skipPlannedSession(
     notes: null,
     created_at: ts,
     updated_at: ts,
+    attempt: 0,
+    write_protocol: 'legacy',
   };
-  const inserted = await db
-    .prepare(
+  const inserted = await runWorkoutWriteStatement(
+    db,
+    db.prepare(
       `INSERT INTO sessions
-       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
        ON CONFLICT(user_id,date) DO NOTHING`,
     )
-    .bind(s.id, s.user_id, s.plan_id, s.day_template_id, s.date, s.status, s.started_at, s.completed_at, s.perceived_fatigue, s.notes, s.created_at, s.updated_at)
-    .run();
+    .bind(
+      s.id,
+      s.user_id,
+      s.plan_id,
+      s.day_template_id,
+      s.date,
+      s.status,
+      s.started_at,
+      s.completed_at,
+      s.perceived_fatigue,
+      s.notes,
+      s.created_at,
+      s.updated_at,
+      s.attempt,
+      s.write_protocol,
+    ),
+  );
   if (inserted.meta.changes > 0) return { ok: true, session: s };
 
   const winner = await readExisting();
@@ -3994,7 +6003,9 @@ export interface CalendarCell {
   /**
    * The day's coarse status. Strength + endurance + trips collapse into one:
    *   - 'unavailable' — a trip covers the date with can_train_light=false:
-   *     items is []. (status carries the trip type via `trip_type`.)
+   *     no logged strength happened and items is []. A real in_progress/
+   *     completed strength session instead keeps its status, but still has
+   *     no endurance items. (The trip type remains in `trip_type`.)
    *   - 'light'       — a trip covers the date with can_train_light=true:
    *     training is possible but constrained; items reflect what's planned.
    *   - real session status (planned|in_progress|completed|skipped) — a real
@@ -4026,6 +6037,10 @@ export interface CalendarCell {
   items: EnduranceItem[];
   /** When status is a trip status ('unavailable'/'light'), the trip.type. */
   trip_type?: string;
+  /** True when a hard blackout suppressed both recurring strength and every
+   *  endurance event. Real in-progress/completed strength may remain visible,
+   *  so consumers cannot infer this solely from `status`. */
+  suppresses_schedule_and_endurance?: true;
 }
 
 /**
@@ -4071,8 +6086,10 @@ function groupByDate<T extends { date: string }>(rows: Iterable<T>): Map<string,
  *    endurance actual. Never fabricate past rest/missed days. items =
  *    completed actuals on the date.
  *  - date >= today (TODAY+):
- *      trip covering date with can_train_light=false → status 'unavailable'
- *        (trip_type = trip.type), items = [] (the day is blacked out).
+ *      trip covering date with can_train_light=false:
+ *        a real in_progress/completed strength session stays visible with
+ *          its own status/template; otherwise status = 'unavailable'.
+ *        Either way, items = [] and no schedule/endurance is projected.
  *      else:
  *        strength: a real sessions row wins; else schedule[weekday] template
  *          (cleared if a trip covers the date — a trip blanks the schedule
@@ -4189,7 +6206,22 @@ export function projectCalendar(
     // TODAY or FUTURE.
     const trip = tripFor(date);
     if (trip && trip.can_train_light === false) {
-      // Blacked out: the day is unavailable, no items projected.
+      // BLACKOUT TRUTH TABLE — keep byte-for-byte in backend and iOS:
+      //   real in_progress/completed → surface the real session;
+      //   real planned/skipped/other, or no real → unavailable.
+      // In every case the blackout suppresses schedule and endurance items.
+      if (real && (real.status === 'in_progress' || real.status === 'completed')) {
+        cells.push({
+          date,
+          status: real.status,
+          day_template_id: real.day_template_id,
+          real: true,
+          items: [],
+          trip_type: trip.type,
+          suppresses_schedule_and_endurance: true,
+        });
+        continue;
+      }
       cells.push({
         date,
         status: 'unavailable',
@@ -4197,14 +6229,15 @@ export function projectCalendar(
         real: false,
         items: [],
         trip_type: trip.type,
+        suppresses_schedule_and_endurance: true,
       });
       continue;
     }
 
-    // Strength side: a real session wins; else the schedule projection,
-    // UNLESS a trip covers the date (a trip blanks the recurring pattern —
-    // Claude re-plans the week as explicit sessions). An explicitly-pinned
-    // real session always survives a trip.
+    // Outside a hard blackout, a real session wins; else the schedule
+    // projection, UNLESS a trip covers the date (a trip blanks the recurring
+    // pattern — Claude re-plans the week as explicit sessions). An explicitly-
+    // pinned real session always survives a light trip.
     let status: CalendarCell['status'];
     let dayTemplateId: string | null;
     let real_ = false;
@@ -5345,7 +7378,22 @@ export async function getRideConflicts(
   toDate: string,
   today: string,
 ): Promise<DayConflict[]> {
+  // Conflict detection reads one day beyond the visible range for its
+  // next-day warning, so projection/suppression must cover that same day.
   const cal = await getProjectedCalendar(db, userId, fromDate, toDate, today);
+  // `projectCalendar` intentionally caps one call at 90 cells. Probe the
+  // visible boundary separately so a max-range request still learns that the
+  // day after its final projected lift is a hard blackout. Without this small
+  // window, a hard ride suppressed on that blackout could leak back as a
+  // false heavy-next-day conflict.
+  const boundaryCal = await getProjectedCalendar(
+    db, userId, toDate, addDays(toDate, 1), today,
+  );
+  const suppressedDates = new Set(
+    [...cal, ...boundaryCal]
+      .filter((c) => c.suppresses_schedule_and_endurance === true)
+      .map((c) => c.date),
+  );
   // A LIFT date carries actual STRENGTH (the conflict subject) — NOT a pure
   // endurance day. The composite projection now also reports 'projected'/
   // 'completed' for endurance-only days, distinguishable by the absence of a
@@ -5356,8 +7404,10 @@ export async function getRideConflicts(
   const liftDates = cal
     .filter(
       (c) =>
-        (c.real && (c.status === 'planned' || c.status === 'in_progress' || c.status === 'completed')) ||
-        (c.status === 'projected' && c.day_template_id != null),
+        c.date <= toDate &&
+        !c.suppresses_schedule_and_endurance &&
+        ((c.real && (c.status === 'planned' || c.status === 'in_progress' || c.status === 'completed')) ||
+          (c.status === 'projected' && c.day_template_id != null)),
     )
     .map((c) => c.date);
   const events = await db
@@ -5369,7 +7419,10 @@ export async function getRideConflicts(
     )
     .bind(userId, fromDate, addDays(toDate, 1))
     .all<Pick<ExternalEventRow, 'id' | 'date' | 'training_load' | 'planned_duration_sec'>>();
-  return detectConflicts(liftDates, events.results);
+  return detectConflicts(
+    liftDates,
+    events.results.filter((event) => !suppressedDates.has(event.date)),
+  );
 }
 
 // ---- M4: group feed + stats ---------------------------------------------

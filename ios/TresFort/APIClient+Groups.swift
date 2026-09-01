@@ -6,10 +6,19 @@ import Foundation
 // top), match the wire shape in src/routes/api.ts verbatim, and return
 // already-decoded models from `GroupModels.swift`. Network errors / HTTP
 // non-2xx surface as `APIError.http` — callers can pattern-match the
-// status code (401 → AuthModel.invalidate(), 409/410 → "expired code",
+// status code (401 → AuthModel.requireReauthentication(), 409/410 → "expired code",
 // etc.) at the call site.
 
 extension APIClient {
+
+    // MARK: - Account profile
+
+    func updateDisplayName(_ displayName: String, jwt: String) async throws -> MeProfile {
+        try await patch(
+            "api/me/profile",
+            body: ["display_name": displayName],
+            jwt: jwt)
+    }
 
     // MARK: - M1: Intervals.icu credentials
 

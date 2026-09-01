@@ -41,7 +41,7 @@ describe('scheduled() cron entrypoint', () => {
     );
     vi.stubGlobal('fetch', stub);
 
-    const owner = await ensureOwnerUser(env.DB, undefined);
+    const owner = (await ensureOwnerUser(env.DB, undefined))!;
     const ctrl = createScheduledController({ scheduledTime: new Date(), cron: '0 */6 * * *' });
     const ctx = createExecutionContext();
     await worker.scheduled!(ctrl, env, ctx);
@@ -64,7 +64,7 @@ describe('scheduled() cron entrypoint', () => {
       'fetch',
       vi.fn(async () => new Response(JSON.stringify([intervalsRow]), { status: 200 })),
     );
-    const owner = await ensureOwnerUser(env.DB, undefined);
+    const owner = (await ensureOwnerUser(env.DB, undefined))!;
     let ctx = createExecutionContext();
     await worker.scheduled!(
       createScheduledController({ scheduledTime: new Date(), cron: '0 */6 * * *' }),

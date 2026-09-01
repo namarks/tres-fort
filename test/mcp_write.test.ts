@@ -1,5 +1,6 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { logSet } from '../src/db';
 
 const BASE = 'https://tres-fort.test';
 const TOKEN = 'test-mcp-token';
@@ -109,6 +110,12 @@ describe('mcp write tools', () => {
     const done = await call('log_workout_complete', { perceived_fatigue: 7 });
     expect(done.status).toBe('completed');
     expect(done.perceived_fatigue).toBe(7);
+    expect(
+      await env.DB
+        .prepare('SELECT write_protocol FROM sessions WHERE id = ?1')
+        .bind(logged.set.session_id)
+        .first(),
+    ).toEqual({ write_protocol: 'legacy' });
 
     // 8. "I'm beat — adjust" scales day A's sets and bumps version
     const before = (await call('get_current_plan', {})).version;
@@ -139,6 +146,55 @@ describe('mcp write tools', () => {
       "SELECT body FROM notes WHERE body LIKE '%HRV tanked%' LIMIT 1",
     ).first<{ body: string }>();
     expect(reason?.body).toContain('reduce_volume');
+  });
+
+  it('keeps MCP generation CAS compatible with a released tokenless iOS writer', async () => {
+    await call('update_plan', {
+      name: 'Protocol compatibility',
+      days: [
+        {
+          day_label: 'P',
+          name: 'Protocol Day',
+          exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }],
+        },
+      ],
+    });
+    const date = '2038-01-01';
+    const mcpSet = await call('log_set', {
+      exercise: 'bench',
+      weight: 176.25,
+      reps: 7,
+      session_date: date,
+    });
+    expect(mcpSet.error).toBeUndefined();
+    const sessionId = mcpSet.set.session_id as string;
+    const exerciseId = mcpSet.set.exercise_id as string;
+    const session = await env.DB
+      .prepare(
+        'SELECT user_id,plan_id,attempt,write_protocol FROM sessions WHERE id=?1',
+      )
+      .bind(sessionId)
+      .first<{
+        user_id: string;
+        plan_id: string;
+        attempt: number;
+        write_protocol: string;
+      }>();
+    expect(session).toMatchObject({ attempt: 0, write_protocol: 'legacy' });
+
+    // This is the released app's tokenless backend path: no expected attempt
+    // and no protocol claim. The normal MCP CAS above must leave it usable.
+    expect(
+      await logSet(env.DB, session!.user_id, {
+        id: crypto.randomUUID(),
+        session_id: sessionId,
+        exercise_id: exerciseId,
+        set_index: 2,
+        weight: 177.5,
+        reps: 7,
+        source: 'ios',
+      }),
+    ).toMatchObject({ deduped: false, session: { write_protocol: 'legacy' } });
   });
 
   it('refresh_rides: audited, returns {rides,activities}, NO version bump, NO note', async () => {
@@ -268,6 +324,18 @@ describe('mcp write tools', () => {
     const skipped = await call('skip_planned_session', { date: '2026-06-07' });
     expect(skipped.ok).toBe(true);
     expect((await call('get_current_plan', {})).version).toBe(vBefore);
+    expect(
+      await env.DB
+        .prepare(
+          "SELECT date, write_protocol FROM sessions WHERE date IN ('2026-06-06', '2026-06-07') ORDER BY date",
+        )
+        .all(),
+    ).toMatchObject({
+      results: [
+        { date: '2026-06-06', write_protocol: 'legacy' },
+        { date: '2026-06-07', write_protocol: 'legacy' },
+      ],
+    });
 
     // one-offs are still audited + noted
     const oneOffAudit = await env.DB.prepare(
@@ -1205,6 +1273,120 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     expect(backfill.error).toBeUndefined();
     expect(backfill.set.weight).toBe(185);
 
+  });
+
+  it('log_set rejects a recent duplicate before reviving its discarded target date', async () => {
+    const built = await call('update_plan', {
+      name: 'Duplicate rejection is mutation-free',
+      days: [
+        {
+          day_label: 'L',
+          name: 'Legs',
+          exercises: [{ exercise: 'squat', target_sets: 3, target_reps: 5 }],
+        },
+      ],
+    });
+    const planId = built.plan.id as string;
+    const planRow = await env.DB
+      .prepare('SELECT user_id FROM plans WHERE id = ?1')
+      .bind(planId)
+      .first<{ user_id: string }>();
+    const userId = planRow!.user_id;
+    const targetDate = (await call('get_today_workout', {})).date as string;
+    const now = Date.now();
+
+    // Reuse the singleton date row if an earlier test created it, then pin a
+    // distinctive generation so any accidental revival is observable.
+    const existingTarget = await env.DB
+      .prepare('SELECT id, attempt FROM sessions WHERE user_id = ?1 AND date = ?2')
+      .bind(userId, targetDate)
+      .first<{ id: string; attempt: number }>();
+    const targetId = existingTarget?.id ?? crypto.randomUUID();
+    const targetAttempt = (existingTarget?.attempt ?? 0) + 17;
+    const targetUpdatedAt = now - 5_000;
+    if (existingTarget) {
+      await env.DB
+        .prepare(
+          `UPDATE sessions
+              SET plan_id=?2, day_template_id=NULL, status='discarded',
+                  started_at=NULL, completed_at=NULL, perceived_fatigue=NULL,
+                  notes=NULL, updated_at=?3, attempt=?4, write_protocol='legacy'
+            WHERE id=?1`,
+        )
+        .bind(targetId, planId, targetUpdatedAt, targetAttempt)
+        .run();
+    } else {
+      await env.DB
+        .prepare(
+          `INSERT INTO sessions
+             (id,user_id,plan_id,day_template_id,date,status,started_at,
+              completed_at,perceived_fatigue,notes,created_at,updated_at,
+              attempt,write_protocol)
+           VALUES (?1,?2,?3,NULL,?4,'discarded',NULL,NULL,NULL,NULL,?5,?5,?6,'legacy')`,
+        )
+        .bind(targetId, userId, planId, targetDate, targetUpdatedAt, targetAttempt)
+        .run();
+    }
+
+    // The matching iOS set is recent, but belongs to a different date. The
+    // duplicate guard is intentionally cross-date; rejecting it must not
+    // touch the discarded target row selected above.
+    const sourceSessionId = crypto.randomUUID();
+    await env.DB
+      .prepare(
+        `INSERT INTO sessions
+           (id,user_id,plan_id,day_template_id,date,status,started_at,
+            completed_at,perceived_fatigue,notes,created_at,updated_at,
+            attempt,write_protocol)
+         VALUES (?1,?2,?3,NULL,'1999-12-31','in_progress',?4,NULL,NULL,NULL,?4,?4,0,'legacy')`,
+      )
+      .bind(sourceSessionId, userId, planId, now - 1_000)
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT INTO set_logs
+           (id,session_id,exercise_id,template_exercise_id,set_index,weight,
+            reps,rpe,is_warmup,notes,logged_at,source,duration_s,deleted_at)
+         VALUES (?1,?2,'ex_back_squat',NULL,1,333.7,13,NULL,0,NULL,?3,'ios',NULL,NULL)`,
+      )
+      .bind(crypto.randomUUID(), sourceSessionId, now - 1_000)
+      .run();
+
+    const duplicate = await call('log_set', { exercise: 'squat', weight: 333.7, reps: 13 });
+    expect(duplicate).toMatchObject({
+      error: 'recent_duplicate',
+      existing_set: { session_id: sourceSessionId, source: 'ios' },
+    });
+
+    const targetAfter = await env.DB
+      .prepare(
+        'SELECT status, attempt, write_protocol, updated_at FROM sessions WHERE id = ?1',
+      )
+      .bind(targetId)
+      .first<{
+        status: string;
+        attempt: number;
+        write_protocol: string;
+        updated_at: number;
+      }>();
+    expect(targetAfter).toEqual({
+      status: 'discarded',
+      attempt: targetAttempt,
+      write_protocol: 'legacy',
+      updated_at: targetUpdatedAt,
+    });
+
+    // Rejected writes remain visible in the normal MCP audit trail.
+    const audit = await env.DB
+      .prepare(
+        `SELECT result FROM audit_log
+          WHERE actor='mcp' AND tool='log_set' AND args LIKE '%"weight":333.7%'
+          ORDER BY created_at DESC LIMIT 1`,
+      )
+      .first<{ result: string }>();
+    // Audit payloads are intentionally capped at 500 bytes, so assert the
+    // leading outcome without requiring the truncated JSON to parse.
+    expect(audit!.result).toContain('"error":"recent_duplicate"');
   });
 
   it('delete_set soft-deletes a logged set; missing id reports not_found', async () => {

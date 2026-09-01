@@ -9,6 +9,7 @@ struct MainTabView: View {
     @StateObject private var sync: SyncModel
     @StateObject private var groupModel: GroupModel
     @StateObject private var health: HealthKitSyncModel
+    @StateObject private var setConnectivity: SetConnectivityMonitor
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var showActivitySheet = false
@@ -28,6 +29,7 @@ struct MainTabView: View {
         let sync = SyncModel(auth: auth)
         let groupModel = GroupModel(auth: auth)
         let health = HealthKitSyncModel(auth: auth)
+        let setConnectivity = SetConnectivityMonitor()
         // Bridge group-side activity writes to the personal calendar here in
         // init — NOT in `.task` — so the closure is set before GroupTabView's
         // own `.task { groupModel.load() }` can drain the outbox on launch.
@@ -40,9 +42,13 @@ struct MainTabView: View {
         // which ride /api/state — so a completed sync must refresh the personal
         // calendar/agenda just like a manual activity does.
         health.onActivitiesPersisted = { [weak sync] in await sync?.load() }
+        setConnectivity.onSatisfiedTransition = { [weak sync] in
+            Task { await sync?.recoverWorkoutWrites() }
+        }
         _sync = StateObject(wrappedValue: sync)
         _groupModel = StateObject(wrappedValue: groupModel)
         _health = StateObject(wrappedValue: health)
+        _setConnectivity = StateObject(wrappedValue: setConnectivity)
     }
 
     var body: some View {
@@ -66,7 +72,16 @@ struct MainTabView: View {
         }
         .tint(Theme.accent)
         .task {
-            await sync.load()
+            guard let initiatingUserID = auth.userID else { return }
+            await auth.checkAppleCredentialState()
+            guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
+            // Renew before the first authenticated pull when the fixed-expiry
+            // app JWT is within its seven-day window. Offline failure is soft;
+            // an expired/revoked bearer moves AuthModel to reauthentication.
+            await auth.renewSessionIfNeeded()
+            guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
+            await sync.recoverWorkoutWrites()
+            guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
             // Register the HealthKit observer + run an incremental sync if the
             // user has connected Apple Health (no-op otherwise). Anchored
             // foreground sync is the source of truth (background delivery is
@@ -80,10 +95,19 @@ struct MainTabView: View {
             // background-task continuation, just cooperative.
             if new == .active {
                 Task {
+                    guard let initiatingUserID = auth.userID else { return }
+                    await auth.checkAppleCredentialState()
+                    guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
+                    await auth.renewSessionIfNeeded()
+                    guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
+                    await sync.recoverWorkoutWrites()
+                    guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     await groupModel.drainOutbox()
+                    guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     if let gid = groupModel.selectedGroupID {
                         await groupModel.refreshGroup(groupID: gid)
                     }
+                    guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     // Pull any workouts recorded while we were backgrounded.
                     await health.sync()
                 }

@@ -75,6 +75,45 @@ enum ActivityOutboxStore {
         defaults.set(data, forKey: scopedKey(userID: userID))
     }
 
+    /// Reload-before-mutate helpers prevent a stale GroupModel from replacing
+    /// a newer same-account model's whole queue after reauthentication. The
+    /// activity id is the server idempotency key, so enqueue never duplicates
+    /// an existing id and a late acknowledgement removes only that exact row.
+    static func enqueue(
+        _ activity: PendingActivity,
+        userID: String?,
+        defaults: UserDefaults = .standard
+    ) {
+        update(userID: userID, defaults: defaults) { outbox in
+            guard !outbox.pending.contains(where: { $0.id == activity.id })
+            else { return }
+            outbox.enqueue(activity)
+        }
+    }
+
+    static func remove(
+        id: String,
+        userID: String?,
+        defaults: UserDefaults = .standard
+    ) {
+        update(userID: userID, defaults: defaults) { $0.remove(id: id) }
+    }
+
+    private static func update(
+        userID: String?,
+        defaults: UserDefaults,
+        mutation: (inout ActivityOutbox) -> Void
+    ) {
+        guard let userID else { return }
+        var current = load(userID: userID, defaults: defaults)
+        mutation(&current)
+        if current.isEmpty {
+            clear(userID: userID, defaults: defaults)
+        } else {
+            save(current, userID: userID, defaults: defaults)
+        }
+    }
+
     /// Bind the old process-global queue to its known account. This is called
     /// by AuthModel before it evaluates a saved bearer, because an unusable or
     /// mismatched bearer may otherwise be followed by a different Apple

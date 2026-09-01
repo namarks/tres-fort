@@ -1,6 +1,6 @@
 # Workout Write Reliability
 
-Slug: workout-write-reliability · Status: done · Archived: completed · Updated: 2026-08-30 · Theme: training-trust
+Slug: workout-write-reliability · Status: done · Archived: completed · Updated: 2026-08-31 · Theme: training-trust
 
 ## Goal
 
@@ -127,7 +127,7 @@ legacy-mode retirement was performed during closeout.
   share the rule that only real logged sessions survive a hard blackout, without
   manufacturing ride conflicts.
 - Final verification passed TypeScript typecheck, the complete Workers/D1 suite
-  (`39` files, `482` tests), and the complete iOS simulator suite (`141` tests)
+  (`39` files, `482` tests), and the complete iOS simulator suite (`147` tests)
   from clean derived data on an iPhone 17 Pro simulator (iOS 26.3.1). Focused
   compatibility, MCP observation, exact-UUID concurrency, recovery,
   calendar-parity, selected-day reopen, legacy-attempt, and persistence
@@ -145,6 +145,16 @@ legacy-mode retirement was performed during closeout.
   MCP duplicates before mutation, and adds the one-way database fence. Do not
   reuse either earlier review after the head changes; require a fresh exact-head
   review before any delivery action.
+- Delivery review of commit `48e1d05e5fa5915b34e4d58b4bcba42b96cbe942`
+  found one remaining same-account renewal race: exact bearer equality could
+  discard a valid in-flight group response after session renewal. The repaired
+  tree scopes successful group and state reads plus exact-id activity-outbox
+  finalization to the same account while retaining exact bearer equality for
+  401 invalidation and mutation/scalar response mirroring.
+  Activity-outbox persistence now reloads before exact-id mutation so an older
+  same-user model cannot replace its successor's queue after reauthentication;
+  six focused session and identity regressions plus the complete 147-test
+  simulator suite are green.
 - Set bodies, retry state, and drain behavior remain owned here. Coordinate only
   the user-keyed namespace and account-switch boundary with the completed P0
   contracts in [Identity and Account Lifecycle](../../identity-account-lifecycle/plan.md).

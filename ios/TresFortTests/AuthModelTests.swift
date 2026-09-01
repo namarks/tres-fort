@@ -1511,4 +1511,328 @@ final class AuthModelTests: XCTestCase {
         XCTAssertEqual(auth.featureJWT, renewedToken)
         XCTAssertEqual(auth.phase, .signedIn)
     }
+
+    func testGroupLoadAcceptsResponseAfterSameAccountSessionRenewal() async {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        let oldToken = jwt(
+            expiration: now.addingTimeInterval(60), subject: "user-a")
+        let renewedToken = jwt(
+            expiration: now.addingTimeInterval(60 * 24 * 60 * 60),
+            subject: "user-a")
+        let api = AuthAPIStub()
+        api.renewalResult = .success(SessionRenewalResponse(jwt: renewedToken))
+        let auth = AuthModel(
+            api: api,
+            tokenStore: MemoryTokenStore(oldToken),
+            defaults: defaults,
+            now: { now })
+        let loadStarted = AsyncLatch()
+        let loadRelease = AsyncLatch()
+        let group = GroupModel(
+            auth: auth,
+            defaults: defaults,
+            groupLister: { token in
+                XCTAssertEqual(token, oldToken)
+                await loadStarted.open()
+                await loadRelease.wait()
+                return []
+            },
+            profileLoader: { token in
+                XCTAssertEqual(token, renewedToken)
+                return MeProfile(
+                    display_name: nil,
+                    email: nil,
+                    intervals: .init(
+                        connected: false,
+                        athlete_id: nil,
+                        needs_reauth: nil),
+                    claude: .init(
+                        is_owner: false,
+                        connected: false,
+                        last_active: nil),
+                    health: nil)
+            })
+
+        let loading = Task { await group.load() }
+        await loadStarted.wait()
+        await auth.renewSessionIfNeeded(force: true)
+        XCTAssertEqual(auth.featureJWT, renewedToken)
+        await loadRelease.open()
+        await loading.value
+
+        XCTAssertEqual(group.phase, .none)
+        XCTAssertNil(group.lastError)
+        XCTAssertEqual(auth.featureJWT, renewedToken)
+        XCTAssertEqual(auth.phase, .signedIn)
+    }
+
+    func testGroupLoadRetriesOldBearer401AfterSameAccountRenewal() async {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        let oldToken = jwt(
+            expiration: now.addingTimeInterval(60), subject: "user-a")
+        let renewedToken = jwt(
+            expiration: now.addingTimeInterval(60 * 24 * 60 * 60),
+            subject: "user-a")
+        let api = AuthAPIStub()
+        api.renewalResult = .success(SessionRenewalResponse(jwt: renewedToken))
+        let auth = AuthModel(
+            api: api,
+            tokenStore: MemoryTokenStore(oldToken),
+            defaults: defaults,
+            now: { now })
+        let loadStarted = AsyncLatch()
+        let loadRelease = AsyncLatch()
+        var listCalls = 0
+        let group = GroupModel(
+            auth: auth,
+            defaults: defaults,
+            groupLister: { token in
+                listCalls += 1
+                if token == oldToken {
+                    await loadStarted.open()
+                    await loadRelease.wait()
+                    throw APIError.http(401, "invalid_token")
+                }
+                XCTAssertEqual(token, renewedToken)
+                return []
+            },
+            profileLoader: { token in
+                XCTAssertEqual(token, renewedToken)
+                return MeProfile(
+                    display_name: nil,
+                    email: nil,
+                    intervals: .init(
+                        connected: false,
+                        athlete_id: nil,
+                        needs_reauth: nil),
+                    claude: .init(
+                        is_owner: false,
+                        connected: false,
+                        last_active: nil),
+                    health: nil)
+            })
+
+        let loading = Task { await group.load() }
+        await loadStarted.wait()
+        await auth.renewSessionIfNeeded(force: true)
+        await loadRelease.open()
+        await loading.value
+
+        XCTAssertEqual(listCalls, 2)
+        XCTAssertEqual(group.phase, .none)
+        XCTAssertNil(group.lastError)
+        XCTAssertEqual(auth.featureJWT, renewedToken)
+        XCTAssertEqual(auth.phase, .signedIn)
+    }
+
+    func testActivityOutboxSuccessFinalizesAfterSameAccountSessionRenewal() async {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        let oldToken = jwt(
+            expiration: now.addingTimeInterval(60), subject: "user-a")
+        let renewedToken = jwt(
+            expiration: now.addingTimeInterval(60 * 24 * 60 * 60),
+            subject: "user-a")
+        let api = AuthAPIStub()
+        api.renewalResult = .success(SessionRenewalResponse(jwt: renewedToken))
+        let auth = AuthModel(
+            api: api,
+            tokenStore: MemoryTokenStore(oldToken),
+            defaults: defaults,
+            now: { now })
+        let pending = PendingActivity(
+            id: UUID().uuidString,
+            date: "2026-08-31",
+            type: "walk",
+            title: nil,
+            duration_minutes: 30,
+            notes: nil,
+            logged_at: 2_000_000_000_000)
+        var seeded = ActivityOutbox()
+        seeded.enqueue(pending)
+        ActivityOutboxStore.save(
+            seeded, userID: "user-a", defaults: defaults)
+        let sendStarted = AsyncLatch()
+        let sendRelease = AsyncLatch()
+        let group = GroupModel(
+            auth: auth,
+            defaults: defaults,
+            activityLogger: { entry, token in
+                XCTAssertEqual(entry.id, pending.id)
+                XCTAssertEqual(token, oldToken)
+                await sendStarted.open()
+                await sendRelease.wait()
+                return ActivityRow(
+                    id: entry.id,
+                    user_id: "user-a",
+                    date: entry.date,
+                    type: entry.type,
+                    title: entry.title,
+                    duration_minutes: entry.duration_minutes,
+                    notes: entry.notes,
+                    logged_at: entry.logged_at,
+                    source: "manual",
+                    deleted_at: nil)
+            })
+        var persistedCallbacks = 0
+        group.onActivityPersisted = { persistedCallbacks += 1 }
+
+        let draining = Task { await group.drainOutbox() }
+        await sendStarted.wait()
+        await auth.renewSessionIfNeeded(force: true)
+        await sendRelease.open()
+        await draining.value
+
+        XCTAssertTrue(group.outbox.isEmpty)
+        XCTAssertTrue(ActivityOutboxStore.load(
+            userID: "user-a", defaults: defaults).isEmpty)
+        XCTAssertEqual(persistedCallbacks, 1)
+        XCTAssertEqual(auth.featureJWT, renewedToken)
+        XCTAssertEqual(auth.phase, .signedIn)
+    }
+
+    func testActivityOutboxOldBearer401PreservesRenewedSessionAndQueue() async {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        let oldToken = jwt(
+            expiration: now.addingTimeInterval(60), subject: "user-a")
+        let renewedToken = jwt(
+            expiration: now.addingTimeInterval(60 * 24 * 60 * 60),
+            subject: "user-a")
+        let api = AuthAPIStub()
+        api.renewalResult = .success(SessionRenewalResponse(jwt: renewedToken))
+        let auth = AuthModel(
+            api: api,
+            tokenStore: MemoryTokenStore(oldToken),
+            defaults: defaults,
+            now: { now })
+        let pending = PendingActivity(
+            id: UUID().uuidString,
+            date: "2026-08-31",
+            type: "walk",
+            title: nil,
+            duration_minutes: 30,
+            notes: nil,
+            logged_at: 2_000_000_000_000)
+        var seeded = ActivityOutbox()
+        seeded.enqueue(pending)
+        ActivityOutboxStore.save(
+            seeded, userID: "user-a", defaults: defaults)
+        let sendStarted = AsyncLatch()
+        let sendRelease = AsyncLatch()
+        let group = GroupModel(
+            auth: auth,
+            defaults: defaults,
+            activityLogger: { _, token in
+                XCTAssertEqual(token, oldToken)
+                await sendStarted.open()
+                await sendRelease.wait()
+                throw APIError.http(401, "invalid_token")
+            })
+
+        let draining = Task { await group.drainOutbox() }
+        await sendStarted.wait()
+        await auth.renewSessionIfNeeded(force: true)
+        await sendRelease.open()
+        await draining.value
+
+        XCTAssertEqual(group.outbox.count, 1)
+        XCTAssertEqual(ActivityOutboxStore.load(
+            userID: "user-a", defaults: defaults).count, 1)
+        XCTAssertEqual(auth.featureJWT, renewedToken)
+        XCTAssertEqual(auth.phase, .signedIn)
+    }
+
+    func testOldActivityDrainCannotOverwriteNewSameUserReauthQueue() async {
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        let oldToken = sessionToken(for: "user-a")
+        let newToken = jwt(
+            expiration: Date(timeIntervalSince1970: 2_100_000_000),
+            subject: "user-a")
+        let api = AuthAPIStub()
+        let auth = AuthModel(
+            api: api,
+            tokenStore: MemoryTokenStore(oldToken),
+            defaults: defaults)
+        let oldPending = PendingActivity(
+            id: UUID().uuidString,
+            date: "2026-08-31",
+            type: "walk",
+            title: nil,
+            duration_minutes: 30,
+            notes: nil,
+            logged_at: 2_000_000_000_000)
+        let newPending = PendingActivity(
+            id: UUID().uuidString,
+            date: "2026-08-31",
+            type: "run",
+            title: nil,
+            duration_minutes: 20,
+            notes: nil,
+            logged_at: 2_000_000_000_001)
+        var seeded = ActivityOutbox()
+        seeded.enqueue(oldPending)
+        ActivityOutboxStore.save(
+            seeded, userID: "user-a", defaults: defaults)
+        let oldSendStarted = AsyncLatch()
+        let oldSendRelease = AsyncLatch()
+        let oldGroup = GroupModel(
+            auth: auth,
+            defaults: defaults,
+            activityLogger: { entry, token in
+                XCTAssertEqual(entry.id, oldPending.id)
+                XCTAssertEqual(token, oldToken)
+                await oldSendStarted.open()
+                await oldSendRelease.wait()
+                return ActivityRow(
+                    id: entry.id,
+                    user_id: "user-a",
+                    date: entry.date,
+                    type: entry.type,
+                    title: entry.title,
+                    duration_minutes: entry.duration_minutes,
+                    notes: entry.notes,
+                    logged_at: entry.logged_at,
+                    source: "manual",
+                    deleted_at: nil)
+            })
+
+        let oldDrain = Task { await oldGroup.drainOutbox() }
+        await oldSendStarted.wait()
+
+        auth.signOut()
+        api.authResult = .success(response(jwt: newToken, userID: "user-a"))
+        await auth.exchange(identityToken: "apple-a", fullName: nil)
+        XCTAssertEqual(auth.featureJWT, newToken)
+        let newGroup = GroupModel(
+            auth: auth,
+            defaults: defaults,
+            activityLogger: { entry, token in
+                XCTAssertEqual(entry.id, newPending.id)
+                XCTAssertEqual(token, newToken)
+                throw URLError(.notConnectedToInternet)
+            })
+        await newGroup.logActivity(newPending)
+        XCTAssertEqual(Set(newGroup.outbox.pending.map(\.id)),
+                       Set([oldPending.id, newPending.id]))
+
+        await oldSendRelease.open()
+        await oldDrain.value
+
+        let durable = ActivityOutboxStore.load(
+            userID: "user-a", defaults: defaults)
+        XCTAssertEqual(durable.pending.map(\.id), [newPending.id])
+        XCTAssertEqual(oldGroup.outbox.pending.map(\.id), [newPending.id])
+        XCTAssertEqual(newGroup.outbox.pending.map(\.id),
+                       [oldPending.id, newPending.id])
+        XCTAssertEqual(auth.featureJWT, newToken)
+        XCTAssertEqual(auth.phase, .signedIn)
+    }
 }

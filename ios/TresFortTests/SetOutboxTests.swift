@@ -181,9 +181,11 @@ private final class SetTerminalAPIStub: WorkoutTerminalAPI {
 @MainActor
 private final class SetCatalogAPIStub: ExerciseCatalogAPI {
     var result: Result<[ExerciseCatalog], Error> = .success([])
+    private(set) var jwtCalls: [String] = []
 
     func getExercises(jwt: String) async throws -> [ExerciseCatalog] {
-        try result.get()
+        jwtCalls.append(jwt)
+        return try result.get()
     }
 }
 
@@ -875,6 +877,50 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertTrue(writeResult)
         XCTAssertTrue(model.setOutbox.isEmpty)
         XCTAssertEqual(model.sets.count, 1)
+    }
+
+    func testSameAccountRenewalCanApplyInFlightStateLoad() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session()
+        let oldToken = jwt(
+            subject: "user-a",
+            expiration: fixedDate.addingTimeInterval(60))
+        let newToken = jwt(
+            subject: "user-a",
+            expiration: fixedDate.addingTimeInterval(10_000_000))
+        let authAPI = SetAuthAPIStub()
+        authAPI.renewalResult = .success(.init(jwt: newToken))
+        let auth = auth(defaults: defaults, api: authAPI, token: oldToken)
+        let api = SetWriteAPIStub()
+        let entered = SetAsyncLatch()
+        let release = SetAsyncLatch()
+        api.stateHandler = { [self] token in
+            XCTAssertEqual(token, oldToken)
+            await entered.open()
+            await release.wait()
+            return state(session: s, sets: [], exercise: ex)
+        }
+        let catalog = SetCatalogAPIStub()
+        let model = SyncModel(
+            auth: auth,
+            setWriteAPI: api,
+            catalogAPI: catalog,
+            defaults: defaults,
+            now: { self.fixedDate })
+
+        let loading = Task { await model.load() }
+        await entered.wait()
+        await auth.renewSessionIfNeeded(force: true)
+        XCTAssertEqual(auth.jwt, newToken)
+        await release.open()
+        await loading.value
+
+        XCTAssertEqual(model.plan?.id, "plan-a")
+        XCTAssertEqual(model.todaySession?.id, s.id)
+        XCTAssertEqual(catalog.jwtCalls, [newToken])
+        XCTAssertNil(model.loadError)
+        XCTAssertFalse(model.isLoading)
     }
 
     func testSameUserReauthLateCallbackDoesNotOverwriteNewQueue() async {

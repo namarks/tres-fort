@@ -1,6 +1,6 @@
 # Identity and Account Lifecycle
 
-Slug: identity-account-lifecycle · Status: gated · Updated: 2026-08-30 · Theme: training-trust
+Slug: identity-account-lifecycle · Status: gated · Updated: 2026-08-31 · Theme: training-trust
 
 ## Goal
 
@@ -206,9 +206,21 @@ completed P2(b) implementation authority.
   TypeScript, plan, iOS production-source, app-module, and XCTest-source
   compilers passed. The current combined code tree has since passed the full
   Workers/D1 suite (482/482), TypeScript and plan validation, and the complete
-  iOS simulator suite (141/141) on an iPhone 17 Pro simulator running iOS
+  iOS simulator suite (147/147) on an iPhone 17 Pro simulator running iOS
   26.3.1. That runtime proof includes stale renewal, stale Apple-credential
   callback, account-switch-during-deletion, in-flight deletion/outbox cleanup,
   durable owner recovery, lost-response retry/bearer, and
   account-switch-during-export coverage. The live Apple provider proof remains
   gated and was not run.
+- Delivery review of commit `48e1d05e5fa5915b34e4d58b4bcba42b96cbe942`
+  found that successful group reads were still tied to exact bearer equality,
+  so an in-flight response could be discarded when the same account renewed its
+  app JWT. The follow-up treats successful group and state reads plus exact-id
+  activity-outbox finalization as same-account scoped, while retaining exact
+  bearer equality for 401 invalidation and mutation/scalar response mirroring.
+  Activity-outbox persistence now reloads before each exact-id mutation so an
+  older same-user model cannot replace a newer model's queue after
+  reauthentication. Six focused session and identity regressions cover
+  successful reads, stale-bearer 401 handling, outbox
+  finalization, and the two-model queue race; the complete 147-test simulator
+  suite passes on the repaired tree.

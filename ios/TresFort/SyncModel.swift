@@ -162,15 +162,25 @@ final class SyncModel: ObservableObject {
         return auth.featureJWT
     }
 
-    private func isCurrentAccount(using jwt: String) -> Bool {
+    /// Exact bearer identity is only relevant to a 401: an old request must
+    /// never invalidate a newer bearer installed by same-account renewal.
+    private func isCurrentBearer(_ jwt: String) -> Bool {
         guard let accountID, auth.userID == accountID else { return false }
         return auth.featureJWT == jwt
     }
 
-    /// Set callbacks may complete after a same-account token renewal, so JWT
-    /// equality is intentionally not part of this generation check. Account
-    /// switch, sign-out, and deletion do invalidate it and must never recreate
-    /// the old account's cleared queue.
+    /// Successful reads remain valid across a bearer renewal for the same
+    /// account. A different account, absent feature session, or deletion
+    /// invalidates the response.
+    private var isCurrentAccount: Bool {
+        guard let accountID, auth.userID == accountID else { return false }
+        return auth.featureJWT != nil && !auth.accountDeletionPending
+    }
+
+    /// Set callbacks may complete after same-account renewal or recoverable
+    /// reauthentication, so JWT equality is intentionally not part of this
+    /// check. Account switch, explicit sign-out, and deletion do invalidate it
+    /// and must never recreate the old account's cleared queue.
     private var canMutateBoundSetAccount: Bool {
         guard let accountID, auth.userID == accountID else { return false }
         return !auth.accountDeletionPending
@@ -206,7 +216,7 @@ final class SyncModel: ObservableObject {
         }
         do {
             let state = try await setWriteAPI.getState(jwt: jwt)
-            guard isCurrentAccount(using: jwt), canMutateBoundSetAccount else { return }
+            guard isCurrentAccount, canMutateBoundSetAccount else { return }
             guard applyLiveStateResponse(
                 state,
                 ticket: snapshotTicket
@@ -215,8 +225,9 @@ final class SyncModel: ObservableObject {
             // replacement after state succeeds so renamed exercises and changed
             // load semantics do not freeze forever. A catalog failure retains
             // the last successful rows, matching the pre-cache best-effort load.
-            if let rows = try? await catalogAPI.getExercises(jwt: jwt) {
-                guard isCurrentAccount(using: jwt), canMutateBoundSetAccount,
+            if let catalogJWT = currentJWT,
+               let rows = try? await catalogAPI.getExercises(jwt: catalogJWT) {
+                guard isCurrentAccount, canMutateBoundSetAccount,
                       StateSnapshotStore.isCurrent(
                           snapshotTicket, defaults: defaults)
                 else { return }
@@ -228,7 +239,7 @@ final class SyncModel: ObservableObject {
         } catch {
             guard StateSnapshotStore.isCurrent(
                       snapshotTicket, defaults: defaults),
-                  isCurrentAccount(using: jwt), canMutateBoundSetAccount
+                  isCurrentAccount, canMutateBoundSetAccount
             else { return }
             let isUnauthorized: Bool
             if case let APIError.http(code, _) = error {
@@ -236,7 +247,7 @@ final class SyncModel: ObservableObject {
             } else {
                 isUnauthorized = false
             }
-            if isCurrentAccount(using: jwt), plan != nil,
+            if isCurrentAccount, plan != nil,
                !(error is CancellationError),
                !isUnauthorized
             {
@@ -3697,7 +3708,7 @@ final class SyncModel: ObservableObject {
 
     private func handle(_ error: Error, jwt: String) {
         if case let APIError.http(code, _) = error, code == 401 {
-            if isCurrentAccount(using: jwt) {
+            if isCurrentBearer(jwt) {
                 auth.requireReauthentication()
             }
         } else {

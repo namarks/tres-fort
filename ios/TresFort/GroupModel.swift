@@ -78,6 +78,8 @@ final class GroupModel: ObservableObject {
     private let accountID: String?
     private let defaults: UserDefaults
     private let activityLogger: ((PendingActivity, String) async throws -> ActivityRow)?
+    private let groupLister: ((String) async throws -> [GroupSummary])?
+    private let profileLoader: ((String) async throws -> MeProfile)?
     /// Invalidates identity-bearing responses that began before a global
     /// profile-name update. Without this, an older in-flight feed or stats
     /// response could restore the previous effective display name.
@@ -95,12 +97,16 @@ final class GroupModel: ObservableObject {
     init(
         auth: AuthModel,
         defaults: UserDefaults = .standard,
-        activityLogger: ((PendingActivity, String) async throws -> ActivityRow)? = nil
+        activityLogger: ((PendingActivity, String) async throws -> ActivityRow)? = nil,
+        groupLister: ((String) async throws -> [GroupSummary])? = nil,
+        profileLoader: ((String) async throws -> MeProfile)? = nil
     ) {
         self.auth = auth
         self.accountID = auth.userID
         self.defaults = defaults
         self.activityLogger = activityLogger
+        self.groupLister = groupLister
+        self.profileLoader = profileLoader
         self.intervalsConnection = Self.loadIntervalsConnection(
             userID: auth.userID, defaults: defaults)
         self.outbox = ActivityOutboxStore.load(
@@ -115,16 +121,17 @@ final class GroupModel: ObservableObject {
         return auth.featureJWT
     }
 
-    private func isCurrentAccount(using jwt: String) -> Bool {
+    /// Exact bearer identity is only relevant to a 401: an old request must
+    /// never invalidate a newer bearer installed by same-account renewal.
+    private func isCurrentBearer(_ jwt: String) -> Bool {
         guard let accountID, auth.userID == accountID else { return false }
         return auth.featureJWT == jwt
     }
 
-    /// A same-user session renewal changes the bearer but not the account
-    /// generation this model owns. Use this for the result of an already-sent
-    /// activity request; reserve the exact-token check above for deciding
-    /// whether a 401 may invalidate the current bearer.
-    private var isCurrentAccountGeneration: Bool {
+    /// Successful responses and id-granular local finalization belong to the
+    /// same account even when renewal replaces its bearer. Reserve exact-token
+    /// equality for deciding whether a 401 may invalidate the current bearer.
+    private var isCurrentAccount: Bool {
         guard let accountID, auth.userID == accountID else { return false }
         return auth.featureJWT != nil
     }
@@ -137,6 +144,16 @@ final class GroupModel: ObservableObject {
             return try await activityLogger(pending, jwt)
         }
         return try await api.logActivity(pending, jwt: jwt)
+    }
+
+    private func listGroups(jwt: String) async throws -> [GroupSummary] {
+        if let groupLister { return try await groupLister(jwt) }
+        return try await api.listGroups(jwt: jwt)
+    }
+
+    private func loadProfile(jwt: String) async throws -> MeProfile {
+        if let profileLoader { return try await profileLoader(jwt) }
+        return try await api.getMe(jwt: jwt)
     }
 
     private static func loadIntervalsConnection(
@@ -191,8 +208,8 @@ final class GroupModel: ObservableObject {
         let generation = identityCacheGeneration
         phase = .loading
         do {
-            let list = try await api.listGroups(jwt: jwt)
-            guard isCurrentAccount(using: jwt),
+            let list = try await listGroups(jwt: jwt)
+            guard isCurrentAccount,
                   generation == identityCacheGeneration else { return }
             groups = list
             ensureSelection()
@@ -207,6 +224,16 @@ final class GroupModel: ObservableObject {
             // Account/setup snapshot for the Profile tab.
             await refreshMe()
         } catch {
+            guard isCurrentAccount else { return }
+            if case let APIError.http(code, _) = error,
+               code == 401,
+               !isCurrentBearer(jwt) {
+                // Renewal won while this request was in flight. Retry with
+                // the current bearer instead of leaving launch stuck in loading
+                // or presenting an error from the superseded credential.
+                await load()
+                return
+            }
             handle(error, jwt: jwt)
             phase = .error(error.localizedDescription)
         }
@@ -228,13 +255,14 @@ final class GroupModel: ObservableObject {
         defer { isRefreshingFeed[groupID] = false }
         do {
             let res = try await api.getGroupFeed(groupID: groupID, limit: 30, jwt: jwt)
-            guard isCurrentAccount(using: jwt),
+            guard isCurrentAccount,
                   generation == identityCacheGeneration else { return }
             feed[groupID] = res.items
             feedNextSince[groupID] = res.next_since
             feedNextSinceID[groupID] = res.next_since_id
             lastError = nil
         } catch {
+            guard isCurrentAccount else { return }
             handle(error, jwt: jwt)
         }
     }
@@ -246,11 +274,12 @@ final class GroupModel: ObservableObject {
         defer { isRefreshingStats[groupID] = false }
         do {
             let res = try await api.getGroupStats(groupID: groupID, range: "7d", jwt: jwt)
-            guard isCurrentAccount(using: jwt),
+            guard isCurrentAccount,
                   generation == identityCacheGeneration else { return }
             stats[groupID] = res.members
             lastError = nil
         } catch {
+            guard isCurrentAccount else { return }
             handle(error, jwt: jwt)
         }
     }
@@ -263,11 +292,12 @@ final class GroupModel: ObservableObject {
         let generation = identityCacheGeneration
         do {
             let res = try await api.getGroupActivity(groupID: groupID, jwt: jwt)
-            guard isCurrentAccount(using: jwt),
+            guard isCurrentAccount,
                   generation == identityCacheGeneration else { return }
             activitySeries[groupID] = res.members
             lastError = nil
         } catch {
+            guard isCurrentAccount else { return }
             handle(error, jwt: jwt)
         }
     }
@@ -278,12 +308,13 @@ final class GroupModel: ObservableObject {
         guard let jwt = currentJWT else { return }
         let generation = identityCacheGeneration
         do {
-            let profile = try await api.getMe(jwt: jwt)
-            guard isCurrentAccount(using: jwt),
+            let profile = try await loadProfile(jwt: jwt)
+            guard isCurrentAccount,
                   generation == identityCacheGeneration else { return }
             me = profile
             lastError = nil
         } catch {
+            guard isCurrentAccount else { return }
             handle(error, jwt: jwt)
         }
     }
@@ -307,10 +338,10 @@ final class GroupModel: ObservableObject {
         }
         let generation = identityCacheGeneration
         let g = try await api.createGroup(name: name, jwt: jwt)
-        guard isCurrentAccount(using: jwt) else { return g }
+        guard isCurrentBearer(jwt) else { return g }
         if generation != identityCacheGeneration {
             await load()
-            guard isCurrentAccount(using: jwt) else { return g }
+            guard isCurrentBearer(jwt) else { return g }
             if let refreshed = groups.first(where: { $0.id == g.id }) {
                 selectedGroupID = refreshed.id
                 await refreshGroup(groupID: refreshed.id)
@@ -337,10 +368,10 @@ final class GroupModel: ObservableObject {
         }
         let generation = identityCacheGeneration
         let res = try await api.joinGroup(code: code, jwt: jwt)
-        guard isCurrentAccount(using: jwt) else { return res.group }
+        guard isCurrentBearer(jwt) else { return res.group }
         if generation != identityCacheGeneration {
             await load()
-            guard isCurrentAccount(using: jwt) else { return res.group }
+            guard isCurrentBearer(jwt) else { return res.group }
             if let refreshed = groups.first(where: { $0.id == res.group.id }) {
                 selectedGroupID = refreshed.id
                 await refreshGroup(groupID: refreshed.id)
@@ -395,6 +426,7 @@ final class GroupModel: ObservableObject {
     func leaveGroup(id: String) async throws {
         guard let jwt = currentJWT else { return }
         try await api.leaveGroup(id: id, jwt: jwt)
+        guard isCurrentBearer(jwt) else { return }
         groups.removeAll { $0.id == id }
         feed[id] = nil
         stats[id] = nil
@@ -416,7 +448,7 @@ final class GroupModel: ObservableObject {
         let generation = identityCacheGeneration
         let updated = try await api.setGroupDisplayName(
             groupID: groupID, displayName: name, jwt: jwt)
-        guard isCurrentAccount(using: jwt) else { return updated }
+        guard isCurrentBearer(jwt) else { return updated }
         if generation != identityCacheGeneration {
             await load()
             return groups.first(where: { $0.id == groupID }) ?? updated
@@ -487,12 +519,13 @@ final class GroupModel: ObservableObject {
         }
         do {
             _ = try await persistActivity(pending, jwt: jwt)
-            guard isCurrentAccountGeneration else { return }
+            guard isCurrentAccount else { return }
             // Success — remove from outbox if we had previously enqueued
             // it on a prior attempt (no-op if not present).
-            outbox.remove(id: pending.id)
-            ActivityOutboxStore.save(
-                outbox, userID: accountID, defaults: defaults)
+            ActivityOutboxStore.remove(
+                id: pending.id, userID: accountID, defaults: defaults)
+            outbox = ActivityOutboxStore.load(
+                userID: accountID, defaults: defaults)
             // 5. Refresh so the optimistic row is replaced by the
             // server-truth row (same id). Refresh the zoom series too so
             // the new activity lights up its day cell.
@@ -504,7 +537,7 @@ final class GroupModel: ObservableObject {
             // must surface on the day it happened regardless of group.
             await onActivityPersisted?()
         } catch let APIError.http(code, _) where (400..<500).contains(code) && code != 401 {
-            guard isCurrentAccountGeneration else { return }
+            guard isCurrentAccount else { return }
             // Validation failure → roll back the optimistic insert and
             // surface the error. 401 falls through to same-user reauthentication.
             if let gid = selectedGroupID {
@@ -512,7 +545,7 @@ final class GroupModel: ObservableObject {
             }
             lastError = "Couldn't save activity (server rejected it)."
         } catch {
-            guard isCurrentAccountGeneration else { return }
+            guard isCurrentAccount else { return }
             // Network failure (incl. 5xx) → enqueue; the optimistic row
             // stays visible. Surface a soft hint.
             enqueue(pending)
@@ -525,9 +558,10 @@ final class GroupModel: ObservableObject {
         guard let accountID,
               auth.userID == accountID,
               auth.featureJWT != nil else { return }
-        outbox.enqueue(pending)
-        ActivityOutboxStore.save(
-            outbox, userID: accountID, defaults: defaults)
+        ActivityOutboxStore.enqueue(
+            pending, userID: accountID, defaults: defaults)
+        outbox = ActivityOutboxStore.load(
+            userID: accountID, defaults: defaults)
     }
 
     /// Drain the outbox. Called on `.task` (mount), on scene-foreground,
@@ -542,28 +576,30 @@ final class GroupModel: ObservableObject {
         for entry in pending {
             do {
                 _ = try await persistActivity(entry, jwt: jwt)
-                guard isCurrentAccount(using: jwt) else { return }
-                outbox.remove(id: entry.id)
-                ActivityOutboxStore.save(
-                    outbox, userID: accountID, defaults: defaults)
+                guard isCurrentAccount else { return }
+                ActivityOutboxStore.remove(
+                    id: entry.id, userID: accountID, defaults: defaults)
+                outbox = ActivityOutboxStore.load(
+                    userID: accountID, defaults: defaults)
                 didPersist = true
             } catch {
-                guard isCurrentAccount(using: jwt) else { return }
+                guard isCurrentAccount else { return }
                 // Stop on the first network failure — no point hammering a
                 // dead network. Server-side 4xx is a permanent failure;
                 // drop those so they don't loop forever.
                 if case let APIError.http(code, _) = error,
                    (400..<500).contains(code) && code != 401 {
-                    outbox.remove(id: entry.id)
-                    ActivityOutboxStore.save(
-                        outbox, userID: accountID, defaults: defaults)
+                    ActivityOutboxStore.remove(
+                        id: entry.id, userID: accountID, defaults: defaults)
+                    outbox = ActivityOutboxStore.load(
+                        userID: accountID, defaults: defaults)
                     continue
                 }
                 handle(error, jwt: jwt)
                 break
             }
         }
-        guard isCurrentAccount(using: jwt) else { return }
+        guard isCurrentAccount else { return }
         // Only refresh when something actually reached the server. If every
         // item failed on a dead network (the `break` path), the feed +
         // calendar are unchanged — kicking sync.load() here would just fire
@@ -583,6 +619,7 @@ final class GroupModel: ObservableObject {
         guard let jwt = currentJWT else { return }
         do {
             try await api.deleteActivity(id: id, jwt: jwt)
+            guard isCurrentBearer(jwt) else { return }
             // Strip the row from every group's cache (it could be in
             // any of them).
             for gid in feed.keys {
@@ -596,6 +633,7 @@ final class GroupModel: ObservableObject {
             // And drop it from the personal calendar.
             await onActivityPersisted?()
         } catch {
+            guard isCurrentBearer(jwt) else { return }
             handle(error, jwt: jwt)
         }
     }
@@ -607,7 +645,7 @@ final class GroupModel: ObservableObject {
             throw APIError.http(401, "not_signed_in")
         }
         let profile = try await api.updateDisplayName(displayName, jwt: jwt)
-        guard isCurrentAccount(using: jwt) else { return }
+        guard isCurrentBearer(jwt) else { return }
         me = profile
 
         // The global name is materialized as effective_display_name in group
@@ -641,7 +679,7 @@ final class GroupModel: ObservableObject {
                 ? "0" : athleteID
         _ = try await api.setIntervalsCredentials(
             apiKey: apiKey, athleteID: resolvedAthlete, jwt: jwt)
-        guard isCurrentAccount(using: jwt) else { return }
+        guard isCurrentBearer(jwt) else { return }
         intervalsConnection = IntervalsConnection(
             athlete_id: resolvedAthlete,
             connected_at: Int(Date().timeIntervalSince1970 * 1000))
@@ -656,7 +694,7 @@ final class GroupModel: ObservableObject {
         }
         _ = try await api.setIntervalsCredentials(
             apiKey: nil, athleteID: nil, jwt: jwt)
-        guard isCurrentAccount(using: jwt) else { return }
+        guard isCurrentBearer(jwt) else { return }
         intervalsConnection = nil
         Self.saveIntervalsConnection(
             nil, userID: accountID, defaults: defaults)
@@ -675,10 +713,10 @@ final class GroupModel: ObservableObject {
             throw APIError.http(401, "not_signed_in")
         }
         let url = try await api.startIntervalsOAuth(jwt: jwt)
-        guard isCurrentAccount(using: jwt) else { return false }
+        guard isCurrentBearer(jwt) else { return false }
         let web = IntervalsWebAuth()
         let connected = try await web.authorize(url)
-        guard isCurrentAccount(using: jwt) else { return false }
+        guard isCurrentBearer(jwt) else { return false }
         if connected { await refreshMe() }
         return connected
     }
@@ -694,6 +732,7 @@ final class GroupModel: ObservableObject {
             throw APIError.http(401, "not_signed_in")
         }
         _ = try await api.setHealthSharing(enabled: enabled, jwt: jwt)
+        guard isCurrentBearer(jwt) else { return }
         await refreshMe()
     }
 
@@ -748,7 +787,7 @@ final class GroupModel: ObservableObject {
 
     private func handle(_ error: Error, jwt: String) {
         if case let APIError.http(code, _) = error, code == 401 {
-            if isCurrentAccount(using: jwt) {
+            if isCurrentBearer(jwt) {
                 auth.requireReauthentication()
             }
         } else {

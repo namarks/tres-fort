@@ -1,6 +1,6 @@
 # Workout Write Reliability
 
-Slug: workout-write-reliability · Status: done · Archived: completed · Updated: 2026-08-31 · Theme: training-trust
+Slug: workout-write-reliability · Status: done · Archived: completed · Updated: 2026-09-01 · Theme: training-trust
 
 ## Goal
 
@@ -43,13 +43,17 @@ No further repository-executable slice. This branch has no workout-only release:
 workout migration 0032 and deploys their combined Worker. A narrow workout
 authorization is therefore insufficient. Before that command, satisfy the
 owner-managed Apple credential gate and obtain explicit combined authority for
-the deployment, live revocation proof, and workout cutover defined in
-[Identity and Account Lifecycle](../../identity-account-lifecycle/plan.md), and
-use one coordinated release window covering both workstreams. Within that
+the deployment, non-destructive live exchange proof, and workout cutover defined
+in [Identity and Account Lifecycle](../../identity-account-lifecycle/plan.md),
+and use one coordinated release window covering both workstreams. Within that
 authorized window, run `npm run release` so the local preflight passes,
 migrations 0030–0032 land with the workout database fence disabled, and the
-combined compatibility Worker finishes deploying. Next complete the controlled
-live Apple proof against that Worker; stop if it does not succeed. Then confirm
+combined compatibility Worker finishes deploying. Next reauthenticate the owner
+to prove a genuine Apple authorization-code exchange against that Worker; do not
+call `DELETE /api/me` or revoke the owner's Apple grant, and stop if the exchange
+does not succeed. Destructive live revocation proof is waived under the owner's
+recorded residual-risk acceptance; deterministic provider coverage and the
+manual-revocation fallback are the release evidence for that branch. Then confirm
 `npm run db:workout-write-fence:status:remote` reports `enabled=0`, a null
 activation time, and zero permits. Only a separate production authorization may
 run `npm run db:workout-write-fence:activate:remote`; verify the status becomes
@@ -135,6 +139,11 @@ legacy-mode retirement was performed during closeout.
   including a repeat of the complete Workers/D1 suite and Wrangler's deploy
   dry-run build. Migration 0032 was authored and locally exercised but was not
   applied remotely.
+- The 2026-09-01 owner decision in the active identity plan replaces destructive
+  live Apple deletion/revocation proof with a non-destructive owner
+  authorization-code exchange plus explicit residual-risk acceptance. It does
+  not authorize deployment, workout-fence activation, TestFlight/App Store
+  distribution, or deletion/revocation of the owner account.
 - Independent exact-head review is a delivery gate for the final tree. The
   initial review of commit `a90fd118d00df22b21c33dab9bb6ab415084219e`
   surfaced six attempt-rollout and concurrency findings; the next review at

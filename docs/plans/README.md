@@ -91,9 +91,6 @@ until their named authority, evidence, or activation condition is satisfied.
 Make every workout and plan mutation authorized, validated, durable, and
 recoverable before adding product depth.
 
-- [Identity and account lifecycle](identity-account-lifecycle/plan.md) —
-  **gated**; the tested Sign in with Apple revocation path is implemented, while
-  owner-managed signing credentials and live provider/deployment proof remain.
 - [Reversible plan management](reversible-plan-management/plan.md) —
   **planned**; make coach and manual plan changes inspectable and reversible.
 

@@ -1,6 +1,6 @@
 # Identity and Account Lifecycle
 
-Slug: identity-account-lifecycle · Status: gated · Updated: 2026-09-01 · Theme: training-trust
+Slug: identity-account-lifecycle · Status: done · Archived: completed · Updated: 2026-09-03 · Theme: training-trust
 
 ## Goal
 
@@ -44,7 +44,7 @@ iOS verification.
       authorization, updating and auditing only the authenticated caller.
     - Store the credential identifier supplied locally by Sign in with Apple;
       do not add a backend identity-data egress solely to migrate older installs.
-- [ ] **P2 — Exact-head repair and provider authorization revocation**
+- [x] **P2 — Exact-head repair and provider authorization revocation**
   - [x] **(a) Lifecycle integrity and destructive-auth repair**
     - Make exports one transactional D1 snapshot and make invite redemption
       atomic with its membership and audit writes.
@@ -65,7 +65,7 @@ iOS verification.
     - Preserve local-data deletion when Apple is unavailable, return a durable
       revocation outcome for receipt retries, and keep the manual handoff as the
       fail-safe for existing accounts without a stored token.
-  - [ ] **(c) Owner-provisioned live exchange proof and revocation-risk acceptance**
+  - [x] **(c) Owner-provisioned live exchange proof and revocation-risk acceptance**
     - Deploy the combined Worker only under explicit proof/deployment authority,
       then verify a genuine Apple authorization-code exchange non-destructively
       by reauthenticating the owner with owner-managed client-signing credentials
@@ -79,36 +79,37 @@ iOS verification.
       write cutover: this branch deploys migrations 0030–0032 together, so a
       narrow identity-only or workout-only authorization is insufficient.
 
-## Execution frontier
+## Completion evidence
 
-- P2(c)
-
-## Dependencies
-
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P2(c) | gated_by | external:apple-sign-in-revocation-credentials | The owner must provision the Apple Team ID, key ID, and private signing key directly through the deployment secret surface. |
-| P2(c) | gated_by | external:deployment-authorization | Live provider proof requires separately authorized deployment; merge alone is not production authority. |
-| P2(c) | gated_by | external:workout-write-cutover-authorization | The shared release also applies migration 0032 and deploys the workout compatibility Worker; the workout fence cutover must be explicitly authorized in the same coordinated release window. |
-
-## Next step
-
-**Now (@owner):** Provision the Apple Team ID, key ID, and private signing key
-directly through the deployment secret surface, then explicitly authorize one
-coordinated release window covering the controlled P2(c) live exchange proof,
-the combined Worker deployment, and the workout write cutover. On this branch,
-`npm run release` applies pending migrations `0030`, `0031`, and `0032` before
-deploying their combined Worker; neither a narrow identity authorization nor a
-narrow workout authorization permits that command. Within the authorized
-window, deploy first and reauthenticate the owner to prove the live Apple
-authorization-code exchange against that Worker without calling
-`DELETE /api/me` or revoking the owner's Apple grant. If the exchange succeeds,
-confirm the workout fence is still disabled; only separately named production
-authority may activate it, and TestFlight/App Store distribution remains a
-separate gate.
-Do not send credentials to an agent, apply any of those migrations, activate the
-workout database fence, delete a real account, merge, deploy, or distribute an
-app under the completed P2(b) implementation authority or this risk acceptance.
+- On 2026-09-03, the owner-authorized combined production release ran from exact
+  merged snapshot `c71e3f9aa1a101988120bb58dcc3357e685e8644`. Remote migrations
+  `0029`–`0032` applied and Worker code version
+  `0ae05b68-ac8d-4d43-8e4a-32675bf15beb` deployed successfully. The later
+  owner-managed Apple credential rotation produced secret-change version
+  `0c764d79-6215-49ac-b27d-76920f6de77b`, verified at 100% traffic; no private
+  key value entered the repository or agent output.
+- The first non-destructive owner exchange returned
+  `401 apple_authorization_failed`. D1 showed zero stored refresh-token rows and
+  zero active exchange reservations, while conservatively recording
+  `revocation_uncertain=1`. The initial key was revoked after potential terminal
+  exposure, and the owner created and directly provisioned a replacement. The
+  exact provider failure cause remains unproven, so the sticky uncertainty
+  marker was preserved.
+- One fresh owner sign-in after the rotation returned the app to the existing
+  account data. During the controlled proof window beginning at
+  `1788418615000`, exactly one refresh-token row was updated at
+  `1788418672152`; afterward D1 reported one token row, zero active exchange
+  reservations, and uncertainty unchanged at one. This proves the live Apple
+  authorization-code exchange without deleting the owner or revoking the
+  owner's Apple grant.
+- Post-proof health remained green and the workout write fence remained
+  `enabled=0`, `activated_at=null`, with zero permits. Irreversible fence
+  activation and TestFlight/App Store distribution remain separately gated
+  outside this completed identity workstream.
+- Destructive live deletion/revocation remains waived under the owner's
+  accepted residual risk. Because this owner's sticky exchange uncertainty is
+  retained by design, a future owner deletion must use the manual Apple-grant
+  revocation handoff rather than claim programmatic provider revocation.
 
 ## Notes / open questions
 
@@ -209,8 +210,10 @@ app under the completed P2(b) implementation authority or this risk acceptance.
   `{"error":"account_not_found"}` response iOS alone treats as cross-device
   completion; the Worker's generic `{"error":"not_found"}` fallback preserves
   local data and the retry credential. Provider failure never retains local
-  data. No live Apple request, owner credential handling, remote/production
-  migration application, real-account deletion, merge, or deployment was run.
+  data. Before the later P2(c) release window, no live Apple request, owner
+  credential handling, remote/production migration application, real-account
+  deletion, merge, or deployment was run; the final production evidence is
+  recorded above.
 - On 2026-09-01 the owner waived destructive live deletion/revocation proof
   against a dedicated Apple test account and accepted the residual risk that the
   first real account deletion will be the first live exercise of `/auth/revoke`.
@@ -228,8 +231,9 @@ app under the completed P2(b) implementation authority or this risk acceptance.
   callback, account-switch-during-deletion, in-flight deletion/outbox cleanup,
   durable owner recovery, lost-response retry/bearer, and
   account-switch-during-export coverage. The non-destructive live Apple exchange
-  proof remains gated and was not run; destructive live revocation proof was
-  waived under the explicitly accepted residual risk above.
+  proof was later completed under the production evidence above; destructive
+  live revocation proof remains waived under the explicitly accepted residual
+  risk.
 - Delivery review of commit `48e1d05e5fa5915b34e4d58b4bcba42b96cbe942`
   found that successful group reads were still tied to exact bearer equality,
   so an in-flight response could be discarded when the same account renewed its

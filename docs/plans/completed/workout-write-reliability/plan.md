@@ -80,15 +80,23 @@ persisted the set intent but still awaited the complete server admission and
 state-reconciliation round trip before advancing the exercise UI. The corrected
 runner advances and starts rest immediately after the local enqueue, then lets a
 model-owned task deliver and reconcile in the background. Its progress derives
-from the union of acknowledged and pending set IDs so one intent is counted
-exactly once. The complete simulator suite passed 149/149 tests, including
-immediate offline-first advancement, timeout recovery, concurrent-tap,
-refresh-coalescing, and caller-cancellation coverage. A three-second grace also
-suppresses the normal transient pending-set banner while preserving immediate
-permanent-failure feedback and visible prolonged queues. The final Release
-build installed directly on the paired iPhone without replacing its data; live
-workout use then looked materially better and the owner accepted the behavior
-for this release. Broader UI cleanup is deferred.
+from the union of acknowledged and retryable pending set IDs so one intent is
+counted exactly once while a permanently rejected intent reopens its runner
+slot. Transport activity no longer blocks entry of the next intentional set;
+an in-memory slot guard still rejects an immediate duplicate tap. State pulls
+now schedule a trailing fresh request after mutations or bearer renewal, and a
+feature-session epoch prevents a pre-sign-out response from applying after a
+same-user sign-in. Live Activity up-next state follows the same runner-aware
+progress calculation. The complete simulator suite passed 154/154 tests,
+including the changed production paths for immediate offline-first advancement,
+duplicate taps, permanent rejection, trailing refresh, identity ABA, timeout
+recovery, and caller cancellation. A three-second grace also suppresses the
+normal transient pending-set banner while preserving immediate permanent-failure
+feedback and visible prolonged queues. The pre-review Release build installed
+directly on the paired iPhone without replacing its data; live workout use then
+looked materially better and the owner accepted the behavior for this release.
+The later adversarial-review repairs retain that interaction contract and add
+the deterministic edge-case coverage above. Broader UI cleanup is deferred.
 
 A later value-free production readback found two additional admitted sets and
 one updated `attempt-v1` session after the first proof. The last set was logged

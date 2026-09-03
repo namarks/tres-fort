@@ -844,8 +844,8 @@ private struct RunnerView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 14))
                         .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
                         .padding(.top, 18)
-                        .disabled(sync.isSetSending(slotID: ex.id))
-                        .opacity(sync.isSetSending(slotID: ex.id) ? 0.55 : 1)
+                        .disabled(sync.isSetEntryBlocked(slotID: ex.id))
+                        .opacity(sync.isSetEntryBlocked(slotID: ex.id) ? 0.55 : 1)
                     }
 
                     completedChips(ex: ex)
@@ -1209,8 +1209,8 @@ private struct TimedSetView: View {
                 .background(Theme.accent).foregroundStyle(.black)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
-                .disabled(sync.isSetSending(slotID: ex.id))
-                .opacity(sync.isSetSending(slotID: ex.id) ? 0.55 : 1)
+                .disabled(sync.isSetEntryBlocked(slotID: ex.id))
+                .opacity(sync.isSetEntryBlocked(slotID: ex.id) ? 0.55 : 1)
             }
         }
         .frame(maxWidth: .infinity)

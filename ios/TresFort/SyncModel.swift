@@ -76,6 +76,7 @@ final class SyncModel: ObservableObject {
     private let catalogAPI: any ExerciseCatalogAPI
     private unowned let auth: AuthModel
     private let accountID: String?
+    private let featureSessionEpoch: UInt64
     private let defaults: UserDefaults
     private let uuidFactory: () -> UUID
     private let now: () -> Date
@@ -98,10 +99,17 @@ final class SyncModel: ObservableObject {
     /// SwiftUI task that happened to request it. Pull-to-refresh may cancel
     /// its view task as the scroll hierarchy changes; keeping one unstructured
     /// model-owned task lets that already-started validation finish, and
-    /// coalesces launch/foreground/HealthKit/manual refreshes onto the same
-    /// identical full-state request.
+    /// coalesces only equivalent full-state requests. A mutation or bearer
+    /// change waits for an older task and then owns one trailing fresh pull.
+    private struct StateLoadKey: Equatable {
+        let bearer: String
+        let freshnessGeneration: UInt64
+        let featureSessionEpoch: UInt64
+    }
     private var stateLoadTask: Task<Void, Never>?
     private var stateLoadTaskID: UUID?
+    private var stateLoadKey: StateLoadKey?
+    private var stateFreshnessGeneration: UInt64 = 0
     /// Loading presentation is tracked separately from full-state freshness:
     /// account-scoped snapshot tickets own freshness, while an outbox
     /// reconciliation can supersede a load without owning its spinner.
@@ -120,6 +128,7 @@ final class SyncModel: ObservableObject {
     ) {
         self.auth = auth
         self.accountID = auth.userID
+        self.featureSessionEpoch = auth.featureSessionEpoch
         self.setWriteAPI = setWriteAPI
         self.terminalAPI = terminalAPI
         self.catalogAPI = catalogAPI
@@ -185,10 +194,12 @@ final class SyncModel: ObservableObject {
         return auth.featureJWT != nil && !auth.accountDeletionPending
     }
 
-    /// Set callbacks may complete after same-account renewal or recoverable
-    /// reauthentication, so JWT equality is intentionally not part of this
-    /// check. Account switch, explicit sign-out, and deletion do invalidate it
-    /// and must never recreate the old account's cleared queue.
+    /// Set callbacks may complete after same-account bearer renewal or
+    /// recoverable reauthentication, so bearer and feature-session identity are
+    /// intentionally not part of this check. Owned-intent and granular-store
+    /// guards let the old callback settle its write without touching work
+    /// created by the replacement model. Account switch and deletion remain
+    /// invalidating boundaries.
     private var canMutateBoundSetAccount: Bool {
         guard let accountID, auth.userID == accountID else { return false }
         return !auth.accountDeletionPending
@@ -209,26 +220,55 @@ final class SyncModel: ObservableObject {
     }
 
     func load() async {
-        if let stateLoadTask {
-            await stateLoadTask.value
-            return
+        await load(requiringFreshness: stateFreshnessGeneration)
+    }
+
+    /// A successful server mutation needs a state request that starts after the
+    /// mutation. It may wait behind an older pull, but it must never merely join
+    /// that pull and mistake pre-mutation state for reconciliation.
+    func loadAfterMutation() async {
+        stateFreshnessGeneration &+= 1
+        await load(requiringFreshness: stateFreshnessGeneration)
+    }
+
+    private func load(requiringFreshness requiredFreshness: UInt64) async {
+        while let activeTask = stateLoadTask {
+            let canJoin = stateLoadKey.map {
+                $0.bearer == currentJWT
+                    && $0.freshnessGeneration >= requiredFreshness
+                    && $0.featureSessionEpoch == auth.featureSessionEpoch
+            } ?? false
+            await activeTask.value
+            if canJoin { return }
         }
+        guard auth.featureSessionEpoch == featureSessionEpoch,
+              let jwt = currentJWT else { return }
         let taskID = UUID()
+        let key = StateLoadKey(
+            bearer: jwt,
+            freshnessGeneration: stateFreshnessGeneration,
+            featureSessionEpoch: featureSessionEpoch)
         stateLoadTaskID = taskID
+        stateLoadKey = key
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.performLoad()
+            await self.performLoad(key: key)
+            self.finishStateLoad(taskID: taskID)
         }
         stateLoadTask = task
         await task.value
+    }
+
+    private func finishStateLoad(taskID: UUID) {
         if stateLoadTaskID == taskID {
             stateLoadTask = nil
             stateLoadTaskID = nil
+            stateLoadKey = nil
         }
     }
 
-    private func performLoad() async {
-        guard let jwt = currentJWT else { return }
+    private func performLoad(key: StateLoadKey) async {
+        let jwt = key.bearer
         loadGeneration += 1
         let thisLoadGeneration = loadGeneration
         guard let snapshotTicket = StateSnapshotStore.reserveFullStateRequest(
@@ -243,7 +283,10 @@ final class SyncModel: ObservableObject {
         }
         do {
             let state = try await setWriteAPI.getState(jwt: jwt)
-            guard isCurrentAccount, canMutateBoundSetAccount else { return }
+            guard isCurrentAccount, canMutateBoundSetAccount,
+                  key.featureSessionEpoch == featureSessionEpoch,
+                  key.featureSessionEpoch == auth.featureSessionEpoch,
+                  key.freshnessGeneration == stateFreshnessGeneration else { return }
             guard applyLiveStateResponse(
                 state,
                 ticket: snapshotTicket
@@ -255,6 +298,9 @@ final class SyncModel: ObservableObject {
             if let catalogJWT = currentJWT,
                let rows = try? await catalogAPI.getExercises(jwt: catalogJWT) {
                 guard isCurrentAccount, canMutateBoundSetAccount,
+                      key.featureSessionEpoch == featureSessionEpoch,
+                      key.featureSessionEpoch == auth.featureSessionEpoch,
+                      key.freshnessGeneration == stateFreshnessGeneration,
                       StateSnapshotStore.isCurrent(
                           snapshotTicket, defaults: defaults)
                 else { return }
@@ -266,7 +312,10 @@ final class SyncModel: ObservableObject {
         } catch {
             guard StateSnapshotStore.isCurrent(
                       snapshotTicket, defaults: defaults),
-                  isCurrentAccount, canMutateBoundSetAccount
+                  isCurrentAccount, canMutateBoundSetAccount,
+                  key.featureSessionEpoch == featureSessionEpoch,
+                  key.featureSessionEpoch == auth.featureSessionEpoch,
+                  key.freshnessGeneration == stateFreshnessGeneration
             else { return }
             let isUnauthorized: Bool
             if case let APIError.http(code, _) = error {
@@ -1602,13 +1651,13 @@ final class SyncModel: ObservableObject {
         }
     }
 
-    func isSetSending(slotID: String) -> Bool {
+    func isSetEntryBlocked(slotID: String) -> Bool {
         if hasPendingTerminalIntentForCurrentWorkout || isTerminalMutationInFlight {
             return true
         }
         if setSlotsInFlight.contains(slotID) { return true }
         return setOutbox.pending.contains {
-            $0.slotID == slotID && sendingSetIntentIDs.contains($0.id)
+            $0.slotID == slotID && $0.deliveryState == .failed
         }
     }
 
@@ -1694,20 +1743,26 @@ final class SyncModel: ObservableObject {
         intent.failedHTTPStatus = nil
         setOutbox.replace(intent)
         persistReplacedSetIntent(intent)
+        normalizeMountedRunnerAfterLocalCommit(for: intent.date)
         await drainSetOutbox()
     }
 
     func retryFailedSetIntents() async {
         guard canMutateBoundSetAccount else { return }
         var changed = false
+        var rearmedDates: Set<String> = []
         for var intent in setOutbox.pending where intent.deliveryState == .failed {
             intent.deliveryState = .queued
             intent.failedHTTPStatus = nil
             setOutbox.replace(intent)
             persistReplacedSetIntent(intent)
+            rearmedDates.insert(intent.date)
             changed = true
         }
         guard changed else { return }
+        for date in rearmedDates {
+            normalizeMountedRunnerAfterLocalCommit(for: date)
+        }
         await drainSetOutbox()
     }
 
@@ -1834,7 +1889,7 @@ final class SyncModel: ObservableObject {
     func recoverWorkoutWrites() async {
         await drainWorkoutWriteOutboxes()
         guard currentJWT != nil, canMutateBoundSetAccount else { return }
-        await load()
+        await loadAfterMutation()
         guard currentJWT != nil, canMutateBoundSetAccount else { return }
         await drainWorkoutWriteOutboxes()
     }
@@ -2537,6 +2592,7 @@ final class SyncModel: ObservableObject {
                 intent.failedHTTPStatus = code
                 setOutbox.replace(intent)
                 persistReplacedSetIntent(intent)
+                reopenMountedRunner(for: intent)
             }
             loadError = "Set wasn't saved because the server rejected it (HTTP \(code))."
             return .permanentFailure
@@ -2737,7 +2793,9 @@ final class SyncModel: ObservableObject {
     /// double count while an acknowledgement is being folded into the cache.
     func runnerSetsDone(_ ex: TemplateExercise) -> Int {
         Set(todaySlotSets(ex).map(\.id))
-            .union(pendingSetIntents(for: ex).map(\.id))
+            .union(pendingSetIntents(for: ex).lazy.filter {
+                $0.deliveryState == .queued
+            }.map(\.id))
             .count
     }
 
@@ -2757,6 +2815,30 @@ final class SyncModel: ObservableObject {
             if !isRunnerResolved(exercises[i]) { return i }
         }
         return nil
+    }
+
+    private func normalizeMountedRunnerAfterLocalCommit(for date: String) {
+        guard running, date == todayString, let current = currentExercise,
+              isRunnerComplete(current) else { return }
+        if let next = nextRunnerIncompleteIndex {
+            jump(to: next)
+        } else {
+            finished = true
+            persistRunnerCheckpoint()
+        }
+    }
+
+    private func reopenMountedRunner(for failedIntent: PendingSetIntent) {
+        guard running, failedIntent.date == todayString,
+              let index = exercises.firstIndex(where: {
+                  $0.id == failedIntent.slotID
+              }) else { return }
+        finished = false
+        exerciseIndex = index
+        seedInputs()
+        weight = failedIntent.body.weight
+        reps = failedIntent.body.reps
+        persistRunnerCheckpoint()
     }
 
     private func allowNewWorkoutStart() -> Bool {
@@ -2919,7 +3001,7 @@ final class SyncModel: ObservableObject {
         guard let ex = currentExercise, ex.isTimed,
               !isTerminalMutationInFlight,
               !hasPendingTerminalIntentForCurrentWorkout,
-              !isSetSending(slotID: ex.id)
+              !isSetEntryBlocked(slotID: ex.id)
         else { return }
         timedActive = true
         let now = Date()
@@ -2974,11 +3056,8 @@ final class SyncModel: ObservableObject {
             persistRunnerCheckpoint()
             return
         }
-        guard running, let current = currentExercise else { return }
-        if isRunnerComplete(current) {
-            if let next = nextRunnerIncompleteIndex { jump(to: next) } else { finished = true }
-        }
-        persistRunnerCheckpoint()
+        guard running, currentExercise != nil else { return }
+        normalizeMountedRunnerAfterLocalCommit(for: todaySession?.date ?? todayString)
     }
 
     func adjustWeight(_ delta: Double) { weight = max(0, weight + delta) }
@@ -3025,12 +3104,8 @@ final class SyncModel: ObservableObject {
             persistRunnerCheckpoint()
             return
         } // starts rest immediately; delivery continues in the background
-        guard running, let current = currentExercise else { return }
-        if isRunnerComplete(current) {
-            if let next = nextRunnerIncompleteIndex { jump(to: next) }
-            else { finished = true }
-        }
-        persistRunnerCheckpoint()
+        guard running, currentExercise != nil else { return }
+        normalizeMountedRunnerAfterLocalCommit(for: todaySession?.date ?? todayString)
     }
 
     /// Manual "move on" — marks the current exercise skipped for this
@@ -3167,7 +3242,7 @@ final class SyncModel: ObservableObject {
                 dayID: dayID, exercise: exercise, isWarmup: isWarmup,
                 targetSets: targetSets, targetReps: targetReps,
                 restSeconds: restSeconds, targetDurationS: targetDurationS, jwt: jwt)
-            await load()
+            await loadAfterMutation()
             restoreActiveSlot(activeSlotID)
         } catch { handle(error, jwt: jwt) }
     }
@@ -3177,7 +3252,7 @@ final class SyncModel: ObservableObject {
         let activeSlotID = currentExercise?.id
         do {
             try await api.deleteExerciseSlot(dayID: dayID, teID: teID, jwt: jwt)
-            await load()
+            await loadAfterMutation()
             restoreActiveSlot(activeSlotID)
         } catch { handle(error, jwt: jwt) }
     }
@@ -3190,7 +3265,7 @@ final class SyncModel: ObservableObject {
         do {
             _ = try await api.updateExerciseSlot(
                 dayID: dayID, teID: teID, fields: ["order_index": toIndex], jwt: jwt)
-            await load()
+            await loadAfterMutation()
             restoreActiveSlot(activeSlotID)
         } catch { handle(error, jwt: jwt) }
     }
@@ -3231,7 +3306,7 @@ final class SyncModel: ObservableObject {
 
     /// Name of the next not-complete exercise (for the rest screen's UP NEXT).
     var upNextName: String {
-        if let i = nextIncompleteIndex { return exercises[i].exercise_name }
+        if let i = nextRunnerIncompleteIndex { return exercises[i].exercise_name }
         return "Done"
     }
 

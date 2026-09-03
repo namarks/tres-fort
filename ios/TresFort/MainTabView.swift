@@ -37,11 +37,15 @@ struct MainTabView: View {
         // while the closure was still nil (calendar never refreshed for those
         // rows). StateObject keeps the first instances, so the closure stays
         // bound to the retained sync across re-inits.
-        groupModel.onActivityPersisted = { [weak sync] in await sync?.load() }
+        groupModel.onActivityPersisted = {
+            [weak sync] in await sync?.loadAfterMutation()
+        }
         // HealthKit pushes land in external_activities (source='healthkit'),
         // which ride /api/state — so a completed sync must refresh the personal
         // calendar/agenda just like a manual activity does.
-        health.onActivitiesPersisted = { [weak sync] in await sync?.load() }
+        health.onActivitiesPersisted = {
+            [weak sync] in await sync?.loadAfterMutation()
+        }
         setConnectivity.onSatisfiedTransition = { [weak sync] in
             Task { await sync?.recoverWorkoutWrites() }
         }

@@ -36,6 +36,12 @@ final class AuthModel: ObservableObject {
     var featureJWT: String? {
         accountDeletionPending ? nil : jwt
     }
+    /// Process-local identity for one continuously active feature session.
+    /// It changes across sign-out, reauthentication teardown, deletion, and a
+    /// subsequent sign-in, but not ordinary same-account bearer renewal. Feature
+    /// models capture it so an old task cannot become current again after a
+    /// sign-out/same-user-sign-in ABA.
+    private(set) var featureSessionEpoch: UInt64 = 0
     /// Server user id, captured from /auth/apple's `user.id` and persisted
     /// in UserDefaults so GroupModel can survive an app relaunch with the
     /// keychain JWT alone. Used as the fallback for `is_me` comparisons
@@ -232,6 +238,7 @@ final class AuthModel: ObservableObject {
             }
             AccountLocalState.bindLegacyState(
                 userID: res.user.id, defaults: defaults)
+            featureSessionEpoch &+= 1
             tokenStore.save(res.jwt)
             jwt = res.jwt
             userID = res.user.id
@@ -350,6 +357,7 @@ final class AuthModel: ObservableObject {
             phase = .signedIn
             return
         }
+        featureSessionEpoch &+= 1
         tokenStore.clear()
         jwt = nil
         reauthenticationReason = reason
@@ -364,6 +372,7 @@ final class AuthModel: ObservableObject {
                 "Account deletion is awaiting confirmation. Retry account deletion to finish."
             return
         }
+        featureSessionEpoch &+= 1
         tokenStore.clear()
         defaults.removeObject(forKey: Self.userIDKey)
         jwt = nil
@@ -453,6 +462,7 @@ final class AuthModel: ObservableObject {
             postDeletionAppleRevocationRequired = true
         }
         guard userID == accountID else { return }
+        featureSessionEpoch &+= 1
         accountDeletionPending = false
         tokenStore.clear()
         defaults.removeObject(forKey: Self.userIDKey)

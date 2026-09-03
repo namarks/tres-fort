@@ -94,6 +94,14 @@ final class SyncModel: ObservableObject {
     private var isDrainingWorkoutWrites = false
     private var workoutWriteDrainRequested = false
     private var workoutWriteDrainWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Full-state refresh belongs to the account-scoped model, not to the
+    /// SwiftUI task that happened to request it. Pull-to-refresh may cancel
+    /// its view task as the scroll hierarchy changes; keeping one unstructured
+    /// model-owned task lets that already-started validation finish, and
+    /// coalesces launch/foreground/HealthKit/manual refreshes onto the same
+    /// identical full-state request.
+    private var stateLoadTask: Task<Void, Never>?
+    private var stateLoadTaskID: UUID?
     /// Loading presentation is tracked separately from full-state freshness:
     /// account-scoped snapshot tickets own freshness, while an outbox
     /// reconciliation can supersede a load without owning its spinner.
@@ -201,6 +209,25 @@ final class SyncModel: ObservableObject {
     }
 
     func load() async {
+        if let stateLoadTask {
+            await stateLoadTask.value
+            return
+        }
+        let taskID = UUID()
+        stateLoadTaskID = taskID
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performLoad()
+        }
+        stateLoadTask = task
+        await task.value
+        if stateLoadTaskID == taskID {
+            stateLoadTask = nil
+            stateLoadTaskID = nil
+        }
+    }
+
+    private func performLoad() async {
         guard let jwt = currentJWT else { return }
         loadGeneration += 1
         let thisLoadGeneration = loadGeneration
@@ -1687,17 +1714,40 @@ final class SyncModel: ObservableObject {
     @discardableResult
     func logSet(_ ex: TemplateExercise, weight: Double, reps: Int,
                 durationOverride: Int? = nil) async -> Bool {
+        guard let intent = enqueueSetIntent(
+            ex, weight: weight, reps: reps, durationOverride: durationOverride
+        ) else { return false }
+        defer { setSlotsInFlight.remove(ex.id) }
+
+        await drainSetOutbox()
+        guard canMutateBoundSetAccount else { return false }
+        let acknowledged = !setOutbox.pending.contains(where: { $0.id == intent.id })
+            && sets.contains(where: { $0.id == intent.id })
+        if acknowledged && running {
+            startRest(seconds: ex.rest_seconds, name: ex.exercise_name)
+        }
+        return acknowledged
+    }
+
+    /// Persist one complete, idempotent intent without waiting for the network.
+    /// This is the offline-first commit boundary shared by the synchronous test
+    /// helper above and the runner's optimistic UI path below.
+    private func enqueueSetIntent(
+        _ ex: TemplateExercise,
+        weight: Double,
+        reps: Int,
+        durationOverride: Int?
+    ) -> PendingSetIntent? {
         let workoutDate = todaySession?.date ?? todayString
         guard currentJWT != nil, canMutateBoundSetAccount,
               !isTerminalMutationInFlight,
               terminalOutbox.intent(for: workoutDate) == nil,
               !setSlotsInFlight.contains(ex.id)
-        else { return false }
+        else { return nil }
 
-        // This guard is published before the first await, so two Tasks created
-        // by a rapid double tap cannot both mint intents for the same slot.
+        // Publish the guard before returning to the view task, so two button
+        // Tasks created by a rapid double tap cannot both mint intents.
         setSlotsInFlight.insert(ex.id)
-        defer { setSlotsInFlight.remove(ex.id) }
 
         // Index per SLOT. Pending (queued OR visibly failed) intents reserve
         // their index so intentional offline sets remain distinct; completion
@@ -1728,15 +1778,36 @@ final class SyncModel: ObservableObject {
         // create therefore leaves the complete intent available on relaunch.
         setOutbox.enqueue(intent)
         persistEnqueuedSetIntent(intent)
+        return intent
+    }
 
-        await drainSetOutbox()
-        guard canMutateBoundSetAccount else { return false }
-        let acknowledged = !setOutbox.pending.contains(where: { $0.id == body.id })
-            && sets.contains(where: { $0.id == body.id })
-        if acknowledged && running {
+    /// The workout runner commits locally and advances immediately. Delivery
+    /// is deliberately model-owned background work: a SwiftUI button task may
+    /// disappear as the runner advances, but the durable intent must continue
+    /// to send or remain visibly queued for a later retry.
+    private func queueRunnerSet(
+        _ ex: TemplateExercise,
+        weight: Double,
+        reps: Int,
+        durationOverride: Int? = nil
+    ) -> Bool {
+        guard enqueueSetIntent(
+            ex, weight: weight, reps: reps, durationOverride: durationOverride
+        ) != nil else { return false }
+
+        if running {
             startRest(seconds: ex.rest_seconds, name: ex.exercise_name)
         }
-        return acknowledged
+        let slotID = ex.id
+        Task { @MainActor [weak self] in
+            // Keep the same-turn double-tap guard through the immediate UI
+            // transition, but do not make the next real set wait on transport.
+            await Task.yield()
+            guard let self else { return }
+            self.setSlotsInFlight.remove(slotID)
+            await self.drainSetOutbox()
+        }
+        return true
     }
 
     private enum SetSendOutcome {
@@ -2658,7 +2729,34 @@ final class SyncModel: ObservableObject {
     /// 1-based number of the set about to be performed for the current exercise.
     var currentSetNumber: Int {
         guard let ex = currentExercise else { return 1 }
-        return todaySlotSets(ex).count + pendingSetIntents(for: ex).count + 1
+        return runnerSetsDone(ex) + 1
+    }
+
+    /// Runner progress counts every locally durable set exactly once. Pending
+    /// rows share their eventual server id, so the set union avoids a transient
+    /// double count while an acknowledgement is being folded into the cache.
+    func runnerSetsDone(_ ex: TemplateExercise) -> Int {
+        Set(todaySlotSets(ex).map(\.id))
+            .union(pendingSetIntents(for: ex).map(\.id))
+            .count
+    }
+
+    private func isRunnerComplete(_ ex: TemplateExercise) -> Bool {
+        runnerSetsDone(ex) >= ex.target_sets
+    }
+
+    private func isRunnerResolved(_ ex: TemplateExercise) -> Bool {
+        isRunnerComplete(ex) || isSkipped(ex)
+    }
+
+    private var nextRunnerIncompleteIndex: Int? {
+        let n = exercises.count
+        guard n > 0 else { return nil }
+        for offset in 1...n {
+            let i = (exerciseIndex + offset) % n
+            if !isRunnerResolved(exercises[i]) { return i }
+        }
+        return nil
     }
 
     private func allowNewWorkoutStart() -> Bool {
@@ -2872,13 +2970,13 @@ final class SyncModel: ObservableObject {
         skipped.remove(ex.id)   // logging work un-skips this slot
         persistRunnerCheckpoint()
         let secs = max(1, held)
-        guard await logSet(ex, weight: 0, reps: secs, durationOverride: secs) else {
+        guard queueRunnerSet(ex, weight: 0, reps: secs, durationOverride: secs) else {
             persistRunnerCheckpoint()
             return
         }
         guard running, let current = currentExercise else { return }
-        if isComplete(current) {
-            if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
+        if isRunnerComplete(current) {
+            if let next = nextRunnerIncompleteIndex { jump(to: next) } else { finished = true }
         }
         persistRunnerCheckpoint()
     }
@@ -2923,13 +3021,13 @@ final class SyncModel: ObservableObject {
         guard let ex = currentExercise else { return }
         skipped.remove(ex.id)   // logging work un-skips this slot
         persistRunnerCheckpoint()
-        guard await logSet(ex, weight: weight, reps: reps) else {
+        guard queueRunnerSet(ex, weight: weight, reps: reps) else {
             persistRunnerCheckpoint()
             return
-        } // also starts rest timer
+        } // starts rest immediately; delivery continues in the background
         guard running, let current = currentExercise else { return }
-        if isComplete(current) {
-            if let next = nextIncompleteIndex { jump(to: next) }
+        if isRunnerComplete(current) {
+            if let next = nextRunnerIncompleteIndex { jump(to: next) }
             else { finished = true }
         }
         persistRunnerCheckpoint()

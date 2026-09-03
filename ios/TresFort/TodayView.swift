@@ -64,6 +64,38 @@ private struct PendingSetBanner: View {
     }
 }
 
+/// Normal online delivery takes a moment but does not need to move the whole
+/// runner down and announce itself. Keep the durable queue truthful, while
+/// surfacing its banner only when it outlives a short online grace period (or
+/// immediately when the server rejects a set and the user can act on it).
+private struct PendingSetBannerGate: View {
+    @ObservedObject var sync: SyncModel
+    @State private var graceElapsed = false
+
+    var body: some View {
+        Group {
+            if sync.pendingSetIntentCount > 0,
+               sync.failedSetIntentCount > 0 || graceElapsed {
+                PendingSetBanner(sync: sync)
+            }
+        }
+        .task(id: sync.pendingSetIntentCount > 0) {
+            guard sync.pendingSetIntentCount > 0 else {
+                graceElapsed = false
+                return
+            }
+            graceElapsed = false
+            do {
+                try await Task.sleep(nanoseconds: 3_000_000_000)
+            } catch {
+                return
+            }
+            guard sync.pendingSetIntentCount > 0 else { return }
+            graceElapsed = true
+        }
+    }
+}
+
 struct CachedStateBanner: View {
     var body: some View {
         HStack(spacing: 9) {
@@ -154,9 +186,7 @@ struct TodayView: View {
                     if sync.pendingTerminalIntentCount > 0 {
                         PendingTerminalBanner(sync: sync)
                     }
-                    if sync.pendingSetIntentCount > 0 {
-                        PendingSetBanner(sync: sync)
-                    }
+                    PendingSetBannerGate(sync: sync)
                     content
                 }
                 if sync.restEndDate != nil {
@@ -701,8 +731,8 @@ private struct ProgressBar: View {
         HStack(spacing: 6) {
             ForEach(Array(exercises.enumerated()), id: \.element.id) { i, ex in
                 GeometryReader { geo in
-                    let ratio = min(1, Double(sync.setsDone(ex)) / Double(max(1, ex.target_sets)))
-                    let complete = sync.isComplete(ex)
+                    let ratio = min(1, Double(sync.runnerSetsDone(ex)) / Double(max(1, ex.target_sets)))
+                    let complete = sync.runnerSetsDone(ex) >= ex.target_sets
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: 2).fill(Theme.surface2)
                         RoundedRectangle(cornerRadius: 2)

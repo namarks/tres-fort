@@ -491,6 +491,56 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertNil(model.restEndDate)
     }
 
+    func testRunnerAdvancesAfterDurableEnqueueWithoutWaitingForServer() async {
+        let defaults = defaults()
+        let ex = exercise(targetSets: 1)
+        let s = session(status: "in_progress")
+        let api = SetWriteAPIStub()
+        let entered = SetAsyncLatch()
+        let release = SetAsyncLatch()
+        api.logHandler = { [self] sessionID, body, _ in
+            await entered.open()
+            await release.wait()
+            return .init(
+                set: setLog(body: body, sessionID: sessionID),
+                deduped: false,
+                session: session(
+                    id: sessionID, status: "in_progress", attempt: 0))
+        }
+        api.stateHandler = { [self] _ in
+            let body = api.logCalls[0].body
+            return state(
+                session: s,
+                sets: [setLog(body: body, sessionID: s.id)],
+                exercise: ex)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, uuidFactory: { self.fixedUUID },
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s, running: true)
+
+        await model.logCurrentSet()
+
+        XCTAssertTrue(model.finished)
+        XCTAssertNotNil(model.restEndDate)
+        XCTAssertEqual(model.runnerSetsDone(ex), 1)
+        XCTAssertEqual(model.setOutbox.count, 1)
+        XCTAssertEqual(
+            SetOutboxStore.load(
+                userID: "user-a", defaults: defaults).pending.first?.id,
+            fixedUUID.uuidString)
+
+        await entered.wait()
+        XCTAssertEqual(model.setOutbox.count, 1)
+        await release.open()
+        await model.drainSetOutbox()
+
+        XCTAssertTrue(model.setOutbox.isEmpty)
+        XCTAssertEqual(model.sets.map(\.id), [fixedUUID.uuidString])
+        XCTAssertTrue(model.finished)
+    }
+
     func testCommitThenTimeoutRetriesSameIDAndDedupes() async {
         let defaults = defaults()
         let ex = exercise()
@@ -2475,25 +2525,17 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(model.rideConflict(for: fixedCivilDate), .none)
     }
 
-    func testNewestLoadOwnsStateAndSpinnerWhenResponsesInvert() async {
+    func testConcurrentLoadsCoalesceOntoOneModelOwnedRefresh() async {
         let defaults = defaults()
         let ex = exercise()
         let api = SetWriteAPIStub()
         let firstEntered = SetAsyncLatch()
         let releaseFirst = SetAsyncLatch()
-        let secondEntered = SetAsyncLatch()
-        let releaseSecond = SetAsyncLatch()
         api.stateHandler = { [self] _ in
-            if api.stateCalls == 1 {
-                await firstEntered.open()
-                await releaseFirst.wait()
-                return state(
-                    session: session(status: "planned"), sets: [], exercise: ex)
-            }
-            await secondEntered.open()
-            await releaseSecond.wait()
+            await firstEntered.open()
+            await releaseFirst.wait()
             return state(
-                session: session(status: "completed"), sets: [], exercise: ex)
+                session: session(status: "planned"), sets: [], exercise: ex)
         }
         let model = SyncModel(
             auth: retainedAuth(defaults: defaults),
@@ -2513,21 +2555,58 @@ final class SetOutboxTests: XCTestCase {
         let first = Task { await model.load() }
         await firstEntered.wait()
         let second = Task { await model.load() }
-        await secondEntered.wait()
+        await Task.yield()
 
+        XCTAssertEqual(api.stateCalls, 1)
+        XCTAssertTrue(model.isLoading)
         await releaseFirst.open()
         await first.value
-        XCTAssertTrue(model.isLoading, "an older completion cannot hide the newer load")
-        XCTAssertNil(model.todaySession, "the superseded response must not apply")
-
-        await releaseSecond.open()
         await second.value
+
+        XCTAssertEqual(api.stateCalls, 1)
         XCTAssertFalse(model.isLoading)
-        XCTAssertEqual(model.todaySession?.status, "completed")
+        XCTAssertEqual(model.todaySession?.status, "planned")
         XCTAssertEqual(
             StateSnapshotStore.load(
                 userID: "user-a", defaults: defaults)?.state.sessions.first?.status,
-            "completed")
+            "planned")
+    }
+
+    func testCancelledRefreshCallerDoesNotCancelModelOwnedValidation() async {
+        let defaults = defaults()
+        let ex = exercise()
+        StateSnapshotStore.save(
+            state(
+                session: session(status: "planned"), sets: [], exercise: ex),
+            userID: "user-a",
+            defaults: defaults)
+        let api = SetWriteAPIStub()
+        let entered = SetAsyncLatch()
+        let release = SetAsyncLatch()
+        api.stateHandler = { [self] _ in
+            await entered.open()
+            await release.wait()
+            return state(
+                session: session(status: "planned"), sets: [], exercise: ex)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: api,
+            defaults: defaults,
+            now: { self.fixedDate })
+
+        XCTAssertTrue(model.isUsingCachedState)
+        let refresh = Task { await model.load() }
+        await entered.wait()
+        refresh.cancel()
+        await release.open()
+        await refresh.value
+
+        XCTAssertTrue(refresh.isCancelled)
+        XCTAssertEqual(api.stateCalls, 1)
+        XCTAssertEqual(model.plan?.name, "Plan A")
+        XCTAssertFalse(model.isUsingCachedState)
+        XCTAssertNil(model.loadError)
     }
 
     func testDelayedPreWriteLoadCannotRollBackAcknowledgedSetOrSnapshot() async {
@@ -3325,7 +3404,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertTrue(cold.isUsingCachedState)
     }
 
-    func testMountedRunnerFinishesAfterForegroundSettlesTimedOutFinalSet() async {
+    func testMountedRunnerStaysFinishedWhileForegroundSettlesTimedOutFinalSet() async {
         let defaults = defaults()
         let ex = exercise(targetSets: 1)
         let active = session(
@@ -3362,7 +3441,7 @@ final class SetOutboxTests: XCTestCase {
 
         await model.logCurrentSet()
         XCTAssertTrue(model.running)
-        XCTAssertFalse(model.finished)
+        XCTAssertTrue(model.finished)
         XCTAssertEqual(model.setOutbox.count, 1)
 
         await model.recoverWorkoutWrites()

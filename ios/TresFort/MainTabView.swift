@@ -30,21 +30,20 @@ struct MainTabView: View {
         let groupModel = GroupModel(auth: auth)
         let health = HealthKitSyncModel(auth: auth)
         let setConnectivity = SetConnectivityMonitor()
-        // Bridge group-side activity writes to the personal calendar here in
-        // init — NOT in `.task` — so the closure is set before GroupTabView's
-        // own `.task { groupModel.load() }` can drain the outbox on launch.
-        // Setting it in a racing sibling task risked an early drain firing
-        // while the closure was still nil (calendar never refreshed for those
-        // rows). StateObject keeps the first instances, so the closure stays
-        // bound to the retained sync across re-inits.
+        // Bridge activity writes through AuthModel's account-scoped generation,
+        // rather than directly to this SyncModel. An older GroupModel can finish
+        // a POST after same-user reauthentication replaces MainTabView; the new
+        // SyncModel observes the shared signal while the retired one rejects it
+        // through its feature-session epoch.
+        let accountID = auth.userID
         groupModel.onActivityPersisted = {
-            [weak sync] in await sync?.loadAfterMutation()
+            [weak auth] in auth?.noteActivityPersisted(for: accountID)
         }
         // HealthKit pushes land in external_activities (source='healthkit'),
         // which ride /api/state — so a completed sync must refresh the personal
         // calendar/agenda just like a manual activity does.
         health.onActivitiesPersisted = {
-            [weak sync] in await sync?.loadAfterMutation()
+            [weak auth] in auth?.noteActivityPersisted(for: accountID)
         }
         setConnectivity.onSatisfiedTransition = { [weak sync] in
             Task { await sync?.recoverWorkoutWrites() }

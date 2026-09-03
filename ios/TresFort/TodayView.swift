@@ -835,7 +835,18 @@ private struct RunnerView: View {
                                 steps: [("−1", { sync.adjustReps(-1) }, false),
                                         ("+1", { sync.adjustReps(1) }, false)])
 
-                        Button { Task { await sync.logCurrentSet() } } label: {
+                        Button {
+                            // Bind the intent to what this tap displayed. The
+                            // Task may begin after an earlier tap advanced the
+                            // runner, and must never log that successor slot.
+                            let expectedSlotID = ex.id
+                            let expectedSetNumber = sync.currentSetNumber
+                            Task {
+                                await sync.logCurrentSet(
+                                    expectedSlotID: expectedSlotID,
+                                    expectedSetNumber: expectedSetNumber)
+                            }
+                        } label: {
                             Text("LOG SET \(sync.currentSetNumber)")
                                 .font(Theme.display(26)).tracking(1.2)
                                 .frame(maxWidth: .infinity).padding(.vertical, 18)

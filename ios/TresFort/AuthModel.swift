@@ -42,12 +42,23 @@ final class AuthModel: ObservableObject {
     /// models capture it so an old task cannot become current again after a
     /// sign-out/same-user-sign-in ABA.
     private(set) var featureSessionEpoch: UInt64 = 0
+    /// Cross-model, account-scoped signal that server-side activity data
+    /// changed. It survives a same-user sign-out/sign-in boundary so a new
+    /// SyncModel can refresh when an older Group/Health task finishes late.
+    @Published private(set) var activityPersistenceGeneration: UInt64 = 0
     /// Server user id, captured from /auth/apple's `user.id` and persisted
     /// in UserDefaults so GroupModel can survive an app relaunch with the
     /// keychain JWT alone. Used as the fallback for `is_me` comparisons
     /// against /api/groups members (the M2 list endpoint doesn't stamp
     /// `is_me` — only /feed and /stats do).
     @Published var userID: String?
+
+    func noteActivityPersisted(for accountID: String?) {
+        guard let accountID, userID == accountID, featureJWT != nil else {
+            return
+        }
+        activityPersistenceGeneration &+= 1
+    }
 
     /// Drives whether RootView shows the first-run `OnboardingView` or the
     /// main app. `false` ⇒ a brand-new sign-in that hasn't been guided

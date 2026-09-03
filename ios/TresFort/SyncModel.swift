@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 private struct SessionWriteConflictPayload: Decodable {
@@ -110,6 +111,7 @@ final class SyncModel: ObservableObject {
     private var stateLoadTaskID: UUID?
     private var stateLoadKey: StateLoadKey?
     private var stateFreshnessGeneration: UInt64 = 0
+    private var activityPersistenceCancellable: AnyCancellable?
     /// Loading presentation is tracked separately from full-state freshness:
     /// account-scoped snapshot tickets own freshness, while an outbox
     /// reconciliation can supersede a load without owning its spinner.
@@ -169,6 +171,13 @@ final class SyncModel: ObservableObject {
             replaceState(with: cached.state, isLiveResponse: false)
             isUsingCachedState = true
         }
+        activityPersistenceCancellable = auth.$activityPersistenceGeneration
+            .dropFirst()
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.loadAfterMutation()
+                }
+            }
     }
 
     /// Bind every request to the account that created this model. An old
@@ -2828,17 +2837,33 @@ final class SyncModel: ObservableObject {
         }
     }
 
+    private func reopenFailedRunnerIntentIfStable(for date: String) {
+        guard !timedActive,
+              let failed = setOutbox.pending.first(where: {
+                  $0.date == date && $0.deliveryState == .failed
+              })
+        else { return }
+        reopenMountedRunner(for: failed)
+    }
+
     private func reopenMountedRunner(for failedIntent: PendingSetIntent) {
         guard running, failedIntent.date == todayString,
               let index = exercises.firstIndex(where: {
                   $0.id == failedIntent.slotID
               }) else { return }
+        // A delayed rejection must not abort a later physical timed set. The
+        // failed intent stays durable and visible; commitTimedSet reopens it as
+        // soon as that in-progress timer reaches its stable commit boundary.
+        guard !timedActive else { return }
         finished = false
         exerciseIndex = index
         seedInputs()
         weight = failedIntent.body.weight
         reps = failedIntent.body.reps
         persistRunnerCheckpoint()
+        if let end = restEndDate {
+            RestLiveActivity.update(endDate: end, upNext: upNextName)
+        }
     }
 
     private func allowNewWorkoutStart() -> Bool {
@@ -3057,7 +3082,9 @@ final class SyncModel: ObservableObject {
             return
         }
         guard running, currentExercise != nil else { return }
-        normalizeMountedRunnerAfterLocalCommit(for: todaySession?.date ?? todayString)
+        let date = todaySession?.date ?? todayString
+        normalizeMountedRunnerAfterLocalCommit(for: date)
+        reopenFailedRunnerIntentIfStable(for: date)
     }
 
     func adjustWeight(_ delta: Double) { weight = max(0, weight + delta) }
@@ -3096,8 +3123,18 @@ final class SyncModel: ObservableObject {
         persistRunnerCheckpoint()
     }
 
-    func logCurrentSet() async {
-        guard let ex = currentExercise else { return }
+    func logCurrentSet(
+        expectedSlotID: String,
+        expectedSetNumber: Int
+    ) async {
+        // A SwiftUI button action launches an unstructured Task. Bind that
+        // work to the slot and set number visible at tap time so a queued
+        // duplicate cannot run after the first tap advances the runner and
+        // accidentally log the successor exercise.
+        guard let ex = currentExercise,
+              ex.id == expectedSlotID,
+              currentSetNumber == expectedSetNumber
+        else { return }
         skipped.remove(ex.id)   // logging work un-skips this slot
         persistRunnerCheckpoint()
         guard queueRunnerSet(ex, weight: weight, reps: reps) else {

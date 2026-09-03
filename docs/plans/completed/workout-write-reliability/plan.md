@@ -86,11 +86,18 @@ slot. Transport activity no longer blocks entry of the next intentional set;
 an in-memory slot guard still rejects an immediate duplicate tap. State pulls
 now schedule a trailing fresh request after mutations or bearer renewal, and a
 feature-session epoch prevents a pre-sign-out response from applying after a
-same-user sign-in. Live Activity up-next state follows the same runner-aware
-progress calculation. The complete simulator suite passed 154/154 tests,
-including the changed production paths for immediate offline-first advancement,
-duplicate taps, permanent rejection, trailing refresh, identity ABA, timeout
-recovery, and caller cancellation. A three-second grace also suppresses the
+same-user sign-in. Activity persistence signals ride an account-scoped
+generation so a late pre-reauthentication writer refreshes the replacement
+calendar. Each tap is bound to its rendered slot and set number, preventing a
+queued duplicate from crossing into the next exercise. A delayed permanent
+failure preserves any successor timed set already underway, then reopens the
+failed slot at that timer's stable commit boundary. Live Activity up-next state
+is refreshed from the same runner-aware progress calculation. The complete
+simulator suite passed 157/157 tests, including the changed production paths for
+immediate offline-first advancement, cross-slot duplicate taps, delayed
+permanent rejection during a timed set, trailing refresh, identity ABA,
+late-activity refresh, timeout recovery, and caller cancellation. A three-second
+grace also suppresses the
 normal transient pending-set banner while preserving immediate permanent-failure
 feedback and visible prolonged queues. The pre-review Release build installed
 directly on the paired iPhone without replacing its data; live workout use then

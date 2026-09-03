@@ -529,7 +529,8 @@ final class SetOutboxTests: XCTestCase {
             now: { self.fixedDate })
         prepare(model, exercise: ex, session: s, running: true)
 
-        await model.logCurrentSet()
+        await model.logCurrentSet(
+            expectedSlotID: ex.id, expectedSetNumber: 1)
 
         XCTAssertTrue(model.finished)
         XCTAssertNotNil(model.restEndDate)
@@ -587,8 +588,14 @@ final class SetOutboxTests: XCTestCase {
             now: { self.fixedDate })
         prepare(model, exercise: ex, session: s, running: true)
 
-        let firstTap = Task { await model.logCurrentSet() }
-        let duplicateTap = Task { await model.logCurrentSet() }
+        let firstTap = Task {
+            await model.logCurrentSet(
+                expectedSlotID: ex.id, expectedSetNumber: 1)
+        }
+        let duplicateTap = Task {
+            await model.logCurrentSet(
+                expectedSlotID: ex.id, expectedSetNumber: 1)
+        }
         await firstTap.value
         await duplicateTap.value
         await firstEntered.wait()
@@ -599,7 +606,8 @@ final class SetOutboxTests: XCTestCase {
 
         await Task.yield()
         XCTAssertFalse(model.isSetEntryBlocked(slotID: ex.id))
-        await model.logCurrentSet()
+        await model.logCurrentSet(
+            expectedSlotID: ex.id, expectedSetNumber: 2)
 
         XCTAssertEqual(model.setOutbox.count, 2)
         XCTAssertEqual(model.runnerSetsDone(ex), 2)
@@ -617,6 +625,64 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertTrue(model.finished)
     }
 
+    func testQueuedDuplicateCannotCrossIntoSuccessorExercise() async {
+        let defaults = defaults()
+        let first = exercise(targetSets: 1)
+        let second = exercise(
+            id: "slot-b", exerciseID: "exercise-b", targetSets: 1)
+        let s = session(status: "in_progress")
+        let api = SetWriteAPIStub()
+        let entered = SetAsyncLatch()
+        let release = SetAsyncLatch()
+        api.logHandler = { [self] sessionID, body, _ in
+            await entered.open()
+            await release.wait()
+            return .init(
+                set: setLog(body: body, sessionID: sessionID),
+                deduped: false,
+                session: session(
+                    id: sessionID, status: "in_progress", attempt: 0))
+        }
+        api.stateHandler = { [self] _ in
+            state(
+                session: s,
+                sets: api.logCalls.map {
+                    setLog(body: $0.body, sessionID: $0.sessionID)
+                },
+                exercises: [first, second])
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, uuidFactory: { self.fixedUUID },
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: s, sets: [], exercises: [first, second]))
+        model.startWorkout()
+
+        let firstTap = Task {
+            await model.logCurrentSet(
+                expectedSlotID: first.id, expectedSetNumber: 1)
+        }
+        let queuedDuplicate = Task {
+            await model.logCurrentSet(
+                expectedSlotID: first.id, expectedSetNumber: 1)
+        }
+        await firstTap.value
+        await queuedDuplicate.value
+        await entered.wait()
+
+        XCTAssertEqual(model.currentExercise?.id, second.id)
+        XCTAssertEqual(model.setOutbox.pending.map(\.slotID), [first.id])
+        XCTAssertEqual(api.logCalls.count, 1)
+
+        await release.open()
+        await model.drainSetOutbox()
+
+        XCTAssertEqual(api.logCalls.map(\.body.template_exercise_id), [first.id])
+        XCTAssertEqual(model.runnerSetsDone(first), 1)
+        XCTAssertEqual(model.runnerSetsDone(second), 0)
+    }
+
     func testPermanentRunnerRejectionReopensFailedSlot() async {
         let defaults = defaults()
         let ex = exercise(targetSets: 1)
@@ -631,7 +697,8 @@ final class SetOutboxTests: XCTestCase {
             now: { self.fixedDate })
         prepare(model, exercise: ex, session: s, running: true)
 
-        await model.logCurrentSet()
+        await model.logCurrentSet(
+            expectedSlotID: ex.id, expectedSetNumber: 1)
         XCTAssertTrue(model.finished)
         await model.drainSetOutbox()
 
@@ -639,8 +706,153 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(model.exerciseIndex, 0)
         XCTAssertEqual(model.runnerSetsDone(ex), 0)
         XCTAssertEqual(model.currentSetNumber, 1)
+        XCTAssertEqual(model.upNextName, ex.exercise_name)
         XCTAssertEqual(model.failedSetIntentCount, 1)
         XCTAssertTrue(model.isSetEntryBlocked(slotID: ex.id))
+    }
+
+    func testDelayedPermanentFailurePreservesActiveSuccessorTimer() async {
+        let defaults = defaults()
+        let first = exercise(targetSets: 1)
+        let timed = exercise(
+            id: "slot-b", exerciseID: "exercise-b", timed: true,
+            targetSets: 1)
+        let s = session(status: "in_progress")
+        let api = SetWriteAPIStub()
+        let firstEntered = SetAsyncLatch()
+        let releaseFirst = SetAsyncLatch()
+        let firstID = fixedUUID
+        let secondID = UUID(uuidString: "22222222-2222-4222-8222-222222222222")!
+        var generatedIDs = [firstID, secondID].makeIterator()
+        api.logHandler = { [self] sessionID, body, _ in
+            if body.template_exercise_id == first.id {
+                await firstEntered.open()
+                await releaseFirst.wait()
+                throw APIError.http(422, "stale_template_exercise")
+            }
+            return .init(
+                set: setLog(body: body, sessionID: sessionID),
+                deduped: false,
+                session: session(
+                    id: sessionID, status: "in_progress", attempt: 0))
+        }
+        api.stateHandler = { [self] _ in
+            state(
+                session: s,
+                sets: api.logCalls.compactMap {
+                    $0.body.template_exercise_id == timed.id
+                        ? setLog(body: $0.body, sessionID: $0.sessionID)
+                        : nil
+                },
+                exercises: [first, timed])
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults,
+            uuidFactory: { generatedIDs.next()! },
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: s, sets: [], exercises: [first, timed]))
+        model.startWorkout()
+
+        await model.logCurrentSet(
+            expectedSlotID: first.id, expectedSetNumber: 1)
+        await firstEntered.wait()
+        XCTAssertEqual(model.currentExercise?.id, timed.id)
+
+        model.startTimedSet()
+        let timerEnd = model.timedEndDate
+        XCTAssertTrue(model.timedActive)
+
+        await releaseFirst.open()
+        await model.drainSetOutbox()
+
+        XCTAssertTrue(model.timedActive)
+        XCTAssertEqual(model.timedEndDate, timerEnd)
+        XCTAssertEqual(model.currentExercise?.id, timed.id)
+        XCTAssertEqual(model.failedSetIntentCount, 1)
+
+        await model.finishTimedSetAuto()
+
+        XCTAssertFalse(model.timedActive)
+        XCTAssertEqual(model.currentExercise?.id, first.id)
+        XCTAssertEqual(model.runnerSetsDone(first), 0)
+        XCTAssertEqual(model.runnerSetsDone(timed), 1)
+    }
+
+    func testOldActivitySuccessRefreshesReplacementSyncAfterSameUserReauth() async {
+        let defaults = defaults()
+        let oldToken = jwt(subject: "user-a")
+        let newToken = jwt(
+            subject: "user-a",
+            expiration: Date(timeIntervalSince1970: 2_100_000_000))
+        let authAPI = SetAuthAPIStub()
+        let auth = auth(
+            defaults: defaults, api: authAPI, token: oldToken)
+        let activityEntered = SetAsyncLatch()
+        let releaseActivity = SetAsyncLatch()
+        let oldGroup = GroupModel(
+            auth: auth,
+            defaults: defaults,
+            activityLogger: { pending, token in
+                XCTAssertEqual(token, oldToken)
+                await activityEntered.open()
+                await releaseActivity.wait()
+                return ActivityRow(
+                    id: pending.id,
+                    user_id: "user-a",
+                    date: pending.date,
+                    type: pending.type,
+                    title: pending.title,
+                    duration_minutes: pending.duration_minutes,
+                    notes: pending.notes,
+                    logged_at: pending.logged_at,
+                    source: "manual",
+                    deleted_at: nil)
+            })
+        let accountID = auth.userID
+        oldGroup.onActivityPersisted = { [weak auth] in
+            auth?.noteActivityPersisted(for: accountID)
+        }
+        let pending = PendingActivity(
+            id: "activity-a",
+            date: fixedCivilDate,
+            type: "walk",
+            title: "Walk",
+            duration_minutes: 20,
+            notes: nil,
+            logged_at: 2_000_000_000_000)
+
+        let logging = Task { await oldGroup.logActivity(pending) }
+        await activityEntered.wait()
+
+        auth.signOut()
+        authAPI.authResult = .success(
+            authResponse(jwt: newToken, userID: "user-a"))
+        await auth.exchange(identityToken: "apple-a", fullName: nil)
+
+        let stateAPI = SetWriteAPIStub()
+        let s = session(status: "in_progress")
+        let ex = exercise()
+        stateAPI.stateHandler = { [self] _ in
+            state(session: s, sets: [], exercise: ex)
+        }
+        let replacement = SyncModel(
+            auth: auth,
+            setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(),
+            defaults: defaults,
+            now: { self.fixedDate })
+        await replacement.load()
+        XCTAssertEqual(stateAPI.stateCalls, 1)
+
+        await releaseActivity.open()
+        await logging.value
+        while stateAPI.stateCalls < 2 { await Task.yield() }
+
+        XCTAssertEqual(auth.activityPersistenceGeneration, 1)
+        XCTAssertEqual(stateAPI.stateCalls, 2)
+        XCTAssertNil(replacement.loadError)
     }
 
     func testCommitThenTimeoutRetriesSameIDAndDedupes() async {
@@ -3667,7 +3879,8 @@ final class SetOutboxTests: XCTestCase {
             session: active, sets: [], exercise: ex))
         model.startWorkout()
 
-        await model.logCurrentSet()
+        await model.logCurrentSet(
+            expectedSlotID: ex.id, expectedSetNumber: 1)
         XCTAssertTrue(model.running)
         XCTAssertTrue(model.finished)
         XCTAssertEqual(model.setOutbox.count, 1)

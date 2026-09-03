@@ -92,11 +92,12 @@ calendar. Each tap is bound to its rendered slot and set number, preventing a
 queued duplicate from crossing into the next exercise. A delayed permanent
 failure preserves any successor timed set already underway, then reopens the
 failed slot at that timer's stable commit boundary. Live Activity up-next state
-is refreshed from the same runner-aware progress calculation. The complete
-simulator suite passed 157/157 tests, including the changed production paths for
+is refreshed from the runner's post-normalization current slot. The complete
+simulator suite passed 161/161 tests, including the changed production paths for
 immediate offline-first advancement, cross-slot duplicate taps, delayed
 permanent rejection during a timed set, trailing refresh, identity ABA,
-late-activity refresh, timeout recovery, and caller cancellation. A three-second
+same-user late activity creation/deletion refresh, retry recovery, Live Activity
+current-slot labeling, timeout recovery, and caller cancellation. A three-second
 grace also suppresses the
 normal transient pending-set banner while preserving immediate permanent-failure
 feedback and visible prolonged queues. The pre-review Release build installed

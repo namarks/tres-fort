@@ -81,6 +81,7 @@ final class SyncModel: ObservableObject {
     private let defaults: UserDefaults
     private let uuidFactory: () -> UUID
     private let now: () -> Date
+    private let restActivityUpdater: (Date, String) -> Void
     private var persistedRunnerCheckpoint: WorkoutRunnerCheckpoint?
     /// Restart authorization belongs to the mounted runner, not a generic
     /// date-level create. It is persisted in the checkpoint until creation
@@ -126,7 +127,11 @@ final class SyncModel: ObservableObject {
         catalogAPI: any ExerciseCatalogAPI = APIClient(),
         defaults: UserDefaults = .standard,
         uuidFactory: @escaping () -> UUID = UUID.init,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        restActivityUpdater: @escaping (Date, String) -> Void = {
+            endDate, upNext in
+            RestLiveActivity.update(endDate: endDate, upNext: upNext)
+        }
     ) {
         self.auth = auth
         self.accountID = auth.userID
@@ -137,6 +142,7 @@ final class SyncModel: ObservableObject {
         self.defaults = defaults
         self.uuidFactory = uuidFactory
         self.now = now
+        self.restActivityUpdater = restActivityUpdater
         let persistedCheckpoint = WorkoutRunnerCheckpointStore.load(
             userID: auth.userID, defaults: defaults)
         self.persistedRunnerCheckpoint = persistedCheckpoint
@@ -2827,14 +2833,18 @@ final class SyncModel: ObservableObject {
     }
 
     private func normalizeMountedRunnerAfterLocalCommit(for date: String) {
-        guard running, date == todayString, let current = currentExercise,
-              isRunnerComplete(current) else { return }
-        if let next = nextRunnerIncompleteIndex {
-            jump(to: next)
-        } else {
-            finished = true
-            persistRunnerCheckpoint()
+        guard running, date == todayString, let current = currentExercise else {
+            return
         }
+        if isRunnerComplete(current) {
+            if let next = nextRunnerIncompleteIndex {
+                jump(to: next)
+            } else {
+                finished = true
+                persistRunnerCheckpoint()
+            }
+        }
+        updateRestActivityAfterRunnerNormalization()
     }
 
     private func reopenFailedRunnerIntentIfStable(for date: String) {
@@ -2861,9 +2871,19 @@ final class SyncModel: ObservableObject {
         weight = failedIntent.body.weight
         reps = failedIntent.body.reps
         persistRunnerCheckpoint()
-        if let end = restEndDate {
-            RestLiveActivity.update(endDate: end, upNext: upNextName)
-        }
+        updateRestActivityAfterRunnerNormalization()
+    }
+
+    /// After a local commit or rollback, the runner has already settled on the
+    /// slot the user should perform when rest ends. Name that current slot—not
+    /// the later distinct slot returned by `upNextName`.
+    var restActivityCurrentStepName: String {
+        finished ? "Done" : (currentExercise?.exercise_name ?? "Done")
+    }
+
+    private func updateRestActivityAfterRunnerNormalization() {
+        guard let end = restEndDate else { return }
+        restActivityUpdater(end, restActivityCurrentStepName)
     }
 
     private func allowNewWorkoutStart() -> Bool {

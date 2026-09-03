@@ -767,6 +767,7 @@ private struct RunnerView: View {
 
     var body: some View {
         if let ex = sync.currentExercise {
+            let displayedSetNumber = sync.currentSetNumber
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if let ws = sync.workoutStart {
@@ -801,7 +802,7 @@ private struct RunnerView: View {
 
                     HStack {
                         let complete = sync.isComplete(ex)
-                        meta("SET", "\(min(sync.currentSetNumber, ex.target_sets))",
+                        meta("SET", "\(min(displayedSetNumber, ex.target_sets))",
                              complete ? "OF \(ex.target_sets) ✓" : "OF \(ex.target_sets)")
                         Spacer()
                         meta("TARGET", ex.targetLabel, "")
@@ -840,14 +841,13 @@ private struct RunnerView: View {
                             // Task may begin after an earlier tap advanced the
                             // runner, and must never log that successor slot.
                             let expectedSlotID = ex.id
-                            let expectedSetNumber = sync.currentSetNumber
                             Task {
                                 await sync.logCurrentSet(
                                     expectedSlotID: expectedSlotID,
-                                    expectedSetNumber: expectedSetNumber)
+                                    expectedSetNumber: displayedSetNumber)
                             }
                         } label: {
-                            Text("LOG SET \(sync.currentSetNumber)")
+                            Text("LOG SET \(displayedSetNumber)")
                                 .font(Theme.display(26)).tracking(1.2)
                                 .frame(maxWidth: .infinity).padding(.vertical, 18)
                         }

@@ -118,6 +118,10 @@ AI coaching.
 - [Member activation and adherence](member-activation-and-adherence/plan.md) —
   **planned**; make onboarding, coach connection, invite continuation, and
   lightweight reminders coherent.
+- [Bodyweight training support](bodyweight-training-support/plan.md) —
+  **planned**; make holds, rep ranges, added load, assistance, and rep-based
+  history first-class for calisthenics and bodyweight-first members, and seed
+  the missing gymnastic-strength movements.
 
 ### Connected training (`connected-training`)
 
@@ -148,9 +152,14 @@ The following remain candidates or design references, not current plans:
 - **Apple Watch app** — promote only when wrist-native execution has a concrete
   outcome beyond the current iPhone runner and Live Activity.
 - **Custom exercises** — promote when catalog gaps create observed workout
-  failures that aliases or the existing catalog cannot solve.
+  failures that aliases or the existing catalog cannot solve. The
+  gymnastic-strength seed in `bodyweight-training-support#P0` is the first
+  answer to catalog gaps; promote only for movements a seed cannot anticipate.
 - **Bodyweight tracking** — promote with a specific coaching or progression
-  decision that needs the data, not as an isolated metric store.
+  decision that needs the data, not as an isolated metric store. The one
+  identified need is true tonnage for weighted or assisted bodyweight work;
+  the rep-based metrics in `bodyweight-training-support#P1` cover the coaching
+  decision without it, so it stays deferred.
 - **M5 endurance write bridge** — retain the conditional design in
   [`MULTISPORT.md`](../MULTISPORT.md) and its
   [M0 spike](../MULTISPORT-M0-spike.md); do not activate planned-endurance

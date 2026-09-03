@@ -1,6 +1,6 @@
 # Gym Runner Depth
 
-Slug: gym-runner-depth · Status: planned · Updated: 2026-08-28 · Theme: gym-floor
+Slug: gym-runner-depth · Status: planned · Updated: 2026-09-02 · Theme: gym-floor
 
 ## Goal
 
@@ -50,6 +50,11 @@ reliability phase to finish.
 
 - Apple Watch execution, custom exercises, advanced readiness scoring, and
   automatic programming are outside this plan.
+- Added-load and assistance controls for bodyweight exercises and rep-based
+  history belong to
+  [Bodyweight training support](../bodyweight-training-support/plan.md); P1
+  here stays barbell loading aids. That plan coordinates with P0 on the
+  runner's value-entry controls.
 - Reuse the durable set-intent, checkpoint, and recovery boundary completed in
   [Workout Write Reliability](../completed/workout-write-reliability/plan.md);
   it is historical foundation rather than an unresolved dependency.

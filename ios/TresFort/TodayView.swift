@@ -64,6 +64,38 @@ private struct PendingSetBanner: View {
     }
 }
 
+/// Normal online delivery takes a moment but does not need to move the whole
+/// runner down and announce itself. Keep the durable queue truthful, while
+/// surfacing its banner only when it outlives a short online grace period (or
+/// immediately when the server rejects a set and the user can act on it).
+private struct PendingSetBannerGate: View {
+    @ObservedObject var sync: SyncModel
+    @State private var graceElapsed = false
+
+    var body: some View {
+        Group {
+            if sync.pendingSetIntentCount > 0,
+               sync.failedSetIntentCount > 0 || graceElapsed {
+                PendingSetBanner(sync: sync)
+            }
+        }
+        .task(id: sync.pendingSetIntentCount > 0) {
+            guard sync.pendingSetIntentCount > 0 else {
+                graceElapsed = false
+                return
+            }
+            graceElapsed = false
+            do {
+                try await Task.sleep(nanoseconds: 3_000_000_000)
+            } catch {
+                return
+            }
+            guard sync.pendingSetIntentCount > 0 else { return }
+            graceElapsed = true
+        }
+    }
+}
+
 struct CachedStateBanner: View {
     var body: some View {
         HStack(spacing: 9) {
@@ -154,9 +186,7 @@ struct TodayView: View {
                     if sync.pendingTerminalIntentCount > 0 {
                         PendingTerminalBanner(sync: sync)
                     }
-                    if sync.pendingSetIntentCount > 0 {
-                        PendingSetBanner(sync: sync)
-                    }
+                    PendingSetBannerGate(sync: sync)
                     content
                 }
                 if sync.restEndDate != nil {
@@ -701,8 +731,8 @@ private struct ProgressBar: View {
         HStack(spacing: 6) {
             ForEach(Array(exercises.enumerated()), id: \.element.id) { i, ex in
                 GeometryReader { geo in
-                    let ratio = min(1, Double(sync.setsDone(ex)) / Double(max(1, ex.target_sets)))
-                    let complete = sync.isComplete(ex)
+                    let ratio = min(1, Double(sync.runnerSetsDone(ex)) / Double(max(1, ex.target_sets)))
+                    let complete = sync.runnerSetsDone(ex) >= ex.target_sets
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: 2).fill(Theme.surface2)
                         RoundedRectangle(cornerRadius: 2)
@@ -737,6 +767,7 @@ private struct RunnerView: View {
 
     var body: some View {
         if let ex = sync.currentExercise {
+            let displayedSetNumber = sync.currentSetNumber
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if let ws = sync.workoutStart {
@@ -771,7 +802,7 @@ private struct RunnerView: View {
 
                     HStack {
                         let complete = sync.isComplete(ex)
-                        meta("SET", "\(min(sync.currentSetNumber, ex.target_sets))",
+                        meta("SET", "\(min(displayedSetNumber, ex.target_sets))",
                              complete ? "OF \(ex.target_sets) ✓" : "OF \(ex.target_sets)")
                         Spacer()
                         meta("TARGET", ex.targetLabel, "")
@@ -805,8 +836,18 @@ private struct RunnerView: View {
                                 steps: [("−1", { sync.adjustReps(-1) }, false),
                                         ("+1", { sync.adjustReps(1) }, false)])
 
-                        Button { Task { await sync.logCurrentSet() } } label: {
-                            Text("LOG SET \(sync.currentSetNumber)")
+                        Button {
+                            // Bind the intent to what this tap displayed. The
+                            // Task may begin after an earlier tap advanced the
+                            // runner, and must never log that successor slot.
+                            let expectedSlotID = ex.id
+                            Task {
+                                await sync.logCurrentSet(
+                                    expectedSlotID: expectedSlotID,
+                                    expectedSetNumber: displayedSetNumber)
+                            }
+                        } label: {
+                            Text("LOG SET \(displayedSetNumber)")
                                 .font(Theme.display(26)).tracking(1.2)
                                 .frame(maxWidth: .infinity).padding(.vertical, 18)
                         }
@@ -814,8 +855,8 @@ private struct RunnerView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 14))
                         .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
                         .padding(.top, 18)
-                        .disabled(sync.isSetSending(slotID: ex.id))
-                        .opacity(sync.isSetSending(slotID: ex.id) ? 0.55 : 1)
+                        .disabled(sync.isSetEntryBlocked(slotID: ex.id))
+                        .opacity(sync.isSetEntryBlocked(slotID: ex.id) ? 0.55 : 1)
                     }
 
                     completedChips(ex: ex)
@@ -1179,8 +1220,8 @@ private struct TimedSetView: View {
                 .background(Theme.accent).foregroundStyle(.black)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
-                .disabled(sync.isSetSending(slotID: ex.id))
-                .opacity(sync.isSetSending(slotID: ex.id) ? 0.55 : 1)
+                .disabled(sync.isSetEntryBlocked(slotID: ex.id))
+                .opacity(sync.isSetEntryBlocked(slotID: ex.id) ? 0.55 : 1)
             }
         }
         .frame(maxWidth: .infinity)

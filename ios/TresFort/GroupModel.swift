@@ -78,6 +78,7 @@ final class GroupModel: ObservableObject {
     private let accountID: String?
     private let defaults: UserDefaults
     private let activityLogger: ((PendingActivity, String) async throws -> ActivityRow)?
+    private let activityDeleter: ((String, String) async throws -> Void)?
     private let groupLister: ((String) async throws -> [GroupSummary])?
     private let profileLoader: ((String) async throws -> MeProfile)?
     /// Invalidates identity-bearing responses that began before a global
@@ -98,6 +99,7 @@ final class GroupModel: ObservableObject {
         auth: AuthModel,
         defaults: UserDefaults = .standard,
         activityLogger: ((PendingActivity, String) async throws -> ActivityRow)? = nil,
+        activityDeleter: ((String, String) async throws -> Void)? = nil,
         groupLister: ((String) async throws -> [GroupSummary])? = nil,
         profileLoader: ((String) async throws -> MeProfile)? = nil
     ) {
@@ -105,6 +107,7 @@ final class GroupModel: ObservableObject {
         self.accountID = auth.userID
         self.defaults = defaults
         self.activityLogger = activityLogger
+        self.activityDeleter = activityDeleter
         self.groupLister = groupLister
         self.profileLoader = profileLoader
         self.intervalsConnection = Self.loadIntervalsConnection(
@@ -149,6 +152,14 @@ final class GroupModel: ObservableObject {
     private func listGroups(jwt: String) async throws -> [GroupSummary] {
         if let groupLister { return try await groupLister(jwt) }
         return try await api.listGroups(jwt: jwt)
+    }
+
+    private func removeActivity(id: String, jwt: String) async throws {
+        if let activityDeleter {
+            try await activityDeleter(id, jwt)
+            return
+        }
+        try await api.deleteActivity(id: id, jwt: jwt)
     }
 
     private func loadProfile(jwt: String) async throws -> MeProfile {
@@ -618,8 +629,14 @@ final class GroupModel: ObservableObject {
     func deleteActivity(id: String) async {
         guard let jwt = currentJWT else { return }
         do {
-            try await api.deleteActivity(id: id, jwt: jwt)
-            guard isCurrentBearer(jwt) else { return }
+            try await removeActivity(id: id, jwt: jwt)
+            if !isCurrentBearer(jwt) {
+                // The server mutation still belongs to this account after a
+                // same-user renewal/reauthentication. Signal the replacement
+                // calendar even though this retired model must not touch UI.
+                if isCurrentAccount { await onActivityPersisted?() }
+                return
+            }
             // Strip the row from every group's cache (it could be in
             // any of them).
             for gid in feed.keys {

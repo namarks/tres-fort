@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 private struct SessionWriteConflictPayload: Decodable {
@@ -76,9 +77,11 @@ final class SyncModel: ObservableObject {
     private let catalogAPI: any ExerciseCatalogAPI
     private unowned let auth: AuthModel
     private let accountID: String?
+    private let featureSessionEpoch: UInt64
     private let defaults: UserDefaults
     private let uuidFactory: () -> UUID
     private let now: () -> Date
+    private let restActivityUpdater: (Date, String) -> Void
     private var persistedRunnerCheckpoint: WorkoutRunnerCheckpoint?
     /// Restart authorization belongs to the mounted runner, not a generic
     /// date-level create. It is persisted in the checkpoint until creation
@@ -94,6 +97,22 @@ final class SyncModel: ObservableObject {
     private var isDrainingWorkoutWrites = false
     private var workoutWriteDrainRequested = false
     private var workoutWriteDrainWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Full-state refresh belongs to the account-scoped model, not to the
+    /// SwiftUI task that happened to request it. Pull-to-refresh may cancel
+    /// its view task as the scroll hierarchy changes; keeping one unstructured
+    /// model-owned task lets that already-started validation finish, and
+    /// coalesces only equivalent full-state requests. A mutation or bearer
+    /// change waits for an older task and then owns one trailing fresh pull.
+    private struct StateLoadKey: Equatable {
+        let bearer: String
+        let freshnessGeneration: UInt64
+        let featureSessionEpoch: UInt64
+    }
+    private var stateLoadTask: Task<Void, Never>?
+    private var stateLoadTaskID: UUID?
+    private var stateLoadKey: StateLoadKey?
+    private var stateFreshnessGeneration: UInt64 = 0
+    private var activityPersistenceCancellable: AnyCancellable?
     /// Loading presentation is tracked separately from full-state freshness:
     /// account-scoped snapshot tickets own freshness, while an outbox
     /// reconciliation can supersede a load without owning its spinner.
@@ -108,16 +127,22 @@ final class SyncModel: ObservableObject {
         catalogAPI: any ExerciseCatalogAPI = APIClient(),
         defaults: UserDefaults = .standard,
         uuidFactory: @escaping () -> UUID = UUID.init,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        restActivityUpdater: @escaping (Date, String) -> Void = {
+            endDate, upNext in
+            RestLiveActivity.update(endDate: endDate, upNext: upNext)
+        }
     ) {
         self.auth = auth
         self.accountID = auth.userID
+        self.featureSessionEpoch = auth.featureSessionEpoch
         self.setWriteAPI = setWriteAPI
         self.terminalAPI = terminalAPI
         self.catalogAPI = catalogAPI
         self.defaults = defaults
         self.uuidFactory = uuidFactory
         self.now = now
+        self.restActivityUpdater = restActivityUpdater
         let persistedCheckpoint = WorkoutRunnerCheckpointStore.load(
             userID: auth.userID, defaults: defaults)
         self.persistedRunnerCheckpoint = persistedCheckpoint
@@ -152,6 +177,13 @@ final class SyncModel: ObservableObject {
             replaceState(with: cached.state, isLiveResponse: false)
             isUsingCachedState = true
         }
+        activityPersistenceCancellable = auth.$activityPersistenceGeneration
+            .dropFirst()
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    await self?.loadAfterMutation()
+                }
+            }
     }
 
     /// Bind every request to the account that created this model. An old
@@ -177,10 +209,12 @@ final class SyncModel: ObservableObject {
         return auth.featureJWT != nil && !auth.accountDeletionPending
     }
 
-    /// Set callbacks may complete after same-account renewal or recoverable
-    /// reauthentication, so JWT equality is intentionally not part of this
-    /// check. Account switch, explicit sign-out, and deletion do invalidate it
-    /// and must never recreate the old account's cleared queue.
+    /// Set callbacks may complete after same-account bearer renewal or
+    /// recoverable reauthentication, so bearer and feature-session identity are
+    /// intentionally not part of this check. Owned-intent and granular-store
+    /// guards let the old callback settle its write without touching work
+    /// created by the replacement model. Account switch and deletion remain
+    /// invalidating boundaries.
     private var canMutateBoundSetAccount: Bool {
         guard let accountID, auth.userID == accountID else { return false }
         return !auth.accountDeletionPending
@@ -201,7 +235,55 @@ final class SyncModel: ObservableObject {
     }
 
     func load() async {
-        guard let jwt = currentJWT else { return }
+        await load(requiringFreshness: stateFreshnessGeneration)
+    }
+
+    /// A successful server mutation needs a state request that starts after the
+    /// mutation. It may wait behind an older pull, but it must never merely join
+    /// that pull and mistake pre-mutation state for reconciliation.
+    func loadAfterMutation() async {
+        stateFreshnessGeneration &+= 1
+        await load(requiringFreshness: stateFreshnessGeneration)
+    }
+
+    private func load(requiringFreshness requiredFreshness: UInt64) async {
+        while let activeTask = stateLoadTask {
+            let canJoin = stateLoadKey.map {
+                $0.bearer == currentJWT
+                    && $0.freshnessGeneration >= requiredFreshness
+                    && $0.featureSessionEpoch == auth.featureSessionEpoch
+            } ?? false
+            await activeTask.value
+            if canJoin { return }
+        }
+        guard auth.featureSessionEpoch == featureSessionEpoch,
+              let jwt = currentJWT else { return }
+        let taskID = UUID()
+        let key = StateLoadKey(
+            bearer: jwt,
+            freshnessGeneration: stateFreshnessGeneration,
+            featureSessionEpoch: featureSessionEpoch)
+        stateLoadTaskID = taskID
+        stateLoadKey = key
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.performLoad(key: key)
+            self.finishStateLoad(taskID: taskID)
+        }
+        stateLoadTask = task
+        await task.value
+    }
+
+    private func finishStateLoad(taskID: UUID) {
+        if stateLoadTaskID == taskID {
+            stateLoadTask = nil
+            stateLoadTaskID = nil
+            stateLoadKey = nil
+        }
+    }
+
+    private func performLoad(key: StateLoadKey) async {
+        let jwt = key.bearer
         loadGeneration += 1
         let thisLoadGeneration = loadGeneration
         guard let snapshotTicket = StateSnapshotStore.reserveFullStateRequest(
@@ -216,7 +298,10 @@ final class SyncModel: ObservableObject {
         }
         do {
             let state = try await setWriteAPI.getState(jwt: jwt)
-            guard isCurrentAccount, canMutateBoundSetAccount else { return }
+            guard isCurrentAccount, canMutateBoundSetAccount,
+                  key.featureSessionEpoch == featureSessionEpoch,
+                  key.featureSessionEpoch == auth.featureSessionEpoch,
+                  key.freshnessGeneration == stateFreshnessGeneration else { return }
             guard applyLiveStateResponse(
                 state,
                 ticket: snapshotTicket
@@ -228,6 +313,9 @@ final class SyncModel: ObservableObject {
             if let catalogJWT = currentJWT,
                let rows = try? await catalogAPI.getExercises(jwt: catalogJWT) {
                 guard isCurrentAccount, canMutateBoundSetAccount,
+                      key.featureSessionEpoch == featureSessionEpoch,
+                      key.featureSessionEpoch == auth.featureSessionEpoch,
+                      key.freshnessGeneration == stateFreshnessGeneration,
                       StateSnapshotStore.isCurrent(
                           snapshotTicket, defaults: defaults)
                 else { return }
@@ -239,7 +327,10 @@ final class SyncModel: ObservableObject {
         } catch {
             guard StateSnapshotStore.isCurrent(
                       snapshotTicket, defaults: defaults),
-                  isCurrentAccount, canMutateBoundSetAccount
+                  isCurrentAccount, canMutateBoundSetAccount,
+                  key.featureSessionEpoch == featureSessionEpoch,
+                  key.featureSessionEpoch == auth.featureSessionEpoch,
+                  key.freshnessGeneration == stateFreshnessGeneration
             else { return }
             let isUnauthorized: Bool
             if case let APIError.http(code, _) = error {
@@ -1575,13 +1666,13 @@ final class SyncModel: ObservableObject {
         }
     }
 
-    func isSetSending(slotID: String) -> Bool {
+    func isSetEntryBlocked(slotID: String) -> Bool {
         if hasPendingTerminalIntentForCurrentWorkout || isTerminalMutationInFlight {
             return true
         }
         if setSlotsInFlight.contains(slotID) { return true }
         return setOutbox.pending.contains {
-            $0.slotID == slotID && sendingSetIntentIDs.contains($0.id)
+            $0.slotID == slotID && $0.deliveryState == .failed
         }
     }
 
@@ -1667,37 +1758,66 @@ final class SyncModel: ObservableObject {
         intent.failedHTTPStatus = nil
         setOutbox.replace(intent)
         persistReplacedSetIntent(intent)
+        normalizeMountedRunnerAfterLocalCommit(for: intent.date)
         await drainSetOutbox()
     }
 
     func retryFailedSetIntents() async {
         guard canMutateBoundSetAccount else { return }
         var changed = false
+        var rearmedDates: Set<String> = []
         for var intent in setOutbox.pending where intent.deliveryState == .failed {
             intent.deliveryState = .queued
             intent.failedHTTPStatus = nil
             setOutbox.replace(intent)
             persistReplacedSetIntent(intent)
+            rearmedDates.insert(intent.date)
             changed = true
         }
         guard changed else { return }
+        for date in rearmedDates {
+            normalizeMountedRunnerAfterLocalCommit(for: date)
+        }
         await drainSetOutbox()
     }
 
     @discardableResult
     func logSet(_ ex: TemplateExercise, weight: Double, reps: Int,
                 durationOverride: Int? = nil) async -> Bool {
+        guard let intent = enqueueSetIntent(
+            ex, weight: weight, reps: reps, durationOverride: durationOverride
+        ) else { return false }
+        defer { setSlotsInFlight.remove(ex.id) }
+
+        await drainSetOutbox()
+        guard canMutateBoundSetAccount else { return false }
+        let acknowledged = !setOutbox.pending.contains(where: { $0.id == intent.id })
+            && sets.contains(where: { $0.id == intent.id })
+        if acknowledged && running {
+            startRest(seconds: ex.rest_seconds, name: ex.exercise_name)
+        }
+        return acknowledged
+    }
+
+    /// Persist one complete, idempotent intent without waiting for the network.
+    /// This is the offline-first commit boundary shared by the synchronous test
+    /// helper above and the runner's optimistic UI path below.
+    private func enqueueSetIntent(
+        _ ex: TemplateExercise,
+        weight: Double,
+        reps: Int,
+        durationOverride: Int?
+    ) -> PendingSetIntent? {
         let workoutDate = todaySession?.date ?? todayString
         guard currentJWT != nil, canMutateBoundSetAccount,
               !isTerminalMutationInFlight,
               terminalOutbox.intent(for: workoutDate) == nil,
               !setSlotsInFlight.contains(ex.id)
-        else { return false }
+        else { return nil }
 
-        // This guard is published before the first await, so two Tasks created
-        // by a rapid double tap cannot both mint intents for the same slot.
+        // Publish the guard before returning to the view task, so two button
+        // Tasks created by a rapid double tap cannot both mint intents.
         setSlotsInFlight.insert(ex.id)
-        defer { setSlotsInFlight.remove(ex.id) }
 
         // Index per SLOT. Pending (queued OR visibly failed) intents reserve
         // their index so intentional offline sets remain distinct; completion
@@ -1728,15 +1848,36 @@ final class SyncModel: ObservableObject {
         // create therefore leaves the complete intent available on relaunch.
         setOutbox.enqueue(intent)
         persistEnqueuedSetIntent(intent)
+        return intent
+    }
 
-        await drainSetOutbox()
-        guard canMutateBoundSetAccount else { return false }
-        let acknowledged = !setOutbox.pending.contains(where: { $0.id == body.id })
-            && sets.contains(where: { $0.id == body.id })
-        if acknowledged && running {
+    /// The workout runner commits locally and advances immediately. Delivery
+    /// is deliberately model-owned background work: a SwiftUI button task may
+    /// disappear as the runner advances, but the durable intent must continue
+    /// to send or remain visibly queued for a later retry.
+    private func queueRunnerSet(
+        _ ex: TemplateExercise,
+        weight: Double,
+        reps: Int,
+        durationOverride: Int? = nil
+    ) -> Bool {
+        guard enqueueSetIntent(
+            ex, weight: weight, reps: reps, durationOverride: durationOverride
+        ) != nil else { return false }
+
+        if running {
             startRest(seconds: ex.rest_seconds, name: ex.exercise_name)
         }
-        return acknowledged
+        let slotID = ex.id
+        Task { @MainActor [weak self] in
+            // Keep the same-turn double-tap guard through the immediate UI
+            // transition, but do not make the next real set wait on transport.
+            await Task.yield()
+            guard let self else { return }
+            self.setSlotsInFlight.remove(slotID)
+            await self.drainSetOutbox()
+        }
+        return true
     }
 
     private enum SetSendOutcome {
@@ -1763,7 +1904,7 @@ final class SyncModel: ObservableObject {
     func recoverWorkoutWrites() async {
         await drainWorkoutWriteOutboxes()
         guard currentJWT != nil, canMutateBoundSetAccount else { return }
-        await load()
+        await loadAfterMutation()
         guard currentJWT != nil, canMutateBoundSetAccount else { return }
         await drainWorkoutWriteOutboxes()
     }
@@ -2466,6 +2607,7 @@ final class SyncModel: ObservableObject {
                 intent.failedHTTPStatus = code
                 setOutbox.replace(intent)
                 persistReplacedSetIntent(intent)
+                reopenMountedRunner(for: intent)
             }
             loadError = "Set wasn't saved because the server rejected it (HTTP \(code))."
             return .permanentFailure
@@ -2658,7 +2800,90 @@ final class SyncModel: ObservableObject {
     /// 1-based number of the set about to be performed for the current exercise.
     var currentSetNumber: Int {
         guard let ex = currentExercise else { return 1 }
-        return todaySlotSets(ex).count + pendingSetIntents(for: ex).count + 1
+        return runnerSetsDone(ex) + 1
+    }
+
+    /// Runner progress counts every locally durable set exactly once. Pending
+    /// rows share their eventual server id, so the set union avoids a transient
+    /// double count while an acknowledgement is being folded into the cache.
+    func runnerSetsDone(_ ex: TemplateExercise) -> Int {
+        Set(todaySlotSets(ex).map(\.id))
+            .union(pendingSetIntents(for: ex).lazy.filter {
+                $0.deliveryState == .queued
+            }.map(\.id))
+            .count
+    }
+
+    private func isRunnerComplete(_ ex: TemplateExercise) -> Bool {
+        runnerSetsDone(ex) >= ex.target_sets
+    }
+
+    private func isRunnerResolved(_ ex: TemplateExercise) -> Bool {
+        isRunnerComplete(ex) || isSkipped(ex)
+    }
+
+    private var nextRunnerIncompleteIndex: Int? {
+        let n = exercises.count
+        guard n > 0 else { return nil }
+        for offset in 1...n {
+            let i = (exerciseIndex + offset) % n
+            if !isRunnerResolved(exercises[i]) { return i }
+        }
+        return nil
+    }
+
+    private func normalizeMountedRunnerAfterLocalCommit(for date: String) {
+        guard running, date == todayString, let current = currentExercise else {
+            return
+        }
+        if isRunnerComplete(current) {
+            if let next = nextRunnerIncompleteIndex {
+                jump(to: next)
+            } else {
+                finished = true
+                persistRunnerCheckpoint()
+            }
+        }
+        updateRestActivityAfterRunnerNormalization()
+    }
+
+    private func reopenFailedRunnerIntentIfStable(for date: String) {
+        guard !timedActive,
+              let failed = setOutbox.pending.first(where: {
+                  $0.date == date && $0.deliveryState == .failed
+              })
+        else { return }
+        reopenMountedRunner(for: failed)
+    }
+
+    private func reopenMountedRunner(for failedIntent: PendingSetIntent) {
+        guard running, failedIntent.date == todayString,
+              let index = exercises.firstIndex(where: {
+                  $0.id == failedIntent.slotID
+              }) else { return }
+        // A delayed rejection must not abort a later physical timed set. The
+        // failed intent stays durable and visible; commitTimedSet reopens it as
+        // soon as that in-progress timer reaches its stable commit boundary.
+        guard !timedActive else { return }
+        finished = false
+        exerciseIndex = index
+        seedInputs()
+        weight = failedIntent.body.weight
+        reps = failedIntent.body.reps
+        persistRunnerCheckpoint()
+        updateRestActivityAfterRunnerNormalization()
+    }
+
+    /// After a local commit or rollback, the runner has already settled on the
+    /// slot the user should perform when rest ends. Name that current slot—not
+    /// the later distinct slot returned by `upNextName`.
+    var restActivityCurrentStepName: String {
+        finished ? "Done" : (currentExercise?.exercise_name ?? "Done")
+    }
+
+    private func updateRestActivityAfterRunnerNormalization() {
+        guard let end = restEndDate else { return }
+        restActivityUpdater(end, restActivityCurrentStepName)
     }
 
     private func allowNewWorkoutStart() -> Bool {
@@ -2821,7 +3046,7 @@ final class SyncModel: ObservableObject {
         guard let ex = currentExercise, ex.isTimed,
               !isTerminalMutationInFlight,
               !hasPendingTerminalIntentForCurrentWorkout,
-              !isSetSending(slotID: ex.id)
+              !isSetEntryBlocked(slotID: ex.id)
         else { return }
         timedActive = true
         let now = Date()
@@ -2872,15 +3097,14 @@ final class SyncModel: ObservableObject {
         skipped.remove(ex.id)   // logging work un-skips this slot
         persistRunnerCheckpoint()
         let secs = max(1, held)
-        guard await logSet(ex, weight: 0, reps: secs, durationOverride: secs) else {
+        guard queueRunnerSet(ex, weight: 0, reps: secs, durationOverride: secs) else {
             persistRunnerCheckpoint()
             return
         }
-        guard running, let current = currentExercise else { return }
-        if isComplete(current) {
-            if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
-        }
-        persistRunnerCheckpoint()
+        guard running, currentExercise != nil else { return }
+        let date = todaySession?.date ?? todayString
+        normalizeMountedRunnerAfterLocalCommit(for: date)
+        reopenFailedRunnerIntentIfStable(for: date)
     }
 
     func adjustWeight(_ delta: Double) { weight = max(0, weight + delta) }
@@ -2919,20 +3143,26 @@ final class SyncModel: ObservableObject {
         persistRunnerCheckpoint()
     }
 
-    func logCurrentSet() async {
-        guard let ex = currentExercise else { return }
+    func logCurrentSet(
+        expectedSlotID: String,
+        expectedSetNumber: Int
+    ) async {
+        // A SwiftUI button action launches an unstructured Task. Bind that
+        // work to the slot and set number visible at tap time so a queued
+        // duplicate cannot run after the first tap advances the runner and
+        // accidentally log the successor exercise.
+        guard let ex = currentExercise,
+              ex.id == expectedSlotID,
+              currentSetNumber == expectedSetNumber
+        else { return }
         skipped.remove(ex.id)   // logging work un-skips this slot
         persistRunnerCheckpoint()
-        guard await logSet(ex, weight: weight, reps: reps) else {
+        guard queueRunnerSet(ex, weight: weight, reps: reps) else {
             persistRunnerCheckpoint()
             return
-        } // also starts rest timer
-        guard running, let current = currentExercise else { return }
-        if isComplete(current) {
-            if let next = nextIncompleteIndex { jump(to: next) }
-            else { finished = true }
-        }
-        persistRunnerCheckpoint()
+        } // starts rest immediately; delivery continues in the background
+        guard running, currentExercise != nil else { return }
+        normalizeMountedRunnerAfterLocalCommit(for: todaySession?.date ?? todayString)
     }
 
     /// Manual "move on" — marks the current exercise skipped for this
@@ -3069,7 +3299,7 @@ final class SyncModel: ObservableObject {
                 dayID: dayID, exercise: exercise, isWarmup: isWarmup,
                 targetSets: targetSets, targetReps: targetReps,
                 restSeconds: restSeconds, targetDurationS: targetDurationS, jwt: jwt)
-            await load()
+            await loadAfterMutation()
             restoreActiveSlot(activeSlotID)
         } catch { handle(error, jwt: jwt) }
     }
@@ -3079,7 +3309,7 @@ final class SyncModel: ObservableObject {
         let activeSlotID = currentExercise?.id
         do {
             try await api.deleteExerciseSlot(dayID: dayID, teID: teID, jwt: jwt)
-            await load()
+            await loadAfterMutation()
             restoreActiveSlot(activeSlotID)
         } catch { handle(error, jwt: jwt) }
     }
@@ -3092,7 +3322,7 @@ final class SyncModel: ObservableObject {
         do {
             _ = try await api.updateExerciseSlot(
                 dayID: dayID, teID: teID, fields: ["order_index": toIndex], jwt: jwt)
-            await load()
+            await loadAfterMutation()
             restoreActiveSlot(activeSlotID)
         } catch { handle(error, jwt: jwt) }
     }
@@ -3133,7 +3363,7 @@ final class SyncModel: ObservableObject {
 
     /// Name of the next not-complete exercise (for the rest screen's UP NEXT).
     var upNextName: String {
-        if let i = nextIncompleteIndex { return exercises[i].exercise_name }
+        if let i = nextRunnerIncompleteIndex { return exercises[i].exercise_name }
         return "Done"
     }
 

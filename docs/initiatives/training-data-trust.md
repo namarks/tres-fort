@@ -1,6 +1,6 @@
 # Training Data Trust
 
-Slug: training-data-trust · Status: active · Updated: 2026-08-30
+Slug: training-data-trust · Status: active · Updated: 2026-09-03
 
 ## Objective
 
@@ -11,25 +11,23 @@ not erase local data, and plan changes can be inspected and restored.
 
 ## Scope
 
-- plan:identity-account-lifecycle
 - plan:reversible-plan-management
 
 ## Priority policy
 
-1. Run the P0 slices of the remaining active plans in parallel when their files and
-   migration surfaces do not overlap; serialize only real collisions.
-2. Fix the confirmed data-loss, cross-user, invalid-write, and destructive-auth
-   paths before adjacent cleanup. Each slice carries its own focused regression
-   proof instead of waiting for a portfolio-wide audit.
-3. Activate reversible-plan-management after the active P0 risk is controlled;
-   do not hold smaller trust fixes for a generalized undo system.
+1. Activate the remaining reversible-plan-management workstream only under
+   explicit planned-work authority; serialize only real collisions.
+2. Fix confirmed snapshot, revert-history, and invalid-write failures before
+   adjacent cleanup. Each slice carries its own focused regression proof instead
+   of waiting for a portfolio-wide audit.
+3. Reuse the completed server, workout-write, and identity contracts as
+   historical foundation; reopen them only for a concrete regression.
 
 ## Completion condition
 
-Server mutation integrity and workout write reliability are complete. The two
-remaining member plans reach their stated outcomes when Apple-backed account
-deletion revokes provider authorization and AI or manual plan edits share a
-readable snapshot-and-revert history.
+Server mutation integrity, workout write reliability, and Apple-backed account
+lifecycle are complete. The remaining member plan reaches its stated outcome
+when AI or manual plan edits share a readable snapshot-and-revert history.
 
 ## Stop rules
 

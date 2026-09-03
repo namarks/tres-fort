@@ -117,3 +117,14 @@ history, not a live checklist; the plans own status. Line references are as of
 - Negative weight needs the iOS clamp lifted and an explicit tonnage rule.
 - The manual-authoring P0 walkthrough must not rely on a rep range, since the
   rep-range field belongs to `bodyweight-training-support#P0`.
+
+## Corrections applied after the exact-head review of d795972
+
+- `test/catalog_v2.test.ts:110` asserts the 254-row count as well, and both
+  catalog test files carry alias-determinism checks.
+- The duplicate issues were not filed by the in-repo `beta:feedback` script;
+  the mirror is outside this repository.
+- `is_timed` is declared by the runner when it logs and consumed by the
+  per-set value labels; the earlier wording inverted that flow.
+- Closing the duplicates is in scope; fixing the external mirror is an owner
+  question, not a plan deliverable.

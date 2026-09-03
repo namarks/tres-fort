@@ -39,12 +39,10 @@ gymnastic-strength movements.
     re-mirrors of the same TestFlight submission as #55, which `9a533e8`
     fixed with `finishTimedSetAuto`; the residual gap is that the runner's
     countdown task is cancelled when the view disappears while `timedActive`
-    stays true. Cover the backgrounded and view-dismissed cases, close the
-    two duplicates, and fix whichever mirror filed them: the in-repo
-    `beta:feedback` script writes a different label and dedupe marker than
-    these issues carry, so the re-filing came from a mirror outside this
-    repository. Planks, L-sits, and hangs are the timed slots a bodyweight
-    plan leans on.
+    stays true. Cover the backgrounded and view-dismissed cases and close
+    #71 and #92 as duplicates of #55. The mirror that re-filed them is an
+    open question below, not a deliverable here. Planks, L-sits, and hangs
+    are the timed slots a bodyweight plan leans on.
 - [ ] **P1 — Added load, assistance, and honest metrics**
   - Define `weight` on a `bw` or `timed` slot or set as added load: positive
     for a belt or vest, negative for band or machine assistance, zero for
@@ -97,9 +95,14 @@ P1 and P2 wait for P0 evidence, not for a product decision.
 ## Notes / open questions
 
 - Source: [research/calisthenics-readiness-review-2026-09.md](research/calisthenics-readiness-review-2026-09.md),
-  a static review at commit `c71e3f9` plus the corrections from the
-  exact-head review of this plan. Its line references drift; verify against
+  a static review at commit `c71e3f9` plus the corrections from the two
+  exact-head reviews of this plan. Its line references drift; verify against
   current code before acting.
+- The TestFlight mirror that re-filed #55 as #71 and #92 is not the in-repo
+  `beta:feedback` script, whose label (`beta-feedback`) and dedupe marker
+  (`asc-feedback`) differ from the `testflight-feedback` / `ASC-ID` pair
+  those issues carry. Finding and fixing that mirror is an owner question
+  outside this repository.
 - Body-mass tracking is deliberately out of scope. True tonnage for weighted
   or assisted bodyweight work is the one need it would serve; rep-based
   metrics cover the coaching decision without it, so the roadmap candidate

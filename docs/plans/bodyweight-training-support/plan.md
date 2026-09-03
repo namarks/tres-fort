@@ -48,9 +48,9 @@ gymnastic-strength movements.
     catalog migration, hold/rep-range authoring, per-set timed history, and
     model-owned timed completion with foreground catch-up. Local evidence is
     green: TypeScript typecheck, all 492 Worker tests, iOS build-for-testing,
-    and all 150 iOS unit tests. The branch is not published or merged. Issue
-    #71 is closed; #92 remains open because external-task closure requires
-    separate authority, so P0 remains unchecked.
+    and all 150 iOS unit tests. The branch is not published or merged. Issues
+    #71 and #92 are closed as duplicates of #55, so P0 remains unchecked only
+    until the verified branch is integrated.
 - [ ] **P1 — Added load, assistance, and honest metrics**
   - Define `weight` on a `bw` or `timed` slot or set as added load: positive
     for a belt or vest, negative for band or machine assistance, zero for
@@ -95,11 +95,10 @@ gymnastic-strength movements.
 
 ## Next step
 
-**Now (@owner):** Grant publication and external-task-closure authority for
-the verified P0 branch. Publish it for exact-head review, merge only after the
-configured review and CI gates pass, then close #92 as a duplicate of #55.
-After integration, recompile the backlog before choosing P1; P1 and P2 still
-wait for P0 evidence, not for a product decision.
+**Now (@owner):** Grant publication authority for the verified P0 branch.
+Publish it for exact-head review and merge only after the configured review and
+CI gates pass. After integration, recompile the backlog before choosing P1; P1
+and P2 still wait for P0 evidence, not for a product decision.
 
 ## Notes / open questions
 

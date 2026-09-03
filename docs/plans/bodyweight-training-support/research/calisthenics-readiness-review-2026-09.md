@@ -52,8 +52,8 @@ history, not a live checklist; the plans own status. Line references are as of
    only for `timed`, minutes only for `cardio`, no rep-range field, no edit of
    an existing slot; `ios/TresFort/APIClient.swift:294–305` never sends
    `target_reps_max`. The app never decodes `progression`.
-4. **Per-set `is_timed` is honored only by the runner and the per-set value
-   labels.** `HistoryView.swift:140` gates the duration chart on catalog
+4. **Per-set `is_timed` is written by the runner and consumed only by the
+   per-set value labels.** `HistoryView.swift:140` gates the duration chart on catalog
    modality; the group feed DTO (`src/db.ts` feed queries) never selects
    `is_timed` or `duration_s`, and `Group/FeedItemDetailSheet.swift:62`
    renders every set as weight × reps.
@@ -61,14 +61,18 @@ history, not a live checklist; the plans own status. Line references are as of
    handstand hold (only `ex_hspu`), wall walk, crow, skin the cat, dragon
    flag, typewriter or eccentric pull-up, back extension row (`ex_superman`
    carries the alias "back extension bw"), or reverse hyper.
-   `test/catalog.test.ts:50–59` asserts exactly 254 rows and rejects shared or
-   shadowing aliases; `ex_dips` owns the plain dip aliases.
+   `test/catalog.test.ts:50–59` and `test/catalog_v2.test.ts:110` both
+   assert exactly 254 rows, and both files reject shared or shadowing
+   aliases; `ex_dips` owns the plain dip aliases.
 6. **Timed auto-log report.** Issues #71 and #92 are re-mirrors of the same
    TestFlight submission as #55 (ASC-ID `AMQS-AA9kc95BweEQFQa7VM`, submitted
    before the fix). #55 was closed by `9a533e8`, which added
    `finishTimedSetAuto` (`SyncModel.swift:2848`) driven by the poll loop in
    `TodayView.swift`. Residual gap: the `.task(id: sync.timedActive)` loop is
    cancelled when the runner view disappears while `timedActive` stays true.
+   The duplicates were not filed by `scripts/beta-feedback-to-issues.mjs`,
+   whose label (`beta-feedback`) and marker (`asc-feedback`) differ from the
+   `testflight-feedback` / `ASC-ID` pair these issues carry.
 7. **`swapExercise` ignores `carry_targets`.** `src/db.ts:5087` declares it;
    the body always carries targets; `src/mcp/server.ts:791,801` advertise it.
 8. **Circuits, supersets, AMRAP, EMOM** are not representable in the flat slot

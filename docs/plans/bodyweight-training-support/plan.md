@@ -22,25 +22,29 @@ gymnastic-strength movements.
     hyper, and gymnastic bridge. Use `timed`/`sec` for static holds and
     `bw`/`lb` for rep work, add spoken-name aliases for the resolver, and
     follow the additive `INSERT OR IGNORE` pattern of migration `0021` with a
-    catalog replay test. Update the exact row-count assertion in
-    `test/catalog.test.ts` (254 today) and re-check its alias-uniqueness
-    rule: `ex_dips` already owns the plain dip aliases and `ex_superman`
-    carries "back extension bw".
+    catalog replay test. Update both exact row-count assertions
+    (`test/catalog.test.ts` and `test/catalog_v2.test.ts`, 254 today) and
+    re-check the alias-uniqueness and alias-determinism tests in both files:
+    `ex_dips` already owns the plain dip aliases and `ex_superman` carries
+    "back extension bw".
   - Let the iOS configure-exercise screen mark any exercise as a timed hold
     and prescribe a rep range, using the existing `target_duration_s` and
     `target_reps_max` slot fields; the REST editor route and MCP already
-    accept both. The runner and the per-set value labels already honor
-    per-set `is_timed` (migration `0024`), but the history duration chart
-    still gates on catalog modality, so a duration-pinned hold on a `bw`
-    exercise needs that chart re-keyed to `is_timed` in the same slice.
+    accept both. The runner already declares per-set `is_timed` when it logs
+    (migration `0024`) and the per-set value labels consume it, but the
+    history duration chart still gates on catalog modality, so a
+    duration-pinned hold on a `bw` exercise needs that chart re-keyed to
+    `is_timed` in the same slice.
   - Close out the timed auto-log report. Open issues #71 and #92 are
     re-mirrors of the same TestFlight submission as #55, which `9a533e8`
     fixed with `finishTimedSetAuto`; the residual gap is that the runner's
     countdown task is cancelled when the view disappears while `timedActive`
     stays true. Cover the backgrounded and view-dismissed cases, close the
-    two duplicates, and stop the `beta:feedback` mirror from re-filing an
-    already-mirrored submission. Planks, L-sits, and hangs are the timed
-    slots a bodyweight plan leans on.
+    two duplicates, and fix whichever mirror filed them: the in-repo
+    `beta:feedback` script writes a different label and dedupe marker than
+    these issues carry, so the re-filing came from a mirror outside this
+    repository. Planks, L-sits, and hangs are the timed slots a bodyweight
+    plan leans on.
 - [ ] **P1 — Added load, assistance, and honest metrics**
   - Define `weight` on a `bw` or `timed` slot or set as added load: positive
     for a belt or vest, negative for band or machine assistance, zero for
@@ -79,14 +83,15 @@ gymnastic-strength movements.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | coordinates_with | plan:manual-workout-authoring#P0 | Both edit the iOS configure-exercise screen; land one shared editor rather than two. |
+| P0 | coordinates_with | plan:manual-workout-authoring#P0 | Both edit the iOS configure-exercise screen; build one shared editor rather than two. |
 | P1 | coordinates_with | plan:gym-runner-depth#P0 | Both change the runner's value-entry controls; serialize the shared surface. |
 | P1 | feeds | plan:coaching-feedback-loop#P2 | Rep-based and hold-based history gives the coach usable bodyweight progress signals; it does not block coaching work. |
 
 ## Next step
 
-**Now (@owner):** Activate P0 alongside `manual-workout-authoring#P0` so the
-first manual bodyweight routine can be prescribed with holds and rep ranges.
+**Now (@owner):** Activate P0 and sequence it with
+`manual-workout-authoring#P0` on the shared editor so the first manual
+bodyweight routine can be prescribed with holds and rep ranges.
 P1 and P2 wait for P0 evidence, not for a product decision.
 
 ## Notes / open questions

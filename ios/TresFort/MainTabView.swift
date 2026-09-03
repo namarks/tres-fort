@@ -100,6 +100,8 @@ struct MainTabView: View {
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     await auth.renewSessionIfNeeded()
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
+                    await sync.finishTimedSetIfDue()
+                    guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     await sync.recoverWorkoutWrites()
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     await groupModel.drainOutbox()

@@ -165,6 +165,11 @@ private struct AddExerciseSheet: View {
 }
 
 private struct ConfigureExerciseView: View {
+    private enum TargetMode: String, CaseIterable {
+        case reps = "Reps"
+        case hold = "Hold"
+    }
+
     // Plain reference (not @ObservedObject): this view only *triggers* an edit
     // and dismisses; it doesn't re-render off sync's published state, so it
     // needs no observation — which also keeps the custom init wrapper-free.
@@ -177,10 +182,13 @@ private struct ConfigureExerciseView: View {
     @State private var isWarmup: Bool
     @State private var sets = 3
     @State private var reps = 8
+    @State private var repsMax = 12
+    @State private var usesRepRange = false
     @State private var minutes = 5
     @State private var seconds = 45
     @State private var restSeconds = 120
     @State private var working = false
+    @State private var targetMode: TargetMode
 
     init(sync: SyncModel, dayID: String, exercise: ExerciseCatalog,
          presetWarmup: Bool, onDone: @escaping () -> Void) {
@@ -190,12 +198,13 @@ private struct ConfigureExerciseView: View {
         self.presetWarmup = presetWarmup
         self.onDone = onDone
         _isWarmup = State(initialValue: presetWarmup)
+        _targetMode = State(initialValue: exercise.modality == "timed" ? .hold : .reps)
     }
 
     /// Cardio ergs (rowing/bike/ski, treadmill) are logged by minutes.
     private var isCardio: Bool { exercise.modality == "cardio" }
-    /// Holds (planks, dead-hangs) are logged by seconds.
-    private var isHold: Bool { exercise.modality == "timed" }
+    /// Any non-cardio movement can be prescribed as repetitions or a hold.
+    private var isHold: Bool { targetMode == .hold }
 
     var body: some View {
         Form {
@@ -210,15 +219,36 @@ private struct ConfigureExerciseView: View {
                 Section("Duration") {
                     Stepper("\(minutes) min", value: $minutes, in: 1...60)
                 }
-            } else if isHold {
+            } else {
+                Section("Measure") {
+                    Picker("Measure", selection: $targetMode) {
+                        ForEach(TargetMode.allCases, id: \.self) { mode in
+                            Text(mode.rawValue).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+            }
+
+            if !isCardio && isHold {
                 Section("Hold") {
                     Stepper("\(sets) set\(sets == 1 ? "" : "s")", value: $sets, in: 1...10)
                     Stepper("\(seconds)s each", value: $seconds, in: 5...300, step: 5)
                 }
-            } else {
+            } else if !isCardio {
                 Section("Target") {
                     Stepper("\(sets) set\(sets == 1 ? "" : "s")", value: $sets, in: 1...10)
-                    Stepper("\(reps) reps", value: $reps, in: 1...30)
+                    Stepper(usesRepRange ? "\(reps) reps minimum" : "\(reps) reps",
+                            value: $reps, in: 1...30)
+                    Toggle("Rep range", isOn: $usesRepRange)
+                        .tint(Theme.accent)
+                    if usesRepRange {
+                        Stepper("Up to \(max(reps, repsMax)) reps",
+                                value: Binding(
+                                    get: { max(reps, repsMax) },
+                                    set: { repsMax = max(reps, $0) }),
+                                in: reps...30)
+                    }
                 }
             }
 
@@ -231,12 +261,16 @@ private struct ConfigureExerciseView: View {
                     Task {
                         working = true
                         let durationS: Int? = isCardio ? minutes * 60 : (isHold ? seconds : nil)
+                        let targetRepsMax = !isCardio && !isHold && usesRepRange
+                            ? max(reps, repsMax)
+                            : nil
                         await sync.addExerciseToDay(
                             dayID,
                             exercise: exercise.id,
                             isWarmup: isWarmup,
                             targetSets: isCardio ? 1 : sets,
                             targetReps: isCardio ? 1 : (isHold ? seconds : reps),
+                            targetRepsMax: targetRepsMax,
                             restSeconds: restSeconds,
                             targetDurationS: durationS)
                         working = false

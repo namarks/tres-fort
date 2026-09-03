@@ -47,16 +47,17 @@ const ORIGINAL_12: Array<{
 ];
 
 describe('expanded exercise catalog (0007)', () => {
-  it('expands the catalog to 254 exercises (12 + 5 + 114 + 7 + 108 + 8)', async () => {
+  it('expands the catalog to 276 exercises (12 + 5 + 114 + 7 + 108 + 8 + 22)', async () => {
     // 0002 = 12, 0004 = 5 timed, 0007 = 114 net-new, 0009 = 7 warmup/core
     // (ex_dead_bug already shipped in 0007 → INSERT OR IGNORE),
     // 0021 = 108 net-new bodyweight/unilateral/Olympic/specialty rows
     // (ex_kb_swing re-listed as a no-op INSERT OR IGNORE),
-    // 0026 = 8 cardio/erg rows (rowing/bike/ski erg, treadmill, etc.).
+    // 0026 = 8 cardio/erg rows (rowing/bike/ski erg, treadmill, etc.),
+    // 0033 = 22 gymnastic-strength rows.
     const { count } = (await env.DB.prepare(
       'SELECT COUNT(*) AS count FROM exercises',
     ).first<{ count: number }>())!;
-    expect(count).toBe(254);
+    expect(count).toBe(276);
   });
 
   it('preserves the original 12 ex_* rows (byte-identical except the documented ex_db_press alias backfill)', async () => {

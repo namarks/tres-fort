@@ -624,6 +624,73 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(model.sets.count, 2)
     }
 
+    func testTimedSetAutoCompletesWithoutRunnerView() async {
+        let defaults = defaults()
+        let ex = exercise(timed: true, targetSets: 1)
+        let s = session()
+        let api = SetWriteAPIStub()
+        let sendEntered = SetAsyncLatch()
+        let releaseSend = SetAsyncLatch()
+        api.logHandler = { [self] sessionID, request, _ in
+            await sendEntered.open()
+            await releaseSend.wait()
+            return .init(
+                set: setLog(body: request, sessionID: sessionID),
+                deduped: false)
+        }
+        api.stateHandler = { [self] _ in state(session: s, sets: [], exercise: ex) }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: api,
+            defaults: defaults,
+            uuidFactory: { self.fixedUUID },
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s, running: true)
+
+        // Starting with an already-elapsed deadline makes the model-owned
+        // task fire without mounting TimedSetView.
+        model.startTimedSet(at: fixedDate.addingTimeInterval(-30))
+        await sendEntered.wait()
+        XCTAssertFalse(model.timedActive)
+        await releaseSend.open()
+        await model.drainSetOutbox()
+
+        XCTAssertEqual(api.logCalls.count, 1)
+        XCTAssertEqual(api.logCalls.first?.body.duration_s, 30)
+        XCTAssertEqual(api.logCalls.first?.body.is_timed, true)
+        XCTAssertTrue(model.setOutbox.isEmpty)
+    }
+
+    func testForegroundCatchUpCompletesOnlyWhenTimedSetIsDue() async {
+        let defaults = defaults()
+        let ex = exercise(timed: true, targetSets: 1)
+        let s = session()
+        let api = SetWriteAPIStub()
+        api.logHandler = { [self] sessionID, request, _ in
+            .init(
+                set: setLog(body: request, sessionID: sessionID),
+                deduped: false)
+        }
+        api.stateHandler = { [self] _ in state(session: s, sets: [], exercise: ex) }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: api,
+            defaults: defaults,
+            uuidFactory: { self.fixedUUID },
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s, running: true)
+
+        model.startTimedSet()
+        await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(29))
+        XCTAssertTrue(model.timedActive)
+        XCTAssertTrue(api.logCalls.isEmpty)
+
+        await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(30))
+        XCTAssertFalse(model.timedActive)
+        XCTAssertEqual(api.logCalls.count, 1)
+        XCTAssertEqual(api.logCalls.first?.body.duration_s, 30)
+    }
+
     func testRelaunchLoadsAndDrainsUnresolvedIntent() async {
         let defaults = defaults()
         let ex = exercise()
@@ -2203,6 +2270,47 @@ final class SetOutboxTests: XCTestCase {
             800)
         XCTAssertEqual(model.exerciseName("exercise-bodyweight"), "Push-Up")
         XCTAssertTrue(model.isBodyweightExercise("exercise-bodyweight"))
+    }
+
+    func testHistoryDurationUsesPerSetTimedFlagInsteadOfCatalogModality() throws {
+        let defaults = defaults()
+        let ex = exercise(exerciseID: "exercise-bodyweight")
+        let s = session(status: "completed")
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            defaults: defaults,
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s)
+        model.catalog = [ExerciseCatalog(
+            id: ex.exercise_id,
+            name: "Ring Row",
+            primary_muscle: "back",
+            modality: "bw",
+            unit: "lb",
+            laterality: "bilateral",
+            load_mode: "total",
+            demo_slug: nil)]
+        model.sessions = [s]
+        model.sets = [
+            SetLog(
+                id: "timed", session_id: s.id,
+                exercise_id: ex.exercise_id,
+                template_exercise_id: ex.id, set_index: 1,
+                weight: 0, reps: 45, rpe: nil, is_warmup: 0,
+                logged_at: 1, duration_s: 45, is_timed: 1,
+                deleted_at: nil),
+            SetLog(
+                id: "rep", session_id: s.id,
+                exercise_id: ex.exercise_id,
+                template_exercise_id: ex.id, set_index: 2,
+                weight: 0, reps: 8, rpe: nil, is_warmup: 0,
+                logged_at: 2, duration_s: 99, is_timed: 0,
+                deleted_at: nil),
+        ]
+
+        let stat = try XCTUnwrap(model.history(for: ex.exercise_id).first)
+        XCTAssertTrue(stat.hasTimedSets)
+        XCTAssertEqual(stat.avgDuration, 45)
     }
 
     func testLiveLoadRefreshesCachedCatalogAndRetainsItOnLaterFailure() async {

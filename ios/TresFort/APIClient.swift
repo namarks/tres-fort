@@ -292,7 +292,8 @@ struct APIClient {
 
     @discardableResult
     func addExercise(dayID: String, exercise: String, isWarmup: Bool,
-                     targetSets: Int, targetReps: Int, restSeconds: Int,
+                     targetSets: Int, targetReps: Int, targetRepsMax: Int?,
+                     restSeconds: Int,
                      targetDurationS: Int?, jwt: String) async throws -> SlotIDRow {
         var body: [String: Any] = [
             "exercise": exercise,
@@ -301,6 +302,7 @@ struct APIClient {
             "rest_seconds": restSeconds,
             "is_warmup": isWarmup,
         ]
+        if let targetRepsMax { body["target_reps_max"] = targetRepsMax }
         if let targetDurationS { body["target_duration_s"] = targetDurationS }
         return try await post("api/days/\(dayID)/exercises", body: body, jwt: jwt)
     }

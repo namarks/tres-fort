@@ -79,6 +79,7 @@ final class SyncModel: ObservableObject {
     private let defaults: UserDefaults
     private let uuidFactory: () -> UUID
     private let now: () -> Date
+    private var timedSetCompletionTask: Task<Void, Never>?
     private var persistedRunnerCheckpoint: WorkoutRunnerCheckpoint?
     /// Restart authorization belongs to the mounted runner, not a generic
     /// date-level create. It is persisted in the checkpoint until creation
@@ -885,9 +886,7 @@ final class SyncModel: ObservableObject {
         running = false
         finished = false
         workoutStart = nil
-        timedActive = false
-        timedEndDate = nil
-        timedStartDate = nil
+        clearTimedSet()
         skipped = []
         clearRunnerCheckpoint()
         skipRest()
@@ -1155,9 +1154,7 @@ final class SyncModel: ObservableObject {
         running = false
         finished = false
         workoutStart = nil
-        timedActive = false
-        timedEndDate = nil
-        timedStartDate = nil
+        clearTimedSet()
         skipped = []
         loadError = "This workout continued in another app view. Refresh to continue."
     }
@@ -1220,9 +1217,7 @@ final class SyncModel: ObservableObject {
         running = false
         finished = false
         workoutStart = nil
-        timedActive = false
-        timedEndDate = nil
-        timedStartDate = nil
+        clearTimedSet()
         skipped = []
         clearRunnerCheckpoint()
         skipRest()
@@ -1435,6 +1430,7 @@ final class SyncModel: ObservableObject {
         let topReps: Int
         let volume: Double
         let setCount: Int
+        let hasTimedSets: Bool
         let avgDuration: Int
     }
 
@@ -1460,14 +1456,18 @@ final class SyncModel: ObservableObject {
         return grouped.compactMap { sid, rows -> SessionStat? in
             guard let date = dateBySession[sid], !rows.isEmpty else { return nil }
             let top = rows.max { epley($0.weight, $0.reps) < epley($1.weight, $1.reps) }!
-            let durs = rows.compactMap(\.duration_s)
+            let timedRows = rows.filter(isTimedSet)
+            let timedDurations = timedRows.compactMap(\.duration_s)
             return SessionStat(
                 id: sid, date: date,
                 est1RM: epley(top.weight, top.reps).rounded(),
                 topWeight: top.weight, topReps: top.reps,
                 volume: rows.reduce(0) { $0 + tonnage(for: $1) },
                 setCount: rows.count,
-                avgDuration: durs.isEmpty ? 0 : durs.reduce(0, +) / durs.count)
+                hasTimedSets: !timedRows.isEmpty,
+                avgDuration: timedDurations.isEmpty
+                    ? 0
+                    : timedDurations.reduce(0, +) / timedDurations.count)
         }
         .sorted { $0.date < $1.date }
     }
@@ -2802,9 +2802,7 @@ final class SyncModel: ObservableObject {
 
     /// Seed weight/reps from last time → plan target → default.
     private func seedInputs() {
-        timedActive = false
-        timedEndDate = nil
-        timedStartDate = nil
+        clearTimedSet()
         guard let ex = currentExercise else { return }
         let last = lastWorkingSet(ex.exercise_id)
         // Bodyweight exercises have no weight input (#2); the field is
@@ -2817,19 +2815,50 @@ final class SyncModel: ObservableObject {
 
     // MARK: timed exercises (plank, holds)
 
-    func startTimedSet() {
+    func startTimedSet(at start: Date? = nil) {
         guard let ex = currentExercise, ex.isTimed,
               !isTerminalMutationInFlight,
               !hasPendingTerminalIntentForCurrentWorkout,
               !isSetSending(slotID: ex.id)
         else { return }
         timedActive = true
-        let now = Date()
-        timedStartDate = now
+        let startedAt = start ?? now()
+        timedStartDate = startedAt
         // Count down the prescribed hold (target_duration_s, fallback
         // target_reps) — not target_reps directly, which was 1s for slots
         // that never set a duration (the "plank ended instantly" bug).
-        timedEndDate = now.addingTimeInterval(TimeInterval(ex.holdSeconds))
+        timedEndDate = startedAt.addingTimeInterval(TimeInterval(ex.holdSeconds))
+        scheduleTimedSetCompletion()
+    }
+
+    /// Own completion in the model so navigation cannot cancel the set. iOS
+    /// may suspend this task in the background; the foreground hook calls the
+    /// same due-date check as a catch-up path.
+    private func scheduleTimedSetCompletion() {
+        timedSetCompletionTask?.cancel()
+        guard let end = timedEndDate else { return }
+        let delay = max(0, end.timeIntervalSince(now()))
+        let maximumDelay = Double(UInt64.max / 1_000_000_000)
+        let nanoseconds = UInt64(min(delay, maximumDelay) * 1_000_000_000)
+        timedSetCompletionTask = Task { [weak self] in
+            if nanoseconds > 0 {
+                try? await Task.sleep(nanoseconds: nanoseconds)
+            }
+            guard !Task.isCancelled, let self else { return }
+            // This task owns the expiry path now. Detach it from the model
+            // before commit clears timer state so the network write does not
+            // inherit a cancellation from cancelling itself.
+            self.timedSetCompletionTask = nil
+            await self.finishTimedSetIfDue()
+        }
+    }
+
+    private func clearTimedSet() {
+        timedSetCompletionTask?.cancel()
+        timedSetCompletionTask = nil
+        timedActive = false
+        timedEndDate = nil
+        timedStartDate = nil
     }
 
     /// Whole seconds held so far in the running timed set (0 when idle).
@@ -2838,16 +2867,24 @@ final class SyncModel: ObservableObject {
     /// junk set — the exact thing the guard exists to prevent).
     var timedElapsed: Int {
         guard let start = timedStartDate else { return 0 }
-        return max(0, Int(Date().timeIntervalSince(start)))
+        return max(0, Int(now().timeIntervalSince(start)))
     }
 
     /// The prescribed hold completed (countdown reached the end) — logs the
-    /// FULL target hold. Driven by the runner's poll loop so it fires
-    /// reliably "at the end of a timed exercise" (#55), even if a single
-    /// long sleep was suspended/cancelled.
+    /// FULL target hold. The model-owned deadline task calls this even when
+    /// the runner view is no longer mounted.
     func finishTimedSetAuto() async {
         guard let ex = currentExercise else { return }
         await commitTimedSet(held: ex.holdSeconds)
+    }
+
+    /// Complete only after the stored deadline. Called by both the model-owned
+    /// task and foreground recovery after iOS resumes a suspended app.
+    func finishTimedSetIfDue(at date: Date? = nil) async {
+        guard timedActive, let end = timedEndDate,
+              (date ?? now()) >= end
+        else { return }
+        await finishTimedSetAuto()
     }
 
     /// Manual STOP — logs the ACTUAL elapsed hold (capped at the prescribed
@@ -2866,9 +2903,7 @@ final class SyncModel: ObservableObject {
     /// (≥1s) and advances. Both auto and manual completion route here.
     private func commitTimedSet(held: Int) async {
         guard let ex = currentExercise, timedActive else { return }
-        timedActive = false
-        timedEndDate = nil
-        timedStartDate = nil
+        clearTimedSet()
         skipped.remove(ex.id)   // logging work un-skips this slot
         persistRunnerCheckpoint()
         let secs = max(1, held)
@@ -3060,7 +3095,8 @@ final class SyncModel: ObservableObject {
     // load(), restore it after.
 
     func addExerciseToDay(_ dayID: String, exercise: String, isWarmup: Bool,
-                          targetSets: Int, targetReps: Int, restSeconds: Int,
+                          targetSets: Int, targetReps: Int, targetRepsMax: Int?,
+                          restSeconds: Int,
                           targetDurationS: Int?) async {
         guard let jwt = currentJWT else { return }
         let activeSlotID = currentExercise?.id
@@ -3068,6 +3104,7 @@ final class SyncModel: ObservableObject {
             _ = try await api.addExercise(
                 dayID: dayID, exercise: exercise, isWarmup: isWarmup,
                 targetSets: targetSets, targetReps: targetReps,
+                targetRepsMax: targetRepsMax,
                 restSeconds: restSeconds, targetDurationS: targetDurationS, jwt: jwt)
             await load()
             restoreActiveSlot(activeSlotID)

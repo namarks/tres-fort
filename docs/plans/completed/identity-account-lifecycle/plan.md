@@ -86,8 +86,9 @@ iOS verification.
   `0029`–`0032` applied and Worker code version
   `0ae05b68-ac8d-4d43-8e4a-32675bf15beb` deployed successfully. The later
   owner-managed Apple credential rotation produced secret-change version
-  `0c764d79-6215-49ac-b27d-76920f6de77b`, verified at 100% traffic; no private
-  key value entered the repository or agent output.
+  `0c764d79-6215-49ac-b27d-76920f6de77b`, verified at 100% traffic. No private
+  key value was added to the repository or intentionally read or captured by an
+  agent during the rotation.
 - The first non-destructive owner exchange returned
   `401 apple_authorization_failed`. D1 showed zero stored refresh-token rows and
   zero active exchange reservations, while conservatively recording
@@ -217,11 +218,13 @@ iOS verification.
 - On 2026-09-01 the owner waived destructive live deletion/revocation proof
   against a dedicated Apple test account and accepted the residual risk that the
   first real account deletion will be the first live exercise of `/auth/revoke`.
-  Release still requires a successful non-destructive authorization-code
-  exchange by reauthenticating the owner, plus the deterministic provider tests
-  and manual-revocation fallback already implemented. Never delete the owner or
-  revoke the owner's Apple grant to satisfy this proof. This decision grants no
-  deployment, workout-fence activation, or TestFlight/App Store authority.
+  At that gate, release still required a successful non-destructive
+  authorization-code exchange by reauthenticating the owner, plus the
+  deterministic provider tests and manual-revocation fallback already
+  implemented; the later evidence above completed that exchange. Never delete
+  the owner or revoke the owner's Apple grant to satisfy this proof. The waiver
+  itself granted no deployment, workout-fence activation, or TestFlight/App
+  Store authority.
 - At the initial P2(b) gate, the full Workers suite passed 434/434 and the
   TypeScript, plan, iOS production-source, app-module, and XCTest-source
   compilers passed. The current combined code tree has since passed the full

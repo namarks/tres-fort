@@ -37,14 +37,16 @@ or editable by the coach.
   - Prove the same workout is readable through MCP and subsequently editable by
     either iOS or Claude.
   - Record iOS as the actor in the same audit trail used by other plan writes.
-    Today only the slot routes write an `actor='ios'` audit row; day create
-    and day patch write none, so those routes need the same call before P0's
-    trail is complete.
+    Among plan-tree writes, today only the slot routes write an `actor='ios'`
+    audit row; day create and day patch write none, so those routes need the
+    same call before P0's trail is complete.
   - Verify with a bodyweight-only routine as a second acceptance walkthrough
-    (for example pull-ups 3×5–8, push-ups 3×12, plank 3×45 s on three
-    weekdays) in addition to a loaded barbell day. It exercises rep ranges,
-    timed holds, and zero-load logging that a barbell walkthrough never
-    touches, and it needs only the existing catalog.
+    (for example pull-ups 3×5, push-ups 3×12, plank 3×45 s on three
+    weekdays) in addition to a loaded barbell day. It exercises timed holds
+    and zero-load logging that a barbell walkthrough never touches, and it
+    needs only the existing catalog and editor. Rep ranges are not
+    prescribable from iOS until `bodyweight-training-support#P0` lands, so
+    the P0 walkthrough does not use one.
 - [ ] **P1 — Manage a recurring routine**
   - Create, rename, reorder, and remove multiple workout days; edit existing
     exercise targets; and map each weekday to a day or rest from one compact
@@ -55,8 +57,9 @@ or editable by the coach.
   - [ ] **(a) Day removal detaches history**
     - Before exposing day removal, make `deleteDayTemplate` null out
       `sessions.day_template_id` and `set_logs.template_exercise_id` in the
-      same batch as its deletes, matching what delete-exercise and the
-      full-tree rebuild already do. The current function deletes without
+      same batch as its deletes: detach set logs the way delete-exercise
+      already does, and detach sessions the way the full-tree rebuild already
+      does. The current function deletes without
       detaching and, under D1's strict foreign keys, fails on any day that has
       ever been trained; the only test deletes a never-run day. Add a test
       that removes a day with a completed session.

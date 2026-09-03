@@ -25,7 +25,7 @@ scheduled session.
    authoritative.
 3. Treat reminder, plate-math, warm-up, and progress features as bounded slices
    of the existing product, not foundations for new platforms.
-4. Land `bodyweight-training-support#P0` with the manual create-to-Today slice
+4. Sequence `bodyweight-training-support#P0` with the manual create-to-Today slice
    so holds and rep ranges are prescribable from the first manual routine;
    added-load semantics and rep-based history follow once that slice has
    evidence.

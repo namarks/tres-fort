@@ -22,37 +22,56 @@ gymnastic-strength movements.
     hyper, and gymnastic bridge. Use `timed`/`sec` for static holds and
     `bw`/`lb` for rep work, add spoken-name aliases for the resolver, and
     follow the additive `INSERT OR IGNORE` pattern of migration `0021` with a
-    catalog replay test.
+    catalog replay test. Update the exact row-count assertion in
+    `test/catalog.test.ts` (254 today) and re-check its alias-uniqueness
+    rule: `ex_dips` already owns the plain dip aliases and `ex_superman`
+    carries "back extension bw".
   - Let the iOS configure-exercise screen mark any exercise as a timed hold
     and prescribe a rep range, using the existing `target_duration_s` and
     `target_reps_max` slot fields; the REST editor route and MCP already
-    accept both, and per-set `is_timed` (migration `0024`) already renders a
-    duration-pinned hold correctly everywhere.
-  - Re-verify the open TestFlight report that the hold countdown does not
-    auto-log at the end of a timed set, and fix it if it reproduces; planks,
-    L-sits, and hangs are the timed slots a bodyweight plan leans on.
+    accept both. The runner and the per-set value labels already honor
+    per-set `is_timed` (migration `0024`), but the history duration chart
+    still gates on catalog modality, so a duration-pinned hold on a `bw`
+    exercise needs that chart re-keyed to `is_timed` in the same slice.
+  - Close out the timed auto-log report. Open issues #71 and #92 are
+    re-mirrors of the same TestFlight submission as #55, which `9a533e8`
+    fixed with `finishTimedSetAuto`; the residual gap is that the runner's
+    countdown task is cancelled when the view disappears while `timedActive`
+    stays true. Cover the backgrounded and view-dismissed cases, close the
+    two duplicates, and stop the `beta:feedback` mirror from re-filing an
+    already-mirrored submission. Planks, L-sits, and hangs are the timed
+    slots a bodyweight plan leans on.
 - [ ] **P1 — Added load, assistance, and honest metrics**
-  - Define `weight` on a bodyweight-modality slot or set as added load:
-    positive for a belt or vest, negative for band or machine assistance,
-    zero for strict bodyweight. Write the convention into the `log_set` and
+  - Define `weight` on a `bw` or `timed` slot or set as added load: positive
+    for a belt or vest, negative for band or machine assistance, zero for
+    strict bodyweight. Write the convention into the `log_set` and
     `add_exercise` tool descriptions so Claude and iOS agree; no schema
     change. Today iOS hides the weight control and pins the logged weight to
-    zero whenever the catalog modality is `bw`.
-  - Show an added-load / assist control in the runner for bodyweight
-    exercises, defaulting to zero, and render "BW+45 × 5", "BW−30 × 8", and
-    "BW × 8" consistently in Today, history, the day agenda, and the group
-    feed.
+    zero whenever the catalog modality is `bw`, the timed runner hard-codes
+    weight zero when it commits a hold, and `adjustWeight` / `setWeight`
+    clamp at zero, so the clamp must be lifted for these slots before a
+    negative value can be entered.
+  - Show an added-load / assist control in the runner for bodyweight and
+    timed exercises, defaulting to zero, and render "BW+45 × 5", "BW−30 × 8",
+    "BW × 8", and "45s" consistently in Today, history, the day agenda, and
+    the group feed. The group feed's server DTO must start carrying
+    `is_timed` and `duration_s`; today it renders every set as weight × reps.
   - Report rep-based metrics for bodyweight exercises (best set, total reps
     per session) and best hold for timed exercises; show estimated 1RM only
     when added load is positive. Keep tonnage undefined for zero-load work
-    rather than reporting zero or inventing a body mass. Today the Epley
-    top-set and tonnage rollups compute to zero for every bodyweight set.
+    rather than reporting zero or inventing a body mass, and exclude
+    negative-load (assisted) sets from tonnage rather than letting them
+    subtract from it. Today the Epley top-set and tonnage rollups compute to
+    zero for every bodyweight set.
   - Cover the convention with backend tests on the history and volume
     rollups and with iOS rendering tests for the three value forms.
 - [ ] **P2 — Progress by variation in the app**
   - Expose the existing swap-exercise service over the authenticated REST
     editor path and add a "Replace with…" action in the iOS editor that keeps
-    the slot's targets, order, and warm-up flag.
+    the slot's targets, order, and warm-up flag. The service currently
+    ignores the `carry_targets` flag the MCP tool advertises and always
+    carries targets; honor it or remove it as part of the exposure rather
+    than propagating an inert parameter.
   - Record the swap in the same audit trail and version bump as other plan
     edits so Claude can see that the member advanced a progression.
 
@@ -72,9 +91,10 @@ P1 and P2 wait for P0 evidence, not for a product decision.
 
 ## Notes / open questions
 
-- Source: the September 2026 calisthenics readiness review at commit
-  `c71e3f9`. Its line references drift; verify against current code before
-  acting.
+- Source: [research/calisthenics-readiness-review-2026-09.md](research/calisthenics-readiness-review-2026-09.md),
+  a static review at commit `c71e3f9` plus the corrections from the
+  exact-head review of this plan. Its line references drift; verify against
+  current code before acting.
 - Body-mass tracking is deliberately out of scope. True tonnage for weighted
   or assisted bodyweight work is the one need it would serve; rep-based
   metrics cover the coaching decision without it, so the roadmap candidate

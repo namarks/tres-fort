@@ -90,6 +90,11 @@ final class HealthKitSyncModel: ObservableObject {
         return auth.featureJWT == jwt
     }
 
+    private var isCurrentBoundAccount: Bool {
+        guard let accountID, auth.userID == accountID else { return false }
+        return auth.featureJWT != nil
+    }
+
     // MARK: - Read scope
 
     /// Read-only scope. Workouts are the spine; HR/energy/distance enrich each
@@ -197,7 +202,17 @@ final class HealthKitSyncModel: ObservableObject {
     func sync() async {
         guard enabled, isAvailable, let jwt = currentJWT, !isSyncing else { return }
         isSyncing = true
-        defer { isSyncing = false }
+        var persistedAny = false
+        defer {
+            isSyncing = false
+            // A push can commit just before the bearer/session changes. Do not
+            // mutate this retired model's anchor or UI, but still notify the
+            // replacement same-account calendar exactly once for the run.
+            if persistedAny && isCurrentBoundAccount {
+                let callback = onActivitiesPersisted
+                Task { await callback?() }
+            }
+        }
         var anchor = loadAnchor()
         let hadStoredAnchor = anchor != nil
         var pushedAny = false
@@ -224,6 +239,7 @@ final class HealthKitSyncModel: ObservableObject {
                     let body = await buildPush(for: w)
                     guard isCurrentAccount(using: jwt) else { return }
                     _ = try await api.pushHealthKitActivity(body, jwt: jwt)
+                    persistedAny = true
                 }
                 // Whole page pushed — checkpoint the anchor before the next page.
                 guard isCurrentAccount(using: jwt) else { return }
@@ -234,7 +250,6 @@ final class HealthKitSyncModel: ObservableObject {
             guard isCurrentAccount(using: jwt) else { return }
             lastSyncedAt = Date()
             lastError = nil
-            if pushedAny { await onActivitiesPersisted?() }
         } catch let APIError.http(code, _) where code == 401 {
             // Token died mid-sync — let AuthModel handle it. Anchor is already
             // checkpointed at the last good page, so a re-auth resumes cleanly.

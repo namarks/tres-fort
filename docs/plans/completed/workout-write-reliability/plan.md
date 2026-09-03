@@ -36,7 +36,7 @@ never present a failed write as completed or silently drop the user's intent.
   - Verify relaunch recovery without introducing a second plan projection or a
     general-purpose sync framework.
 
-## Closeout and deferred rollout
+## Closeout and rollout evidence
 
 On 2026-09-03, the owner-authorized combined release ran from exact merged
 snapshot `c71e3f9aa1a101988120bb58dcc3357e685e8644`: remote migrations
@@ -48,14 +48,73 @@ owner exchange then succeeded under the detailed evidence in
 post-proof status check confirmed `enabled=0`, `activated_at=null`, and zero
 permits.
 
-The remaining rollout decision is the separately authorized, irreversible
-workout-write fence activation. Only that authority may run
-`npm run db:workout-write-fence:activate:remote`; afterward verify
-`enabled=1` with zero permits and collect both new-protocol admission and
-pre-fence-writer rejection evidence. Never roll back to a Worker that lacks the
-permit batches after activation—forward-fix instead. TestFlight/App Store
-distribution and eventual tokenless `legacy` retirement remain separate gates.
-No fence activation, app distribution, or legacy-mode retirement was performed
+At `2026-09-03T16:11:17Z`, after an immediate readback again showed the
+compatible Worker at 100% traffic and the fence at `0/null/0`, the owner
+explicitly authorized the irreversible production activation. The activation
+changed one row; the immediate readback reported `enabled=1`,
+`activated_at=1788451877000`, and zero permits, while `/health` remained HTTP
+200. A value-preserving direct update against one of nine existing session rows
+was then rejected with `workout_write_fence_active`, proving a pre-fence writer
+fails closed without exposing or changing workout contents.
+
+The paired iPhone received an attempt-aware direct install of `0.1.0 (28)`
+without publishing a new TestFlight/App Store build. During device validation,
+SwiftUI cancelled the pull-to-refresh caller even though the Worker returned
+HTTP 200, leaving the cached-state banner visible as `cancelled`. The local fix
+makes a single account-scoped task own the full-state request, coalesces
+concurrent callers, and lets validation finish when the initiating view task is
+cancelled. A corrected build installed directly on the paired phone then
+cleared the offline banner after a real pull-to-refresh.
+
+The genuine-write proof window began at `2026-09-03T17:16:59Z`. Production
+traces showed successful session creation, set writes, and full-state
+reconciliation from the corrected build. A value-free D1 readback found one
+session updated as `attempt-v1` and two non-deleted sets logged between
+`2026-09-03T17:18:32Z` and `2026-09-03T17:18:41Z`; the session's latest update
+was `2026-09-03T17:19:04Z`. The same readback reconfirmed the fence at
+`enabled=1`, `activated_at=1788451877000`, with zero permits. No synthetic
+workout data was created for this proof.
+
+Continued live use exposed a second client boundary: the runner had durably
+persisted the set intent but still awaited the complete server admission and
+state-reconciliation round trip before advancing the exercise UI. The corrected
+runner advances and starts rest immediately after the local enqueue, then lets a
+model-owned task deliver and reconcile in the background. Its progress derives
+from the union of acknowledged and retryable pending set IDs so one intent is
+counted exactly once while a permanently rejected intent reopens its runner
+slot. Transport activity no longer blocks entry of the next intentional set;
+an in-memory slot guard still rejects an immediate duplicate tap. State pulls
+now schedule a trailing fresh request after mutations or bearer renewal, and a
+feature-session epoch prevents a pre-sign-out response from applying after a
+same-user sign-in. Activity persistence signals ride an account-scoped
+generation so a late pre-reauthentication writer refreshes the replacement
+calendar. Each tap is bound to its rendered slot and set number, preventing a
+queued duplicate from crossing into the next exercise. A delayed permanent
+failure preserves any successor timed set already underway, then reopens the
+failed slot at that timer's stable commit boundary. Live Activity up-next state
+is refreshed from the runner's post-normalization current slot. The complete
+simulator suite passed 161/161 tests, including the changed production paths for
+immediate offline-first advancement, cross-slot duplicate taps, delayed
+permanent rejection during a timed set, trailing refresh, identity ABA,
+same-user late activity creation/deletion refresh, retry recovery, Live Activity
+current-slot labeling, timeout recovery, and caller cancellation. A three-second
+grace also suppresses the
+normal transient pending-set banner while preserving immediate permanent-failure
+feedback and visible prolonged queues. The pre-review Release build installed
+directly on the paired iPhone without replacing its data; live workout use then
+looked materially better and the owner accepted the behavior for this release.
+The later adversarial-review repairs retain that interaction contract and add
+the deterministic edge-case coverage above. Broader UI cleanup is deferred.
+
+A later value-free production readback found two additional admitted sets and
+one updated `attempt-v1` session after the first proof. The last set was logged
+at `2026-09-03T18:26:53Z` and the session reconciled at
+`2026-09-03T18:26:55Z`, explaining the screenshot that briefly showed one set
+sending between those events rather than a stuck or lost write. The fence was
+still `enabled=1`, `activated_at=1788451877000`, with zero permits. The rollback
+boundary is permanent: never roll back to a Worker that lacks the permit
+batches—forward-fix instead. TestFlight/App Store distribution and eventual
+tokenless `legacy` retirement remain separate gates and were not performed
 during this milestone.
 
 ## Notes / open questions

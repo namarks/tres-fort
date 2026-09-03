@@ -47,8 +47,9 @@ gymnastic-strength movements.
     catalog migration, hold/rep-range authoring, per-set timed history, and
     model-owned timed completion with foreground catch-up. Local verification
     passed TypeScript typecheck, all 492 Worker tests, iOS build-for-testing,
-    and all 150 iOS unit tests. Issues #71 and #92 are closed as duplicates of
-    #55. The checked phase and this evidence land atomically with the reviewed
+    and all 164 iOS unit tests after reconciling current `main`. Issues #71 and
+    #92 are closed as duplicates of #55. The checked phase and this evidence
+    land atomically with the reviewed
     PR; no remote migration, Worker deployment, or TestFlight publication is
     part of the merge.
 - [ ] **P1 — Added load, assistance, and honest metrics**

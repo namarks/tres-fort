@@ -394,14 +394,15 @@ describe('mcp write tools', () => {
       expect(note!.c).toBe(2);
     });
 
-    it('a cross-plan / foreign day id is rejected with no partial write', async () => {
+    it('an unknown day ref (not in the active plan) is rejected with no partial write', async () => {
       const set1 = await call('set_schedule', {
         week: { mon: 'Push Day', wed: 'B', fri: 'Push Day' },
       });
       expect(set1.ok).toBe(true);
       const v1 = set1.version as number;
 
-      // cross-plan / foreign id rejected, no partial write
+      // a ref that resolves to no day in the active plan is rejected, no
+      // partial write
       const foreign = await call('set_schedule', {
         week: { mon: 'this-is-not-a-real-day-id' },
       });
@@ -1208,8 +1209,8 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     // plan + iOS session. The seeded iOS sets are logged 20–40 s before the
     // block starts and findRecentMatchingSet's window is 120 s, so they stay
     // "recent" for every case. The cases are independent by design: a single
-    // sequential case covering all of them made 22 round-trips and sat right
-    // at vitest's 5 s default per-test timeout on a CI runner.
+    // sequential case covering all of them made 21 round-trips and sat near
+    // vitest's 5 s default per-test timeout on a CI runner.
     let sessionId: string;
     let today: string;
 
@@ -1251,7 +1252,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
         `INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,deleted_at)
          VALUES (?1,?2,'ex_back_squat',NULL,?3,?4,5,NULL,0,NULL,?5,'ios',?6,NULL)`,
       );
-      for (const [setIndex, weight, loggedAt, duration] of [
+      const iosSets: Array<[number, number, number, number]> = [
         [1, 185, tNow - 30_000, 30],
         [2, 195, tNow - 30_000, 30],
         [3, 205, tNow - 30_000, 30],
@@ -1259,11 +1260,12 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
         // explicit discriminator matches it but not the newest candidate.
         [4, 215, tNow - 40_000, 30],
         [5, 215, tNow - 20_000, 45],
-      ]) {
-        await insertIosSet
-          .bind(crypto.randomUUID(), sessionId, setIndex, weight, loggedAt, duration)
-          .run();
-      }
+      ];
+      await env.DB.batch(
+        iosSets.map(([setIndex, weight, loggedAt, duration]) =>
+          insertIosSet.bind(crypto.randomUUID(), sessionId, setIndex, weight, loggedAt, duration),
+        ),
+      );
     });
 
     it("rejects the phantom narration (same triple ~30 s later), with or without today's date, and does not insert", async () => {

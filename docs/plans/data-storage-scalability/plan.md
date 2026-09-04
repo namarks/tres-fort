@@ -41,12 +41,16 @@ Done means:
     written per cron tick, and current table row counts. These numbers are
     the before/after evidence for P1–P3 and the inputs to the P5 decision.
 - [ ] **P1 — Sync only what changed (sets and sessions)**
-  - Migration: add `set_logs.updated_at` (backfilled from
-    `COALESCE(deleted_at, logged_at)`) and index `set_logs(session_id,
-    updated_at)`. Every `UPDATE set_logs` path in `db.ts` (`patchSet`,
-    discard, template detach on plan rebuild and slot delete) stamps it with
-    the server clock; `logSet` stamps it on insert.
-  - Server: `getState` filters sets on `updated_at > sets_since` and, when
+  - Migration: add `set_logs.user_id` (backfilled from `sessions.user_id`)
+    and `set_logs.updated_at` (backfilled from `COALESCE(deleted_at,
+    logged_at)`), with cursor-leading indexes `set_logs(user_id, updated_at)`
+    and `sessions(user_id, updated_at)`, so an empty poll reads only the delta
+    instead of walking the member's lifetime sessions to find it. Every
+    `UPDATE set_logs` path in `db.ts` (`patchSet`, discard, template detach
+    on plan rebuild and slot delete) stamps `updated_at` with the server
+    clock; `logSet` stamps both columns on insert.
+  - Server: `getState` filters sets on `user_id = ? AND updated_at >
+    sets_since` (no sessions join on the delta path) and, when
     `sets_since > 0`, includes soft-deleted rows as tombstones, matching the
     external_events contract already documented in that function. The
     `sets_since = 0` full reload keeps its current shape.
@@ -75,12 +79,15 @@ Done means:
     altered field asserts one row written; the P0 cron log shows a quiet hour
     at zero writes.
 - [ ] **P3 — Filing-cabinet tabs (member-first indexes)**
-  - Migration: `audit_log(user_id, created_at)`; `oauth_tokens(user_id)`;
-    `notes(user_id, created_at)`; replace `ix_sets_ex_time` with
-    `set_logs(session_id, exercise_id, logged_at)` so exercise history probes
-    the member's sessions first instead of scanning every member's sets for
-    that exercise. Local `EXPLAIN QUERY PLAN` against the applied migrations
-    already confirms each plan flips to the member-first index.
+  - Migration: `audit_log(user_id, actor, created_at)` so the profile's
+    latest-MCP-action lookup seeks directly instead of walking a member's
+    audit history when the newest MCP row is old or absent;
+    `oauth_tokens(user_id)`; `notes(user_id, created_at)`; replace
+    `ix_sets_ex_time` with `set_logs(user_id, exercise_id, logged_at)` (the
+    `user_id` column lands in P1, so P3 runs after it) so exercise history
+    seeks straight to the member's sets for that exercise instead of scanning
+    every member's. Local `EXPLAIN QUERY PLAN` against the applied migrations
+    plus these changes confirms each plan flips to the member-first index.
   - Add a small checked-in script that applies `migrations/` to a temporary
     SQLite file and asserts the query plan for each hot query names the
     expected index, so an index regression fails CI instead of showing up as
@@ -89,15 +96,18 @@ Done means:
   - Per-member isolation: one thrown sync error is logged and the loop
     continues; bounded concurrency (about four members in flight) replaces the
     strict serial walk.
-  - Skip rule: add `users.intervals_last_sync_at`, stamped by every successful
-    webhook, cron, or manual sync; the hourly cron only polls members whose
-    stamp is older than two cron intervals. The webhook is the primary path,
-    so a healthy account costs the cron nothing.
+  - Skip rule: add `users.intervals_events_synced_at` and
+    `users.intervals_activities_synced_at`, each stamped only by its own
+    cache's successful sync (webhook, cron, or manual). The hourly cron polls
+    a cache only when that cache's stamp is older than two cron intervals, so
+    an activity webhook never marks the planned-events cache fresh and the
+    cron's first job never suppresses its second. The webhook is the primary
+    path, so a healthy account costs the cron nothing.
   - Rate limits: treat an intervals.icu 429 as `fetch_failed` for that member
     only, honor `Retry-After` when present, and leave the cache untouched.
   - Evidence: tests with an injected fetcher prove member B syncs when member
-    A throws, a freshly-synced member is skipped, and a 429 leaves the cache
-    intact; the P0 cron log shows external calls per tick bounded by the
+    A throws, a cache freshly synced by its own webhook is skipped while the
+    other cache still polls, and a 429 leaves the cache intact; the P0 cron log shows external calls per tick bounded by the
     number of stale members, not the number of connected members.
 - [ ] **P5 — Retention decision for the two unbounded tables**
   - Using P0 numbers, the owner decides retention for `audit_log` (for

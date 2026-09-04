@@ -48,6 +48,132 @@ import {
 const now = () => Date.now();
 const uuid = () => crypto.randomUUID();
 
+// ---- D1 usage observability ---------------------------------------------
+
+export interface D1Usage {
+  query_count: number;
+  rows_read: number;
+  rows_written: number;
+}
+
+export interface D1UsageObserver {
+  db: D1Database;
+  usage: D1Usage;
+}
+
+/** Add one completed D1 query's billing counters to a request-local total. */
+function addD1Usage(usage: D1Usage, result: D1Result<unknown>): void {
+  usage.query_count += 1;
+  usage.rows_read += result.meta.rows_read;
+  usage.rows_written += result.meta.rows_written;
+}
+
+/**
+ * Wrap a prepared statement so all()/run() metadata contributes to `usage`.
+ * D1 first() deliberately returns no metadata, so measured paths execute the
+ * same prepared query through all() and project its first row locally.
+ */
+function measuredStatement(
+  statement: D1PreparedStatement,
+  usage: D1Usage,
+  originals: WeakMap<D1PreparedStatement, D1PreparedStatement>,
+): D1PreparedStatement {
+  const measured = new Proxy(statement, {
+    get(target, property) {
+      if (property === 'bind') {
+        return (...values: unknown[]) => measuredStatement(target.bind(...values), usage, originals);
+      }
+      if (property === 'first') {
+        return async (columnName?: string): Promise<unknown> => {
+          const result = await target.all<Record<string, unknown>>();
+          addD1Usage(usage, result);
+          const first = result.results[0];
+          if (first === undefined) return null;
+          if (columnName === undefined) return first;
+          if (!Object.prototype.hasOwnProperty.call(first, columnName)) {
+            throw new Error(`D1_ERROR: column not found: ${columnName}`);
+          }
+          return first[columnName];
+        };
+      }
+      if (property === 'run') {
+        return async <T = Record<string, unknown>>(): Promise<D1Result<T>> => {
+          const result = await target.run<T>();
+          addD1Usage(usage, result);
+          return result;
+        };
+      }
+      if (property === 'all') {
+        return async <T = Record<string, unknown>>(): Promise<D1Result<T>> => {
+          const result = await target.all<T>();
+          addD1Usage(usage, result);
+          return result;
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  originals.set(measured, statement);
+  return measured;
+}
+
+/**
+ * Run one request/tool/tick with a request-local D1 collector and emit one
+ * searchable JSON line. The wrapper also unwraps statements before batch(),
+ * then totals each result's metadata without double-counting prepared calls.
+ */
+export function createD1UsageObserver(db: D1Database): D1UsageObserver {
+  const usage: D1Usage = { query_count: 0, rows_read: 0, rows_written: 0 };
+  const originals = new WeakMap<D1PreparedStatement, D1PreparedStatement>();
+  const measuredDb = new Proxy(db, {
+    get(target, property) {
+      if (property === 'prepare') {
+        return (query: string) => measuredStatement(target.prepare(query), usage, originals);
+      }
+      if (property === 'batch') {
+        return async <TResult = unknown>(
+          statements: D1PreparedStatement[],
+        ): Promise<D1Result<TResult>[]> => {
+          const results = await target.batch<TResult>(
+            statements.map((statement) => originals.get(statement) ?? statement),
+          );
+          for (const result of results) addD1Usage(usage, result);
+          return results;
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  return { db: measuredDb, usage };
+}
+
+export function logD1Usage(
+  operation: string,
+  outcome: 'ok' | 'error',
+  usage: D1Usage,
+): void {
+  console.log({ event: 'd1_usage', operation, outcome, ...usage });
+}
+
+export async function observeD1Usage<T>(
+  db: D1Database,
+  operation: string,
+  task: (measuredDb: D1Database) => Promise<T>,
+): Promise<T> {
+  const observer = createD1UsageObserver(db);
+  let outcome: 'ok' | 'error' = 'ok';
+  try {
+    return await task(observer.db);
+  } catch (error) {
+    outcome = 'error';
+    throw error;
+  } finally {
+    logD1Usage(operation, outcome, observer.usage);
+  }
+}
+
 // ---- users ---------------------------------------------------------------
 
 async function sha256Hex(value: string): Promise<string> {

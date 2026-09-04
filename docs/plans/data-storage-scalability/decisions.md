@@ -68,3 +68,45 @@ measured data. What P0 still owes is the per-request breakdown
 (`meta.rows_read` per `/api/state`, `/api/me`, `get_history`, and per cron
 tick) so P1–P3 can show before/after per path; the dashboard gives daily
 totals only.
+
+## 2026-09-04 — P0 local instrumentation and index-cost evidence
+
+The workstream branch adds a request-scoped D1 usage observer for the four P0
+paths. Each invocation emits one structured Workers Logs object with only:
+
+- `event=d1_usage`;
+- `operation` (`GET /api/state`, `GET /api/me`, `MCP get_history`, or
+  `cron tick`);
+- `outcome`, `query_count`, `rows_read`, and `rows_written`.
+
+The REST totals include app-auth middleware queries, the MCP total includes
+bearer resolution, and the cron total covers both cache jobs. No user id,
+credential, request arguments, URL, audit args, or external source JSON is
+logged. The local Workers-runtime coverage is
+`test/d1_observability.test.ts`; the full suite passed with 41 files and 521
+tests, and TypeScript plus diff hygiene passed. Exact-head review and CI remain
+delivery gates rather than evidence already claimed here.
+
+`test/d1_index_cost.test.ts` uses paired local shadow tables and real D1
+`meta.rows_written` counters to isolate the final P1/P3 index cost. It models
+adding `set_logs(user_id, updated_at)`, replacing
+`set_logs(exercise_id, logged_at)` with
+`set_logs(user_id, exercise_id, logged_at)`, preserving the session and live
+slot indexes, and adding `audit_log(user_id, actor, created_at)`.
+
+| Mutation | `set_logs` current → proposed | `audit_log` current → proposed | Combined MCP write |
+|---|---:|---:|---:|
+| Insert | 5 → 6 (+1) | 2 → 3 (+1) | 7 → 9 (+2) |
+| Correction | 1 → 2 (+1) | 2 → 3 (+1) | 3 → 5 (+2) |
+| Soft-delete | 1 → 2 (+1) | 2 → 3 (+1) | 3 → 5 (+2) |
+
+These are controlled index-amplification measurements, not owner-production
+traffic. They exclude surrounding session transitions, write-fence work, and
+other route queries. P3 still needs the production P2 savings comparison
+before its indexes may ship.
+
+The remaining P0 baseline requires an explicitly authorized
+instrumentation-only Worker deploy, representative owner app and OAuth MCP
+traffic, at least one natural hourly cron tick, and read-only Workers Logs plus
+production table-count evidence. It requires no D1 migration, production index
+creation, TestFlight build, credential transfer, or manual cron trigger.

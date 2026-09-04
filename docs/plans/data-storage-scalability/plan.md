@@ -43,12 +43,19 @@ Done means:
     structured console line each (Workers observability is already on).
     `.first()` returns no `meta`, so the reads on these paths move to
     `.all()` / `.run()` or a read batch before the numbers are capturable.
+    Implemented and locally verified 2026-09-04 with request-scoped observers;
+    the production baseline remains pending an authorized instrumentation-only
+    deploy and representative owner traffic.
   - Capture the owner account's baseline: rows read per foreground sync, rows
     written per cron tick, current table row counts, and the rows-written
     delta each proposed index adds on the highest-write tables (`set_logs`,
     `audit_log`), since D1 bills every index update as a row written. These
     numbers are the before/after evidence for P1–P3, the check that P3's
     index cost stays below P2's savings, and the inputs to the P5 decision.
+    Local shadow-table evidence now measures the proposed final index delta:
+    +1 row written per set insert/correction/soft-delete, +1 per audit insert,
+    and +2 for a combined MCP set mutation plus its audit row. Production path
+    totals and table counts remain outstanding.
 - [ ] **P1 — Sync only what changed (sets and sessions)**
   - Migration: add `set_logs.user_id` (NOT NULL, backfilled from
     `sessions.user_id`, with a parity assertion that every row matches its
@@ -173,8 +180,8 @@ Done means:
 
 ## Next step
 
-**Now (@owner):** Tier confirmed Free on 2026-09-04 (see `decisions.md`, with the 24-hour D1 baseline). Decide whether to move to Paid now or before inviting roughly ten more members, the point where the measured per-member usage puts the read cap in reach.
-**Now (@agent):** Complete P0 instrumentation and capture the owner baseline, then start P1 with the server migration and `getState` before the iOS client.
+**Now (@owner):** Authorize an instrumentation-only Worker production deploy of the exact reviewed P0 head, then generate representative owner app and OAuth MCP traffic; separately decide whether to move to Paid now or before inviting roughly ten more members.
+**Now (@agent):** After that authorization, record the per-path Workers Logs baseline, a natural cron tick, and read-only table counts in `decisions.md`; then complete P0 and start P1 with the server migration and `getState` before the iOS client.
 
 ## Notes / open questions
 

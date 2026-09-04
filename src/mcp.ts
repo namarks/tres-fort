@@ -6,6 +6,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { HonoEnv } from './types';
+import { createD1UsageObserver, logD1Usage } from './db';
 import { handleMcp } from './mcp/server';
 import { validateBearer } from './oauth';
 
@@ -35,12 +36,32 @@ function unauthorized(c: any) {
   return c.json({ error: 'unauthorized' }, 401);
 }
 
+function isGetHistoryCall(body: unknown): boolean {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return false;
+  const request = body as { method?: unknown; params?: unknown };
+  if (
+    request.method !== 'tools/call' ||
+    request.params === null ||
+    typeof request.params !== 'object'
+  ) {
+    return false;
+  }
+  return (request.params as { name?: unknown }).name === 'get_history';
+}
+
 // No server-initiated streams: GET stream not supported.
 mcpRoutes.get('*', (c) => c.json({ error: 'method_not_allowed' }, 405));
 
 mcpRoutes.post('*', async (c) => {
+  // Start the request-local collector before bearer resolution so the
+  // get_history total includes its authentication/owner reads. We identify
+  // the tool only after successful authentication and body parsing, preserving
+  // the existing boundary that rejects unauthenticated bodies without reading
+  // them. Other MCP calls discard their unused collector without logging.
+  const observer = createD1UsageObserver(c.env.DB);
+  const measuredEnv = { ...c.env, DB: observer.db };
   const token = bearer(c);
-  const userId = await validateBearer(c.env, token);
+  const userId = await validateBearer(measuredEnv, token);
   if (!userId) {
     return unauthorized(c);
   }
@@ -63,7 +84,21 @@ mcpRoutes.post('*', async (c) => {
   } catch {
     bg = undefined;
   }
-  const { status, json } = await handleMcp(body, c.env, userId, bg);
-  if (json === undefined) return c.body(null, status as any);
-  return c.json(json as object, status as any);
+  const measuresHistory = isGetHistoryCall(body);
+  let outcome: 'ok' | 'error' = 'ok';
+  try {
+    const { status, json } = await handleMcp(
+      body,
+      measuresHistory ? measuredEnv : c.env,
+      userId,
+      bg,
+    );
+    if (json === undefined) return c.body(null, status as any);
+    return c.json(json as object, status as any);
+  } catch (error) {
+    outcome = 'error';
+    throw error;
+  } finally {
+    if (measuresHistory) logD1Usage('MCP get_history', outcome, observer.usage);
+  }
 });

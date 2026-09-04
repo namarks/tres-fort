@@ -283,8 +283,11 @@ enum SetValueFormatter {
         timed: Bool,
         bodyweight: Bool
     ) -> String {
-        if timed, let durationSeconds, durationSeconds > 0 {
-            return "\(durationSeconds)s"
+        if timed {
+            // Legacy MCP timed sets stored elapsed seconds in reps before the
+            // dedicated duration field existed.
+            let seconds = durationSeconds ?? reps
+            if seconds > 0 { return "\(seconds)s" }
         }
         if bodyweight {
             if weight > 0 { return "BW+\(number(weight)) × \(reps)" }

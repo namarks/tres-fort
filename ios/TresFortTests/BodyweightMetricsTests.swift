@@ -27,6 +27,11 @@ final class BodyweightMetricsTests: XCTestCase {
                 weight: -20, reps: 45, durationSeconds: 45,
                 timed: true, bodyweight: false),
             "45s")
+        XCTAssertEqual(
+            SetValueFormatter.value(
+                weight: 0, reps: 60, durationSeconds: nil,
+                timed: true, bodyweight: false),
+            "60s")
     }
 
     func testFeedTopSetDecodesMetricContextAndUsesSharedFormatter() throws {

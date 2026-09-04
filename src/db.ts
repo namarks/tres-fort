@@ -5232,6 +5232,14 @@ function positiveSetTonnage(
   return set.weight * set.reps * sides * implementsUsed;
 }
 
+function timedDurationSeconds(
+  set: Pick<SetLogRow, 'duration_s' | 'reps'>,
+): number {
+  // Older MCP clients logged elapsed seconds in reps before duration_s was
+  // added. Keep those valid timed sets visible in history and feeds.
+  return set.duration_s ?? set.reps;
+}
+
 function chooseHistoryTop(
   rows: SetLogRow[],
   modality: string,
@@ -5249,7 +5257,7 @@ function chooseHistoryTop(
   }
   if (timed.length > 0 && repBased.length === 0) {
     const top = timed.reduce((best, row) =>
-      (row.duration_s ?? 0) > (best.duration_s ?? 0) ? row : best,
+      timedDurationSeconds(row) > timedDurationSeconds(best) ? row : best,
     );
     return { top, metric: 'duration' };
   }
@@ -5305,7 +5313,9 @@ export async function getHistory(
       : null;
     return {
       date,
-      top,
+      top: metric === 'duration'
+        ? { ...top, duration_s: timedDurationSeconds(top) }
+        : top,
       metric,
       est_1rm: est1rm,
       best_reps:
@@ -5322,7 +5332,7 @@ export async function getHistory(
           : null,
       best_duration_s:
         timedRows.length > 0
-          ? Math.max(...timedRows.map((row) => row.duration_s ?? 0))
+          ? Math.max(...timedRows.map(timedDurationSeconds))
           : null,
       tonnage: tonnages.length > 0 ? tonnages.reduce((total, value) => total + value, 0) : null,
     };
@@ -7888,7 +7898,7 @@ export async function getGroupFeed(
           );
         } else if (timedRows.length > 0 && repRows.length === 0) {
           top = timedRows.reduce((best, row) =>
-            (row.duration_s ?? 0) > (best.duration_s ?? 0) ? row : best,
+            timedDurationSeconds(row) > timedDurationSeconds(best) ? row : best,
           );
         } else {
           const candidates = repRows.length > 0 ? repRows : rows;
@@ -7902,6 +7912,7 @@ export async function getGroupFeed(
         }
         return {
           ...top,
+          duration_s: top.is_timed ? timedDurationSeconds(top) : top.duration_s,
           // The shipped iOS decoder requires a number here. Preserve that
           // wire contract with zero as the legacy unavailable sentinel; new
           // clients use is_timed/load semantics to hide the estimate.

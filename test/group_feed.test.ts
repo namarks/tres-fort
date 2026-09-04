@@ -547,6 +547,7 @@ describe('group feed: top-set semantics', () => {
         ['ex_pullup', 45, 5, false],
         ['ex_plank', 0, 45, false, 45, true],
         ['ex_plank', 20, 30, false, 30, true],
+        ['ex_plank', 0, 60, false, undefined, true],
       ],
     });
 
@@ -567,9 +568,9 @@ describe('group feed: top-set semantics', () => {
     });
     expect(topSets.find((set: any) => set.exercise === 'Plank')).toMatchObject({
       weight: 0,
-      reps: 45,
+      reps: 60,
       modality: 'timed',
-      duration_s: 45,
+      duration_s: 60,
       is_timed: true,
       est_1rm: 0,
     });

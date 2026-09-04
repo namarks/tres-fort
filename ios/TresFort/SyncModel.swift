@@ -1485,7 +1485,7 @@ final class SyncModel: ObservableObject {
     }
 
     func bestHoldSeconds(for sets: [SetLog]) -> Int? {
-        sets.filter(isTimedSet).compactMap(\.duration_s).max()
+        sets.filter(isTimedSet).map { $0.duration_s ?? $0.reps }.max()
     }
 
     /// Effective positive-load tonnage represented by one rep set. Strict
@@ -1571,14 +1571,15 @@ final class SyncModel: ObservableObject {
                 }
             } else if repRows.isEmpty, let first = timedRows.first {
                 top = timedRows.dropFirst().reduce(first) { best, row in
-                    (row.duration_s ?? 0) > (best.duration_s ?? 0) ? row : best
+                    (row.duration_s ?? row.reps) > (best.duration_s ?? best.reps)
+                        ? row : best
                 }
             } else {
                 top = repRows.max {
                     epley($0.weight, $0.reps) < epley($1.weight, $1.reps)
                 } ?? rows[0]
             }
-            let timedDurations = timedRows.compactMap(\.duration_s)
+            let timedDurations = timedRows.map { $0.duration_s ?? $0.reps }
             return SessionStat(
                 id: sid, date: date,
                 est1RM: !isTimedSet(top) && top.weight > 0

@@ -2885,7 +2885,7 @@ final class SetOutboxTests: XCTestCase {
                 exercise_id: ex.exercise_id,
                 template_exercise_id: ex.id, set_index: 1,
                 weight: 0, reps: 45, rpe: nil, is_warmup: 0,
-                logged_at: 1, duration_s: 45, is_timed: 1,
+                logged_at: 1, duration_s: nil, is_timed: 1,
                 deleted_at: nil),
             SetLog(
                 id: "rep", session_id: s.id,

@@ -313,7 +313,7 @@ describe('sessions, idempotent set logging, history, volume', () => {
       set_index: number,
       weight: number,
       reps: number,
-      timed?: { duration_s: number },
+      timed?: { duration_s?: number },
     ) => {
       const response = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
         method: 'POST',
@@ -326,7 +326,7 @@ describe('sessions, idempotent set logging, history, volume', () => {
           reps,
           ...(timed == null
             ? {}
-            : { duration_s: timed.duration_s, is_timed: true }),
+            : { ...(timed.duration_s == null ? {} : { duration_s: timed.duration_s }), is_timed: true }),
         }),
       });
       expect(response.status).toBe(201);
@@ -337,6 +337,7 @@ describe('sessions, idempotent set logging, history, volume', () => {
     await log('ex_pullup', 3, 45, 5);
     await log('ex_plank', 1, 0, 45, { duration_s: 45 });
     await log('ex_plank', 2, 20, 30, { duration_s: 30 });
+    await log('ex_plank', 3, 0, 60, {});
 
     const pullups = await (
       await SELF.fetch(`${BASE}/api/history?exercise_id=ex_pullup`, { headers: H })
@@ -360,10 +361,10 @@ describe('sessions, idempotent set logging, history, volume', () => {
       metric: 'duration',
       best_reps: null,
       total_reps: null,
-      best_duration_s: 45,
+      best_duration_s: 60,
       est_1rm: null,
       tonnage: null,
-      top: { duration_s: 45, is_timed: 1 },
+      top: { duration_s: 60, reps: 60, is_timed: 1 },
     });
 
     const back = await (
@@ -379,7 +380,7 @@ describe('sessions, idempotent set logging, history, volume', () => {
     ).json<any>();
     expect(core.buckets).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ hard_sets: 2, tonnage: null }),
+        expect.objectContaining({ hard_sets: 3, tonnage: null }),
       ]),
     );
   });

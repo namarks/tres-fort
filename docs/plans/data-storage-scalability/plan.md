@@ -200,8 +200,9 @@ Done means:
   roughly twenty. These estimates ignore index write amplification, which
   is why P0 measures the per-index delta before P3 ships.
 - Storage volume is not a near-term risk on either tier; the growth drivers
-  are `audit_log.args` (up to 4 KB per MCP write) and `raw` JSON on external
-  rows, which is why P5 is a decision phase rather than a build phase.
+  are `audit_log.args` (the first 4,000 JavaScript UTF-16 code units of
+  serialized arguments per MCP write) and `raw` JSON on external rows, which
+  is why P5 is a decision phase rather than a build phase.
 - Group stats and series run three sequential queries per member. This is
   fine at friends-and-family size and is deliberately out of scope; revisit
   only if a group exceeds a few dozen members.

@@ -161,11 +161,14 @@ export async function observeD1Usage<T>(
   db: D1Database,
   operation: string,
   task: (measuredDb: D1Database) => Promise<T>,
+  outcomeForResult?: (result: T) => 'ok' | 'error',
 ): Promise<T> {
   const observer = createD1UsageObserver(db);
   let outcome: 'ok' | 'error' = 'ok';
   try {
-    return await task(observer.db);
+    const result = await task(observer.db);
+    outcome = outcomeForResult?.(result) ?? 'ok';
+    return result;
   } catch (error) {
     outcome = 'error';
     throw error;

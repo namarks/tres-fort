@@ -8,13 +8,15 @@ decisions and measured baselines; it carries no live checklist.
 Confirmed by the owner on the Cloudflare dashboard Workers plans page
 ("Current plan" under Free). Account id is the one in `wrangler.jsonc`.
 
-Free-tier limits that bind this plan (dashboard, same page):
+Free-tier limits that bind this plan, with D1 Paid allowances and overage
+rates from Cloudflare's official [D1 pricing page](https://developers.cloudflare.com/d1/platform/pricing/),
+read 2026-09-04:
 
 | Limit | Free | Paid ($5 / month + usage) |
 |---|---|---|
-| D1 rows read | 5,000,000 / day | $0.001 / million rows |
-| D1 rows written | 100,000 / day | $1.00 / million rows |
-| D1 stored data | 5 GB | $0.20 / GB-month |
+| D1 rows read | 5,000,000 / day | First 25 billion / month included; then $0.001 / million rows |
+| D1 rows written | 100,000 / day | First 50 million / month included; then $1.00 / million rows |
+| D1 stored data | 5 GB total | First 5 GB included; then $0.75 / GB-month |
 | CPU time per invocation | 10 ms | 5 min |
 | Subrequests per request (cron tick included) | 50 | 10,000 |
 | Requests | 100,000 / day | $0.30 / million |
@@ -83,7 +85,7 @@ The REST totals include app-auth middleware queries, the MCP total includes
 bearer resolution, and the cron total covers both cache jobs. No user id,
 credential, request arguments, URL, audit args, or external source JSON is
 logged. The local Workers-runtime coverage is
-`test/d1_observability.test.ts`; the full suite passed with 41 files and 521
+`test/d1_observability.test.ts`; the full suite passed with 41 files and 525
 tests, and TypeScript plus diff hygiene passed. Exact-head review and CI remain
 delivery gates rather than evidence already claimed here.
 

@@ -52,8 +52,11 @@ async function fetch(
 
   // Clone the bindings object for this invocation rather than mutating the
   // shared env. This lets the collector see auth middleware and route queries.
-  return observeD1Usage(env.DB, operation, async (db) =>
-    app.fetch(request, { ...env, DB: db }, ctx),
+  return observeD1Usage(
+    env.DB,
+    operation,
+    async (db) => app.fetch(request, { ...env, DB: db }, ctx),
+    (response) => (response.status >= 500 ? 'error' : 'ok'),
   );
 }
 
@@ -75,21 +78,32 @@ async function scheduled(
   ctx: ExecutionContext,
 ): Promise<void> {
   ctx.waitUntil(
-    observeD1Usage(env.DB, 'cron tick', async (db) => {
-      try {
-        await syncExternalEvents(db, env);
-      } catch (e) {
-        // A sync failure must never crash the scheduled handler — the
-        // failed-fetch guard already left the cache untouched.
-        console.error('scheduled syncExternalEvents failed', e);
-      }
-      try {
-        await syncExternalActivities(db, env);
-      } catch (e) {
-        // Same isolation as the planned-event sync above.
-        console.error('scheduled syncExternalActivities failed', e);
-      }
-    }),
+    observeD1Usage(
+      env.DB,
+      'cron tick',
+      async (db) => {
+        let failed = false;
+        try {
+          const result = await syncExternalEvents(db, env);
+          failed ||= result.status === 'fetch_failed';
+        } catch (e) {
+          failed = true;
+          // A sync failure must never crash the scheduled handler — the
+          // failed-fetch guard already left the cache untouched.
+          console.error('scheduled syncExternalEvents failed', e);
+        }
+        try {
+          const result = await syncExternalActivities(db, env);
+          failed ||= result.status === 'fetch_failed';
+        } catch (e) {
+          failed = true;
+          // Same isolation as the planned-event sync above.
+          console.error('scheduled syncExternalActivities failed', e);
+        }
+        return failed;
+      },
+      (failed) => (failed ? 'error' : 'ok'),
+    ),
   );
 }
 

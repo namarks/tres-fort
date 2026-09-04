@@ -49,6 +49,17 @@ function isGetHistoryCall(body: unknown): boolean {
   return (request.params as { name?: unknown }).name === 'get_history';
 }
 
+function isToolErrorResponse(body: unknown): boolean {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return false;
+  const result = (body as { result?: unknown }).result;
+  return (
+    result !== null &&
+    typeof result === 'object' &&
+    !Array.isArray(result) &&
+    (result as { isError?: unknown }).isError === true
+  );
+}
+
 // No server-initiated streams: GET stream not supported.
 mcpRoutes.get('*', (c) => c.json({ error: 'method_not_allowed' }, 405));
 
@@ -93,6 +104,7 @@ mcpRoutes.post('*', async (c) => {
       userId,
       bg,
     );
+    if (status >= 500 || isToolErrorResponse(json)) outcome = 'error';
     if (json === undefined) return c.body(null, status as any);
     return c.json(json as object, status as any);
   } catch (error) {

@@ -1,6 +1,6 @@
 # Data Storage Scalability
 
-Slug: data-storage-scalability · Status: active · Updated: 2026-09-03 · Theme: platform
+Slug: data-storage-scalability · Status: active · Updated: 2026-09-04 · Theme: platform
 
 ## Goal
 
@@ -32,7 +32,8 @@ Done means:
 
 - [ ] **P0 — Measure before changing anything**
   - Owner confirms the Cloudflare Workers plan tier (Free or Paid) in the
-    dashboard and records it in `decisions.md`. D1 has hard-enforced the Free
+    dashboard and records it in `decisions.md`. Done 2026-09-04: Free, with
+    the dashboard's 24-hour row totals recorded as the daily baseline. D1 has hard-enforced the Free
     daily caps since 2026-09-01 (Cloudflare changelog,
     <https://developers.cloudflare.com/changelog/post/2026-09-01-d1-free-tier-limit-enforcement/>),
     so on Free this plan is an outage-prevention plan and the cheapest
@@ -172,7 +173,7 @@ Done means:
 
 ## Next step
 
-**Now (@owner):** Confirm the Workers plan tier in the Cloudflare dashboard, record it in `decisions.md`, and if it is Free decide whether to move to Paid now as the immediate mitigation while P1–P4 land.
+**Now (@owner):** Tier confirmed Free on 2026-09-04 (see `decisions.md`, with the 24-hour D1 baseline). Decide whether to move to Paid now or before inviting roughly ten more members, the point where the measured per-member usage puts the read cap in reach.
 **Now (@agent):** Complete P0 instrumentation and capture the owner baseline, then start P1 with the server migration and `getState` before the iOS client.
 
 ## Notes / open questions

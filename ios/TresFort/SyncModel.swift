@@ -6,6 +6,111 @@ private struct SessionWriteConflictPayload: Decodable {
     let current_session: SessionRow
 }
 
+/// Process-local ownership for ActivityKit and the single rest notification.
+/// The durable checkpoint is value-based, so a replacement model can resume
+/// to an identical value; this token closes that in-process ABA gap.
+@MainActor
+private enum RunnerArtifactOwnership {
+    private struct Key: Hashable {
+        let defaults: ObjectIdentifier
+        let userID: String
+    }
+
+    private final class Owner {
+        weak var defaults: UserDefaults?
+        let id: UUID
+        let featureSessionEpoch: UInt64
+
+        init(defaults: UserDefaults, id: UUID, featureSessionEpoch: UInt64) {
+            self.defaults = defaults
+            self.id = id
+            self.featureSessionEpoch = featureSessionEpoch
+        }
+    }
+
+    private static var owners: [Key: Owner] = [:]
+
+    static func claim(
+        _ owner: UUID,
+        featureSessionEpoch: UInt64,
+        userID: String?,
+        defaults: UserDefaults
+    ) {
+        guard let userID else { return }
+        let key = Key(defaults: ObjectIdentifier(defaults), userID: userID)
+        let current = owners[key]
+        guard current?.defaults === defaults || current?.defaults == nil else {
+            return
+        }
+        guard current?.featureSessionEpoch ?? 0 <= featureSessionEpoch else {
+            return
+        }
+        owners[key] = Owner(
+            defaults: defaults,
+            id: owner,
+            featureSessionEpoch: featureSessionEpoch)
+    }
+
+    static func isOwned(
+        by owner: UUID,
+        featureSessionEpoch: UInt64,
+        userID: String?,
+        defaults: UserDefaults
+    ) -> Bool {
+        guard let userID else { return false }
+        guard let current = owners[Key(
+            defaults: ObjectIdentifier(defaults), userID: userID)],
+              current.defaults === defaults
+        else { return false }
+        return current.id == owner
+            && current.featureSessionEpoch == featureSessionEpoch
+    }
+
+    static func isOwnedByOther(
+        than owner: UUID,
+        featureSessionEpoch: UInt64,
+        userID: String?,
+        defaults: UserDefaults
+    ) -> Bool {
+        guard let userID,
+              let current = owners[Key(
+                  defaults: ObjectIdentifier(defaults), userID: userID)],
+              current.defaults === defaults
+        else { return false }
+        return current.featureSessionEpoch > featureSessionEpoch
+            || (current.featureSessionEpoch == featureSessionEpoch
+                && current.id != owner)
+    }
+
+    static func release(
+        _ owner: UUID,
+        featureSessionEpoch: UInt64,
+        userID: String?,
+        defaults: UserDefaults
+    ) {
+        guard let userID else { return }
+        let key = Key(defaults: ObjectIdentifier(defaults), userID: userID)
+        if let current = owners[key],
+           current.defaults === defaults,
+           current.id == owner,
+           current.featureSessionEpoch == featureSessionEpoch {
+            owners.removeValue(forKey: key)
+        }
+    }
+}
+
+/// Exact workout identity visible when a terminal UI action is rendered or a
+/// destructive confirmation opens. The token prevents a queued SwiftUI Task
+/// from retargeting itself to a replacement session attempt before it runs.
+struct WorkoutTerminalActionTarget: Equatable {
+    let featureSessionEpoch: UInt64
+    let date: String
+    let sessionID: String?
+    let sessionAttempt: Int?
+    let nilBoundRunnerCheckpoint: WorkoutRunnerCheckpoint?
+    let restartDiscardedAttempt: Int?
+}
+
 @MainActor
 final class SyncModel: ObservableObject {
     @Published var plan: PlanTree?
@@ -71,17 +176,42 @@ final class SyncModel: ObservableObject {
     @Published var timedEndDate: Date?
     @Published var timedStartDate: Date?    // wall-clock start of the hold
 
-    private let api = APIClient()
     private let setWriteAPI: any SetWriteAPI
     private let terminalAPI: any WorkoutTerminalAPI
     private let catalogAPI: any ExerciseCatalogAPI
+    private let planEditingAPI: any PlanEditingAPI
     private unowned let auth: AuthModel
     private let accountID: String?
     private let featureSessionEpoch: UInt64
     private let defaults: UserDefaults
     private let uuidFactory: () -> UUID
     private let now: () -> Date
+    private let runnerArtifactOwnerID = UUID()
     private let restActivityUpdater: (Date, String) -> Void
+    private let restActivityEnder: () -> Void
+    private let restNotificationCanceller: () -> Void
+    /// Identity of the exact rendered hold the user started. Automatic timer
+    /// completion is a new local write, so unlike settlement callbacks it may
+    /// not cross a feature-session epoch or follow selection to another slot.
+    private struct TimedSetAttempt: Equatable {
+        let featureSessionEpoch: UInt64
+        let slotID: String
+        let exerciseID: String
+        let setNumber: Int
+        let holdSeconds: Int
+        let weight: Double
+        let isWarmup: Bool
+        let startedAt: Date
+        let endDate: Date
+    }
+    private struct RunnerExecutionIdentity: Equatable {
+        let slotID: String
+        let exerciseID: String
+        let isWarmup: Bool
+        let isTimed: Bool
+        let isBodyweight: Bool
+    }
+    private var timedSetAttempt: TimedSetAttempt?
     private var timedSetCompletionTask: Task<Void, Never>?
     private var persistedRunnerCheckpoint: WorkoutRunnerCheckpoint?
     /// Restart authorization belongs to the mounted runner, not a generic
@@ -114,6 +244,7 @@ final class SyncModel: ObservableObject {
     private var stateLoadKey: StateLoadKey?
     private var stateFreshnessGeneration: UInt64 = 0
     private var activityPersistenceCancellable: AnyCancellable?
+    private var authBoundaryObserverID: UUID?
     /// Loading presentation is tracked separately from full-state freshness:
     /// account-scoped snapshot tickets own freshness, while an outbox
     /// reconciliation can supersede a load without owning its spinner.
@@ -126,12 +257,19 @@ final class SyncModel: ObservableObject {
         setWriteAPI: any SetWriteAPI = APIClient(),
         terminalAPI: any WorkoutTerminalAPI = APIClient(),
         catalogAPI: any ExerciseCatalogAPI = APIClient(),
+        planEditingAPI: any PlanEditingAPI = APIClient(),
         defaults: UserDefaults = .standard,
         uuidFactory: @escaping () -> UUID = UUID.init,
         now: @escaping () -> Date = Date.init,
         restActivityUpdater: @escaping (Date, String) -> Void = {
             endDate, upNext in
             RestLiveActivity.update(endDate: endDate, upNext: upNext)
+        },
+        restActivityEnder: @escaping () -> Void = {
+            RestLiveActivity.endNow()
+        },
+        restNotificationCanceller: @escaping () -> Void = {
+            RestCue.cancelNotification()
         }
     ) {
         self.auth = auth
@@ -140,10 +278,13 @@ final class SyncModel: ObservableObject {
         self.setWriteAPI = setWriteAPI
         self.terminalAPI = terminalAPI
         self.catalogAPI = catalogAPI
+        self.planEditingAPI = planEditingAPI
         self.defaults = defaults
         self.uuidFactory = uuidFactory
         self.now = now
         self.restActivityUpdater = restActivityUpdater
+        self.restActivityEnder = restActivityEnder
+        self.restNotificationCanceller = restNotificationCanceller
         let persistedCheckpoint = WorkoutRunnerCheckpointStore.load(
             userID: auth.userID, defaults: defaults)
         self.persistedRunnerCheckpoint = persistedCheckpoint
@@ -185,6 +326,12 @@ final class SyncModel: ObservableObject {
                     await self?.loadAfterMutation()
                 }
             }
+        authBoundaryObserverID = auth.observeFeatureSessionBoundary {
+            [weak self] in
+            guard let self else { return false }
+            self.prepareForFeatureSessionBoundary()
+            return true
+        }
     }
 
     /// Bind every request to the account that created this model. An old
@@ -221,6 +368,31 @@ final class SyncModel: ObservableObject {
         return !auth.accountDeletionPending
     }
 
+    /// New user choices belong to the feature session that rendered them.
+    /// Already-durable writes intentionally settle through the broader
+    /// account guard above after same-account reauthentication.
+    private var canInitiateBoundFeatureAction: Bool {
+        canMutateBoundSetAccount
+            && auth.featureSessionEpoch == featureSessionEpoch
+    }
+
+    private var canControlSharedRestArtifacts: Bool {
+        canInitiateBoundFeatureAction
+            && RunnerArtifactOwnership.isOwned(
+                by: runnerArtifactOwnerID,
+                featureSessionEpoch: featureSessionEpoch,
+                userID: accountID,
+                defaults: defaults)
+    }
+
+    private var runnerArtifactsOwnedByOther: Bool {
+        RunnerArtifactOwnership.isOwnedByOther(
+            than: runnerArtifactOwnerID,
+            featureSessionEpoch: featureSessionEpoch,
+            userID: accountID,
+            defaults: defaults)
+    }
+
     var todayString: String {
         let f = DateFormatter()
         f.calendar = Calendar(identifier: .gregorian)
@@ -233,6 +405,35 @@ final class SyncModel: ObservableObject {
     var selectedDay: DayTemplate? {
         guard let plan else { return nil }
         return plan.days.first { $0.id == selectedDayID } ?? plan.days.first
+    }
+
+    var terminalActionTarget: WorkoutTerminalActionTarget? {
+        guard canInitiateBoundFeatureAction else { return nil }
+        let date = todaySession?.date ?? todayString
+        return WorkoutTerminalActionTarget(
+            featureSessionEpoch: featureSessionEpoch,
+            date: date,
+            sessionID: todaySession?.id,
+            sessionAttempt: todaySession?.attempt,
+            nilBoundRunnerCheckpoint:
+                todaySession == nil ? persistedRunnerCheckpoint : nil,
+            restartDiscardedAttempt: runnerRestartDiscardedAttempt)
+    }
+
+    private func matchesTerminalActionTarget(
+        _ target: WorkoutTerminalActionTarget
+    ) -> Bool {
+        guard canInitiateBoundFeatureAction,
+              target.featureSessionEpoch == featureSessionEpoch,
+              target.date == (todaySession?.date ?? todayString),
+              target.sessionID == todaySession?.id,
+              target.sessionAttempt == todaySession?.attempt,
+              target.restartDiscardedAttempt == runnerRestartDiscardedAttempt
+        else { return false }
+        if target.sessionID == nil {
+            return target.nilBoundRunnerCheckpoint == persistedRunnerCheckpoint
+        }
+        return true
     }
 
     func load() async {
@@ -287,65 +488,91 @@ final class SyncModel: ObservableObject {
         let jwt = key.bearer
         loadGeneration += 1
         let thisLoadGeneration = loadGeneration
-        guard let snapshotTicket = StateSnapshotStore.reserveFullStateRequest(
-            userID: accountID, defaults: defaults)
-        else {
-            loadError = "Couldn't reserve local sync state."
-            return
-        }
         isLoading = true
         defer {
             if thisLoadGeneration == loadGeneration { isLoading = false }
         }
-        do {
-            let state = try await setWriteAPI.getState(jwt: jwt)
+        while true {
             guard isCurrentAccount, canMutateBoundSetAccount,
-                  key.featureSessionEpoch == featureSessionEpoch,
-                  key.featureSessionEpoch == auth.featureSessionEpoch,
-                  key.freshnessGeneration == stateFreshnessGeneration else { return }
-            guard applyLiveStateResponse(
-                state,
-                ticket: snapshotTicket
-            ) else { return }
-            // A cached catalog is presentation-only too: always attempt a live
-            // replacement after state succeeds so renamed exercises and changed
-            // load semantics do not freeze forever. A catalog failure retains
-            // the last successful rows, matching the pre-cache best-effort load.
-            if let catalogJWT = currentJWT,
-               let rows = try? await catalogAPI.getExercises(jwt: catalogJWT) {
-                guard isCurrentAccount, canMutateBoundSetAccount,
-                      key.featureSessionEpoch == featureSessionEpoch,
-                      key.featureSessionEpoch == auth.featureSessionEpoch,
-                      key.freshnessGeneration == stateFreshnessGeneration,
-                      StateSnapshotStore.isCurrent(
-                          snapshotTicket, defaults: defaults)
-                else { return }
-                catalog = rows
-                ExerciseCatalogSnapshotStore.save(
-                    rows, userID: accountID, defaults: defaults)
-            }
-            loadError = nil
-        } catch {
-            guard StateSnapshotStore.isCurrent(
-                      snapshotTicket, defaults: defaults),
-                  isCurrentAccount, canMutateBoundSetAccount,
                   key.featureSessionEpoch == featureSessionEpoch,
                   key.featureSessionEpoch == auth.featureSessionEpoch,
                   key.freshnessGeneration == stateFreshnessGeneration
             else { return }
-            let isUnauthorized: Bool
-            if case let APIError.http(code, _) = error {
-                isUnauthorized = code == 401
-            } else {
-                isUnauthorized = false
+            guard let snapshotTicket = StateSnapshotStore.reserveFullStateRequest(
+                userID: accountID, defaults: defaults)
+            else {
+                loadError = "Couldn't reserve local sync state."
+                return
             }
-            if isCurrentAccount, plan != nil,
-               !(error is CancellationError),
-               !isUnauthorized
-            {
-                isUsingCachedState = true
+            do {
+                let state = try await setWriteAPI.getState(jwt: jwt)
+                guard isCurrentAccount, canMutateBoundSetAccount,
+                      key.featureSessionEpoch == featureSessionEpoch,
+                      key.featureSessionEpoch == auth.featureSessionEpoch,
+                      key.freshnessGeneration == stateFreshnessGeneration
+                else { return }
+                if !StateSnapshotStore.isCurrent(
+                    snapshotTicket, defaults: defaults)
+                {
+                    // Retry only when an accepted mutation advanced this exact
+                    // latest request. Another full-state reservation owns a
+                    // newer request and must keep newest-request-wins ordering.
+                    if StateSnapshotStore.wasSupersededByMutation(
+                        snapshotTicket, defaults: defaults)
+                    {
+                        continue
+                    }
+                    return
+                }
+                guard applyLiveStateResponse(
+                    state,
+                    ticket: snapshotTicket
+                ) else {
+                    loadError = "Couldn't save the latest sync state."
+                    return
+                }
+                // A cached catalog is presentation-only too: always attempt a live
+                // replacement after state succeeds so renamed exercises and changed
+                // load semantics do not freeze forever. A catalog failure retains
+                // the last successful rows, matching the pre-cache best-effort load.
+                if let catalogJWT = currentJWT,
+                   let rows = try? await catalogAPI.getExercises(jwt: catalogJWT) {
+                    guard isCurrentAccount, canMutateBoundSetAccount,
+                          key.featureSessionEpoch == featureSessionEpoch,
+                          key.featureSessionEpoch == auth.featureSessionEpoch,
+                          key.freshnessGeneration == stateFreshnessGeneration,
+                          StateSnapshotStore.isCurrent(
+                              snapshotTicket, defaults: defaults)
+                    else { return }
+                    catalog = rows
+                    ExerciseCatalogSnapshotStore.save(
+                        rows, userID: accountID, defaults: defaults)
+                }
+                loadError = nil
+                return
+            } catch {
+                guard StateSnapshotStore.isCurrent(
+                          snapshotTicket, defaults: defaults),
+                      isCurrentAccount, canMutateBoundSetAccount,
+                      key.featureSessionEpoch == featureSessionEpoch,
+                      key.featureSessionEpoch == auth.featureSessionEpoch,
+                      key.freshnessGeneration == stateFreshnessGeneration
+                else { return }
+                let isUnauthorized: Bool
+                if case let APIError.http(code, _) = error {
+                    isUnauthorized = code == 401
+                } else {
+                    isUnauthorized = false
+                }
+                if isCurrentAccount, plan != nil,
+                   !(error is CancellationError),
+                   !isUnauthorized
+                {
+                    isUsingCachedState = true
+                }
+                handle(error, jwt: jwt)
+                return
             }
-            handle(error, jwt: jwt)
         }
     }
 
@@ -386,7 +613,7 @@ final class SyncModel: ObservableObject {
         ticket: StateSnapshotTicket,
         preferredTodaySessionID: String? = nil
     ) -> Bool {
-        guard canMutateBoundSetAccount,
+        guard canInitiateBoundFeatureAction,
               StateSnapshotStore.commitFullState(
                   state, ticket: ticket, defaults: defaults) != nil
         else { return false }
@@ -405,6 +632,10 @@ final class SyncModel: ObservableObject {
         let previousSelectedDayID = selectedDayID
         let runnerWasActive = running
         let activeSlotID = activeRunnerSlotID()
+        let previousExecutionIdentity = activeRunnerExecutionIdentity()
+        let runnerCheckpointBeforeState = persistedRunnerCheckpoint
+        let previousSkippedExecutionState =
+            skippedExecutionStateForCurrentPlan()
         statePlanVersion = state.plan_version
         stateServerTime = state.server_time
         plan = state.plan
@@ -443,14 +674,83 @@ final class SyncModel: ObservableObject {
         } ?? sessions.first {
             $0.date == todayString && $0.status != "discarded"
         }
+        if isLiveResponse {
+            preflightMountedRunnerOwnership(
+                checkpointBeforeState: runnerCheckpointBeforeState)
+        }
         reconcileSelection(
             previousSelectedDayID: previousSelectedDayID,
             activeSlotID: activeSlotID,
-            runnerWasActive: runnerWasActive)
+            runnerWasActive: runnerWasActive && running)
         if isLiveResponse {
+            reconcileInheritedSkips(
+                previousExecutionIdentities:
+                    previousSkippedExecutionState.identities,
+                unverifiedSlotIDs: previousSkippedExecutionState.unverified)
+            let executionIdentityChanged = runnerWasActive
+                && running
+                && previousExecutionIdentity != activeRunnerExecutionIdentity()
+            if executionIdentityChanged {
+                clearTimedSet()
+            }
+            normalizeMountedRunnerProgress(
+                for: todaySession?.date ?? todayString,
+                reseedCurrent: executionIdentityChanged)
             isUsingCachedState = false
             validatePersistedRunnerCheckpoint()
         }
+    }
+
+    /// Reject a mounted checkpoint against the response's attempt/status
+    /// before any progress normalization can persist it with newer server
+    /// identity. The complete validator still runs afterward for inactive
+    /// resume eligibility and normalized checkpoint shape.
+    private func preflightMountedRunnerOwnership(
+        checkpointBeforeState checkpoint: WorkoutRunnerCheckpoint?
+    ) {
+        guard running, let checkpoint else { return }
+        let serverSession = checkpoint.sessionID.flatMap { boundSessionID in
+            sessions.first { $0.id == boundSessionID }
+        } ?? sessions.first { $0.date == checkpoint.date }
+        guard let serverSession else { return }
+        if !checkpointAttemptMatches(checkpoint, serverSession: serverSession) {
+            stopRunnerForStateChange()
+            return
+        }
+        if checkpoint.sessionID == nil,
+           serverSession.status == "discarded",
+           checkpoint.restartDiscardedAttempt == serverSession.attempt
+        {
+            return
+        }
+        guard serverSession.status == "planned"
+                || serverSession.status == "in_progress"
+        else {
+            stopRunnerForStateChange()
+            return
+        }
+    }
+
+    /// Migration 0032 assigns generation zero to legacy rows. A checkpoint
+    /// missing its local attempt therefore means attempt 0, not "adopt
+    /// whichever generation is current." The sole exception is an explicit
+    /// restart, whose marker names the discarded generation and therefore
+    /// expects the next one once the server revives the date.
+    private func checkpointAttemptMatches(
+        _ checkpoint: WorkoutRunnerCheckpoint,
+        serverSession: SessionRow
+    ) -> Bool {
+        if checkpoint.sessionID == nil,
+           serverSession.status == "discarded",
+           checkpoint.restartDiscardedAttempt == serverSession.attempt
+        {
+            return true
+        }
+        guard let serverAttempt = serverSession.attempt else { return true }
+        let expectedAttempt = checkpoint.sessionAttempt
+            ?? checkpoint.restartDiscardedAttempt.map { $0 + 1 }
+            ?? 0
+        return expectedAttempt == serverAttempt
     }
 
     /// Fallback only for the first accepted mutation before this install has a
@@ -979,12 +1279,11 @@ final class SyncModel: ObservableObject {
         workoutStart = nil
         clearTimedSet()
         skipped = []
-        clearRunnerCheckpoint()
-        skipRest()
+        _ = clearRunnerCheckpointAndSharedRest()
     }
 
     private func validatePersistedRunnerCheckpoint() {
-        guard var checkpoint = persistedRunnerCheckpoint else {
+        guard let checkpoint = persistedRunnerCheckpoint else {
             resumableCheckpoint = nil
             return
         }
@@ -1003,9 +1302,8 @@ final class SyncModel: ObservableObject {
                 }
             } ?? sessions.first { $0.date == checkpoint.date }
             if let serverSession {
-                if let checkpointAttempt = checkpoint.sessionAttempt,
-                   let serverAttempt = serverSession.attempt,
-                   checkpointAttempt != serverAttempt
+                if !checkpointAttemptMatches(
+                    checkpoint, serverSession: serverSession)
                 {
                     stopRunnerForStateChange()
                     return
@@ -1035,6 +1333,10 @@ final class SyncModel: ObservableObject {
                     stopRunnerForStateChange()
                     return
                 }
+                if checkpoint.sessionID == nil {
+                    bindRunnerCheckpoint(to: serverSession)
+                    guard running else { return }
+                }
             }
             persistRunnerCheckpoint()
             return
@@ -1042,11 +1344,11 @@ final class SyncModel: ObservableObject {
         let checkpointSession = checkpoint.sessionID.flatMap { sessionID in
             sessions.first { $0.id == sessionID }
         } ?? sessions.first { $0.date == checkpoint.date }
-        if let checkpointAttempt = checkpoint.sessionAttempt,
-           let serverAttempt = checkpointSession?.attempt,
-           checkpointAttempt != serverAttempt
+        if let checkpointSession,
+           !checkpointAttemptMatches(
+               checkpoint, serverSession: checkpointSession)
         {
-            clearRunnerCheckpoint()
+            _ = clearRunnerCheckpointAndSharedRest()
             return
         }
         let hasPendingFirstSet = setOutbox.pending.contains {
@@ -1090,7 +1392,7 @@ final class SyncModel: ObservableObject {
                   $0.id == currentSlotID
               })
         else {
-            clearRunnerCheckpoint()
+            _ = clearRunnerCheckpointAndSharedRest()
             return
         }
 
@@ -1149,7 +1451,8 @@ final class SyncModel: ObservableObject {
     }
 
     private func persistRunnerCheckpoint() {
-        guard canMutateBoundSetAccount,
+        guard canInitiateBoundFeatureAction,
+              !runnerArtifactsOwnedByOther,
               running,
               let selectedDayID,
               let workoutStart,
@@ -1173,20 +1476,25 @@ final class SyncModel: ObservableObject {
         }
         persistedRunnerCheckpoint = checkpoint
         resumableCheckpoint = nil
+        RunnerArtifactOwnership.claim(
+            runnerArtifactOwnerID,
+            featureSessionEpoch: featureSessionEpoch,
+            userID: accountID,
+            defaults: defaults)
     }
 
     /// Session creation and the first set write are separate requests. Bind the
     /// durable runner checkpoint as soon as creation succeeds so a transient
     /// first-set failure cannot strand a nil-session checkpoint on relaunch.
     private func bindRunnerCheckpoint(to session: SessionRow) {
-        guard canMutateBoundSetAccount,
+        guard canInitiateBoundFeatureAction,
+              !runnerArtifactsOwnedByOther,
               let checkpoint = persistedRunnerCheckpoint,
               checkpoint.date == session.date,
               checkpoint.sessionID != session.id
                 || (checkpoint.sessionAttempt == nil && session.attempt != nil),
-              checkpoint.sessionAttempt == nil
-                || session.attempt == nil
-                || checkpoint.sessionAttempt == session.attempt
+              checkpointAttemptMatches(
+                  checkpoint, serverSession: session)
         else { return }
         let bound = WorkoutRunnerCheckpoint(
             date: checkpoint.date,
@@ -1203,6 +1511,13 @@ final class SyncModel: ObservableObject {
             return
         }
         persistedRunnerCheckpoint = bound
+        if running {
+            RunnerArtifactOwnership.claim(
+                runnerArtifactOwnerID,
+                featureSessionEpoch: featureSessionEpoch,
+                userID: accountID,
+                defaults: defaults)
+        }
         runnerRestartDiscardedAttempt = nil
         resumableCheckpoint = nil
     }
@@ -1213,8 +1528,67 @@ final class SyncModel: ObservableObject {
         persistedRunnerCheckpoint = nil
         runnerRestartDiscardedAttempt = nil
         resumableCheckpoint = nil
-        return WorkoutRunnerCheckpointStore.clear(
+        guard canInitiateBoundFeatureAction,
+              !RunnerArtifactOwnership.isOwnedByOther(
+            than: runnerArtifactOwnerID,
+            featureSessionEpoch: featureSessionEpoch,
+            userID: accountID,
+            defaults: defaults)
+        else { return false }
+        let cleared = WorkoutRunnerCheckpointStore.clear(
             ifCurrent: expected,
+            userID: accountID,
+            defaults: defaults)
+        if cleared {
+            // A newer feature epoch may clear an inherited checkpoint owned by
+            // the retired epoch. Claim the shared artifacts long enough for
+            // the caller's terminal teardown (or the next explicit start).
+            RunnerArtifactOwnership.claim(
+                runnerArtifactOwnerID,
+                featureSessionEpoch: featureSessionEpoch,
+                userID: accountID,
+                defaults: defaults)
+        }
+        return cleared
+    }
+
+    /// Retire a checkpoint from the current auth epoch together with the
+    /// process-shared rest artifacts it owns. A stale model can clear only its
+    /// local task; the replacement owner keeps its Live Activity and cue.
+    @discardableResult
+    private func clearRunnerCheckpointAndSharedRest() -> Bool {
+        let shouldTearDownSharedRest =
+            persistedRunnerCheckpoint != nil || canControlSharedRestArtifacts
+        guard clearRunnerCheckpoint() else {
+            relinquishLocalRest()
+            return false
+        }
+        if shouldTearDownSharedRest {
+            skipRest()
+        } else {
+            relinquishLocalRest()
+        }
+        releaseRunnerArtifactOwnership()
+        return true
+    }
+
+    /// End account-visible rest UI before AuthModel invalidates this feature
+    /// epoch. The durable runner checkpoint remains available for a safe,
+    /// live-validated resume after reauthentication; only its current exact
+    /// owner may touch the process-shared ActivityKit/notification pair.
+    private func prepareForFeatureSessionBoundary() {
+        guard canControlSharedRestArtifacts else {
+            relinquishLocalRest()
+            return
+        }
+        skipRest()
+        releaseRunnerArtifactOwnership()
+    }
+
+    private func releaseRunnerArtifactOwnership() {
+        RunnerArtifactOwnership.release(
+            runnerArtifactOwnerID,
+            featureSessionEpoch: featureSessionEpoch,
             userID: accountID,
             defaults: defaults)
     }
@@ -1223,6 +1597,7 @@ final class SyncModel: ObservableObject {
         _ checkpoint: WorkoutRunnerCheckpoint,
         ifCurrent expected: WorkoutRunnerCheckpoint?
     ) -> Bool {
+        guard !runnerArtifactsOwnedByOther else { return false }
         if WorkoutRunnerCheckpointStore.replace(
             checkpoint,
             ifCurrent: expected,
@@ -1237,8 +1612,9 @@ final class SyncModel: ObservableObject {
             userID: accountID, defaults: defaults) == checkpoint
     }
 
-    /// Stop only this stale model. Do not clear the durable checkpoint or rest
-    /// cues: a newer same-account model owns them now.
+    /// Stop only this stale model. Cancel its in-process rest task, but do not
+    /// clear the durable checkpoint or shared rest artifacts: a newer
+    /// same-account model owns them now.
     private func relinquishStaleRunnerCheckpoint() {
         persistedRunnerCheckpoint = nil
         resumableCheckpoint = nil
@@ -1247,6 +1623,7 @@ final class SyncModel: ObservableObject {
         workoutStart = nil
         clearTimedSet()
         skipped = []
+        relinquishLocalRest()
         loadError = "This workout continued in another app view. Refresh to continue."
     }
 
@@ -1259,6 +1636,96 @@ final class SyncModel: ObservableObject {
               day.exercises.indices.contains(exerciseIndex)
         else { return nil }
         return day.exercises[exerciseIndex].id
+    }
+
+    private func executionIdentity(
+        for ex: TemplateExercise
+    ) -> RunnerExecutionIdentity {
+        RunnerExecutionIdentity(
+            slotID: ex.id,
+            exerciseID: ex.exercise_id,
+            isWarmup: ex.isWarmup,
+            isTimed: ex.isTimed,
+            isBodyweight: ex.isBodyweight)
+    }
+
+    /// Capture the executable identity behind every durable/in-memory skip
+    /// before a live plan replacement. Slot UUID alone is insufficient: an
+    /// editor can replace the movement in place, and the new work must not
+    /// inherit the old movement's user choice.
+    private func skippedExecutionStateForCurrentPlan()
+        -> (
+            identities: [String: RunnerExecutionIdentity],
+            unverified: Set<String>
+        )
+    {
+        var skippedSlotIDs = skipped
+        if let checkpoint = persistedRunnerCheckpoint {
+            skippedSlotIDs.formUnion(checkpoint.skippedSlotIDs)
+        }
+        var identities: [String: RunnerExecutionIdentity] = [:]
+        for ex in plan?.days.flatMap(\.exercises) ?? []
+        where skippedSlotIDs.contains(ex.id) {
+            identities[ex.id] = executionIdentity(for: ex)
+        }
+        return (identities, skippedSlotIDs.subtracting(identities.keys))
+    }
+
+    /// Drop skips whose stable slot now describes different executable work,
+    /// and update the durable checkpoint before resume validation. This covers
+    /// both mounted non-active slots and cold-launch checkpoints restored from
+    /// an older cached plan.
+    private func reconcileInheritedSkips(
+        previousExecutionIdentities: [String: RunnerExecutionIdentity],
+        unverifiedSlotIDs: Set<String>
+    ) {
+        var currentIdentities: [String: RunnerExecutionIdentity] = [:]
+        for ex in plan?.days.flatMap(\.exercises) ?? [] {
+            currentIdentities[ex.id] = executionIdentity(for: ex)
+        }
+        let changedSlotIDs = unverifiedSlotIDs.union(
+            previousExecutionIdentities.compactMap {
+            slotID, identity in
+            currentIdentities[slotID] == identity ? nil : slotID
+            })
+        guard !changedSlotIDs.isEmpty else { return }
+        skipped.subtract(changedSlotIDs)
+
+        guard let checkpoint = persistedRunnerCheckpoint else { return }
+        let retainedSkipped = checkpoint.skippedSlotIDs.filter {
+            !changedSlotIDs.contains($0)
+        }
+        guard retainedSkipped != checkpoint.skippedSlotIDs else { return }
+        let normalized = WorkoutRunnerCheckpoint(
+            date: checkpoint.date,
+            sessionID: checkpoint.sessionID,
+            selectedDayID: checkpoint.selectedDayID,
+            currentSlotID: checkpoint.currentSlotID,
+            skippedSlotIDs: retainedSkipped,
+            workoutStartedAtMS: checkpoint.workoutStartedAtMS,
+            finished: checkpoint.finished,
+            sessionAttempt: checkpoint.sessionAttempt,
+            restartDiscardedAttempt: checkpoint.restartDiscardedAttempt)
+        guard replaceRunnerCheckpoint(normalized, ifCurrent: checkpoint) else {
+            relinquishStaleRunnerCheckpoint()
+            return
+        }
+        persistedRunnerCheckpoint = normalized
+        if running {
+            RunnerArtifactOwnership.claim(
+                runnerArtifactOwnerID,
+                featureSessionEpoch: featureSessionEpoch,
+                userID: accountID,
+                defaults: defaults)
+        }
+        if resumableCheckpoint == checkpoint { resumableCheckpoint = normalized }
+    }
+
+    private func activeRunnerExecutionIdentity() -> RunnerExecutionIdentity? {
+        guard activeRunnerSlotID() != nil, let ex = currentExercise else {
+            return nil
+        }
+        return executionIdentity(for: ex)
     }
 
     /// Inactive state prefers the real session's remapped day. An active
@@ -1300,6 +1767,10 @@ final class SyncModel: ObservableObject {
         } else {
             stopRunnerForStateChange()
         }
+        // A live plan/set refresh may retain the runner while changing the
+        // slot or displayed set that an active hold was bound to. Fail closed
+        // immediately instead of letting the old deadline write its successor.
+        if timedActive { _ = validatedTimedSetAttempt() }
     }
 
     /// Stop only local execution state; the already-logged server data stays.
@@ -1310,8 +1781,7 @@ final class SyncModel: ObservableObject {
         workoutStart = nil
         clearTimedSet()
         skipped = []
-        clearRunnerCheckpoint()
-        skipRest()
+        _ = clearRunnerCheckpointAndSharedRest()
     }
 
     /// Adopt a successful aliased write when the follow-up full refresh is
@@ -1425,17 +1895,23 @@ final class SyncModel: ObservableObject {
         // iOS logger always sends a slot id now, so this only affects that
         // specific delete-then-re-add edit path.
         let unique = dayExercises.filter {
-            $0.exercise_id == ex.exercise_id && ($0.isWarmup ? 1 : 0) == warm
+            $0.exercise_id == ex.exercise_id
+                && ($0.isWarmup ? 1 : 0) == warm
+                && $0.isTimed == ex.isTimed
         }.count == 1
         return sets.filter { s in
             guard s.session_id == sessionID, s.deleted_at == nil else { return false }
+            // The per-set flag is authoritative after migration 0024. Legacy
+            // rows intentionally fall back to catalog modality: duration is
+            // not reliable because older rep sets can carry incidental timing.
+            // Never infer from today's slot, which would let a later mode edit
+            // inherit completion across rep/timed work.
+            let setIsTimed = isTimedSet(s)
+            guard setIsTimed == ex.isTimed else { return false }
             // Slot-linked set: attribute to this slot ONLY when the movement AND
-            // the warm-up class also match. The slot id alone is not trusted — a
-            // stale/swapped link (slot since changed to a different exercise) or
-            // a warm-up set mis-pointed at a working slot of the same movement
-            // must never count toward, or complete, this slot. This cross-check
-            // is the completion invariant; the backend write-guards (log_set,
-            // update_plan remap) are belt-and-suspenders over it.
+            // the warm-up/timed classes also match. The slot id alone is not
+            // trusted — a stale link after a swap or mode flip must never count
+            // toward, or complete, the replacement slot.
             if let teid = s.template_exercise_id {
                 return teid == ex.id && s.exercise_id == ex.exercise_id && s.is_warmup == warm
             }
@@ -1540,6 +2016,8 @@ final class SyncModel: ObservableObject {
         let volume: Double?
         let setCount: Int
         let bestHoldSeconds: Int?
+        let hasTimedSets: Bool
+        let avgDuration: Int
     }
 
     private func epley(_ w: Double, _ r: Int) -> Double { w * (1 + Double(r) / 30) }
@@ -1592,9 +2070,22 @@ final class SyncModel: ObservableObject {
                 totalReps: totalReps(for: repRows),
                 volume: totalTonnage(for: repRows),
                 setCount: rows.count,
-                bestHoldSeconds: timedDurations.max())
+                bestHoldSeconds: timedDurations.max(),
+                hasTimedSets: !timedRows.isEmpty,
+                avgDuration: timedDurations.isEmpty
+                    ? 0
+                    : timedDurations.reduce(0, +) / timedDurations.count)
         }
         .sorted { $0.date < $1.date }
+    }
+
+    /// Only sessions with a timed hold duration (including the legacy reps
+    /// fallback) belong on this trend. Mixed rep/hold histories must not
+    /// synthesize 0-second points for rep-only sessions.
+    func durationHistory(for exerciseID: String) -> [SessionStat] {
+        history(for: exerciseID).filter {
+            $0.hasTimedSets && $0.avgDuration > 0
+        }
     }
 
     var pendingSetIntentCount: Int { setOutbox.count }
@@ -1693,20 +2184,32 @@ final class SyncModel: ObservableObject {
         return current
     }
 
-    func pendingSetIntents(for ex: TemplateExercise) -> [PendingSetIntent] {
-        let date = todaySession?.date ?? todayString
-        return setOutbox.pending.filter {
-            $0.date == date && $0.slotID == ex.id
-        }
+    private func setIntent(
+        _ intent: PendingSetIntent,
+        matches ex: TemplateExercise,
+        on date: String
+    ) -> Bool {
+        intent.date == date
+            && intent.slotID == ex.id
+            && intent.body.exercise_id == ex.exercise_id
+            && intent.body.is_warmup == ex.isWarmup
+            && intent.body.is_timed == ex.isTimed
     }
 
-    func isSetEntryBlocked(slotID: String) -> Bool {
+    func pendingSetIntents(for ex: TemplateExercise) -> [PendingSetIntent] {
+        let date = todaySession?.date ?? todayString
+        return setOutbox.pending.filter { setIntent($0, matches: ex, on: date) }
+    }
+
+    func isSetEntryBlocked(_ ex: TemplateExercise) -> Bool {
         if hasPendingTerminalIntentForCurrentWorkout || isTerminalMutationInFlight {
             return true
         }
-        if setSlotsInFlight.contains(slotID) { return true }
+        if setSlotsInFlight.contains(ex.id) { return true }
+        let date = todaySession?.date ?? todayString
         return setOutbox.pending.contains {
-            $0.slotID == slotID && $0.deliveryState == .failed
+            setIntent($0, matches: ex, on: date)
+                && $0.deliveryState == .failed
         }
     }
 
@@ -1771,20 +2274,18 @@ final class SyncModel: ObservableObject {
         let acknowledgedPendingIDs = Set(
             setOutbox.pending.lazy.map(\.id).filter(serverIDs.contains))
         guard !acknowledgedPendingIDs.isEmpty else { return }
-        let acknowledgedDates = Set(setOutbox.pending.lazy.filter {
-            acknowledgedPendingIDs.contains($0.id)
-        }.map(\.date))
         for id in acknowledgedPendingIDs { setOutbox.remove(id: id) }
         persistRemovedSetIntentIDs(acknowledgedPendingIDs)
-        for date in acknowledgedDates {
-            normalizeMountedRunnerProgress(for: date)
-        }
+        // applyState remaps the active stable slot after the plan assignment,
+        // then performs one authoritative runner normalization. Normalizing
+        // here would interpret the old numeric index against a newly reordered
+        // plan and could clear a valid timed attempt.
     }
 
     /// Explicitly re-arm one permanent 4xx failure. The request body remains
     /// byte-for-byte equivalent under Codable and retains its original UUID.
     func retrySetIntent(id: String) async {
-        guard canMutateBoundSetAccount,
+        guard canInitiateBoundFeatureAction,
               var intent = setOutbox.pending.first(where: { $0.id == id }),
               intent.deliveryState == .failed
         else { return }
@@ -1797,7 +2298,7 @@ final class SyncModel: ObservableObject {
     }
 
     func retryFailedSetIntents() async {
-        guard canMutateBoundSetAccount else { return }
+        guard canInitiateBoundFeatureAction else { return }
         var changed = false
         var rearmedDates: Set<String> = []
         for var intent in setOutbox.pending where intent.deliveryState == .failed {
@@ -1843,7 +2344,8 @@ final class SyncModel: ObservableObject {
         durationOverride: Int?
     ) -> PendingSetIntent? {
         let workoutDate = todaySession?.date ?? todayString
-        guard currentJWT != nil, canMutateBoundSetAccount,
+        guard canInitiateBoundFeatureAction,
+              currentJWT != nil, canMutateBoundSetAccount,
               !isTerminalMutationInFlight,
               terminalOutbox.intent(for: workoutDate) == nil,
               !setSlotsInFlight.contains(ex.id)
@@ -1856,7 +2358,7 @@ final class SyncModel: ObservableObject {
         // Index per SLOT. Pending (queued OR visibly failed) intents reserve
         // their index so intentional offline sets remain distinct; completion
         // still counts acknowledged `SetLog` rows only.
-        let nextIndex = todaySlotSets(ex).count + pendingSetIntents(for: ex).count + 1
+        let nextIndex = nextReservedSetIndex(for: ex)
         let body = SetRequestBody(
             id: uuidFactory().uuidString,
             exercise_id: ex.exercise_id,
@@ -2811,18 +3313,53 @@ final class SyncModel: ObservableObject {
     /// acknowledged set exactly as the original tap would have; the caller's
     /// post-await check is idempotent because it sees the new current slot (or
     /// the already-finished flag).
-    private func normalizeMountedRunnerProgress(for date: String) {
-        guard running,
-              date == todayString,
-              let current = currentExercise,
-              isComplete(current)
-        else { return }
-        if let next = nextIncompleteIndex {
-            jump(to: next)
-        } else {
-            finished = true
+    private func normalizeMountedRunnerProgress(
+        for date: String,
+        reseedCurrent: Bool = false
+    ) {
+        if running {
+            preflightMountedRunnerOwnership(
+                checkpointBeforeState: persistedRunnerCheckpoint)
+        }
+        guard running, date == todayString, !exercises.isEmpty else { return }
+        let unresolved = exercises.indices.filter {
+            !isRunnerResolved(exercises[$0])
+        }
+        guard !unresolved.isEmpty else {
+            if !finished {
+                finished = true
+                persistRunnerCheckpoint()
+            }
+            updateRestActivityAfterRunnerNormalization()
+            return
+        }
+
+        let wasFinished = finished
+        var selectionChanged = false
+        if !unresolved.contains(exerciseIndex) {
+            let n = exercises.count
+            let next = (1...n)
+                .map { (exerciseIndex + $0) % n }
+                .first(where: unresolved.contains) ?? unresolved[0]
+            exerciseIndex = next
+            selectionChanged = true
+        }
+        finished = false
+        if reseedCurrent || selectionChanged || wasFinished {
+            seedInputs()
+        }
+        if reseedCurrent || selectionChanged || wasFinished {
             persistRunnerCheckpoint()
         }
+        updateRestActivityAfterRunnerNormalization()
+    }
+
+    private func currentExerciseMatchesRenderedAction(
+        _ expected: TemplateExercise,
+        current: TemplateExercise
+    ) -> Bool {
+        executionIdentity(for: expected) == executionIdentity(for: current)
+            && (!expected.isTimed || expected.holdSeconds == current.holdSeconds)
     }
 
     // MARK: runner
@@ -2835,6 +3372,13 @@ final class SyncModel: ObservableObject {
     var currentSetNumber: Int {
         guard let ex = currentExercise else { return 1 }
         return runnerSetsDone(ex) + 1
+    }
+
+    /// Stable write index for the next physical set. Failed intents remain in
+    /// the outbox and keep reserving their original index even though the
+    /// presentation count reopens them for retry.
+    private func nextReservedSetIndex(for ex: TemplateExercise) -> Int {
+        todaySlotSets(ex).count + pendingSetIntents(for: ex).count + 1
     }
 
     /// Runner progress counts every locally durable set exactly once. Pending
@@ -2883,8 +3427,12 @@ final class SyncModel: ObservableObject {
 
     private func reopenFailedRunnerIntentIfStable(for date: String) {
         guard !timedActive,
-              let failed = setOutbox.pending.first(where: {
-                  $0.date == date && $0.deliveryState == .failed
+              let failed = setOutbox.pending.first(where: { intent in
+                  intent.date == date
+                      && intent.deliveryState == .failed
+                      && exercises.contains(where: {
+                          setIntent(intent, matches: $0, on: date)
+                      })
               })
         else { return }
         reopenMountedRunner(for: failed)
@@ -2893,7 +3441,7 @@ final class SyncModel: ObservableObject {
     private func reopenMountedRunner(for failedIntent: PendingSetIntent) {
         guard running, failedIntent.date == todayString,
               let index = exercises.firstIndex(where: {
-                  $0.id == failedIntent.slotID
+                  setIntent(failedIntent, matches: $0, on: todayString)
               }) else { return }
         // A delayed rejection must not abort a later physical timed set. The
         // failed intent stays durable and visible; commitTimedSet reopens it as
@@ -2917,6 +3465,19 @@ final class SyncModel: ObservableObject {
 
     private func updateRestActivityAfterRunnerNormalization() {
         guard let end = restEndDate else { return }
+        guard canInitiateBoundFeatureAction,
+              let checkpoint = persistedRunnerCheckpoint,
+              WorkoutRunnerCheckpointStore.load(
+                  userID: accountID, defaults: defaults) == checkpoint,
+              RunnerArtifactOwnership.isOwned(
+                  by: runnerArtifactOwnerID,
+                  featureSessionEpoch: featureSessionEpoch,
+                  userID: accountID,
+                  defaults: defaults)
+        else {
+            relinquishStaleRunnerCheckpoint()
+            return
+        }
         restActivityUpdater(end, restActivityCurrentStepName)
     }
 
@@ -2941,6 +3502,7 @@ final class SyncModel: ObservableObject {
     }
 
     func startWorkout() {
+        guard canInitiateBoundFeatureAction, currentJWT != nil else { return }
         guard allowNewWorkoutStart() else { return }
         let date = todaySession?.date ?? todayString
         var restartDiscardedAttempt = sessions.first(where: {
@@ -2964,7 +3526,7 @@ final class SyncModel: ObservableObject {
                 date: date, userID: accountID, defaults: defaults)
             ownedTerminalIntentIDs.remove(terminal.id)
         }
-        guard clearRunnerCheckpoint() else {
+        guard clearRunnerCheckpointAndSharedRest() else {
             loadError = "This workout is already active in another app view. Refresh to continue."
             return
         }
@@ -3022,6 +3584,7 @@ final class SyncModel: ObservableObject {
     /// plan slot ids. Timed-set progress is intentionally not restored: the
     /// current slot restarts from its stable boundary.
     func resumeWorkout() {
+        guard canInitiateBoundFeatureAction, currentJWT != nil else { return }
         guard !running,
               let checkpoint = resumableCheckpoint,
               let session = sessions.first(where: {
@@ -3037,7 +3600,7 @@ final class SyncModel: ObservableObject {
                   $0.id == currentSlotID
               })
         else {
-            clearRunnerCheckpoint()
+            _ = clearRunnerCheckpointAndSharedRest()
             return
         }
 
@@ -3054,16 +3617,36 @@ final class SyncModel: ObservableObject {
                 TimeInterval(checkpoint.workoutStartedAtMS) / 1_000)
         running = true
         finished = checkpoint.finished
-        skipRest()
         seedInputs()
+        // Resume is the explicit same-epoch ownership handoff. A second model
+        // may have loaded the exact same checkpoint value, so claim before the
+        // value-based persistence CAS can otherwise look like an ABA success.
+        RunnerArtifactOwnership.claim(
+            runnerArtifactOwnerID,
+            featureSessionEpoch: featureSessionEpoch,
+            userID: accountID,
+            defaults: defaults)
         persistRunnerCheckpoint()
+        guard running,
+              RunnerArtifactOwnership.isOwned(
+                  by: runnerArtifactOwnerID,
+                  featureSessionEpoch: featureSessionEpoch,
+                  userID: accountID,
+                  defaults: defaults)
+        else { return }
+        skipRest()
     }
 
     /// Seed weight/reps from last time → plan target → default.
     private func seedInputs() {
         clearTimedSet()
         guard let ex = currentExercise else { return }
-        let last = lastWorkingSet(ex.exercise_id)
+        // A same-slot prescription can switch between timed and rep work.
+        // Seed only from history in the current execution class so seconds
+        // cannot become reps (or vice versa) after an edit.
+        let last = live(ex.exercise_id)
+            .filter { isTimedSet($0) == ex.isTimed }
+            .max { $0.logged_at < $1.logged_at }
         // Bodyweight/static-hold load is relative to bodyweight: positive
         // added load, zero strict, negative assistance. It is visible and
         // editable, so carry the last/target value like any other exercise.
@@ -3077,19 +3660,45 @@ final class SyncModel: ObservableObject {
 
     // MARK: timed exercises (plank, holds)
 
-    func startTimedSet(at start: Date? = nil) {
-        guard let ex = currentExercise, ex.isTimed,
+    func startTimedSet(
+        expected renderedExercise: TemplateExercise,
+        expectedSetNumber: Int,
+        at start: Date? = nil
+    ) {
+        guard canInitiateBoundFeatureAction,
+              currentJWT != nil,
+              running,
+              !finished,
+              let ex = currentExercise,
+              currentExerciseMatchesRenderedAction(renderedExercise, current: ex),
+              currentSetNumber == expectedSetNumber,
+              ex.isTimed,
+              !timedActive,
+              !isRunnerComplete(ex),
               !isTerminalMutationInFlight,
               !hasPendingTerminalIntentForCurrentWorkout,
-              !isSetEntryBlocked(slotID: ex.id)
+              !isSetEntryBlocked(ex)
         else { return }
+        skipped.remove(ex.id)
         timedActive = true
         let startedAt = start ?? now()
+        let endDate = startedAt.addingTimeInterval(TimeInterval(ex.holdSeconds))
         timedStartDate = startedAt
         // Count down the prescribed hold (target_duration_s, fallback
         // target_reps) — not target_reps directly, which was 1s for slots
         // that never set a duration (the "plank ended instantly" bug).
-        timedEndDate = startedAt.addingTimeInterval(TimeInterval(ex.holdSeconds))
+        timedEndDate = endDate
+        timedSetAttempt = TimedSetAttempt(
+            featureSessionEpoch: featureSessionEpoch,
+            slotID: ex.id,
+            exerciseID: ex.exercise_id,
+            setNumber: nextReservedSetIndex(for: ex),
+            holdSeconds: ex.holdSeconds,
+            weight: weight,
+            isWarmup: ex.isWarmup,
+            startedAt: startedAt,
+            endDate: endDate)
+        persistRunnerCheckpoint()
         scheduleTimedSetCompletion()
     }
 
@@ -3098,8 +3707,8 @@ final class SyncModel: ObservableObject {
     /// same due-date check as a catch-up path.
     private func scheduleTimedSetCompletion() {
         timedSetCompletionTask?.cancel()
-        guard let end = timedEndDate else { return }
-        let delay = max(0, end.timeIntervalSince(now()))
+        guard let attempt = timedSetAttempt else { return }
+        let delay = max(0, attempt.endDate.timeIntervalSince(now()))
         let maximumDelay = Double(UInt64.max / 1_000_000_000)
         let nanoseconds = UInt64(min(delay, maximumDelay) * 1_000_000_000)
         timedSetCompletionTask = Task { [weak self] in
@@ -3107,11 +3716,12 @@ final class SyncModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: nanoseconds)
             }
             guard !Task.isCancelled, let self else { return }
+            guard self.timedSetAttempt == attempt else { return }
             // This task owns the expiry path now. Detach it from the model
             // before commit clears timer state so the network write does not
             // inherit a cancellation from cancelling itself.
             self.timedSetCompletionTask = nil
-            await self.finishTimedSetIfDue()
+            await self.finishTimedSetIfDue(requiring: attempt)
         }
     }
 
@@ -3121,6 +3731,37 @@ final class SyncModel: ObservableObject {
         timedActive = false
         timedEndDate = nil
         timedStartDate = nil
+        timedSetAttempt = nil
+    }
+
+    /// Return the original hold only while every identity component still
+    /// matches the rendered runner. Any mismatch invalidates the timer and
+    /// clears it before it can enqueue a set.
+    private func validatedTimedSetAttempt(
+        requiring expected: TimedSetAttempt? = nil
+    ) -> (attempt: TimedSetAttempt, exercise: TemplateExercise)? {
+        guard timedActive,
+              canInitiateBoundFeatureAction,
+              currentJWT != nil,
+              let attempt = timedSetAttempt,
+              expected == nil || expected == attempt,
+              attempt.featureSessionEpoch == featureSessionEpoch,
+              auth.featureSessionEpoch == attempt.featureSessionEpoch,
+              let ex = currentExercise,
+              ex.id == attempt.slotID,
+              ex.exercise_id == attempt.exerciseID,
+              nextReservedSetIndex(for: ex) == attempt.setNumber,
+              ex.isTimed,
+              !isRunnerComplete(ex),
+              ex.holdSeconds == attempt.holdSeconds,
+              ex.isWarmup == attempt.isWarmup,
+              timedStartDate == attempt.startedAt,
+              timedEndDate == attempt.endDate
+        else {
+            clearTimedSet()
+            return nil
+        }
+        return (attempt, ex)
     }
 
     /// Whole seconds held so far in the running timed set (0 when idle).
@@ -3136,17 +3777,26 @@ final class SyncModel: ObservableObject {
     /// FULL target hold. The model-owned deadline task calls this even when
     /// the runner view is no longer mounted.
     func finishTimedSetAuto() async {
-        guard let ex = currentExercise else { return }
-        await commitTimedSet(held: ex.holdSeconds)
+        guard let validated = validatedTimedSetAttempt() else { return }
+        await commitTimedSet(validated, held: validated.attempt.holdSeconds)
     }
 
     /// Complete only after the stored deadline. Called by both the model-owned
     /// task and foreground recovery after iOS resumes a suspended app.
     func finishTimedSetIfDue(at date: Date? = nil) async {
-        guard timedActive, let end = timedEndDate,
-              (date ?? now()) >= end
+        guard let validated = validatedTimedSetAttempt(),
+              (date ?? now()) >= validated.attempt.endDate
         else { return }
-        await finishTimedSetAuto()
+        await commitTimedSet(validated, held: validated.attempt.holdSeconds)
+    }
+
+    /// Model-owned completion additionally proves that the sleeping task still
+    /// owns the attempt it captured before it detached itself from the model.
+    private func finishTimedSetIfDue(requiring attempt: TimedSetAttempt) async {
+        guard let validated = validatedTimedSetAttempt(requiring: attempt),
+              now() >= validated.attempt.endDate
+        else { return }
+        await commitTimedSet(validated, held: validated.attempt.holdSeconds)
     }
 
     /// Manual STOP — logs the ACTUAL elapsed hold (capped at the prescribed
@@ -3155,21 +3805,31 @@ final class SyncModel: ObservableObject {
     /// it's ignored (the timer keeps running) so it can't log a junk "1s"
     /// set, the symptom in #55.
     func stopTimedSet() async {
-        guard let ex = currentExercise else { return }
+        guard let validated = validatedTimedSetAttempt() else { return }
         let elapsed = timedElapsed
         guard elapsed >= 2 else { return }
-        await commitTimedSet(held: min(elapsed, ex.holdSeconds))
+        await commitTimedSet(
+            validated, held: min(elapsed, validated.attempt.holdSeconds))
     }
 
     /// Single commit path for a timed set — logs reps=held, duration=held
     /// (≥1s) and advances. Both auto and manual completion route here.
-    private func commitTimedSet(held: Int) async {
-        guard let ex = currentExercise, timedActive else { return }
+    private func commitTimedSet(
+        _ validated: (attempt: TimedSetAttempt, exercise: TemplateExercise),
+        held: Int
+    ) async {
+        guard timedSetAttempt == validated.attempt, timedActive else { return }
+        let ex = validated.exercise
         clearTimedSet()
         skipped.remove(ex.id)   // logging work un-skips this slot
         persistRunnerCheckpoint()
         let secs = max(1, held)
-        guard queueRunnerSet(ex, weight: weight, reps: secs, durationOverride: secs) else {
+        guard queueRunnerSet(
+            ex,
+            weight: validated.attempt.weight,
+            reps: secs,
+            durationOverride: secs)
+        else {
             persistRunnerCheckpoint()
             return
         }
@@ -3221,16 +3881,21 @@ final class SyncModel: ObservableObject {
     }
 
     func logCurrentSet(
-        expectedSlotID: String,
+        expected renderedExercise: TemplateExercise,
         expectedSetNumber: Int
     ) async {
         // A SwiftUI button action launches an unstructured Task. Bind that
         // work to the slot and set number visible at tap time so a queued
         // duplicate cannot run after the first tap advances the runner and
         // accidentally log the successor exercise.
-        guard let ex = currentExercise,
-              ex.id == expectedSlotID,
-              currentSetNumber == expectedSetNumber
+        guard canInitiateBoundFeatureAction,
+              running,
+              !finished,
+              let ex = currentExercise,
+              currentExerciseMatchesRenderedAction(renderedExercise, current: ex),
+              currentSetNumber == expectedSetNumber,
+              !isRunnerComplete(ex),
+              !isSetEntryBlocked(ex)
         else { return }
         skipped.remove(ex.id)   // logging work un-skips this slot
         persistRunnerCheckpoint()
@@ -3246,6 +3911,9 @@ final class SyncModel: ObservableObject {
     /// session (so it is NOT requeued, #3) and advances to the next
     /// unresolved exercise; ends the workout if none remain.
     func skip() {
+        // Skip is a terminal decision for the rendered hold even when there is
+        // no next slot and `jump` therefore never calls `seedInputs`.
+        clearTimedSet()
         if let ex = currentExercise { skipped.insert(ex.id) }
         if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
         persistRunnerCheckpoint()
@@ -3271,7 +3939,7 @@ final class SyncModel: ObservableObject {
     }
 
     func finishWorkout() async {
-        guard canMutateBoundSetAccount, currentJWT != nil else { return }
+        guard canInitiateBoundFeatureAction, currentJWT != nil else { return }
         persistRunnerCheckpoint()
         let date = todaySession?.date ?? todayString
         if terminalOutbox.intent(for: date) == nil {
@@ -3293,6 +3961,31 @@ final class SyncModel: ObservableObject {
         await drainWorkoutWriteOutboxes()
     }
 
+    func finishWorkout(expected target: WorkoutTerminalActionTarget) async {
+        guard matchesTerminalActionTarget(target) else { return }
+        await finishWorkout()
+    }
+
+    /// FinishedView is rendered only after every slot resolves, but a live
+    /// refresh may reopen work before SwiftUI removes that view. Revalidate
+    /// the completion state at action time; the overflow menu intentionally
+    /// keeps `finishWorkout()` as its explicit early-end path.
+    func finishResolvedWorkout() async {
+        guard running,
+              finished,
+              !exercises.isEmpty,
+              exercises.allSatisfy({ isRunnerResolved($0) })
+        else { return }
+        await finishWorkout()
+    }
+
+    func finishResolvedWorkout(
+        expected target: WorkoutTerminalActionTarget
+    ) async {
+        guard matchesTerminalActionTarget(target) else { return }
+        await finishResolvedWorkout()
+    }
+
     /// Discard today's session — "I didn't really do this." Throws the
     /// logged sets away and marks the session discarded server-side; the
     /// day VANISHES (reverts to its scheduled/rest projection) rather than
@@ -3300,7 +3993,7 @@ final class SyncModel: ObservableObject {
     /// the runner/Live Activity don't linger; `load()` then pulls the
     /// vanished state. Restarting the day creates a fresh session.
     func discardWorkout() async {
-        guard canMutateBoundSetAccount, currentJWT != nil else { return }
+        guard canInitiateBoundFeatureAction, currentJWT != nil else { return }
         let date = todaySession?.date ?? todayString
         let intent = WorkoutTerminalIntent(
             id: uuidFactory().uuidString,
@@ -3318,14 +4011,18 @@ final class SyncModel: ObservableObject {
         // this barrier and performs the same supersession before any drain.
         terminalOutbox.enqueue(intent)
         persistEnqueuedTerminalIntent(intent)
-        clearRunnerCheckpoint()
         supersedeSetIntentsForDiscardBarriers()
         applyLocalDiscardMask()
         await drainWorkoutWriteOutboxes()
     }
 
+    func discardWorkout(expected target: WorkoutTerminalActionTarget) async {
+        guard matchesTerminalActionTarget(target) else { return }
+        await discardWorkout()
+    }
+
     func retryTerminalIntent(id: String) async {
-        guard canMutateBoundSetAccount,
+        guard canInitiateBoundFeatureAction,
               var intent = terminalOutbox.intents.first(where: { $0.id == id }),
               intent.deliveryState == .failed
         else { return }
@@ -3337,7 +4034,7 @@ final class SyncModel: ObservableObject {
     }
 
     func retryFailedTerminalIntents() async {
-        guard canMutateBoundSetAccount else { return }
+        guard canInitiateBoundFeatureAction else { return }
         var changed = false
         for var intent in terminalOutbox.intents
         where intent.deliveryState == .failed {
@@ -3362,80 +4059,67 @@ final class SyncModel: ObservableObject {
     // override) keeps one source of truth and mirrors how Claude edits — an
     // added erg warm-up recurs on that day, which is what you want for a
     // warm-up. Any edit can shift slot indices (add/delete/reorder before the
-    // current one) or remove the active slot itself, so after a reload we pin
-    // the runner back to the same physical slot by id — capture it before
-    // load(), restore it after.
+    // current one) or remove the active slot itself. The live-state apply path
+    // owns stable-slot remapping and only reseeds when executable identity
+    // changes, preserving an in-flight timed hold across harmless edits.
 
     func addExerciseToDay(_ dayID: String, exercise: String, isWarmup: Bool,
                           targetSets: Int, targetReps: Int, targetRepsMax: Int?,
                           restSeconds: Int,
                           targetDurationS: Int?) async {
-        guard let jwt = currentJWT else { return }
-        let activeSlotID = currentExercise?.id
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return }
         do {
-            _ = try await api.addExercise(
+            _ = try await planEditingAPI.addExercise(
                 dayID: dayID, exercise: exercise, isWarmup: isWarmup,
                 targetSets: targetSets, targetReps: targetReps,
                 targetRepsMax: targetRepsMax,
                 restSeconds: restSeconds, targetDurationS: targetDurationS, jwt: jwt)
+            guard canInitiateBoundFeatureAction else {
+                auth.noteAccountStatePersisted(for: accountID)
+                return
+            }
             await loadAfterMutation()
-            restoreActiveSlot(activeSlotID)
+            guard canInitiateBoundFeatureAction else {
+                auth.noteAccountStatePersisted(for: accountID)
+                return
+            }
         } catch { handle(error, jwt: jwt) }
     }
 
     func deleteSlot(dayID: String, teID: String) async {
-        guard let jwt = currentJWT else { return }
-        let activeSlotID = currentExercise?.id
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return }
         do {
-            try await api.deleteExerciseSlot(dayID: dayID, teID: teID, jwt: jwt)
+            try await planEditingAPI.deleteExerciseSlot(
+                dayID: dayID, teID: teID, jwt: jwt)
+            guard canInitiateBoundFeatureAction else {
+                auth.noteAccountStatePersisted(for: accountID)
+                return
+            }
             await loadAfterMutation()
-            restoreActiveSlot(activeSlotID)
+            guard canInitiateBoundFeatureAction else {
+                auth.noteAccountStatePersisted(for: accountID)
+                return
+            }
         } catch { handle(error, jwt: jwt) }
     }
 
     /// Move a slot to a new position. The backend densifies sibling
     /// order_index values around the requested destination.
     func moveSlot(dayID: String, teID: String, toIndex: Int) async {
-        guard let jwt = currentJWT else { return }
-        let activeSlotID = currentExercise?.id
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return }
         do {
-            _ = try await api.updateExerciseSlot(
+            _ = try await planEditingAPI.updateExerciseSlot(
                 dayID: dayID, teID: teID, fields: ["order_index": toIndex], jwt: jwt)
+            guard canInitiateBoundFeatureAction else {
+                auth.noteAccountStatePersisted(for: accountID)
+                return
+            }
             await loadAfterMutation()
-            restoreActiveSlot(activeSlotID)
+            guard canInitiateBoundFeatureAction else {
+                auth.noteAccountStatePersisted(for: accountID)
+                return
+            }
         } catch { handle(error, jwt: jwt) }
-    }
-
-    /// After an edit reloads the plan, keep the runner on the same physical
-    /// slot it was executing. Re-find the slot by its stable
-    /// TemplateExercise.id, since a numeric exerciseIndex silently points at a
-    /// different lift once a slot before it is added/removed/reordered. If the
-    /// active slot itself was deleted (id gone), keep the index — it now lands
-    /// on the slot that followed the deletion — and clamp it into bounds.
-    private func restoreActiveSlot(_ previousID: String?) {
-        guard running else { return }
-        // The editor just removed the last slot mid-workout — nothing left to
-        // run. Stop the runner non-destructively (logged sets are kept; no
-        // completeSession) so the user lands back on Today instead of a blank
-        // RunnerView (currentExercise nil); re-entering the day resumes. Mirror
-        // finishWorkout's local teardown so the rest cue / Live Activity don't
-        // linger.
-        if exercises.isEmpty {
-            exerciseIndex = 0
-            running = false
-            finished = false
-            workoutStart = nil
-            clearRunnerCheckpoint()
-            skipRest()
-            return
-        }
-        if let previousID, let i = exercises.firstIndex(where: { $0.id == previousID }) {
-            exerciseIndex = i
-        } else if exerciseIndex >= exercises.count {
-            exerciseIndex = exercises.count - 1
-        }
-        seedInputs()
-        persistRunnerCheckpoint()
     }
 
     // MARK: rest timer
@@ -3447,10 +4131,9 @@ final class SyncModel: ObservableObject {
     }
 
     func removeSet(_ set: SetLog) async {
-        guard let jwt = currentJWT else { return }
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return }
         do {
             try await setWriteAPI.deleteSet(setId: set.id, jwt: jwt)
-            sets.removeAll { $0.id == set.id }
             // The endpoint can also revert the last-set session to `planned`,
             // but it does not return that session. Invalidate rather than
             // guessing; a cold offline launch must never resurrect this set.
@@ -3461,6 +4144,11 @@ final class SyncModel: ObservableObject {
                 StateSnapshotStore.clear(
                     userID: accountID, defaults: defaults)
             }
+            guard canInitiateBoundFeatureAction else {
+                auth.noteAccountStatePersisted(for: accountID)
+                return
+            }
+            sets.removeAll { $0.id == set.id }
         } catch { handle(error, jwt: jwt) }
     }
 
@@ -3470,6 +4158,10 @@ final class SyncModel: ObservableObject {
     private var restCueTask: Task<Void, Never>?
 
     func startRest(seconds: Int, name: String) {
+        guard canControlSharedRestArtifacts else {
+            relinquishStaleRunnerCheckpoint()
+            return
+        }
         restExercise = name
         restTotal = seconds
         let end = Date().addingTimeInterval(TimeInterval(seconds))
@@ -3479,7 +4171,10 @@ final class SyncModel: ObservableObject {
         RestCue.scheduleNotification(at: end)
     }
     func addRest(_ seconds: Int) {
-        guard let end = restEndDate else { return }
+        guard canControlSharedRestArtifacts, let end = restEndDate else {
+            if restEndDate != nil { relinquishStaleRunnerCheckpoint() }
+            return
+        }
         let newEnd = end.addingTimeInterval(TimeInterval(seconds))
         restEndDate = newEnd
         RestLiveActivity.update(endDate: newEnd, upNext: upNextName)
@@ -3487,11 +4182,22 @@ final class SyncModel: ObservableObject {
         RestCue.scheduleNotification(at: newEnd)
     }
     func skipRest() {
+        guard canControlSharedRestArtifacts else {
+            relinquishStaleRunnerCheckpoint()
+            return
+        }
+        relinquishLocalRest()
+        restActivityEnder()
+        restNotificationCanceller()
+    }
+
+    /// Cancel only this model's local rest state. A stale same-account model
+    /// that loses the runner-checkpoint CAS must not end the replacement
+    /// model's process-global Live Activity or notification.
+    private func relinquishLocalRest() {
         restEndDate = nil
         restCueTask?.cancel()
         restCueTask = nil
-        RestLiveActivity.endNow()
-        RestCue.cancelNotification()
     }
 
     /// The lift to name in the rest cue: the one the runner is ON when rest
@@ -3509,15 +4215,27 @@ final class SyncModel: ObservableObject {
     /// same robustness the timed-set runner needed (#55). The cue only sounds
     /// if this is still the same, still-active rest when the deadline arrives.
     private func scheduleRestCue(for end: Date) {
+        guard canControlSharedRestArtifacts else {
+            relinquishStaleRunnerCheckpoint()
+            return
+        }
         restCueTask?.cancel()
         restCueTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self, self.restEndDate == end else { return }
+                guard self.canControlSharedRestArtifacts else {
+                    self.relinquishStaleRunnerCheckpoint()
+                    return
+                }
                 if Date() >= end { break }
                 try? await Task.sleep(nanoseconds: 250_000_000)
             }
             if Task.isCancelled { return }
             guard let self, self.restEndDate == end else { return }
+            guard self.canControlSharedRestArtifacts else {
+                self.relinquishStaleRunnerCheckpoint()
+                return
+            }
             // Announce the exercise the runner is actually ON when rest ends —
             // NOT upNextName, which returns the next DIFFERENT exercise. By the
             // time rest ends the index has already advanced (logCurrentSet jumps
@@ -3535,6 +4253,10 @@ final class SyncModel: ObservableObject {
             // when the user taps the notification within the lateness window.
             let alreadyCued = await RestCue.notificationWasDelivered()
             if Task.isCancelled || self.restEndDate != end { return }
+            guard self.canControlSharedRestArtifacts else {
+                self.relinquishStaleRunnerCheckpoint()
+                return
+            }
             if !alreadyCued {
                 RestCue.play(upNext: self.restCueLift)
             }
@@ -3954,34 +4676,51 @@ final class SyncModel: ObservableObject {
         if let skipped = todaySession, skipped.status == "skipped" {
             guard !isReopeningSkippedWorkout else { return }
             isReopeningSkippedWorkout = true
-            Task { await reopenSkippedWorkoutAndStart(skipped) }
+            Task {
+                await reopenSkippedWorkoutAndStart(
+                    skipped, requestedDayID: dayID)
+            }
             return
         }
         startWorkout()
     }
 
-    private func reopenSkippedWorkoutAndStart(_ skipped: SessionRow) async {
+    private func reopenSkippedWorkoutAndStart(
+        _ skipped: SessionRow,
+        requestedDayID: String
+    ) async {
         defer { isReopeningSkippedWorkout = false }
-        guard canMutateBoundSetAccount, let jwt = currentJWT else { return }
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return }
         do {
             let response = try await setWriteAPI.reopenSkippedSession(
                 sessionId: skipped.id,
-                dayTemplateID: selectedDayID,
+                dayTemplateID: requestedDayID,
                 expectedAttempt: skipped.attempt ?? 0,
                 jwt: jwt)
             guard canMutateBoundSetAccount,
                   response.id == skipped.id,
                   response.date == skipped.date,
                   response.status == "planned",
+                  response.day_template_id == requestedDayID,
                   response.attempt == nil
                     || response.attempt == (skipped.attempt ?? 0) + 1,
                   let accepted = acceptSessionResolution(response),
-                  accepted.status == "planned"
+                  accepted.status == "planned",
+                  accepted.day_template_id == requestedDayID
             else {
                 throw APIError.decoding(
                     "Skipped-session reopen did not advance the workout")
             }
+            guard canInitiateBoundFeatureAction else {
+                // The account still owns the accepted server mutation, but
+                // this model no longer owns the feature session that rendered
+                // the choice. Wake the replacement model instead of mounting
+                // a stale runner or overwriting its checkpoint.
+                auth.noteAccountStatePersisted(for: accountID)
+                return
+            }
             loadError = nil
+            selectedDayID = requestedDayID
             // The network gate has completed; clear it before entering the
             // shared start guard, which intentionally blocks while a reopen
             // is still in flight.
@@ -3992,6 +4731,10 @@ final class SyncModel: ObservableObject {
                conflict.current_session.date == skipped.date
             {
                 adoptSessionWriteConflict(conflict.current_session)
+                guard canInitiateBoundFeatureAction else {
+                    auth.noteAccountStatePersisted(for: accountID)
+                    return
+                }
                 loadError = "Today's session changed elsewhere. Review it before starting."
                 return
             }

@@ -136,6 +136,9 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
         let newer = try XCTUnwrap(StateSnapshotStore.reserveFullStateRequest(
             userID: "user-a", defaults: defaults))
 
+        XCTAssertFalse(StateSnapshotStore.wasSupersededByMutation(
+            older, defaults: defaults))
+
         XCTAssertNil(StateSnapshotStore.commitFullState(
             try state(planName: "Stale", serverTime: Int.max),
             ticket: older,
@@ -166,6 +169,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             fallback: try state(planName: "Fallback"),
             defaults: defaults
         ) { _ in acknowledged })
+        XCTAssertTrue(StateSnapshotStore.wasSupersededByMutation(
+            ticket, defaults: defaults))
         XCTAssertNil(StateSnapshotStore.commitFullState(
             try state(planName: "Late response"),
             ticket: ticket,
@@ -208,6 +213,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
 
         XCTAssertTrue(StateSnapshotStore.invalidate(
             userID: "user-a", defaults: defaults))
+        XCTAssertTrue(StateSnapshotStore.wasSupersededByMutation(
+            ticket, defaults: defaults))
         XCTAssertNil(StateSnapshotStore.load(
             userID: "user-a", defaults: defaults))
         XCTAssertNil(StateSnapshotStore.commitFullState(

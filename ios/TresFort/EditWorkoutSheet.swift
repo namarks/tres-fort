@@ -203,8 +203,15 @@ private struct ConfigureExerciseView: View {
 
     /// Cardio ergs (rowing/bike/ski, treadmill) are logged by minutes.
     private var isCardio: Bool { exercise.modality == "cardio" }
-    /// Any non-cardio movement can be prescribed as repetitions or a hold.
-    private var isHold: Bool { targetMode == .hold }
+    /// Timed catalog rows are intrinsically holds. Until the slot schema has
+    /// an explicit modality override, offering Reps would still execute them
+    /// as seconds in TemplateExercise.isTimed.
+    private var canChooseMeasure: Bool {
+        ExercisePrescriptionPolicy.canChooseMeasure(for: exercise.modality)
+    }
+    private var isHold: Bool {
+        exercise.modality == "timed" || targetMode == .hold
+    }
 
     var body: some View {
         Form {
@@ -219,7 +226,7 @@ private struct ConfigureExerciseView: View {
                 Section("Duration") {
                     Stepper("\(minutes) min", value: $minutes, in: 1...60)
                 }
-            } else {
+            } else if canChooseMeasure {
                 Section("Measure") {
                     Picker("Measure", selection: $targetMode) {
                         ForEach(TargetMode.allCases, id: \.self) { mode in
@@ -289,5 +296,11 @@ private struct ConfigureExerciseView: View {
         .navigationTitle(exercise.name)
         .navigationBarTitleDisplayMode(.inline)
         .tint(Theme.accent)
+    }
+}
+
+enum ExercisePrescriptionPolicy {
+    static func canChooseMeasure(for modality: String) -> Bool {
+        modality != "timed" && modality != "cardio"
     }
 }

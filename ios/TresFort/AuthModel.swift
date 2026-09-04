@@ -54,6 +54,14 @@ final class AuthModel: ObservableObject {
     @Published var userID: String?
 
     func noteActivityPersisted(for accountID: String?) {
+        noteAccountStatePersisted(for: accountID)
+    }
+
+    /// Cross-model refresh signal for any successful same-account server
+    /// mutation completed by a feature model from an older session epoch.
+    /// The publisher retains its original activity-oriented name for source
+    /// compatibility with the existing subscribers.
+    func noteAccountStatePersisted(for accountID: String?) {
         guard let accountID, userID == accountID, featureJWT != nil else {
             return
         }
@@ -79,11 +87,30 @@ final class AuthModel: ObservableObject {
     private let appleCredentialChecker: any AppleCredentialStateChecking
     private let defaults: UserDefaults
     private let now: () -> Date
+    /// Weak-owner callbacks registered by mounted feature models. AuthModel
+    /// invokes them immediately before an account boundary makes their epoch
+    /// stale, so process-shared UI such as Live Activities cannot outlive the
+    /// signed-in account. A `false` result prunes a deallocated observer.
+    private var featureSessionBoundaryObservers: [UUID: () -> Bool] = [:]
     static let userIDKey = "com.nmarkspdx.liftcoach.user-id.v1"
     static let onboardedKey = "com.nmarkspdx.liftcoach.onboarded.v1"
     static let postDeletionAppleRevocationKey =
         "com.nmarkspdx.liftcoach.post-deletion-apple-revocation.v1"
     static let renewalWindow: TimeInterval = 7 * 24 * 60 * 60
+
+    @discardableResult
+    func observeFeatureSessionBoundary(
+        _ observer: @escaping () -> Bool
+    ) -> UUID {
+        let id = UUID()
+        featureSessionBoundaryObservers[id] = observer
+        return id
+    }
+
+    private func notifyFeatureSessionBoundary() {
+        featureSessionBoundaryObservers =
+            featureSessionBoundaryObservers.filter { $0.value() }
+    }
 
     private static func serverErrorCode(in body: String) -> String? {
         guard let data = body.data(using: .utf8) else { return nil }
@@ -247,6 +274,9 @@ final class AuthModel: ObservableObject {
                 phase = .error("session identity mismatch")
                 return
             }
+            if featureJWT != nil {
+                notifyFeatureSessionBoundary()
+            }
             AccountLocalState.bindLegacyState(
                 userID: res.user.id, defaults: defaults)
             featureSessionEpoch &+= 1
@@ -368,6 +398,7 @@ final class AuthModel: ObservableObject {
             phase = .signedIn
             return
         }
+        notifyFeatureSessionBoundary()
         featureSessionEpoch &+= 1
         tokenStore.clear()
         jwt = nil
@@ -383,6 +414,7 @@ final class AuthModel: ObservableObject {
                 "Account deletion is awaiting confirmation. Retry account deletion to finish."
             return
         }
+        notifyFeatureSessionBoundary()
         featureSessionEpoch &+= 1
         tokenStore.clear()
         defaults.removeObject(forKey: Self.userIDKey)
@@ -409,6 +441,9 @@ final class AuthModel: ObservableObject {
         } else {
             idempotencyKey = UUID().uuidString
             defaults.set(idempotencyKey, forKey: deletionKeyName)
+        }
+        if userID == accountID, !accountDeletionPending {
+            notifyFeatureSessionBoundary()
         }
         if userID == accountID {
             accountDeletionPending = true

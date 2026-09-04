@@ -114,6 +114,7 @@ enum WorkoutRunnerCheckpointStore {
 struct StateSnapshotTicket: Equatable {
     fileprivate let userID: String
     fileprivate let revision: UInt64
+    fileprivate let mutationGeneration: UInt64
 }
 
 struct StateSnapshotValue {
@@ -130,6 +131,11 @@ enum StateSnapshotStore {
         let revision: UInt64
         let state: StateResponse?
         let invalidated: Bool?
+        /// Revision of the newest full-state reservation. ACK/invalidation
+        /// revisions preserve this value so a superseded request can tell a
+        /// mutation apart from a genuinely newer full pull.
+        let latestFullRequestRevision: UInt64?
+        let mutationGeneration: UInt64?
     }
 
     static func scopedKey(userID: String) -> String {
@@ -157,17 +163,23 @@ enum StateSnapshotStore {
         guard let userID else { return nil }
         let current = storedSnapshot(userID: userID, defaults: defaults)
             ?? StoredStateSnapshot(
-                revision: 0, state: nil, invalidated: false)
+                revision: 0, state: nil, invalidated: false,
+                latestFullRequestRevision: nil,
+                mutationGeneration: 0)
         guard current.revision < UInt64.max else { return nil }
         let reserved = StoredStateSnapshot(
             revision: current.revision + 1,
             state: current.state,
-            invalidated: current.invalidated)
+            invalidated: current.invalidated,
+            latestFullRequestRevision: current.revision + 1,
+            mutationGeneration: current.mutationGeneration ?? 0)
         guard write(reserved, userID: userID, defaults: defaults) else {
             return nil
         }
         return StateSnapshotTicket(
-            userID: userID, revision: reserved.revision)
+            userID: userID,
+            revision: reserved.revision,
+            mutationGeneration: reserved.mutationGeneration ?? 0)
     }
 
     static func isCurrent(
@@ -176,6 +188,21 @@ enum StateSnapshotStore {
     ) -> Bool {
         storedSnapshot(userID: ticket.userID, defaults: defaults)?.revision
             == ticket.revision
+    }
+
+    /// True only when an ACK/invalidation advanced this exact latest full
+    /// request. A later full-state reservation is different: newest request
+    /// wins, and the older caller must not issue a trailing pull that can
+    /// overtake it.
+    static func wasSupersededByMutation(
+        _ ticket: StateSnapshotTicket,
+        defaults: UserDefaults = .standard
+    ) -> Bool {
+        guard let current = storedSnapshot(
+            userID: ticket.userID, defaults: defaults)
+        else { return false }
+        return (current.mutationGeneration ?? 0) > ticket.mutationGeneration
+            && current.latestFullRequestRevision == ticket.revision
     }
 
     /// A full response may replace the snapshot only while its request ticket
@@ -200,7 +227,11 @@ enum StateSnapshotStore {
     ) -> StateSnapshotValue? {
         guard isCurrent(ticket, defaults: defaults) else { return nil }
         let stored = StoredStateSnapshot(
-            revision: ticket.revision, state: state, invalidated: false)
+            revision: ticket.revision,
+            state: state,
+            invalidated: false,
+            latestFullRequestRevision: ticket.revision,
+            mutationGeneration: ticket.mutationGeneration)
         guard write(stored, userID: ticket.userID, defaults: defaults) else {
             return nil
         }
@@ -220,7 +251,9 @@ enum StateSnapshotStore {
         guard let userID else { return nil }
         let current = storedSnapshot(userID: userID, defaults: defaults)
             ?? StoredStateSnapshot(
-                revision: 0, state: nil, invalidated: false)
+                revision: 0, state: nil, invalidated: false,
+                latestFullRequestRevision: nil,
+                mutationGeneration: 0)
         // A successful mutation such as set deletion can prove that every
         // cached full state is stale without returning enough data to rebuild
         // it. Until a new full response commits, never let a delayed ACK
@@ -228,12 +261,17 @@ enum StateSnapshotStore {
         guard current.invalidated != true || current.state != nil else {
             return nil
         }
-        guard current.revision < UInt64.max else { return nil }
+        let mutationGeneration = current.mutationGeneration ?? 0
+        guard current.revision < UInt64.max,
+              mutationGeneration < UInt64.max
+        else { return nil }
         let state = transform(current.state ?? fallback)
         let stored = StoredStateSnapshot(
             revision: current.revision + 1,
             state: state,
-            invalidated: false)
+            invalidated: false,
+            latestFullRequestRevision: current.latestFullRequestRevision,
+            mutationGeneration: mutationGeneration + 1)
         guard write(stored, userID: userID, defaults: defaults) else {
             return nil
         }
@@ -250,13 +288,20 @@ enum StateSnapshotStore {
         guard let userID else { return false }
         let current = storedSnapshot(userID: userID, defaults: defaults)
             ?? StoredStateSnapshot(
-                revision: 0, state: nil, invalidated: false)
-        guard current.revision < UInt64.max else { return false }
+                revision: 0, state: nil, invalidated: false,
+                latestFullRequestRevision: nil,
+                mutationGeneration: 0)
+        let mutationGeneration = current.mutationGeneration ?? 0
+        guard current.revision < UInt64.max,
+              mutationGeneration < UInt64.max
+        else { return false }
         return write(
             StoredStateSnapshot(
                 revision: current.revision + 1,
                 state: nil,
-                invalidated: true),
+                invalidated: true,
+                latestFullRequestRevision: current.latestFullRequestRevision,
+                mutationGeneration: mutationGeneration + 1),
             userID: userID,
             defaults: defaults)
     }
@@ -281,7 +326,9 @@ enum StateSnapshotStore {
         // StateResponse at this same account-scoped key.
         if let legacy = try? JSONDecoder().decode(StateResponse.self, from: data) {
             return StoredStateSnapshot(
-                revision: 0, state: legacy, invalidated: false)
+                revision: 0, state: legacy, invalidated: false,
+                latestFullRequestRevision: nil,
+                mutationGeneration: 0)
         }
         return nil
     }

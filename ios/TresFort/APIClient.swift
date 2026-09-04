@@ -529,6 +529,36 @@ protocol ExerciseCatalogAPI {
 
 extension APIClient: ExerciseCatalogAPI {}
 
+/// Narrow plan-editor seam so delayed mutation callbacks can be proven across
+/// feature-session replacement without exercising URLSession in unit tests.
+@MainActor
+protocol PlanEditingAPI {
+    func addExercise(
+        dayID: String,
+        exercise: String,
+        isWarmup: Bool,
+        targetSets: Int,
+        targetReps: Int,
+        targetRepsMax: Int?,
+        restSeconds: Int,
+        targetDurationS: Int?,
+        jwt: String
+    ) async throws -> APIClient.SlotIDRow
+    func updateExerciseSlot(
+        dayID: String,
+        teID: String,
+        fields: [String: Any],
+        jwt: String
+    ) async throws -> APIClient.SlotIDRow
+    func deleteExerciseSlot(
+        dayID: String,
+        teID: String,
+        jwt: String
+    ) async throws
+}
+
+extension APIClient: PlanEditingAPI {}
+
 /// Narrow terminal-session seam used only to prove the P0 exclusion between
 /// destructive/completing session mutations and new set persistence.
 @MainActor

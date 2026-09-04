@@ -15,6 +15,11 @@ export default defineWorkersConfig(async () => {
       poolOptions: {
         workers: {
           singleWorker: true,
+          // Already the default; pinned because the suites rely on it: a
+          // describe-level beforeAll seed stays visible to every `it` in the
+          // block while each `it`'s own writes are rolled back, which is what
+          // makes the exact per-case audit/note counts hold.
+          isolatedStorage: true,
           wrangler: { configPath: './wrangler.jsonc' },
           miniflare: {
             bindings: {

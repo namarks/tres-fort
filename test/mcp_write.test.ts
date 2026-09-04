@@ -26,126 +26,170 @@ async function call(name: string, args: unknown) {
 }
 
 describe('mcp write tools', () => {
-  it('builds, mutates, and audits the plan via chat-style calls', async () => {
-    // 1. build a plan from scratch
-    const built = await call('update_plan', {
-      name: 'Upper/Lower',
-      days: [
-        {
-          day_label: 'A',
-          name: 'Upper A',
-          exercises: [
-            { exercise: 'bench', target_sets: 3, target_reps: 5, target_reps_max: 8 },
-            { exercise: 'barbell row', target_sets: 3, target_reps: 8 },
-          ],
-        },
-        {
-          day_label: 'B',
-          name: 'Lower B',
-          exercises: [
-            { exercise: 'squat', target_sets: 3, target_reps: 5 },
-            { exercise: 'rdl', target_sets: 3, target_reps: 8 },
-          ],
-        },
-      ],
+  describe('builds, mutates, and audits the plan via chat-style calls', () => {
+    // One seed for the block. vitest-pool-workers' default isolatedStorage
+    // keeps beforeAll writes visible to every `it` below and undoes each
+    // `it`'s own writes after it runs, so every case starts from this same
+    // plan at the same version. The cases are independent by design: a
+    // single sequential case covering all of them made 17 Worker round-trips
+    // and sat near vitest's 5 s default per-test timeout on a CI runner.
+    let built: any;
+    let v: number;
+
+    beforeAll(async () => {
+      // build a plan from scratch
+      built = await call('update_plan', {
+        name: 'Upper/Lower',
+        days: [
+          {
+            day_label: 'A',
+            name: 'Upper A',
+            exercises: [
+              { exercise: 'bench', target_sets: 3, target_reps: 5, target_reps_max: 8 },
+              { exercise: 'barbell row', target_sets: 3, target_reps: 8 },
+            ],
+          },
+          {
+            day_label: 'B',
+            name: 'Lower B',
+            exercises: [
+              { exercise: 'squat', target_sets: 3, target_reps: 5 },
+              { exercise: 'rdl', target_sets: 3, target_reps: 8 },
+            ],
+          },
+        ],
+      });
+      expect(built.conflict).toBe(false);
+      expect(built.plan.days).toHaveLength(2);
+      v = built.plan.version;
+      expect(v).toBeGreaterThan(1);
     });
-    expect(built.conflict).toBe(false);
-    expect(built.plan.days).toHaveLength(2);
-    const v = built.plan.version;
-    expect(v).toBeGreaterThan(1);
 
-    // 2. optimistic concurrency: a stale expected_version conflicts
-    const stale = await call('update_plan', { name: 'x', expected_version: 1, days: [] });
-    expect(stale).toMatchObject({ conflict: true, current_version: v });
+    it('update_plan: a stale expected_version conflicts; the current one rebuilds, audited + noted', async () => {
+      // optimistic concurrency: a stale expected_version conflicts
+      const stale = await call('update_plan', { name: 'x', expected_version: 1, days: [] });
+      expect(stale).toMatchObject({ conflict: true, current_version: v });
 
-    // 3. correct expected_version succeeds
-    const fresh = await call('update_plan', {
-      expected_version: v,
-      name: 'Upper/Lower v2',
-      days: built.plan.days.map((d: any) => ({
-        day_label: d.day_label,
-        name: d.name,
-        exercises: d.exercises.map((e: any) => ({
-          exercise: e.exercise_id,
-          target_sets: e.target_sets,
-          target_reps: e.target_reps,
+      // correct expected_version succeeds
+      const fresh = await call('update_plan', {
+        expected_version: v,
+        name: 'Upper/Lower v2',
+        days: built.plan.days.map((d: any) => ({
+          day_label: d.day_label,
+          name: d.name,
+          exercises: d.exercises.map((e: any) => ({
+            exercise: e.exercise_id,
+            target_sets: e.target_sets,
+            target_reps: e.target_reps,
+          })),
         })),
-      })),
-    });
-    expect(fresh.conflict).toBe(false);
-    expect(fresh.plan.version).toBeGreaterThan(v);
+      });
+      expect(fresh.conflict).toBe(false);
+      expect(fresh.plan.version).toBeGreaterThan(v);
 
-    // 4. swap RDL -> front squat on day B
-    const swap = await call('swap_exercise', {
-      day: 'B',
-      from_exercise: 'rdl',
-      to_exercise: 'front squat',
-    });
-    expect(swap.exercise_id).toBe('ex_front_squat');
-
-    // 5. add a deadlift day, then an exercise to it
-    const day = await call('add_day', { name: 'Deadlift Day', day_label: 'D' });
-    expect(day.day_label).toBe('D');
-    const added = await call('add_exercise', {
-      day: 'D',
-      exercise: 'deadlift',
-      target_sets: 3,
-      target_reps: 5,
-    });
-    expect(added.exercise_id).toBe('ex_deadlift');
-
-    // 6. patch that slot
-    const patched = await call('update_exercise', {
-      day: 'D',
-      exercise: 'deadlift',
-      patch: { target_sets: 5, target_weight: 315 },
-    });
-    expect(patched.target_sets).toBe(5);
-    expect(patched.target_weight).toBe(315);
-
-    // 7. log a set (auto-creates today's session) + complete it
-    const logged = await call('log_set', { exercise: 'bench', weight: 225, reps: 8, rpe: 8 });
-    expect(logged.deduped).toBe(false);
-    expect(logged.set.source).toBe('mcp');
-    const done = await call('log_workout_complete', { perceived_fatigue: 7 });
-    expect(done.status).toBe('completed');
-    expect(done.perceived_fatigue).toBe(7);
-    expect(
-      await env.DB
-        .prepare('SELECT write_protocol FROM sessions WHERE id = ?1')
-        .bind(logged.set.session_id)
-        .first(),
-    ).toEqual({ write_protocol: 'legacy' });
-
-    // 8. "I'm beat — adjust" scales day A's sets and bumps version
-    const before = (await call('get_current_plan', {})).version;
-    const adj = await call('adjust_today', {
-      intent: 'reduce_volume',
-      magnitude: 'moderate',
-      day_label: 'A',
-      reason: 'slept 4h, HRV tanked',
-    });
-    expect(adj.changes.length).toBeGreaterThan(0);
-    expect((await call('get_current_plan', {})).version).toBeGreaterThan(before);
-
-    // 9. explicit coaching note
-    expect(await call('add_note', { scope: 'general', body: 'deload next week' })).toMatchObject({
-      ok: true,
+      // every call is audited, the conflict included; only successful
+      // rebuilds write a Claude note
+      const audits = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM audit_log WHERE actor='mcp' AND tool='update_plan'",
+      ).first<{ c: number }>();
+      expect(audits!.c).toBe(3); // seed build + stale + fresh
+      const notes = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM notes WHERE author='claude' AND body LIKE 'Rebuilt plan:%'",
+      ).first<{ c: number }>();
+      expect(notes!.c).toBe(2); // seed build + fresh
     });
 
-    // 10. audit trail + Claude notes were written
-    const audits = await env.DB.prepare(
-      "SELECT COUNT(*) AS c FROM audit_log WHERE actor='mcp'",
-    ).first<{ c: number }>();
-    expect(audits!.c).toBeGreaterThanOrEqual(9);
-    const notes = await env.DB.prepare(
-      "SELECT COUNT(*) AS c FROM notes WHERE author='claude'",
-    ).first<{ c: number }>();
-    expect(notes!.c).toBeGreaterThan(0);
-    const reason = await env.DB.prepare(
-      "SELECT body FROM notes WHERE body LIKE '%HRV tanked%' LIMIT 1",
-    ).first<{ body: string }>();
-    expect(reason?.body).toContain('reduce_volume');
+    it('swap_exercise / add_day / add_exercise / update_exercise edit the tree in place, each audited + noted', async () => {
+      // swap RDL -> front squat on day B
+      const swap = await call('swap_exercise', {
+        day: 'B',
+        from_exercise: 'rdl',
+        to_exercise: 'front squat',
+      });
+      expect(swap.exercise_id).toBe('ex_front_squat');
+
+      // add a deadlift day, then an exercise to it
+      const day = await call('add_day', { name: 'Deadlift Day', day_label: 'D' });
+      expect(day.day_label).toBe('D');
+      const added = await call('add_exercise', {
+        day: 'D',
+        exercise: 'deadlift',
+        target_sets: 3,
+        target_reps: 5,
+      });
+      expect(added.exercise_id).toBe('ex_deadlift');
+
+      // patch that slot
+      const patched = await call('update_exercise', {
+        day: 'D',
+        exercise: 'deadlift',
+        patch: { target_sets: 5, target_weight: 315 },
+      });
+      expect(patched.target_sets).toBe(5);
+      expect(patched.target_weight).toBe(315);
+
+      // audit trail + Claude notes were written, one of each per mutation
+      const audits = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM audit_log WHERE actor='mcp' AND tool IN ('swap_exercise','add_day','add_exercise','update_exercise')",
+      ).first<{ c: number }>();
+      expect(audits!.c).toBe(4);
+      const notes = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM notes WHERE author='claude'",
+      ).first<{ c: number }>();
+      expect(notes!.c).toBe(5); // seed rebuild + one per mutation above
+    });
+
+    it("log_set auto-creates today's session on the legacy write protocol; log_workout_complete closes it", async () => {
+      const logged = await call('log_set', { exercise: 'bench', weight: 225, reps: 8, rpe: 8 });
+      expect(logged.deduped).toBe(false);
+      expect(logged.set.source).toBe('mcp');
+      const done = await call('log_workout_complete', { perceived_fatigue: 7 });
+      expect(done.status).toBe('completed');
+      expect(done.perceived_fatigue).toBe(7);
+      expect(
+        await env.DB
+          .prepare('SELECT write_protocol FROM sessions WHERE id = ?1')
+          .bind(logged.set.session_id)
+          .first(),
+      ).toEqual({ write_protocol: 'legacy' });
+
+      // both log writes are audited
+      const audits = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM audit_log WHERE actor='mcp' AND tool IN ('log_set','log_workout_complete')",
+      ).first<{ c: number }>();
+      expect(audits!.c).toBe(2);
+    });
+
+    it("adjust_today scales day A's sets, bumps the version, and stores the reason as a note; add_note records a coaching note", async () => {
+      // "I'm beat — adjust" scales day A's sets and bumps version
+      const adj = await call('adjust_today', {
+        intent: 'reduce_volume',
+        magnitude: 'moderate',
+        day_label: 'A',
+        reason: 'slept 4h, HRV tanked',
+      });
+      expect(adj.changes.length).toBeGreaterThan(0);
+      expect((await call('get_current_plan', {})).version).toBeGreaterThan(v);
+
+      // explicit coaching note
+      expect(await call('add_note', { scope: 'general', body: 'deload next week' })).toMatchObject({
+        ok: true,
+      });
+
+      // audit trail + Claude notes were written
+      const audits = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM audit_log WHERE actor='mcp' AND tool IN ('adjust_today','add_note')",
+      ).first<{ c: number }>();
+      expect(audits!.c).toBe(2);
+      const notes = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM notes WHERE author='claude'",
+      ).first<{ c: number }>();
+      expect(notes!.c).toBe(3); // seed rebuild + adjust_today reason + add_note
+      const reason = await env.DB.prepare(
+        "SELECT body FROM notes WHERE body LIKE '%HRV tanked%' LIMIT 1",
+      ).first<{ body: string }>();
+      expect(reason?.body).toContain('reduce_volume');
+    });
   });
 
   it('keeps MCP generation CAS compatible with a released tokenless iOS writer', async () => {
@@ -254,99 +298,160 @@ describe('mcp write tools', () => {
     expect(JSON.stringify(r)).toContain('unknown_exercise');
   });
 
-  it('set_schedule: resolve names, +1 version, 409 stale, cross-plan reject, audit+note; one-offs no bump', async () => {
-    // Fresh plan with two named days.
-    const built = await call('update_plan', {
-      name: 'Sched Test',
-      days: [
-        { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
-        { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
-      ],
-    });
-    const planId = built.plan.id as string;
-    const v0 = built.plan.version as number;
+  describe('set_schedule: resolve names, +1 version, 409 stale, cross-plan reject, audit+note; one-offs no bump', () => {
+    // One seed for the block (see the note on the first describe above):
+    // isolatedStorage keeps it visible to every `it` and rolls each `it`'s
+    // own writes back, so every case starts at version v0 with no schedule.
+    // The single sequential case this replaces made 17 Worker round-trips.
+    let planId: string;
+    let v0: number;
 
-    // happy path: resolve by day name + label, exactly +1 version
-    const set1 = await call('set_schedule', {
-      week: { mon: 'Push Day', wed: 'B', fri: 'Push Day' },
-    });
-    expect(set1.ok).toBe(true);
-    expect(set1.version).toBe(v0 + 1);
-    // resolved to ids belonging to the active plan
-    const dayIds = await env.DB.prepare(
-      'SELECT id, name FROM day_templates WHERE plan_id = ?1',
-    )
-      .bind(planId)
-      .all<{ id: string; name: string }>();
-    const idByName = Object.fromEntries(dayIds.results.map((d) => [d.name, d.id]));
-    expect(set1.schedule.week.mon).toBe(idByName['Push Day']);
-    expect(set1.schedule.week.wed).toBe(idByName['Pull Day']);
-    expect(set1.schedule.week.tue).toBeNull();
-
-    // get_current_plan exposes the resolved weekday → name schedule
-    const cp = await call('get_current_plan', {});
-    expect(cp.schedule.mon).toBe('Push Day');
-    expect(cp.schedule.wed).toBe('Pull Day');
-    expect(cp.schedule.tue).toBeNull();
-
-    // 409-style stale expected_version → conflict, no write
-    const v1 = set1.version as number;
-    const stale = await call('set_schedule', { week: { mon: 'Push Day' }, expected_version: v0 });
-    expect(stale).toMatchObject({ conflict: true, current_version: v1 });
-    expect((await call('get_current_plan', {})).version).toBe(v1);
-
-    // cross-plan / foreign id rejected, no partial write
-    const foreign = await call('set_schedule', {
-      week: { mon: 'this-is-not-a-real-day-id' },
-    });
-    expect(foreign).toMatchObject({ error: 'unknown_day_ref' });
-    expect((await call('get_current_plan', {})).version).toBe(v1);
-
-    // correct expected_version succeeds, +1 again
-    const set2 = await call('set_schedule', { week: { tue: 'A' }, expected_version: v1 });
-    expect(set2.ok).toBe(true);
-    expect(set2.version).toBe(v1 + 1);
-
-    // audit rows + Claude notes recorded for schedule writes
-    const audit = await env.DB.prepare(
-      "SELECT COUNT(*) AS c FROM audit_log WHERE tool='set_schedule'",
-    ).first<{ c: number }>();
-    expect(audit!.c).toBeGreaterThanOrEqual(4); // 2 ok + stale + foreign
-    const note = await env.DB.prepare(
-      "SELECT COUNT(*) AS c FROM notes WHERE author='claude' AND body LIKE 'Set recurring weekly schedule%'",
-    ).first<{ c: number }>();
-    expect(note!.c).toBeGreaterThanOrEqual(2);
-
-    // one-off tools: write a session, do NOT bump version
-    const vBefore = (await call('get_current_plan', {})).version as number;
-    const planned = await call('set_planned_session', { date: '2026-06-06', day: 'Pull Day' });
-    expect(planned.ok).toBe(true);
-    const skipped = await call('skip_planned_session', { date: '2026-06-07' });
-    expect(skipped.ok).toBe(true);
-    expect((await call('get_current_plan', {})).version).toBe(vBefore);
-    expect(
-      await env.DB
-        .prepare(
-          "SELECT date, write_protocol FROM sessions WHERE date IN ('2026-06-06', '2026-06-07') ORDER BY date",
-        )
-        .all(),
-    ).toMatchObject({
-      results: [
-        { date: '2026-06-06', write_protocol: 'legacy' },
-        { date: '2026-06-07', write_protocol: 'legacy' },
-      ],
+    beforeAll(async () => {
+      // Fresh plan with two named days.
+      const built = await call('update_plan', {
+        name: 'Sched Test',
+        days: [
+          { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
+          { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
+        ],
+      });
+      expect(built.conflict).toBe(false);
+      planId = built.plan.id as string;
+      v0 = built.plan.version as number;
     });
 
-    // one-offs are still audited + noted
-    const oneOffAudit = await env.DB.prepare(
-      "SELECT COUNT(*) AS c FROM audit_log WHERE tool IN ('set_planned_session','skip_planned_session')",
-    ).first<{ c: number }>();
-    expect(oneOffAudit!.c).toBeGreaterThanOrEqual(2);
+    it("resolves day names + labels to the active plan's ids, exactly +1 version, audited + noted", async () => {
+      // happy path: resolve by day name + label, exactly +1 version
+      const set1 = await call('set_schedule', {
+        week: { mon: 'Push Day', wed: 'B', fri: 'Push Day' },
+      });
+      expect(set1.ok).toBe(true);
+      expect(set1.version).toBe(v0 + 1);
+      // resolved to ids belonging to the active plan
+      const dayIds = await env.DB.prepare(
+        'SELECT id, name FROM day_templates WHERE plan_id = ?1',
+      )
+        .bind(planId)
+        .all<{ id: string; name: string }>();
+      const idByName = Object.fromEntries(dayIds.results.map((d) => [d.name, d.id]));
+      expect(set1.schedule.week.mon).toBe(idByName['Push Day']);
+      expect(set1.schedule.week.wed).toBe(idByName['Pull Day']);
+      expect(set1.schedule.week.tue).toBeNull();
 
-    // schedule.version is a change counter: it increments per successful
-    // set_schedule (set1 was the 1st write, set2 the 2nd on this plan).
-    expect(set1.schedule.version).toBe(2); // migration baseline 1 → +1
-    expect(set2.schedule.version).toBe(3); // → +1 again
+      // get_current_plan exposes the resolved weekday → name schedule
+      const cp = await call('get_current_plan', {});
+      expect(cp.schedule.mon).toBe('Push Day');
+      expect(cp.schedule.wed).toBe('Pull Day');
+      expect(cp.schedule.tue).toBeNull();
+
+      // schedule.version is a change counter: migration baseline 1 → +1 on
+      // the first successful set_schedule for this plan.
+      expect(set1.schedule.version).toBe(2);
+
+      // audit row + Claude note recorded for the schedule write
+      const audit = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM audit_log WHERE tool='set_schedule'",
+      ).first<{ c: number }>();
+      expect(audit!.c).toBe(1);
+      const note = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM notes WHERE author='claude' AND body LIKE 'Set recurring weekly schedule%'",
+      ).first<{ c: number }>();
+      expect(note!.c).toBe(1);
+    });
+
+    it('a stale expected_version conflicts with no write; the current one succeeds, +1 again', async () => {
+      const set1 = await call('set_schedule', {
+        week: { mon: 'Push Day', wed: 'B', fri: 'Push Day' },
+      });
+      expect(set1.ok).toBe(true);
+      const v1 = set1.version as number;
+
+      // 409-style stale expected_version → conflict, no write
+      const stale = await call('set_schedule', { week: { mon: 'Push Day' }, expected_version: v0 });
+      expect(stale).toMatchObject({ conflict: true, current_version: v1 });
+      expect((await call('get_current_plan', {})).version).toBe(v1);
+
+      // correct expected_version succeeds, +1 again
+      const set2 = await call('set_schedule', { week: { tue: 'A' }, expected_version: v1 });
+      expect(set2.ok).toBe(true);
+      expect(set2.version).toBe(v1 + 1);
+
+      // schedule.version is a change counter: it increments per successful
+      // set_schedule (set1 was the 1st write, set2 the 2nd on this plan);
+      // the conflict in between did not move it.
+      expect(set1.schedule.version).toBe(2); // migration baseline 1 → +1
+      expect(set2.schedule.version).toBe(3); // → +1 again
+
+      // every call is audited, the conflict included; only the two
+      // successful writes are noted
+      const audit = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM audit_log WHERE tool='set_schedule'",
+      ).first<{ c: number }>();
+      expect(audit!.c).toBe(3); // set1 + stale + set2
+      const note = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM notes WHERE author='claude' AND body LIKE 'Set recurring weekly schedule%'",
+      ).first<{ c: number }>();
+      expect(note!.c).toBe(2);
+    });
+
+    it('an unknown day ref (not in the active plan) is rejected with no partial write', async () => {
+      const set1 = await call('set_schedule', {
+        week: { mon: 'Push Day', wed: 'B', fri: 'Push Day' },
+      });
+      expect(set1.ok).toBe(true);
+      const v1 = set1.version as number;
+
+      // a ref that resolves to no day in the active plan is rejected, no
+      // partial write
+      const foreign = await call('set_schedule', {
+        week: { mon: 'this-is-not-a-real-day-id' },
+      });
+      expect(foreign).toMatchObject({ error: 'unknown_day_ref' });
+      const cp = await call('get_current_plan', {});
+      expect(cp.version).toBe(v1);
+      expect(cp.schedule.mon).toBe('Push Day'); // the existing schedule is intact
+
+      // the rejection is audited but not noted
+      const audit = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM audit_log WHERE tool='set_schedule'",
+      ).first<{ c: number }>();
+      expect(audit!.c).toBe(2); // set1 + foreign
+      const note = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM notes WHERE author='claude' AND body LIKE 'Set recurring weekly schedule%'",
+      ).first<{ c: number }>();
+      expect(note!.c).toBe(1);
+    });
+
+    it('one-off tools write legacy sessions, do NOT bump the version, and are still audited + noted', async () => {
+      // one-off tools: write a session, do NOT bump version
+      const planned = await call('set_planned_session', { date: '2026-06-06', day: 'Pull Day' });
+      expect(planned.ok).toBe(true);
+      const skipped = await call('skip_planned_session', { date: '2026-06-07' });
+      expect(skipped.ok).toBe(true);
+      expect((await call('get_current_plan', {})).version).toBe(v0);
+      expect(
+        await env.DB
+          .prepare(
+            "SELECT date, write_protocol FROM sessions WHERE date IN ('2026-06-06', '2026-06-07') ORDER BY date",
+          )
+          .all(),
+      ).toMatchObject({
+        results: [
+          { date: '2026-06-06', write_protocol: 'legacy' },
+          { date: '2026-06-07', write_protocol: 'legacy' },
+        ],
+      });
+
+      // one-offs are still audited + noted
+      const oneOffAudit = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM audit_log WHERE tool IN ('set_planned_session','skip_planned_session')",
+      ).first<{ c: number }>();
+      expect(oneOffAudit!.c).toBe(2);
+      const oneOffNotes = await env.DB.prepare(
+        "SELECT COUNT(*) AS c FROM notes WHERE author='claude' AND (body LIKE 'Planned 2026-06-06%' OR body LIKE 'Skipped 2026-06-07%')",
+      ).first<{ c: number }>();
+      expect(oneOffNotes!.c).toBe(2);
+    });
   });
 
   it('schedule survives update_plan for days kept by name; cleared for removed days', async () => {
@@ -1101,182 +1206,203 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     expect(first.set.id).not.toBe(second.set.id);
   });
 
-  it('log_set blocks ambiguous iOS narration but accepts explicit distinctions and confirmation', async () => {
-    // Plan + a session iOS just logged a 185x5 squat into.
-    const built = await call('update_plan', {
-      name: 'Dedupe',
-      days: [
-        {
-          day_label: 'L',
-          name: 'Legs',
-          exercises: [{ exercise: 'squat', target_sets: 3, target_reps: 5 }],
-        },
-      ],
-    });
-    expect(built.conflict).toBe(false);
-    // Simulate the iOS write directly: create today's session + a set with
-    // source='ios' logged 30s ago. (Bypasses the MCP gate — that's the
-    // point: iOS is the source of truth, MCP must respect what's there.)
-    const planId = built.plan.id as string;
-    // The plan's owner is the MCP-resolved owner; use that user_id so the
-    // hand-inserted iOS session shares the same user (single-user invariant).
-    const planRow = await env.DB
-      .prepare("SELECT user_id FROM plans WHERE id = ?1")
-      .bind(planId)
-      .first<{ user_id: string }>();
-    const userId = planRow!.user_id;
-    const today = new Date().toISOString().slice(0, 10);
-    const sessionId = crypto.randomUUID();
-    const tNow = Date.now();
-    await env.DB
-      .prepare(
-        `INSERT INTO sessions (id,user_id,plan_id,date,status,started_at,created_at,updated_at)
-         VALUES (?1,?2,?3,?4,'in_progress',?5,?5,?5)`,
-      )
-      .bind(sessionId, userId, planId, today, tNow - 30_000)
-      .run();
-    const insertIosSet = env.DB.prepare(
-      `INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,deleted_at)
-       VALUES (?1,?2,'ex_back_squat',NULL,?3,?4,5,NULL,0,NULL,?5,'ios',?6,NULL)`,
-    );
-    for (const [setIndex, weight, loggedAt, duration] of [
-      [1, 185, tNow - 30_000, 30],
-      [2, 195, tNow - 30_000, 30],
-      [3, 205, tNow - 30_000, 30],
-      // Same triple twice: the older row must remain discoverable when an
-      // explicit discriminator matches it but not the newest candidate.
-      [4, 215, tNow - 40_000, 30],
-      [5, 215, tNow - 20_000, 45],
-    ]) {
-      await insertIosSet
-        .bind(crypto.randomUUID(), sessionId, setIndex, weight, loggedAt, duration)
+  describe('log_set blocks ambiguous iOS narration but accepts explicit distinctions and confirmation', () => {
+    // One seed for the block. vitest-pool-workers' default isolatedStorage
+    // keeps beforeAll writes visible to every `it` below and undoes each
+    // `it`'s own writes after it runs, so every case starts from the same
+    // plan + iOS session. The seeded iOS sets are logged 20–40 s before the
+    // block starts and findRecentMatchingSet's window is 120 s, so they stay
+    // "recent" for every case. The cases are independent by design: a single
+    // sequential case covering all of them made 21 round-trips and sat near
+    // vitest's 5 s default per-test timeout on a CI runner.
+    let sessionId: string;
+    let today: string;
+
+    beforeAll(async () => {
+      // Plan + a session iOS just logged a 185x5 squat into.
+      const built = await call('update_plan', {
+        name: 'Dedupe',
+        days: [
+          {
+            day_label: 'L',
+            name: 'Legs',
+            exercises: [{ exercise: 'squat', target_sets: 3, target_reps: 5 }],
+          },
+        ],
+      });
+      expect(built.conflict).toBe(false);
+      // Simulate the iOS write directly: create today's session + a set with
+      // source='ios' logged 30s ago. (Bypasses the MCP gate — that's the
+      // point: iOS is the source of truth, MCP must respect what's there.)
+      const planId = built.plan.id as string;
+      // The plan's owner is the MCP-resolved owner; use that user_id so the
+      // hand-inserted iOS session shares the same user (single-user invariant).
+      const planRow = await env.DB
+        .prepare("SELECT user_id FROM plans WHERE id = ?1")
+        .bind(planId)
+        .first<{ user_id: string }>();
+      const userId = planRow!.user_id;
+      today = new Date().toISOString().slice(0, 10);
+      sessionId = crypto.randomUUID();
+      const tNow = Date.now();
+      await env.DB
+        .prepare(
+          `INSERT INTO sessions (id,user_id,plan_id,date,status,started_at,created_at,updated_at)
+           VALUES (?1,?2,?3,?4,'in_progress',?5,?5,?5)`,
+        )
+        .bind(sessionId, userId, planId, today, tNow - 30_000)
         .run();
-    }
-
-    // The phantom narration call: same exercise/weight/reps, ~30s later.
-    const dup = await call('log_set', { exercise: 'squat', weight: 185, reps: 5 });
-    expect(dup.error).toBe('recent_duplicate');
-    expect(dup.existing_set.source).toBe('ios');
-    expect(dup.message).toMatch(/iOS/);
-
-    // Only the one matching iOS set survives — the MCP call did NOT insert.
-    const live = await env.DB
-      .prepare(
-        "SELECT COUNT(*) AS c FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL AND weight = 185 AND reps = 5",
-      )
-      .bind(sessionId)
-      .first<{ c: number }>();
-    expect(live!.c).toBe(1);
-
-    // Supplying today's date is still ambiguous and remains blocked.
-    const sameDay = await call('log_set', {
-      exercise: 'squat',
-      weight: 185,
-      reps: 5,
-      session_date: today,
+      const insertIosSet = env.DB.prepare(
+        `INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,deleted_at)
+         VALUES (?1,?2,'ex_back_squat',NULL,?3,?4,5,NULL,0,NULL,?5,'ios',?6,NULL)`,
+      );
+      const iosSets: Array<[number, number, number, number]> = [
+        [1, 185, tNow - 30_000, 30],
+        [2, 195, tNow - 30_000, 30],
+        [3, 205, tNow - 30_000, 30],
+        // Same triple twice: the older row must remain discoverable when an
+        // explicit discriminator matches it but not the newest candidate.
+        [4, 215, tNow - 40_000, 30],
+        [5, 215, tNow - 20_000, 45],
+      ];
+      await env.DB.batch(
+        iosSets.map(([setIndex, weight, loggedAt, duration]) =>
+          insertIosSet.bind(crypto.randomUUID(), sessionId, setIndex, weight, loggedAt, duration),
+        ),
+      );
     });
-    expect(sameDay.error).toBe('recent_duplicate');
 
-    // The newest same-triple row differs, but an older recent iOS row still
-    // matches each supplied discriminator and must not be shadowed.
-    const olderIndexMatch = await call('log_set', {
-      exercise: 'squat',
-      weight: 215,
-      reps: 5,
-      set_index: 4,
+    it("rejects the phantom narration (same triple ~30 s later), with or without today's date, and does not insert", async () => {
+      // The phantom narration call: same exercise/weight/reps, ~30s later.
+      const dup = await call('log_set', { exercise: 'squat', weight: 185, reps: 5 });
+      expect(dup.error).toBe('recent_duplicate');
+      expect(dup.existing_set.source).toBe('ios');
+      expect(dup.message).toMatch(/iOS/);
+
+      // Only the one matching iOS set survives — the MCP call did NOT insert.
+      const live = await env.DB
+        .prepare(
+          "SELECT COUNT(*) AS c FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL AND weight = 185 AND reps = 5",
+        )
+        .bind(sessionId)
+        .first<{ c: number }>();
+      expect(live!.c).toBe(1);
+
+      // Supplying today's date is still ambiguous and remains blocked.
+      const sameDay = await call('log_set', {
+        exercise: 'squat',
+        weight: 185,
+        reps: 5,
+        session_date: today,
+      });
+      expect(sameDay.error).toBe('recent_duplicate');
     });
-    expect(olderIndexMatch.error).toBe('recent_duplicate');
-    expect(olderIndexMatch.existing_set.set_index).toBe(4);
 
-    const olderDurationMatch = await call('log_set', {
-      exercise: 'squat',
-      weight: 215,
-      reps: 5,
-      duration_s: 30,
-      is_timed: true,
+    it('an older recent iOS row matching a supplied discriminator is not shadowed by the newest same-triple row', async () => {
+      // The newest same-triple row differs, but an older recent iOS row still
+      // matches each supplied discriminator and must not be shadowed.
+      const olderIndexMatch = await call('log_set', {
+        exercise: 'squat',
+        weight: 215,
+        reps: 5,
+        set_index: 4,
+      });
+      expect(olderIndexMatch.error).toBe('recent_duplicate');
+      expect(olderIndexMatch.existing_set.set_index).toBe(4);
+
+      const olderDurationMatch = await call('log_set', {
+        exercise: 'squat',
+        weight: 215,
+        reps: 5,
+        duration_s: 30,
+        is_timed: true,
+      });
+      expect(olderDurationMatch.error).toBe('recent_duplicate');
+      expect(olderDurationMatch.existing_set.duration_s).toBe(30);
+
+      const trulyDistinct = await call('log_set', {
+        exercise: 'squat',
+        weight: 215,
+        reps: 5,
+        set_index: 21,
+        duration_s: 60,
+        is_timed: true,
+      });
+      expect(trulyDistinct.error).toBeUndefined();
+      expect(trulyDistinct.set.set_index).toBe(21);
+      expect(trulyDistinct.set.duration_s).toBe(60);
     });
-    expect(olderDurationMatch.error).toBe('recent_duplicate');
-    expect(olderDurationMatch.existing_set.duration_s).toBe(30);
 
-    const trulyDistinct = await call('log_set', {
-      exercise: 'squat',
-      weight: 215,
-      reps: 5,
-      set_index: 21,
-      duration_s: 60,
-      is_timed: true,
+    it('accepts explicit distinctions: a warm-up, a different weight, an explicit set_index, a distinct duration', async () => {
+      // Same triple-but-warmup is NOT considered a dupe of a working set.
+      const wu = await call('log_set', {
+        exercise: 'squat',
+        weight: 185,
+        reps: 5,
+        is_warmup: true,
+      });
+      expect(wu.error).toBeUndefined();
+      expect(wu.set.is_warmup).toBe(1);
+
+      // Different weight in the window logs fine (real next set).
+      const next = await call('log_set', { exercise: 'squat', weight: 225, reps: 5 });
+      expect(next.error).toBeUndefined();
+      expect(next.set.weight).toBe(225);
+
+      // An explicit different set index identifies a separate intended set,
+      // even though an iOS set has the same exercise/weight/reps triple.
+      const indexed = await call('log_set', {
+        exercise: 'squat',
+        weight: 205,
+        reps: 5,
+        set_index: 20,
+      });
+      expect(indexed.error).toBeUndefined();
+      expect(indexed.set.set_index).toBe(20);
+
+      // Duration distinguishes repeated timed efforts across channels.
+      const durationDistinct = await call('log_set', {
+        exercise: 'squat',
+        weight: 185,
+        reps: 5,
+        duration_s: 45,
+        is_timed: true,
+      });
+      expect(durationDistinct.error).toBeUndefined();
+      expect(durationDistinct.set.duration_s).toBe(45);
     });
-    expect(trulyDistinct.error).toBeUndefined();
-    expect(trulyDistinct.set.set_index).toBe(21);
-    expect(trulyDistinct.set.duration_s).toBe(60);
 
-    // Same triple-but-warmup is NOT considered a dupe of a working set.
-    const wu = await call('log_set', {
-      exercise: 'squat',
-      weight: 185,
-      reps: 5,
-      is_warmup: true,
+    it('an identical recent iOS set stays blocked until confirm_duplicate; explicit backfill to a past date bypasses the gate', async () => {
+      // An otherwise identical recent iOS set remains blocked until the user
+      // explicitly confirms it is a separate intentional repeat.
+      const needsConfirmation = await call('log_set', {
+        exercise: 'squat',
+        weight: 195,
+        reps: 5,
+      });
+      expect(needsConfirmation.error).toBe('recent_duplicate');
+      const confirmed = await call('log_set', {
+        exercise: 'squat',
+        weight: 195,
+        reps: 5,
+        confirm_duplicate: true,
+      });
+      expect(confirmed.error).toBeUndefined();
+      expect(confirmed.set.source).toBe('mcp');
+
+      // Explicit backfill to a past date bypasses the gate — "log yesterday's
+      // 185x5" is an explicit logging intent and must not be blocked by today's
+      // matching iOS set.
+      const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+      const backfill = await call('log_set', {
+        exercise: 'squat',
+        weight: 185,
+        reps: 5,
+        session_date: yesterday,
+      });
+      expect(backfill.error).toBeUndefined();
+      expect(backfill.set.weight).toBe(185);
     });
-    expect(wu.error).toBeUndefined();
-    expect(wu.set.is_warmup).toBe(1);
-
-    // Different weight in the window logs fine (real next set).
-    const next = await call('log_set', { exercise: 'squat', weight: 225, reps: 5 });
-    expect(next.error).toBeUndefined();
-    expect(next.set.weight).toBe(225);
-
-    // An explicit different set index identifies a separate intended set,
-    // even though an iOS set has the same exercise/weight/reps triple.
-    const indexed = await call('log_set', {
-      exercise: 'squat',
-      weight: 205,
-      reps: 5,
-      set_index: 20,
-    });
-    expect(indexed.error).toBeUndefined();
-    expect(indexed.set.set_index).toBe(20);
-
-    // Duration distinguishes repeated timed efforts across channels.
-    const durationDistinct = await call('log_set', {
-      exercise: 'squat',
-      weight: 185,
-      reps: 5,
-      duration_s: 45,
-      is_timed: true,
-    });
-    expect(durationDistinct.error).toBeUndefined();
-    expect(durationDistinct.set.duration_s).toBe(45);
-
-    // An otherwise identical recent iOS set remains blocked until the user
-    // explicitly confirms it is a separate intentional repeat.
-    const needsConfirmation = await call('log_set', {
-      exercise: 'squat',
-      weight: 195,
-      reps: 5,
-    });
-    expect(needsConfirmation.error).toBe('recent_duplicate');
-    const confirmed = await call('log_set', {
-      exercise: 'squat',
-      weight: 195,
-      reps: 5,
-      confirm_duplicate: true,
-    });
-    expect(confirmed.error).toBeUndefined();
-    expect(confirmed.set.source).toBe('mcp');
-
-    // Explicit backfill to a past date bypasses the gate — "log yesterday's
-    // 185x5" is an explicit logging intent and must not be blocked by today's
-    // matching iOS set.
-    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
-    const backfill = await call('log_set', {
-      exercise: 'squat',
-      weight: 185,
-      reps: 5,
-      session_date: yesterday,
-    });
-    expect(backfill.error).toBeUndefined();
-    expect(backfill.set.weight).toBe(185);
-
   });
 
   it('log_set rejects a recent duplicate before reviving its discarded target date', async () => {
@@ -1434,144 +1560,173 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     expect(miss.error).toBe('not_found');
   });
 
-  it('correct_set validates and visibly corrects values without crossing tenant boundaries', async () => {
-    const built = await call('update_plan', {
-      name: 'Corrections',
-      days: [
-        {
-          day_label: 'C',
-          name: 'Correction day',
-          exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }],
-        },
-      ],
-    });
-    expect(built.conflict).toBe(false);
-    const logged = await call('log_set', {
-      exercise: 'bench',
-      weight: 185,
-      reps: 5,
-      duration_s: 42,
-    });
-    expect(logged.error).toBeUndefined();
-    const setId = logged.set.id as string;
+  describe('correct_set validates and visibly corrects values without crossing tenant boundaries', () => {
+    // One seed for the block (isolatedStorage keeps it visible to every `it`
+    // and rolls each `it`'s own writes back): a plan and one MCP-logged
+    // 185x5 bench set with a 42 s duration, which every case starts from
+    // unchanged. The single sequential case this replaces made 19 round-trips
+    // and sat near vitest's 5 s default per-test timeout on a CI runner.
+    let setId: string;
 
-    const corrected = await call('correct_set', {
-      set_id: setId,
-      weight: 190,
-      reps: 6,
-      rpe: 8.5,
-      notes: 'corrected from watch',
-      duration_s: 75,
-    });
-    expect(corrected).toMatchObject({
-      id: setId,
-      weight: 190,
-      reps: 6,
-      rpe: 8.5,
-      notes: 'corrected from watch',
-      duration_s: 75,
+    beforeAll(async () => {
+      const built = await call('update_plan', {
+        name: 'Corrections',
+        days: [
+          {
+            day_label: 'C',
+            name: 'Correction day',
+            exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }],
+          },
+        ],
+      });
+      expect(built.conflict).toBe(false);
+      const logged = await call('log_set', {
+        exercise: 'bench',
+        weight: 185,
+        reps: 5,
+        duration_s: 42,
+      });
+      expect(logged.error).toBeUndefined();
+      setId = logged.set.id as string;
     });
 
-    const visible = await call('get_current_session', {});
-    expect(visible.sets.find((set: { id: string }) => set.id === setId)).toMatchObject({
-      weight: 190,
-      reps: 6,
-      duration_s: 75,
+    it('corrects values visibly, clears nullable fields with null, and is audited + noted', async () => {
+      const corrected = await call('correct_set', {
+        set_id: setId,
+        weight: 190,
+        reps: 6,
+        rpe: 8.5,
+        notes: 'corrected from watch',
+        duration_s: 75,
+      });
+      expect(corrected).toMatchObject({
+        id: setId,
+        weight: 190,
+        reps: 6,
+        rpe: 8.5,
+        notes: 'corrected from watch',
+        duration_s: 75,
+      });
+
+      const visible = await call('get_current_session', {});
+      expect(visible.sets.find((set: { id: string }) => set.id === setId)).toMatchObject({
+        weight: 190,
+        reps: 6,
+        duration_s: 75,
+      });
+
+      const cleared = await call('correct_set', {
+        set_id: setId,
+        rpe: null,
+        notes: null,
+        duration_s: null,
+      });
+      expect(cleared).toMatchObject({ id: setId, rpe: null, notes: null, duration_s: null });
+
+      const audit = await env.DB
+        .prepare("SELECT COUNT(*) AS c FROM audit_log WHERE tool='correct_set'")
+        .first<{ c: number }>();
+      expect(audit!.c).toBe(2);
+      const note = await env.DB
+        .prepare('SELECT body FROM notes WHERE body = ?1 ORDER BY created_at DESC LIMIT 1')
+        .bind(`Corrected set ${setId} to 190x6.`)
+        .first<{ body: string }>();
+      expect(note?.body).toBe(`Corrected set ${setId} to 190x6.`);
     });
 
-    const cleared = await call('correct_set', {
-      set_id: setId,
-      rpe: null,
-      notes: null,
-      duration_s: null,
-    });
-    expect(cleared).toMatchObject({ id: setId, rpe: null, notes: null, duration_s: null });
-
-    // One invalid value rejects the whole correction; valid siblings do not
-    // leak through as a partial update.
-    const invalid = await call('correct_set', {
-      set_id: setId,
-      weight: 999,
-      duration_s: 1.5,
-    });
-    expect(invalid).toEqual({ error: 'invalid_fields', fields: ['duration_s'] });
-    const unchanged = await env.DB
-      .prepare('SELECT weight, duration_s FROM set_logs WHERE id = ?1')
-      .bind(setId)
-      .first<{ weight: number; duration_s: number | null }>();
-    expect(unchanged).toEqual({ weight: 190, duration_s: null });
-
-    const unknownField = await call('correct_set', {
-      set_id: setId,
-      weight: 999,
-      duration_seconds: 75,
-    });
-    expect(unknownField).toEqual({
-      error: 'invalid_fields',
-      fields: ['duration_seconds'],
-    });
-    expect(
-      await env.DB
+    it('one invalid value, an unknown field, or an empty correction rejects the whole call with no partial write', async () => {
+      // One invalid value rejects the whole correction; valid siblings do not
+      // leak through as a partial update.
+      const invalid = await call('correct_set', {
+        set_id: setId,
+        weight: 999,
+        duration_s: 1.5,
+      });
+      expect(invalid).toEqual({ error: 'invalid_fields', fields: ['duration_s'] });
+      const unchanged = await env.DB
         .prepare('SELECT weight, duration_s FROM set_logs WHERE id = ?1')
         .bind(setId)
-        .first<{ weight: number; duration_s: number | null }>(),
-    ).toEqual({ weight: 190, duration_s: null });
-    expect(await call('correct_set', { set_id: setId })).toEqual({ error: 'no_corrections' });
+        .first<{ weight: number; duration_s: number | null }>();
+      expect(unchanged).toEqual({ weight: 185, duration_s: 42 });
 
-    const audit = await env.DB
-      .prepare("SELECT COUNT(*) AS c FROM audit_log WHERE tool='correct_set'")
-      .first<{ c: number }>();
-    expect(audit!.c).toBeGreaterThanOrEqual(4);
-    const note = await env.DB
-      .prepare('SELECT body FROM notes WHERE body = ?1 ORDER BY created_at DESC LIMIT 1')
-      .bind(`Corrected set ${setId} to 190x6.`)
-      .first<{ body: string }>();
-    expect(note?.body).toBe(`Corrected set ${setId} to 190x6.`);
+      const unknownField = await call('correct_set', {
+        set_id: setId,
+        weight: 999,
+        duration_seconds: 75,
+      });
+      expect(unknownField).toEqual({
+        error: 'invalid_fields',
+        fields: ['duration_seconds'],
+      });
+      expect(
+        await env.DB
+          .prepare('SELECT weight, duration_s FROM set_logs WHERE id = ?1')
+          .bind(setId)
+          .first<{ weight: number; duration_s: number | null }>(),
+      ).toEqual({ weight: 185, duration_s: 42 });
+      expect(await call('correct_set', { set_id: setId })).toEqual({ error: 'no_corrections' });
 
-    expect(await call('correct_set', { set_id: 'missing-set', weight: 1 })).toMatchObject({
-      error: 'not_found',
-      set_id: 'missing-set',
+      // rejections stay visible in the audit trail but never write a note
+      const audit = await env.DB
+        .prepare("SELECT COUNT(*) AS c FROM audit_log WHERE tool='correct_set'")
+        .first<{ c: number }>();
+      expect(audit!.c).toBe(3);
+      const notes = await env.DB
+        .prepare("SELECT COUNT(*) AS c FROM notes WHERE body LIKE 'Corrected set %'")
+        .first<{ c: number }>();
+      expect(notes!.c).toBe(0);
     });
 
-    const foreignUserId = crypto.randomUUID();
-    const foreignPlanId = crypto.randomUUID();
-    const foreignSessionId = crypto.randomUUID();
-    const foreignSetId = crypto.randomUUID();
-    const now = Date.now();
-    await env.DB
-      .prepare(
-        'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,NULL,?3,?4)',
-      )
-      .bind(foreignUserId, `sub-${foreignUserId}`, 'Foreign lifter', now)
-      .run();
-    await env.DB
-      .prepare(
-        "INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at) VALUES (?1,?2,'Foreign','active',1,NULL,?3,?3)",
-      )
-      .bind(foreignPlanId, foreignUserId, now)
-      .run();
-    await env.DB
-      .prepare(
-        "INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,'2040-01-02','in_progress',?4,NULL,NULL,NULL,?4,?4)",
-      )
-      .bind(foreignSessionId, foreignUserId, foreignPlanId, now)
-      .run();
-    await env.DB
-      .prepare(
-        "INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,deleted_at,duration_s,is_timed) VALUES (?1,?2,'ex_bench',NULL,1,95,5,NULL,0,NULL,?3,'ios',NULL,NULL,0)",
-      )
-      .bind(foreignSetId, foreignSessionId, now)
-      .run();
+    it("reports not_found for a missing id and for another tenant's set, which stays untouched", async () => {
+      expect(await call('correct_set', { set_id: 'missing-set', weight: 1 })).toMatchObject({
+        error: 'not_found',
+        set_id: 'missing-set',
+      });
 
-    expect(await call('correct_set', { set_id: foreignSetId, weight: 100 })).toMatchObject({
-      error: 'not_found',
-      set_id: foreignSetId,
+      const foreignUserId = crypto.randomUUID();
+      const foreignPlanId = crypto.randomUUID();
+      const foreignSessionId = crypto.randomUUID();
+      const foreignSetId = crypto.randomUUID();
+      const now = Date.now();
+      await env.DB.batch([
+        env.DB
+          .prepare(
+            'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,NULL,?3,?4)',
+          )
+          .bind(foreignUserId, `sub-${foreignUserId}`, 'Foreign lifter', now),
+        env.DB
+          .prepare(
+            "INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at) VALUES (?1,?2,'Foreign','active',1,NULL,?3,?3)",
+          )
+          .bind(foreignPlanId, foreignUserId, now),
+        env.DB
+          .prepare(
+            "INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,'2040-01-02','in_progress',?4,NULL,NULL,NULL,?4,?4)",
+          )
+          .bind(foreignSessionId, foreignUserId, foreignPlanId, now),
+        env.DB
+          .prepare(
+            "INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,deleted_at,duration_s,is_timed) VALUES (?1,?2,'ex_bench',NULL,1,95,5,NULL,0,NULL,?3,'ios',NULL,NULL,0)",
+          )
+          .bind(foreignSetId, foreignSessionId, now),
+      ]);
+
+      expect(await call('correct_set', { set_id: foreignSetId, weight: 100 })).toMatchObject({
+        error: 'not_found',
+        set_id: foreignSetId,
+      });
+      const foreignRow = await env.DB
+        .prepare('SELECT weight FROM set_logs WHERE id = ?1')
+        .bind(foreignSetId)
+        .first<{ weight: number }>();
+      expect(foreignRow?.weight).toBe(95);
+
+      // both misses are audited
+      const audit = await env.DB
+        .prepare("SELECT COUNT(*) AS c FROM audit_log WHERE tool='correct_set'")
+        .first<{ c: number }>();
+      expect(audit!.c).toBe(2);
     });
-    const foreignRow = await env.DB
-      .prepare('SELECT weight FROM set_logs WHERE id = ?1')
-      .bind(foreignSetId)
-      .first<{ weight: number }>();
-    expect(foreignRow?.weight).toBe(95);
   });
 });
 

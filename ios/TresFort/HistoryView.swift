@@ -139,6 +139,7 @@ private struct ExerciseDetailView: View {
         let repHistory = bodyweight ? hist.filter { $0.bestReps != nil } : []
         let bodyweightReps = !repHistory.isEmpty
         let estimated = hist.filter { $0.est1RM != nil }
+        let durationHist = sync.durationHistory(for: exerciseID)
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 if bodyweightReps, let best = repHistory.compactMap(\.bestReps).max() {
@@ -172,12 +173,12 @@ private struct ExerciseDetailView: View {
                     chartCard("ESTIMATED 1RM", estimated) { $0.est1RM ?? 0 }
                 }
 
-                // Key hold history on the logged set, not catalog modality:
-                // any movement can be prescribed as a hold.
-                let held = hist.filter { $0.bestHoldSeconds != nil }
-                if !held.isEmpty {
-                    chartCard("BEST HOLD (s)", held) {
-                        Double($0.bestHoldSeconds ?? 0)
+                // Key duration history on the logged set, not catalog
+                // modality: any movement can be prescribed as a hold, while
+                // old rep sets may still carry incidental wall-clock values.
+                if !durationHist.isEmpty {
+                    chartCard("AVG SET DURATION (s)", durationHist) {
+                        Double($0.avgDuration)
                     }
                 }
 

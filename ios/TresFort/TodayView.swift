@@ -13,6 +13,7 @@ private struct EditDayTarget: Identifiable { let id: String }
 private struct PendingSetBanner: View {
     @ObservedObject var sync: SyncModel
     @State private var showAbandonConfirm = false
+    @State private var abandonTarget: WorkoutTerminalActionTarget?
 
     var body: some View {
         HStack(spacing: 10) {
@@ -39,7 +40,10 @@ private struct PendingSetBanner: View {
                     }
                     .foregroundStyle(Theme.accent)
                     if sync.canAbandonRecoveredWorkout {
-                        Button("DISCARD") { showAbandonConfirm = true }
+                        Button("DISCARD") {
+                            abandonTarget = sync.terminalActionTarget
+                            showAbandonConfirm = abandonTarget != nil
+                        }
                             .foregroundStyle(Theme.danger)
                     }
                 }
@@ -55,7 +59,8 @@ private struct PendingSetBanner: View {
             titleVisibility: .visible
         ) {
             Button("Discard workout", role: .destructive) {
-                Task { await sync.discardWorkout() }
+                guard let target = abandonTarget else { return }
+                Task { await sync.discardWorkout(expected: target) }
             }
             Button("Keep workout", role: .cancel) {}
         } message: {
@@ -166,6 +171,7 @@ struct TodayView: View {
     @State private var showOverridePicker = false
     /// Confirms discarding the in-progress workout (destructive, undo-less).
     @State private var showDiscardConfirm = false
+    @State private var discardTarget: WorkoutTerminalActionTarget?
     /// Rest overlay collapsed to a floating pill so the runner underneath
     /// (current exercise, jump strip, completed sets) is visible/scrollable
     /// without ending the rest timer. Reset whenever `restEndDate` clears so
@@ -242,11 +248,15 @@ struct TodayView: View {
                         }
                         if sync.running {
                             Button("End workout", role: .destructive) {
-                                Task { await sync.finishWorkout() }
+                                guard let target = sync.terminalActionTarget else {
+                                    return
+                                }
+                                Task { await sync.finishWorkout(expected: target) }
                             }
                             .disabled(sync.hasPendingTerminalIntentForCurrentWorkout)
                             Button("Discard workout", role: .destructive) {
-                                showDiscardConfirm = true
+                                discardTarget = sync.terminalActionTarget
+                                showDiscardConfirm = discardTarget != nil
                             }
                             .disabled(sync.hasDiscardIntentForCurrentWorkout)
                         }
@@ -274,7 +284,8 @@ struct TodayView: View {
                 titleVisibility: .visible
             ) {
                 Button("Discard — don't save", role: .destructive) {
-                    Task { await sync.discardWorkout() }
+                    guard let target = discardTarget else { return }
+                    Task { await sync.discardWorkout(expected: target) }
                 }
                 Button("Keep workout", role: .cancel) {}
             } message: {
@@ -463,6 +474,7 @@ private struct WorkoutDoneView: View {
     /// Confirms discarding the just-completed session ("didn't really do
     /// this" — e.g. an accidental/test End workout).
     @State private var showDiscardConfirm = false
+    @State private var discardTarget: WorkoutTerminalActionTarget?
 
     private var doneTemplateTitle: String {
         sync.todayResolvedDay?.title.uppercased() ?? "WORKOUT"
@@ -534,7 +546,8 @@ private struct WorkoutDoneView: View {
                 // Discard throws it away and the day reverts to its normal
                 // schedule (no SQL, fully reversible by just redoing it).
                 Button(role: .destructive) {
-                    showDiscardConfirm = true
+                    discardTarget = sync.terminalActionTarget
+                    showDiscardConfirm = discardTarget != nil
                 } label: {
                     Text("Discard — didn't really do this")
                         .font(Theme.mono(12, .bold)).tracking(1)
@@ -554,7 +567,8 @@ private struct WorkoutDoneView: View {
             titleVisibility: .visible
         ) {
             Button("Discard — don't save", role: .destructive) {
-                Task { await sync.discardWorkout() }
+                guard let target = discardTarget else { return }
+                Task { await sync.discardWorkout(expected: target) }
             }
             Button("Keep workout", role: .cancel) {}
         } message: {
@@ -828,10 +842,10 @@ private struct RunnerView: View {
                             // Bind the intent to what this tap displayed. The
                             // Task may begin after an earlier tap advanced the
                             // runner, and must never log that successor slot.
-                            let expectedSlotID = ex.id
+                            let renderedExercise = ex
                             Task {
                                 await sync.logCurrentSet(
-                                    expectedSlotID: expectedSlotID,
+                                    expected: renderedExercise,
                                     expectedSetNumber: displayedSetNumber)
                             }
                         } label: {
@@ -843,8 +857,8 @@ private struct RunnerView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 14))
                         .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
                         .padding(.top, 18)
-                        .disabled(sync.isSetEntryBlocked(slotID: ex.id))
-                        .opacity(sync.isSetEntryBlocked(slotID: ex.id) ? 0.55 : 1)
+                        .disabled(sync.isSetEntryBlocked(ex))
+                        .opacity(sync.isSetEntryBlocked(ex) ? 0.55 : 1)
                     }
 
                     completedChips(ex: ex)
@@ -1208,6 +1222,7 @@ private struct TimedSetView: View {
     let ex: TemplateExercise
 
     var body: some View {
+        let displayedSetNumber = sync.currentSetNumber
         VStack(spacing: 16) {
             Text(sync.timedActive ? "HOLD" : "DURATION")
                 .font(Theme.mono(10, .bold)).tracking(2).foregroundStyle(Theme.muted)
@@ -1238,16 +1253,20 @@ private struct TimedSetView: View {
                     sync.isTerminalMutationInFlight
                         || sync.hasPendingTerminalIntentForCurrentWorkout)
             } else {
-                Button { sync.startTimedSet() } label: {
-                    Text("START SET \(sync.currentSetNumber)")
+                Button {
+                    sync.startTimedSet(
+                        expected: ex,
+                        expectedSetNumber: displayedSetNumber)
+                } label: {
+                    Text("START SET \(displayedSetNumber)")
                         .font(Theme.display(24)).tracking(1.2)
                         .frame(maxWidth: .infinity).padding(.vertical, 16)
                 }
                 .background(Theme.accent).foregroundStyle(.black)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
-                .disabled(sync.isSetEntryBlocked(slotID: ex.id))
-                .opacity(sync.isSetEntryBlocked(slotID: ex.id) ? 0.55 : 1)
+                .disabled(sync.isSetEntryBlocked(ex))
+                .opacity(sync.isSetEntryBlocked(ex) ? 0.55 : 1)
             }
         }
         .frame(maxWidth: .infinity)
@@ -1439,7 +1458,10 @@ private struct FinishedView: View {
                 }
                 .padding(.top, 20)
 
-                Button { Task { await sync.finishWorkout() } } label: {
+                Button {
+                    guard let target = sync.terminalActionTarget else { return }
+                    Task { await sync.finishResolvedWorkout(expected: target) }
+                } label: {
                     Text(finishPending ? "WAITING TO SYNC" : "FINISH")
                         .font(Theme.display(24)).tracking(1.5)
                         .frame(maxWidth: .infinity).padding(.vertical, 16)

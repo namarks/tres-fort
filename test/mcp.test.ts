@@ -432,3 +432,38 @@ describe('mcp tools read live D1', () => {
     expect(out.note).toMatch(/not in any groups/);
   });
 });
+
+describe('mcp bodyweight intensity adjustment', () => {
+  it('adds assistance magnitude while reducing positive external load', async () => {
+    const built = toolJson((await rpc('tools/call', {
+      name: 'update_plan',
+      arguments: {
+        name: 'Assistance scaling',
+        days: [{
+          name: 'A',
+          day_label: 'A',
+          exercises: [
+            { exercise: 'Pull-Up', target_sets: 3, target_reps: 8, target_weight: -30 },
+            { exercise: 'Bench Press', target_sets: 3, target_reps: 5, target_weight: 100 },
+          ],
+        }],
+      },
+    })).body);
+    expect(built.conflict).toBe(false);
+
+    const adjusted = toolJson((await rpc('tools/call', {
+      name: 'adjust_today',
+      arguments: {
+        intent: 'reduce_intensity',
+        magnitude: 'moderate',
+        day_label: 'A',
+        reason: 'fatigued',
+      },
+    })).body);
+    const exercises = adjusted.plan.days[0].exercises;
+    expect(exercises.find((exercise: any) => exercise.exercise_id === 'ex_pullup')
+      .target_weight).toBe(-35);
+    expect(exercises.find((exercise: any) => exercise.exercise_id === 'ex_bench')
+      .target_weight).toBe(90);
+  });
+});

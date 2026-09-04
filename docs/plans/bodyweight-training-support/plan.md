@@ -83,7 +83,7 @@ gymnastic-strength movements.
     group-feed values. Backend and iOS history use reps or duration for
     zero/assisted work, expose Epley estimates only for positive loads, and
     leave tonnage undefined when no positive rep-based load exists. Local
-    verification passed TypeScript typecheck, all 494 Worker tests, and all 167
+    verification passed TypeScript typecheck, all 495 Worker tests, and all 168
     iOS unit tests. The checked phase and this evidence land atomically with the
     reviewed PR; no remote migration, Worker deployment, or TestFlight
     publication is part of the merge.

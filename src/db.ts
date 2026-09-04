@@ -5166,7 +5166,13 @@ export async function adjustToday(
     for (const te of d.exercises) {
       if (intent === 'reduce_intensity') {
         if (te.target_weight == null) continue;
-        const w = Math.round((te.target_weight * wtF) / 5) * 5;
+        // Positive added load gets lighter. Negative load is assistance, so
+        // reducing intensity must increase its magnitude rather than move it
+        // toward zero and accidentally make the exercise harder.
+        const scaled = te.target_weight < 0
+          ? te.target_weight / wtF
+          : te.target_weight * wtF;
+        const w = Math.round(scaled / 5) * 5;
         stmts.push(
           db
             .prepare('UPDATE template_exercises SET target_weight=?2, updated_at=?3 WHERE id=?1')

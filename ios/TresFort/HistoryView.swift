@@ -136,19 +136,20 @@ private struct ExerciseDetailView: View {
     var body: some View {
         let hist = sync.history(for: exerciseID)
         let bodyweight = sync.isBodyweightExercise(exerciseID)
-        let bodyweightReps = bodyweight && hist.contains { $0.totalReps > 0 }
+        let repHistory = bodyweight ? hist.filter { $0.bestReps != nil } : []
+        let bodyweightReps = !repHistory.isEmpty
         let estimated = hist.filter { $0.est1RM != nil }
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                if bodyweightReps, let best = hist.map(\.topReps).max() {
+                if bodyweightReps, let best = repHistory.compactMap(\.bestReps).max() {
                     HStack {
                         stat("BEST REPS", "\(best)")
                         Spacer()
                         stat("SESSIONS", "\(hist.count)")
                         Spacer()
-                        stat("LAST TOTAL", hist.last.map { "\($0.totalReps)" } ?? "—")
+                        stat("LAST TOTAL", repHistory.last.map { "\($0.totalReps)" } ?? "—")
                     }
-                    chartCard("TOTAL REPS", hist) { Double($0.totalReps) }
+                    chartCard("TOTAL REPS", repHistory) { Double($0.totalReps) }
                 } else if let best = hist.compactMap(\.bestHoldSeconds).max() {
                     HStack {
                         stat("BEST HOLD", "\(best)s")

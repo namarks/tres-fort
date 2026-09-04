@@ -2895,7 +2895,52 @@ final class SetOutboxTests: XCTestCase {
         ]
 
         let stat = try XCTUnwrap(model.history(for: ex.exercise_id).first)
+        XCTAssertEqual(stat.bestReps, 8)
         XCTAssertEqual(stat.bestHoldSeconds, 45)
+    }
+
+    func testBodyweightBestRepsExcludeSeparateTimedOnlySessions() throws {
+        let defaults = defaults()
+        let ex = exercise(exerciseID: "exercise-bodyweight", bodyweight: true)
+        let repSession = session(id: "rep-session", date: "2026-06-01", status: "completed")
+        let holdSession = session(id: "hold-session", date: "2026-06-02", status: "completed")
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            defaults: defaults,
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: repSession)
+        model.catalog = [ExerciseCatalog(
+            id: ex.exercise_id,
+            name: "Pull-Up",
+            primary_muscle: "back",
+            modality: "bw",
+            unit: "lb",
+            laterality: "bilateral",
+            load_mode: "total",
+            demo_slug: nil)]
+        model.sessions = [repSession, holdSession]
+        model.sets = [
+            SetLog(
+                id: "rep", session_id: repSession.id,
+                exercise_id: ex.exercise_id,
+                template_exercise_id: ex.id, set_index: 1,
+                weight: 0, reps: 12, rpe: nil, is_warmup: 0,
+                logged_at: 1, duration_s: nil, is_timed: 0,
+                deleted_at: nil),
+            SetLog(
+                id: "hold", session_id: holdSession.id,
+                exercise_id: ex.exercise_id,
+                template_exercise_id: ex.id, set_index: 1,
+                weight: 0, reps: 45, rpe: nil, is_warmup: 0,
+                logged_at: 2, duration_s: 45, is_timed: 1,
+                deleted_at: nil),
+        ]
+
+        let stats = model.history(for: ex.exercise_id)
+        XCTAssertEqual(stats.compactMap(\.bestReps).max(), 12)
+        XCTAssertNil(stats[1].bestReps)
+        XCTAssertEqual(stats[1].totalReps, 0)
+        XCTAssertEqual(stats[1].bestHoldSeconds, 45)
     }
 
     func testLiveLoadRefreshesCachedCatalogAndRetainsItOnLaterFailure() async {

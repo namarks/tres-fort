@@ -1535,6 +1535,7 @@ final class SyncModel: ObservableObject {
         let est1RM: Double?
         let topWeight: Double
         let topReps: Int
+        let bestReps: Int?
         let totalReps: Int
         let volume: Double?
         let setCount: Int
@@ -1584,6 +1585,9 @@ final class SyncModel: ObservableObject {
                     ? epley(top.weight, top.reps).rounded()
                     : nil,
                 topWeight: top.weight, topReps: top.reps,
+                bestReps: bodyweight && !repRows.isEmpty
+                    ? repRows.map(\.reps).max()
+                    : nil,
                 totalReps: totalReps(for: repRows),
                 volume: totalTonnage(for: repRows),
                 setCount: rows.count,

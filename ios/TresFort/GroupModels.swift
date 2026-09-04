@@ -221,7 +221,19 @@ struct FeedSessionItem: Codable, Identifiable, Equatable {
         let weight: Double
         let reps: Int
         let unit: String?
-        let est_1rm: Double
+        let modality: String?
+        let duration_s: Int?
+        let is_timed: Bool?
+        let est_1rm: Double?
+
+        var valueLabel: String {
+            SetValueFormatter.value(
+                weight: weight,
+                reps: reps,
+                durationSeconds: duration_s,
+                timed: is_timed == true,
+                bodyweight: modality == "bw")
+        }
     }
 }
 

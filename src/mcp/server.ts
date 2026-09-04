@@ -258,7 +258,7 @@ const TOOLS: Record<string, Tool> = {
   },
   get_history: {
     description:
-      'Get set history for one exercise (by name or id, e.g. "bench"), with Epley est-1RM and the top working set per session.',
+      'Get set history for one exercise (by name or id, e.g. "bench"). Loaded rep work reports its top set and Epley est-1RM; bodyweight work reports best and total reps; timed work reports the best hold. est_1rm and tonnage are null when the underlying set has no positive external load.',
     inputSchema: obj(
       {
         exercise: { type: 'string', description: 'Exercise name, alias, or id' },
@@ -276,7 +276,7 @@ const TOOLS: Record<string, Tool> = {
   },
   get_volume_trend: {
     description:
-      'Get weekly hard-set count and tonnage for a muscle group (e.g. "chest","quads","back") over a range.',
+      'Get weekly hard-set count and positive-load tonnage for a muscle group (e.g. "chest","quads","back") over a range. Tonnage is null when a bucket contains only strict-bodyweight, assisted, or timed work; negative assistance never subtracts from it.',
     inputSchema: obj(
       {
         muscle_group: { type: 'string' },
@@ -379,7 +379,13 @@ const TOOLS: Record<string, Tool> = {
       'all guidance per hand — say "25 lb in each hand", never a vague ' +
       'doubled "50 lb". The response echoes exercise.load_mode so you can ' +
       'word it correctly; effective.implements is 2 and tonnage counts both ' +
-      'implements independently from any unilateral-side multiplier.',
+      'implements independently from any unilateral-side multiplier. ' +
+      'BODYWEIGHT / TIMED LOAD: for a bodyweight or timed hold, weight is ' +
+      'external load relative to bodyweight: positive for a belt/vest, zero ' +
+      'for strict bodyweight, and negative for band or machine assistance. ' +
+      'Do not substitute the athlete\'s body mass. Zero, assisted, and timed ' +
+      'sets have undefined tonnage; rep totals or hold duration are their ' +
+      'progress metrics.',
     inputSchema: obj(
       {
         exercise: { type: 'string', description: 'name, alias, or id' },
@@ -504,7 +510,10 @@ const TOOLS: Record<string, Tool> = {
           sides,
           implements: implementsUsed,
           total_reps: set.reps * sides,
-          tonnage: set.weight * set.reps * sides * implementsUsed,
+          tonnage:
+            set.is_timed === 0 && set.weight > 0
+              ? set.weight * set.reps * sides * implementsUsed
+              : null,
           // For two-dumbbell lifts, the weight is one dumbbell — surface a
           // ready-to-say phrasing so guidance never reads as the vague total.
           weight_display: perHand
@@ -806,7 +815,7 @@ const TOOLS: Record<string, Tool> = {
       r?.error ? null : `Swapped ${a.from_exercise} → ${a.to_exercise} on ${a.day}.`,
   },
   add_exercise: {
-    description: 'Add an exercise to a day in the active plan. `exercise` must match the closed catalog — use list_exercises to discover valid names. order_index defaults to max(existing)+1 (append dense), not the old 99 sentinel. Set is_warmup:true for a prescribed warm-up (erg, mobility) — its logged sets stay out of working-set rollups / session RPE. For a duration-based warm-up (e.g. 5-min row), use a cardio exercise and set target_duration_s.',
+    description: 'Add an exercise to a day in the active plan. `exercise` must match the closed catalog — use list_exercises to discover valid names. order_index defaults to max(existing)+1 (append dense), not the old 99 sentinel. Set is_warmup:true for a prescribed warm-up (erg, mobility) — its logged sets stay out of working-set rollups / session RPE. For a duration-based warm-up (e.g. 5-min row), use a cardio exercise and set target_duration_s. For bodyweight or timed work, target_weight is external load relative to bodyweight: positive for added load, zero for strict bodyweight, and negative for assistance; never store body mass. For AMRAP, use target_reps as the minimum, leave target_reps_max unset, and put "AMRAP" in cues.',
     inputSchema: obj(
       {
         day: { type: 'string', description: 'day label or name' },
@@ -816,7 +825,11 @@ const TOOLS: Record<string, Tool> = {
         target_reps_max: { type: 'integer' },
         target_rpe: { type: 'number' },
         rest_seconds: { type: 'integer' },
-        target_weight: { type: 'number' },
+        target_weight: {
+          type: 'number',
+          description:
+            'Planned external load. On bodyweight/timed work: positive = added load, 0 = strict bodyweight, negative = assistance.',
+        },
         target_duration_s: { type: 'integer', description: 'Planned hold/effort seconds for timed or cardio slots (planks, erg warm-ups); leave unset for conventional reps slots.' },
         progression: { type: 'object' },
         order_index: { type: 'integer' },

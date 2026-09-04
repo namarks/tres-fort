@@ -95,8 +95,8 @@ async function seedSession(
     setRpe?: number | null;
     dayName?: string;
     dayLabel?: string | null;
-    // [exerciseId, weight, reps, isWarmup][]
-    sets: Array<[string, number, number, boolean]>;
+    // [exerciseId, weight, reps, isWarmup, durationSeconds?, isTimed?][]
+    sets: Array<[string, number, number, boolean, number?, boolean?]>;
   },
 ): Promise<{ sessionId: string; dayTemplateId: string }> {
   const planId = crypto.randomUUID();
@@ -134,10 +134,10 @@ async function seedSession(
     )
     .run();
   for (let i = 0; i < opts.sets.length; i++) {
-    const [exerciseId, weight, reps, isWarmup] = opts.sets[i]!;
+    const [exerciseId, weight, reps, isWarmup, durationSeconds, isTimed] = opts.sets[i]!;
     await env.DB
       .prepare(
-        'INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,deleted_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,?7,?8,?9,?10,?11,NULL)',
+        'INSERT INTO set_logs (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,deleted_at,duration_s,is_timed) VALUES (?1,?2,?3,NULL,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,?13)',
       )
       .bind(
         crypto.randomUUID(),
@@ -151,6 +151,8 @@ async function seedSession(
         opts.setNotes ?? null,
         opts.completedAt ?? ts,
         'ios',
+        durationSeconds ?? null,
+        isTimed ? 1 : 0,
       )
       .run();
   }
@@ -316,6 +318,12 @@ describe('group feed: empty + single-member', () => {
     expect(it.session.top_sets[0].exercise).toBe('Back Squat');
     expect(it.session.top_sets[0].weight).toBe(225);
     expect(it.session.top_sets[0].reps).toBe(5);
+    expect(it.session.top_sets[0]).toMatchObject({
+      modality: 'barbell',
+      duration_s: null,
+      is_timed: false,
+    });
+    expect(it.session.top_sets[0].est_1rm).toBeGreaterThan(0);
     // duration_sec computed from started_at/completed_at delta.
     expect(it.session.duration_sec).toBe(1800);
   });
@@ -525,6 +533,46 @@ describe('group feed: top-set semantics', () => {
     expect(top.weight).toBe(185);
     expect(top.reps).toBe(6);
     expect(top.est_1rm).toBeGreaterThan(0);
+  });
+
+  it('uses reps for bodyweight sets and duration for holds', async () => {
+    const a = await devJwt();
+    const groupId = await createGroup(a.jwt, 'bodyweight-topsets');
+    await seedSession(a.id, {
+      date: '2026-09-03',
+      completedAt: Date.now(),
+      sets: [
+        ['ex_pullup', 0, 8, false],
+        ['ex_pullup', -30, 12, false],
+        ['ex_pullup', 45, 5, false],
+        ['ex_plank', 0, 45, false, 45, true],
+        ['ex_plank', 20, 30, false, 30, true],
+      ],
+    });
+
+    const r = await SELF.fetch(`${BASE}/api/groups/${groupId}/feed`, {
+      headers: headers(a.jwt),
+    });
+    expect(r.status).toBe(200);
+    const body = await r.json<any>();
+    const topSets = body.items[0].session.top_sets;
+    expect(topSets).toHaveLength(2);
+    expect(topSets.find((set: any) => set.exercise === 'Pull-Up')).toMatchObject({
+      weight: -30,
+      reps: 12,
+      modality: 'bw',
+      duration_s: null,
+      is_timed: false,
+      est_1rm: null,
+    });
+    expect(topSets.find((set: any) => set.exercise === 'Plank')).toMatchObject({
+      weight: 0,
+      reps: 45,
+      modality: 'timed',
+      duration_s: 45,
+      is_timed: true,
+      est_1rm: null,
+    });
   });
 });
 

@@ -1478,12 +1478,28 @@ final class SyncModel: ObservableObject {
         set.reps * sides(for: set.exercise_id)
     }
 
-    /// Effective tonnage represented by one logged set. Side count and
-    /// per-hand implement count are independent multipliers; total-load,
-    /// bilateral exercises therefore retain their original 1x behavior.
-    func tonnage(for set: SetLog) -> Double {
-        set.weight * Double(effectiveReps(for: set))
+    func totalReps(for sets: [SetLog]) -> Int {
+        sets.filter { !isTimedSet($0) }.reduce(0) {
+            $0 + effectiveReps(for: $1)
+        }
+    }
+
+    func bestHoldSeconds(for sets: [SetLog]) -> Int? {
+        sets.filter(isTimedSet).compactMap(\.duration_s).max()
+    }
+
+    /// Effective positive-load tonnage represented by one rep set. Strict
+    /// bodyweight, assisted (negative-load), and timed work have no tonnage;
+    /// their progress is represented by reps or hold duration instead.
+    func tonnage(for set: SetLog) -> Double? {
+        guard set.weight > 0, !isTimedSet(set) else { return nil }
+        return set.weight * Double(effectiveReps(for: set))
             * Double(implements(for: set.exercise_id))
+    }
+
+    func totalTonnage(for sets: [SetLog]) -> Double? {
+        let values = sets.compactMap { tonnage(for: $0) }
+        return values.isEmpty ? nil : values.reduce(0, +)
     }
 
     /// True when the catalog row is a timed modality (planks/holds) — the only
@@ -1516,13 +1532,13 @@ final class SyncModel: ObservableObject {
     struct SessionStat: Identifiable {
         let id: String          // session id
         let date: String
-        let est1RM: Double
+        let est1RM: Double?
         let topWeight: Double
         let topReps: Int
-        let volume: Double
+        let totalReps: Int
+        let volume: Double?
         let setCount: Int
-        let hasTimedSets: Bool
-        let avgDuration: Int
+        let bestHoldSeconds: Int?
     }
 
     private func epley(_ w: Double, _ r: Int) -> Double { w * (1 + Double(r) / 30) }
@@ -1540,25 +1556,38 @@ final class SyncModel: ObservableObject {
     func history(for exerciseID: String) -> [SessionStat] {
         let dateBySession = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.date) })
         let grouped = Dictionary(grouping: live(exerciseID), by: \.session_id)
-        // Volume accounts independently for reps logged per-side and weights
-        // logged per hand.
-        // topReps + est-1RM stay per-side: those represent per-leg/per-arm
-        // strength, which is what the lifter actually displaced in one rep.
+        let bodyweight = isBodyweightExercise(exerciseID)
         return grouped.compactMap { sid, rows -> SessionStat? in
             guard let date = dateBySession[sid], !rows.isEmpty else { return nil }
-            let top = rows.max { epley($0.weight, $0.reps) < epley($1.weight, $1.reps) }!
             let timedRows = rows.filter(isTimedSet)
+            let repRows = rows.filter { !isTimedSet($0) }
+            let top: SetLog
+            if bodyweight, let first = repRows.first {
+                top = repRows.dropFirst().reduce(first) { best, row in
+                    row.reps > best.reps
+                        || (row.reps == best.reps && row.weight > best.weight)
+                        ? row : best
+                }
+            } else if repRows.isEmpty, let first = timedRows.first {
+                top = timedRows.dropFirst().reduce(first) { best, row in
+                    (row.duration_s ?? 0) > (best.duration_s ?? 0) ? row : best
+                }
+            } else {
+                top = repRows.max {
+                    epley($0.weight, $0.reps) < epley($1.weight, $1.reps)
+                } ?? rows[0]
+            }
             let timedDurations = timedRows.compactMap(\.duration_s)
             return SessionStat(
                 id: sid, date: date,
-                est1RM: epley(top.weight, top.reps).rounded(),
+                est1RM: !isTimedSet(top) && top.weight > 0
+                    ? epley(top.weight, top.reps).rounded()
+                    : nil,
                 topWeight: top.weight, topReps: top.reps,
-                volume: rows.reduce(0) { $0 + tonnage(for: $1) },
+                totalReps: totalReps(for: repRows),
+                volume: totalTonnage(for: repRows),
                 setCount: rows.count,
-                hasTimedSets: !timedRows.isEmpty,
-                avgDuration: timedDurations.isEmpty
-                    ? 0
-                    : timedDurations.reduce(0, +) / timedDurations.count)
+                bestHoldSeconds: timedDurations.max())
         }
         .sorted { $0.date < $1.date }
     }
@@ -3030,11 +3059,10 @@ final class SyncModel: ObservableObject {
         clearTimedSet()
         guard let ex = currentExercise else { return }
         let last = lastWorkingSet(ex.exercise_id)
-        // Bodyweight exercises have no weight input (#2); the field is
-        // hidden and uneditable, so always seed 0 — never carry a prior
-        // (possibly mis-logged) non-zero load forward where the user can't
-        // see or fix it mid-workout.
-        weight = ex.isBodyweight ? 0 : (last?.weight ?? ex.target_weight ?? 45)
+        // Bodyweight/timed load is relative to bodyweight: positive added
+        // load, zero strict, negative assistance. It is visible and editable,
+        // so carry the last/target value just like any other exercise.
+        weight = last?.weight ?? ex.target_weight ?? (ex.isTimed || ex.isBodyweight ? 0 : 45)
         reps = last?.reps ?? ex.target_reps
     }
 
@@ -3132,7 +3160,7 @@ final class SyncModel: ObservableObject {
         skipped.remove(ex.id)   // logging work un-skips this slot
         persistRunnerCheckpoint()
         let secs = max(1, held)
-        guard queueRunnerSet(ex, weight: 0, reps: secs, durationOverride: secs) else {
+        guard queueRunnerSet(ex, weight: weight, reps: secs, durationOverride: secs) else {
             persistRunnerCheckpoint()
             return
         }
@@ -3142,12 +3170,17 @@ final class SyncModel: ObservableObject {
         reopenFailedRunnerIntentIfStable(for: date)
     }
 
-    func adjustWeight(_ delta: Double) { weight = max(0, weight + delta) }
-    /// Direct-set the working weight (tap-to-edit on the runner). Same
-    /// non-negative clamp as `adjustWeight` so weird-increment machines
-    /// (14.3 lb plate stack) can be entered exactly without making the
-    /// stepper row carry every possible delta button.
-    func setWeight(_ value: Double) { weight = max(0, value) }
+    func adjustWeight(_ delta: Double) {
+        let candidate = weight + delta
+        weight = currentExercise?.allowsAssistance == true
+            ? candidate
+            : max(0, candidate)
+    }
+    /// Direct-set the working load. Bodyweight and timed slots accept
+    /// negative assistance; conventional loaded exercises remain nonnegative.
+    func setWeight(_ value: Double) {
+        weight = currentExercise?.allowsAssistance == true ? value : max(0, value)
+    }
     func adjustReps(_ delta: Int) { reps = max(0, reps + delta) }
 
     func setsDone(_ ex: TemplateExercise) -> Int { todaySlotSets(ex).count }

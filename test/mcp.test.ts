@@ -161,6 +161,21 @@ describe('mcp tools list', () => {
     const correction = body.result.tools.find((t: any) => t.name === 'correct_set');
     expect(correction.inputSchema.required).toEqual(['set_id']);
     expect(correction.inputSchema.properties.duration_s.type).toEqual(['integer', 'null']);
+
+    const logSet = body.result.tools.find((t: any) => t.name === 'log_set');
+    expect(logSet.description).toMatch(/negative for band or machine assistance/i);
+    expect(logSet.description).toMatch(/do not substitute the athlete's body mass/i);
+
+    const addExercise = body.result.tools.find((t: any) => t.name === 'add_exercise');
+    expect(addExercise.description).toMatch(/AMRAP/);
+    expect(addExercise.inputSchema.properties.target_weight.description)
+      .toMatch(/negative = assistance/i);
+
+    const history = body.result.tools.find((t: any) => t.name === 'get_history');
+    expect(history.description).toMatch(/best and total reps/i);
+    expect(history.description).toMatch(/best hold/i);
+    const volume = body.result.tools.find((t: any) => t.name === 'get_volume_trend');
+    expect(volume.description).toMatch(/positive-load tonnage/i);
   });
 });
 

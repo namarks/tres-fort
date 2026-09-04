@@ -59,12 +59,22 @@ struct FeedItemDetailSheet: View {
                                 .foregroundStyle(Theme.text)
                             Spacer()
                             VStack(alignment: .trailing, spacing: 2) {
-                                Text("\(FeedFormat.weight(s.weight)) × \(s.reps)")
+                                Text(s.valueLabel)
                                     .font(Theme.mono(13))
                                     .foregroundStyle(Theme.accent)
-                                Text("~\(Int(s.est_1rm.rounded())) 1RM")
-                                    .font(Theme.mono(9))
-                                    .foregroundStyle(Theme.dim)
+                                if let estimate = s.est_1rm {
+                                    Text("~\(Int(estimate.rounded())) 1RM")
+                                        .font(Theme.mono(9))
+                                        .foregroundStyle(Theme.dim)
+                                } else if s.is_timed == true {
+                                    Text("BEST HOLD")
+                                        .font(Theme.mono(9))
+                                        .foregroundStyle(Theme.dim)
+                                } else if s.modality == "bw" {
+                                    Text("BEST SET")
+                                        .font(Theme.mono(9))
+                                        .foregroundStyle(Theme.dim)
+                                }
                             }
                         }
                     }

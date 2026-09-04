@@ -5197,6 +5197,61 @@ export async function adjustToday(
 
 const epley = (w: number, r: number) => Math.round(w * (1 + r / 30) * 10) / 10;
 
+type ExerciseMetricSemantics = {
+  modality: string;
+  laterality: string;
+  load_mode: string;
+};
+
+type HistorySessionSummary = {
+  date: string;
+  top: SetLogRow;
+  metric: 'load' | 'reps' | 'duration';
+  est_1rm: number | null;
+  best_reps: number | null;
+  total_reps: number | null;
+  best_duration_s: number | null;
+  tonnage: number | null;
+};
+
+function positiveSetTonnage(
+  set: Pick<SetLogRow, 'weight' | 'reps' | 'is_timed'>,
+  exercise: Pick<ExerciseMetricSemantics, 'laterality' | 'load_mode'>,
+): number | null {
+  if (set.is_timed === 1 || set.weight <= 0) return null;
+  const sides = exercise.laterality === 'unilateral' ? 2 : 1;
+  const implementsUsed = exercise.load_mode === 'per_hand' ? 2 : 1;
+  return set.weight * set.reps * sides * implementsUsed;
+}
+
+function chooseHistoryTop(
+  rows: SetLogRow[],
+  modality: string,
+): { top: SetLogRow; metric: HistorySessionSummary['metric'] } {
+  const timed = rows.filter((row) => row.is_timed === 1);
+  const repBased = rows.filter((row) => row.is_timed !== 1);
+
+  if (modality === 'bw' && repBased.length > 0) {
+    const top = repBased.reduce((best, row) =>
+      row.reps > best.reps || (row.reps === best.reps && row.weight > best.weight)
+        ? row
+        : best,
+    );
+    return { top, metric: 'reps' };
+  }
+  if (timed.length > 0 && repBased.length === 0) {
+    const top = timed.reduce((best, row) =>
+      (row.duration_s ?? 0) > (best.duration_s ?? 0) ? row : best,
+    );
+    return { top, metric: 'duration' };
+  }
+  const candidates = repBased.length > 0 ? repBased : rows;
+  const top = candidates.reduce((best, row) =>
+    epley(row.weight, row.reps) > epley(best.weight, best.reps) ? row : best,
+  );
+  return { top, metric: 'load' };
+}
+
 export async function getHistory(
   db: D1Database,
   userId: string,
@@ -5204,6 +5259,15 @@ export async function getHistory(
   from: number,
   to: number,
 ) {
+  const exercise =
+    (await db
+      .prepare('SELECT modality, laterality, load_mode FROM exercises WHERE id = ?1')
+      .bind(exerciseId)
+      .first<ExerciseMetricSemantics>()) ?? {
+      modality: 'unknown',
+      laterality: 'bilateral',
+      load_mode: 'total',
+    };
   const sets = await db
     .prepare(
       `SELECT sl.*, s.date as session_date FROM set_logs sl
@@ -5214,19 +5278,51 @@ export async function getHistory(
     )
     .bind(userId, exerciseId, from, to)
     .all<SetLogRow & { session_date: string }>();
-  // Top working set per session + Epley est-1RM.
-  const bySession = new Map<string, { date: string; top: SetLogRow; est_1rm: number }>();
+  const rowsBySession = new Map<string, SetLogRow[]>();
   for (const s of sets.results) {
-    const e = epley(s.weight, s.reps);
-    const cur = bySession.get(s.session_date);
-    if (!cur || e > cur.est_1rm) {
-      bySession.set(s.session_date, { date: s.session_date, top: s, est_1rm: e });
-    }
+    const rows = rowsBySession.get(s.session_date) ?? [];
+    rows.push(s);
+    rowsBySession.set(s.session_date, rows);
   }
+
+  const bySession: HistorySessionSummary[] = [...rowsBySession].map(([date, rows]) => {
+    const { top, metric } = chooseHistoryTop(rows, exercise.modality);
+    const timedRows = rows.filter((row) => row.is_timed === 1);
+    const repRows = rows.filter((row) => row.is_timed !== 1);
+    const tonnages = repRows
+      .map((row) => positiveSetTonnage(row, exercise))
+      .filter((value): value is number => value != null);
+    const est1rm = top.is_timed !== 1 && top.weight > 0
+      ? epley(top.weight, top.reps)
+      : null;
+    return {
+      date,
+      top,
+      metric,
+      est_1rm: est1rm,
+      best_reps:
+        exercise.modality === 'bw' && repRows.length > 0
+          ? Math.max(...repRows.map((row) => row.reps))
+          : null,
+      total_reps:
+        exercise.modality === 'bw'
+          ? repRows.reduce(
+              (total, row) =>
+                total + row.reps * (exercise.laterality === 'unilateral' ? 2 : 1),
+              0,
+            )
+          : null,
+      best_duration_s:
+        timedRows.length > 0
+          ? Math.max(...timedRows.map((row) => row.duration_s ?? 0))
+          : null,
+      tonnage: tonnages.length > 0 ? tonnages.reduce((total, value) => total + value, 0) : null,
+    };
+  });
   return {
     exercise_id: exerciseId,
     sets: sets.results,
-    by_session: [...bySession.values()].sort((a, b) => a.date.localeCompare(b.date)),
+    by_session: bySession.sort((a, b) => a.date.localeCompare(b.date)),
   };
 }
 
@@ -5237,7 +5333,10 @@ export async function getVolume(
   from: number,
   to: number,
 ): Promise<
-  | { muscle_group: string; buckets: { week: string; hard_sets: number; tonnage: number }[] }
+  | {
+      muscle_group: string;
+      buckets: { week: string; hard_sets: number; tonnage: number | null }[];
+    }
   | { error: 'unknown_muscle'; query: string }
 > {
   const normalizedMuscle = muscle.trim().toLowerCase();
@@ -5250,14 +5349,18 @@ export async function getVolume(
   // `weight` is one implement when load_mode=per_hand and `reps` is one
   // side when laterality=unilateral. These dimensions are independent: a
   // 45x8 two-dumbbell Bulgarian split squat is 45*8*2 legs*2 dumbbells =
-  // 1,440 lb of work. hard_sets remains a literal logged-set count.
+  // 1,440 lb of work. Zero-load bodyweight and assisted (negative-load)
+  // sets remain hard sets but have undefined tonnage; timed holds likewise
+  // use duration rather than pretending seconds are repetitions.
   const rows = await db
     .prepare(
       `SELECT strftime('%Y-%W', s.date) AS week,
               COUNT(*) AS hard_sets,
-              SUM(sl.weight * sl.reps
-                  * CASE WHEN e.laterality = 'unilateral' THEN 2 ELSE 1 END
-                  * CASE WHEN e.load_mode = 'per_hand' THEN 2 ELSE 1 END) AS tonnage
+              SUM(CASE WHEN sl.weight > 0 AND sl.is_timed = 0
+                       THEN sl.weight * sl.reps
+                         * CASE WHEN e.laterality = 'unilateral' THEN 2 ELSE 1 END
+                         * CASE WHEN e.load_mode = 'per_hand' THEN 2 ELSE 1 END
+                       ELSE NULL END) AS tonnage
        FROM set_logs sl
        JOIN sessions s ON s.id = sl.session_id
        JOIN exercises e ON e.id = sl.exercise_id
@@ -5266,7 +5369,7 @@ export async function getVolume(
        GROUP BY week ORDER BY week`,
     )
     .bind(userId, normalizedMuscle, from, to)
-    .all<{ week: string; hard_sets: number; tonnage: number }>();
+    .all<{ week: string; hard_sets: number; tonnage: number | null }>();
   return { muscle_group: normalizedMuscle, buckets: rows.results };
 }
 
@@ -7434,8 +7537,9 @@ export async function getRideConflicts(
 // Privacy contract (do not break — this is the trust substrate that lets
 // the feature ship):
 //   * Strength sessions: SHARE date, completed_at, day_name, set_count,
-//     duration_sec, per-exercise top set (exercise name + weight + reps +
-//     Epley est_1rm). HIDE session.notes, session.perceived_fatigue, every
+//     duration_sec, per-exercise top set (exercise name + load/reps or hold
+//     duration, plus Epley est_1rm only for positive rep-based loads). HIDE
+//     session.notes, session.perceived_fatigue, every
 //     set's `notes`, every set's `rpe`.
 //   * Intervals.icu rides: SHARE all the ride metrics (these are not
 //     personal). Soft-deleted rows are excluded.
@@ -7471,7 +7575,10 @@ export interface FeedSessionItem {
       weight: number;
       reps: number;
       unit: string | null;
-      est_1rm: number;
+      modality: string;
+      duration_s: number | null;
+      is_timed: boolean;
+      est_1rm: number | null;
     }>;
   };
 }
@@ -7703,8 +7810,11 @@ export async function getGroupFeed(
                 sl.exercise_id,
                 sl.weight,
                 sl.reps,
+                sl.duration_s,
+                sl.is_timed,
                 e.name AS exercise_name,
-                e.unit AS exercise_unit
+                e.unit AS exercise_unit,
+                e.modality AS exercise_modality
            FROM set_logs sl
            JOIN exercises e ON e.id = sl.exercise_id
           WHERE sl.session_id IN (${setPlaceholders})
@@ -7717,46 +7827,77 @@ export async function getGroupFeed(
         exercise_id: string;
         weight: number;
         reps: number;
+        duration_s: number | null;
+        is_timed: number;
         exercise_name: string;
         exercise_unit: string;
+        exercise_modality: string;
       }>();
-    // Aggregate: per (session_id, exercise_id) → highest-est-1RM working
-    // set. Ties broken by higher reps (matches the convention of "show me
-    // the harder set"). Total set_count is just the row count per session.
-    type TopAcc = {
+    // Aggregate per exercise using the metric that represents its work:
+    // longest hold for timed sets, most reps for bodyweight work, and Epley
+    // for externally loaded rep work. Cross-modality scores are never mixed.
+    type FeedSetCandidate = {
       exercise: string;
       unit: string | null;
+      modality: string;
       weight: number;
       reps: number;
-      est_1rm: number;
+      duration_s: number | null;
+      is_timed: boolean;
     };
-    const acc = new Map<string, Map<string, TopAcc>>(); // session_id -> exercise_id -> top
+    const acc = new Map<string, Map<string, FeedSetCandidate[]>>();
     for (const r of sets.results) {
       setCountBySession.set(r.session_id, (setCountBySession.get(r.session_id) ?? 0) + 1);
-      const est = epley(r.weight, r.reps);
       let perSession = acc.get(r.session_id);
       if (!perSession) {
         perSession = new Map();
         acc.set(r.session_id, perSession);
       }
-      const cur = perSession.get(r.exercise_id);
-      if (
-        !cur ||
-        est > cur.est_1rm ||
-        (est === cur.est_1rm && r.reps > cur.reps)
-      ) {
-        perSession.set(r.exercise_id, {
-          exercise: r.exercise_name,
-          unit: r.exercise_unit,
-          weight: r.weight,
-          reps: r.reps,
-          est_1rm: est,
-        });
-      }
+      const candidates = perSession.get(r.exercise_id) ?? [];
+      candidates.push({
+        exercise: r.exercise_name,
+        unit: r.exercise_unit,
+        modality: r.exercise_modality,
+        weight: r.weight,
+        reps: r.reps,
+        duration_s: r.duration_s,
+        is_timed: r.is_timed === 1,
+      });
+      perSession.set(r.exercise_id, candidates);
     }
     for (const [sid, perEx] of acc) {
-      // Sort top_sets by est_1rm DESC so the "headline" lift renders first.
-      const list = [...perEx.values()].sort((a, b) => b.est_1rm - a.est_1rm);
+      const list = [...perEx.values()].map((rows) => {
+        const repRows = rows.filter((row) => !row.is_timed);
+        const timedRows = rows.filter((row) => row.is_timed);
+        let top: FeedSetCandidate;
+        if (rows[0]!.modality === 'bw' && repRows.length > 0) {
+          top = repRows.reduce((best, row) =>
+            row.reps > best.reps || (row.reps === best.reps && row.weight > best.weight)
+              ? row
+              : best,
+          );
+        } else if (timedRows.length > 0 && repRows.length === 0) {
+          top = timedRows.reduce((best, row) =>
+            (row.duration_s ?? 0) > (best.duration_s ?? 0) ? row : best,
+          );
+        } else {
+          const candidates = repRows.length > 0 ? repRows : rows;
+          top = candidates.reduce((best, row) => {
+            const score = epley(row.weight, row.reps);
+            const bestScore = epley(best.weight, best.reps);
+            return score > bestScore || (score === bestScore && row.reps > best.reps)
+              ? row
+              : best;
+          });
+        }
+        return {
+          ...top,
+          est_1rm: !top.is_timed && top.weight > 0
+            ? epley(top.weight, top.reps)
+            : null,
+        };
+      });
+      list.sort((a, b) => a.exercise.localeCompare(b.exercise));
       topSetsBySession.set(sid, list);
     }
   }

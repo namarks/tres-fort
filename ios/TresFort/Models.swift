@@ -86,6 +86,15 @@ struct TemplateExercise: Codable, Identifiable, Equatable {
     // seeded with unit "lb" in the catalog, so checking the unit left the
     // weight field showing for them (bug #2). Modality is the truth.
     var isBodyweight: Bool { exercise_modality == "bw" }
+    /// Bodyweight reps and the catalog's static-hold exercises interpret
+    /// `weight` relative to bodyweight, so negative values mean assistance.
+    /// Cardio also uses the timed runner but has no meaningful load control.
+    var allowsAssistance: Bool {
+        isBodyweight || exercise_modality == "timed"
+    }
+    /// Duration-pinned loaded exercises still need their positive load, while
+    /// cardio efforts do not expose a synthetic weight field.
+    var showsLoadControl: Bool { exercise_modality != "cardio" }
     var isUnilateral: Bool { exercise_laterality == "unilateral" }
     var isPerHand: Bool { exercise_load_mode == "per_hand" }
     /// Prescribed hold/effort for a timed or cardio set, in seconds. Uses
@@ -240,17 +249,52 @@ struct SetLog: Codable, Identifiable {
 
 extension SetLog {
     /// One-line value for a logged set: a timed hold reads "45s"; a bodyweight
-    /// rep set reads "BW × 6"; a weighted set reads "85 × 5". A SetLog carries
+    /// rep set reads "BW+45 × 5", "BW−30 × 8", or "BW × 8"; a weighted set
+    /// reads "85 × 5". A SetLog carries
     /// no modality, so the caller resolves both flags from the exercise's
     /// catalog row (see SyncModel.isTimedExercise / isBodyweightExercise) —
     /// "BW" keys off modality == "bw", NOT weight == 0, so a weighted lift
     /// logged at 0 load (unloaded warmup, machine/cable at zero) still reads
     /// "0 × reps", not "BW × reps". #30
     func valueLabel(timed: Bool, bodyweight: Bool) -> String {
-        if timed, let d = duration_s, d > 0 { return "\(d)s" }
-        if bodyweight { return "BW × \(reps)" }
-        let w = weight.rounded() == weight ? String(Int(weight)) : String(format: "%.1f", weight)
-        return "\(w) × \(reps)"
+        SetValueFormatter.value(
+            weight: weight,
+            reps: reps,
+            durationSeconds: duration_s,
+            timed: timed,
+            bodyweight: bodyweight)
+    }
+}
+
+/// One formatter for persisted, pending, history, agenda, and group-feed set
+/// values. `weight` is external load for bodyweight work: positive is added
+/// load, negative is assistance, and zero is strict bodyweight.
+enum SetValueFormatter {
+    static func number(_ value: Double) -> String {
+        value.rounded() == value
+            ? String(Int(value))
+            : String(format: "%.1f", value)
+    }
+
+    static func value(
+        weight: Double,
+        reps: Int,
+        durationSeconds: Int?,
+        timed: Bool,
+        bodyweight: Bool
+    ) -> String {
+        if timed {
+            // Legacy MCP timed sets stored elapsed seconds in reps before the
+            // dedicated duration field existed.
+            let seconds = durationSeconds ?? reps
+            if seconds > 0 { return "\(seconds)s" }
+        }
+        if bodyweight {
+            if weight > 0 { return "BW+\(number(weight)) × \(reps)" }
+            if weight < 0 { return "BW−\(number(abs(weight))) × \(reps)" }
+            return "BW × \(reps)"
+        }
+        return "\(number(weight)) × \(reps)"
     }
 }
 

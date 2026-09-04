@@ -499,13 +499,13 @@ private struct WorkoutDoneView: View {
                     if n > 0 {
                         // Reps count both sides; volume also counts both
                         // implements when weight is logged per hand.
-                        let reps = todaySets.reduce(0) {
-                            $0 + sync.effectiveReps(for: $1)
-                        }
-                        let vol = todaySets.reduce(0.0) {
-                            $0 + sync.tonnage(for: $1)
-                        }
-                        Text("✓ \(n) SET\(n == 1 ? "" : "S") · \(reps) REPS · \(Int(vol)) LB")
+                        let reps = sync.totalReps(for: todaySets)
+                        let repsLabel = reps > 0 ? " · \(reps) REPS" : ""
+                        let holdLabel = sync.bestHoldSeconds(for: todaySets)
+                            .map { " · BEST HOLD \($0)S" } ?? ""
+                        let tonnage = sync.totalTonnage(for: todaySets)
+                        let tonnageLabel = tonnage.map { " · \(Int($0)) LB" } ?? ""
+                        Text("✓ \(n) SET\(n == 1 ? "" : "S")\(repsLabel)\(holdLabel)\(tonnageLabel)")
                             .font(Theme.mono(12, .bold)).tracking(1)
                             .foregroundStyle(Theme.muted)
                             .padding(.top, 2)
@@ -813,25 +813,13 @@ private struct RunnerView: View {
 
                     jumpStrip(ex: ex)
 
+                    if ex.showsLoadControl {
+                        loadControl(ex: ex)
+                    }
+
                     if ex.isTimed {
                         TimedSetView(sync: sync, ex: ex)
                     } else {
-                        if !ex.isBodyweight {
-                            // Two-dumbbell lifts: the number is one dumbbell, so
-                            // label it "EACH HAND" rather than implying a total.
-                            let weightLabel = ex.isPerHand
-                                ? "WEIGHT (\(ex.exercise_unit)) · EACH HAND · TAP TO EDIT"
-                                : "WEIGHT (\(ex.exercise_unit)) · TAP TO EDIT"
-                            stepper(label: weightLabel, value: fmt(sync.weight),
-                                    steps: [("−10", { sync.adjustWeight(-10) }, true),
-                                            ("−5", { sync.adjustWeight(-5) }, false),
-                                            ("+5", { sync.adjustWeight(5) }, false),
-                                            ("+10", { sync.adjustWeight(10) }, true)],
-                                    onTapValue: {
-                                        weightDraft = fmt(sync.weight)
-                                        editingWeight = true
-                                    })
-                        }
                         stepper(label: "REPS", value: "\(sync.reps)",
                                 steps: [("−1", { sync.adjustReps(-1) }, false),
                                         ("+1", { sync.adjustReps(1) }, false)])
@@ -898,7 +886,8 @@ private struct RunnerView: View {
             .sheet(isPresented: $editingWeight) {
                 WeightEditorSheet(
                     draft: $weightDraft,
-                    unit: ex.exercise_unit,
+                    unit: ex.allowsAssistance ? "lb" : ex.exercise_unit,
+                    allowsAssistance: ex.allowsAssistance,
                     onSave: {
                         // Trim and parse — empty / non-numeric drafts cancel
                         // silently rather than zeroing the working weight.
@@ -955,6 +944,39 @@ private struct RunnerView: View {
             }
         }
         .padding(.top, 16)
+    }
+
+    private func loadControl(ex: TemplateExercise) -> some View {
+        let unit = ex.allowsAssistance ? "lb" : ex.exercise_unit
+        let label: String
+        if ex.allowsAssistance {
+            label = "ADDED LOAD / ASSIST (\(unit)) · TAP TO EDIT"
+        } else if ex.isPerHand {
+            label = "WEIGHT (\(unit)) · EACH HAND · TAP TO EDIT"
+        } else {
+            label = "WEIGHT (\(unit)) · TAP TO EDIT"
+        }
+        let value: String
+        if ex.allowsAssistance && sync.weight > 0 {
+            value = "+\(SetValueFormatter.number(sync.weight))"
+        } else if ex.allowsAssistance && sync.weight < 0 {
+            value = "−\(SetValueFormatter.number(abs(sync.weight)))"
+        } else {
+            value = SetValueFormatter.number(sync.weight)
+        }
+        return stepper(
+            label: label,
+            value: value,
+            steps: [
+                ("−10", { sync.adjustWeight(-10) }, true),
+                ("−5", { sync.adjustWeight(-5) }, false),
+                ("+5", { sync.adjustWeight(5) }, false),
+                ("+10", { sync.adjustWeight(10) }, true),
+            ],
+            onTapValue: {
+                weightDraft = SetValueFormatter.number(sync.weight)
+                editingWeight = true
+            })
     }
 
     private func stepper(label: String, value: String,
@@ -1051,11 +1073,12 @@ private struct RunnerView: View {
                                 .font(.system(size: 11, weight: .bold))
                                 .foregroundStyle(intent.deliveryState == .failed
                                     ? Theme.danger : Theme.accent)
-                            Text(intent.body.is_timed
-                                ? "\(intent.body.duration_s ?? intent.body.reps)s"
-                                : (ex.isBodyweight
-                                    ? "BW × \(intent.body.reps)"
-                                    : "\(fmt(intent.body.weight)) × \(intent.body.reps)"))
+                            Text(SetValueFormatter.value(
+                                weight: intent.body.weight,
+                                reps: intent.body.reps,
+                                durationSeconds: intent.body.duration_s,
+                                timed: intent.body.is_timed,
+                                bodyweight: ex.isBodyweight))
                                 .font(Theme.mono(12, .bold))
                                 .foregroundStyle(Theme.text)
                             Spacer()
@@ -1103,6 +1126,7 @@ private struct RunnerView: View {
 private struct WeightEditorSheet: View {
     @Binding var draft: String
     let unit: String
+    let allowsAssistance: Bool
     let onSave: () -> Void
     let onCancel: () -> Void
 
@@ -1116,7 +1140,7 @@ private struct WeightEditorSheet: View {
                     .foregroundStyle(Theme.muted)
                     .padding(.top, 8)
                 TextField("0", text: $draft)
-                    .keyboardType(.decimalPad)
+                    .keyboardType(allowsAssistance ? .numbersAndPunctuation : .decimalPad)
                     .multilineTextAlignment(.center)
                     .font(Theme.number(56))
                     .foregroundStyle(Theme.text)
@@ -1124,7 +1148,9 @@ private struct WeightEditorSheet: View {
                     .background(Theme.surface)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .focused($focused)
-                Text("Any value — \(unit) (e.g. 14.3)")
+                Text(allowsAssistance
+                     ? "Positive adds load · negative records assistance"
+                     : "Any value — \(unit) (e.g. 14.3)")
                     .font(Theme.mono(11)).foregroundStyle(Theme.dim)
                 Spacer()
             }
@@ -1398,16 +1424,18 @@ private struct FinishedView: View {
                 let sets = todaysSets
                 // Match the WorkoutDoneView rollup: reps count both sides;
                 // volume also counts both implements for per-hand loads.
-                let reps = sets.reduce(0) {
-                    $0 + sync.effectiveReps(for: $1)
-                }
-                let vol = sets.reduce(0.0) {
-                    $0 + sync.tonnage(for: $1)
-                }
+                let reps = sync.totalReps(for: sets)
                 VStack(spacing: 0) {
                     sumRow("Sets logged", "\(sets.count)")
-                    sumRow("Total reps", "\(reps)")
-                    sumRow("Total volume", "\(Int(vol)) lb")
+                    if reps > 0 {
+                        sumRow("Total reps", "\(reps)")
+                    }
+                    if let bestHold = sync.bestHoldSeconds(for: sets) {
+                        sumRow("Best hold", "\(bestHold)s")
+                    }
+                    if let tonnage = sync.totalTonnage(for: sets) {
+                        sumRow("Total volume", "\(Int(tonnage)) lb")
+                    }
                 }
                 .padding(.top, 20)
 

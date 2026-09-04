@@ -292,6 +292,98 @@ describe('sessions, idempotent set logging, history, volume', () => {
     ).json<{ by_session: unknown[] }>();
     expect(histAfter.by_session).toHaveLength(0);
   });
+
+  it('reports bodyweight reps and holds without inventing or subtracting tonnage', async () => {
+    const H = auth(await devJwt());
+    await SELF.fetch(`${BASE}/api/plan`, {
+      method: 'POST',
+      headers: H,
+      body: JSON.stringify({ name: 'Bodyweight metrics' }),
+    });
+    const session = await (
+      await SELF.fetch(`${BASE}/api/sessions`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({ date: '2026-09-03' }),
+      })
+    ).json<{ id: string }>();
+
+    const log = async (
+      exercise_id: string,
+      set_index: number,
+      weight: number,
+      reps: number,
+      timed?: { duration_s?: number },
+    ) => {
+      const response = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
+        method: 'POST',
+        headers: H,
+        body: JSON.stringify({
+          id: crypto.randomUUID(),
+          exercise_id,
+          set_index,
+          weight,
+          reps,
+          ...(timed == null
+            ? {}
+            : { ...(timed.duration_s == null ? {} : { duration_s: timed.duration_s }), is_timed: true }),
+        }),
+      });
+      expect(response.status).toBe(201);
+    };
+
+    await log('ex_pullup', 1, 0, 8);
+    await log('ex_pullup', 2, -30, 12);
+    await log('ex_pullup', 3, 45, 5);
+    await log('ex_plank', 1, 0, 45, { duration_s: 45 });
+    await log('ex_plank', 2, 20, 30, { duration_s: 30 });
+    await log('ex_plank', 3, 0, 60, {});
+
+    const pullups = await (
+      await SELF.fetch(`${BASE}/api/history?exercise_id=ex_pullup`, { headers: H })
+    ).json<any>();
+    expect(pullups.by_session).toHaveLength(1);
+    expect(pullups.by_session[0]).toMatchObject({
+      metric: 'reps',
+      best_reps: 12,
+      total_reps: 25,
+      best_duration_s: null,
+      est_1rm: null,
+      tonnage: 225,
+      top: { weight: -30, reps: 12 },
+    });
+
+    const holds = await (
+      await SELF.fetch(`${BASE}/api/history?exercise_id=ex_plank`, { headers: H })
+    ).json<any>();
+    expect(holds.by_session).toHaveLength(1);
+    expect(holds.by_session[0]).toMatchObject({
+      metric: 'duration',
+      best_reps: null,
+      total_reps: null,
+      best_duration_s: 60,
+      est_1rm: null,
+      tonnage: null,
+      top: { duration_s: 60, reps: 60, is_timed: 1 },
+    });
+
+    const back = await (
+      await SELF.fetch(`${BASE}/api/volume?muscle=back`, { headers: H })
+    ).json<any>();
+    expect(back.buckets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ hard_sets: 3, tonnage: 225 }),
+      ]),
+    );
+    const core = await (
+      await SELF.fetch(`${BASE}/api/volume?muscle=core`, { headers: H })
+    ).json<any>();
+    expect(core.buckets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ hard_sets: 3, tonnage: null }),
+      ]),
+    );
+  });
 });
 
 // Phantom-session guard: logging promotes a session planned->in_progress;

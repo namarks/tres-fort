@@ -52,7 +52,7 @@ gymnastic-strength movements.
     land atomically with the reviewed
     PR; no remote migration, Worker deployment, or TestFlight publication is
     part of the merge.
-- [ ] **P1 — Added load, assistance, and honest metrics**
+- [x] **P1 — Added load, assistance, and honest metrics**
   - Define `weight` on a `bw` or `timed` slot or set as added load: positive
     for a belt or vest, negative for band or machine assistance, zero for
     strict bodyweight. Write the convention into the `log_set` and
@@ -76,6 +76,17 @@ gymnastic-strength movements.
     zero for every bodyweight set.
   - Cover the convention with backend tests on the history and volume
     rollups and with iOS rendering tests for the three value forms.
+  - Completion evidence (2026-09-03): the runner now uses one load-entry path
+    for conventional, bodyweight, and static-hold exercises; bodyweight and
+    hold work accept signed external load while cardio retains its duration-only
+    control. One formatter renders persisted, pending, agenda, history, and
+    group-feed values. Backend and iOS history use reps or duration for
+    zero/assisted work, expose Epley estimates only for positive loads, and
+    leave tonnage undefined when no positive rep-based load exists. Local
+    verification passed TypeScript typecheck, all 495 Worker tests, and all 168
+    iOS unit tests. The checked phase and this evidence land atomically with the
+    reviewed PR; no remote migration, Worker deployment, or TestFlight
+    publication is part of the merge.
 - [ ] **P2 — Progress by variation in the app**
   - Expose the existing swap-exercise service over the authenticated REST
     editor path and add a "Replace with…" action in the iOS editor that keeps
@@ -96,10 +107,10 @@ gymnastic-strength movements.
 
 ## Next step
 
-**Now (@agent):** Recompile the backlog after PR #113 lands. If P1 remains the
-highest-ranked eligible bodyweight slice, preflight its runner touch set against
-`gym-runner-depth#P0` and implement one shared value-entry path rather than two
-competing controls. P2 still waits for P1 evidence, not for a product decision.
+**Now (@agent):** P2 is ready once this P1 evidence is integrated: expose the
+existing swap service through the authenticated REST editor path, keep its plan
+version/audit semantics intact, and let iOS replace a slot without rebuilding
+its targets or order.
 
 ## Notes / open questions
 

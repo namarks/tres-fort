@@ -290,9 +290,13 @@ final class SetOutboxTests: XCTestCase {
         id: String = "slot-a",
         exerciseID: String = "exercise-a",
         timed: Bool = false,
+        bodyweight: Bool = false,
+        modality: String? = nil,
+        targetWeight: Double? = nil,
         targetSets: Int = 3
     ) -> TemplateExercise {
-        TemplateExercise(
+        let resolvedModality = modality ?? (timed ? "timed" : (bodyweight ? "bw" : "barbell"))
+        return TemplateExercise(
             id: id,
             exercise_id: exerciseID,
             exercise_name: timed ? "Plank" : "Squat",
@@ -303,9 +307,9 @@ final class SetOutboxTests: XCTestCase {
             target_reps_max: nil,
             target_rpe: nil,
             rest_seconds: 90,
-            target_weight: 100,
+            target_weight: targetWeight ?? (timed || bodyweight ? 0 : 100),
             cues: nil,
-            exercise_modality: timed ? "timed" : "barbell",
+            exercise_modality: resolvedModality,
             exercise_laterality: "bilateral",
             exercise_load_mode: "total",
             exercise_demo_slug: nil,
@@ -1228,6 +1232,7 @@ final class SetOutboxTests: XCTestCase {
             now: { self.fixedDate })
         prepare(model, exercise: ex, session: s, running: true)
 
+        model.setWeight(-20)
         model.startTimedSet()
         await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(29))
         XCTAssertTrue(model.timedActive)
@@ -1242,6 +1247,36 @@ final class SetOutboxTests: XCTestCase {
         await model.drainSetOutbox()
         XCTAssertEqual(api.logCalls.count, 1)
         XCTAssertEqual(api.logCalls.first?.body.duration_s, 30)
+        XCTAssertEqual(api.logCalls.first?.body.weight, -20)
+    }
+
+    func testRunnerAllowsSignedLoadOnlyForBodyweightAndTimedWork() {
+        let defaults = defaults()
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            defaults: defaults,
+            now: { self.fixedDate })
+        let bodyweight = exercise(bodyweight: true)
+        prepare(model, exercise: bodyweight, running: true)
+
+        model.setWeight(-30)
+        XCTAssertEqual(model.weight, -30)
+        model.adjustWeight(-5)
+        XCTAssertEqual(model.weight, -35)
+
+        let loaded = exercise()
+        prepare(model, exercise: loaded, running: true)
+        model.setWeight(-30)
+        XCTAssertEqual(model.weight, 0)
+        model.adjustWeight(-5)
+        XCTAssertEqual(model.weight, 0)
+
+        let cardio = exercise(timed: true, modality: "cardio", targetWeight: 100)
+        prepare(model, exercise: cardio, running: true)
+        XCTAssertFalse(cardio.showsLoadControl)
+        XCTAssertEqual(model.weight, 0)
+        model.setWeight(-30)
+        XCTAssertEqual(model.weight, 0)
     }
 
     func testRelaunchLoadsAndDrainsUnresolvedIntent() async {
@@ -2850,7 +2885,7 @@ final class SetOutboxTests: XCTestCase {
                 exercise_id: ex.exercise_id,
                 template_exercise_id: ex.id, set_index: 1,
                 weight: 0, reps: 45, rpe: nil, is_warmup: 0,
-                logged_at: 1, duration_s: 45, is_timed: 1,
+                logged_at: 1, duration_s: nil, is_timed: 1,
                 deleted_at: nil),
             SetLog(
                 id: "rep", session_id: s.id,
@@ -2862,8 +2897,52 @@ final class SetOutboxTests: XCTestCase {
         ]
 
         let stat = try XCTUnwrap(model.history(for: ex.exercise_id).first)
-        XCTAssertTrue(stat.hasTimedSets)
-        XCTAssertEqual(stat.avgDuration, 45)
+        XCTAssertEqual(stat.bestReps, 8)
+        XCTAssertEqual(stat.bestHoldSeconds, 45)
+    }
+
+    func testBodyweightBestRepsExcludeSeparateTimedOnlySessions() throws {
+        let defaults = defaults()
+        let ex = exercise(exerciseID: "exercise-bodyweight", bodyweight: true)
+        let repSession = session(id: "rep-session", date: "2026-06-01", status: "completed")
+        let holdSession = session(id: "hold-session", date: "2026-06-02", status: "completed")
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            defaults: defaults,
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: repSession)
+        model.catalog = [ExerciseCatalog(
+            id: ex.exercise_id,
+            name: "Pull-Up",
+            primary_muscle: "back",
+            modality: "bw",
+            unit: "lb",
+            laterality: "bilateral",
+            load_mode: "total",
+            demo_slug: nil)]
+        model.sessions = [repSession, holdSession]
+        model.sets = [
+            SetLog(
+                id: "rep", session_id: repSession.id,
+                exercise_id: ex.exercise_id,
+                template_exercise_id: ex.id, set_index: 1,
+                weight: 0, reps: 12, rpe: nil, is_warmup: 0,
+                logged_at: 1, duration_s: nil, is_timed: 0,
+                deleted_at: nil),
+            SetLog(
+                id: "hold", session_id: holdSession.id,
+                exercise_id: ex.exercise_id,
+                template_exercise_id: ex.id, set_index: 1,
+                weight: 0, reps: 45, rpe: nil, is_warmup: 0,
+                logged_at: 2, duration_s: 45, is_timed: 1,
+                deleted_at: nil),
+        ]
+
+        let stats = model.history(for: ex.exercise_id)
+        XCTAssertEqual(stats.compactMap(\.bestReps).max(), 12)
+        XCTAssertNil(stats[1].bestReps)
+        XCTAssertEqual(stats[1].totalReps, 0)
+        XCTAssertEqual(stats[1].bestHoldSeconds, 45)
     }
 
     func testLiveLoadRefreshesCachedCatalogAndRetainsItOnLaterFailure() async {

@@ -89,21 +89,37 @@ private struct ExerciseHistoryList: View {
     private func row(_ id: String) -> some View {
         let hist = sync.history(for: id)
         let last = hist.last
+        let bodyweight = sync.isBodyweightExercise(id)
         return HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text(sync.exerciseName(id).uppercased())
                     .font(Theme.display(20)).foregroundStyle(Theme.text)
                 if let last {
-                    Text("\(fmtW(last.topWeight))×\(last.topReps) · \(last.setCount) sets · \(last.date)")
+                    let summary = bodyweight && last.totalReps > 0
+                        ? "\(last.topReps) best · \(last.totalReps) total reps"
+                        : (last.bestHoldSeconds.map { "\($0)s best hold" }
+                            ?? "\(fmtW(last.topWeight))×\(last.topReps)")
+                    Text("\(summary) · \(last.setCount) sets · \(last.date)")
                         .font(Theme.mono(11)).foregroundStyle(Theme.muted)
                 }
             }
             Spacer()
             if let last {
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text("\(Int(last.est1RM))").font(Theme.mono(18, .bold))
-                        .foregroundStyle(Theme.accent)
-                    Text("est 1RM").font(Theme.mono(9)).foregroundStyle(Theme.dim)
+                    if let estimate = last.est1RM {
+                        Text("\(Int(estimate))").font(Theme.mono(18, .bold))
+                            .foregroundStyle(Theme.accent)
+                        Text("est 1RM").font(Theme.mono(9)).foregroundStyle(Theme.dim)
+                    } else if let hold = last.bestHoldSeconds,
+                              !bodyweight || last.totalReps == 0 {
+                        Text("\(hold)s").font(Theme.mono(18, .bold))
+                            .foregroundStyle(Theme.accent)
+                        Text("best hold").font(Theme.mono(9)).foregroundStyle(Theme.dim)
+                    } else if bodyweight && last.totalReps > 0 {
+                        Text("\(last.topReps)").font(Theme.mono(18, .bold))
+                            .foregroundStyle(Theme.accent)
+                        Text("best reps").font(Theme.mono(9)).foregroundStyle(Theme.dim)
+                    }
                 }
             }
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.dim)
@@ -119,9 +135,30 @@ private struct ExerciseDetailView: View {
 
     var body: some View {
         let hist = sync.history(for: exerciseID)
+        let bodyweight = sync.isBodyweightExercise(exerciseID)
+        let repHistory = bodyweight ? hist.filter { $0.bestReps != nil } : []
+        let bodyweightReps = !repHistory.isEmpty
+        let estimated = hist.filter { $0.est1RM != nil }
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                if let best = hist.map(\.est1RM).max() {
+                if bodyweightReps, let best = repHistory.compactMap(\.bestReps).max() {
+                    HStack {
+                        stat("BEST REPS", "\(best)")
+                        Spacer()
+                        stat("SESSIONS", "\(hist.count)")
+                        Spacer()
+                        stat("LAST TOTAL", repHistory.last.map { "\($0.totalReps)" } ?? "—")
+                    }
+                    chartCard("TOTAL REPS", repHistory) { Double($0.totalReps) }
+                } else if let best = hist.compactMap(\.bestHoldSeconds).max() {
+                    HStack {
+                        stat("BEST HOLD", "\(best)s")
+                        Spacer()
+                        stat("SESSIONS", "\(hist.count)")
+                        Spacer()
+                        stat("LAST", hist.last?.bestHoldSeconds.map { "\($0)s" } ?? "—")
+                    }
+                } else if let best = estimated.compactMap(\.est1RM).max() {
                     HStack {
                         stat("BEST e1RM", "\(Int(best))")
                         Spacer()
@@ -131,13 +168,17 @@ private struct ExerciseDetailView: View {
                     }
                 }
 
-                chartCard("ESTIMATED 1RM", hist) { s in s.est1RM }
+                if !estimated.isEmpty {
+                    chartCard("ESTIMATED 1RM", estimated) { $0.est1RM ?? 0 }
+                }
 
-                // Key duration history on the logged set, not catalog
-                // modality: any movement can be prescribed as a hold, while
-                // old rep sets may still carry incidental wall-clock values.
-                if hist.contains(where: { $0.hasTimedSets && $0.avgDuration > 0 }) {
-                    chartCard("AVG SET DURATION (s)", hist) { Double($0.avgDuration) }
+                // Key hold history on the logged set, not catalog modality:
+                // any movement can be prescribed as a hold.
+                let held = hist.filter { $0.bestHoldSeconds != nil }
+                if !held.isEmpty {
+                    chartCard("BEST HOLD (s)", held) {
+                        Double($0.bestHoldSeconds ?? 0)
+                    }
                 }
 
                 if let last = hist.last {

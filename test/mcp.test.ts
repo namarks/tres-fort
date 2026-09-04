@@ -444,6 +444,7 @@ describe('mcp bodyweight intensity adjustment', () => {
           day_label: 'A',
           exercises: [
             { exercise: 'Pull-Up', target_sets: 3, target_reps: 8, target_weight: -30 },
+            { exercise: 'Neutral-Grip Pull-Up', target_sets: 3, target_reps: 8, target_weight: -1 },
             { exercise: 'Bench Press', target_sets: 3, target_reps: 5, target_weight: 100 },
           ],
         }],
@@ -463,6 +464,8 @@ describe('mcp bodyweight intensity adjustment', () => {
     const exercises = adjusted.plan.days[0].exercises;
     expect(exercises.find((exercise: any) => exercise.exercise_id === 'ex_pullup')
       .target_weight).toBe(-35);
+    expect(exercises.find((exercise: any) => exercise.exercise_id === 'ex_neutral_pullup')
+      .target_weight).toBe(-1);
     expect(exercises.find((exercise: any) => exercise.exercise_id === 'ex_bench')
       .target_weight).toBe(90);
   });

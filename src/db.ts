@@ -5169,10 +5169,12 @@ export async function adjustToday(
         // Positive added load gets lighter. Negative load is assistance, so
         // reducing intensity must increase its magnitude rather than move it
         // toward zero and accidentally make the exercise harder.
-        const scaled = te.target_weight < 0
-          ? te.target_weight / wtF
-          : te.target_weight * wtF;
-        const w = Math.round(scaled / 5) * 5;
+        const assisted = te.target_weight < 0;
+        const scaled = assisted ? te.target_weight / wtF : te.target_weight * wtF;
+        const rounded = Math.round(scaled / 5) * 5;
+        // Keep the existing five-pound convention when it increases
+        // assistance, but never let a small negative value round to zero.
+        const w = assisted ? Math.min(te.target_weight, rounded) : rounded;
         stmts.push(
           db
             .prepare('UPDATE template_exercises SET target_weight=?2, updated_at=?3 WHERE id=?1')

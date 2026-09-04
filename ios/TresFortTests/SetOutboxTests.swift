@@ -292,6 +292,7 @@ final class SetOutboxTests: XCTestCase {
         timed: Bool = false,
         bodyweight: Bool = false,
         modality: String? = nil,
+        targetWeight: Double? = nil,
         targetSets: Int = 3
     ) -> TemplateExercise {
         let resolvedModality = modality ?? (timed ? "timed" : (bodyweight ? "bw" : "barbell"))
@@ -306,7 +307,7 @@ final class SetOutboxTests: XCTestCase {
             target_reps_max: nil,
             target_rpe: nil,
             rest_seconds: 90,
-            target_weight: timed || bodyweight ? 0 : 100,
+            target_weight: targetWeight ?? (timed || bodyweight ? 0 : 100),
             cues: nil,
             exercise_modality: resolvedModality,
             exercise_laterality: "bilateral",
@@ -1270,9 +1271,10 @@ final class SetOutboxTests: XCTestCase {
         model.adjustWeight(-5)
         XCTAssertEqual(model.weight, 0)
 
-        let cardio = exercise(timed: true, modality: "cardio")
+        let cardio = exercise(timed: true, modality: "cardio", targetWeight: 100)
         prepare(model, exercise: cardio, running: true)
         XCTAssertFalse(cardio.showsLoadControl)
+        XCTAssertEqual(model.weight, 0)
         model.setWeight(-30)
         XCTAssertEqual(model.weight, 0)
     }

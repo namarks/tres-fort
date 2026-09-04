@@ -3063,10 +3063,14 @@ final class SyncModel: ObservableObject {
         clearTimedSet()
         guard let ex = currentExercise else { return }
         let last = lastWorkingSet(ex.exercise_id)
-        // Bodyweight/timed load is relative to bodyweight: positive added
-        // load, zero strict, negative assistance. It is visible and editable,
-        // so carry the last/target value just like any other exercise.
-        weight = last?.weight ?? ex.target_weight ?? (ex.isTimed || ex.isBodyweight ? 0 : 45)
+        // Bodyweight/static-hold load is relative to bodyweight: positive
+        // added load, zero strict, negative assistance. It is visible and
+        // editable, so carry the last/target value like any other exercise.
+        // Cardio shares the countdown runner but has no visible load control;
+        // never carry a stale/invalid target into the persisted timed set.
+        weight = ex.exercise_modality == "cardio"
+            ? 0
+            : (last?.weight ?? ex.target_weight ?? (ex.isTimed || ex.isBodyweight ? 0 : 45))
         reps = last?.reps ?? ex.target_reps
     }
 

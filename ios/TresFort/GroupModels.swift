@@ -226,6 +226,13 @@ struct FeedSessionItem: Codable, Identifiable, Equatable {
         let is_timed: Bool?
         let est_1rm: Double?
 
+        /// The wire keeps zero as a legacy sentinel so installed clients with
+        /// a required Double continue decoding the feed during rollout.
+        var estimatedOneRepMax: Double? {
+            guard is_timed != true, let est_1rm, est_1rm > 0 else { return nil }
+            return est_1rm
+        }
+
         var valueLabel: String {
             SetValueFormatter.value(
                 weight: weight,

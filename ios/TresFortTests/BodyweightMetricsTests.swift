@@ -2,6 +2,10 @@ import XCTest
 @testable import TresFort
 
 final class BodyweightMetricsTests: XCTestCase {
+    private struct LegacyTopSet: Decodable {
+        let est_1rm: Double
+    }
+
     func testSetValueFormatterCoversAddedAssistedStrictAndTimedWork() {
         XCTAssertEqual(
             SetValueFormatter.value(
@@ -36,12 +40,16 @@ final class BodyweightMetricsTests: XCTestCase {
               "modality": "bw",
               "duration_s": null,
               "is_timed": false,
-              "est_1rm": null
+              "est_1rm": 0
             }
             """.utf8)
         let top = try JSONDecoder().decode(FeedSessionItem.TopSet.self, from: data)
 
         XCTAssertEqual(top.valueLabel, "BW−30 × 12")
-        XCTAssertNil(top.est_1rm)
+        XCTAssertEqual(top.est_1rm, 0)
+        XCTAssertNil(top.estimatedOneRepMax)
+        XCTAssertEqual(
+            try JSONDecoder().decode(LegacyTopSet.self, from: data).est_1rm,
+            0)
     }
 }

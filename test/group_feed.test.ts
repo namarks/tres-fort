@@ -563,7 +563,7 @@ describe('group feed: top-set semantics', () => {
       modality: 'bw',
       duration_s: null,
       is_timed: false,
-      est_1rm: null,
+      est_1rm: 0,
     });
     expect(topSets.find((set: any) => set.exercise === 'Plank')).toMatchObject({
       weight: 0,
@@ -571,7 +571,7 @@ describe('group feed: top-set semantics', () => {
       modality: 'timed',
       duration_s: 45,
       is_timed: true,
-      est_1rm: null,
+      est_1rm: 0,
     });
   });
 });

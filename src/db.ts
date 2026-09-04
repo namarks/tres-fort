@@ -7584,7 +7584,9 @@ export interface FeedSessionItem {
       modality: string;
       duration_s: number | null;
       is_timed: boolean;
-      est_1rm: number | null;
+      /** Kept numeric for installed iOS clients whose decoder predates the
+       * metric fields. Zero means unavailable; current clients hide it. */
+      est_1rm: number;
     }>;
   };
 }
@@ -7898,9 +7900,12 @@ export async function getGroupFeed(
         }
         return {
           ...top,
+          // The shipped iOS decoder requires a number here. Preserve that
+          // wire contract with zero as the legacy unavailable sentinel; new
+          // clients use is_timed/load semantics to hide the estimate.
           est_1rm: !top.is_timed && top.weight > 0
             ? epley(top.weight, top.reps)
-            : null,
+            : 0,
         };
       });
       list.sort((a, b) => a.exercise.localeCompare(b.exercise));

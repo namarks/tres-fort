@@ -62,7 +62,7 @@ struct FeedItemDetailSheet: View {
                                 Text(s.valueLabel)
                                     .font(Theme.mono(13))
                                     .foregroundStyle(Theme.accent)
-                                if let estimate = s.est_1rm {
+                                if let estimate = s.estimatedOneRepMax {
                                     Text("~\(Int(estimate.rounded())) 1RM")
                                         .font(Theme.mono(9))
                                         .foregroundStyle(Theme.dim)

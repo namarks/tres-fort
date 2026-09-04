@@ -8,18 +8,22 @@ decisions and measured baselines; it carries no live checklist.
 Confirmed by the owner on the Cloudflare dashboard Workers plans page
 ("Current plan" under Free). Account id is the one in `wrangler.jsonc`.
 
-Free-tier limits that bind this plan, with D1 Paid allowances and overage
-rates from Cloudflare's official [D1 pricing page](https://developers.cloudflare.com/d1/platform/pricing/),
-read 2026-09-04:
+Free-tier limits that bind this plan, with current Paid allowances, rates,
+and CPU limits from Cloudflare's official [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/),
+[Workers pricing](https://developers.cloudflare.com/workers/platform/pricing/),
+and [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
+pages, read 2026-09-04:
 
 | Limit | Free | Paid ($5 / month + usage) |
 |---|---|---|
 | D1 rows read | 5,000,000 / day | First 25 billion / month included; then $0.001 / million rows |
 | D1 rows written | 100,000 / day | First 50 million / month included; then $1.00 / million rows |
 | D1 stored data | 5 GB total | First 5 GB included; then $0.75 / GB-month |
-| CPU time per invocation | 10 ms | 5 min |
+| CPU time per HTTP request | 10 ms | 30 s default; configurable to 5 min |
+| CPU time per hourly cron trigger | 10 ms | 15 min |
+| CPU time billing | — | First 30 million CPU-ms / month included; then $0.02 / million CPU-ms |
 | Subrequests per request (cron tick included) | 50 | 10,000 |
-| Requests | 100,000 / day | $0.30 / million |
+| Requests | 100,000 / day | First 10 million / month included; then $0.30 / million |
 
 D1 has hard-enforced the free-tier daily row limits since 2026-09-01
 (<https://developers.cloudflare.com/changelog/post/2026-09-01-d1-free-tier-limit-enforcement/>).

@@ -1,5 +1,6 @@
 /**
- * 0020 (demo_slug backfill) + 0021 (v2 catalog expansion) contracts.
+ * 0020 (demo_slug backfill), 0021 (v2 catalog expansion), and 0033
+ * (gymnastic-strength expansion) contracts.
  *
  *  - 0020 adds a nullable demo_slug column and backfills 127 of the 138
  *    pre-existing rows from free-exercise-db ids. The 11 unmapped rows
@@ -100,14 +101,14 @@ describe('0020 demo_slug backfill', () => {
 });
 
 describe('0021 catalog v2 (bodyweight + unilateral expansion)', () => {
-  it('catalog grows by 108 net-new rows (138 + 108 = 246, +8 cardio in 0026 = 254)', async () => {
+  it('catalog grows to 276 rows after cardio and gymnastic-strength seeds', async () => {
     const { count } = (await env.DB.prepare(
       'SELECT COUNT(*) AS count FROM exercises',
     ).first<{ count: number }>())!;
     // ex_kb_swing re-listed as INSERT OR IGNORE no-op — net 108 new at 0021.
     // Migrations apply cumulatively, so the absolute total also includes the
-    // 8 erg/cardio rows seeded by 0026.
-    expect(count).toBe(254);
+    // 8 erg/cardio rows seeded by 0026 and 22 gymnastic-strength rows in 0033.
+    expect(count).toBe(276);
   });
 
   it('adds priority bodyweight at-home rows', async () => {
@@ -342,6 +343,85 @@ describe('0021 catalog v2 (bodyweight + unilateral expansion)', () => {
     for (const q of mig!.queries) {
       await env.DB.prepare(q).run();
     }
+    const after = (await env.DB.prepare(
+      'SELECT COUNT(*) AS c FROM exercises',
+    ).first<{ c: number }>())!.c;
+    expect(after).toBe(before);
+  });
+});
+
+describe('0033 gymnastic-strength catalog', () => {
+  const timed = [
+    'ex_ring_support_hold',
+    'ex_l_sit',
+    'ex_tuck_front_lever',
+    'ex_front_lever',
+    'ex_back_lever',
+    'ex_tuck_planche',
+    'ex_planche_lean',
+    'ex_handstand_hold',
+    'ex_crow_pose',
+    'ex_gymnastic_bridge',
+  ];
+  const repBased = [
+    'ex_ring_dip',
+    'ex_ring_row',
+    'ex_ring_pushup',
+    'ex_bar_muscle_up',
+    'ex_ring_muscle_up',
+    'ex_wall_walk',
+    'ex_skin_the_cat',
+    'ex_dragon_flag',
+    'ex_typewriter_pullup',
+    'ex_eccentric_pullup',
+    'ex_back_extension',
+    'ex_reverse_hyper',
+  ];
+
+  it('adds all 22 rows with hold versus rep semantics', async () => {
+    for (const exId of timed) {
+      const row = await env.DB.prepare(
+        'SELECT modality,unit FROM exercises WHERE id = ?1',
+      ).bind(exId).first<{ modality: string; unit: string }>();
+      expect(row, `${exId} missing`).toEqual({ modality: 'timed', unit: 'sec' });
+    }
+    for (const exId of repBased) {
+      const row = await env.DB.prepare(
+        'SELECT modality,unit FROM exercises WHERE id = ?1',
+      ).bind(exId).first<{ modality: string; unit: string }>();
+      expect(row, `${exId} missing`).toEqual({ modality: 'bw', unit: 'lb' });
+    }
+  });
+
+  it('resolves representative spoken names without taking legacy aliases', async () => {
+    const cases: Array<[string, string]> = [
+      ['rings support hold', 'ex_ring_support_hold'],
+      ['muscle up on bar', 'ex_bar_muscle_up'],
+      ['lsit', 'ex_l_sit'],
+      ['full front lever', 'ex_front_lever'],
+      ['frog stand', 'ex_crow_pose'],
+      ['negative pullup', 'ex_eccentric_pullup'],
+      ['back extension', 'ex_back_extension'],
+      ['reverse hyper', 'ex_reverse_hyper'],
+    ];
+    for (const [query, exId] of cases) {
+      const exercise = await resolveExercise(env.DB, query);
+      expect((exercise as { id: string } | null)?.id, query).toBe(exId);
+    }
+    expect((await resolveExercise(env.DB, 'dip') as { id: string }).id).toBe('ex_dips');
+    expect((await resolveExercise(env.DB, 'back extension bw') as { id: string }).id)
+      .toBe('ex_superman');
+  });
+
+  it('re-running 0033 is a no-op', async () => {
+    const before = (await env.DB.prepare(
+      'SELECT COUNT(*) AS c FROM exercises',
+    ).first<{ c: number }>())!.c;
+    const migration = (
+      env.TEST_MIGRATIONS as Array<{ name: string; queries: string[] }>
+    ).find((candidate) => candidate.name.includes('0033'));
+    expect(migration, '0033 migration missing').toBeTruthy();
+    for (const query of migration!.queries) await env.DB.prepare(query).run();
     const after = (await env.DB.prepare(
       'SELECT COUNT(*) AS c FROM exercises',
     ).first<{ c: number }>())!.c;

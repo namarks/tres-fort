@@ -133,11 +133,10 @@ private struct ExerciseDetailView: View {
 
                 chartCard("ESTIMATED 1RM", hist) { s in s.est1RM }
 
-                // Only timed holds have a meaningful set duration. Rep sets
-                // logged before #30 still carry an incidental wall-clock
-                // duration in the DB, so gate this chart on modality, not
-                // just avgDuration > 0.
-                if sync.isTimedExercise(exerciseID), hist.contains(where: { $0.avgDuration > 0 }) {
+                // Key duration history on the logged set, not catalog
+                // modality: any movement can be prescribed as a hold, while
+                // old rep sets may still carry incidental wall-clock values.
+                if hist.contains(where: { $0.hasTimedSets && $0.avgDuration > 0 }) {
                     chartCard("AVG SET DURATION (s)", hist) { Double($0.avgDuration) }
                 }
 

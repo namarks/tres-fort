@@ -1228,19 +1228,6 @@ private struct TimedSetView: View {
         .padding(20)
         .background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 14))
         .padding(.top, 16)
-        // Auto-log when the prescribed hold elapses. Poll the real clock
-        // (re-checked every 0.2s) instead of a single long sleep so the
-        // countdown reliably logs "at the end" even if one sleep is
-        // suspended/cancelled — the #55 complaint. Cancelled (STOP / set
-        // logged) when `timedActive` flips false.
-        .task(id: sync.timedActive) {
-            guard sync.timedActive, let end = sync.timedEndDate else { return }
-            while sync.timedActive && Date() < end {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-                if Task.isCancelled { return }
-            }
-            if sync.timedActive { await sync.finishTimedSetAuto() }
-        }
     }
 }
 

@@ -1,6 +1,6 @@
 # Bodyweight Training Support
 
-Slug: bodyweight-training-support · Status: planned · Updated: 2026-09-02 · Theme: gym-floor
+Slug: bodyweight-training-support · Status: active · Updated: 2026-09-03 · Theme: gym-floor
 
 ## Goal
 
@@ -13,7 +13,7 @@ gymnastic-strength movements.
 
 ## Phases
 
-- [ ] **P0 — Holds, rep ranges, and the missing catalog rows**
+- [x] **P0 — Holds, rep ranges, and the missing catalog rows**
   - Seed the catalog with the gymnastic-strength staples that are absent:
     ring dip, ring row, ring push-up, ring support hold, bar and ring
     muscle-up, L-sit, tuck and full front lever, back lever, tuck planche and
@@ -43,6 +43,15 @@ gymnastic-strength movements.
     #71 and #92 as duplicates of #55. The mirror that re-filed them is an
     open question below, not a deliverable here. Planks, L-sits, and hangs
     are the timed slots a bodyweight plan leans on.
+  - Completion evidence (2026-09-03): PR #113 delivers the 22-row additive
+    catalog migration, hold/rep-range authoring, per-set timed history, and
+    model-owned timed completion with foreground catch-up. Local verification
+    passed TypeScript typecheck, all 492 Worker tests, iOS build-for-testing,
+    and all 164 iOS unit tests after reconciling current `main`. Issues #71 and
+    #92 are closed as duplicates of #55. The checked phase and this evidence
+    land atomically with the reviewed
+    PR; no remote migration, Worker deployment, or TestFlight publication is
+    part of the merge.
 - [ ] **P1 — Added load, assistance, and honest metrics**
   - Define `weight` on a `bw` or `timed` slot or set as added load: positive
     for a belt or vest, negative for band or machine assistance, zero for
@@ -87,10 +96,10 @@ gymnastic-strength movements.
 
 ## Next step
 
-**Now (@owner):** Activate P0 and sequence it with
-`manual-workout-authoring#P0` on the shared editor so the first manual
-bodyweight routine can be prescribed with holds and rep ranges.
-P1 and P2 wait for P0 evidence, not for a product decision.
+**Now (@agent):** Recompile the backlog after PR #113 lands. If P1 remains the
+highest-ranked eligible bodyweight slice, preflight its runner touch set against
+`gym-runner-depth#P0` and implement one shared value-entry path rather than two
+competing controls. P2 still waits for P1 evidence, not for a product decision.
 
 ## Notes / open questions
 

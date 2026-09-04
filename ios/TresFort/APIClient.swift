@@ -2,13 +2,41 @@ import Foundation
 
 enum APIError: Error, LocalizedError {
     case http(Int, String)
+    /// A transient HTTP response that asks the client not to retry before the
+    /// supplied delay. Kept distinct from ordinary HTTP errors so durable
+    /// workout outboxes can honor server admission/rate-limit backoff without
+    /// changing the existing error-matching surface for every API caller.
+    case httpWithRetryAfter(Int, String, TimeInterval)
     case decoding(String)
 
     var errorDescription: String? {
         switch self {
         case let .http(code, body): return "HTTP \(code): \(body)"
+        case let .httpWithRetryAfter(code, body, retryAfter):
+            return "HTTP \(code): \(body) (retry after \(retryAfter)s)"
         case let .decoding(msg): return "Decode failed: \(msg)"
         }
+    }
+
+    var httpStatus: Int? {
+        switch self {
+        case let .http(code, _), let .httpWithRetryAfter(code, _, _): code
+        case .decoding: nil
+        }
+    }
+
+    var httpBody: String? {
+        switch self {
+        case let .http(_, body), let .httpWithRetryAfter(_, body, _): body
+        case .decoding: nil
+        }
+    }
+
+    var retryAfter: TimeInterval? {
+        guard case let .httpWithRetryAfter(_, _, seconds) = self else {
+            return nil
+        }
+        return seconds
     }
 }
 
@@ -542,9 +570,18 @@ struct APIClient {
 
     func send<T: Decodable>(_ req: URLRequest) async throws -> T {
         let (data, resp) = try await URLSession.shared.data(for: req)
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+        let http = resp as? HTTPURLResponse
+        let code = http?.statusCode ?? -1
         guard (200..<300).contains(code) else {
-            throw APIError.http(code, String(data: data, encoding: .utf8) ?? "")
+            let body = String(data: data, encoding: .utf8) ?? ""
+            if [429, 503].contains(code),
+               let raw = http?.value(forHTTPHeaderField: "Retry-After"),
+               let seconds = TimeInterval(raw.trimmingCharacters(in: .whitespaces)),
+               seconds >= 0
+            {
+                throw APIError.httpWithRetryAfter(code, body, seconds)
+            }
+            throw APIError.http(code, body)
         }
         do { return try JSONDecoder().decode(T.self, from: data) }
         catch { throw APIError.decoding("\(error)") }

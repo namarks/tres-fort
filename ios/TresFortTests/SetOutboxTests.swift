@@ -1,4 +1,5 @@
 import Foundation
+import UserNotifications
 import XCTest
 @testable import TresFort
 
@@ -335,6 +336,50 @@ private actor SetAsyncLatch {
 }
 
 @MainActor
+private final class RestNotificationCenterStub: RestNotificationCenterProviding {
+    var status: UNAuthorizationStatus = .authorized
+    var addEntered: SetAsyncLatch?
+    var releaseAdd: SetAsyncLatch?
+    private(set) var pendingIDs: [String] = []
+    private(set) var deliveredIDs: [String] = []
+    var deliverDuringPendingRemoval = false
+
+    func authorizationStatus() async -> UNAuthorizationStatus { status }
+
+    func requestAuthorization(
+        options: UNAuthorizationOptions
+    ) async throws -> Bool {
+        status = .authorized
+        return true
+    }
+
+    func add(_ request: UNNotificationRequest) async throws {
+        await addEntered?.open()
+        await releaseAdd?.wait()
+        pendingIDs.append(request.identifier)
+    }
+
+    func pendingNotificationIdentifiers() async -> [String] { pendingIDs }
+    func deliveredNotificationIdentifiers() async -> [String] { deliveredIDs }
+
+    func installPendingForTests(_ identifier: String) {
+        pendingIDs.append(identifier)
+    }
+
+    func removePendingNotificationRequests(withIdentifiers identifiers: [String]) {
+        if deliverDuringPendingRemoval {
+            deliveredIDs.append(contentsOf: pendingIDs.filter(
+                Set(identifiers).contains))
+        }
+        pendingIDs.removeAll(where: Set(identifiers).contains)
+    }
+
+    func removeDeliveredNotifications(withIdentifiers identifiers: [String]) {
+        deliveredIDs.removeAll(where: Set(identifiers).contains)
+    }
+}
+
+@MainActor
 final class SetOutboxTests: XCTestCase {
     private let fixedDate = Date(timeIntervalSince1970: 2_000_000_000)
     private let fixedUUID = UUID(uuidString: "11111111-1111-4111-8111-111111111111")!
@@ -355,6 +400,41 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(
             APIClient.attemptProtocolHeaders(expectedAttempt: 0),
             ["X-TresFort-Write-Protocol": "attempt-v1"])
+    }
+
+    func testCancelledRestNotificationCannotBeResurrectedByInFlightAdd() async {
+        let center = RestNotificationCenterStub()
+        let addEntered = SetAsyncLatch()
+        let releaseAdd = SetAsyncLatch()
+        center.addEntered = addEntered
+        center.releaseAdd = releaseAdd
+        center.deliverDuringPendingRemoval = true
+        let coordinator = RestNotificationCoordinator(
+            center: center,
+            now: { self.fixedDate },
+            requestIDFactory: { "stale-request" })
+
+        coordinator.schedule(at: fixedDate.addingTimeInterval(60))
+        await addEntered.wait()
+        coordinator.cancel()
+        await releaseAdd.open()
+        await coordinator.waitForSchedulingForTests()
+
+        XCTAssertTrue(center.pendingIDs.isEmpty)
+        XCTAssertTrue(center.deliveredIDs.isEmpty)
+    }
+
+    func testCancellationRemovesNotificationThatTransitionsToDelivered() async {
+        let center = RestNotificationCenterStub()
+        center.installPendingForTests("rest-cue-racing")
+        center.deliverDuringPendingRemoval = true
+        let coordinator = RestNotificationCoordinator(center: center)
+
+        coordinator.cancel()
+        await coordinator.waitForSchedulingForTests()
+
+        XCTAssertTrue(center.pendingIDs.isEmpty)
+        XCTAssertTrue(center.deliveredIDs.isEmpty)
     }
 
     private func defaults() -> UserDefaults {
@@ -3906,14 +3986,19 @@ final class SetOutboxTests: XCTestCase {
         let s = session()
         let api = SetWriteAPIStub()
         api.logHandler = { _, _, _ in throw APIError.http(422, "invalid_fields") }
+        var retrySleeps = 0
         let model = SyncModel(
             auth: retainedAuth(defaults: defaults), setWriteAPI: api,
-            defaults: defaults, now: { self.fixedDate })
+            defaults: defaults, now: { self.fixedDate },
+            automaticWorkoutWriteRetryEnabled: true,
+            workoutWriteRetrySleeper: { _ in retrySleeps += 1 })
         prepare(model, exercise: ex, session: s)
 
         let firstAttempt = await model.logSet(ex, weight: 135, reps: 5)
         XCTAssertFalse(firstAttempt)
         XCTAssertEqual(model.setOutbox.pending.first?.deliveryState, .failed)
+        await Task.yield()
+        XCTAssertEqual(retrySleeps, 0)
         await model.drainSetOutbox()
         XCTAssertEqual(api.logCalls.count, 1)
 
@@ -4390,22 +4475,356 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertTrue(model.setOutbox.isEmpty)
     }
 
+    func testTransientFailureAutomaticallyRetriesWithoutNetworkPathChange() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session()
+        let api = SetWriteAPIStub()
+        let retrySleepStarted = SetAsyncLatch()
+        let releaseRetry = SetAsyncLatch()
+        let retryRequestStarted = SetAsyncLatch()
+        var serverSets: [SetLog] = []
+        api.logHandler = { [self] sessionID, body, _ in
+            if api.logCalls.count == 1 {
+                throw URLError(.notConnectedToInternet)
+            }
+            let row = setLog(body: body, sessionID: sessionID)
+            serverSets.append(row)
+            await retryRequestStarted.open()
+            return .init(set: row, deduped: false)
+        }
+        api.stateHandler = { [self] _ in
+            state(session: s, sets: serverSets, exercise: ex)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: api,
+            defaults: defaults,
+            now: { self.fixedDate },
+            automaticWorkoutWriteRetryEnabled: true,
+            workoutWriteRetryDelaysNanoseconds: [123],
+            workoutWriteRetrySleeper: { _ in
+                await retrySleepStarted.open()
+                await releaseRetry.wait()
+            })
+        prepare(model, exercise: ex, session: s)
+
+        let firstAttempt = await model.logSet(ex, weight: 135, reps: 5)
+        XCTAssertFalse(firstAttempt)
+        await retrySleepStarted.wait()
+        XCTAssertEqual(api.logCalls.count, 1)
+        XCTAssertEqual(model.queuedSetIntentCount, 1)
+
+        await releaseRetry.open()
+        await retryRequestStarted.wait()
+        // Join the model-owned retry if it is still reconciling state.
+        await model.drainSetOutbox()
+
+        XCTAssertEqual(api.logCalls.count, 2)
+        XCTAssertEqual(api.logCalls[0].body, api.logCalls[1].body)
+        XCTAssertEqual(api.stateCalls, 1)
+        XCTAssertTrue(model.setOutbox.isEmpty)
+    }
+
+    func testRetiredModelDoesNotRearmRetryAfterSameUserReauthentication() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session()
+        let firstAttemptEntered = SetAsyncLatch()
+        let releaseFirstAttempt = SetAsyncLatch()
+        let api = SetWriteAPIStub()
+        var serverSets: [SetLog] = []
+        api.logHandler = { [self] sessionID, body, _ in
+            if api.logCalls.count == 1 {
+                await firstAttemptEntered.open()
+                await releaseFirstAttempt.wait()
+                throw URLError(.notConnectedToInternet)
+            }
+            let row = setLog(body: body, sessionID: sessionID)
+            serverSets.append(row)
+            return .init(set: row, deduped: false)
+        }
+        api.stateHandler = { [self] _ in
+            state(session: s, sets: serverSets, exercise: ex)
+        }
+        let oldToken = jwt(subject: "user-a")
+        let newToken = jwt(
+            subject: "user-a",
+            expiration: fixedDate.addingTimeInterval(5_000_000))
+        let authAPI = SetAuthAPIStub()
+        authAPI.authResult = .success(
+            authResponse(jwt: newToken, userID: "user-a"))
+        let sharedAuth = auth(
+            defaults: defaults, api: authAPI, token: oldToken)
+        var retiredRetrySleeps = 0
+        let retired = SyncModel(
+            auth: sharedAuth,
+            setWriteAPI: api,
+            defaults: defaults,
+            now: { self.fixedDate },
+            automaticWorkoutWriteRetryEnabled: true,
+            workoutWriteRetryDelaysNanoseconds: [1],
+            workoutWriteRetrySleeper: { _ in
+                retiredRetrySleeps += 1
+                throw CancellationError()
+            })
+        prepare(retired, exercise: ex, session: s)
+
+        let initialWrite = Task {
+            await retired.logSet(ex, weight: 135, reps: 5)
+        }
+        await firstAttemptEntered.wait()
+        let coalescedOldModelTrigger = Task {
+            await retired.drainSetOutbox()
+        }
+        // Let the second caller enter the in-flight drain and install its
+        // coalesced waiter before the auth epoch changes.
+        await Task.yield()
+        await Task.yield()
+        sharedAuth.signOut()
+        await sharedAuth.exchange(
+            identityToken: "same-user", fullName: nil)
+        let replacement = SyncModel(
+            auth: sharedAuth,
+            setWriteAPI: api,
+            defaults: defaults,
+            now: { self.fixedDate },
+            automaticWorkoutWriteRetryEnabled: true,
+            workoutWriteRetryDelaysNanoseconds: [1])
+
+        await releaseFirstAttempt.open()
+        let acknowledged = await initialWrite.value
+        await coalescedOldModelTrigger.value
+        XCTAssertFalse(acknowledged)
+        await Task.yield()
+        await Task.yield()
+
+        XCTAssertEqual(retiredRetrySleeps, 0)
+        XCTAssertEqual(api.logCalls.count, 1)
+        await replacement.drainSetOutbox()
+        XCTAssertEqual(api.logCalls.count, 2)
+        XCTAssertTrue(replacement.setOutbox.isEmpty)
+    }
+
     func testRateLimitRemainsQueuedRatherThanPermanentlyFailed() async {
         let defaults = defaults()
         let ex = exercise()
         let s = session()
         let api = SetWriteAPIStub()
-        api.logHandler = { _, _, _ in throw APIError.http(429, "rate_limited") }
+        let retryScheduled = SetAsyncLatch()
+        var retryDelays: [UInt64] = []
+        api.logHandler = { _, _, _ in
+            throw APIError.httpWithRetryAfter(429, "rate_limited", 7)
+        }
         let model = SyncModel(
             auth: retainedAuth(defaults: defaults), setWriteAPI: api,
-            defaults: defaults, now: { self.fixedDate })
+            defaults: defaults, now: { self.fixedDate },
+            automaticWorkoutWriteRetryEnabled: true,
+            workoutWriteRetryDelaysNanoseconds: [2_000_000_000],
+            workoutWriteRetrySleeper: { delay in
+                retryDelays.append(delay)
+                await retryScheduled.open()
+                throw CancellationError()
+            })
         prepare(model, exercise: ex, session: s)
 
         let acknowledged = await model.logSet(ex, weight: 135, reps: 5)
+        await retryScheduled.wait()
 
         XCTAssertFalse(acknowledged)
         XCTAssertEqual(model.setOutbox.pending.first?.deliveryState, .queued)
         XCTAssertNil(model.setOutbox.pending.first?.failedHTTPStatus)
+        XCTAssertEqual(retryDelays, [7_000_000_000])
+    }
+
+    func testServiceUnavailableRetryAfterCannotBeBypassedByTriggers() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session()
+        let api = SetWriteAPIStub()
+        let firstRequestEntered = SetAsyncLatch()
+        let releaseFirstRequest = SetAsyncLatch()
+        let retrySleepStarted = SetAsyncLatch()
+        let releaseRetrySleep = SetAsyncLatch()
+        let retryRequestStarted = SetAsyncLatch()
+        var retryDelays: [UInt64] = []
+        var serverSets: [SetLog] = []
+        api.logHandler = { [self] sessionID, body, _ in
+            if api.logCalls.count == 1 {
+                await firstRequestEntered.open()
+                await releaseFirstRequest.wait()
+                throw APIError.httpWithRetryAfter(
+                    503, "write_protocol_not_active", 5)
+            }
+            let row = setLog(body: body, sessionID: sessionID)
+            serverSets.append(row)
+            await retryRequestStarted.open()
+            return .init(set: row, deduped: false)
+        }
+        api.stateHandler = { [self] _ in
+            state(session: s, sets: serverSets, exercise: ex)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { self.fixedDate },
+            automaticWorkoutWriteRetryEnabled: true,
+            workoutWriteRetryDelaysNanoseconds: [2_000_000_000],
+            workoutWriteRetrySleeper: { delay in
+                retryDelays.append(delay)
+                await retrySleepStarted.open()
+                await releaseRetrySleep.wait()
+            })
+        prepare(model, exercise: ex, session: s)
+
+        let initialWrite = Task {
+            await model.logSet(ex, weight: 135, reps: 5)
+        }
+        await firstRequestEntered.wait()
+        let triggerDuringRequest = Task {
+            await model.drainSetOutbox()
+        }
+        await Task.yield()
+        await releaseFirstRequest.open()
+        let acknowledged = await initialWrite.value
+        await triggerDuringRequest.value
+        await retrySleepStarted.wait()
+
+        XCTAssertFalse(acknowledged)
+        XCTAssertEqual(model.queuedSetIntentCount, 1)
+        XCTAssertEqual(api.logCalls.count, 1)
+        XCTAssertEqual(retryDelays, [5_000_000_000])
+
+        // A later manual/lifecycle trigger must join the existing server floor
+        // instead of cancelling it and issuing an early second POST.
+        await model.drainSetOutbox()
+        XCTAssertEqual(api.logCalls.count, 1)
+
+        await releaseRetrySleep.open()
+        await retryRequestStarted.wait()
+        await model.drainSetOutbox()
+
+        XCTAssertEqual(api.logCalls.count, 2)
+        XCTAssertTrue(model.setOutbox.isEmpty)
+    }
+
+    func testRetryAfterSurvivesSameUserReauthentication() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session()
+        let api = SetWriteAPIStub()
+        let retiredSleepStarted = SetAsyncLatch()
+        let releaseRetiredSleep = SetAsyncLatch()
+        let replacementSleepStarted = SetAsyncLatch()
+        let releaseReplacementSleep = SetAsyncLatch()
+        let retryRequestStarted = SetAsyncLatch()
+        var retiredDelays: [UInt64] = []
+        var replacementDelays: [UInt64] = []
+        var serverSets: [SetLog] = []
+        api.logHandler = { [self] sessionID, body, _ in
+            if api.logCalls.count == 1 {
+                throw APIError.httpWithRetryAfter(
+                    503, "write_protocol_not_active", 5)
+            }
+            let row = setLog(body: body, sessionID: sessionID)
+            serverSets.append(row)
+            await retryRequestStarted.open()
+            return .init(set: row, deduped: false)
+        }
+        api.stateHandler = { [self] _ in
+            state(session: s, sets: serverSets, exercise: ex)
+        }
+        let oldToken = jwt(subject: "user-a")
+        let newToken = jwt(
+            subject: "user-a",
+            expiration: fixedDate.addingTimeInterval(5_000_000))
+        let authAPI = SetAuthAPIStub()
+        authAPI.authResult = .success(
+            authResponse(jwt: newToken, userID: "user-a"))
+        let sharedAuth = auth(
+            defaults: defaults, api: authAPI, token: oldToken)
+        let retired = SyncModel(
+            auth: sharedAuth,
+            setWriteAPI: api,
+            defaults: defaults,
+            now: { self.fixedDate },
+            automaticWorkoutWriteRetryEnabled: true,
+            workoutWriteRetryDelaysNanoseconds: [2_000_000_000],
+            workoutWriteRetrySleeper: { delay in
+                retiredDelays.append(delay)
+                await retiredSleepStarted.open()
+                await releaseRetiredSleep.wait()
+            })
+        prepare(retired, exercise: ex, session: s)
+
+        let acknowledged = await retired.logSet(ex, weight: 135, reps: 5)
+        await retiredSleepStarted.wait()
+        XCTAssertFalse(acknowledged)
+        XCTAssertEqual(retiredDelays, [5_000_000_000])
+        XCTAssertEqual(api.logCalls.count, 1)
+
+        sharedAuth.signOut()
+        await sharedAuth.exchange(identityToken: "same-user", fullName: nil)
+        await releaseRetiredSleep.open()
+        let replacement = SyncModel(
+            auth: sharedAuth,
+            setWriteAPI: api,
+            defaults: defaults,
+            now: { self.fixedDate },
+            automaticWorkoutWriteRetryEnabled: true,
+            workoutWriteRetryDelaysNanoseconds: [2_000_000_000],
+            workoutWriteRetrySleeper: { delay in
+                replacementDelays.append(delay)
+                await replacementSleepStarted.open()
+                await releaseReplacementSleep.wait()
+            })
+
+        await replacement.drainSetOutbox()
+        await replacementSleepStarted.wait()
+        XCTAssertEqual(api.logCalls.count, 1)
+        XCTAssertEqual(replacementDelays, [5_000_000_000])
+
+        await releaseReplacementSleep.open()
+        await retryRequestStarted.wait()
+        await replacement.drainSetOutbox()
+
+        XCTAssertEqual(api.logCalls.count, 2)
+        XCTAssertTrue(replacement.setOutbox.isEmpty)
+        XCTAssertNil(WorkoutWriteRetryDeadlineStore.load(
+            userID: "user-a", defaults: defaults))
+    }
+
+    func testOversizedRetryAfterIsSafelyCapped() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session()
+        let api = SetWriteAPIStub()
+        let retryScheduled = SetAsyncLatch()
+        var retryDelays: [UInt64] = []
+        api.logHandler = { _, _, _ in
+            throw APIError.httpWithRetryAfter(
+                503, "write_protocol_not_active", .greatestFiniteMagnitude)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { self.fixedDate },
+            automaticWorkoutWriteRetryEnabled: true,
+            workoutWriteRetryDelaysNanoseconds: [2_000_000_000],
+            workoutWriteRetrySleeper: { delay in
+                retryDelays.append(delay)
+                await retryScheduled.open()
+                throw CancellationError()
+            })
+        prepare(model, exercise: ex, session: s)
+
+        let acknowledged = await model.logSet(ex, weight: 135, reps: 5)
+        await retryScheduled.wait()
+
+        XCTAssertFalse(acknowledged)
+        XCTAssertEqual(retryDelays, [86_400_000_000_000])
+        XCTAssertEqual(
+            WorkoutWriteRetryDeadlineStore.load(
+                userID: "user-a", defaults: defaults),
+            fixedDate.addingTimeInterval(24 * 60 * 60))
     }
 
     func testMultipleOfflineSetsReserveIndexesButDoNotCompleteSlot() async {
@@ -4547,11 +4966,18 @@ final class SetOutboxTests: XCTestCase {
             jwt: newToken,
             user: .init(id: "user-a", display_name: nil, email: nil)))
         await auth.exchange(identityToken: "same-user", fullName: nil)
-        await model.drainWorkoutWriteOutboxes()
+        let replacement = SyncModel(
+            auth: auth,
+            terminalAPI: terminalAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        await replacement.drainWorkoutWriteOutboxes()
 
         XCTAssertEqual(terminalAPI.completeCalls.map(\.jwt), [oldToken, newToken])
-        XCTAssertTrue(model.terminalOutbox.isEmpty)
-        XCTAssertFalse(model.running)
+        XCTAssertTrue(replacement.terminalOutbox.isEmpty)
+        XCTAssertTrue(
+            WorkoutTerminalOutboxStore.load(
+                userID: "user-a", defaults: defaults).isEmpty)
     }
 
     func testFinishSendsOnlyAfterItsQueuedSetIsAcknowledged() async {

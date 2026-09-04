@@ -192,7 +192,7 @@ final class SyncModel: ObservableObject {
     private let runnerArtifactOwnerID = UUID()
     private let restActivityUpdater: (Date, String) -> Void
     private let restActivityEnder: () -> Void
-    private let restNotificationCanceller: () -> Void
+    private let restNotificationCanceller: @MainActor () -> Void
     /// Identity of the exact rendered hold the user started. Automatic timer
     /// completion is a new local write, so unlike settlement callbacks it may
     /// not cross a feature-session epoch or follow selection to another slot.
@@ -231,6 +231,26 @@ final class SyncModel: ObservableObject {
     private var isDrainingWorkoutWrites = false
     private var workoutWriteDrainRequested = false
     private var workoutWriteDrainWaiters: [CheckedContinuation<Void, Never>] = []
+    /// A server can recover while `NWPathMonitor` remains satisfied, so an
+    /// unsent idempotent write cannot rely only on launch/foreground/path
+    /// transitions. Production enables this short capped retry loop; tests opt
+    /// in explicitly so transient-failure fixtures remain deterministic.
+    private let automaticWorkoutWriteRetryEnabled: Bool
+    private let workoutWriteRetryDelaysNanoseconds: [UInt64]
+    private let workoutWriteRetrySleeper: (UInt64) async throws -> Void
+    private var workoutWriteRetryTask: Task<Void, Never>?
+    private var workoutWriteRetryAttempt = 0
+    /// Minimum delay requested by the transient response that stopped the
+    /// current drain (for example Retry-After on a 429/503).
+    private var workoutWriteRetryMinimumDelayNanoseconds: UInt64?
+    /// Absolute server-directed floor shared by automatic, lifecycle, network,
+    /// and manual triggers. A foreground transition must not turn Retry-After
+    /// into an immediate retry.
+    private var workoutWriteRetryNotBefore: Date?
+    /// A malformed or hostile header must not overflow nanosecond conversion or
+    /// suspend an offline-first workout queue indefinitely. The Worker uses a
+    /// five-second floor; one day still accommodates legitimate rate limiting.
+    private static let maximumRetryAfterSeconds: TimeInterval = 24 * 60 * 60
     /// Full-state refresh belongs to the account-scoped model, not to the
     /// SwiftUI task that happened to request it. Pull-to-refresh may cancel
     /// its view task as the scroll hierarchy changes; keeping one unstructured
@@ -265,6 +285,17 @@ final class SyncModel: ObservableObject {
         defaults: UserDefaults = .standard,
         uuidFactory: @escaping () -> UUID = UUID.init,
         now: @escaping () -> Date = Date.init,
+        automaticWorkoutWriteRetryEnabled: Bool = false,
+        workoutWriteRetryDelaysNanoseconds: [UInt64] = [
+            2_000_000_000,
+            5_000_000_000,
+            15_000_000_000,
+            30_000_000_000,
+            60_000_000_000,
+        ],
+        workoutWriteRetrySleeper: @escaping (UInt64) async throws -> Void = {
+            try await Task.sleep(nanoseconds: $0)
+        },
         restActivityUpdater: @escaping (Date, String) -> Void = {
             endDate, upNext in
             RestLiveActivity.update(endDate: endDate, upNext: upNext)
@@ -272,7 +303,7 @@ final class SyncModel: ObservableObject {
         restActivityEnder: @escaping () -> Void = {
             RestLiveActivity.endNow()
         },
-        restNotificationCanceller: @escaping () -> Void = {
+        restNotificationCanceller: @escaping @MainActor () -> Void = {
             RestCue.cancelNotification()
         }
     ) {
@@ -287,6 +318,11 @@ final class SyncModel: ObservableObject {
         self.defaults = defaults
         self.uuidFactory = uuidFactory
         self.now = now
+        self.automaticWorkoutWriteRetryEnabled =
+            automaticWorkoutWriteRetryEnabled
+        self.workoutWriteRetryDelaysNanoseconds =
+            workoutWriteRetryDelaysNanoseconds
+        self.workoutWriteRetrySleeper = workoutWriteRetrySleeper
         self.restActivityUpdater = restActivityUpdater
         self.restActivityEnder = restActivityEnder
         self.restNotificationCanceller = restNotificationCanceller
@@ -310,6 +346,14 @@ final class SyncModel: ObservableObject {
         self.ownedSetIntentIDs = Set(persistedSets.pending.map(\.id))
         self.ownedTerminalIntentIDs = Set(
             persistedTerminals.intents.map(\.id))
+        if !persistedSets.isEmpty || !persistedTerminals.intents.isEmpty {
+            self.workoutWriteRetryNotBefore =
+                WorkoutWriteRetryDeadlineStore.load(
+                    userID: auth.userID, defaults: defaults)
+        } else if let userID = auth.userID {
+            WorkoutWriteRetryDeadlineStore.clear(
+                userID: userID, defaults: defaults)
+        }
         for intent in persistedTerminals.intents where intent.action == .discard {
             SetOutboxStore.remove(
                 date: intent.date, userID: auth.userID, defaults: defaults)
@@ -563,12 +607,8 @@ final class SyncModel: ObservableObject {
                       key.featureSessionEpoch == auth.featureSessionEpoch,
                       key.freshnessGeneration == stateFreshnessGeneration
                 else { return }
-                let isUnauthorized: Bool
-                if case let APIError.http(code, _) = error {
-                    isUnauthorized = code == 401
-                } else {
-                    isUnauthorized = false
-                }
+                let isUnauthorized =
+                    (error as? APIError)?.httpStatus == 401
                 if isCurrentAccount, plan != nil,
                    !(error is CancellationError),
                    !isUnauthorized
@@ -1582,6 +1622,11 @@ final class SyncModel: ObservableObject {
     /// live-validated resume after reauthentication; only its current exact
     /// owner may touch the process-shared ActivityKit/notification pair.
     private func prepareForFeatureSessionBoundary() {
+        workoutWriteDrainRequested = false
+        // Stop this model's task, but preserve the account-scoped server floor
+        // for the replacement model that inherits the durable outbox.
+        cancelWorkoutWriteRetry(
+            resetAttempt: true, clearServerDeadline: false)
         guard canControlSharedRestArtifacts else {
             relinquishLocalRest()
             return
@@ -2444,9 +2489,9 @@ final class SyncModel: ObservableObject {
     /// reconciliation requeued.
     func recoverWorkoutWrites() async {
         await drainWorkoutWriteOutboxes()
-        guard currentJWT != nil, canMutateBoundSetAccount else { return }
+        guard currentJWT != nil, canInitiateBoundFeatureAction else { return }
         await loadAfterMutation()
-        guard currentJWT != nil, canMutateBoundSetAccount else { return }
+        guard currentJWT != nil, canInitiateBoundFeatureAction else { return }
         await drainWorkoutWriteOutboxes()
     }
 
@@ -2455,7 +2500,26 @@ final class SyncModel: ObservableObject {
     /// terminal request. This is the ordering boundary that makes discard the
     /// final client mutation even when it is requested during another await.
     func drainWorkoutWriteOutboxes() async {
-        guard currentJWT != nil, canMutateBoundSetAccount,
+        // Local backoff may be superseded by an explicit recovery signal, but a
+        // server Retry-After floor applies to every trigger. Keep the existing
+        // scheduled owner alive instead of turning foreground/manual recovery
+        // into an early resend.
+        adoptPersistedWorkoutWriteRetryDeadline()
+        if let notBefore = workoutWriteRetryNotBefore {
+            let remaining = notBefore.timeIntervalSince(now())
+            if remaining > 0 {
+                workoutWriteRetryMinimumDelayNanoseconds = max(
+                    workoutWriteRetryMinimumDelayNanoseconds ?? 0,
+                    retryDelayNanoseconds(seconds: remaining))
+                scheduleWorkoutWriteRetry()
+                return
+            }
+            WorkoutWriteRetryDeadlineStore.clear(
+                through: notBefore, userID: accountID, defaults: defaults)
+            workoutWriteRetryNotBefore = nil
+        }
+        cancelWorkoutWriteRetry(resetAttempt: false)
+        guard currentJWT != nil, canInitiateBoundFeatureAction,
               !setOutbox.isEmpty || !terminalOutbox.intents.isEmpty
         else {
             return
@@ -2473,20 +2537,125 @@ final class SyncModel: ObservableObject {
         }
 
         isDrainingWorkoutWrites = true
+        workoutWriteRetryMinimumDelayNanoseconds = nil
         // An intent can be persisted while this owner is awaiting the final
         // reconciliation pull. Re-check the queue before releasing waiters so
         // that trigger coalesces into this same serialized drain instead of
         // being stranded until some later lifecycle/network event.
-        while canMutateBoundSetAccount, currentJWT != nil {
+        var stoppedForRetryableFailure = false
+        while canInitiateBoundFeatureAction, currentJWT != nil {
             workoutWriteDrainRequested = false
-            let stoppedForRetryableFailure = await performWorkoutWriteDrain()
-            if stoppedForRetryableFailure && !workoutWriteDrainRequested { break }
+            stoppedForRetryableFailure = await performWorkoutWriteDrain()
+            if stoppedForRetryableFailure,
+               workoutWriteRetryNotBefore != nil
+                    || !workoutWriteDrainRequested
+            {
+                break
+            }
             guard hasImmediatelyDeliverableWorkoutWrite else { break }
         }
         isDrainingWorkoutWrites = false
         let waiters = workoutWriteDrainWaiters
         workoutWriteDrainWaiters.removeAll()
         waiters.forEach { $0.resume() }
+        if stoppedForRetryableFailure && hasImmediatelyDeliverableWorkoutWrite {
+            scheduleWorkoutWriteRetry()
+        } else if !hasImmediatelyDeliverableWorkoutWrite {
+            let durableQueuesAreEmpty = SetOutboxStore.load(
+                userID: accountID, defaults: defaults).isEmpty
+                && WorkoutTerminalOutboxStore.load(
+                    userID: accountID, defaults: defaults).intents.isEmpty
+            cancelWorkoutWriteRetry(
+                resetAttempt: true,
+                clearServerDeadline: durableQueuesAreEmpty)
+        }
+    }
+
+    private func scheduleWorkoutWriteRetry() {
+        // Another same-account generation can finish an older in-flight 503
+        // while this model is handling a different transient result. Re-read
+        // the shared floor immediately before choosing any new send time.
+        adoptPersistedWorkoutWriteRetryDeadline()
+        if let notBefore = workoutWriteRetryNotBefore {
+            let remaining = notBefore.timeIntervalSince(now())
+            if remaining > 0 {
+                workoutWriteRetryMinimumDelayNanoseconds = max(
+                    workoutWriteRetryMinimumDelayNanoseconds ?? 0,
+                    retryDelayNanoseconds(seconds: remaining))
+            }
+        }
+        guard automaticWorkoutWriteRetryEnabled,
+              workoutWriteRetryTask == nil,
+              currentJWT != nil,
+              canInitiateBoundFeatureAction,
+              hasImmediatelyDeliverableWorkoutWrite,
+              !workoutWriteRetryDelaysNanoseconds.isEmpty
+        else { return }
+
+        let delayIndex = min(
+            workoutWriteRetryAttempt,
+            workoutWriteRetryDelaysNanoseconds.count - 1)
+        let delay = max(
+            workoutWriteRetryDelaysNanoseconds[delayIndex],
+            workoutWriteRetryMinimumDelayNanoseconds ?? 0)
+        let scheduledServerDeadline = workoutWriteRetryNotBefore
+        if workoutWriteRetryAttempt < workoutWriteRetryDelaysNanoseconds.count - 1 {
+            workoutWriteRetryAttempt += 1
+        }
+        workoutWriteRetryTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.workoutWriteRetrySleeper(delay)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  self.currentJWT != nil,
+                  self.canInitiateBoundFeatureAction
+            else {
+                self.workoutWriteRetryTask = nil
+                return
+            }
+            self.workoutWriteRetryTask = nil
+            // This task slept for the max of local backoff and Retry-After.
+            // Clearing the floor here lets its own drain proceed even when an
+            // injected test clock is fixed.
+            if let scheduledServerDeadline {
+                WorkoutWriteRetryDeadlineStore.clear(
+                    through: scheduledServerDeadline,
+                    userID: self.accountID,
+                    defaults: self.defaults)
+            }
+            self.workoutWriteRetryNotBefore = nil
+            self.workoutWriteRetryMinimumDelayNanoseconds = nil
+            await self.drainWorkoutWriteOutboxes()
+        }
+    }
+
+    private func cancelWorkoutWriteRetry(
+        resetAttempt: Bool,
+        clearServerDeadline: Bool = false
+    ) {
+        workoutWriteRetryTask?.cancel()
+        workoutWriteRetryTask = nil
+        if resetAttempt {
+            workoutWriteRetryAttempt = 0
+            workoutWriteRetryMinimumDelayNanoseconds = nil
+            workoutWriteRetryNotBefore = nil
+            if clearServerDeadline, let accountID {
+                WorkoutWriteRetryDeadlineStore.clear(
+                    userID: accountID, defaults: defaults)
+            }
+        }
+    }
+
+    private func adoptPersistedWorkoutWriteRetryDeadline() {
+        if let persisted = WorkoutWriteRetryDeadlineStore.load(
+            userID: accountID, defaults: defaults),
+           persisted > (workoutWriteRetryNotBefore ?? .distantPast)
+        {
+            workoutWriteRetryNotBefore = persisted
+        }
     }
 
     private var hasImmediatelyDeliverableWorkoutWrite: Bool {
@@ -2542,6 +2711,8 @@ final class SyncModel: ObservableObject {
         if setStopped { return true }
         supersedeSetIntentsForDiscardBarriers()
 
+        guard canInitiateBoundFeatureAction else { return true }
+
         guard let terminal = terminalOutbox.intents.first(where: { intent in
             guard ownedTerminalIntentIDs.contains(intent.id),
                   intent.deliveryState == .queued
@@ -2561,7 +2732,7 @@ final class SyncModel: ObservableObject {
         var preferredSessionID: String?
         var stoppedForRetryableFailure = false
 
-        while canMutateBoundSetAccount,
+        while canInitiateBoundFeatureAction,
               let intent = setOutbox.pending.first(where: {
                   ownedSetIntentIDs.contains($0.id)
                       && $0.deliveryState == .queued
@@ -2654,7 +2825,7 @@ final class SyncModel: ObservableObject {
     private func sendPersistedTerminalIntent(
         _ original: WorkoutTerminalIntent
     ) async -> Bool {
-        guard canMutateBoundSetAccount, currentJWT != nil else { return true }
+        guard canInitiateBoundFeatureAction, currentJWT != nil else { return true }
         guard var intent = durableTerminalIntent(matching: original) else {
             // The account remains valid, but a newer model owns (or cleared)
             // this date. The durable adoption above is the authoritative local
@@ -2688,7 +2859,7 @@ final class SyncModel: ObservableObject {
                 // existing date-level endpoint without that stale association.
                 guard intent.dayTemplateID != nil,
                       isPermanentSetClientError(error),
-                      canMutateBoundSetAccount,
+                      canInitiateBoundFeatureAction,
                       let fallbackJWT = currentJWT
                 else {
                     return classifyTerminalIntentFailure(
@@ -2752,7 +2923,9 @@ final class SyncModel: ObservableObject {
         // Session creation is an await too. Revalidate the exact account
         // intent immediately before the destructive/completing request; a
         // newer model may have discarded, restarted, or cleared it meanwhile.
-        guard let durable = durableTerminalIntent(matching: intent) else {
+        guard canInitiateBoundFeatureAction,
+              let durable = durableTerminalIntent(matching: intent)
+        else {
             return false
         }
         guard let sessionID = durable.resolvedSessionID,
@@ -2895,7 +3068,7 @@ final class SyncModel: ObservableObject {
             return false
         }
         if isPermanentSetClientError(error),
-           case let APIError.http(code, _) = error {
+           let code = (error as? APIError)?.httpStatus {
             current.deliveryState = .failed
             current.failedHTTPStatus = code
             terminalOutbox.replace(current)
@@ -2903,9 +3076,9 @@ final class SyncModel: ObservableObject {
             loadError = "Workout \(current.action == .finish ? "finish" : "discard") wasn't saved because the server rejected it (HTTP \(code))."
             return false
         }
+        recordRetryAfter(from: error)
         handle(error, jwt: attemptedJWT)
-        if case let APIError.http(code, _) = error,
-           code == 401,
+        if (error as? APIError)?.httpStatus == 401,
            let latestJWT = currentJWT,
            latestJWT != attemptedJWT {
             return false
@@ -2914,7 +3087,7 @@ final class SyncModel: ObservableObject {
     }
 
     private func sendPersistedSetIntent(_ original: PendingSetIntent) async -> SetSendOutcome {
-        guard canMutateBoundSetAccount, currentJWT != nil else {
+        guard canInitiateBoundFeatureAction, currentJWT != nil else {
             return .staleAccount
         }
         guard var intent = durableSetIntent(matching: original) else {
@@ -2950,7 +3123,7 @@ final class SyncModel: ObservableObject {
                 // canonical session preserve the set itself.
                 guard intent.dayTemplateID != nil,
                       isPermanentSetClientError(error),
-                      canMutateBoundSetAccount,
+                      canInitiateBoundFeatureAction,
                       let fallbackJWT = currentJWT,
                       durableSetIntent(matching: intent) != nil
                 else {
@@ -2976,7 +3149,7 @@ final class SyncModel: ObservableObject {
                         attemptedJWT: fallbackJWT)
                 }
             }
-            guard canMutateBoundSetAccount else { return .staleAccount }
+            guard canInitiateBoundFeatureAction else { return .staleAccount }
             guard let durable = durableSetIntent(matching: intent) else {
                 return .superseded
             }
@@ -3016,7 +3189,9 @@ final class SyncModel: ObservableObject {
         // durable set still exists and no discard barrier has superseded it
         // immediately before logging. If another model already resolved the
         // session, adopt that canonical id as well.
-        guard let durable = durableSetIntent(matching: intent) else {
+        guard canInitiateBoundFeatureAction,
+              let durable = durableSetIntent(matching: intent)
+        else {
             return .superseded
         }
         intent = durable
@@ -3052,7 +3227,9 @@ final class SyncModel: ObservableObject {
 
         // The original body was persisted before session creation, and the
         // resolved session id is persisted above before this POST await.
-        guard let jwt = currentJWT else { return .staleAccount }
+        guard canInitiateBoundFeatureAction,
+              let jwt = currentJWT
+        else { return .staleAccount }
         do {
             let result = try await setWriteAPI.logSet(
                 sessionId: writeSession.id,
@@ -3142,7 +3319,7 @@ final class SyncModel: ObservableObject {
             return .superseded
         }
         if isPermanentSetClientError(error),
-           case let APIError.http(code, _) = error {
+           let code = (error as? APIError)?.httpStatus {
             if var intent = setOutbox.pending.first(where: { $0.id == intentID }) {
                 intent.deliveryState = .failed
                 intent.failedHTTPStatus = code
@@ -3153,25 +3330,54 @@ final class SyncModel: ObservableObject {
             loadError = "Set wasn't saved because the server rejected it (HTTP \(code))."
             return .permanentFailure
         }
+        recordRetryAfter(from: error)
         handle(error, jwt: attemptedJWT)
-        let unauthorized: Bool
-        if case let APIError.http(code, _) = error { unauthorized = code == 401 }
-        else { unauthorized = false }
+        let unauthorized = (error as? APIError)?.httpStatus == 401
         return .transientFailure(
             attemptedJWT: attemptedJWT,
             wasUnauthorized: unauthorized)
     }
 
     private func isPermanentSetClientError(_ error: Error) -> Bool {
-        guard case let APIError.http(code, _) = error else { return false }
+        guard let code = (error as? APIError)?.httpStatus else { return false }
         return (400..<500).contains(code) && ![401, 408, 429].contains(code)
+    }
+
+    private func retryDelayNanoseconds(seconds: TimeInterval) -> UInt64 {
+        let bounded = min(
+            max(seconds, 0), Self.maximumRetryAfterSeconds)
+        return UInt64((bounded * 1_000_000_000).rounded(.up))
+    }
+
+    private func retryAfterDelay(
+        from error: Error
+    ) -> (seconds: TimeInterval, nanoseconds: UInt64)? {
+        guard let seconds = (error as? APIError)?.retryAfter,
+              seconds.isFinite,
+              seconds >= 0
+        else { return nil }
+        let bounded = min(seconds, Self.maximumRetryAfterSeconds)
+        return (bounded, retryDelayNanoseconds(seconds: bounded))
+    }
+
+    private func recordRetryAfter(from error: Error) {
+        guard let retryAfter = retryAfterDelay(from: error) else {
+            workoutWriteRetryMinimumDelayNanoseconds = nil
+            workoutWriteRetryNotBefore = nil
+            return
+        }
+        workoutWriteRetryMinimumDelayNanoseconds = retryAfter.nanoseconds
+        let proposed = now().addingTimeInterval(retryAfter.seconds)
+        workoutWriteRetryNotBefore = WorkoutWriteRetryDeadlineStore.extend(
+            to: proposed, userID: accountID, defaults: defaults)
     }
 
     private func sessionWriteConflict(
         from error: Error
     ) -> SessionWriteConflictPayload? {
-        guard case let APIError.http(code, body) = error,
-              code == 409,
+        guard let apiError = error as? APIError,
+              apiError.httpStatus == 409,
+              let body = apiError.httpBody,
               let data = body.data(using: .utf8),
               let payload = try? JSONDecoder().decode(
                   SessionWriteConflictPayload.self, from: data),
@@ -4995,7 +5201,7 @@ final class SyncModel: ObservableObject {
     }
 
     private func handle(_ error: Error, jwt: String) {
-        if case let APIError.http(code, _) = error, code == 401 {
+        if (error as? APIError)?.httpStatus == 401 {
             if isCurrentBearer(jwt) {
                 auth.requireReauthentication()
             }

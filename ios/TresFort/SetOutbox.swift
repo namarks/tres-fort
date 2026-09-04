@@ -241,3 +241,65 @@ enum SetOutboxStore {
         defaults.removeObject(forKey: scopedKey(userID: userID))
     }
 }
+
+/// Account-scoped server admission floor for durable workout writes. Unlike a
+/// model-owned retry task, this deadline must survive same-user reauthentication
+/// and process replacement so a newly mounted sender cannot bypass Retry-After.
+enum WorkoutWriteRetryDeadlineStore {
+    static func scopedKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.workout-write-retry-deadline.v1.\(userID)"
+    }
+
+    static func load(
+        userID: String?,
+        defaults: UserDefaults = .standard
+    ) -> Date? {
+        guard let userID,
+              let value = defaults.object(
+                forKey: scopedKey(userID: userID)) as? NSNumber
+        else { return nil }
+        let timestamp = value.doubleValue
+        guard timestamp.isFinite else {
+            clear(userID: userID, defaults: defaults)
+            return nil
+        }
+        return Date(timeIntervalSince1970: timestamp)
+    }
+
+    /// Never shorten a deadline written by another same-account model.
+    @discardableResult
+    static func extend(
+        to proposed: Date,
+        userID: String?,
+        defaults: UserDefaults = .standard
+    ) -> Date? {
+        guard let userID, proposed.timeIntervalSince1970.isFinite else {
+            return load(userID: userID, defaults: defaults)
+        }
+        let deadline = max(
+            load(userID: userID, defaults: defaults) ?? proposed,
+            proposed)
+        defaults.set(
+            deadline.timeIntervalSince1970,
+            forKey: scopedKey(userID: userID))
+        return deadline
+    }
+
+    /// Clear only the deadline this sender actually waited for. A later floor
+    /// installed while it slept remains authoritative.
+    static func clear(
+        through completedDeadline: Date,
+        userID: String?,
+        defaults: UserDefaults = .standard
+    ) {
+        guard let userID,
+              let current = load(userID: userID, defaults: defaults),
+              current <= completedDeadline
+        else { return }
+        clear(userID: userID, defaults: defaults)
+    }
+
+    static func clear(userID: String, defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: scopedKey(userID: userID))
+    }
+}

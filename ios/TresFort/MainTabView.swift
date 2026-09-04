@@ -26,7 +26,9 @@ struct MainTabView: View {
 
     init(auth: AuthModel) {
         self.auth = auth
-        let sync = SyncModel(auth: auth)
+        let sync = SyncModel(
+            auth: auth,
+            automaticWorkoutWriteRetryEnabled: true)
         let groupModel = GroupModel(auth: auth)
         let health = HealthKitSyncModel(auth: auth)
         let setConnectivity = SetConnectivityMonitor()

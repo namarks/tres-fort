@@ -48,6 +48,13 @@ private struct PendingSetBanner: View {
                     }
                 }
                 .font(Theme.mono(10, .bold))
+            } else if sync.queuedSetIntentCount > 0,
+                      sync.sendingSetIntentCount == 0 {
+                Button("RETRY") {
+                    Task { await sync.drainWorkoutWriteOutboxes() }
+                }
+                .font(Theme.mono(10, .bold))
+                .foregroundStyle(Theme.accent)
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
@@ -182,8 +189,12 @@ struct TodayView: View {
     @State private var editTarget: EditDayTarget?
     /// Full member-owned plan/day/schedule editor.
     @State private var showRoutine = false
+    /// Keeps a double tap from starting twice while iOS is presenting the
+    /// one-time notification permission prompt before a new workout.
+    @State private var isPreparingWorkoutStart = false
 
     var body: some View {
+        let fullRestOverlayVisible = sync.restEndDate != nil && !restMinimized
         NavigationStack {
             ZStack(alignment: .top) {
                 Theme.background
@@ -197,6 +208,11 @@ struct TodayView: View {
                     PendingSetBannerGate(sync: sync)
                     content
                 }
+                // The full rest screen is modal. Without explicitly removing
+                // the runner from hit testing and the accessibility tree,
+                // assistive actions can start/log a hidden set underneath it.
+                .allowsHitTesting(!fullRestOverlayVisible)
+                .accessibilityHidden(fullRestOverlayVisible)
                 if sync.restEndDate != nil {
                     if restMinimized {
                         RestPill(sync: sync) { restMinimized = false }
@@ -272,6 +288,16 @@ struct TodayView: View {
                     } label: { Image(systemName: "ellipsis.circle").foregroundStyle(Theme.muted) }
                 }
             }
+            // The expanded rest screen is modal across the whole app chrome,
+            // not just the scroll content. Hiding both bars removes Log
+            // Activity, destructive menu actions, and tab switches from taps
+            // and the VoiceOver tree until rest is minimized or dismissed.
+            .toolbar(
+                fullRestOverlayVisible ? .hidden : .visible,
+                for: .navigationBar)
+            .toolbar(
+                fullRestOverlayVisible ? .hidden : .visible,
+                for: .tabBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
             .confirmationDialog(
                 "Train a different day",
@@ -279,7 +305,11 @@ struct TodayView: View {
                 titleVisibility: .visible
             ) {
                 ForEach(sync.plan?.days ?? []) { d in
-                    Button(d.title) { sync.startOverride(dayID: d.id) }
+                    Button(d.title) {
+                        prepareNewWorkout {
+                            sync.startOverride(dayID: d.id)
+                        }
+                    }
                         .disabled(sync.blocksNewWorkoutStart)
                 }
                 Button("Cancel", role: .cancel) {}
@@ -351,12 +381,38 @@ struct TodayView: View {
             TodayWorkoutView(
                 sync: sync, auth: auth, day: day,
                 onOverride: { showOverridePicker = true },
-                onEdit: { editTarget = EditDayTarget(id: day.id) })
+                onEdit: { editTarget = EditDayTarget(id: day.id) },
+                onStart: {
+                    prepareNewWorkout {
+                        if sync.hasResumableWorkout {
+                            sync.resumeWorkout()
+                        } else {
+                            sync.startToday()
+                        }
+                    }
+                },
+                isPreparingWorkoutStart: isPreparingWorkoutStart)
         } else {
             // Pure rest day (or skipped) — no primary START CTA.
             RestDayView(
                 sync: sync,
                 onOverride: { showOverridePicker = true })
+        }
+    }
+
+    /// Ask at the user's explicit start action, before the runner begins. Rest
+    /// scheduling itself must never surprise-interrupt the first logged set.
+    private func prepareNewWorkout(_ start: @escaping @MainActor () -> Void) {
+        guard !isPreparingWorkoutStart else { return }
+        isPreparingWorkoutStart = true
+        Task { @MainActor in
+            await RestCue.requestNotificationPermissionIfNeeded()
+            guard !Task.isCancelled else {
+                isPreparingWorkoutStart = false
+                return
+            }
+            start()
+            isPreparingWorkoutStart = false
         }
     }
 }
@@ -613,6 +669,8 @@ private struct TodayWorkoutView: View {
     let day: DayTemplate
     let onOverride: () -> Void
     let onEdit: () -> Void
+    let onStart: () -> Void
+    let isPreparingWorkoutStart: Bool
     @State private var demoFor: TemplateExercise?
 
     var body: some View {
@@ -653,14 +711,15 @@ private struct TodayWorkoutView: View {
             .refreshable { await sync.load() }
 
             Button {
-                if sync.hasResumableWorkout { sync.resumeWorkout() }
-                else { sync.startToday() }
+                onStart()
             } label: {
-                Text(sync.hasResumableWorkout
-                    ? "RESUME WORKOUT"
-                    : (sync.needsLiveWorkoutValidation
-                        ? sync.liveWorkoutValidationActionTitle
-                        : "START WORKOUT"))
+                Text(isPreparingWorkoutStart
+                    ? "PREPARING…"
+                    : (sync.hasResumableWorkout
+                        ? "RESUME WORKOUT"
+                        : (sync.needsLiveWorkoutValidation
+                            ? sync.liveWorkoutValidationActionTitle
+                            : "START WORKOUT")))
                     .font(Theme.display(26)).tracking(1.5)
                     .frame(maxWidth: .infinity).padding(.vertical, 18)
             }
@@ -669,6 +728,7 @@ private struct TodayWorkoutView: View {
             .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
             .disabled(
                 day.exercises.isEmpty
+                    || isPreparingWorkoutStart
                     || sync.hasUnacknowledgedDiscardForToday
                     || (sync.blocksNewWorkoutStart
                         && !sync.hasResumableWorkout))
@@ -915,6 +975,10 @@ private struct RunnerView: View {
                     .padding(.top, 8)
                 }
                 .padding(20)
+                // Native tab bars can overlay the tail of a tall runner. Keep
+                // enough scroll content below Prev/Next/Skip for those controls
+                // to clear the bar on every supported phone size.
+                .padding(.bottom, 88)
                 // When a rest is running the floating RestPill sits at the
                 // top-centre; reserve space so it never lands on the WORKOUT
                 // timer + progress bar (#53). Invisible when the full rest

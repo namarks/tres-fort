@@ -2351,18 +2351,74 @@ export async function createPlan(
     created_at: ts,
     updated_at: ts,
   };
-  // Archive any currently-active plan to honor the one-active-plan invariant.
-  await db
-    .prepare("UPDATE plans SET status = 'archived', updated_at = ?2 WHERE user_id = ?1 AND status = 'active'")
-    .bind(userId, ts)
-    .run();
-  await db
-    .prepare(
-      'INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)',
-    )
-    .bind(plan.id, plan.user_id, plan.name, plan.status, plan.version, plan.meta, plan.created_at, plan.updated_at)
-    .run();
+  // Archive + replace in one D1 transaction. This also serializes against
+  // ensureActivePlan's conflict-safe insert: an ensure cannot land between
+  // these statements and make the replacement violate ux_one_active_plan.
+  await db.batch([
+    db
+      .prepare(
+        "UPDATE plans SET status = 'archived', updated_at = ?2 WHERE user_id = ?1 AND status = 'active'",
+      )
+      .bind(userId, ts),
+    db
+      .prepare(
+        'INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)',
+      )
+      .bind(
+        plan.id,
+        plan.user_id,
+        plan.name,
+        plan.status,
+        plan.version,
+        plan.meta,
+        plan.created_at,
+        plan.updated_at,
+      ),
+  ]);
   return plan;
+}
+
+/**
+ * Idempotent app bootstrap for manual authoring. Unlike `createPlan`, this
+ * never archives or replaces an active plan. The partial unique index on
+ * plans(user_id) serializes concurrent app/coach creation; a losing caller
+ * simply returns the winner.
+ */
+export async function ensureActivePlan(
+  db: D1Database,
+  userId: string,
+  name: string,
+): Promise<{ plan: PlanRow; created: boolean }> {
+  const existing = await getActivePlan(db, userId);
+  if (existing) return { plan: existing, created: false };
+
+  const ts = now();
+  const candidate: PlanRow = {
+    id: uuid(),
+    user_id: userId,
+    name,
+    status: 'active',
+    version: 1,
+    meta: null,
+    created_at: ts,
+    updated_at: ts,
+  };
+  const inserted = await db
+    .prepare(
+      `INSERT INTO plans
+       (id,user_id,name,status,version,meta,created_at,updated_at)
+       VALUES (?1,?2,?3,'active',1,NULL,?4,?4)
+       ON CONFLICT DO NOTHING`,
+    )
+    .bind(candidate.id, candidate.user_id, candidate.name, ts)
+    .run();
+  if ((inserted.meta.changes ?? 0) === 1) {
+    return { plan: candidate, created: true };
+  }
+
+  const winner = await getActivePlan(db, userId);
+  if (!winner) throw new Error('active_plan_create_conflict_without_winner');
+  return { plan: winner, created: false };
 }
 
 /** Bump the plan version + updated_at. Called by every plan-tree mutation. */
@@ -2380,6 +2436,7 @@ export async function addDayTemplate(
   name: string,
   dayLabel: string | null,
   orderIndex: number,
+  normalizeOrder = false,
 ): Promise<DayTemplateRow> {
   const ts = now();
   const row: DayTemplateRow = {
@@ -2398,6 +2455,13 @@ export async function addDayTemplate(
     )
     .bind(row.id, row.plan_id, row.name, row.day_label, row.order_index, row.notes, row.created_at, row.updated_at)
     .run();
+  if (normalizeOrder && await dedupePlanDayOrderIndexes(db, planId, row.id)) {
+    const fresh = await db
+      .prepare('SELECT order_index FROM day_templates WHERE id = ?1')
+      .bind(row.id)
+      .first<{ order_index: number }>();
+    if (fresh) row.order_index = fresh.order_index;
+  }
   await bumpPlanVersion(db, planId);
   return row;
 }
@@ -2434,6 +2498,7 @@ export async function patchDayTemplate(
     order_index?: number;
     notes?: string | null;
   },
+  normalizeOrder = false,
 ): Promise<DayTemplateRow | { error: 'unknown_fields'; fields: string[] } | null> {
   const existing = await db
     .prepare('SELECT * FROM day_templates WHERE id = ?1 AND plan_id = ?2')
@@ -2452,8 +2517,229 @@ export async function patchDayTemplate(
     .prepare('UPDATE day_templates SET name=?2, day_label=?3, order_index=?4, notes=?5, updated_at=?6 WHERE id=?1')
     .bind(dayId, merged.name, merged.day_label, merged.order_index, merged.notes, now())
     .run();
+  if (normalizeOrder && patch.order_index !== undefined) {
+    await dedupePlanDayOrderIndexes(db, planId, dayId);
+    const fresh = await db
+      .prepare('SELECT order_index FROM day_templates WHERE id = ?1')
+      .bind(dayId)
+      .first<{ order_index: number }>();
+    if (fresh) merged.order_index = fresh.order_index;
+  }
   await bumpPlanVersion(db, planId);
   return { ...existing, ...merged, updated_at: now() };
+}
+
+type PlanVersionConflict = { conflict: true; current_version: number };
+
+const orderDayRows = <T extends { id: string; order_index: number }>(
+  rows: T[],
+  movedId: string,
+): T[] => {
+  const moved = rows.find((row) => row.id === movedId);
+  if (!moved) return rows;
+  const others = rows.filter((row) => row.id !== movedId);
+  const target = Math.max(0, Math.min(moved.order_index, others.length));
+  return [...others.slice(0, target), moved, ...others.slice(target)];
+};
+
+async function currentPlanVersion(
+  db: D1Database,
+  userId: string,
+  fallback: number,
+): Promise<PlanVersionConflict> {
+  const current = await getActivePlan(db, userId);
+  return { conflict: true, current_version: current?.version ?? fallback };
+}
+
+/**
+ * App day creation tied to the exact plan version the route read. D1 batches
+ * are transactions, so the day insert, dense ordering, and version bump either
+ * commit together or all observe that a concurrent plan writer won.
+ */
+export async function addDayTemplateAtVersion(
+  db: D1Database,
+  userId: string,
+  plan: PlanRow,
+  name: string,
+  dayLabel: string | null,
+  orderIndex: number,
+): Promise<DayTemplateRow | PlanVersionConflict> {
+  const ts = now();
+  const row: DayTemplateRow = {
+    id: uuid(),
+    plan_id: plan.id,
+    name,
+    day_label: dayLabel,
+    order_index: orderIndex,
+    notes: null,
+    created_at: ts,
+    updated_at: ts,
+  };
+  const currentDays = await db
+    .prepare(
+      'SELECT id, order_index FROM day_templates WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
+    )
+    .bind(plan.id)
+    .all<{ id: string; order_index: number }>();
+  const ordered = orderDayRows([...currentDays.results, row], row.id);
+  const statements: D1PreparedStatement[] = [
+    db
+      .prepare(
+        `INSERT INTO day_templates
+         (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+         SELECT ?1,?2,?3,?4,?5,?6,?7,?8
+          WHERE EXISTS (
+            SELECT 1 FROM plans
+             WHERE id = ?2 AND user_id = ?9 AND status = 'active' AND version = ?10
+          )`,
+      )
+      .bind(
+        row.id, row.plan_id, row.name, row.day_label, row.order_index, row.notes,
+        row.created_at, row.updated_at, userId, plan.version,
+      ),
+    ...ordered.map((day, index) =>
+      db
+        .prepare(
+          `UPDATE day_templates SET order_index = ?2, updated_at = ?3
+            WHERE id = ?1 AND plan_id = ?4
+              AND EXISTS (
+                SELECT 1 FROM plans
+                 WHERE id = ?4 AND user_id = ?5 AND status = 'active' AND version = ?6
+              )`,
+        )
+        .bind(day.id, index, ts, plan.id, userId, plan.version),
+    ),
+    db
+      .prepare(
+        `UPDATE plans SET version = version + 1, updated_at = ?3
+          WHERE id = ?1 AND user_id = ?2 AND status = 'active' AND version = ?4
+          RETURNING version`,
+      )
+      .bind(plan.id, userId, ts, plan.version),
+  ];
+  const results = await db.batch<{ version: number }>(statements);
+  const inserted = results[0];
+  const updatedPlan = results.at(-1)?.results[0];
+  if ((inserted?.meta.changes ?? 0) !== 1 || !updatedPlan) {
+    return currentPlanVersion(db, userId, plan.version);
+  }
+  row.order_index = ordered.findIndex((day) => day.id === row.id);
+  return row;
+}
+
+/** Rename/reorder one day with write-time optimistic concurrency. */
+export async function patchDayTemplateAtVersion(
+  db: D1Database,
+  userId: string,
+  plan: PlanRow,
+  dayId: string,
+  patch: {
+    name?: string;
+    day_label?: string | null;
+    order_index?: number;
+    notes?: string | null;
+  },
+): Promise<DayTemplateRow | { error: 'unknown_fields'; fields: string[] } | PlanVersionConflict | null> {
+  const existing = await getDayTemplateInPlan(db, plan.id, dayId);
+  if (!existing) return null;
+  const unknown = Object.keys(patch).filter((key) => !DAY_TEMPLATE_PATCH_KEYS.has(key));
+  if (unknown.length > 0) return { error: 'unknown_fields', fields: unknown };
+  const merged: DayTemplateRow = {
+    ...existing,
+    name: patch.name ?? existing.name,
+    day_label: patch.day_label === undefined ? existing.day_label : patch.day_label,
+    order_index: patch.order_index ?? existing.order_index,
+    notes: patch.notes === undefined ? existing.notes : patch.notes,
+    updated_at: now(),
+  };
+  const currentDays = await db
+    .prepare(
+      'SELECT id, order_index FROM day_templates WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
+    )
+    .bind(plan.id)
+    .all<{ id: string; order_index: number }>();
+  const withMove = currentDays.results.map((day) =>
+    day.id === dayId ? { ...day, order_index: merged.order_index } : day,
+  );
+  const ordered = patch.order_index === undefined
+    ? withMove
+    : orderDayRows(withMove, dayId);
+  const statements: D1PreparedStatement[] = [
+    db
+      .prepare(
+        `UPDATE day_templates
+            SET name=?2, day_label=?3, order_index=?4, notes=?5, updated_at=?6
+          WHERE id=?1 AND plan_id=?7
+            AND EXISTS (
+              SELECT 1 FROM plans
+               WHERE id=?7 AND user_id=?8 AND status='active' AND version=?9
+            )`,
+      )
+      .bind(
+        dayId, merged.name, merged.day_label, merged.order_index, merged.notes,
+        merged.updated_at, plan.id, userId, plan.version,
+      ),
+    ...(patch.order_index === undefined
+      ? []
+      : ordered.map((day, index) =>
+          db
+            .prepare(
+              `UPDATE day_templates SET order_index=?2, updated_at=?3
+                WHERE id=?1 AND plan_id=?4
+                  AND EXISTS (
+                    SELECT 1 FROM plans
+                     WHERE id=?4 AND user_id=?5 AND status='active' AND version=?6
+                  )`,
+            )
+            .bind(day.id, index, merged.updated_at, plan.id, userId, plan.version),
+        )),
+    db
+      .prepare(
+        `UPDATE plans SET version=version+1, updated_at=?3
+          WHERE id=?1 AND user_id=?2 AND status='active' AND version=?4
+          RETURNING version`,
+      )
+      .bind(plan.id, userId, merged.updated_at, plan.version),
+  ];
+  const results = await db.batch<{ version: number }>(statements);
+  const patched = results[0];
+  const updatedPlan = results.at(-1)?.results[0];
+  if ((patched?.meta.changes ?? 0) !== 1 || !updatedPlan) {
+    return currentPlanVersion(db, userId, plan.version);
+  }
+  if (patch.order_index !== undefined) {
+    merged.order_index = ordered.findIndex((day) => day.id === dayId);
+  }
+  return merged;
+}
+
+/** Dense, deterministic order for workout days after an explicit move. */
+export async function dedupePlanDayOrderIndexes(
+  db: D1Database,
+  planId: string,
+  preferId?: string,
+): Promise<boolean> {
+  const rows = await db
+    .prepare(
+      'SELECT id, order_index FROM day_templates WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
+    )
+    .bind(planId)
+    .all<{ id: string; order_index: number }>();
+  const list = rows.results;
+  const dense = list.every((row, index) => row.order_index === index);
+  if (dense) return false;
+
+  const ordered = preferId ? orderDayRows(list, preferId) : list;
+  const ts = now();
+  for (let index = 0; index < ordered.length; index++) {
+    if (ordered[index]!.order_index !== index) {
+      await db
+        .prepare('UPDATE day_templates SET order_index = ?2, updated_at = ?3 WHERE id = ?1')
+        .bind(ordered[index]!.id, index, ts)
+        .run();
+    }
+  }
+  return true;
 }
 
 /**
@@ -3064,6 +3350,11 @@ export type SessionAttemptConflict = {
   expected_attempt: number;
   current_attempt: number;
   current_session: SessionRow;
+};
+
+export type SessionAttemptMissing = {
+  error: 'session_attempt_missing';
+  expected_attempt: number;
 };
 
 export type SessionStateConflict = {
@@ -4499,7 +4790,13 @@ export async function updatePlanTree(
   | { error: 'unknown_exercise'; queries: string[]; query: string }
 > {
   let plan = await getActivePlan(db, userId);
-  if (!plan) plan = await createPlan(db, userId, input.name ?? 'My Plan', input.meta ?? null);
+  if (!plan) {
+    // The no-plan coach path shares the same conflict-safe bootstrap as the
+    // app. If both callers observe "no active plan", the partial unique index
+    // elects one stable plan id and the coach rebuilds that winner instead of
+    // archiving the app's just-created row with createPlan().
+    plan = (await ensureActivePlan(db, userId, input.name ?? 'My Plan')).plan;
+  }
   if (
     input.expected_version != null &&
     input.expected_version !== plan.version
@@ -5472,16 +5769,28 @@ export async function setPlanSchedule(
   userId: string,
   weekInput: Partial<Record<Weekday, string | null>>,
   expectedVersion?: number | null,
+  expectedPlanId?: string | null,
 ): Promise<
-  | { conflict: true; current_version: number }
+  | { conflict: true; current_plan_id: string; current_version: number }
   | { error: 'no_active_plan' }
   | { error: 'unknown_day_ref'; ref: string }
   | { ok: true; plan: PlanRow; schedule: WeeklySchedule; version: number }
 > {
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' };
+  if (expectedPlanId != null && expectedPlanId !== plan.id) {
+    return {
+      conflict: true,
+      current_plan_id: plan.id,
+      current_version: plan.version,
+    };
+  }
   if (expectedVersion != null && expectedVersion !== plan.version) {
-    return { conflict: true, current_version: plan.version };
+    return {
+      conflict: true,
+      current_plan_id: plan.id,
+      current_version: plan.version,
+    };
   }
   const days = await db
     .prepare('SELECT id, name, day_label FROM day_templates WHERE plan_id = ?1')
@@ -5522,13 +5831,19 @@ export async function setPlanSchedule(
   // writePlanMeta; a concurrent plan write → no row updated → 409.
   const row = await db
     .prepare(
-      'UPDATE plans SET meta = ?2, version = version + 1, updated_at = ?3 WHERE id = ?1 AND version = ?4 RETURNING version',
+      `UPDATE plans SET meta = ?2, version = version + 1, updated_at = ?3
+        WHERE id = ?1 AND version = ?4 AND user_id = ?5 AND status = 'active'
+        RETURNING version`,
     )
-    .bind(plan.id, serializePlanMeta(meta, schedule), ts, plan.version)
+    .bind(plan.id, serializePlanMeta(meta, schedule), ts, plan.version, userId)
     .first<{ version: number }>();
   if (!row) {
     const cur = await getActivePlan(db, userId);
-    return { conflict: true, current_version: cur?.version ?? plan.version };
+    return {
+      conflict: true,
+      current_plan_id: cur?.id ?? plan.id,
+      current_version: cur?.version ?? plan.version,
+    };
   }
   return {
     ok: true,
@@ -5736,7 +6051,7 @@ function scrubSchedule(
       changed = true;
     }
   }
-  return changed ? { version: schedule.version, week } : null;
+  return changed ? { version: schedule.version + 1, week } : null;
 }
 
 /**
@@ -5747,9 +6062,19 @@ export async function deleteDayTemplate(
   db: D1Database,
   userId: string,
   dayId: string,
-): Promise<{ ok: true } | { error: 'day_not_found' }> {
+  expectedVersion?: number,
+): Promise<
+  { ok: true; version: number }
+  | { error: 'day_not_found' }
+  | { error: 'day_in_progress' }
+  | PlanVersionConflict
+> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'day_not_found' };
+  if (expectedVersion !== undefined && expectedVersion !== plan.version) {
+    return { conflict: true, current_version: plan.version };
+  }
+  const writeVersion = expectedVersion ?? plan.version;
   const day = await db
     .prepare('SELECT id FROM day_templates WHERE id = ?1 AND plan_id = ?2')
     .bind(dayId, plan.id)
@@ -5757,29 +6082,183 @@ export async function deleteDayTemplate(
   if (!day) return { error: 'day_not_found' };
   const meta = parsePlanMeta(plan.meta);
   const remaining = await db
-    .prepare('SELECT id FROM day_templates WHERE plan_id = ?1 AND id != ?2')
+    .prepare(
+      'SELECT id FROM day_templates WHERE plan_id = ?1 AND id != ?2 ORDER BY order_index, created_at, id',
+    )
     .bind(plan.id, dayId)
     .all<{ id: string }>();
   const liveIds = new Set(remaining.results.map((r) => r.id));
   const scrubbed = scrubSchedule(meta.schedule, liveIds);
+  // A session may deliberately keep day_template_id NULL and resolve its
+  // workout from the recurring schedule for that civil date. Treat those
+  // rows as references to this day too, using the same mon..sun rule as the
+  // calendar projection. The literal list is derived only from WEEKDAYS.
+  const scheduledWeekdayNumbers = WEEKDAYS.flatMap((weekday, index) =>
+    meta.schedule.week[weekday] === dayId ? [(index + 1) % 7] : [],
+  );
+  const matchesDeletedDay = (
+    alias: string,
+    dayParameter: string,
+    planParameter: string,
+  ): string => {
+    // Keep the plan identity explicit in both branches. Besides preventing an
+    // archived-plan row from participating, this keeps the numbered binding
+    // contract stable when the deleted day is no longer in the schedule.
+    const explicit = `(${alias}.day_template_id = ${dayParameter} AND ${alias}.plan_id = ${planParameter})`;
+    if (scheduledWeekdayNumbers.length === 0) return explicit;
+    return `(${explicit} OR (${alias}.day_template_id IS NULL AND ${alias}.plan_id = ${planParameter} AND CAST(strftime('%w', ${alias}.date) AS INTEGER) IN (${scheduledWeekdayNumbers.join(',')})))`;
+  };
+  // Once a null-template session has started, its live set links are durable
+  // evidence of which template it is executing. The recurring schedule can be
+  // remapped while that workout is still active, so current weekday resolution
+  // alone is insufficient to protect the old day from deletion.
+  const activeSessionReferencesDeletedDay = (
+    alias: string,
+    dayParameter: string,
+    planParameter: string,
+  ): string => `(
+    ${matchesDeletedDay(alias, dayParameter, planParameter)}
+    OR EXISTS (
+      SELECT 1 FROM set_logs AS active_set
+      JOIN template_exercises AS active_slot
+        ON active_slot.id = active_set.template_exercise_id
+      WHERE active_set.session_id = ${alias}.id
+        AND active_set.deleted_at IS NULL
+        AND active_slot.day_template_id = ${dayParameter}
+    )
+  )`;
   const ts = now();
   const stmts: D1PreparedStatement[] = [
-    db
-      .prepare('DELETE FROM template_exercises WHERE day_template_id = ?1')
-      .bind(dayId),
-    db.prepare('DELETE FROM day_templates WHERE id = ?1').bind(dayId),
+    // Preserve historical rows; only detach their pointers into the plan
+    // document before deleting that document node.
     db
       .prepare(
-        'UPDATE plans SET meta = ?2, version = version + 1, updated_at = ?3 WHERE id = ?1',
+        `UPDATE sessions
+            SET day_template_id = NULL,
+                status = CASE WHEN status = 'planned' THEN 'skipped' ELSE status END,
+                updated_at = CASE
+                  WHEN day_template_id IS NOT NULL OR status = 'planned' THEN ?5
+                  ELSE updated_at
+                END,
+                attempt = CASE WHEN status = 'planned' THEN attempt + 1 ELSE attempt END
+          WHERE user_id = ?1 AND ${matchesDeletedDay('sessions', '?2', '?3')}
+            AND status != 'in_progress'
+            AND EXISTS (
+              SELECT 1 FROM plans
+               WHERE id = ?3 AND user_id = ?1 AND status = 'active' AND version = ?4
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM sessions AS active_session
+               WHERE active_session.user_id = ?1
+                 AND ${activeSessionReferencesDeletedDay('active_session', '?2', '?3')}
+                 AND active_session.status = 'in_progress'
+            )`,
+      )
+      .bind(userId, dayId, plan.id, writeVersion, ts),
+    db
+      .prepare(
+        `UPDATE set_logs SET template_exercise_id = NULL
+          WHERE template_exercise_id IN (
+            SELECT id FROM template_exercises WHERE day_template_id = ?1
+          )
+            AND EXISTS (
+              SELECT 1 FROM plans
+               WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM sessions AS active_session
+               WHERE active_session.user_id = ?3
+                 AND ${activeSessionReferencesDeletedDay('active_session', '?1', '?2')}
+                 AND active_session.status = 'in_progress'
+            )`,
+      )
+      .bind(dayId, plan.id, userId, writeVersion),
+    db
+      .prepare(
+        `DELETE FROM template_exercises WHERE day_template_id = ?1
+          AND EXISTS (
+            SELECT 1 FROM plans
+             WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM sessions AS active_session
+             WHERE active_session.user_id = ?3
+               AND ${activeSessionReferencesDeletedDay('active_session', '?1', '?2')}
+               AND active_session.status = 'in_progress'
+          )`,
+      )
+      .bind(dayId, plan.id, userId, writeVersion),
+    db
+      .prepare(
+        `DELETE FROM day_templates WHERE id = ?1 AND plan_id = ?2
+          AND EXISTS (
+            SELECT 1 FROM plans
+             WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM sessions AS active_session
+             WHERE active_session.user_id = ?3
+               AND ${activeSessionReferencesDeletedDay('active_session', '?1', '?2')}
+               AND active_session.status = 'in_progress'
+          )`,
+      )
+      .bind(dayId, plan.id, userId, writeVersion),
+    ...remaining.results.map((row, index) =>
+      db
+        .prepare(
+          `UPDATE day_templates SET order_index = ?2, updated_at = ?3
+            WHERE id = ?1 AND plan_id = ?4
+              AND EXISTS (
+                SELECT 1 FROM plans
+                 WHERE id = ?4 AND user_id = ?5 AND status = 'active' AND version = ?6
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM sessions AS active_session
+                 WHERE active_session.user_id = ?5
+                   AND ${activeSessionReferencesDeletedDay('active_session', '?7', '?4')}
+                   AND active_session.status = 'in_progress'
+              )`,
+        )
+        .bind(row.id, index, ts, plan.id, userId, writeVersion, dayId),
+    ),
+    db
+      .prepare(
+        `UPDATE plans SET meta = ?2, version = version + 1, updated_at = ?3
+          WHERE id = ?1 AND user_id = ?4 AND status = 'active' AND version = ?5
+            AND NOT EXISTS (
+              SELECT 1 FROM sessions AS active_session
+               WHERE active_session.user_id = ?4
+                 AND ${activeSessionReferencesDeletedDay('active_session', '?6', '?1')}
+                 AND active_session.status = 'in_progress'
+            )
+          RETURNING version`,
       )
       .bind(
         plan.id,
         serializePlanMeta(meta, scrubbed ?? meta.schedule),
         ts,
+        userId,
+        writeVersion,
+        dayId,
       ),
   ];
-  await db.batch(stmts);
-  return { ok: true };
+  const results = await runWorkoutWriteBatch<{ version: number }>(db, stmts);
+  const updatedPlan = results.at(-1)?.results[0];
+  if (!updatedPlan) {
+    const active = await db
+      .prepare(
+        `SELECT 1 FROM sessions AS active_session
+          WHERE active_session.user_id = ?1
+            AND ${activeSessionReferencesDeletedDay('active_session', '?2', '?3')}
+            AND active_session.status = 'in_progress'
+          LIMIT 1`,
+      )
+      .bind(userId, dayId, plan.id)
+      .first();
+    if (active) return { error: 'day_in_progress' };
+    return currentPlanVersion(db, userId, writeVersion);
+  }
+  return { ok: true, version: updatedPlan.version };
 }
 
 /**
@@ -5796,8 +6275,11 @@ export async function setPlannedSession(
 ): Promise<
   | { error: 'no_active_plan' }
   | { error: 'unknown_day_ref'; ref: string }
+  | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
   | SessionAttemptConflict
+  | SessionAttemptMissing
   | SessionStateConflict
+  | PlanVersionConflict
   | { ok: true; session: SessionRow }
 > {
   const plan = await getActivePlan(db, userId);
@@ -5820,13 +6302,31 @@ export async function setPlannedSession(
     existing: SessionRow,
   ): Promise<
     | { ok: true; session: SessionRow }
+    | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
     | SessionAttemptConflict
     | SessionStateConflict
+    | PlanVersionConflict
   > => {
-    if (expectedAttempt !== undefined && existing.attempt !== expectedAttempt) {
-      return sessionAttemptConflict(expectedAttempt, existing);
+    if (existing.status === 'in_progress' || existing.status === 'completed') {
+      return {
+        error: 'session_already_started',
+        status: existing.status as 'in_progress' | 'completed',
+      };
     }
-    const casAttempt = expectedAttempt ?? existing.attempt;
+    // An identical retry is idempotent even if the caller never received the
+    // first response's advanced assignment token. Every *different* date
+    // choice below advances attempt, so an old queued set/override cannot
+    // silently join the replacement assignment.
+    const assignmentUnchanged =
+      existing.plan_id === plan.id &&
+      existing.status === 'planned' &&
+      existing.day_template_id === d.id;
+    if (assignmentUnchanged) return { ok: true, session: existing };
+
+    const casAttempt = expectedAttempt ?? 0;
+    if (existing.attempt !== casAttempt) {
+      return sessionAttemptConflict(casAttempt, existing);
+    }
     const casStatus = existing.status;
     const ts = now();
     // The SQL CASE already flips the row to a sensible status; the bug was
@@ -5837,26 +6337,24 @@ export async function setPlannedSession(
     // we're reviving a discarded row, mirroring getOrCreateSession's
     // discard→planned resurrection (consistent revival rule across the
     // two places that revive a discarded session).
-    const newStatus =
-      existing.status === 'completed' || existing.status === 'in_progress'
-        ? existing.status
-        : 'planned';
-    // Reopening an explicit skip is also a generation boundary. It has no
-    // live sets (skip guards started history), but advancing the token ensures
-    // a delayed skip/set from the prior rest choice cannot target the newly
-    // started override.
+    const newStatus = 'planned';
+    // Every assignment change is a generation boundary. This includes
+    // planned A -> planned B and planned -> rest (in skipPlannedSession), not
+    // only discarded/skipped revival: otherwise two clients holding attempt 0
+    // can both win and an old queued set can land in the newly assigned day.
     const reviving =
       existing.status === 'discarded' || existing.status === 'skipped';
     const newStartedAt = reviving ? null : existing.started_at;
     const newCompletedAt = reviving ? null : existing.completed_at;
     const newFatigue = reviving ? null : existing.perceived_fatigue;
     const newNotes = reviving ? null : existing.notes;
-    const newAttempt = reviving ? casAttempt + 1 : casAttempt;
+    const newAttempt = casAttempt + 1;
     const updated = await runWorkoutWriteStatement(
       db,
       db.prepare(
         `UPDATE sessions
-            SET day_template_id = ?2,
+            SET plan_id = ?13,
+                day_template_id = ?2,
                 status = ?3,
                 started_at = ?4,
                 completed_at = ?5,
@@ -5867,7 +6365,18 @@ export async function setPlannedSession(
           WHERE id = ?1
             AND user_id = ?8
             AND status = ?9
-            AND attempt = ?10`,
+            AND attempt = ?10
+            AND EXISTS (
+              SELECT 1
+                FROM plans AS active_plan
+                JOIN day_templates AS active_day
+                  ON active_day.plan_id = active_plan.id
+               WHERE active_plan.id = ?13
+                 AND active_plan.user_id = ?8
+                 AND active_plan.status = 'active'
+                 AND active_plan.version = ?14
+                 AND active_day.id = ?2
+            )`,
       )
       .bind(
         existing.id,
@@ -5882,9 +6391,15 @@ export async function setPlannedSession(
         casAttempt,
         newFatigue,
         newNotes,
+        plan.id,
+        plan.version,
       ),
     );
     if (updated.meta.changes === 0) {
+      const activePlan = await getActivePlan(db, userId);
+      if (activePlan?.id !== plan.id || activePlan.version !== plan.version) {
+        return { conflict: true, current_version: activePlan?.version ?? plan.version };
+      }
       const current = await readExisting();
       if (!current) throw new Error('session_update_conflict_without_winner');
       if (current.attempt !== casAttempt) {
@@ -5894,6 +6409,7 @@ export async function setPlannedSession(
     }
     const session: SessionRow = {
       ...existing,
+      plan_id: plan.id,
       day_template_id: d.id,
       status: newStatus,
       started_at: newStartedAt,
@@ -5908,6 +6424,9 @@ export async function setPlannedSession(
   };
   const existing = await readExisting();
   if (existing) return useExisting(existing);
+  if (expectedAttempt !== undefined && expectedAttempt !== 0) {
+    return { error: 'session_attempt_missing', expected_attempt: expectedAttempt };
+  }
 
   const ts = now();
   const s: SessionRow = {
@@ -5923,7 +6442,10 @@ export async function setPlannedSession(
     notes: null,
     created_at: ts,
     updated_at: ts,
-    attempt: 0,
+    // Attempt zero is the explicit "no date assignment observed" token.
+    // Persist the first concrete assignment as generation one so a second
+    // concurrent creator carrying zero loses the CAS in useExisting().
+    attempt: 1,
     write_protocol: 'legacy',
   };
   const inserted = await runWorkoutWriteStatement(
@@ -5931,7 +6453,18 @@ export async function setPlannedSession(
     db.prepare(
       `INSERT INTO sessions
        (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+       SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14
+        WHERE EXISTS (
+          SELECT 1
+            FROM plans AS active_plan
+            JOIN day_templates AS active_day
+              ON active_day.plan_id = active_plan.id
+           WHERE active_plan.id = ?3
+             AND active_plan.user_id = ?2
+             AND active_plan.status = 'active'
+             AND active_plan.version = ?15
+             AND active_day.id = ?4
+        )
        ON CONFLICT(user_id,date) DO NOTHING`,
     )
     .bind(
@@ -5949,10 +6482,15 @@ export async function setPlannedSession(
       s.updated_at,
       s.attempt,
       s.write_protocol,
+      plan.version,
     ),
   );
   if (inserted.meta.changes > 0) return { ok: true, session: s };
 
+  const activePlan = await getActivePlan(db, userId);
+  if (activePlan?.id !== plan.id || activePlan.version !== plan.version) {
+    return { conflict: true, current_version: activePlan?.version ?? plan.version };
+  }
   const winner = await readExisting();
   if (!winner) throw new Error('session_create_conflict_without_winner');
   return useExisting(winner);
@@ -5971,7 +6509,9 @@ export async function skipPlannedSession(
   | { error: 'no_active_plan' }
   | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
   | SessionAttemptConflict
+  | SessionAttemptMissing
   | SessionStateConflict
+  | PlanVersionConflict
   | { ok: true; session: SessionRow }
 > {
   const plan = await getActivePlan(db, userId);
@@ -5989,13 +6529,9 @@ export async function skipPlannedSession(
     | { error: 'session_already_started'; status: 'in_progress' | 'completed' }
     | SessionAttemptConflict
     | SessionStateConflict
+    | PlanVersionConflict
     | { ok: true; session: SessionRow }
   > => {
-    if (expectedAttempt !== undefined && existing.attempt !== expectedAttempt) {
-      return sessionAttemptConflict(expectedAttempt, existing);
-    }
-    const casAttempt = expectedAttempt ?? existing.attempt;
-    const casStatus = existing.status;
     // A skip may only override a planned (or absent) session. If the date
     // already has a started/finished workout, skipping it would hide logged
     // sets and destroy visible history for a mis-dated skip. Reject and
@@ -6007,21 +6543,54 @@ export async function skipPlannedSession(
         status: existing.status as 'in_progress' | 'completed',
       };
     }
+    const assignmentUnchanged =
+      existing.plan_id === plan.id && existing.status === 'skipped';
+    if (assignmentUnchanged) return { ok: true, session: existing };
+
+    const casAttempt = expectedAttempt ?? 0;
+    if (existing.attempt !== casAttempt) {
+      return sessionAttemptConflict(casAttempt, existing);
+    }
+    const casStatus = existing.status;
     const ts = now();
+    const newAttempt = casAttempt + 1;
     const updated = await runWorkoutWriteStatement(
       db,
       db.prepare(
         `UPDATE sessions
-            SET status = 'skipped',
-                updated_at = ?2
+            SET plan_id = ?6,
+                day_template_id = NULL,
+                status = 'skipped',
+                updated_at = ?2,
+                attempt = ?7
           WHERE id = ?1
             AND user_id = ?3
             AND status = ?4
-            AND attempt = ?5`,
+            AND attempt = ?5
+            AND EXISTS (
+              SELECT 1 FROM plans AS active_plan
+               WHERE active_plan.id = ?6
+                 AND active_plan.user_id = ?3
+                 AND active_plan.status = 'active'
+                 AND active_plan.version = ?8
+            )`,
       )
-      .bind(existing.id, ts, userId, casStatus, casAttempt),
+      .bind(
+        existing.id,
+        ts,
+        userId,
+        casStatus,
+        casAttempt,
+        plan.id,
+        newAttempt,
+        plan.version,
+      ),
     );
     if (updated.meta.changes === 0) {
+      const activePlan = await getActivePlan(db, userId);
+      if (activePlan?.id !== plan.id || activePlan.version !== plan.version) {
+        return { conflict: true, current_version: activePlan?.version ?? plan.version };
+      }
       const current = await readExisting();
       if (!current) throw new Error('session_update_conflict_without_winner');
       if (current.attempt !== casAttempt) {
@@ -6039,14 +6608,20 @@ export async function skipPlannedSession(
       ok: true,
       session: {
         ...existing,
+        plan_id: plan.id,
+        day_template_id: null,
         status: 'skipped',
         updated_at: ts,
+        attempt: newAttempt,
         write_protocol: existing.write_protocol,
       },
     };
   };
   const existing = await readExisting();
   if (existing) return useExisting(existing);
+  if (expectedAttempt !== undefined && expectedAttempt !== 0) {
+    return { error: 'session_attempt_missing', expected_attempt: expectedAttempt };
+  }
 
   const ts = now();
   const s: SessionRow = {
@@ -6062,7 +6637,7 @@ export async function skipPlannedSession(
     notes: null,
     created_at: ts,
     updated_at: ts,
-    attempt: 0,
+    attempt: 1,
     write_protocol: 'legacy',
   };
   const inserted = await runWorkoutWriteStatement(
@@ -6070,7 +6645,14 @@ export async function skipPlannedSession(
     db.prepare(
       `INSERT INTO sessions
        (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+       SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14
+        WHERE EXISTS (
+          SELECT 1 FROM plans AS active_plan
+           WHERE active_plan.id = ?3
+             AND active_plan.user_id = ?2
+             AND active_plan.status = 'active'
+             AND active_plan.version = ?15
+        )
        ON CONFLICT(user_id,date) DO NOTHING`,
     )
     .bind(
@@ -6088,10 +6670,15 @@ export async function skipPlannedSession(
       s.updated_at,
       s.attempt,
       s.write_protocol,
+      plan.version,
     ),
   );
   if (inserted.meta.changes > 0) return { ok: true, session: s };
 
+  const activePlan = await getActivePlan(db, userId);
+  if (activePlan?.id !== plan.id || activePlan.version !== plan.version) {
+    return { conflict: true, current_version: activePlan?.version ?? plan.version };
+  }
   const winner = await readExisting();
   if (!winner) throw new Error('session_create_conflict_without_winner');
   return useExisting(winner);

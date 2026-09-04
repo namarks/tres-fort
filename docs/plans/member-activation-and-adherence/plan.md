@@ -37,15 +37,14 @@ correct workout.
   - Tune reminders and onboarding copy from concrete member feedback rather
     than add a generalized analytics, growth, or messaging platform.
   - [ ] **(a) Implement the decided starter path**
-    - After the product decision, either seed an approved starter through
-      `manual-workout-authoring` and the same versioned plan tree, or record the
+    - After the product decision, either seed an approved starter through the
+      completed manual builder and the same versioned plan tree, or record the
       decision not to offer one and retain the manual and coach choices.
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | coordinates_with | plan:manual-workout-authoring#P0 | The no-plan surface links to the manual builder, while invite and Coach Connect continuity can proceed independently. |
 | P2(a) | gated_by | external:starter-plan-policy | Implementing or explicitly declining the starter path requires the product decision; evidence and recommendation do not. |
 
 ## Next step

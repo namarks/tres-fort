@@ -5,11 +5,12 @@ import { requireAppJwt } from '../auth';
 import { appleProviderConfig } from '../apple';
 import {
   accountDeletionContinuationMatches,
-  addDayTemplate,
+  addDayTemplateAtVersion,
   addTemplateExercise,
   createGroup,
   createInvite,
   createPlan,
+  deleteDayTemplate,
   deleteUserAccount,
   deleteTemplateExercise,
   discardSession,
@@ -36,12 +37,16 @@ import {
   listGroupsForUser,
   logActivity,
   logSet,
+  nextDayOrderIndex,
   nextExerciseOrderIndex,
-  patchDayTemplate,
+  patchDayTemplateAtVersion,
   patchSession,
   patchSet,
   redeemInvite,
   resolveExercise,
+  setPlanSchedule,
+  setPlannedSession,
+  skipPlannedSession,
   setGroupDisplayName,
   setUserDisplayName,
   setUserIntervalsCreds,
@@ -54,8 +59,10 @@ import {
   updateExercise,
   upsertHealthKitActivity,
   writeAudit,
+  ensureActivePlan,
 } from '../db';
 import { isWorkoutWriteFenceEnabled } from '../workout-write-fence';
+import type { Weekday } from '../types';
 
 export const apiRoutes = new Hono<HonoEnv>();
 apiRoutes.use('*', requireAppJwt);
@@ -74,7 +81,7 @@ type FieldRule = (value: unknown) => boolean;
 const hasOwn = (body: JsonObject, field: string) =>
   Object.prototype.hasOwnProperty.call(body, field);
 const isNonEmptyString: FieldRule = (value) =>
-  typeof value === 'string' && value.length > 0;
+  typeof value === 'string' && value.trim().length > 0;
 const isFiniteNumber: FieldRule = (value) =>
   typeof value === 'number' && Number.isFinite(value);
 const isNonNegativeInteger: FieldRule = (value) =>
@@ -202,6 +209,27 @@ apiRoutes.get('/plan/active', async (c) => {
   return tree ? c.json(tree) : c.json({ error: 'no_active_plan' }, 404);
 });
 
+// Idempotent manual-authoring bootstrap. This route deliberately does not use
+// createPlan: a retry or concurrent coach write must return the active winner,
+// never archive it.
+apiRoutes.put('/plan/active', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const invalid = invalidMutationFields(parsed.body, { name: isNonEmptyString });
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const userId = c.get('userId');
+  const result = await ensureActivePlan(c.env.DB, userId, String(parsed.body.name).trim());
+  await writeAudit(
+    c.env.DB,
+    userId,
+    'ensure_active_plan',
+    { name: parsed.body.name },
+    JSON.stringify({ id: result.plan.id, created: result.created }),
+    'ios',
+  );
+  return c.json(result, result.created ? 201 : 200);
+});
+
 apiRoutes.post('/plan', async (c) => {
   const b = await c.req.json<{ name: string; meta?: unknown }>();
   if (!b.name) return c.json({ error: 'missing_name' }, 400);
@@ -209,29 +237,206 @@ apiRoutes.post('/plan', async (c) => {
 });
 
 apiRoutes.post('/days', async (c) => {
-  const plan = await getActivePlan(c.env.DB, c.get('userId'));
+  const userId = c.get('userId');
+  const plan = await getActivePlan(c.env.DB, userId);
   if (!plan) return c.json({ error: 'no_active_plan' }, 400);
-  const b = await c.req.json<{ name: string; day_label?: string; order_index?: number }>();
-  if (!b.name) return c.json({ error: 'missing_name' }, 400);
-  return c.json(
-    await addDayTemplate(c.env.DB, plan.id, b.name, b.day_label ?? null, b.order_index ?? 0),
-    201,
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const invalid = invalidMutationFields(
+    b,
+    { name: isNonEmptyString },
+    {
+      day_label: isNullableString,
+      order_index: isNonNegativeInteger,
+      expected_plan_id: isNonEmptyString,
+      expected_version: isPositiveInteger,
+    },
   );
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  if (hasOwn(b, 'expected_plan_id') && b.expected_plan_id !== plan.id) {
+    return c.json({ conflict: true, current_plan_id: plan.id, current_version: plan.version }, 409);
+  }
+  if (hasOwn(b, 'expected_version') && b.expected_version !== plan.version) {
+    return c.json({ conflict: true, current_version: plan.version }, 409);
+  }
+  const orderIndex = hasOwn(b, 'order_index')
+    ? Number(b.order_index)
+    : await nextDayOrderIndex(c.env.DB, plan.id);
+  const row = await addDayTemplateAtVersion(
+    c.env.DB,
+    userId,
+    plan,
+    String(b.name).trim(),
+    typeof b.day_label === 'string' ? b.day_label : null,
+    orderIndex,
+  );
+  if ('conflict' in row) return c.json(row, 409);
+  await writeAudit(
+    c.env.DB,
+    userId,
+    'add_day',
+    {
+      name: b.name,
+      day_label: b.day_label ?? null,
+      order_index: orderIndex,
+      expected_plan_id: b.expected_plan_id ?? null,
+    },
+    row.id,
+    'ios',
+  );
+  return c.json(row, 201);
 });
 
 apiRoutes.patch('/days/:id', async (c) => {
-  const plan = await getActivePlan(c.env.DB, c.get('userId'));
+  const userId = c.get('userId');
+  const plan = await getActivePlan(c.env.DB, userId);
   if (!plan) return c.json({ error: 'no_active_plan' }, 400);
-  const b = await c.req.json<{
-    name?: string;
-    day_label?: string | null;
-    order_index?: number;
-    notes?: string | null;
-  }>();
-  const row = await patchDayTemplate(c.env.DB, plan.id, c.req.param('id'), b);
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const invalid = invalidMutationFields(
+    b,
+    {},
+    {
+      name: isNonEmptyString,
+      day_label: isNullableString,
+      order_index: isNonNegativeInteger,
+      notes: isNullableString,
+      expected_version: isPositiveInteger,
+    },
+  );
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  if (hasOwn(b, 'expected_version') && b.expected_version !== plan.version) {
+    return c.json({ conflict: true, current_version: plan.version }, 409);
+  }
+  const { expected_version: _expectedVersion, ...patch } = b;
+  const row = await patchDayTemplateAtVersion(
+    c.env.DB, userId, plan, c.req.param('id'), patch,
+  );
   if (!row) return c.json({ error: 'not_found' }, 404);
+  if ('conflict' in row) return c.json(row, 409);
   if ('error' in row) return c.json(row, 400);
+  await writeAudit(
+    c.env.DB,
+    userId,
+    'update_day',
+    { day_template_id: c.req.param('id'), patch },
+    row.id,
+    'ios',
+  );
   return c.json(row);
+});
+
+apiRoutes.delete('/days/:id', async (c) => {
+  const userId = c.get('userId');
+  const plan = await getActivePlan(c.env.DB, userId);
+  if (!plan) return c.json({ error: 'no_active_plan' }, 400);
+  const rawExpected = c.req.query('expected_version');
+  if (rawExpected !== undefined) {
+    const expected = Number(rawExpected);
+    if (!isPositiveInteger(expected)) {
+      return c.json({ error: 'invalid_fields', fields: ['expected_version'] }, 400);
+    }
+    if (expected !== plan.version) {
+      return c.json({ conflict: true, current_version: plan.version }, 409);
+    }
+  }
+  const dayId = c.req.param('id');
+  const result = await deleteDayTemplate(c.env.DB, userId, dayId, plan.version);
+  if ('conflict' in result) return c.json(result, 409);
+  if ('error' in result && result.error === 'day_in_progress') {
+    return c.json(result, 409);
+  }
+  if ('error' in result) return c.json({ error: 'not_found' }, 404);
+  await writeAudit(
+    c.env.DB,
+    userId,
+    'delete_day',
+    { day_template_id: dayId },
+    JSON.stringify(result),
+    'ios',
+  );
+  return c.json(result);
+});
+
+apiRoutes.put('/plan/schedule', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const invalid = invalidMutationFields(
+    b,
+    { week: (value) => value !== null && typeof value === 'object' && !Array.isArray(value) },
+    {
+      expected_plan_id: isNonEmptyString,
+      expected_version: isPositiveInteger,
+    },
+  );
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const week = b.week as Record<string, unknown>;
+  const badKeys = Object.keys(week).filter(
+    (key) => !['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].includes(key),
+  );
+  const badValues = Object.entries(week)
+    .filter(([, value]) => value !== null && typeof value !== 'string')
+    .map(([key]) => key);
+  if (badKeys.length > 0 || badValues.length > 0) {
+    return c.json({ error: 'invalid_fields', fields: [...new Set([...badKeys, ...badValues])] }, 400);
+  }
+  const userId = c.get('userId');
+  const result = await setPlanSchedule(
+    c.env.DB,
+    userId,
+    week as Partial<Record<Weekday, string | null>>,
+    typeof b.expected_version === 'number' ? b.expected_version : null,
+    typeof b.expected_plan_id === 'string' ? b.expected_plan_id : null,
+  );
+  if ('conflict' in result) return c.json(result, 409);
+  if ('error' in result) return c.json(result, 400);
+  await writeAudit(c.env.DB, userId, 'set_schedule', { week }, JSON.stringify(result), 'ios');
+  return c.json(result);
+});
+
+// One concrete date only. `day_template_id: null` means rest; either branch
+// mutates sessions and deliberately leaves the recurring schedule/version
+// untouched.
+apiRoutes.put('/calendar/:date', async (c) => {
+  const date = c.req.param('date');
+  if (!ISO_DATE_RE.test(date)) return c.json({ error: 'invalid_date' }, 400);
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const invalid = invalidMutationFields(
+    b,
+    { day_template_id: (value) => value === null || isNonEmptyString(value) },
+    { expected_attempt: isNonNegativeInteger },
+  );
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const userId = c.get('userId');
+  // Attempt zero is the explicit absence token for released clients that did
+  // not yet send the field. The first assignment persists as attempt one.
+  const expectedAttempt = typeof b.expected_attempt === 'number' ? b.expected_attempt : 0;
+  const isRest = b.day_template_id === null;
+  const result = isRest
+    ? await skipPlannedSession(c.env.DB, userId, date, expectedAttempt)
+    : await setPlannedSession(c.env.DB, userId, date, String(b.day_template_id), expectedAttempt);
+  if ('conflict' in result) return c.json(result, 409);
+  if ('error' in result) {
+    const conflict = result.error === 'session_attempt_conflict'
+      || result.error === 'session_attempt_missing'
+      || result.error === 'session_state_conflict'
+      || result.error === 'session_already_started';
+    return c.json(result, conflict ? 409 : 400);
+  }
+  await writeAudit(
+    c.env.DB,
+    userId,
+    isRest ? 'skip_planned_session' : 'set_planned_session',
+    { date, day_template_id: b.day_template_id },
+    result.session.id,
+    'ios',
+  );
+  return c.json(result);
 });
 
 apiRoutes.post('/days/:id/exercises', async (c) => {

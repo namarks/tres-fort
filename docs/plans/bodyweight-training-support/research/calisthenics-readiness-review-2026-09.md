@@ -4,7 +4,7 @@ Static review of the worktree at commit `c71e3f9`, cross-checked against
 migrations `0001`–`0032`, the vitest suites, the iOS sources, and open GitHub
 issues. No probe tests were run against D1. This note is the evidence behind
 [`bodyweight-training-support`](../plan.md) and the 2026-09-02 amendments to
-[`manual-workout-authoring`](../../manual-workout-authoring/plan.md). It is
+[`manual-workout-authoring`](../../completed/manual-workout-authoring/plan.md). It is
 history, not a live checklist; the plans own status. Line references are as of
 `c71e3f9` and drift.
 

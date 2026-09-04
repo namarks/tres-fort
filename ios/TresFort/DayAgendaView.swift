@@ -22,6 +22,7 @@ private func fmtWeight(_ w: Double) -> String {
 struct DayAgendaView: View {
     @ObservedObject var sync: SyncModel
     let dateString: String
+    @State private var showDateEditor = false
 
     private var prettyDate: String {
         guard let d = CalendarProjection.date(from: dateString) else { return dateString }
@@ -45,7 +46,28 @@ struct DayAgendaView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     header(proj, today: today)
+                    if canEditDate(projection: proj, today: today) {
+                        Button {
+                            showDateEditor = true
+                        } label: {
+                            Label("Change this date", systemImage: "calendar.badge.clock")
+                                .font(Theme.mono(13, .bold))
+                                .foregroundStyle(Theme.accent)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 13)
+                                .background(Theme.surface)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(sync.isRoutineMutationInFlight)
+                    }
                     content(proj, today: today)
+                    if let error = sync.loadError {
+                        Text(error)
+                            .font(Theme.mono(12))
+                            .foregroundStyle(Theme.danger)
+                            .accessibilityIdentifier("calendarOverrideError")
+                    }
                     // On a can_train_light=false blackout the backend projects
                     // items: [] — so suppress the endurance cards here too, or a
                     // blackout day would still show training to do (Codex #61 P2).
@@ -60,6 +82,51 @@ struct DayAgendaView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .confirmationDialog(
+            "Change this date",
+            isPresented: $showDateEditor,
+            titleVisibility: .visible
+        ) {
+            ForEach(sync.plan?.days ?? []) { day in
+                Button(day.name) {
+                    Task {
+                        await sync.setCalendarOverride(
+                            date: dateString, dayID: day.id)
+                    }
+                }
+                .disabled(
+                    proj.suppressesScheduleAndEndurance
+                        || sync.isRoutineMutationInFlight
+                        || (dateString == today && sync.running))
+            }
+            Button("Rest day") {
+                Task {
+                    await sync.setCalendarOverride(date: dateString, dayID: nil)
+                }
+            }
+            .disabled(
+                proj.suppressesScheduleAndEndurance
+                    || sync.isRoutineMutationInFlight
+                    || (dateString == today && sync.running))
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This changes only \(prettyDate). Your recurring weekly schedule stays the same.")
+        }
+    }
+
+    private func canEditDate(
+        projection: DayProjection,
+        today: String
+    ) -> Bool {
+        guard dateString >= today,
+              !(dateString == today && sync.running),
+              !projection.suppressesScheduleAndEndurance,
+              !(sync.plan?.days.isEmpty ?? true)
+        else {
+            return false
+        }
+        guard let status = realSession?.status else { return true }
+        return status != "in_progress" && status != "completed"
     }
 
     // MARK: header

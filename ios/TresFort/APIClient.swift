@@ -289,6 +289,114 @@ struct APIClient {
     /// Minimal decode of an edited slot row (the response carries the full
     /// template_exercises row; the caller only needs the id and reloads).
     struct SlotIDRow: Decodable { let id: String }
+    struct PlanSummaryRow: Decodable {
+        let id: String
+        let name: String
+        let version: Int
+    }
+    struct EnsureActivePlanResult: Decodable {
+        let plan: PlanSummaryRow
+        let created: Bool
+    }
+    struct DayIDRow: Decodable { let id: String }
+    struct DeleteDayResult: Decodable {
+        let ok: Bool
+        let version: Int
+    }
+    struct ScheduleWriteResult: Decodable {
+        let ok: Bool
+        let version: Int
+        let schedule: PlanSchedule
+    }
+    struct CalendarWriteResult: Decodable {
+        let ok: Bool
+        let session: SessionRow
+    }
+
+    func ensureActivePlan(name: String, jwt: String) async throws
+        -> EnsureActivePlanResult
+    {
+        try await put("api/plan/active", body: ["name": name], jwt: jwt)
+    }
+
+    @discardableResult
+    func addDay(
+        name: String,
+        expectedPlanID: String,
+        expectedVersion: Int,
+        jwt: String
+    ) async throws
+        -> DayIDRow
+    {
+        try await post(
+            "api/days",
+            body: [
+                "name": name,
+                "expected_plan_id": expectedPlanID,
+                "expected_version": expectedVersion,
+            ],
+            jwt: jwt)
+    }
+
+    @discardableResult
+    func updateDay(
+        dayID: String,
+        fields: [String: Any],
+        expectedVersion: Int,
+        jwt: String
+    ) async throws -> DayIDRow {
+        var body = fields
+        body["expected_version"] = expectedVersion
+        return try await patch("api/days/\(dayID)", body: body, jwt: jwt)
+    }
+
+    func deleteDay(dayID: String, expectedVersion: Int, jwt: String) async throws
+        -> DeleteDayResult
+    {
+        try await delete(
+            "api/days/\(dayID)?expected_version=\(expectedVersion)", jwt: jwt)
+    }
+
+    func setSchedule(
+        _ week: [String: String],
+        expectedPlanID: String,
+        expectedVersion: Int,
+        jwt: String
+    ) async throws -> ScheduleWriteResult {
+        var wireWeek: [String: Any] = [:]
+        for key in PlanSchedule.weekdayKeys {
+            let value = week[key] ?? ""
+            if value.isEmpty {
+                wireWeek[key] = NSNull()
+            } else {
+                wireWeek[key] = value
+            }
+        }
+        return try await put(
+            "api/plan/schedule",
+            body: [
+                "week": wireWeek,
+                "expected_plan_id": expectedPlanID,
+                "expected_version": expectedVersion,
+            ],
+            jwt: jwt)
+    }
+
+    func setCalendarDate(
+        _ date: String,
+        dayID: String?,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> CalendarWriteResult {
+        var body: [String: Any] = [:]
+        if let dayID {
+            body["day_template_id"] = dayID
+        } else {
+            body["day_template_id"] = NSNull()
+        }
+        if let expectedAttempt { body["expected_attempt"] = expectedAttempt }
+        return try await put("api/calendar/\(date)", body: body, jwt: jwt)
+    }
 
     @discardableResult
     func addExercise(dayID: String, exercise: String, isWarmup: Bool,
@@ -353,6 +461,20 @@ struct APIClient {
         // build the dict conditionally (see e.g. createSession), so
         // dropping NSNull here would silently re-map the explicit-null
         // contract to the default-value path.
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return try await send(req)
+    }
+
+    func put<T: Decodable>(
+        _ path: String,
+        body: [String: Any],
+        jwt: String
+    ) async throws -> T {
+        var req = URLRequest(url: URL(string: baseURL.absoluteString + "/" + path)!)
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         return try await send(req)
     }
@@ -558,6 +680,43 @@ protocol PlanEditingAPI {
 }
 
 extension APIClient: PlanEditingAPI {}
+
+/// Manual routine and calendar editing are separate from the gym-floor slot
+/// seam so their conflict/reload behavior can be tested without networking.
+@MainActor
+protocol RoutineEditingAPI {
+    func ensureActivePlan(name: String, jwt: String) async throws
+        -> APIClient.EnsureActivePlanResult
+    func addDay(
+        name: String,
+        expectedPlanID: String,
+        expectedVersion: Int,
+        jwt: String
+    ) async throws
+        -> APIClient.DayIDRow
+    func updateDay(
+        dayID: String,
+        fields: [String: Any],
+        expectedVersion: Int,
+        jwt: String
+    ) async throws -> APIClient.DayIDRow
+    func deleteDay(dayID: String, expectedVersion: Int, jwt: String) async throws
+        -> APIClient.DeleteDayResult
+    func setSchedule(
+        _ week: [String: String],
+        expectedPlanID: String,
+        expectedVersion: Int,
+        jwt: String
+    ) async throws -> APIClient.ScheduleWriteResult
+    func setCalendarDate(
+        _ date: String,
+        dayID: String?,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> APIClient.CalendarWriteResult
+}
+
+extension APIClient: RoutineEditingAPI {}
 
 /// Narrow terminal-session seam used only to prove the P0 exclusion between
 /// destructive/completing session mutations and new set persistence.

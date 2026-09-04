@@ -101,7 +101,6 @@ gymnastic-strength movements.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | coordinates_with | plan:manual-workout-authoring#P0 | Both edit the iOS configure-exercise screen; build one shared editor rather than two. |
 | P1 | coordinates_with | plan:gym-runner-depth#P0 | Both change the runner's value-entry controls; serialize the shared surface. |
 | P1 | feeds | plan:coaching-feedback-loop#P2 | Rep-based and hold-based history gives the coach usable bodyweight progress signals; it does not block coaching work. |
 

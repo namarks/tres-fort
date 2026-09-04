@@ -144,7 +144,8 @@ struct DayTemplate: Codable, Identifiable, Equatable {
 ///     "week": { "mon": "<day_template_id|null>", "tue": …, … "sun": … } }
 ///
 /// Keyed by weekday; null / absent = rest day; values are `day_template_id`.
-/// The app is READ-ONLY here — Claude owns schedule edits via MCP.
+/// Both the Routine screen and Claude edit this same versioned map through
+/// their respective thin API wrappers; neither owns a client-only schedule.
 struct PlanSchedule: Decodable, Equatable {
     let version: Int
     let week: [String: String?]

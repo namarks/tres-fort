@@ -773,15 +773,19 @@ describe('mcp set_planned_session — clean revival of a discarded session', () 
       ] }],
     });
     await call('set_planned_session', { date: '2026-11-01', day: 'A' });
-    const sid = (await env.DB.prepare("SELECT id FROM sessions WHERE date='2026-11-01'")
-      .first<{ id: string }>())!.id;
+    const seeded = (await env.DB.prepare(
+      "SELECT id,attempt FROM sessions WHERE date='2026-11-01'",
+    ).first<{ id: string; attempt: number }>())!;
+    const sid = seeded.id;
     // Force the row to a discarded state with a past started_at.
     await env.DB
       .prepare("UPDATE sessions SET status='discarded', started_at=12345 WHERE id=?1")
       .bind(sid)
       .run();
 
-    const r = await call('set_planned_session', { date: '2026-11-01', day: 'A' });
+    const r = await call('set_planned_session', {
+      date: '2026-11-01', day: 'A', expected_attempt: seeded.attempt,
+    });
     // Pre-fix: r.session.status was 'discarded' (stale — the SQL had
     // already flipped to 'planned' in the DB but the response spread
     // ...existing). Post-fix: returned shape matches the row, with
@@ -866,7 +870,7 @@ describe('mcp order_index — settable on add and update; rejects unknown patch 
 });
 
 describe('mcp update_day — patch a day in place (no full plan rebuild)', () => {
-  it('updates notes/name/day_label/order_index via day label; bumps plan version', async () => {
+  it('updates notes/name/day_label/order_index via day label; densifies and bumps version', async () => {
     const built = await call('update_plan', {
       name: 'Day patch',
       days: [{ name: 'Old A', day_label: 'A', notes: 'old', exercises: [
@@ -882,7 +886,7 @@ describe('mcp update_day — patch a day in place (no full plan rebuild)', () =>
     expect(r.error).toBeUndefined();
     expect(r.name).toBe('New A');
     expect(r.notes).toBe('warmup first');
-    expect(r.order_index).toBe(7);
+    expect(r.order_index).toBe(0);
 
     const after = await call('get_current_plan', {});
     expect(after.version).toBeGreaterThan(v0);

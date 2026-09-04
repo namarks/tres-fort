@@ -180,6 +180,8 @@ struct TodayView: View {
     /// Presents the in-app workout editor (add/remove/reorder exercises +
     /// warm-ups) for the resolved day.
     @State private var editTarget: EditDayTarget?
+    /// Full member-owned plan/day/schedule editor.
+    @State private var showRoutine = false
 
     var body: some View {
         NavigationStack {
@@ -241,6 +243,12 @@ struct TodayView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Refresh") { Task { await sync.load() } }
+                        Button {
+                            showRoutine = true
+                        } label: {
+                            Label(sync.plan == nil ? "Build routine" : "Edit routine",
+                                  systemImage: "calendar.badge.clock")
+                        }
                         if let id = sync.running ? sync.selectedDay?.id : sync.todayResolvedDay?.id {
                             Button {
                                 editTarget = EditDayTarget(id: id)
@@ -276,7 +284,7 @@ struct TodayView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Starts a one-off session. Your weekly schedule is unchanged — ask Claude to edit the schedule.")
+                Text("Starts a one-off session. Your weekly schedule is unchanged; edit it from Routine.")
             }
             .confirmationDialog(
                 "Discard this workout?",
@@ -294,6 +302,9 @@ struct TodayView: View {
             .sheet(item: $editTarget) { t in
                 EditWorkoutSheet(sync: sync, dayID: t.id)
             }
+            .sheet(isPresented: $showRoutine) {
+                RoutineView(sync: sync)
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -306,11 +317,24 @@ struct TodayView: View {
         } else if sync.running {
             RunnerView(sync: sync, auth: auth)
         } else if sync.plan == nil {
-            VStack(spacing: 8) {
+            VStack(spacing: 14) {
                 Text("NO PLAN YET").font(Theme.display(28)).foregroundStyle(Theme.text)
-                Text("Ask Claude to build one, then pull to refresh.")
+                Text("Build and schedule your first workout here, or ask your coach.")
                     .font(Theme.mono(13)).foregroundStyle(Theme.muted)
+                    .multilineTextAlignment(.center)
+                Button {
+                    showRoutine = true
+                } label: {
+                    Label("Build a routine", systemImage: "plus.circle.fill")
+                        .font(Theme.mono(14, .bold))
+                        .foregroundStyle(Theme.bg)
+                        .padding(.horizontal, 18).padding(.vertical, 13)
+                        .background(Theme.accent)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .padding(.top, 6)
             }
+            .padding(24)
         } else if sync.todayIsCompleted {
             // Today's session is already COMPLETED. Show a done/recap
             // state with NO start and NO override: one session per

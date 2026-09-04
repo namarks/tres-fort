@@ -242,6 +242,80 @@ private final class SetPlanEditingAPIStub: PlanEditingAPI {
     }
 }
 
+@MainActor
+private final class SetRoutineEditingAPIStub: RoutineEditingAPI {
+    var ensureHandler: ((String, String) async throws -> APIClient.EnsureActivePlanResult)?
+    var addDayHandler: ((String, String, Int, String) async throws -> APIClient.DayIDRow)?
+    var updateDayHandler: ((String, [String: Any], Int, String) async throws -> APIClient.DayIDRow)?
+    var deleteDayHandler: ((String, Int, String) async throws -> APIClient.DeleteDayResult)?
+    var scheduleHandler: (([String: String], String, Int, String) async throws -> APIClient.ScheduleWriteResult)?
+    var calendarHandler: ((String, String?, Int?, String) async throws -> APIClient.CalendarWriteResult)?
+    private(set) var updateDayCalls = 0
+    private(set) var deleteDayCalls = 0
+    private(set) var scheduleCalls = 0
+    private(set) var calendarCalls = 0
+
+    func ensureActivePlan(name: String, jwt: String) async throws
+        -> APIClient.EnsureActivePlanResult
+    {
+        guard let ensureHandler else { throw URLError(.badServerResponse) }
+        return try await ensureHandler(name, jwt)
+    }
+
+    func addDay(
+        name: String,
+        expectedPlanID: String,
+        expectedVersion: Int,
+        jwt: String
+    ) async throws
+        -> APIClient.DayIDRow
+    {
+        guard let addDayHandler else { throw URLError(.badServerResponse) }
+        return try await addDayHandler(name, expectedPlanID, expectedVersion, jwt)
+    }
+
+    func updateDay(
+        dayID: String,
+        fields: [String: Any],
+        expectedVersion: Int,
+        jwt: String
+    ) async throws -> APIClient.DayIDRow {
+        updateDayCalls += 1
+        guard let updateDayHandler else { throw URLError(.badServerResponse) }
+        return try await updateDayHandler(dayID, fields, expectedVersion, jwt)
+    }
+
+    func deleteDay(dayID: String, expectedVersion: Int, jwt: String) async throws
+        -> APIClient.DeleteDayResult
+    {
+        deleteDayCalls += 1
+        guard let deleteDayHandler else { throw URLError(.badServerResponse) }
+        return try await deleteDayHandler(dayID, expectedVersion, jwt)
+    }
+
+    func setSchedule(
+        _ week: [String: String],
+        expectedPlanID: String,
+        expectedVersion: Int,
+        jwt: String
+    ) async throws -> APIClient.ScheduleWriteResult {
+        scheduleCalls += 1
+        guard let scheduleHandler else { throw URLError(.badServerResponse) }
+        return try await scheduleHandler(week, expectedPlanID, expectedVersion, jwt)
+    }
+
+    func setCalendarDate(
+        _ date: String,
+        dayID: String?,
+        expectedAttempt: Int?,
+        jwt: String
+    ) async throws -> APIClient.CalendarWriteResult {
+        calendarCalls += 1
+        guard let calendarHandler else { throw URLError(.badServerResponse) }
+        return try await calendarHandler(date, dayID, expectedAttempt, jwt)
+    }
+}
+
 private actor SetAsyncLatch {
     private var isOpen = false
     private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -449,13 +523,16 @@ final class SetOutboxTests: XCTestCase {
         sets: [SetLog],
         days: [DayTemplate],
         serverTime: Int = 2_000_000_000_000,
-        planName: String = "Plan A"
+        planID: String = "plan-a",
+        planName: String = "Plan A",
+        planVersion: Int = 1,
+        planMeta: String? = nil
     ) -> StateResponse {
         StateResponse(
             plan: PlanTree(
-                id: "plan-a", name: planName, version: 1,
-                days: days, meta: nil),
-            plan_version: 1,
+                id: planID, name: planName, version: planVersion,
+                days: days, meta: planMeta),
+            plan_version: planVersion,
             sessions: [session],
             sets: sets,
             external_events: [],
@@ -2978,6 +3055,629 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertTrue(model.setOutbox.isEmpty)
     }
 
+    func testManualScheduleWriteUsesCurrentPlanVersionAndReloadsSharedTree() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(status: "planned", attempt: 0)
+        let routineAPI = SetRoutineEditingAPIStub()
+        var capturedWeek: [String: String] = [:]
+        var capturedPlanID: String?
+        var capturedVersion: Int?
+        routineAPI.scheduleHandler = { week, planID, version, _ in
+            capturedWeek = week
+            capturedPlanID = planID
+            capturedVersion = version
+            return APIClient.ScheduleWriteResult(
+                ok: true,
+                version: 2,
+                schedule: PlanSchedule(version: 2, week: ["mon": "day-a"]))
+        }
+        let stateAPI = SetWriteAPIStub()
+        let meta = #"{"schedule":{"version":2,"week":{"mon":"day-a","tue":null,"wed":null,"thu":null,"fri":null,"sat":null,"sun":null}}}"#
+        stateAPI.stateHandler = { [self] _ in
+            state(
+                session: s, sets: [], days: [day(with: [ex])],
+                planVersion: 2, planMeta: meta)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(),
+            routineEditingAPI: routineAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: s, sets: [], days: [day(with: [ex])]))
+
+        await model.saveRecurringSchedule(["mon": "day-a", "tue": ""])
+
+        XCTAssertEqual(capturedPlanID, "plan-a")
+        XCTAssertEqual(capturedVersion, 1)
+        XCTAssertEqual(capturedWeek["mon"], "day-a")
+        XCTAssertEqual(model.plan?.version, 2)
+        XCTAssertEqual(model.plan?.schedule?.templateID(forWeekdayKey: "mon"), "day-a")
+    }
+
+    func testFirstManualDayPinsTheExactEnsuredPlanIdentityAndVersion() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(status: "planned", attempt: 0)
+        let routineAPI = SetRoutineEditingAPIStub()
+        var capturedPlanID: String?
+        var capturedVersion: Int?
+        routineAPI.addDayHandler = { name, planID, version, _ in
+            XCTAssertEqual(name, "First day")
+            capturedPlanID = planID
+            capturedVersion = version
+            return APIClient.DayIDRow(id: "day-new")
+        }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { [self] _ in
+            state(
+                session: s, sets: [], days: [day(with: [ex])],
+                planName: "Concurrent coach plan", planVersion: 8)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(),
+            routineEditingAPI: routineAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: s, sets: [], days: [day(with: [ex])]))
+
+        let dayID = await model.addWorkoutDay(
+            name: "First day",
+            expectedPlanID: "ensured-plan",
+            expectedVersion: 1)
+
+        XCTAssertEqual(dayID, "day-new")
+        XCTAssertEqual(capturedPlanID, "ensured-plan")
+        XCTAssertEqual(capturedVersion, 1)
+        XCTAssertEqual(model.plan?.name, "Concurrent coach plan")
+    }
+
+    func testRoutineCreationRetryCompletesAnEmptyEnsuredPlan() {
+        XCTAssertTrue(RoutineCreationPolicy.shouldAddFirstDay(
+            wasCreated: false,
+            ensuredPlanID: "plan-a",
+            loadedPlanID: "plan-a",
+            loadedDayCount: 0))
+    }
+
+    func testRoutineCreationRetryDoesNotAppendToANonemptyOrDifferentPlan() {
+        XCTAssertFalse(RoutineCreationPolicy.shouldAddFirstDay(
+            wasCreated: false,
+            ensuredPlanID: "plan-a",
+            loadedPlanID: "plan-a",
+            loadedDayCount: 1))
+        XCTAssertFalse(RoutineCreationPolicy.shouldAddFirstDay(
+            wasCreated: true,
+            ensuredPlanID: "plan-a",
+            loadedPlanID: "plan-b",
+            loadedDayCount: 0))
+    }
+
+    func testAcknowledgedExerciseAddSucceedsWhenPostMutationRefreshFails() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(status: "planned", attempt: 0)
+        let editor = SetPlanEditingAPIStub()
+        editor.addHandler = { APIClient.SlotIDRow(id: "slot-new") }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { _ in throw URLError(.timedOut) }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: stateAPI,
+            planEditingAPI: editor,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: ex))
+
+        let saved = await model.addExerciseToDay(
+            "day-a",
+            exercise: ex.exercise_id,
+            isWarmup: false,
+            targetSets: 3,
+            targetReps: 8,
+            targetRepsMax: nil,
+            restSeconds: 90,
+            targetDurationS: nil)
+
+        XCTAssertTrue(saved)
+        XCTAssertEqual(editor.addCalls, 1)
+        XCTAssertNotNil(model.loadError)
+    }
+
+    func testFailedTargetSaveReportsFailureAndKeepsErrorVisible() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(status: "planned", attempt: 0)
+        let editor = SetPlanEditingAPIStub()
+        editor.updateHandler = {
+            throw APIError.http(500, #"{"error":"write_failed"}"#)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: SetWriteAPIStub(),
+            planEditingAPI: editor,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: ex))
+
+        let saved = await model.updateSlot(
+            dayID: "day-a",
+            teID: ex.id,
+            isWarmup: false,
+            targetSets: 3,
+            targetReps: 8,
+            targetRepsMax: 12,
+            restSeconds: 90,
+            targetDurationS: nil)
+
+        XCTAssertFalse(saved)
+        XCTAssertEqual(editor.updateCalls, 1)
+        XCTAssertNotNil(model.loadError)
+        XCTAssertTrue(model.loadError?.contains("write_failed") == true)
+    }
+
+    func testTargetSaveStaysOpenWhenPostMutationRefreshFails() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(status: "planned", attempt: 0)
+        let editor = SetPlanEditingAPIStub()
+        editor.updateHandler = { APIClient.SlotIDRow(id: ex.id) }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { _ in throw URLError(.timedOut) }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: stateAPI,
+            planEditingAPI: editor,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: ex))
+
+        let saved = await model.updateSlot(
+            dayID: "day-a",
+            teID: ex.id,
+            isWarmup: false,
+            targetSets: 4,
+            targetReps: 10,
+            targetRepsMax: nil,
+            restSeconds: 90,
+            targetDurationS: nil)
+
+        XCTAssertFalse(saved)
+        XCTAssertEqual(editor.updateCalls, 1)
+        XCTAssertNotNil(model.loadError)
+        XCTAssertEqual(model.plan?.days[0].exercises[0].target_reps, ex.target_reps)
+    }
+
+    func testDeletingActiveWorkoutDayShowsActionableConflict() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(status: "in_progress", attempt: 0)
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.deleteDayHandler = { _, _, _ in
+            throw APIError.http(409, #"{"error":"day_in_progress"}"#)
+        }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { [self] _ in
+            state(session: s, sets: [], exercise: ex)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(),
+            routineEditingAPI: routineAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: ex))
+
+        await model.deleteWorkoutDay(dayID: "day-a")
+
+        XCTAssertEqual(
+            model.loadError,
+            "Finish or discard the active workout before removing this workout day.")
+    }
+
+    func testDeletingLocallyRunningWorkoutDayIsBlockedBeforeServerSessionStarts() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let planned = session(status: "planned", attempt: 0)
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.deleteDayHandler = { _, _, _ in
+            XCTFail("A locally running day must not reach deletion")
+            return APIClient.DeleteDayResult(ok: true, version: 2)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: SetWriteAPIStub(),
+            catalogAPI: SetCatalogAPIStub(),
+            routineEditingAPI: routineAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: planned, sets: [], days: [day(with: [ex])]))
+        model.startWorkout()
+        XCTAssertTrue(model.running)
+
+        await model.deleteWorkoutDay(dayID: "day-a")
+
+        XCTAssertEqual(routineAPI.deleteDayCalls, 0)
+        XCTAssertTrue(model.running)
+        XCTAssertEqual(
+            model.loadError,
+            "Finish or discard the active workout before removing this workout day.")
+    }
+
+    func testManualCalendarOverrideUsesAttemptAndDoesNotChangePlanVersion() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let original = session(status: "planned", attempt: 3)
+        let skipped = SessionRow(
+            id: original.id,
+            date: original.date,
+            status: "skipped",
+            day_template_id: original.day_template_id,
+            updated_at: 2_000_000_000_100,
+            attempt: 3)
+        let routineAPI = SetRoutineEditingAPIStub()
+        var capturedAttempt: Int?
+        routineAPI.calendarHandler = { date, dayID, attempt, _ in
+            XCTAssertEqual(date, self.fixedCivilDate)
+            XCTAssertNil(dayID)
+            capturedAttempt = attempt
+            return APIClient.CalendarWriteResult(ok: true, session: skipped)
+        }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { [self] _ in
+            state(session: skipped, sets: [], days: [day(with: [ex])])
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(),
+            routineEditingAPI: routineAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: original, sets: [], days: [day(with: [ex])]))
+
+        await model.setCalendarOverride(date: fixedCivilDate, dayID: nil)
+
+        XCTAssertEqual(capturedAttempt, 3)
+        XCTAssertEqual(model.plan?.version, 1)
+        XCTAssertEqual(model.sessionsByDate[fixedCivilDate]?.status, "skipped")
+    }
+
+    func testManualCalendarOverrideUsesZeroAsTheNoAssignmentToken() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let original = session(status: "planned", attempt: 3)
+        let futureDate = "2037-01-05"
+        let created = SessionRow(
+            id: "future-session", date: futureDate,
+            status: "planned", day_template_id: "day-a", attempt: 1)
+        let routineAPI = SetRoutineEditingAPIStub()
+        var capturedAttempt: Int?
+        routineAPI.calendarHandler = { date, dayID, attempt, _ in
+            XCTAssertEqual(date, futureDate)
+            XCTAssertEqual(dayID, "day-a")
+            capturedAttempt = attempt
+            return APIClient.CalendarWriteResult(ok: true, session: created)
+        }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { [self] _ in
+            state(session: original, sets: [], days: [day(with: [ex])])
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(),
+            routineEditingAPI: routineAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: original, sets: [], days: [day(with: [ex])]))
+
+        await model.setCalendarOverride(date: futureDate, dayID: "day-a")
+
+        XCTAssertEqual(capturedAttempt, 0)
+        XCTAssertEqual(routineAPI.calendarCalls, 1)
+    }
+
+    func testHardBlackoutBlocksCalendarOverrideBeforeServerWrite() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let original = session(status: "planned", attempt: 0)
+        let blackoutDate = "2037-01-06"
+        let planMeta = """
+        {"trips":[{"id":"trip-a","start":"\(blackoutDate)",
+        "end":"\(blackoutDate)","type":"travel","can_train_light":false}]}
+        """
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.calendarHandler = { _, _, _, _ in
+            XCTFail("A hard-blackout date must not reach the calendar writer")
+            return APIClient.CalendarWriteResult(ok: true, session: original)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: SetWriteAPIStub(),
+            catalogAPI: SetCatalogAPIStub(),
+            routineEditingAPI: routineAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: original,
+            sets: [],
+            days: [day(with: [ex])],
+            planMeta: planMeta))
+
+        await model.setCalendarOverride(date: blackoutDate, dayID: "day-a")
+
+        XCTAssertEqual(routineAPI.calendarCalls, 0)
+        XCTAssertEqual(
+            model.loadError,
+            "This date is unavailable while the hard travel blackout is active.")
+    }
+
+    func testManualCalendarOverrideBlocksTodayWhileLocalRunnerIsActive() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let original = session(status: "planned", attempt: 0)
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.calendarHandler = { _, _, _, _ in
+            XCTFail("A running workout must fence out today's calendar override")
+            return APIClient.CalendarWriteResult(ok: true, session: original)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: SetWriteAPIStub(),
+            catalogAPI: SetCatalogAPIStub(),
+            routineEditingAPI: routineAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: original, sets: [], days: [day(with: [ex])]))
+        model.startWorkout()
+        XCTAssertTrue(model.running)
+
+        await model.setCalendarOverride(date: fixedCivilDate, dayID: nil)
+
+        XCTAssertEqual(routineAPI.calendarCalls, 0)
+        XCTAssertEqual(
+            model.loadError,
+            "Finish or discard the active workout before changing today's assignment.")
+    }
+
+    func testScheduleDraftSurvivesUnrelatedReloadAndReconcilesRealScheduleChanges() {
+        let ex = exercise()
+        let meta = #"{"schedule":{"version":1,"week":{"mon":"day-a","tue":null}}}"#
+        let original = PlanTree(
+            id: "plan-a", name: "Plan A", version: 1,
+            days: [day(with: [ex])], meta: meta)
+        let unrelatedPlanEdit = PlanTree(
+            id: "plan-a", name: "Renamed", version: 2,
+            days: [day(with: [])], meta: meta)
+        let removedWorkout = PlanTree(
+            id: "plan-a", name: "Renamed", version: 3,
+            days: [], meta: meta)
+        let changedWeek = PlanTree(
+            id: "plan-a", name: "Renamed", version: 3,
+            days: [day(with: [])],
+            meta: #"{"schedule":{"version":1,"week":{"mon":null,"tue":"day-a"}}}"#)
+        let replacement = PlanTree(
+            id: "plan-b", name: "Plan B", version: 1,
+            days: [day(with: [ex])], meta: meta)
+
+        let initial = RoutineScheduleDraftPolicy.reconcile(
+            currentDraft: [:], loadedIdentity: [], plan: original)
+        var unsaved = initial.draft
+        unsaved["wed"] = "day-a"
+        let unrelated = RoutineScheduleDraftPolicy.reconcile(
+            currentDraft: unsaved,
+            loadedIdentity: initial.identity,
+            plan: unrelatedPlanEdit)
+        XCTAssertEqual(unrelated.draft["wed"], "day-a")
+
+        let changed = RoutineScheduleDraftPolicy.reconcile(
+            currentDraft: unrelated.draft,
+            loadedIdentity: unrelated.identity,
+            plan: changedWeek)
+        XCTAssertEqual(changed.draft["mon"], "")
+        XCTAssertEqual(changed.draft["tue"], "day-a")
+
+        let replaced = RoutineScheduleDraftPolicy.reconcile(
+            currentDraft: changed.draft,
+            loadedIdentity: changed.identity,
+            plan: replacement)
+        XCTAssertEqual(replaced.draft["mon"], "day-a")
+        XCTAssertEqual(replaced.draft["tue"], "")
+
+        let removedDay = RoutineScheduleDraftPolicy.reconcile(
+            currentDraft: ["wed": "day-a"],
+            loadedIdentity: initial.identity,
+            plan: removedWorkout)
+        XCTAssertEqual(removedDay.draft["wed"], "")
+    }
+
+    func testManualDayConflictReloadsInsteadOfOverwritingNewerRoutine() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(status: "planned", attempt: 0)
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.updateDayHandler = { _, _, _, _ in
+            throw APIError.http(409, #"{"conflict":true,"current_version":2}"#)
+        }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { [self] _ in
+            state(
+                session: s, sets: [], days: [day(with: [ex])],
+                planName: "Coach Update", planVersion: 2)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(),
+            routineEditingAPI: routineAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: s, sets: [], days: [day(with: [ex])]))
+
+        await model.renameWorkoutDay(dayID: "day-a", name: "Stale Rename")
+
+        XCTAssertEqual(model.plan?.version, 2)
+        XCTAssertEqual(model.plan?.name, "Coach Update")
+        XCTAssertEqual(
+            model.loadError,
+            "The routine changed elsewhere. Latest version loaded — review and try again.")
+    }
+
+    func testStaleDayNotFoundReloadsReplacementWithSameVersion() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(status: "planned", attempt: 0)
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.updateDayHandler = { _, _, _, _ in
+            throw APIError.http(404, #"{"error":"not_found"}"#)
+        }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { [self] _ in
+            state(
+                session: s, sets: [], days: [day(with: [ex])],
+                planID: "plan-b", planName: "Replacement", planVersion: 1)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(),
+            routineEditingAPI: routineAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: s, sets: [], days: [day(with: [ex])]))
+
+        await model.renameWorkoutDay(dayID: "day-a", name: "Stale rename")
+
+        XCTAssertEqual(model.plan?.id, "plan-b")
+        XCTAssertEqual(model.plan?.version, 1)
+        XCTAssertEqual(
+            model.loadError,
+            "The routine changed elsewhere. Latest version loaded — review and try again.")
+    }
+
+    func testStaleCalendarDayReferenceReloadsReplacementPlan() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(status: "planned", attempt: 0)
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.calendarHandler = { _, _, _, _ in
+            throw APIError.http(400, #"{"error":"unknown_day_ref"}"#)
+        }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { [self] _ in
+            state(
+                session: s, sets: [], days: [day(with: [ex])],
+                planID: "plan-b", planName: "Replacement", planVersion: 1)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(),
+            routineEditingAPI: routineAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: s, sets: [], days: [day(with: [ex])]))
+
+        await model.setCalendarOverride(date: "2037-01-05", dayID: "day-a")
+
+        XCTAssertEqual(routineAPI.calendarCalls, 1)
+        XCTAssertEqual(model.plan?.id, "plan-b")
+        XCTAssertEqual(
+            model.loadError,
+            "The routine changed elsewhere. Latest version loaded — review and try again.")
+    }
+
+    func testManualConflictKeepsReloadFailureInsteadOfClaimingLatestLoaded() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(status: "planned", attempt: 0)
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.updateDayHandler = { _, _, _, _ in
+            throw APIError.http(409, #"{"conflict":true,"current_version":2}"#)
+        }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { _ in throw URLError(.timedOut) }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(),
+            routineEditingAPI: routineAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: s, sets: [], days: [day(with: [ex])]))
+
+        await model.renameWorkoutDay(dayID: "day-a", name: "Stale Rename")
+
+        XCTAssertEqual(model.plan?.version, 1)
+        XCTAssertNotNil(model.loadError)
+        XCTAssertNotEqual(
+            model.loadError,
+            "The routine changed elsewhere. Latest version loaded — review and try again.")
+    }
+
+    func testRoutineMutationsQueueInsteadOfSilentlyDroppingSecondEdit() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(status: "planned", attempt: 0)
+        let entered = SetAsyncLatch()
+        let release = SetAsyncLatch()
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.scheduleHandler = { _, _, _, _ in
+            await entered.open()
+            await release.wait()
+            return APIClient.ScheduleWriteResult(
+                ok: true,
+                version: 2,
+                schedule: PlanSchedule(version: 2, week: [:]))
+        }
+        routineAPI.updateDayHandler = { _, _, _, _ in
+            APIClient.DayIDRow(id: "day-a")
+        }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { [self] _ in
+            state(session: s, sets: [], exercise: ex)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(),
+            routineEditingAPI: routineAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: ex))
+
+        let schedule = Task { await model.saveRecurringSchedule([:]) }
+        await entered.wait()
+        let rename = Task {
+            await model.renameWorkoutDay(dayID: "day-a", name: "Queued rename")
+        }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertEqual(routineAPI.scheduleCalls, 1)
+        XCTAssertEqual(routineAPI.updateDayCalls, 0)
+
+        await release.open()
+        await schedule.value
+        await rename.value
+
+        XCTAssertEqual(routineAPI.updateDayCalls, 1)
+    }
+
     func testSkippingFinalActiveTimedSlotCancelsAutoCompletion() async {
         let defaults = defaults()
         let ex = exercise(timed: true, targetSets: 1)
@@ -5160,6 +5860,18 @@ final class SetOutboxTests: XCTestCase {
             ExercisePrescriptionPolicy.canChooseMeasure(for: "bw"))
         XCTAssertTrue(
             ExercisePrescriptionPolicy.canChooseMeasure(for: "barbell"))
+        XCTAssertEqual(
+            ExercisePrescriptionPolicy.initialEditableReps(
+                targetReps: 45, isTimed: false, modality: "bw"),
+            45)
+        XCTAssertEqual(
+            ExercisePrescriptionPolicy.editableRepUpperBound(
+                reps: 45, repsMax: 60),
+            1_000)
+        XCTAssertEqual(
+            ExercisePrescriptionPolicy.initialEditableReps(
+                targetReps: 180, isTimed: true, modality: "bw"),
+            8)
     }
 
     func testLiveLoadRefreshesCachedCatalogAndRetainsItOnLaterFailure() async {
@@ -6707,7 +7419,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(cancelledNotifications, 1)
     }
 
-    func testColdRelaunchPreservesUnresolvedRestartAfterCreateFailure() async {
+    func testColdRelaunchPreservesUnresolvedRestartAndFencesRoutineMutations() async {
         let defaults = defaults()
         let ex = exercise()
         let discarded = session(
@@ -6742,9 +7454,19 @@ final class SetOutboxTests: XCTestCase {
         liveAPI.stateHandler = { [self] _ in
             state(session: discarded, sets: [], exercise: ex)
         }
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.deleteDayHandler = { _, _, _ in
+            XCTFail("A recovered workout day must not reach deletion")
+            return APIClient.DeleteDayResult(ok: true, version: 2)
+        }
+        routineAPI.calendarHandler = { _, _, _, _ in
+            XCTFail("A recovered workout date must not be reassigned")
+            return APIClient.CalendarWriteResult(ok: true, session: discarded)
+        }
         let relaunched = SyncModel(
             auth: sharedAuth, setWriteAPI: liveAPI,
-            catalogAPI: SetCatalogAPIStub(), defaults: defaults,
+            catalogAPI: SetCatalogAPIStub(), routineEditingAPI: routineAPI,
+            defaults: defaults,
             now: { self.fixedDate })
         await relaunched.load()
 
@@ -6752,6 +7474,19 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertTrue(relaunched.blocksNewWorkoutStart)
         XCTAssertNotNil(WorkoutRunnerCheckpointStore.load(
             userID: "user-a", defaults: defaults))
+
+        await relaunched.deleteWorkoutDay(dayID: "day-a")
+        XCTAssertEqual(routineAPI.deleteDayCalls, 0)
+        XCTAssertEqual(
+            relaunched.loadError,
+            "Finish or discard the active workout before removing this workout day.")
+
+        await relaunched.setCalendarOverride(
+            date: fixedCivilDate, dayID: nil)
+        XCTAssertEqual(routineAPI.calendarCalls, 0)
+        XCTAssertEqual(
+            relaunched.loadError,
+            "Finish or discard the active workout before changing today's assignment.")
     }
 
     func testOldWorkerSetACKPromotesPlannedSessionInColdSnapshot() async {

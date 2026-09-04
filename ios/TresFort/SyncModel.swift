@@ -150,6 +150,8 @@ final class SyncModel: ObservableObject {
     @Published private(set) var setSlotsInFlight: Set<String> = []
     @Published private(set) var isTerminalMutationInFlight = false
     @Published private(set) var isReopeningSkippedWorkout = false
+    @Published private(set) var isRoutineMutationInFlight = false
+    private var routineMutationWaiters: [CheckedContinuation<Void, Never>] = []
 
     // Rest timer (local Live Activity arrives in milestone g).
     @Published var restEndDate: Date?
@@ -180,6 +182,7 @@ final class SyncModel: ObservableObject {
     private let terminalAPI: any WorkoutTerminalAPI
     private let catalogAPI: any ExerciseCatalogAPI
     private let planEditingAPI: any PlanEditingAPI
+    private let routineEditingAPI: any RoutineEditingAPI
     private unowned let auth: AuthModel
     private let accountID: String?
     private let featureSessionEpoch: UInt64
@@ -258,6 +261,7 @@ final class SyncModel: ObservableObject {
         terminalAPI: any WorkoutTerminalAPI = APIClient(),
         catalogAPI: any ExerciseCatalogAPI = APIClient(),
         planEditingAPI: any PlanEditingAPI = APIClient(),
+        routineEditingAPI: any RoutineEditingAPI = APIClient(),
         defaults: UserDefaults = .standard,
         uuidFactory: @escaping () -> UUID = UUID.init,
         now: @escaping () -> Date = Date.init,
@@ -279,6 +283,7 @@ final class SyncModel: ObservableObject {
         self.terminalAPI = terminalAPI
         self.catalogAPI = catalogAPI
         self.planEditingAPI = planEditingAPI
+        self.routineEditingAPI = routineEditingAPI
         self.defaults = defaults
         self.uuidFactory = uuidFactory
         self.now = now
@@ -3482,6 +3487,10 @@ final class SyncModel: ObservableObject {
     }
 
     private func allowNewWorkoutStart() -> Bool {
+        guard !isRoutineMutationInFlight else {
+            loadError = "Wait for the routine change to finish before starting your workout."
+            return false
+        }
         guard !todayIsCompleted else {
             loadError = "Today's workout is already completed."
             return false
@@ -4063,11 +4072,12 @@ final class SyncModel: ObservableObject {
     // owns stable-slot remapping and only reseeds when executable identity
     // changes, preserving an in-flight timed hold across harmless edits.
 
+    @discardableResult
     func addExerciseToDay(_ dayID: String, exercise: String, isWarmup: Bool,
                           targetSets: Int, targetReps: Int, targetRepsMax: Int?,
                           restSeconds: Int,
-                          targetDurationS: Int?) async {
-        guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return }
+                          targetDurationS: Int?) async -> Bool {
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return false }
         do {
             _ = try await planEditingAPI.addExercise(
                 dayID: dayID, exercise: exercise, isWarmup: isWarmup,
@@ -4076,14 +4086,21 @@ final class SyncModel: ObservableObject {
                 restSeconds: restSeconds, targetDurationS: targetDurationS, jwt: jwt)
             guard canInitiateBoundFeatureAction else {
                 auth.noteAccountStatePersisted(for: accountID)
-                return
+                return false
             }
             await loadAfterMutation()
             guard canInitiateBoundFeatureAction else {
                 auth.noteAccountStatePersisted(for: accountID)
-                return
+                return false
             }
-        } catch { handle(error, jwt: jwt) }
+            // The POST acknowledgement is the commit boundary. A failed
+            // refresh leaves `loadError` visible, but returning false would
+            // keep the add form open and let a retry insert a duplicate slot.
+            return true
+        } catch {
+            handle(error, jwt: jwt)
+            return false
+        }
     }
 
     func deleteSlot(dayID: String, teID: String) async {
@@ -4120,6 +4137,225 @@ final class SyncModel: ObservableObject {
                 return
             }
         } catch { handle(error, jwt: jwt) }
+    }
+
+    @discardableResult
+    func updateSlot(
+        dayID: String,
+        teID: String,
+        isWarmup: Bool,
+        targetSets: Int,
+        targetReps: Int,
+        targetRepsMax: Int?,
+        restSeconds: Int,
+        targetDurationS: Int?
+    ) async -> Bool {
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return false }
+        var fields: [String: Any] = [
+            "is_warmup": isWarmup,
+            "target_sets": targetSets,
+            "target_reps": targetReps,
+            "rest_seconds": restSeconds,
+        ]
+        fields["target_reps_max"] = targetRepsMax.map { $0 as Any } ?? NSNull()
+        fields["target_duration_s"] = targetDurationS.map { $0 as Any } ?? NSNull()
+        do {
+            _ = try await planEditingAPI.updateExerciseSlot(
+                dayID: dayID, teID: teID, fields: fields, jwt: jwt)
+            guard canInitiateBoundFeatureAction else {
+                auth.noteAccountStatePersisted(for: accountID)
+                return false
+            }
+            await loadAfterMutation()
+            guard canInitiateBoundFeatureAction else {
+                auth.noteAccountStatePersisted(for: accountID)
+                return false
+            }
+            // The write may have committed while the authoritative state pull
+            // failed. Keep the editor open with the sync error visible rather
+            // than dismissing onto stale target values.
+            guard loadError == nil else { return false }
+            return true
+        } catch {
+            handle(error, jwt: jwt)
+            return false
+        }
+    }
+
+    // MARK: manual routine + calendar authoring
+
+    private func performRoutineMutation<T>(
+        _ operation: (any RoutineEditingAPI, String) async throws -> T
+    ) async -> T? {
+        guard canInitiateBoundFeatureAction else { return nil }
+        // UI controls are disabled while this flag is set, but serializing
+        // here also closes the tap-to-Task scheduling window. A second edit
+        // waits and then reaches the server (where its captured version can
+        // conflict) instead of being silently dropped.
+        while isRoutineMutationInFlight {
+            // Suspend until the active edit finishes. Task.yield() here was a
+            // MainActor busy loop for the whole network timeout.
+            await withCheckedContinuation { continuation in
+                routineMutationWaiters.append(continuation)
+            }
+            guard canInitiateBoundFeatureAction else { return nil }
+        }
+        guard let jwt = currentJWT else { return nil }
+        isRoutineMutationInFlight = true
+        defer {
+            isRoutineMutationInFlight = false
+            let waiters = routineMutationWaiters
+            routineMutationWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+        do {
+            let result = try await operation(routineEditingAPI, jwt)
+            guard canInitiateBoundFeatureAction else {
+                auth.noteAccountStatePersisted(for: accountID)
+                return nil
+            }
+            await loadAfterMutation()
+            guard canInitiateBoundFeatureAction else {
+                auth.noteAccountStatePersisted(for: accountID)
+                return nil
+            }
+            guard loadError == nil else { return nil }
+            return result
+        } catch {
+            if case let APIError.http(code, body) = error,
+               Self.routineMutationNeedsReload(code: code, body: body)
+            {
+                await loadAfterMutation()
+                guard loadError == nil else { return nil }
+                if canInitiateBoundFeatureAction {
+                    if body.contains("day_in_progress") {
+                        loadError = "Finish or discard the active workout before removing this workout day."
+                    } else if body.contains("session_already_started") {
+                        loadError = "A started workout cannot be reassigned to another day or rest."
+                    } else {
+                        loadError = "The routine changed elsewhere. Latest version loaded — review and try again."
+                    }
+                }
+            } else {
+                handle(error, jwt: jwt)
+            }
+            return nil
+        }
+    }
+
+    private static func routineMutationNeedsReload(code: Int, body: String) -> Bool {
+        if code == 409 { return true }
+        if code == 404 {
+            return body.contains("\"not_found\"")
+                || body.contains("\"day_not_found\"")
+        }
+        if code == 400 {
+            return body.contains("\"unknown_day_ref\"")
+                || body.contains("\"no_active_plan\"")
+        }
+        return false
+    }
+
+    /// Returns the exact ensured identity/version. A concurrent coach/app
+    /// winner is loaded without being replaced.
+    func ensureRoutinePlan(name: String) async -> APIClient.EnsureActivePlanResult? {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return nil }
+        return await performRoutineMutation { api, jwt in
+            try await api.ensureActivePlan(name: clean, jwt: jwt)
+        }
+    }
+
+    func addWorkoutDay(
+        name: String,
+        expectedPlanID: String? = nil,
+        expectedVersion: Int? = nil
+    ) async -> String? {
+        guard let currentPlan = plan else { return nil }
+        let planID = expectedPlanID ?? currentPlan.id
+        let version = expectedVersion ?? currentPlan.version
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return nil }
+        return await performRoutineMutation { api, jwt in
+            try await api.addDay(
+                name: clean,
+                expectedPlanID: planID,
+                expectedVersion: version,
+                jwt: jwt)
+        }?.id
+    }
+
+    func renameWorkoutDay(dayID: String, name: String) async {
+        guard let version = plan?.version else { return }
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        _ = await performRoutineMutation { api, jwt in
+            try await api.updateDay(
+                dayID: dayID, fields: ["name": clean],
+                expectedVersion: version, jwt: jwt)
+        } as APIClient.DayIDRow?
+    }
+
+    func moveWorkoutDay(dayID: String, toIndex: Int) async {
+        guard let version = plan?.version else { return }
+        _ = await performRoutineMutation { api, jwt in
+            try await api.updateDay(
+                dayID: dayID, fields: ["order_index": toIndex],
+                expectedVersion: version, jwt: jwt)
+        } as APIClient.DayIDRow?
+    }
+
+    private func runnerProtectsWorkoutDay(_ dayID: String) -> Bool {
+        (running && selectedDayID == dayID)
+            || persistedRunnerCheckpoint?.selectedDayID == dayID
+    }
+
+    private func runnerProtectsCalendarDate(_ date: String) -> Bool {
+        (running && date == todayString)
+            || persistedRunnerCheckpoint?.date == date
+    }
+
+    func deleteWorkoutDay(dayID: String) async {
+        guard !runnerProtectsWorkoutDay(dayID) else {
+            loadError = "Finish or discard the active workout before removing this workout day."
+            return
+        }
+        guard let version = plan?.version else { return }
+        _ = await performRoutineMutation { api, jwt in
+            try await api.deleteDay(
+                dayID: dayID, expectedVersion: version, jwt: jwt)
+        } as APIClient.DeleteDayResult?
+    }
+
+    func saveRecurringSchedule(_ week: [String: String]) async {
+        guard let currentPlan = plan else { return }
+        _ = await performRoutineMutation { api, jwt in
+            try await api.setSchedule(
+                week,
+                expectedPlanID: currentPlan.id,
+                expectedVersion: currentPlan.version,
+                jwt: jwt)
+        } as APIClient.ScheduleWriteResult?
+    }
+
+    func setCalendarOverride(date: String, dayID: String?) async {
+        let today = todayString
+        guard !runnerProtectsCalendarDate(date) else {
+            loadError = "Finish or discard the active workout before changing today's assignment."
+            return
+        }
+        guard !projection(for: date, today: today).suppressesScheduleAndEndurance else {
+            loadError = "This date is unavailable while the hard travel blackout is active."
+            return
+        }
+        // Zero is the explicit CAS token for "no assignment row observed".
+        // The Worker persists the first choice as attempt one, so two clients
+        // creating different overrides from the same empty view cannot both win.
+        let expectedAttempt = sessionsByDate[date]?.attempt ?? 0
+        _ = await performRoutineMutation { api, jwt in
+            try await api.setCalendarDate(
+                date, dayID: dayID, expectedAttempt: expectedAttempt, jwt: jwt)
+        } as APIClient.CalendarWriteResult?
     }
 
     // MARK: rest timer

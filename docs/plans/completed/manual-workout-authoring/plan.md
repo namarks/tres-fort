@@ -1,6 +1,6 @@
 # Manual Workout Authoring
 
-Slug: manual-workout-authoring · Status: planned · Updated: 2026-09-02 · Theme: gym-floor
+Slug: manual-workout-authoring · Status: done · Archived: completed · Updated: 2026-09-04 · Theme: gym-floor
 
 ## Goal
 
@@ -12,7 +12,7 @@ or editable by the coach.
 
 ## Phases
 
-- [ ] **P0 — Build and schedule one workout without AI**
+- [x] **P0 — Build and schedule one workout without AI**
   - From the no-plan state, create an active plan only when none exists, then
     let the member add one day, select catalog exercises, set targets, and add,
     edit, remove, or reorder slots using the existing plan services and editor
@@ -47,14 +47,14 @@ or editable by the coach.
     needs only the existing catalog and editor. Rep ranges are not
     prescribable from iOS until `bodyweight-training-support#P0` lands, so
     the P0 walkthrough does not use one.
-- [ ] **P1 — Manage a recurring routine**
+- [x] **P1 — Manage a recurring routine**
   - Create, rename, reorder, and remove multiple workout days; edit existing
     exercise targets; and map each weekday to a day or rest from one compact
     routine screen.
   - Edit sets, reps, rep range (`target_reps_max`), rest, and hold seconds on
     an existing slot from the editor. Today iOS calls the slot PATCH route
     only to reorder, and the configure screen has no rep-range field.
-  - [ ] **(a) Day removal detaches history**
+  - [x] **(a) Day removal detaches history**
     - Before exposing day removal, make `deleteDayTemplate` null out
       `sessions.day_template_id` and `set_logs.template_exercise_id` in the
       same batch as its deletes: detach set logs the way delete-exercise
@@ -68,7 +68,7 @@ or editable by the coach.
     coach or member edit.
   - Cover the shared version, schedule-remap, and calendar-projection contracts
     with focused backend and iOS tests rather than a second planning engine.
-- [ ] **P2 — Add optional date-specific exceptions**
+- [x] **P2 — Add optional date-specific exceptions**
   - From the calendar, assign an existing day template or rest to one concrete
     date using the existing planned-session and skip semantics.
   - Keep the recurring schedule unchanged and keep these rows outside the plan
@@ -76,16 +76,57 @@ or editable by the coach.
 
 ## Next step
 
-**Now (@owner):** Activate P0 to ship the narrow create-to-Today path; do not
-wait for one-off overrides or a starter-plan policy decision.
+No further executable step. Manual creation, recurring routine management, and
+date-specific exceptions are complete in the shared plan model; deployment and
+TestFlight distribution remain separate release actions and were not performed.
 
 ## Notes / open questions
+
+- Completion evidence (2026-09-04): iOS now creates or returns the one active
+  plan without replacing it, provides a compact routine editor for workout
+  days, catalog slots, targets, and the weekly schedule, and exposes one-date
+  workout/rest exceptions in the calendar. Worker routes reuse the existing
+  plan, schedule, and planned-session services, record `actor='ios'`, reload on
+  version conflicts, and preserve session/set history when a day is removed.
+  Planned overrides become explicit rest when their day is removed; an
+  in-progress day cannot be removed, including when a null-template session
+  resolves through the recurring schedule, and a started date cannot be retagged.
+  First-day creation is pinned to the exact plan identity/version returned by
+  the ensure call, explicit replacement is atomic with creation, and schedule
+  writes bind both identity and version. Target-save and conflict-refresh
+  failures stay visible, including in the calendar agenda, while overlapping
+  routine edits serialize. The calendar fence also covers a locally running or
+  recovered workout before its first set reaches the server; the same fence
+  protects its workout day from deletion. Archived-plan sessions do not affect
+  current-plan deletion, unrelated plan reloads preserve an unsaved weekly schedule draft,
+  stale day identities refresh even when the replacement reused a version, and
+  valid high-rep prescriptions remain editable without an invalid Swift range.
+  App and MCP day creation/patching now share one atomic plan-version writer,
+  and concurrent no-plan bootstrap keeps one stable winning plan identity.
+  One-date workout/rest choices use attempt zero as the no-row CAS token; the
+  first assignment and every changed choice advance the token, while an
+  identical retry remains idempotent, so a stale screen or queued set cannot
+  cross into a replacement assignment; a nonzero token cannot create a row
+  when no assignment exists. Removing a planned workout day also
+  advances that date token, and workout/rest insert and update statements prove
+  the captured plan identity and version are still active at commit time, so a
+  concurrent plan replacement cannot bind a date to archived plan state.
+  History detachment advances the session sync cursor so incremental clients
+  do not retain a removed day identifier. Hard
+  travel blackouts suppress the date
+  editor and model write, target sheets stay open when post-write state refresh
+  fails, and overlapping routine mutations suspend behind the active request
+  without spinning on the main actor.
+  The route-level acceptance test covers loaded barbell work plus a pull-up,
+  push-up, and timed-plank routine from REST writes through Today projection
+  and MCP read/edit. Verification passed TypeScript typecheck, all 515 Worker
+  tests, iOS build-for-testing, and all 242 iOS tests.
 
 - Tres Fort already supports creating plans and days through REST and editing
   day exercise slots in iOS. P0 completes the missing no-plan, target-edit, and
   recurring-schedule experience instead of replacing those paths.
 - Manual authoring reuses the plan-version and write-validation boundary
-  completed in [Server Mutation Integrity](../completed/server-mutation-integrity/plan.md);
+  completed in [Server Mutation Integrity](../server-mutation-integrity/plan.md);
   no unresolved dependency remains.
 - There is no manual-mode schema, weeks table, duplicate calendar projection,
   or client-only workout store. The existing versioned plan tree remains the
@@ -97,5 +138,5 @@ wait for one-off overrides or a starter-plan policy decision.
   `member-activation-and-adherence#P2`; it cannot gate manual creation.
 - The bodyweight walkthrough depends only on the existing catalog. Added load,
   assistance, rep-based history, and the missing gymnastic movements belong to
-  [Bodyweight training support](../bodyweight-training-support/plan.md), not
+  [Bodyweight training support](../../bodyweight-training-support/plan.md), not
   to this plan.

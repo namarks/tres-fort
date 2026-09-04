@@ -206,16 +206,23 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `GET /api/volume?muscle=&from=&to=` | Tonnage & hard sets per week bucket. |
 | `GET /api/me/export` | Download the signed caller's portable account and training-data snapshot as a non-cacheable JSON attachment. Excludes credentials, tokens, invite capabilities, and other members' private data. |
 | `DELETE /api/me` | Permanently delete the signed caller after explicit in-app confirmation and recent Apple authentication. A UUID-bound intent serializes provider revocation and local deletion; a durable receipt makes a lost success response safe to acknowledge. The response reports `apple_revocation: revoked|manual_required`; provider failure, legacy accounts without a stored token, or an uncertain exchange never retain local data and instead trigger the manual Apple Account handoff. |
-| `PATCH /api/days/{id}` | `{name?, day_label?, order_index?, notes?}` — inline day rename/reorder. |
+| `PUT /api/plan/active` | Idempotently ensure an active plan for manual authoring. Returns the existing winner on retry/concurrent coach creation and never archives it; explicit plan replacement archives and inserts atomically so the two creation paths cannot violate the one-active-plan invariant. |
+| `POST /api/days` | Add a workout day; omitted `order_index` appends densely. The first-day flow pins both `expected_plan_id` and `expected_version` to the plan returned by `PUT /api/plan/active`; app and MCP adds use the same atomic plan-version writer. |
+| `PATCH /api/days/{id}` | `{name?, day_label?, order_index?, notes?, expected_version?}` — rename/reorder a day through the same atomic plan-version writer as MCP. |
+| `DELETE /api/days/{id}?expected_version=` | Remove a day and scrub its recurring assignments. Completed history is detached, direct or same-plan schedule-resolved planned sessions become explicit rest, and removal is rejected while that day has a direct, same-plan schedule-resolved, or locally running workout. |
 | `POST /api/days/{id}/exercises` | Add an exercise slot (incl. `is_warmup`, `target_duration_s`). |
 | `PATCH /api/days/{id}/exercises/{teId}` | Edit one slot in place (targets / rest / warm-up flag / order). |
 | `DELETE /api/days/{id}/exercises/{teId}` | Remove a slot; detaches (NULLs) historical `set_logs.template_exercise_id`. |
+| `PUT /api/plan/schedule` | Replace the recurring weekday → day/rest map with optimistic concurrency on both `expected_plan_id` and `expected_version`. |
+| `PUT /api/calendar/{date}` | Assign one concrete date to a day (`day_template_id`) or rest (`null`) without changing the recurring schedule or plan version. `expected_attempt=0` represents no observed assignment; the first assignment and every changed choice advance the session attempt, while an identical retry is idempotent. Started/completed sessions cannot be reassigned, and iOS also fences the mutation against a locally running workout before its first set creates the server session or a hard travel blackout. |
 
-In-app workout editing (add/remove/reorder exercises + warm-ups, migration
-0026) goes through the three `/api/days/{id}/exercises…` routes — thin wrappers
-over the same `updateExercise`/`deleteTemplateExercise` the MCP tools use,
-audited as `actor='ios'`. Any write touching the plan tree bumps
-`plans.version`.
+In-app manual authoring uses the same `plans` / `day_templates` /
+`template_exercises` tree and `plans.meta.schedule` that MCP uses. The Routine
+screen creates and orders days, edits exercise prescriptions, and maps weekdays;
+the calendar writes only concrete `sessions` exceptions. These REST endpoints
+are thin wrappers over the shared service layer and audit as `actor='ios'`.
+Every recurring plan-tree write bumps `plans.version`; one-date exceptions do
+not.
 
 ---
 
@@ -289,12 +296,12 @@ the OAuth path empirically at milestone (b) before polishing it.
    an **outbox** of unsynced sets; flushes on connectivity; retries are safe
    because POST is idempotent. This kills the offline-data-loss path.
 
-2. **Versioned document** (plan tree): edited almost only by Claude. Single
+2. **Versioned document** (plan tree): edited by Claude or the member in iOS. Single
    monotonic `plans.version` + optimistic concurrency. `update_plan` takes
    `expected_version`; mismatch → 409 → Claude refetches and reapplies
-   (Claude handles this well). The app's rare writes (rename/reorder) use
-   the same check; on 409 it just refetches — no user-facing merge UI,
-   because app-side plan edits are tiny and infrequent.
+   (Claude handles this well). App day and schedule writes use the same atomic
+   version check; on 409 the app refetches instead of silently overwriting the
+   coach or another member screen.
 
 **Flow:** app on launch/foreground/post-write calls
 `GET /api/state?since=<lastPlanVersion>&sets_since=<watermark>`. Plan changed

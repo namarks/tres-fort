@@ -2,9 +2,10 @@ import SwiftUI
 
 // Milestone m — month calendar grid.
 //
-// Read-only "future calendar": projected future workouts (from the synced
-// plan schedule) + real past/today sessions (from the in-memory SyncModel
-// cache). No schedule-write paths exist anywhere in this file.
+// Projected future workouts (from the synced plan schedule) + real past/today
+// sessions (from the in-memory SyncModel cache). Tapping a date opens the
+// agenda, where a member can write a one-date workout/rest exception; recurring
+// schedule changes stay in Routine.
 
 /// Per-state visual language. Each state is intentionally distinct in
 /// BOTH color and glyph so they read at a glance on the scoreboard theme.

@@ -121,7 +121,9 @@ algorithm in `CalendarProjection.swift`** — the weekday rule (tz-free civil
 date) and the truth table must stay byte-for-byte in parity across both;
 `test/calendar.test.ts` is the contract. `update_plan` rebuilds day UUIDs
 and remaps the schedule by day name/label; days removed in the rebuild have
-their schedule entry cleared.
+their schedule entry cleared. For a date assignment, `expected_attempt=0`
+means no row was observed; the first assignment and every changed workout/rest
+choice advance `sessions.attempt`, while an identical retry is idempotent.
 
 **Owner anchor + multi-tenant MCP.** There is always a distinguished **owner**:
 the bootstrap row (`ensureOwnerUser`), which Sign in with Apple later *claims*

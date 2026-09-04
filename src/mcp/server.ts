@@ -4,7 +4,7 @@
 // goes through src/db.ts, identical to REST.
 import type { Env } from '../types';
 import {
-  addDayTemplate,
+  addDayTemplateAtVersion,
   addTemplateExercise,
   addTrip,
   adjustToday,
@@ -28,6 +28,7 @@ import {
   getUpcomingRides,
   getUserTimezone,
   getVolume,
+  ensureActivePlan,
   isGroupMember,
   listGroupsForUser,
   logActivity,
@@ -35,7 +36,7 @@ import {
   logWorkoutComplete,
   nextDayOrderIndex,
   nextExerciseOrderIndex,
-  patchDayTemplate,
+  patchDayTemplateAtVersion,
   patchSet,
   resolveExercise,
   removeTrip,
@@ -889,9 +890,7 @@ const TOOLS: Record<string, Tool> = {
     handler: async (a, env, userId) => {
       let plan = await getActivePlan(env.DB, userId);
       if (!plan) {
-        const r = await updatePlanTree(env.DB, userId, { name: 'My Plan', days: [] });
-        plan = (await getActivePlan(env.DB, userId))!;
-        void r;
+        plan = (await ensureActivePlan(env.DB, userId, 'My Plan')).plan;
       }
       // Append densely (max+1) rather than the old 99 sentinel — same
       // fix the add_exercise path got. Honors an explicit order_index.
@@ -899,15 +898,17 @@ const TOOLS: Record<string, Tool> = {
         typeof a.order_index === 'number'
           ? a.order_index
           : await nextDayOrderIndex(env.DB, plan.id);
-      return addDayTemplate(
+      return addDayTemplateAtVersion(
         env.DB,
-        plan.id,
+        userId,
+        plan,
         String(a.name),
         typeof a.day_label === 'string' ? a.day_label : null,
         orderIndex,
       );
     },
-    note: (a) => `Added day "${a.name}".`,
+    note: (a, r) =>
+      r?.conflict || r?.error ? null : `Added day "${a.name}".`,
   },
   update_day: {
     description:
@@ -937,11 +938,17 @@ const TOOLS: Record<string, Tool> = {
         dayId = row?.id ?? null;
       }
       if (!dayId) return { error: 'day_not_found' };
-      const r = await patchDayTemplate(env.DB, plan.id, dayId, (a.patch as Json) ?? {});
+      const r = await patchDayTemplateAtVersion(
+        env.DB,
+        userId,
+        plan,
+        dayId,
+        (a.patch as Json) ?? {},
+      );
       return r ?? { error: 'day_not_found' };
     },
     note: (_a, r) =>
-      r?.error
+      r?.conflict || r?.error
         ? null
         : `Updated day "${(r as { name: string }).name}".`,
   },
@@ -1014,6 +1021,7 @@ const TOOLS: Record<string, Tool> = {
           },
           additionalProperties: false,
         },
+        expected_plan_id: { type: 'string' },
         expected_version: { type: 'integer' },
       },
       ['week'],
@@ -1026,6 +1034,7 @@ const TOOLS: Record<string, Tool> = {
         userId,
         week as Partial<Record<Weekday, string | null>>,
         typeof a.expected_version === 'number' ? a.expected_version : null,
+        typeof a.expected_plan_id === 'string' ? a.expected_plan_id : null,
       );
       return r;
     },
@@ -1039,7 +1048,7 @@ const TOOLS: Record<string, Tool> = {
   },
   set_planned_session: {
     description:
-      'Pin ONE specific calendar date to a training day (a single-date override, NOT a recurring change). Use this for "next Saturday do legs" — it does not alter the standing weekly pattern and does not bump the plan version. `day` accepts a day template id, day_label, or name. Pass expected_attempt from the current session when one exists; a mismatch returns a conflict so this calendar edit cannot rewrite a newer workout attempt. For the permanent weekly routine use set_schedule.',
+      'Pin ONE specific calendar date to a training day (a single-date override, NOT a recurring change). Use this for "next Saturday do legs" — it does not alter the standing weekly pattern and does not bump the plan version. `day` accepts a day template id, day_label, or name. Pass expected_attempt from the current session, or 0 when no session exists; a mismatch returns a conflict so this calendar edit cannot rewrite a newer workout attempt. For the permanent weekly routine use set_schedule.',
     inputSchema: obj(
       {
         date: { type: 'string', description: 'YYYY-MM-DD (device-local)' },
@@ -1055,14 +1064,14 @@ const TOOLS: Record<string, Tool> = {
         userId,
         String(a.date),
         String(a.day),
-        typeof a.expected_attempt === 'number' ? a.expected_attempt : undefined,
+        typeof a.expected_attempt === 'number' ? a.expected_attempt : 0,
       ),
     note: (a, r) =>
       r?.ok ? `Planned ${a.date} → day "${a.day}" (one-off, no plan change).` : null,
   },
   skip_planned_session: {
     description:
-      'Mark ONE specific calendar date as a rest/skip day (single-date override, NOT recurring). Use for "skip this Friday". Pass expected_attempt from the current session when one exists; a mismatch returns a conflict so this calendar edit cannot hide a newer workout attempt. Does not change the standing weekly pattern and does not bump the plan version.',
+      'Mark ONE specific calendar date as a rest/skip day (single-date override, NOT recurring). Use for "skip this Friday". Pass expected_attempt from the current session, or 0 when no session exists; a mismatch returns a conflict so this calendar edit cannot hide a newer workout attempt. Does not change the standing weekly pattern and does not bump the plan version.',
     inputSchema: obj(
       {
         date: { type: 'string', description: 'YYYY-MM-DD (device-local)' },
@@ -1076,7 +1085,7 @@ const TOOLS: Record<string, Tool> = {
         env.DB,
         userId,
         String(a.date),
-        typeof a.expected_attempt === 'number' ? a.expected_attempt : undefined,
+        typeof a.expected_attempt === 'number' ? a.expected_attempt : 0,
       ),
     note: (a, r) => (r?.ok ? `Skipped ${a.date} (one-off rest, no plan change).` : null),
   },

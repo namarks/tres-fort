@@ -1,13 +1,20 @@
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  addDayTemplateAtVersion,
+  createPlan,
+  deleteDayTemplate,
   discardSession,
+  ensureActivePlan,
+  getActivePlan,
   getOrCreateSession,
   logSet,
   logWorkoutComplete,
   patchSession,
+  patchDayTemplateAtVersion,
   patchSet,
   reviveDiscardedSession,
+  setPlanSchedule,
   setPlannedSession,
   skipPlannedSession,
   updatePlanTree,
@@ -302,6 +309,15 @@ function databaseWithPausedBatchAfterRead(readNeedle: string): {
             return value;
           };
         }
+        if (property === 'all') {
+          return async (...args: any[]) => {
+            const value = await (target.all as (...callArgs: any[]) => Promise<unknown>)(
+              ...args,
+            );
+            markRead();
+            return value;
+          };
+        }
         const value = Reflect.get(target, property, target);
         return typeof value === 'function' ? value.bind(target) : value;
       },
@@ -368,6 +384,71 @@ function databaseWithPausedWriteBatchAfterSnapshot(): {
 }
 
 describe('plan-tree optimistic concurrency', () => {
+  it('serializes member ensure with the coach no-plan creation path', async () => {
+    const userId = crypto.randomUUID();
+    const ts = Date.now();
+    await env.DB.prepare(
+      'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,NULL,?3,?4)',
+    ).bind(userId, `sub-${userId}`, 'plan-create-race', ts).run();
+    const [dbA, dbB] = databasesWithSharedReadBarrier(
+      "SELECT * FROM plans WHERE user_id = ?1 AND status = 'active'",
+    );
+
+    const [ensured, updated] = await Promise.all([
+      ensureActivePlan(dbA, userId, 'Member Plan'),
+      updatePlanTree(dbB, userId, { name: 'Coach Plan', days: [] }),
+    ]);
+
+    expect(ensured.plan.user_id).toBe(userId);
+    expect(updated).toMatchObject({
+      conflict: false,
+      plan: { name: 'Coach Plan', version: 2 },
+    });
+    if (!('plan' in updated)) throw new Error('coach rebuild did not win');
+    expect(ensured.plan.id).toBe(updated.plan.id);
+    expect(await env.DB.prepare(
+      "SELECT COUNT(*) AS n FROM plans WHERE user_id=?1 AND status='active'",
+    ).bind(userId).first()).toEqual({ n: 1 });
+    expect(await env.DB.prepare(
+      "SELECT id,name,version FROM plans WHERE user_id=?1 AND status='active'",
+    ).bind(userId).first()).toEqual({
+      id: ensured.plan.id, name: 'Coach Plan', version: 2,
+    });
+  });
+
+  it('serializes app add-day and coach update-day through one plan CAS', async () => {
+    const { userId, planId } = await seedUserAndPlan('cross-channel-day-race');
+    const dayId = crypto.randomUUID();
+    const ts = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO day_templates
+       (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+       VALUES (?1,?2,'Original','O',0,NULL,?3,?3)`,
+    ).bind(dayId, planId, ts).run();
+    const plan = await getActivePlan(env.DB, userId);
+    if (!plan) throw new Error('missing active plan');
+    const paused = databaseWithPausedBatchAfterRead(
+      'SELECT id, order_index FROM day_templates WHERE plan_id = ?1',
+    );
+
+    const staleAppAdd = addDayTemplateAtVersion(
+      paused.db, userId, plan, 'Stale app day', null, 1,
+    );
+    await paused.readReached;
+    const coachPatch = await patchDayTemplateAtVersion(
+      env.DB, userId, plan, dayId, { name: 'Coach winner' },
+    );
+    expect(coachPatch).toMatchObject({ id: dayId, name: 'Coach winner' });
+    paused.releaseBatch();
+
+    expect(await staleAppAdd).toEqual({ conflict: true, current_version: 2 });
+    expect(await env.DB.prepare(
+      'SELECT id,name,order_index FROM day_templates WHERE plan_id=?1 ORDER BY order_index',
+    ).bind(planId).all()).toMatchObject({
+      results: [{ id: dayId, name: 'Coach winner', order_index: 0 }],
+    });
+  });
+
   it('allows exactly one full rebuild after two callers read the same version', async () => {
     const { userId, planId } = await seedUserAndPlan('plan-race');
     const oldDayId = crypto.randomUUID();
@@ -607,7 +688,7 @@ describe('session create concurrency', () => {
     });
   });
 
-  it('claims the legacy pin winner without overwriting its first-writer day', async () => {
+  it('preserves the newer assignment and refuses a stale protocol claim', async () => {
     const { userId, planId } = await seedUserAndPlan('legacy-pin-v1-claim-race');
     const ts = Date.now();
     const dayA = crypto.randomUUID();
@@ -660,9 +741,9 @@ describe('session create concurrency', () => {
     expect(await explicitClaim).toMatchObject({
       id: existing.id,
       status: 'planned',
-      attempt: 0,
+      attempt: 1,
       day_template_id: dayB,
-      write_protocol: 'attempt-v1',
+      write_protocol: 'legacy',
     });
   });
 
@@ -765,6 +846,356 @@ describe('session create concurrency', () => {
     expect(rows.results).toEqual([{ id: created.id, status: 'skipped' }]);
   });
 
+  it('lets only one different first assignment win from the absence token', async () => {
+    const { userId, planId } = await seedUserAndPlan('first-assignment-race');
+    const ts = Date.now();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO day_templates
+         (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+         VALUES (?1,?2,'Day A','A',0,NULL,?3,?3)`,
+      ).bind(crypto.randomUUID(), planId, ts),
+      env.DB.prepare(
+        `INSERT INTO day_templates
+         (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+         VALUES (?1,?2,'Day B','B',1,NULL,?3,?3)`,
+      ).bind(crypto.randomUUID(), planId, ts),
+    ]);
+    const [dbA, dbB] = databasesWithSharedReadBarrier(
+      'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
+    );
+
+    const results = await Promise.all([
+      setPlannedSession(dbA, userId, '2037-01-30', 'A', 0),
+      setPlannedSession(dbB, userId, '2037-01-30', 'B', 0),
+    ]);
+    expect(results.filter((result) => 'ok' in result)).toHaveLength(1);
+    const conflict = results.find((result) => 'error' in result);
+    expect(conflict).toMatchObject({
+      error: 'session_attempt_conflict',
+      expected_attempt: 0,
+      current_attempt: 1,
+    });
+    expect(await env.DB.prepare(
+      'SELECT status,attempt FROM sessions WHERE user_id=?1 AND date=?2',
+    ).bind(userId, '2037-01-30').first()).toEqual({
+      status: 'planned', attempt: 1,
+    });
+  });
+
+  it('advances the assignment token and keeps an identical retry idempotent', async () => {
+    const { userId, planId } = await seedUserAndPlan('assignment-token');
+    const ts = Date.now();
+    const dayA = crypto.randomUUID();
+    const dayB = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO day_templates
+         (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+         VALUES (?1,?2,'Day A','A',0,NULL,?3,?3)`,
+      ).bind(dayA, planId, ts),
+      env.DB.prepare(
+        `INSERT INTO day_templates
+         (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+         VALUES (?1,?2,'Day B','B',1,NULL,?3,?3)`,
+      ).bind(dayB, planId, ts),
+    ]);
+
+    const first = await setPlannedSession(env.DB, userId, '2037-01-31', 'A', 0);
+    expect(first).toMatchObject({ ok: true, session: { attempt: 1 } });
+    const retry = await setPlannedSession(env.DB, userId, '2037-01-31', 'A', 0);
+    expect(retry).toMatchObject({ ok: true, session: { attempt: 1 } });
+    const changed = await setPlannedSession(env.DB, userId, '2037-01-31', 'B', 1);
+    expect(changed).toMatchObject({
+      ok: true,
+      session: { day_template_id: dayB, attempt: 2 },
+    });
+    expect(await setPlannedSession(env.DB, userId, '2037-01-31', 'A', 1)).toMatchObject({
+      error: 'session_attempt_conflict',
+      expected_attempt: 1,
+      current_attempt: 2,
+    });
+  });
+
+  it('rejects nonzero date tokens when no assignment row exists', async () => {
+    const { userId, planId } = await seedUserAndPlan('missing-assignment-token');
+    const dayId = crypto.randomUUID();
+    const ts = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO day_templates
+       (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+       VALUES (?1,?2,'Only Day','O',0,NULL,?3,?3)`,
+    ).bind(dayId, planId, ts).run();
+
+    expect(await setPlannedSession(env.DB, userId, '2037-02-11', 'O', 3)).toEqual({
+      error: 'session_attempt_missing',
+      expected_attempt: 3,
+    });
+    expect(await skipPlannedSession(env.DB, userId, '2037-02-12', 4)).toEqual({
+      error: 'session_attempt_missing',
+      expected_attempt: 4,
+    });
+    expect(await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM sessions WHERE user_id=?1 AND date IN (?2,?3)',
+    ).bind(userId, '2037-02-11', '2037-02-12').first()).toEqual({ n: 0 });
+  });
+
+  it('advances the date token when deleting its planned workout day', async () => {
+    const { userId, planId } = await seedUserAndPlan('delete-day-assignment-race');
+    const ts = Date.now();
+    const dayA = crypto.randomUUID();
+    const dayB = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO day_templates
+         (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+         VALUES (?1,?2,'Day A','A',0,NULL,?3,?3)`,
+      ).bind(dayA, planId, ts),
+      env.DB.prepare(
+        `INSERT INTO day_templates
+         (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+         VALUES (?1,?2,'Day B','B',1,NULL,?3,?3)`,
+      ).bind(dayB, planId, ts),
+    ]);
+    const date = '2037-02-06';
+    expect(await setPlannedSession(env.DB, userId, date, 'A', 0)).toMatchObject({
+      ok: true,
+      session: { day_template_id: dayA, attempt: 1 },
+    });
+    const paused = databaseWithPausedRunAfterRead(
+      'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2',
+      'SET plan_id = ?13',
+    );
+    const staleAssignment = setPlannedSession(paused.db, userId, date, 'B', 1);
+    await paused.runReached;
+
+    expect(await deleteDayTemplate(env.DB, userId, dayA, 1)).toEqual({
+      ok: true,
+      version: 2,
+    });
+    paused.releaseRun();
+
+    expect(await staleAssignment).toEqual({
+      conflict: true,
+      current_version: 2,
+    });
+    expect(await setPlannedSession(env.DB, userId, date, 'B', 1)).toMatchObject({
+      error: 'session_attempt_conflict',
+      expected_attempt: 1,
+      current_attempt: 2,
+      current_session: { status: 'skipped', attempt: 2 },
+    });
+    expect(
+      await env.DB.prepare('SELECT day_template_id,status,attempt FROM sessions WHERE user_id=?1 AND date=?2')
+        .bind(userId, date)
+        .first(),
+    ).toEqual({ day_template_id: null, status: 'skipped', attempt: 2 });
+  });
+
+  it('keeps a null-template active day protected after its weekday is remapped', async () => {
+    const { userId, planId } = await seedUserAndPlan('delete-remapped-active-day');
+    const ts = Date.now();
+    const dayA = crypto.randomUUID();
+    const dayB = crypto.randomUUID();
+    const slotA = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO day_templates
+         (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+         VALUES (?1,?2,'Day A','A',0,NULL,?3,?3)`,
+      ).bind(dayA, planId, ts),
+      env.DB.prepare(
+        `INSERT INTO day_templates
+         (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+         VALUES (?1,?2,'Day B','B',1,NULL,?3,?3)`,
+      ).bind(dayB, planId, ts),
+      env.DB.prepare(
+        `INSERT INTO template_exercises
+         (id,day_template_id,exercise_id,order_index,target_sets,target_reps,
+          rest_seconds,created_at,updated_at)
+         VALUES (?1,?2,'ex_bench',0,3,5,120,?3,?3)`,
+      ).bind(slotA, dayA, ts),
+    ]);
+    expect(await setPlanSchedule(env.DB, userId, { mon: dayA }, 1, planId))
+      .toMatchObject({ ok: true, version: 2 });
+
+    const session = await getOrCreateSession(
+      env.DB,
+      userId,
+      planId,
+      '2037-02-02',
+      null,
+    );
+    const setId = crypto.randomUUID();
+    expect(await logSet(env.DB, userId, {
+      id: setId,
+      session_id: session.id,
+      exercise_id: 'ex_bench',
+      template_exercise_id: slotA,
+      set_index: 1,
+      weight: 185,
+      reps: 5,
+      expected_attempt: 0,
+      source: 'ios',
+    })).toMatchObject({
+      session: { status: 'in_progress', day_template_id: null },
+      set: { template_exercise_id: slotA, deleted_at: null },
+    });
+    expect(await setPlanSchedule(env.DB, userId, { mon: dayB }, 2, planId))
+      .toMatchObject({ ok: true, version: 3 });
+
+    expect(await deleteDayTemplate(env.DB, userId, dayA, 3)).toEqual({
+      error: 'day_in_progress',
+    });
+    expect(await env.DB.prepare(
+      'SELECT id FROM day_templates WHERE id=?1',
+    ).bind(dayA).first()).toEqual({ id: dayA });
+    expect(await env.DB.prepare(
+      'SELECT id FROM template_exercises WHERE id=?1',
+    ).bind(slotA).first()).toEqual({ id: slotA });
+    expect(await env.DB.prepare(
+      'SELECT template_exercise_id,deleted_at FROM set_logs WHERE id=?1',
+    ).bind(setId).first()).toEqual({
+      template_exercise_id: slotA,
+      deleted_at: null,
+    });
+  });
+
+  it('rejects a calendar update when its captured plan is replaced before commit', async () => {
+    const { userId, planId } = await seedUserAndPlan('calendar-update-plan-race');
+    const ts = Date.now();
+    const dayA = crypto.randomUUID();
+    const dayB = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO day_templates
+         (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+         VALUES (?1,?2,'Day A','A',0,NULL,?3,?3)`,
+      ).bind(dayA, planId, ts),
+      env.DB.prepare(
+        `INSERT INTO day_templates
+         (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+         VALUES (?1,?2,'Day B','B',1,NULL,?3,?3)`,
+      ).bind(dayB, planId, ts),
+    ]);
+    const date = '2037-02-07';
+    const first = await setPlannedSession(env.DB, userId, date, 'A', 0);
+    expect(first).toMatchObject({ ok: true, session: { attempt: 1 } });
+    const sessionId = 'ok' in first ? first.session.id : '';
+    const paused = databaseWithPausedRunAfterRead(
+      'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2',
+      'SET plan_id = ?13',
+    );
+    const staleAssignment = setPlannedSession(paused.db, userId, date, 'B', 1);
+    await paused.runReached;
+    const replacement = await createPlan(env.DB, userId, 'Replacement');
+    paused.releaseRun();
+
+    expect(await staleAssignment).toEqual({
+      conflict: true,
+      current_version: replacement.version,
+    });
+    expect(
+      await env.DB.prepare('SELECT plan_id,day_template_id,status,attempt FROM sessions WHERE id=?1')
+        .bind(sessionId)
+        .first(),
+    ).toEqual({
+      plan_id: planId,
+      day_template_id: dayA,
+      status: 'planned',
+      attempt: 1,
+    });
+  });
+
+  it('rejects a calendar insert when its captured plan is replaced before commit', async () => {
+    const { userId, planId } = await seedUserAndPlan('calendar-insert-plan-race');
+    const dayId = crypto.randomUUID();
+    const ts = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO day_templates
+       (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+       VALUES (?1,?2,'Old Day','O',0,NULL,?3,?3)`,
+    ).bind(dayId, planId, ts).run();
+    const date = '2037-02-08';
+    const paused = databaseWithPausedBatchAfterRead(
+      'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2',
+    );
+    const staleAssignment = setPlannedSession(paused.db, userId, date, 'O', 0);
+    await paused.readReached;
+    const replacement = await createPlan(env.DB, userId, 'Replacement');
+    paused.releaseBatch();
+
+    expect(await staleAssignment).toEqual({
+      conflict: true,
+      current_version: replacement.version,
+    });
+    expect(
+      await env.DB.prepare('SELECT id FROM sessions WHERE user_id=?1 AND date=?2')
+        .bind(userId, date)
+        .first(),
+    ).toBeNull();
+  });
+
+  it('rejects a rest update when its captured plan is replaced before commit', async () => {
+    const { userId, planId } = await seedUserAndPlan('rest-update-plan-race');
+    const dayId = crypto.randomUUID();
+    const ts = Date.now();
+    await env.DB.prepare(
+      `INSERT INTO day_templates
+       (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+       VALUES (?1,?2,'Old Day','O',0,NULL,?3,?3)`,
+    ).bind(dayId, planId, ts).run();
+    const date = '2037-02-09';
+    const first = await setPlannedSession(env.DB, userId, date, 'O', 0);
+    expect(first).toMatchObject({ ok: true, session: { attempt: 1 } });
+    const sessionId = 'ok' in first ? first.session.id : '';
+    const paused = databaseWithPausedRunAfterRead(
+      'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2',
+      'SET plan_id = ?6',
+    );
+    const staleRest = skipPlannedSession(paused.db, userId, date, 1);
+    await paused.runReached;
+    const replacement = await createPlan(env.DB, userId, 'Replacement');
+    paused.releaseRun();
+
+    expect(await staleRest).toEqual({
+      conflict: true,
+      current_version: replacement.version,
+    });
+    expect(
+      await env.DB.prepare('SELECT plan_id,day_template_id,status,attempt FROM sessions WHERE id=?1')
+        .bind(sessionId)
+        .first(),
+    ).toEqual({
+      plan_id: planId,
+      day_template_id: dayId,
+      status: 'planned',
+      attempt: 1,
+    });
+  });
+
+  it('rejects a rest insert when its captured plan is replaced before commit', async () => {
+    const { userId } = await seedUserAndPlan('rest-insert-plan-race');
+    const date = '2037-02-10';
+    const paused = databaseWithPausedBatchAfterRead(
+      'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2',
+    );
+    const staleRest = skipPlannedSession(paused.db, userId, date, 0);
+    await paused.readReached;
+    const replacement = await createPlan(env.DB, userId, 'Replacement');
+    paused.releaseBatch();
+
+    expect(await staleRest).toEqual({
+      conflict: true,
+      current_version: replacement.version,
+    });
+    expect(
+      await env.DB.prepare('SELECT id FROM sessions WHERE user_id=?1 AND date=?2')
+        .bind(userId, date)
+        .first(),
+    ).toBeNull();
+  });
+
   it('does not let a stale default resolver reset an explicitly restarted attempt', async () => {
     const { userId, planId } = await seedUserAndPlan('resolver-restart-race');
     const date = '2037-01-14';
@@ -834,7 +1265,7 @@ describe('session create concurrency', () => {
     const session = await getOrCreateSession(env.DB, userId, planId, date, null);
     const paused = databaseWithPausedRunAfterRead(
       'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2',
-      'SET day_template_id = ?2',
+      'SET plan_id = ?13',
     );
     const staleOverride = setPlannedSession(
       paused.db,
@@ -882,7 +1313,7 @@ describe('session create concurrency', () => {
     const session = await getOrCreateSession(env.DB, userId, planId, date, null);
     const paused = databaseWithPausedRunAfterRead(
       'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2',
-      "SET status = 'skipped'",
+      'SET plan_id = ?6',
     );
     const staleSkip = skipPlannedSession(paused.db, userId, date, 0);
     await paused.runReached;
@@ -1711,18 +2142,21 @@ describe('discard terminal-state concurrency', () => {
     await paused.snapshotReached;
     expect(await skipPlannedSession(env.DB, userId, session.date, 0)).toMatchObject({
       ok: true,
-      session: { id: session.id, status: 'skipped', attempt: 0 },
+      session: { id: session.id, status: 'skipped', attempt: 1 },
     });
     paused.releaseBatch();
 
     expect(await delayedSet).toEqual({
       ok: false,
       response: {
-        error: 'session_state_conflict',
+        error: 'session_attempt_conflict',
+        expected_attempt: 0,
+        current_attempt: 1,
+        status: 'skipped',
         current_session: expect.objectContaining({
           id: session.id,
           status: 'skipped',
-          attempt: 0,
+          attempt: 1,
         }),
       },
     });
@@ -1733,7 +2167,7 @@ describe('discard terminal-state concurrency', () => {
       await env.DB.prepare('SELECT status,attempt FROM sessions WHERE id=?1')
         .bind(session.id)
         .first(),
-    ).toEqual({ status: 'skipped', attempt: 0 });
+    ).toEqual({ status: 'skipped', attempt: 1 });
   });
 });
 

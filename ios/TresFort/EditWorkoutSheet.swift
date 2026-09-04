@@ -1,12 +1,16 @@
 import SwiftUI
 
+private struct ExerciseEditTarget: Identifiable {
+    let exercise: TemplateExercise
+    var id: String { exercise.id }
+}
+
 /// In-app workout editor (#1/#2). Lets you add / remove / reorder exercises in
 /// today's workout — including a prescribed warm-up (e.g. a 5-min erg) — without
 /// going to Claude. It edits the active plan's DAY TEMPLATE via the REST editor
 /// endpoints, so a change shows up immediately and (for a warm-up) recurs on
-/// that day, which is what you want. Claude stays the brain for programming and
-/// analysis; this is just the executor letting you tweak the session in front
-/// of you.
+/// that day. The member and coach share this one prescription; either can make
+/// a later change without creating a separate manual-only workout.
 ///
 /// Reads the live day off `sync` by id (not a captured snapshot) so the list
 /// reflects edits the moment `sync.load()` returns.
@@ -16,6 +20,7 @@ struct EditWorkoutSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var adding = false
     @State private var addPresetWarmup = false
+    @State private var editingExercise: ExerciseEditTarget?
 
     private var day: DayTemplate? { sync.dayTemplate(id: dayID) }
 
@@ -52,6 +57,14 @@ struct EditWorkoutSheet: View {
             .sheet(isPresented: $adding) {
                 AddExerciseSheet(sync: sync, dayID: dayID, presetWarmup: addPresetWarmup)
             }
+            .sheet(item: $editingExercise) { target in
+                NavigationStack {
+                    EditExerciseTargetView(
+                        sync: sync,
+                        dayID: dayID,
+                        slot: target.exercise)
+                }
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -59,18 +72,26 @@ struct EditWorkoutSheet: View {
     private func list(_ day: DayTemplate) -> some View {
         List {
             ForEach(day.exercises) { ex in
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(ex.exercise_name)
-                            .font(Theme.mono(15, .bold))
-                            .foregroundStyle(Theme.text)
-                        Text(ex.targetLabel)
-                            .font(Theme.mono(12))
-                            .foregroundStyle(Theme.muted)
+                Button {
+                    editingExercise = ExerciseEditTarget(exercise: ex)
+                } label: {
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(ex.exercise_name)
+                                .font(Theme.mono(15, .bold))
+                                .foregroundStyle(Theme.text)
+                            Text("\(ex.targetLabel) · \(ex.rest_seconds)s rest")
+                                .font(Theme.mono(12))
+                                .foregroundStyle(Theme.muted)
+                        }
+                        Spacer()
+                        if ex.isWarmup { WarmupTag() }
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(Theme.dim)
                     }
-                    Spacer()
-                    if ex.isWarmup { WarmupTag() }
                 }
+                .buttonStyle(.plain)
                 .listRowBackground(Theme.surface)
             }
             .onDelete { offsets in
@@ -271,7 +292,7 @@ private struct ConfigureExerciseView: View {
                         let targetRepsMax = !isCardio && !isHold && usesRepRange
                             ? max(reps, repsMax)
                             : nil
-                        await sync.addExerciseToDay(
+                        let saved = await sync.addExerciseToDay(
                             dayID,
                             exercise: exercise.id,
                             isWarmup: isWarmup,
@@ -281,7 +302,7 @@ private struct ConfigureExerciseView: View {
                             restSeconds: restSeconds,
                             targetDurationS: durationS)
                         working = false
-                        onDone()
+                        if saved { onDone() }
                     }
                 } label: {
                     Text(working ? "Adding…" : "Add to workout")
@@ -289,6 +310,10 @@ private struct ConfigureExerciseView: View {
                         .frame(maxWidth: .infinity)
                 }
                 .disabled(working)
+            }
+
+            if let error = sync.loadError {
+                Section { Text(error).foregroundStyle(Theme.danger) }
             }
         }
         .scrollContentBackground(.hidden)
@@ -300,7 +325,181 @@ private struct ConfigureExerciseView: View {
 }
 
 enum ExercisePrescriptionPolicy {
+    static let ordinaryRepUpperBound = 1_000
+
     static func canChooseMeasure(for modality: String) -> Bool {
         modality != "timed" && modality != "cardio"
+    }
+
+    static func initialEditableReps(
+        targetReps: Int,
+        isTimed: Bool,
+        modality: String
+    ) -> Int {
+        if isTimed, canChooseMeasure(for: modality) { return 8 }
+        return max(1, targetReps)
+    }
+
+    static func editableRepUpperBound(
+        reps: Int,
+        repsMax: Int?
+    ) -> Int {
+        max(ordinaryRepUpperBound, reps, repsMax ?? 0)
+    }
+}
+
+// MARK: - Edit an existing prescription
+
+private struct EditExerciseTargetView: View {
+    @ObservedObject var sync: SyncModel
+    let dayID: String
+    let slot: TemplateExercise
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var isWarmup: Bool
+    @State private var sets: Int
+    @State private var reps: Int
+    @State private var repsMax: Int
+    @State private var usesRepRange: Bool
+    @State private var usesHold: Bool
+    @State private var seconds: Int
+    @State private var restSeconds: Int
+    @State private var working = false
+    private let repUpperBound: Int
+
+    init(sync: SyncModel, dayID: String, slot: TemplateExercise) {
+        self.sync = sync
+        self.dayID = dayID
+        self.slot = slot
+        let initialReps = ExercisePrescriptionPolicy.initialEditableReps(
+            targetReps: slot.target_reps,
+            isTimed: slot.isTimed,
+            modality: slot.exercise_modality)
+        let initialRepsMax = slot.isTimed
+            ? initialReps
+            : max(initialReps, slot.target_reps_max ?? initialReps)
+        self.repUpperBound = ExercisePrescriptionPolicy.editableRepUpperBound(
+            reps: initialReps,
+            repsMax: initialRepsMax)
+        _isWarmup = State(initialValue: slot.isWarmup)
+        _sets = State(initialValue: max(1, slot.target_sets))
+        _reps = State(initialValue: initialReps)
+        _repsMax = State(initialValue: initialRepsMax)
+        _usesRepRange = State(initialValue: !slot.isTimed && slot.target_reps_max != nil)
+        _usesHold = State(initialValue: slot.isTimed)
+        _seconds = State(initialValue: slot.holdSeconds)
+        _restSeconds = State(initialValue: max(0, slot.rest_seconds))
+    }
+
+    private var isCardio: Bool { slot.exercise_modality == "cardio" }
+    private var intrinsicallyTimed: Bool { slot.exercise_modality == "timed" }
+    private var canChooseMeasure: Bool {
+        ExercisePrescriptionPolicy.canChooseMeasure(for: slot.exercise_modality)
+    }
+    private var isHold: Bool { intrinsicallyTimed || usesHold }
+    private var durationText: String {
+        let minutes = seconds / 60
+        let remainder = seconds % 60
+        if minutes == 0 { return "\(seconds)s" }
+        if remainder == 0 { return "\(minutes) min" }
+        return "\(minutes)m \(remainder)s"
+    }
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Warm-up", isOn: $isWarmup).tint(Theme.accent)
+            } footer: {
+                Text("Warm-up sets stay out of working-set totals and session intensity.")
+            }
+
+            if isCardio {
+                Section("Duration") {
+                    Stepper("\(sets) set\(sets == 1 ? "" : "s")", value: $sets, in: 1...10)
+                    Stepper(durationText, value: $seconds, in: 1...7_200, step: 15)
+                }
+            } else if canChooseMeasure {
+                Section("Measure") {
+                    Picker("Measure", selection: $usesHold) {
+                        Text("Reps").tag(false)
+                        Text("Hold").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                }
+            }
+
+            if !isCardio && isHold {
+                Section("Hold") {
+                    Stepper("\(sets) set\(sets == 1 ? "" : "s")", value: $sets, in: 1...10)
+                    Stepper("\(seconds)s each", value: $seconds, in: 1...7_200, step: 5)
+                }
+            } else if !isCardio {
+                Section("Target") {
+                    Stepper("\(sets) set\(sets == 1 ? "" : "s")", value: $sets, in: 1...10)
+                    Stepper(usesRepRange ? "\(reps) reps minimum" : "\(reps) reps",
+                            value: $reps, in: 1...repUpperBound)
+                    Toggle("Rep range", isOn: $usesRepRange).tint(Theme.accent)
+                    if usesRepRange {
+                        Stepper(
+                            "Up to \(max(reps, repsMax)) reps",
+                            value: Binding(
+                                get: { max(reps, repsMax) },
+                                set: { repsMax = max(reps, $0) }),
+                            in: reps...repUpperBound)
+                    }
+                }
+            }
+
+            Section("Rest between sets") {
+                Stepper("\(restSeconds)s", value: $restSeconds, in: 0...600, step: 15)
+            }
+
+            Section {
+                Button {
+                    save()
+                } label: {
+                    Text(working ? "Saving…" : "Save targets")
+                        .font(Theme.mono(15, .bold))
+                        .frame(maxWidth: .infinity)
+                }
+                .disabled(working)
+            }
+
+            if let error = sync.loadError {
+                Section { Text(error).foregroundStyle(Theme.danger) }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .background(Theme.background)
+        .navigationTitle(slot.exercise_name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Cancel") { dismiss() }.foregroundStyle(Theme.muted)
+            }
+        }
+        .toolbarColorScheme(.dark, for: .navigationBar)
+        .tint(Theme.accent)
+    }
+
+    private func save() {
+        working = true
+        Task {
+            let durationS: Int? = (isCardio || isHold) ? seconds : nil
+            let rangeMax = !isCardio && !isHold && usesRepRange
+                ? max(reps, repsMax)
+                : nil
+            let saved = await sync.updateSlot(
+                dayID: dayID,
+                teID: slot.id,
+                isWarmup: isWarmup,
+                targetSets: sets,
+                targetReps: isCardio ? slot.target_reps : (isHold ? seconds : reps),
+                targetRepsMax: rangeMax,
+                restSeconds: restSeconds,
+                targetDurationS: durationS)
+            working = false
+            if saved { dismiss() }
+        }
     }
 }

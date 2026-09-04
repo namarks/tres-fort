@@ -107,9 +107,6 @@ can understand and safely change.
 Let a person create and execute a workout confidently, whether or not they use
 AI coaching.
 
-- [Manual workout authoring](manual-workout-authoring/plan.md) — **planned**;
-  provide first-class manual creation and editing through the same plan model
-  the coach uses.
 - [Gym runner depth](gym-runner-depth/plan.md) — **planned**; improve the
   in-workout reference, correction, loading, timer, and completion experience.
 - [Member activation and adherence](member-activation-and-adherence/plan.md) —

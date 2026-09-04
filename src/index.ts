@@ -9,6 +9,7 @@ import { webhookRoutes } from './routes/webhooks';
 import { mcpRoutes } from './mcp';
 import { oauthRoutes } from './oauth';
 import {
+  observeD1Usage,
   syncExternalActivities,
   syncExternalEvents,
 } from './db';
@@ -35,6 +36,30 @@ app.onError((err, c) => {
 
 app.notFound((c) => c.json({ error: 'not_found' }, 404));
 
+async function fetch(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  const { pathname } = new URL(request.url);
+  const operation =
+    request.method === 'GET' && pathname === '/api/state'
+      ? 'GET /api/state'
+      : request.method === 'GET' && pathname === '/api/me'
+        ? 'GET /api/me'
+        : null;
+  if (!operation) return app.fetch(request, env, ctx);
+
+  // Clone the bindings object for this invocation rather than mutating the
+  // shared env. This lets the collector see auth middleware and route queries.
+  return observeD1Usage(
+    env.DB,
+    operation,
+    async (db) => app.fetch(request, { ...env, DB: db }, ctx),
+    (response) => (response.status >= 500 ? 'error' : 'ok'),
+  );
+}
+
 /**
  * Cron entrypoint (wrangler triggers.crons). SAFETY NET for intervals.icu
  * sync — real-time reconciliation is push-based (POST /webhooks/intervals);
@@ -53,24 +78,35 @@ async function scheduled(
   ctx: ExecutionContext,
 ): Promise<void> {
   ctx.waitUntil(
-    (async () => {
-      try {
-        await syncExternalEvents(env.DB, env);
-      } catch (e) {
-        // A sync failure must never crash the scheduled handler — the
-        // failed-fetch guard already left the cache untouched.
-        console.error('scheduled syncExternalEvents failed', e);
-      }
-      try {
-        await syncExternalActivities(env.DB, env);
-      } catch (e) {
-        // Same isolation as the planned-event sync above.
-        console.error('scheduled syncExternalActivities failed', e);
-      }
-    })(),
+    observeD1Usage(
+      env.DB,
+      'cron tick',
+      async (db) => {
+        let failed = false;
+        try {
+          const result = await syncExternalEvents(db, env);
+          failed ||= result.status === 'fetch_failed';
+        } catch (e) {
+          failed = true;
+          // A sync failure must never crash the scheduled handler — the
+          // failed-fetch guard already left the cache untouched.
+          console.error('scheduled syncExternalEvents failed', e);
+        }
+        try {
+          const result = await syncExternalActivities(db, env);
+          failed ||= result.status === 'fetch_failed';
+        } catch (e) {
+          failed = true;
+          // Same isolation as the planned-event sync above.
+          console.error('scheduled syncExternalActivities failed', e);
+        }
+        return failed;
+      },
+      (failed) => (failed ? 'error' : 'ok'),
+    ),
   );
 }
 
-// The fetch path is byte-equivalent to the previous bare-app default
-// export; `scheduled` is additive (cron only).
-export default { fetch: app.fetch, scheduled };
+// HTTP behavior remains delegated to the same Hono app; the wrapper adds D1
+// accounting only for the two P0 baseline routes. `scheduled` is additive.
+export default { fetch, scheduled };

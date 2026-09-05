@@ -37,15 +37,20 @@ Done means:
     daily caps since 2026-09-01 (Cloudflare changelog,
     <https://developers.cloudflare.com/changelog/post/2026-09-01-d1-free-tier-limit-enforcement/>),
     so on Free this plan is an outage-prevention plan and the cheapest
-    immediate mitigation is the paid tier.
+    immediate mitigation is the paid tier. The measured natural cron also used
+    32 ms CPU against Free's nominal 10 ms limit; its successful outcome
+    reflects Cloudflare's documented flexibility for infrequent overages, not
+    safe recurring headroom.
   - Log D1 `meta.rows_read` / `rows_written` per request for `GET /api/state`,
     `GET /api/me`, the `get_history` MCP tool, and per cron tick, as one
     structured console line each (Workers observability is already on).
     `.first()` returns no `meta`, so the reads on these paths move to
     `.all()` / `.run()` or a read batch before the numbers are capturable.
-    Implemented and locally verified 2026-09-04 with request-scoped observers;
-    the production baseline remains pending an authorized instrumentation-only
-    deploy and representative owner traffic.
+    Implemented, reviewed, merged, and deployed without migrations on
+    2026-09-04. The natural hourly cron baseline and a privacy-safe production
+    table-census summary are recorded in `decisions.md`; representative
+    authenticated owner REST and MCP traffic is the remaining per-path
+    baseline.
   - Capture the owner account's baseline: rows read per foreground sync, rows
     written per cron tick, current table row counts, and the rows-written
     delta each proposed index adds on the highest-write tables (`set_logs`,
@@ -54,8 +59,10 @@ Done means:
     index cost stays below P2's savings, and the inputs to the P5 decision.
     Local shadow-table evidence now measures the proposed final index delta:
     +1 row written per set insert/correction/soft-delete, +1 per audit insert,
-    and +2 for a combined MCP set mutation plus its audit row. Production path
-    totals and table counts remain outstanding.
+    and +2 for a combined MCP set mutation plus its audit row. Production table
+    census and the natural cron total are captured, with exact personal and
+    auth-state counts intentionally omitted from the public repository; the
+    three authenticated owner-path totals remain outstanding.
 - [ ] **P1 — Sync only what changed (sets and sessions)**
   - Migration: add `set_logs.user_id` (NOT NULL, backfilled from
     `sessions.user_id`, with a parity assertion that every row matches its
@@ -63,12 +70,22 @@ Done means:
     `COALESCE(deleted_at, logged_at)`), with cursor-leading indexes
     `set_logs(user_id, updated_at)` and `sessions(user_id, updated_at)`, so
     an empty poll reads only the delta instead of walking the member's
-    lifetime sessions to find it. `logSet`, the single insert path, stamps
+    lifetime sessions to find it. Because releases apply migrations before
+    code, migration `0034` stays additive and compatible with the old Worker:
+    placeholder defaults plus a narrowly conditioned legacy-insert trigger
+    fill the fields until the new Worker is active, while preserving the
+    `set_logs` write-fence triggers installed by migration `0032`; do not
+    rebuild the table. Because the production write fence is active, the
+    migration acquires the existing singleton `workout_write_permit`
+    immediately around its set-log backfill and removes it before completing;
+    migration tests prove the permit cannot leak and the fence still rejects
+    an unpermitted update afterward. `logSet`, the single insert path, stamps
     both columns; `patchSet` and discard stamp `updated_at` with the server
-    clock. The template-detach remap on plan rebuild and slot delete does
-    not stamp it: that UPDATE touches every historical set of a remapped
-    slot on every plan edit, and the client keys sets by exercise rather than
-    by slot, so re-delivering them would defeat the delta.
+    clock. Plan rebuild remaps that change `sessions.day_template_id` also
+    stamp the session cursor. Template-exercise remaps and detach-on-delete
+    stamp affected set logs too: iOS completion is slot-aware, so the new or
+    null slot id must arrive in the delta even though a plan edit may redeliver
+    historical sets for that slot.
   - Server: `getState` filters sets on `user_id = ? AND updated_at >
     sets_since` (no sessions join on the delta path) and, when
     `sets_since > 0`, includes soft-deleted rows as tombstones, matching the
@@ -86,7 +103,10 @@ Done means:
     The post-outbox-drain reconciliation becomes a delta pull that still
     verifies every acknowledged set id came back.
   - Evidence: a state test proves a set soft-deleted after the watermark
-    arrives incrementally as a tombstone; the P0 log shows rows read per
+    arrives incrementally as a tombstone; remapped and detached slot ids also
+    arrive after the watermark; a migration test starts with the active write
+    fence, proves the backfill completes with no permit left behind, and proves
+    an unpermitted update still fails afterward; the P0 log shows rows read per
     foreground sync for the owner drop from lifetime-history size to the
     delta; the full-reload test still passes.
 - [ ] **P2 — Reconcile only what changed (intervals.icu cache)**
@@ -180,8 +200,8 @@ Done means:
 
 ## Next step
 
-**Now (@owner):** Authorize an instrumentation-only Worker production deploy of the exact reviewed P0 head, then generate representative owner app and OAuth MCP traffic; separately decide whether to move to Paid now or before inviting roughly ten more members.
-**Now (@agent):** After that authorization, record the per-path Workers Logs baseline, a natural cron tick, and read-only table counts in `decisions.md`; then complete P0 and start P1 with the server migration and `getState` before the iOS client.
+**Now (@owner):** Foreground the production iOS app and open Profile once, then use the OAuth-connected Claude coach to request bench history once; also choose Paid now or authorize a focused cron CPU mitigation, because the measured 32 ms tick exceeds Free's nominal 10 ms limit despite succeeding.
+**Now (@agent):** Record those three authenticated per-path Workers Logs totals in `decisions.md`; then complete P0 and start P1 locally with the server migration and `getState` before the iOS client. Do not release another production change until the owner resolves the tier-or-mitigation gate.
 
 ## Notes / open questions
 
@@ -209,5 +229,14 @@ Done means:
 - P1 does not add a generic sync framework, event sourcing, or a per-user
   change log. One mutable timestamp plus the existing tombstone pattern is
   enough; add more only if a focused fixture proves it is not.
+- P1 rollout is server-first: migration plus Worker can precede iOS because
+  released clients still send zero cursors. After incremental iOS cursors
+  ship, the pre-P1 Worker is no longer a safe rollback target because it reads
+  nonzero `sets_since` against immutable `logged_at` and can omit later
+  tombstones; retain a P1-aware rollback version or forward-fix instead.
+- Production still has unrelated migration
+  `0033_gymnastic_strength_catalog.sql` pending. The next repository release
+  would apply it before P1's `0034`; neither migration is authorized by this
+  plan writeback.
 - This plan does not authorize a production migration, a plan-tier purchase,
   or a TestFlight build. Each is a separate owner action.

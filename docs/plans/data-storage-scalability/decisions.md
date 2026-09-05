@@ -3,9 +3,31 @@
 Supporting material for [`plan.md`](plan.md). This file records owner
 decisions and measured baselines; it carries no live checklist.
 
+## 2026-09-05 — Workers plan tier: Paid
+
+After the deployed cron optimization still measured 18 ms CPU on its first
+natural hourly tick, the owner authorized the Workers Paid purchase. The
+Cloudflare checkout confirmed the subscription active, and the account's
+Workers plans page then showed **Paid** as the current plan at **$5 / month +
+usage**. The saved payment method and account identity are deliberately not
+copied into the repository.
+
+The subscription includes 10 million Workers requests and 30 million CPU-ms
+per month before usage charges. For this workstream, the decisive capacity
+change is the hourly-cron CPU allowance: Paid permits up to 15 minutes rather
+than Free's nominal 10 ms. The observed 18 ms tick therefore no longer risks
+the Free runtime ceiling. D1's Paid included allowances also replace the hard
+Free daily row caps with monthly included usage, but this does not make the P1
+delta-sync or P2 no-op reconcile work optional: those changes still reduce
+latency, write amplification, and avoidable spend as membership grows.
+
+This tier change resolves the P0.5 capacity gate only. It does not decide P5
+retention, authorize production migration `0034`, authorize the P1 Worker or
+iOS rollout, or authorize future plan changes.
+
 ## 2026-09-04 — Workers plan tier: Free
 
-Confirmed by the owner on the Cloudflare dashboard Workers plans page
+Historical baseline confirmed by the owner on the Cloudflare dashboard Workers plans page
 ("Current plan" under Free). Account id is the one in `wrangler.jsonc`.
 
 Free-tier limits that bind this plan, with current Paid allowances, rates,
@@ -28,15 +50,40 @@ pages, read 2026-09-04:
 D1 has hard-enforced the free-tier daily row limits since 2026-09-01
 (<https://developers.cloudflare.com/changelog/post/2026-09-01-d1-free-tier-limit-enforcement/>).
 
-**Tier-or-mitigation decision: mitigate on Free (2026-09-05).** The D1 row
+**Initial tier-or-mitigation decision: mitigate on Free (2026-09-05).** The D1 row
 totals below show headroom at one member, but the later per-invocation evidence
 recorded a 32 ms cron tick against Free's nominal 10 ms CPU limit. Cloudflare
 documents limited runtime flexibility for infrequent overages, which explains
 why this invocation could succeed; it does not make repeated overages safe.
 The owner authorized a focused local cron CPU mitigation while remaining on
-Free. That decision does not authorize a plan purchase, production deployment,
-migration, manual production cron trigger, or TestFlight build; each remains a
-separate owner action.
+Free. The owner later separately authorized the Paid purchase after the
+optimized natural tick still missed the Free target; the section above records
+the current tier. Neither decision authorizes the P1 production migration,
+Worker deployment, or iOS distribution.
+
+## 2026-09-05 — P0.5 production release and natural-tick result
+
+The reviewed mitigation was merged in PR #123 as commit
+`dc04db76326cd502063d94d3ee44428b8ae0f213` (tree
+`0ffb6099b4253111cf172678fafb8b5a2b4f1641`) and delivered with a deploy-only
+release. Production routed 100% of traffic to Worker version
+`4f0b3ab1-af0e-4235-884d-927658458b94`; the health endpoint returned HTTP 200
+with `ok=true`. No migration was applied, the hourly schedule remained in
+place, and `0033_gymnastic_strength_catalog.sql` remained the only pending
+migration.
+
+The next natural hourly tick ran on that exact Worker version and completed
+with `outcome=ok`: 53 D1 queries, 291 rows read, 64 rows written, 18 ms CPU,
+and 4,519 ms wall time. Compared with the 32 ms / 2,560-row-read P0 baseline,
+the bounded reconcile removed the intended historical scan and reduced CPU,
+but it did not meet Free's strict `<10 ms` acceptance threshold. Validation
+therefore stopped after the first tick and the monitor was paused; successful
+execution was not treated as evidence of recurring Free-tier headroom.
+
+The subsequent Paid upgrade resolves the runtime-capacity outcome without
+erasing the failed Free acceptance result. The row and CPU reduction remain
+the before/after evidence for the mitigation; P2 still owns eliminating quiet
+hour writes.
 
 ## 2026-09-05 — Free-plan mitigation evidence
 
@@ -59,14 +106,79 @@ A production-shaped real-D1 fixture with 120 old rows from each source measured
 the bounded dedupe at 2 queries, 4 rows read, and 0 rows written, versus 2
 queries, 484 rows read, and 0 rows written for the retained full-history mode.
 The focused activity-sync shape used 6 queries, 10 rows read, and 1 row written.
-This is deterministic local cost evidence, not proof of production CPU. P0.5
-still requires a separately authorized exact-source deployment followed by at
-least three successful natural cron ticks below Free's 10 ms limit.
+This is deterministic local cost evidence, not proof of production CPU. The
+separately authorized release later supplied that evidence: the first natural
+tick improved but failed the Free CPU threshold, as recorded above.
 
 The final local source passed all 41 test files / 537 tests, TypeScript,
 planning validation, diff hygiene, a Wrangler dry-run, and independent
-exact-head review. Pull-request checks and merge remain delivery evidence; none
-of these local results authorizes the production gate above.
+exact-head review. The production release and natural-tick outcome are recorded
+above.
+
+## 2026-09-05 — P1 local implementation and rollout contract
+
+The local P1 slice keeps D1 and the existing two-class consistency model. It
+adds migration `0034_set_log_delta_cursors.sql`, backend delta reads and cursor
+writers, and iOS per-account cursor persistence and merge behavior. It does not
+add a generic change log, background sync service, event store, or new provider.
+
+Migration `0034` is additive because repository releases migrate before they
+deploy code. It adds denormalized `set_logs.user_id`, server-owned mutable
+`set_logs.updated_at` and `activities.updated_at`, plus member-first cursor
+indexes for sets, sessions, and manual activities. Existing rows receive a D1
+clock value rather than a client event timestamp. The protected set backfill
+holds migration `0032`'s singleton workout-write permit only around its UPDATE,
+then executable assertions prove ownership parity, a positive cursor, no leaked
+permit, and a still-enforced write fence.
+
+Narrow compatibility triggers cover only the old Worker's omitted-column and
+unchanged-cursor statement shapes during a migration-first rollout. New code
+supplies or advances the cursor and bypasses them. They also preserve a safe
+rollback window before incremental iOS ships. Apply `0034` only when the P1
+Worker is ready to deploy immediately; if that deployment fails, roll forward
+with the P1-aware Worker rather than trying to reverse the migration. For the
+entire migration-to-Worker-deploy gap, an old-Worker session discard can
+overcount its audit `sets_discarded` value because D1 `meta.changes` includes
+the trigger's internal cursor write. Data, tombstones, and cursors remain
+correct. The P1 Worker counts the authoritative `RETURNING` rows instead; this
+bounded observability defect is accepted rather than weakening rolling-release
+compatibility.
+
+The server captures each `/api/state` response watermark before collection
+reads. Active cursors use that request-start time minus a 60-second overlap;
+rows merge idempotently by id, so a concurrent write falls into the next pull
+and overlap redelivery is harmless. Plan versions now increase across plan
+replacement as well as in-place edits. P1 activates incremental plan,
+set/session, and manual-activity sync only. The app persists and sends the
+external event/activity cursor fields but holds both at zero until P2 makes
+their `synced_at` values advance only on real provider changes.
+
+The iOS snapshot and watermarks commit atomically behind an account-scoped
+request ticket. First sign-in, account change, corrupt/invalid cached state, or
+legacy rows without comparable cursors force a complete reload. Raw set
+tombstones survive long enough to order against delayed outbox acknowledgements;
+stale or equal-time acknowledgements cannot overwrite a newer attempt/status or
+strictly newer server row. A successful set POST is the mutation boundary. An
+incomplete following delta retains the ACK, retires the durable intent, reports
+success, clears cursors for a complete reload, and surfaces sync uncertainty
+instead of inviting a duplicate tap. Omission is accepted without uncertainty
+only when the pre-POST snapshot already contains an equal or newer server row.
+
+Manual activities preserve a separate cursor-capability bit through local
+snapshot encoding. A legacy absent/null collection decodes as empty but leaves
+`log_since=0`; a valid non-null collection supplies capability; a malformed
+present collection fails decoding, so neither state nor cursor can commit.
+
+Local evidence covers a request-interleaving watermark race; backdated,
+future-dated, tombstoned, and 1,005-row manual-activity deltas; every legacy
+write shape; same-millisecond cursor advancement; and monotonic plan
+replacement. Query plans name the member-first indexes, empty set/session/
+activity seeks read at most two billed rows, and the added activity or set
+cursor index costs one additional billed row per indexed mutation. All 43
+backend test files / 548 tests passed, TypeScript passed, all 267 iOS simulator
+tests passed, and diff hygiene passed. The P1 production migration/Worker
+release, production before/after traffic, and iOS distribution remain separate
+delivery evidence and are not authorized by this record.
 
 ## 2026-09-04 — D1 daily baseline (P0, dashboard aggregate)
 
@@ -106,10 +218,10 @@ lighter members read less):
 | Cron subrequests (50 / tick) | ≈ 20 members with intervals.icu connected |
 
 The plan's back-of-envelope figures (tens, forty, twenty) hold against the
-measured data. What P0 still owes is the per-request breakdown
-(`meta.rows_read` per `/api/state`, `/api/me`, `get_history`, and per cron
-tick) so P1–P3 can show before/after per path; the dashboard gives daily
-totals only.
+measured data. The cron per-invocation baseline is now recorded below. What P0
+still owes is the three representative authenticated foreground samples:
+`meta.rows_read` for `/api/state`, `/api/me`, and `get_history`, so P1–P3 can
+show before/after per path; the dashboard gives daily totals only.
 
 ## 2026-09-04 — P0 local instrumentation and index-cost evidence
 

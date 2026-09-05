@@ -115,7 +115,10 @@ describe('manual routine authoring over REST', () => {
       created: boolean;
     }>();
     expect(created.created).toBe(true);
-    expect(created.plan).toMatchObject({ name: 'Member Plan', version: 1 });
+    expect(created.plan).toMatchObject({
+      name: 'Member Plan',
+      version: existing.version + 1,
+    });
 
     const active = await env.DB.prepare(
       "SELECT COUNT(*) AS n FROM plans WHERE user_id=?1 AND status='active'",
@@ -142,7 +145,12 @@ describe('manual routine authoring over REST', () => {
         body: JSON.stringify({ name: 'Replacement Plan' }),
       })
     ).json<{ id: string; version: number }>();
-    expect(replacement.version).toBe(original.version);
+    expect(replacement.version).toBe(original.version + 1);
+    // Preserve the identity-only conflict regression against a legacy/corrupt
+    // same-version replacement even though new replacements are monotonic.
+    await env.DB.prepare('UPDATE plans SET version=?2 WHERE id=?1')
+      .bind(replacement.id, original.version)
+      .run();
 
     const stale = await SELF.fetch(`${BASE}/api/plan/schedule`, {
       method: 'PUT', headers: H,
@@ -156,11 +164,11 @@ describe('manual routine authoring over REST', () => {
     expect(await stale.json()).toEqual({
       conflict: true,
       current_plan_id: replacement.id,
-      current_version: replacement.version,
+      current_version: original.version,
     });
     expect(await env.DB.prepare(
       'SELECT id,version,meta FROM plans WHERE status=\'active\'',
-    ).first()).toEqual({ id: replacement.id, version: 1, meta: null });
+    ).first()).toEqual({ id: replacement.id, version: original.version, meta: null });
   });
 
   it('creates and reorders days densely, rejects a stale version, and writes the weekly schedule', async () => {

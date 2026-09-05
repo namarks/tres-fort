@@ -239,6 +239,9 @@ struct SetLog: Codable, Identifiable {
     let rpe: Double?
     let is_warmup: Int
     let logged_at: Int
+    /// Server-owned mutation ordering for inserts, corrections, and deletes.
+    /// Optional only for rolling compatibility with pre-0034 Workers.
+    let updated_at: Int?
     let duration_s: Int?
     /// 1 = a deliberate timed hold (render as "Ns"); 0/absent = a rep set.
     /// Backend migration 0024. Optional so sets from a pre-0024 server still
@@ -246,6 +249,38 @@ struct SetLog: Codable, Identifiable {
     /// SyncModel.isTimedSet).
     let is_timed: Int?
     let deleted_at: Int?
+
+    init(
+        id: String,
+        session_id: String,
+        exercise_id: String,
+        template_exercise_id: String?,
+        set_index: Int,
+        weight: Double,
+        reps: Int,
+        rpe: Double?,
+        is_warmup: Int,
+        logged_at: Int,
+        duration_s: Int?,
+        is_timed: Int?,
+        deleted_at: Int?,
+        updated_at: Int? = nil
+    ) {
+        self.id = id
+        self.session_id = session_id
+        self.exercise_id = exercise_id
+        self.template_exercise_id = template_exercise_id
+        self.set_index = set_index
+        self.weight = weight
+        self.reps = reps
+        self.rpe = rpe
+        self.is_warmup = is_warmup
+        self.logged_at = logged_at
+        self.updated_at = updated_at
+        self.duration_s = duration_s
+        self.is_timed = is_timed
+        self.deleted_at = deleted_at
+    }
 }
 
 extension SetLog {
@@ -500,14 +535,20 @@ struct StateResponse: Codable {
     /// User-authored manual activities (Pilates / walk / yoga / "lift
     /// elsewhere" …) logged from the app or MCP. Keyed on user_id, NOT a
     /// group — these render on the personal calendar regardless of group
-    /// membership. `/api/state` returns the full current non-deleted set
-    /// under `activities`. Same defensive decode: absent/null → [].
+    /// membership. `/api/state` returns the full current rows when
+    /// `log_since=0`, or updated rows and tombstones for an active cursor.
+    /// Absent/null → []; malformed non-null data rejects the response.
     let activities: [ActivityRow]
+    /// True only when the wire payload contained a non-null `activities`
+    /// collection, or when that fact survived a local snapshot round-trip.
+    /// This prevents a legacy absent/null payload from advancing `log_since`.
+    let manualActivityCursorCapable: Bool
     let server_time: Int
 
     private enum CodingKeys: String, CodingKey {
         case plan, plan_version, sessions, sets
         case external_events, external_activities, activities, server_time
+        case manualActivityCursorCapable = "_manual_activity_cursor_capable"
     }
 
     init(
@@ -518,7 +559,8 @@ struct StateResponse: Codable {
         external_events: [ExternalEvent],
         external_activities: [ExternalActivity],
         activities: [ActivityRow],
-        server_time: Int
+        server_time: Int,
+        manualActivityCursorCapable: Bool = true
     ) {
         self.plan = plan
         self.plan_version = plan_version
@@ -527,6 +569,7 @@ struct StateResponse: Codable {
         self.external_events = external_events
         self.external_activities = external_activities
         self.activities = activities
+        self.manualActivityCursorCapable = manualActivityCursorCapable
         self.server_time = server_time
     }
 
@@ -543,9 +586,20 @@ struct StateResponse: Codable {
         external_activities =
             (try? c.decodeIfPresent([ExternalActivity].self, forKey: .external_activities))
             .flatMap { $0 } ?? []
-        activities =
-            (try? c.decodeIfPresent([ActivityRow].self, forKey: .activities))
-            .flatMap { $0 } ?? []
+        // Absence/null is backward-compatible, but malformed present data must
+        // fail the response. Treating it as [] could commit server_time and
+        // advance log_since past manual-activity rows the client never decoded.
+        let activitiesWasNonNull: Bool
+        if c.contains(.activities) {
+            activitiesWasNonNull = !(try c.decodeNil(forKey: .activities))
+        } else {
+            activitiesWasNonNull = false
+        }
+        activities = try c.decodeIfPresent(
+            [ActivityRow].self, forKey: .activities) ?? []
+        manualActivityCursorCapable = try c.decodeIfPresent(
+            Bool.self, forKey: .manualActivityCursorCapable)
+            ?? activitiesWasNonNull
         server_time = try c.decode(Int.self, forKey: .server_time)
     }
 
@@ -558,6 +612,9 @@ struct StateResponse: Codable {
         try c.encode(external_events, forKey: .external_events)
         try c.encode(external_activities, forKey: .external_activities)
         try c.encode(activities, forKey: .activities)
+        try c.encode(
+            manualActivityCursorCapable,
+            forKey: .manualActivityCursorCapable)
         try c.encode(server_time, forKey: .server_time)
     }
 }

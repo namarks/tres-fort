@@ -198,6 +198,7 @@ export interface SessionRow {
 
 export interface SetLogRow {
   id: string;
+  user_id: string;
   session_id: string;
   exercise_id: string;
   template_exercise_id: string | null;
@@ -208,6 +209,8 @@ export interface SetLogRow {
   is_warmup: number;
   notes: string | null;
   logged_at: number;
+  /** Server-owned mutable cursor for incremental set sync. */
+  updated_at: number;
   source: string;
   duration_s: number | null;
   /** 1 = a deliberate timed hold (render as "Ns"); 0 = a rep set. Stored
@@ -352,7 +355,8 @@ export interface ActivityRow {
   title: string | null;
   duration_minutes: number | null;
   notes: string | null;
-  logged_at: number;       // epoch ms; also the delta-sync cursor
+  logged_at: number;       // client-authored event time, epoch ms
+  updated_at: number;      // server-owned mutable delta-sync cursor
   source: string;          // 'ios' | 'mcp'
   deleted_at: number | null;
 }

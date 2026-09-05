@@ -251,11 +251,11 @@ final class SyncModel: ObservableObject {
     /// suspend an offline-first workout queue indefinitely. The Worker uses a
     /// five-second floor; one day still accommodates legitimate rate limiting.
     private static let maximumRetryAfterSeconds: TimeInterval = 24 * 60 * 60
-    /// Full-state refresh belongs to the account-scoped model, not to the
+    /// State refresh belongs to the account-scoped model, not to the
     /// SwiftUI task that happened to request it. Pull-to-refresh may cancel
     /// its view task as the scroll hierarchy changes; keeping one unstructured
     /// model-owned task lets that already-started validation finish, and
-    /// coalesces only equivalent full-state requests. A mutation or bearer
+    /// coalesces only equivalent state requests. A mutation or bearer
     /// change waits for an older task and then owns one trailing fresh pull.
     private struct StateLoadKey: Equatable {
         let bearer: String
@@ -268,12 +268,13 @@ final class SyncModel: ObservableObject {
     private var stateFreshnessGeneration: UInt64 = 0
     private var activityPersistenceCancellable: AnyCancellable?
     private var authBoundaryObserverID: UUID?
-    /// Loading presentation is tracked separately from full-state freshness:
+    /// Loading presentation is tracked separately from state freshness:
     /// account-scoped snapshot tickets own freshness, while an outbox
     /// reconciliation can supersede a load without owning its spinner.
     private var loadGeneration = 0
     private var statePlanVersion = 0
     private var stateServerTime = 0
+    private var stateManualActivityCursorCapable = false
 
     init(
         auth: AuthModel,
@@ -357,6 +358,15 @@ final class SyncModel: ObservableObject {
         for intent in persistedTerminals.intents where intent.action == .discard {
             SetOutboxStore.remove(
                 date: intent.date, userID: auth.userID, defaults: defaults)
+        }
+        // A relaunch of the same account resumes its persisted cursors. Moving
+        // between accounts keeps each cache isolated but deliberately clears
+        // the destination cursor so its first authenticated pull is complete.
+        if StateSyncAccountStore.activate(
+            userID: auth.userID, defaults: defaults)
+        {
+            _ = StateSnapshotStore.requireFullReload(
+                userID: auth.userID, defaults: defaults)
         }
         self.catalog = ExerciseCatalogSnapshotStore.load(
             userID: auth.userID, defaults: defaults) ?? []
@@ -547,14 +557,16 @@ final class SyncModel: ObservableObject {
                   key.featureSessionEpoch == auth.featureSessionEpoch,
                   key.freshnessGeneration == stateFreshnessGeneration
             else { return }
-            guard let snapshotTicket = StateSnapshotStore.reserveFullStateRequest(
+            guard let snapshotTicket = StateSnapshotStore.reserveStateRequest(
                 userID: accountID, defaults: defaults)
             else {
                 loadError = "Couldn't reserve local sync state."
                 return
             }
             do {
-                let state = try await setWriteAPI.getState(jwt: jwt)
+                let state = try await setWriteAPI.getState(
+                    jwt: jwt,
+                    watermarks: snapshotTicket.watermarks)
                 guard isCurrentAccount, canMutateBoundSetAccount,
                       key.featureSessionEpoch == featureSessionEpoch,
                       key.featureSessionEpoch == auth.featureSessionEpoch,
@@ -564,7 +576,7 @@ final class SyncModel: ObservableObject {
                     snapshotTicket, defaults: defaults)
                 {
                     // Retry only when an accepted mutation advanced this exact
-                    // latest request. Another full-state reservation owns a
+                    // latest request. Another state reservation owns a
                     // newer request and must keep newest-request-wins ordering.
                     if StateSnapshotStore.wasSupersededByMutation(
                         snapshotTicket, defaults: defaults)
@@ -621,9 +633,9 @@ final class SyncModel: ObservableObject {
         }
     }
 
-    /// Apply a full `/api/state` response atomically at the cache boundary.
-    /// `getState` always uses zero watermarks, so every collection is a full
-    /// replacement rather than a delta merge.
+    /// Apply a complete `/api/state` response atomically at the cache boundary.
+    /// Direct applications are fixtures or mutation compatibility paths and
+    /// therefore intentionally reserve explicit zero watermarks.
     func replaceState(
         with state: StateResponse,
         preferredTodaySessionID: String? = nil,
@@ -648,7 +660,7 @@ final class SyncModel: ObservableObject {
         }
     }
 
-    /// Single freshness gate for every fetched full-state response. Keeping the
+    /// Single freshness gate for every fetched state response. Keeping the
     /// check immediately beside the shared apply/persist boundary prevents a
     /// future caller from updating presentation but forgetting the snapshot (or
     /// vice versa).
@@ -659,11 +671,11 @@ final class SyncModel: ObservableObject {
         preferredTodaySessionID: String? = nil
     ) -> Bool {
         guard canInitiateBoundFeatureAction,
-              StateSnapshotStore.commitFullState(
-                  state, ticket: ticket, defaults: defaults) != nil
+              let committed = StateSnapshotStore.commitStateResponse(
+                  state, ticket: ticket, defaults: defaults)
         else { return false }
         applyState(
-            state,
+            committed.state,
             preferredTodaySessionID: preferredTodaySessionID,
             isLiveResponse: true)
         return true
@@ -683,6 +695,8 @@ final class SyncModel: ObservableObject {
             skippedExecutionStateForCurrentPlan()
         statePlanVersion = state.plan_version
         stateServerTime = state.server_time
+        stateManualActivityCursorCapable =
+            state.manualActivityCursorCapable
         plan = state.plan
         if isLiveResponse {
             // A replacement model may have cleared or superseded this
@@ -698,8 +712,12 @@ final class SyncModel: ObservableObject {
         sessions = state.sessions.filter { !maskedDates.contains($0.date) }
         sets = state.sets.filter { !maskedSessionIDs.contains($0.session_id) }
         if isLiveResponse { reconcileSetOutboxWithServerSets() }
-        // The server returns the full current non-deleted external_events set;
-        // defensively drop any tombstones so calendar surfaces never see them.
+        // Raw tombstones must reach reconciliation so a deleted UUID retires a
+        // doomed idempotent retry. They are never published as live workout
+        // data after that ordering boundary.
+        sets.removeAll { $0.deleted_at != nil }
+        // The snapshot store has already applied any delta tombstones. Keep the
+        // presentation boundary defensive for legacy/full payloads too.
         rides = state.external_events.filter { !$0.isDeleted }
         activities = state.external_activities.filter { !$0.isDeleted }
         manualActivities = state.activities.filter { $0.deleted_at == nil }
@@ -811,7 +829,9 @@ final class SyncModel: ObservableObject {
             external_activities: activities,
             activities: manualActivities,
             // Mutation responses carry no replacement state watermark.
-            server_time: stateServerTime)
+            server_time: stateServerTime,
+            manualActivityCursorCapable:
+                stateManualActivityCursorCapable)
     }
 
     /// Another same-account model removes an intent only after merging its ACK
@@ -844,10 +864,20 @@ final class SyncModel: ObservableObject {
     private func persistSetAcknowledgement(
         _ result: APIClient.SetLogResult,
         submittedSession: SessionRow
-    ) -> Bool {
-        guard canMutateBoundSetAccount else { return false }
+    ) -> StateSnapshotValue? {
+        guard canMutateBoundSetAccount else { return nil }
         let acknowledgedSession = Self.sessionAcknowledgedBySet(
             result, submittedSession: submittedSession)
+        let snapshot = StateSnapshotStore.load(
+            userID: accountID, defaults: defaults)
+        let decision = Self.setAcknowledgementMergeDecision(
+            acceptedSet: result.set,
+            snapshot: snapshot)
+        if decision.requiresFullReload {
+            guard StateSnapshotStore.requireFullReload(
+                userID: accountID, defaults: defaults)
+            else { return nil }
+        }
         return StateSnapshotStore.mergeAcknowledgement(
             userID: accountID,
             fallback: currentStateResponse(),
@@ -856,15 +886,16 @@ final class SyncModel: ObservableObject {
             Self.mergingSetAcknowledgement(
                 into: newest,
                 acceptedSet: result.set,
-                acknowledgedSession: acknowledgedSession)
-        } != nil
+                acknowledgedSession: acknowledgedSession,
+                includeAcceptedSet: decision.includeAcceptedSet)
+        }
     }
 
     private func persistTerminalAcknowledgement(
         _ response: SessionRow,
         action: WorkoutTerminalAction
-    ) -> Bool {
-        guard canMutateBoundSetAccount else { return false }
+    ) -> StateSnapshotValue? {
+        guard canMutateBoundSetAccount else { return nil }
         return StateSnapshotStore.mergeAcknowledgement(
             userID: accountID,
             fallback: currentStateResponse(),
@@ -872,12 +903,12 @@ final class SyncModel: ObservableObject {
         ) { newest in
             Self.mergingTerminalAcknowledgement(
                 into: newest, response: response, action: action)
-        } != nil
+        }
     }
 
     /// Session creation/revival is itself an attempt mutation. Merge it into
     /// the shared snapshot before any later await or durable intent binding so
-    /// a full-state request that started before the create cannot overwrite the
+    /// a state request that started before the create cannot overwrite the
     /// new generation. Returns the newest same-attempt session from that merge.
     private func acceptSessionResolution(_ response: SessionRow) -> SessionRow? {
         guard canMutateBoundSetAccount,
@@ -945,8 +976,11 @@ final class SyncModel: ObservableObject {
         case .discard:
             // Within one attempt, discard is the sanctioned transition that
             // overrides every other status. A later restart has a greater
-            // attempt and was handled above.
-            return true
+            // attempt and was handled above. Once both observations are already
+            // discarded, normal timestamp/tie rules protect later plan remaps.
+            if current.status != "discarded" {
+                return response.status == "discarded"
+            }
         case .resolution:
             // Date resolution and 409 current_session observations can be
             // captured before a later set/terminal acknowledgement reaches
@@ -965,17 +999,33 @@ final class SyncModel: ObservableObject {
 
         switch (current.updated_at, response.updated_at) {
         case let (currentTS?, responseTS?):
-            return responseTS >= currentTS
+            if responseTS != currentTS { return responseTS > currentTS }
+            return sessionStatusAdvances(
+                from: current.status, to: response.status)
         case (nil, _?):
             return true
         case (_?, nil):
             return false
         case (nil, nil):
-            // Rolling old Workers cannot prove causality. Preserve a terminal
-            // observation; otherwise retain the pre-timestamp behavior.
-            return !["completed", "skipped", "discarded"].contains(
-                current.status)
+            // Incomparable rolling-old responses may advance an explicit state
+            // machine transition, but never rewrite equal semantic state (and
+            // with it a newer plan-remapped day_template_id).
+            return sessionStatusAdvances(
+                from: current.status, to: response.status)
         }
+    }
+
+    private static func sessionStatusAdvances(
+        from current: String,
+        to response: String
+    ) -> Bool {
+        if current == "planned", response == "in_progress" { return true }
+        if ["planned", "in_progress"].contains(current),
+           ["completed", "skipped", "discarded"].contains(response)
+        {
+            return true
+        }
+        return response == "discarded" && current != "discarded"
     }
 
     private static func sessionAcknowledgedBySet(
@@ -1015,7 +1065,8 @@ final class SyncModel: ObservableObject {
     private static func mergingSetAcknowledgement(
         into state: StateResponse,
         acceptedSet: SetLog,
-        acknowledgedSession: SessionRow
+        acknowledgedSession: SessionRow,
+        includeAcceptedSet: Bool = true
     ) -> StateResponse {
         var sessions = state.sessions
         var sets = state.sets
@@ -1057,15 +1108,26 @@ final class SyncModel: ObservableObject {
             // The session outcome owns visibility. A rolling/inconsistent live
             // set row must never resurrect work beneath a discarded session.
         } else if acceptedSet.deleted_at != nil {
-            // An exact old-UUID retry can settle after discard/restart. Its
-            // tombstone is authoritative for that UUID but is not live work in
-            // the newer session generation.
-            sets.removeAll { $0.id == acceptedSet.id }
+            // Retain the newest raw tombstone in the snapshot. `applyState`
+            // exposes it to outbox reconciliation, then removes it before
+            // publishing live workout data.
+            if includeAcceptedSet,
+               let index = sets.firstIndex(where: { $0.id == acceptedSet.id })
+            {
+                if setResponseCanReplace(sets[index], with: acceptedSet) {
+                    sets[index] = acceptedSet
+                }
+            } else if includeAcceptedSet {
+                sets.append(acceptedSet)
+            }
         } else if let index = sets.firstIndex(where: { $0.id == acceptedSet.id }) {
-            // A newer cached tombstone must not be resurrected by a delayed
-            // deduped ACK from an older model.
-            if sets[index].deleted_at == nil { sets[index] = acceptedSet }
-        } else {
+            if includeAcceptedSet,
+               sets[index].deleted_at == nil,
+               setResponseCanReplace(sets[index], with: acceptedSet)
+            {
+                sets[index] = acceptedSet
+            }
+        } else if includeAcceptedSet {
             sets.append(acceptedSet)
         }
         return StateResponse(
@@ -1076,7 +1138,67 @@ final class SyncModel: ObservableObject {
             external_events: state.external_events,
             external_activities: state.external_activities,
             activities: state.activities,
-            server_time: state.server_time)
+            server_time: state.server_time,
+            manualActivityCursorCapable:
+                state.manualActivityCursorCapable)
+    }
+
+    private struct SetAcknowledgementMergeDecision {
+        let includeAcceptedSet: Bool
+        let requiresFullReload: Bool
+    }
+
+    /// Decide whether a mutation response may add a row that the latest state
+    /// snapshot did not contain. `updated_at` and the request-start horizon are
+    /// server-owned; client `logged_at` never participates in causality.
+    private static func setAcknowledgementMergeDecision(
+        acceptedSet: SetLog,
+        snapshot: StateSnapshotValue?
+    ) -> SetAcknowledgementMergeDecision {
+        guard let snapshot else {
+            return SetAcknowledgementMergeDecision(
+                includeAcceptedSet: false,
+                requiresFullReload: true)
+        }
+        if let current = snapshot.state.sets.first(where: {
+            $0.id == acceptedSet.id
+        }) {
+            guard current.updated_at != nil, acceptedSet.updated_at != nil else {
+                return SetAcknowledgementMergeDecision(
+                    includeAcceptedSet: false, requiresFullReload: true)
+            }
+            // Idempotent UUIDs never resurrect. A newer live correction or
+            // template detach likewise outranks an older delayed POST body.
+            return SetAcknowledgementMergeDecision(
+                includeAcceptedSet: setResponseCanReplace(
+                    current, with: acceptedSet)
+                    && (current.deleted_at == nil
+                        || acceptedSet.deleted_at != nil),
+                requiresFullReload: false)
+        }
+        guard let responseVersion = acceptedSet.updated_at,
+              let committedThrough = snapshot.setsCommittedThrough
+        else {
+            return SetAcknowledgementMergeDecision(
+                includeAcceptedSet: false,
+                requiresFullReload: true)
+        }
+        return SetAcknowledgementMergeDecision(
+            includeAcceptedSet: acceptedSet.deleted_at != nil
+                || responseVersion > committedThrough,
+            requiresFullReload: false)
+    }
+
+    private static func setResponseCanReplace(
+        _ current: SetLog,
+        with response: SetLog
+    ) -> Bool {
+        guard let currentVersion = current.updated_at,
+              let responseVersion = response.updated_at
+        else { return false }
+        // Equality is not causality: two server mutations may share one
+        // millisecond, and the committed snapshot wins any such tie.
+        return responseVersion > currentVersion
     }
 
     private static func mergingTerminalAcknowledgement(
@@ -1117,7 +1239,9 @@ final class SyncModel: ObservableObject {
             external_events: state.external_events,
             external_activities: state.external_activities,
             activities: state.activities,
-            server_time: state.server_time)
+            server_time: state.server_time,
+            manualActivityCursorCapable:
+                state.manualActivityCursorCapable)
     }
 
     /// Merge a date-level create/revive response without allowing its
@@ -1185,7 +1309,9 @@ final class SyncModel: ObservableObject {
             external_events: state.external_events,
             external_activities: state.external_activities,
             activities: state.activities,
-            server_time: state.server_time)
+            server_time: state.server_time,
+            manualActivityCursorCapable:
+                state.manualActivityCursorCapable)
     }
 
     /// Apply a terminal response to the mounted model using the same alias and
@@ -1834,7 +1960,7 @@ final class SyncModel: ObservableObject {
         _ = clearRunnerCheckpointAndSharedRest()
     }
 
-    /// Adopt a successful aliased write when the follow-up full refresh is
+    /// Adopt a successful aliased write when the follow-up sync pull is
     /// unavailable. All cached same-date session/set aliases collapse onto the
     /// canonical id returned by the POST, so the committed set remains visible
     /// and a retry cannot create a second physical set.
@@ -2314,7 +2440,7 @@ final class SyncModel: ObservableObject {
         ownedTerminalIntentIDs.remove(id)
     }
 
-    /// A full state pull is also authoritative acknowledgement of an exact
+    /// A state pull is also authoritative acknowledgement of an exact
     /// client UUID. This closes the commit-then-timeout window when an ordinary
     /// refresh wins the race with the retry drain and prevents double-counting
     /// one physical set as both completed and pending.
@@ -2377,7 +2503,9 @@ final class SyncModel: ObservableObject {
         await drainSetOutbox()
         guard canMutateBoundSetAccount else { return false }
         let acknowledged = !setOutbox.pending.contains(where: { $0.id == intent.id })
-            && sets.contains(where: { $0.id == intent.id })
+            && sets.contains(where: {
+                $0.id == intent.id && $0.deleted_at == nil
+            })
         if acknowledged && running {
             startRest(seconds: ex.rest_seconds, name: ex.exercise_name)
         }
@@ -2467,7 +2595,11 @@ final class SyncModel: ObservableObject {
     }
 
     private enum SetSendOutcome {
-        case acknowledged(setID: String, canonicalSessionID: String, date: String)
+        case acknowledged(
+            setID: String,
+            canonicalSessionID: String,
+            date: String,
+            baselineProvedAcknowledgement: Bool)
         case permanentFailure
         case transientFailure(attemptedJWT: String, wasUnauthorized: Bool)
         /// Another same-account model removed or superseded this exact intent.
@@ -2728,7 +2860,10 @@ final class SyncModel: ObservableObject {
     /// returns false so the owner can coalesce work that arrived during its
     /// reconciliation await.
     private func performSetOutboxDrain() async -> Bool {
-        var acknowledgedIDs: [String] = []
+        var acknowledgements: [(
+            setID: String,
+            baselineProvedAcknowledgement: Bool
+        )] = []
         var preferredSessionID: String?
         var stoppedForRetryableFailure = false
 
@@ -2744,8 +2879,15 @@ final class SyncModel: ObservableObject {
             let outcome = await sendPersistedSetIntent(intent)
             supersedeSetIntentsForDiscardBarriers()
             switch outcome {
-            case let .acknowledged(setID, canonicalSessionID, date):
-                acknowledgedIDs.append(setID)
+            case let .acknowledged(
+                setID,
+                canonicalSessionID,
+                date,
+                baselineProvedAcknowledgement):
+                acknowledgements.append((
+                    setID: setID,
+                    baselineProvedAcknowledgement:
+                        baselineProvedAcknowledgement))
                 if date == todayString { preferredSessionID = canonicalSessionID }
             case .permanentFailure:
                 // Keep the failed row visible and continue with later FIFO
@@ -2777,18 +2919,20 @@ final class SyncModel: ObservableObject {
             if case .staleAccount = outcome { break }
         }
 
-        guard !acknowledgedIDs.isEmpty,
+        guard !acknowledgements.isEmpty,
               canMutateBoundSetAccount,
               let jwt = currentJWT
         else { return stoppedForRetryableFailure }
-        guard let snapshotTicket = StateSnapshotStore.reserveFullStateRequest(
+        guard let snapshotTicket = StateSnapshotStore.reserveStateRequest(
             userID: accountID, defaults: defaults)
         else {
             loadError = "Couldn't reserve local reconciliation state."
             return true
         }
         do {
-            let state = try await setWriteAPI.getState(jwt: jwt)
+            let state = try await setWriteAPI.getState(
+                jwt: jwt,
+                watermarks: snapshotTicket.watermarks)
             guard canMutateBoundSetAccount else { return true }
             guard StateSnapshotStore.isCurrent(
                 snapshotTicket, defaults: defaults)
@@ -2796,9 +2940,27 @@ final class SyncModel: ObservableObject {
                 return stoppedForRetryableFailure
             }
             let returnedIDs = Set(state.sets.map(\.id))
-            guard acknowledgedIDs.allSatisfy(returnedIDs.contains) else {
-                throw APIError.decoding(
-                    "Acknowledged set was missing from the reconciliation state")
+            let incrementalSetPull = snapshotTicket.watermarks.setsSince > 0
+            let missingAcknowledgedIDs = Set(
+                acknowledgements.compactMap { acknowledgement in
+                    let baselineAlreadyProvesSet = incrementalSetPull
+                        && acknowledgement.baselineProvedAcknowledgement
+                    return !baselineAlreadyProvesSet
+                            && !returnedIDs.contains(acknowledgement.setID)
+                        ? acknowledgement.setID
+                        : nil
+                })
+            guard missingAcknowledgedIDs.isEmpty else {
+                // The successful POST is the mutation boundary. An incomplete
+                // delta cannot revoke that acknowledged result or invite a
+                // duplicate retry; retain every ACK merge and clear only the
+                // cursors so the next pull is an explicit full reload.
+                _ = StateSnapshotStore.requireFullReload(
+                    userID: accountID, defaults: defaults)
+                loadError = acknowledgements.count == 1
+                    ? "Set was saved, but the latest sync response was incomplete. A full refresh will reconcile it."
+                    : "Sets were saved, but the latest sync response was incomplete. A full refresh will reconcile them."
+                return stoppedForRetryableFailure
             }
             guard applyLiveStateResponse(
                 state,
@@ -2814,7 +2976,8 @@ final class SyncModel: ObservableObject {
                 return stoppedForRetryableFailure
             }
             // The acknowledgement itself remains authoritative and is already
-            // reflected locally. A later full sync will reconcile the cache.
+            // reflected locally. A later delta (or safety full reload) will
+            // reconcile the cache.
             handle(error, jwt: jwt)
         }
         return stoppedForRetryableFailure
@@ -3002,12 +3165,18 @@ final class SyncModel: ObservableObject {
             case .finish:
                 let applied = applyTerminalAcknowledgementLocally(
                     response, action: .finish)
-                guard persistTerminalAcknowledgement(
+                guard let persisted = persistTerminalAcknowledgement(
                     response, action: .finish)
                 else {
                     loadError = "Workout finished on the server, but its local recovery snapshot couldn't be saved. It will retry safely."
                     return true
                 }
+                applyState(
+                    persisted.state,
+                    preferredTodaySessionID: persisted.state.sessions.first {
+                        $0.date == response.date
+                    }?.id,
+                    isLiveResponse: false)
                 terminalOutbox.remove(id: intent.id)
                 persistRemovedTerminalIntent(id: intent.id)
                 if applied, intent.date == todayString {
@@ -3016,12 +3185,17 @@ final class SyncModel: ObservableObject {
             case .discard:
                 applyTerminalAcknowledgementLocally(response, action: .discard)
                 applyLocalDiscardMask()
-                guard persistTerminalAcknowledgement(
+                guard let persisted = persistTerminalAcknowledgement(
                     response, action: .discard)
                 else {
                     loadError = "Workout was discarded on the server, but its local recovery snapshot couldn't be saved. It will retry safely."
                     return true
                 }
+                applyState(
+                    persisted.state,
+                    preferredTodaySessionID: nil,
+                    isLiveResponse: false)
+                applyLocalDiscardMask()
                 intent.resolvedSessionID = response.id
                 intent.expectedAttempt = response.attempt
                 intent.deliveryState = .acknowledged
@@ -3276,26 +3450,52 @@ final class SyncModel: ObservableObject {
                 return .acknowledged(
                     setID: result.set.id,
                     canonicalSessionID: result.set.session_id,
-                    date: intent.date)
+                    date: intent.date,
+                    baselineProvedAcknowledgement: true)
+            }
+            let baselineRow = StateSnapshotStore.load(
+                    userID: accountID,
+                    defaults: defaults
+                )?.state.sets.first { $0.id == result.set.id }
+            let baselineProvedAcknowledgement: Bool
+            if let baselineVersion = baselineRow?.updated_at,
+               let responseVersion = result.set.updated_at
+            {
+                // A baseline at least as new as the POST body already proves
+                // this UUID even when an incremental overlap legitimately
+                // omits it. A newer correction/delete must still appear.
+                baselineProvedAcknowledgement =
+                    baselineVersion >= responseVersion
+            } else {
+                baselineProvedAcknowledgement = false
             }
             applySetAcknowledgement(
                 result,
                 intent: intent,
                 submittedSession: writeSession)
-            guard persistSetAcknowledgement(
+            guard let persisted = persistSetAcknowledgement(
                 result, submittedSession: writeSession)
             else {
                 loadError = "Set was saved on the server, but its local recovery snapshot couldn't be saved. It will retry safely."
                 return .transientFailure(
                     attemptedJWT: jwt, wasUnauthorized: false)
             }
+            // The shared snapshot may contain a newer tombstone/correction than
+            // this delayed POST body. Re-adopt its ordered result before the
+            // durable intent is retired so stale live data is never published.
+            applyState(
+                persisted.state,
+                preferredTodaySessionID: result.set.session_id,
+                isLiveResponse: false)
             setOutbox.remove(id: intent.id)
             persistRemovedSetIntentIDs(Set([intent.id]))
             normalizeMountedRunnerProgress(for: intent.date)
             return .acknowledged(
                 setID: result.set.id,
                 canonicalSessionID: result.set.session_id,
-                date: intent.date)
+                date: intent.date,
+                baselineProvedAcknowledgement:
+                    baselineProvedAcknowledgement)
         } catch {
             return classifySetIntentFailure(
                 intentID: intent.id, error: error, attemptedJWT: jwt)
@@ -3499,9 +3699,9 @@ final class SyncModel: ObservableObject {
                 committedSet: result.set,
                 submittedSlotID: intent.slotID)
         } else {
-            // A later full state owns the session fields. The set itself is
-            // still an accepted immutable fact unless that newer state is a
-            // discard, handled above.
+            // A later committed state owns the session fields. The set itself
+            // is still an accepted immutable fact unless that newer state is
+            // a discard, handled above.
             if let index = sets.firstIndex(where: { $0.id == result.set.id }) {
                 if sets[index].deleted_at == nil { sets[index] = result.set }
             } else {
@@ -5226,6 +5426,7 @@ private extension SetLog {
             logged_at: logged_at,
             duration_s: duration_s,
             is_timed: is_timed,
-            deleted_at: deleted_at)
+            deleted_at: deleted_at,
+            updated_at: updated_at)
     }
 }

@@ -135,17 +135,27 @@ struct APIClient {
                 ?? "tres-fort-account-export.json")
     }
 
-    /// Full sync pull (since=0 → everything; the app dedupes locally).
-    ///
-    /// `events_since=0` / `activities_since=0` are passed explicitly (not
-    /// omitted) so the external_events + external_activities contracts are
-    /// greppable here. The app does a FULL reload every sync — all
-    /// watermarks are 0 — and the server returns the full current
-    /// non-deleted sets. No client-side watermark / tombstone-merge /
-    /// incremental-delta sync is used (by design: server is truth).
+    /// Compatibility full reload used by older test doubles and callers that
+    /// do not yet own an account-scoped snapshot.
     func getState(jwt: String) async throws -> StateResponse {
+        try await getState(jwt: jwt, watermarks: .fullReload)
+    }
+
+    /// The single incremental sync pull. Every cursor is explicit, including
+    /// `log_since` for the user-authored activity log; zero means full reload
+    /// for that collection. Watermarks come only from a previously committed
+    /// server response, never from the device clock or a row's client-authored
+    /// `logged_at`.
+    func getState(
+        jwt: String,
+        watermarks: StateSyncWatermarks
+    ) async throws -> StateResponse {
         try await get(
-            "api/state?since=0&sets_since=0&events_since=0&activities_since=0",
+            "api/state?since=\(watermarks.planVersion)"
+                + "&sets_since=\(watermarks.setsSince)"
+                + "&events_since=\(watermarks.eventsSince)"
+                + "&activities_since=\(watermarks.activitiesSince)"
+                + "&log_since=\(watermarks.logSince)",
             jwt: jwt)
     }
 
@@ -606,7 +616,7 @@ protocol AuthAPI {
 
 extension APIClient: AuthAPI {}
 
-/// Only the calls required to settle a set intent and the shared full-state
+/// Only the calls required to settle a set intent and the shared state-sync
 /// pull are injectable. The rest of SyncModel continues using APIClient
 /// directly, avoiding a broad sync abstraction while making persistence,
 /// retry identity, and response-ordering deterministic in model tests.
@@ -643,9 +653,24 @@ protocol SetWriteAPI {
     ) async throws -> APIClient.SetLogResult
     func deleteSet(setId: String, jwt: String) async throws
     func getState(jwt: String) async throws -> StateResponse
+    func getState(
+        jwt: String,
+        watermarks: StateSyncWatermarks
+    ) async throws -> StateResponse
 }
 
 extension SetWriteAPI {
+    /// Compatibility bridge for focused write-test doubles. Production's
+    /// APIClient overrides this requirement and sends every cursor; a legacy
+    /// double that only models complete responses can keep implementing
+    /// getState.
+    func getState(
+        jwt: String,
+        watermarks: StateSyncWatermarks
+    ) async throws -> StateResponse {
+        try await getState(jwt: jwt)
+    }
+
     func createSession(
         date: String,
         dayTemplateID: String?,

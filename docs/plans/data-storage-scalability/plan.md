@@ -40,8 +40,10 @@ Done means:
     immediate mitigation is the paid tier. The measured natural cron also used
     32 ms CPU against Free's nominal 10 ms limit; its successful outcome
     reflects Cloudflare's documented flexibility for infrequent overages, not
-    safe recurring headroom. On 2026-09-05 the owner chose to mitigate on Free;
-    P0.5 records that independently executable slice.
+    safe recurring headroom. On 2026-09-05 the owner first chose to mitigate on
+    Free, then upgraded the account to Workers Paid after the optimized natural
+    tick still measured 18 ms. The dashboard now identifies Paid as the current
+    plan; `decisions.md` records both steps and the exact evidence.
   - Log D1 `meta.rows_read` / `rows_written` per request for `GET /api/state`,
     `GET /api/me`, the `get_history` MCP tool, and per cron tick, as one
     structured console line each (Workers observability is already on).
@@ -64,11 +66,10 @@ Done means:
     census and the natural cron total are captured, with exact personal and
     auth-state counts intentionally omitted from the public repository; the
     three authenticated owner-path totals remain outstanding.
-- [ ] **P0.5 — Fit the natural cron inside the Free CPU limit**
-  - Owner decision 2026-09-05: **Mitigate on Free**. Keep the single hourly
-    webhook-backstop trigger and optimize the activity reconcile; this authorizes
-    local implementation and review of this slice, not a plan purchase,
-    production deployment, migration, or manual production cron trigger.
+- [x] **P0.5 — Resolve the natural-cron CPU capacity gate**
+  - Initial owner decision 2026-09-05: **Mitigate on Free**. Keep the single
+    hourly webhook-backstop trigger and optimize the activity reconcile without
+    changing its fetch window, trigger, or storage contract.
   - Bound post-intervals HealthKit candidates to the completed-activity sync
     window plus one civil day on either side for two-minute cross-midnight
     matches. Look up intervals winners one additional civil day beyond that so
@@ -88,58 +89,91 @@ Done means:
     isolation, inclusive tolerance, deterministic ties, window boundaries, and
     both midnight edges; a real-D1 fixture and query plan prove old history no
     longer contributes billed reads or matching work on the bounded cron path.
-    Done locally 2026-09-05: implementation, full-suite verification, Wrangler
-    dry-run, and independent exact-head review passed; no migration or trigger
-    change is part of the reviewed source.
-    After a separately authorized exact-source deployment, at least three
-    natural hourly ticks must remain successful and below the Free 10 ms CPU
-    limit before this phase is complete.
-- [ ] **P1 — Sync only what changed (sets and sessions)**
+    Done 2026-09-05: implementation, full-suite verification, Wrangler dry-run,
+    independent exact-head review, merge, and an exact-source deploy-only release
+    passed; no migration or trigger change was part of the release. The first
+    natural hourly tick on that source completed successfully with 18 ms CPU,
+    4,519 ms wall time, 53 D1 queries, 291 rows read, and 64 rows written. The
+    validation stopped because 18 ms missed the Free target instead of treating
+    a successful outcome as headroom. The owner then upgraded to Workers Paid,
+    whose hourly-cron CPU allowance resolves this capacity gate while retaining
+    the measured optimization.
+- [ ] **P1 — Sync only what changed (sets, sessions, and manual activities)**
   - Migration: add `set_logs.user_id` (NOT NULL, backfilled from
     `sessions.user_id`, with a parity assertion that every row matches its
-    session's owner) and `set_logs.updated_at` (backfilled from
-    `COALESCE(deleted_at, logged_at)`), with cursor-leading indexes
-    `set_logs(user_id, updated_at)` and `sessions(user_id, updated_at)`, so
-    an empty poll reads only the delta instead of walking the member's
-    lifetime sessions to find it. Because releases apply migrations before
-    code, migration `0034` stays additive and compatible with the old Worker:
-    placeholder defaults plus a narrowly conditioned legacy-insert trigger
-    fill the fields until the new Worker is active, while preserving the
-    `set_logs` write-fence triggers installed by migration `0032`; do not
-    rebuild the table. Because the production write fence is active, the
-    migration acquires the existing singleton `workout_write_permit`
-    immediately around its set-log backfill and removes it before completing;
-    migration tests prove the permit cannot leak and the fence still rejects
-    an unpermitted update afterward. `logSet`, the single insert path, stamps
-    both columns; `patchSet` and discard stamp `updated_at` with the server
-    clock. Plan rebuild remaps that change `sessions.day_template_id` also
-    stamp the session cursor. Template-exercise remaps and detach-on-delete
-    stamp affected set logs too: iOS completion is slot-aware, so the new or
-    null slot id must arrive in the delta even though a plan edit may redeliver
-    historical sets for that slot.
+    session's owner) and server-owned `set_logs.updated_at`. Backfill the mutable
+    cursor from D1's clock rather than client-authored `logged_at` or
+    `deleted_at`. Add the same server-owned cursor to the manual `activities`
+    log. Cursor-leading indexes on `set_logs(user_id, updated_at)`,
+    `sessions(user_id, updated_at)`, and `activities(user_id, updated_at)` make
+    empty polls seek the member's delta rather than walk lifetime history.
+    Because releases apply migrations before code, migration `0034` stays
+    additive and compatible with the old Worker: placeholder defaults plus
+    narrowly conditioned insert/update/delete compatibility triggers populate
+    or advance cursors only for the legacy statement shapes. The narrow triggers
+    remain safe after rollout because new writes supply or advance the cursor and
+    bypass their conditions. Preserve the `set_logs` write fence installed by
+    migration `0032`; acquire its singleton `workout_write_permit` only around
+    the protected backfill and remove it before the migration completes. Tests
+    prove the permit cannot leak and the fence still rejects an unpermitted
+    update afterward.
+  - Writers: `logSet` stamps ownership and cursor atomically; set correction,
+    discard, plan-slot remap, slot deletion, and day deletion advance
+    `set_logs.updated_at` monotonically, even for same-millisecond changes. Every
+    visible session mutation advances `sessions.updated_at`. Manual activity
+    insert and soft-delete advance `activities.updated_at` monotonically.
+    Replacement plan creation, and ensure-active only when it must recreate a
+    plan after archived history, allocate a version greater than every prior
+    plan for that user. Returning an existing active plan leaves it unchanged;
+    replacing or recreating one never moves the plan cursor backward or repeats
+    it.
   - Server: `getState` filters sets on `user_id = ? AND updated_at >
     sets_since` (no sessions join on the delta path) and, when
     `sets_since > 0`, includes soft-deleted rows as tombstones, matching the
-    external_events contract already documented in that function. The
-    `sets_since = 0` full reload keeps its current shape.
-  - Cursor rule (write it down in the API doc): the client's next watermark is
-    the previous response's `server_time` minus a fixed overlap (60 s); the
-    client applies rows idempotently by id, so overlap re-delivery is
-    harmless and device-clock skew cannot lose a set.
-  - iOS: persist per-account watermarks for every `/api/state` cursor,
-    including `log_since` for the manual activity log (the app does not send
-    it at all today), send them on every state pull, merge deltas and
-    tombstones into the local cache, and keep the existing full
-    reload for first sign-in, account change, or an invalid snapshot ticket.
-    The post-outbox-drain reconciliation becomes a delta pull that still
-    verifies every acknowledged set id came back.
+    manual-activity contract. The `sets_since = 0` and `log_since = 0` paths
+    remain complete reloads. Capture `server_time` at request start, before the
+    collection reads, so a write that commits after its collection was read
+    necessarily falls beyond the response watermark and cannot be skipped.
+  - Cursor rule (also documented in the API contract): the client's next active
+    watermark is the response's request-start `server_time` minus a fixed 60 s
+    overlap. Rows merge idempotently by id, so overlap redelivery is harmless
+    and device clock skew cannot lose a mutation. P1 activates only plan,
+    set/session, and manual-activity cursors; `events_since` and
+    `activities_since` remain zero until P2 makes their cache timestamps true
+    change cursors.
+  - iOS: persist every `/api/state` watermark per account and send all cursor
+    parameters on every pull. Atomically merge deltas and tombstones with the
+    account-scoped request ticket, retain raw set tombstones long enough to
+    order them against delayed outbox acknowledgements, and keep a complete
+    reload for first sign-in, account change, legacy/incomparable cached rows,
+    or a missing, invalidated, or undecodable snapshot. A superseded request
+    ticket is discarded rather than forcing a reload. Post-outbox reconciliation
+    uses a delta pull. An old deduped UUID may be absent only when the pre-POST
+    snapshot already contains an equal or newer server row. If a genuinely new
+    or newer acknowledged row is absent, retain the authoritative ACK, retire
+    the durable intent, report the mutation as successful, clear cursors for a
+    full reload, and surface sync uncertainty separately. Session/set ACKs are
+    ordered by attempt/status and then strict server timestamp so a stale
+    response cannot overwrite a newer snapshot. Manual activities treat an
+    absent/null legacy collection as non-capable (`log_since` stays zero), a
+    valid non-null collection as the capability signal, and malformed present
+    data as a response failure that cannot advance the cursor.
   - Evidence: a state test proves a set soft-deleted after the watermark
     arrives incrementally as a tombstone; remapped and detached slot ids also
     arrive after the watermark; a migration test starts with the active write
     fence, proves the backfill completes with no permit left behind, and proves
-    an unpermitted update still fails afterward; the P0 log shows rows read per
-    foreground sync for the owner drop from lifetime-history size to the
-    delta; the full-reload test still passes.
+    an unpermitted update still fails afterward; request-interleaving,
+    backdated/future event time, same-millisecond, legacy-write, and 1,005-row
+    regressions preserve every delta; replacement plan versions stay monotonic;
+    and full-reload plus outbox-recovery tests still pass. Query plans use the
+    member-first cursor indexes, empty delta seeks read at most two billed rows,
+    and each added set/activity cursor index costs one extra billed row per
+    indexed mutation. iOS regressions also prove that an incomplete
+    post-acknowledgement delta cannot turn a committed write into apparent
+    failure or lose a manual-activity cursor. Done locally 2026-09-05: the
+    backend suite passed 43 files / 548 tests, TypeScript passed, and the iOS
+    simulator suite passed 267 tests. Production before/after traffic and
+    delivery evidence remain outstanding.
 - [ ] **P2 — Reconcile only what changed (intervals.icu cache)**
   - Change the events and activities upserts to `ON CONFLICT DO UPDATE ...
     WHERE` any extracted column differs from the incoming row, or the row is
@@ -220,7 +254,7 @@ Done means:
 ## Execution frontier
 
 - P0
-- P0.5
+- P1
 
 ## Dependencies
 
@@ -233,8 +267,8 @@ Done means:
 
 ## Next step
 
-**Now (@owner):** Foreground the production iOS app and open Profile once, then use the OAuth-connected Claude coach to request bench history once; these two actions complete the three outstanding authenticated P0 traffic samples. Separately authorize a deploy-only P0.5 production release if the reviewed mitigation should enter natural-tick validation.
-**Now (@agent):** Record the authenticated P0 samples when they arrive and hold the reviewed P0.5 mitigation at the production gate. Stop before any production deployment, migration, manual production cron trigger, plan purchase, or TestFlight build.
+**Now (@owner):** Foreground the production iOS app and open Profile once, then use the OAuth-connected Claude coach to request bench history once; these two actions complete the three outstanding authenticated P0 traffic samples.
+**Now (@agent):** Finish exact-head review and repository delivery of the local P1 slice, then hold its production migration/Worker rollout and iOS distribution at their separate release gates. Record the authenticated P0 samples when they arrive. Stop before any production deployment, migration, manual production cron trigger, plan-tier change, or TestFlight build.
 
 ## Notes / open questions
 
@@ -245,7 +279,7 @@ Done means:
   `audit_log` has no index and exercise history uses an exercise-first index
   that scans across members; the cron walks members serially with no per-member
   try/catch and no 429 handling. Everything else in the storage design holds.
-- Free-tier caps that matter if the account is still Free: 5M row reads/day,
+- Historical Free-tier caps that motivated the work: 5M row reads/day,
   100k row writes/day, 50 external subrequests per cron tick, 10 ms CPU per
   request. Back-of-envelope: full-reload sync crosses the read cap at tens of
   active members with history; the hourly rewrite crosses the write cap at
@@ -270,9 +304,18 @@ Done means:
 - Production still has unrelated migration
   `0033_gymnastic_strength_catalog.sql` pending. The next repository release
   would apply it before P1's `0034`; neither migration is authorized by this
-  plan writeback. P0.5 is intentionally migration-free; a future separately
-  authorized release of it must use deploy-only delivery rather than
-  `npm run release`, so it does not implicitly apply `0033`.
-- This plan does not authorize a production deployment, production migration,
-  manual production cron trigger, plan-tier purchase, or TestFlight build.
-  Each is a separate owner action.
+  plan writeback. The completed P0.5 release was intentionally deploy-only and
+  left `0033` pending.
+- Apply `0034` only with the P1 Worker ready to deploy immediately. If Worker
+  deployment fails after the migration commits, roll forward with the P1-aware
+  Worker rather than attempting a migration rollback. For the entire gap, the
+  retained legacy set-update trigger can make old-Worker discard audit field
+  `sets_discarded` overcount changed rows because D1 includes trigger writes in
+  `meta.changes`. Cursor and data semantics remain correct; the new Worker
+  counts authoritative `RETURNING` rows instead. This bounded rolling-release
+  limitation is accepted and does not justify disabling the compatibility
+  trigger.
+- The owner separately authorized and completed the Workers Paid purchase on
+  2026-09-05. This plan does not authorize another plan-tier change, a P1
+  production deployment or migration, a manual production cron trigger, or a
+  TestFlight build; each remains a separate owner action.

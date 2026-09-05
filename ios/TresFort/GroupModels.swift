@@ -364,6 +364,9 @@ struct ActivityRow: Codable, Identifiable, Equatable {
     let logged_at: Int
     let source: String
     let deleted_at: Int?
+    /// Server-owned mutation cursor added with the P1 delta contract. Optional
+    /// while a pre-0034 response may still be decoded during rollout.
+    var updated_at: Int? = nil
 }
 
 /// Pending activity in the outbox. Mirrors the POST /api/activities body

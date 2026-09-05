@@ -2,7 +2,7 @@
 // cross-user isolation), the /api/state delta cursor, and the MCP
 // `log_activity` write tool (audit row written, row visible).
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { issueAppJwt } from '../src/auth';
 
 const BASE = 'https://lift-coach.test';
@@ -10,6 +10,10 @@ const MCP_TOKEN = 'test-mcp-token';
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 async function devJwt(): Promise<string> {
@@ -228,11 +232,12 @@ describe('activities REST', () => {
 
 describe('activities /api/state deltas', () => {
   it('includes activities in /api/state; cursor advances', async () => {
+    const t1 = Date.parse('2035-06-01T00:00:00Z');
+    vi.setSystemTime(t1);
     const jwt = await devJwt();
     const H = headers(jwt);
 
     const id1 = uuid();
-    const t1 = Date.now();
     await SELF.fetch(`${BASE}/api/activities`, {
       method: 'POST',
       headers: H,
@@ -254,13 +259,15 @@ describe('activities /api/state deltas', () => {
     ).json<{ activities: any[] }>();
     expect(empty.activities.find((a) => a.id === id1)).toBeUndefined();
 
-    // Drop a new one with a later logged_at; incremental at t1 returns it.
+    // Drop a new one after the server cursor even with a backdated client
+    // event time; incremental at t1 returns it by server-owned updated_at.
     const id2 = uuid();
     const t2 = t1 + 1000;
+    vi.setSystemTime(t2);
     await SELF.fetch(`${BASE}/api/activities`, {
       method: 'POST',
       headers: H,
-      body: JSON.stringify({ id: id2, date: '2026-05-28', type: 'yoga', logged_at: t2 }),
+      body: JSON.stringify({ id: id2, date: '2026-05-28', type: 'yoga', logged_at: 1 }),
     });
     const incr = await (
       await SELF.fetch(`${BASE}/api/state?log_since=${t1}`, { headers: H })
@@ -268,17 +275,19 @@ describe('activities /api/state deltas', () => {
     expect(incr.activities.find((a) => a.id === id2)).toBeDefined();
     expect(incr.activities.find((a) => a.id === id1)).toBeUndefined();
 
-    // Soft-delete id2 -> incremental at t1 still surfaces it (as a
+    // Soft-delete id2 -> incremental after its insert still surfaces it (as a
     // tombstone — deleted_at populated) so a syncing client can apply the
     // removal. This is the set_logs / external_events delta+tombstone
     // pattern (DESIGN §7).
+    const t3 = t2 + 1000;
+    vi.setSystemTime(t3);
     const dRes = await SELF.fetch(`${BASE}/api/activities/${id2}`, {
       method: 'DELETE',
       headers: H,
     });
     expect(dRes.status).toBe(200);
     const tomb = await (
-      await SELF.fetch(`${BASE}/api/state?log_since=${t1}`, { headers: H })
+      await SELF.fetch(`${BASE}/api/state?log_since=${t2}`, { headers: H })
     ).json<{ activities: any[] }>();
     const row = tomb.activities.find((a) => a.id === id2);
     expect(row).toBeDefined();

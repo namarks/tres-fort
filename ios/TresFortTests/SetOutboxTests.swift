@@ -65,6 +65,8 @@ private final class SetWriteAPIStub: SetWriteAPI {
     var reopenHandler: ((String, String?, Int?, String) async throws -> SessionRow)?
     var deleteHandler: ((String, String) async throws -> Void)?
     var stateHandler: ((String) async throws -> StateResponse)?
+    var stateWatermarkHandler:
+        ((String, StateSyncWatermarks) async throws -> StateResponse)?
     private(set) var createCalls: [CreateCall] = []
     private(set) var logCalls: [LogCall] = []
     private(set) var reopenCalls: [(
@@ -75,6 +77,7 @@ private final class SetWriteAPIStub: SetWriteAPI {
     )] = []
     private(set) var deleteCalls: [(setID: String, jwt: String)] = []
     private(set) var stateCalls = 0
+    private(set) var stateWatermarkCalls: [StateSyncWatermarks] = []
 
     func createSession(
         date: String,
@@ -127,7 +130,18 @@ private final class SetWriteAPIStub: SetWriteAPI {
     }
 
     func getState(jwt: String) async throws -> StateResponse {
+        try await getState(jwt: jwt, watermarks: .fullReload)
+    }
+
+    func getState(
+        jwt: String,
+        watermarks: StateSyncWatermarks
+    ) async throws -> StateResponse {
         stateCalls += 1
+        stateWatermarkCalls.append(watermarks)
+        if let stateWatermarkHandler {
+            return try await stateWatermarkHandler(jwt, watermarks)
+        }
         guard let stateHandler else { throw URLError(.badServerResponse) }
         return try await stateHandler(jwt)
     }
@@ -561,7 +575,9 @@ final class SetOutboxTests: XCTestCase {
 
     private func setLog(
         body: SetRequestBody,
-        sessionID: String = "session-a"
+        sessionID: String = "session-a",
+        updatedAt: Int? = 2_000_000_000_001,
+        deletedAt: Int? = nil
     ) -> SetLog {
         SetLog(
             id: body.id,
@@ -576,7 +592,8 @@ final class SetOutboxTests: XCTestCase {
             logged_at: body.logged_at,
             duration_s: body.duration_s,
             is_timed: body.is_timed ? 1 : 0,
-            deleted_at: nil)
+            deleted_at: deletedAt,
+            updated_at: updatedAt)
     }
 
     private func state(
@@ -694,6 +711,590 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertTrue(model.setOutbox.isEmpty)
         XCTAssertEqual(model.sets.map(\.id), [fixedUUID.uuidString])
         XCTAssertNotNil(model.restEndDate)
+    }
+
+    func testAcknowledgedSetReconcilesWithPersistedDeltaWatermarks() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let baselineTime = 2_000_000_000_000
+        let s = session(updatedAt: baselineTime - 1, attempt: 0)
+        let api = SetWriteAPIStub()
+        api.logHandler = { [self] sessionID, body, _ in
+            .init(
+                set: setLog(
+                    body: body,
+                    sessionID: sessionID,
+                    updatedAt: baselineTime + 1),
+                deduped: false)
+        }
+        api.stateWatermarkHandler = { [self] _, _ in
+            let body = api.logCalls[0].body
+            return StateResponse(
+                plan: nil,
+                plan_version: 1,
+                sessions: [s],
+                sets: [setLog(
+                    body: body,
+                    sessionID: s.id,
+                    updatedAt: baselineTime + 1)],
+                external_events: [],
+                external_activities: [],
+                activities: [],
+                server_time: baselineTime + 100_000)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, uuidFactory: { self.fixedUUID },
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: s,
+            sets: [],
+            days: [day(with: [ex])],
+            serverTime: baselineTime))
+        model.startWorkout()
+
+        let acknowledged = await model.logSet(ex, weight: 135, reps: 5)
+
+        XCTAssertTrue(acknowledged)
+        XCTAssertEqual(api.stateWatermarkCalls, [StateSyncWatermarks(
+            planVersion: 1,
+            setsSince: baselineTime - 60_000,
+            eventsSince: 0,
+            activitiesSince: 0,
+            logSince: baselineTime - 60_000)])
+        XCTAssertEqual(model.sets.map(\.id), [fixedUUID.uuidString])
+        XCTAssertNotNil(model.restEndDate)
+        XCTAssertEqual(
+            StateSnapshotStore.load(
+                userID: "user-a", defaults: defaults)?.watermarks,
+            StateSyncWatermarks(
+                planVersion: 1,
+                setsSince: baselineTime + 40_000,
+                eventsSince: 0,
+                activitiesSince: 0,
+                logSince: baselineTime + 40_000))
+    }
+
+    func testMissingAcknowledgedIDPreservesAuthoritativeACKAndForcesFullReload() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let baselineTime = 2_000_000_000_000
+        let s = session(updatedAt: baselineTime - 1, attempt: 0)
+        let api = SetWriteAPIStub()
+        api.logHandler = { [self] sessionID, body, _ in
+            .init(
+                set: setLog(
+                    body: body,
+                    sessionID: sessionID,
+                    updatedAt: baselineTime + 1),
+                deduped: false)
+        }
+        api.stateWatermarkHandler = { _, _ in
+            StateResponse(
+                plan: nil,
+                plan_version: 1,
+                sessions: [],
+                sets: [],
+                external_events: [],
+                external_activities: [],
+                activities: [],
+                server_time: baselineTime + 100_000)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, uuidFactory: { self.fixedUUID },
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: s,
+            sets: [],
+            days: [day(with: [ex])],
+            serverTime: baselineTime))
+        model.startWorkout()
+
+        let acknowledged = await model.logSet(ex, weight: 135, reps: 5)
+
+        XCTAssertTrue(acknowledged)
+        XCTAssertTrue(model.setOutbox.isEmpty)
+        XCTAssertTrue(model.sets.contains { $0.id == fixedUUID.uuidString })
+        XCTAssertNotNil(model.restEndDate)
+        XCTAssertTrue(model.loadError?.contains(
+            "Set was saved") == true)
+        let snapshot = StateSnapshotStore.load(
+            userID: "user-a", defaults: defaults)
+        XCTAssertEqual(
+            snapshot?.state.sets.map(\.id), [fixedUUID.uuidString])
+        XCTAssertNil(snapshot?.watermarks)
+        XCTAssertEqual(
+            StateSnapshotStore.reserveStateRequest(
+                userID: "user-a", defaults: defaults)?.watermarks,
+            .fullReload)
+    }
+
+    func testBatchReconciliationOmissionPreservesEveryAuthoritativeACK() async {
+        let defaults = defaults()
+        let baselineTime = 2_000_000_000_000
+        let s = session(updatedAt: baselineTime - 1, attempt: 0)
+        let exA = exercise(id: "slot-a", exerciseID: "exercise-a")
+        let exB = exercise(id: "slot-b", exerciseID: "exercise-b")
+        let bodies = [
+            SetRequestBody(
+                id: "11111111-1111-4111-8111-111111111111",
+                exercise_id: exA.exercise_id,
+                template_exercise_id: exA.id,
+                set_index: 1,
+                weight: 135,
+                reps: 5,
+                is_warmup: false,
+                logged_at: baselineTime + 1,
+                duration_s: nil,
+                is_timed: false),
+            SetRequestBody(
+                id: "22222222-2222-4222-8222-222222222222",
+                exercise_id: exB.exercise_id,
+                template_exercise_id: exB.id,
+                set_index: 1,
+                weight: 95,
+                reps: 8,
+                is_warmup: false,
+                logged_at: baselineTime + 2,
+                duration_s: nil,
+                is_timed: false),
+        ]
+        StateSnapshotStore.save(
+            state(
+                session: s,
+                sets: [],
+                exercises: [exA, exB]),
+            userID: "user-a",
+            defaults: defaults)
+        var outbox = SetOutbox()
+        for body in bodies {
+            outbox.enqueue(.init(
+                body: body,
+                date: s.date,
+                dayTemplateID: "day-a",
+                resolvedSessionID: s.id,
+                deliveryState: .queued,
+                failedHTTPStatus: nil,
+                expectedAttempt: 0))
+        }
+        SetOutboxStore.save(
+            outbox, userID: "user-a", defaults: defaults)
+        let api = SetWriteAPIStub()
+        api.logHandler = { [self] sessionID, body, _ in
+            .init(
+                set: setLog(
+                    body: body,
+                    sessionID: sessionID,
+                    updatedAt: baselineTime + 10),
+                deduped: false,
+                session: s)
+        }
+        api.stateWatermarkHandler = { [self] _, _ in
+            StateResponse(
+                plan: nil,
+                plan_version: 1,
+                sessions: [],
+                sets: [setLog(
+                    body: bodies[0],
+                    sessionID: s.id,
+                    updatedAt: baselineTime + 10)],
+                external_events: [],
+                external_activities: [],
+                activities: [],
+                server_time: baselineTime + 100_000)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: api,
+            defaults: defaults,
+            now: { self.fixedDate })
+
+        await model.drainSetOutbox()
+
+        XCTAssertEqual(api.logCalls.map(\.body.id), bodies.map(\.id))
+        XCTAssertTrue(model.setOutbox.isEmpty)
+        XCTAssertEqual(Set(model.sets.map(\.id)), Set(bodies.map(\.id)))
+        XCTAssertTrue(model.loadError?.contains("Sets were saved") == true)
+        let snapshot = StateSnapshotStore.load(
+            userID: "user-a", defaults: defaults)
+        XCTAssertEqual(
+            Set(snapshot?.state.sets.map(\.id) ?? []),
+            Set(bodies.map(\.id)))
+        XCTAssertNil(snapshot?.watermarks)
+        XCTAssertEqual(
+            StateSnapshotStore.reserveStateRequest(
+                userID: "user-a", defaults: defaults)?.watermarks,
+            .fullReload)
+    }
+
+    func testDedupedPersistedSetMayBeAbsentFromValidIncrementalDelta() async {
+        let defaults = defaults()
+        let baselineTime = 2_000_000_000_000
+        let ex = exercise()
+        let s = session(updatedAt: baselineTime - 1, attempt: 0)
+        let body = SetRequestBody(
+            id: fixedUUID.uuidString,
+            exercise_id: ex.exercise_id,
+            template_exercise_id: ex.id,
+            set_index: 1,
+            weight: 135,
+            reps: 5,
+            is_warmup: false,
+            logged_at: baselineTime - 1_000,
+            duration_s: nil,
+            is_timed: false)
+        let existing = setLog(
+            body: body,
+            sessionID: s.id,
+            updatedAt: baselineTime - 500)
+        XCTAssertTrue(StateSyncAccountStore.activate(
+            userID: "user-a", defaults: defaults))
+        StateSnapshotStore.save(
+            state(
+                session: s,
+                sets: [existing],
+                exercise: ex),
+            userID: "user-a",
+            defaults: defaults)
+        var outbox = SetOutbox()
+        outbox.enqueue(.init(
+            body: body,
+            date: s.date,
+            dayTemplateID: "day-a",
+            resolvedSessionID: s.id,
+            deliveryState: .queued,
+            failedHTTPStatus: nil,
+            expectedAttempt: 0))
+        SetOutboxStore.save(
+            outbox, userID: "user-a", defaults: defaults)
+        let api = SetWriteAPIStub()
+        api.logHandler = { _, _, _ in
+            .init(set: existing, deduped: true, session: s)
+        }
+        api.stateWatermarkHandler = { _, watermarks in
+            XCTAssertGreaterThan(watermarks.setsSince, 0)
+            return StateResponse(
+                plan: nil,
+                plan_version: 1,
+                sessions: [],
+                sets: [],
+                external_events: [],
+                external_activities: [],
+                activities: [],
+                server_time: baselineTime + 100_000)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: api,
+            defaults: defaults,
+            now: { self.fixedDate })
+
+        await model.drainSetOutbox()
+
+        XCTAssertTrue(model.setOutbox.isEmpty)
+        XCTAssertEqual(model.sets.map(\.id), [body.id])
+        XCTAssertNil(model.loadError)
+        let snapshot = StateSnapshotStore.load(
+            userID: "user-a", defaults: defaults)
+        XCTAssertEqual(snapshot?.state.sets.map(\.id), [body.id])
+        XCTAssertEqual(
+            snapshot?.watermarks?.setsSince,
+            baselineTime + 40_000)
+    }
+
+    func testNewerDedupedCorrectionMissingFromDeltaPreservesACKAndForcesFullReload() async {
+        let defaults = defaults()
+        let baselineTime = 2_000_000_000_000
+        let ex = exercise()
+        let s = session(updatedAt: baselineTime - 1, attempt: 0)
+        let body = SetRequestBody(
+            id: fixedUUID.uuidString,
+            exercise_id: ex.exercise_id,
+            template_exercise_id: ex.id,
+            set_index: 1,
+            weight: 135,
+            reps: 5,
+            is_warmup: false,
+            logged_at: baselineTime - 1_000,
+            duration_s: nil,
+            is_timed: false)
+        let existing = setLog(
+            body: body,
+            sessionID: s.id,
+            updatedAt: baselineTime - 500)
+        let corrected = SetLog(
+            id: existing.id,
+            session_id: existing.session_id,
+            exercise_id: existing.exercise_id,
+            template_exercise_id: nil,
+            set_index: existing.set_index,
+            weight: 155,
+            reps: 4,
+            rpe: 8,
+            is_warmup: existing.is_warmup,
+            logged_at: existing.logged_at,
+            duration_s: existing.duration_s,
+            is_timed: existing.is_timed,
+            deleted_at: nil,
+            updated_at: baselineTime + 10)
+        XCTAssertTrue(StateSyncAccountStore.activate(
+            userID: "user-a", defaults: defaults))
+        StateSnapshotStore.save(
+            state(
+                session: s,
+                sets: [existing],
+                exercise: ex),
+            userID: "user-a",
+            defaults: defaults)
+        var outbox = SetOutbox()
+        outbox.enqueue(.init(
+            body: body,
+            date: s.date,
+            dayTemplateID: "day-a",
+            resolvedSessionID: s.id,
+            deliveryState: .queued,
+            failedHTTPStatus: nil,
+            expectedAttempt: 0))
+        SetOutboxStore.save(
+            outbox, userID: "user-a", defaults: defaults)
+        let api = SetWriteAPIStub()
+        api.logHandler = { _, _, _ in
+            .init(set: corrected, deduped: true, session: s)
+        }
+        api.stateWatermarkHandler = { _, watermarks in
+            XCTAssertGreaterThan(watermarks.setsSince, 0)
+            return StateResponse(
+                plan: nil,
+                plan_version: 1,
+                sessions: [],
+                sets: [],
+                external_events: [],
+                external_activities: [],
+                activities: [],
+                server_time: baselineTime + 100_000)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: api,
+            defaults: defaults,
+            now: { self.fixedDate })
+
+        await model.drainSetOutbox()
+
+        XCTAssertTrue(model.setOutbox.isEmpty)
+        let live = model.sets.first { $0.id == body.id }
+        XCTAssertEqual(live?.weight, 155)
+        XCTAssertNil(live?.template_exercise_id)
+        XCTAssertTrue(model.loadError?.contains("Set was saved") == true)
+        let snapshot = StateSnapshotStore.load(
+            userID: "user-a", defaults: defaults)
+        XCTAssertEqual(
+            snapshot?.state.sets.first { $0.id == body.id }?.weight,
+            155)
+        XCTAssertNil(snapshot?.watermarks)
+        XCTAssertEqual(
+            StateSnapshotStore.reserveStateRequest(
+                userID: "user-a", defaults: defaults)?.watermarks,
+            .fullReload)
+    }
+
+    func testDelayedLiveAcknowledgementAfterNewerTombstoneNeverResurrects() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let baselineTime = 2_000_000_000_000
+        let s = session(updatedAt: baselineTime - 1, attempt: 0)
+        let acknowledgementEntered = SetAsyncLatch()
+        let releaseAcknowledgement = SetAsyncLatch()
+        let api = SetWriteAPIStub()
+        api.logHandler = { [self] sessionID, body, _ in
+            await acknowledgementEntered.open()
+            await releaseAcknowledgement.wait()
+            return .init(
+                set: setLog(
+                    body: body,
+                    sessionID: sessionID,
+                    updatedAt: baselineTime + 10_000),
+                deduped: true)
+        }
+        api.stateWatermarkHandler = { [self] _, _ in
+            let body = api.logCalls[0].body
+            let rows: [SetLog] = api.stateCalls == 1
+                ? [setLog(
+                    body: body,
+                    sessionID: s.id,
+                    updatedAt: baselineTime + 20_000,
+                    deletedAt: baselineTime + 20_000)]
+                : []
+            return StateResponse(
+                plan: nil,
+                plan_version: 1,
+                sessions: [],
+                sets: rows,
+                external_events: [],
+                external_activities: [],
+                activities: [],
+                server_time: baselineTime + (api.stateCalls == 1 ? 100_000 : 200_000))
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, uuidFactory: { self.fixedUUID },
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: s,
+            sets: [],
+            days: [day(with: [ex])],
+            serverTime: baselineTime))
+        model.startWorkout()
+
+        let write = Task { await model.logSet(ex, weight: 135, reps: 5) }
+        await acknowledgementEntered.wait()
+        let body = api.logCalls[0].body
+        let tombstone = setLog(
+            body: body,
+            sessionID: s.id,
+            updatedAt: baselineTime + 20_000,
+            deletedAt: baselineTime + 20_000)
+        let deltaTicket = try! XCTUnwrap(StateSnapshotStore.reserveStateRequest(
+            userID: "user-a", defaults: defaults))
+        XCTAssertNotNil(StateSnapshotStore.commitStateResponse(
+            StateResponse(
+                plan: nil,
+                plan_version: 1,
+                sessions: [],
+                sets: [tombstone],
+                external_events: [],
+                external_activities: [],
+                activities: [],
+                server_time: baselineTime + 15_000),
+            ticket: deltaTicket,
+            defaults: defaults))
+        await releaseAcknowledgement.open()
+
+        let acknowledged = await write.value
+        XCTAssertFalse(acknowledged)
+        XCTAssertTrue(model.setOutbox.isEmpty)
+        XCTAssertFalse(model.sets.contains { $0.id == fixedUUID.uuidString })
+        XCTAssertNil(model.restEndDate)
+        var snapshot = try! XCTUnwrap(StateSnapshotStore.load(
+            userID: "user-a", defaults: defaults))
+        XCTAssertEqual(
+            snapshot.state.sets.first { $0.id == fixedUUID.uuidString }?.updated_at,
+            baselineTime + 20_000)
+        XCTAssertNotNil(
+            snapshot.state.sets.first { $0.id == fixedUUID.uuidString }?.deleted_at)
+
+        await model.load()
+
+        snapshot = try! XCTUnwrap(StateSnapshotStore.load(
+            userID: "user-a", defaults: defaults))
+        XCTAssertNotNil(
+            snapshot.state.sets.first { $0.id == fixedUUID.uuidString }?.deleted_at)
+        XCTAssertFalse(model.sets.contains { $0.id == fixedUUID.uuidString })
+    }
+
+    func testEqualTimestampDelayedACKPreservesCorrectedDetachedDelta() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let baselineTime = 2_000_000_000_000
+        let mutationTime = baselineTime + 10_000
+        let s = session(updatedAt: mutationTime, attempt: 0)
+        let remappedSession = SessionRow(
+            id: s.id,
+            date: s.date,
+            status: s.status,
+            day_template_id: "day-remapped",
+            updated_at: mutationTime,
+            attempt: s.attempt)
+        let acknowledgementEntered = SetAsyncLatch()
+        let releaseAcknowledgement = SetAsyncLatch()
+        let api = SetWriteAPIStub()
+        api.logHandler = { [self] sessionID, body, _ in
+            await acknowledgementEntered.open()
+            await releaseAcknowledgement.wait()
+            return .init(
+                set: setLog(
+                    body: body,
+                    sessionID: sessionID,
+                    updatedAt: mutationTime),
+                deduped: true,
+                session: s)
+        }
+        var corrected: SetLog?
+        api.stateWatermarkHandler = { _, _ in
+            StateResponse(
+                plan: nil,
+                plan_version: 1,
+                sessions: [remappedSession],
+                sets: corrected.map { [$0] } ?? [],
+                external_events: [],
+                external_activities: [],
+                activities: [],
+                server_time: baselineTime + 100_000)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, uuidFactory: { self.fixedUUID },
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: s,
+            sets: [],
+            days: [day(with: [ex])],
+            serverTime: baselineTime))
+
+        let write = Task { await model.logSet(ex, weight: 135, reps: 5) }
+        await acknowledgementEntered.wait()
+        let body = api.logCalls[0].body
+        corrected = SetLog(
+            id: body.id,
+            session_id: s.id,
+            exercise_id: body.exercise_id,
+            template_exercise_id: nil,
+            set_index: body.set_index,
+            weight: 225,
+            reps: 3,
+            rpe: 8,
+            is_warmup: 0,
+            logged_at: body.logged_at,
+            duration_s: nil,
+            is_timed: 0,
+            deleted_at: nil,
+            updated_at: mutationTime)
+        let deltaTicket = try! XCTUnwrap(StateSnapshotStore.reserveStateRequest(
+            userID: "user-a", defaults: defaults))
+        XCTAssertNotNil(StateSnapshotStore.commitStateResponse(
+            StateResponse(
+                plan: nil,
+                plan_version: 1,
+                sessions: [remappedSession],
+                sets: [corrected!],
+                external_events: [],
+                external_activities: [],
+                activities: [],
+                server_time: baselineTime + 5_000),
+            ticket: deltaTicket,
+            defaults: defaults))
+        await releaseAcknowledgement.open()
+
+        let acknowledged = await write.value
+        XCTAssertTrue(acknowledged)
+        let live = model.sets.first { $0.id == fixedUUID.uuidString }
+        XCTAssertEqual(live?.weight, 225)
+        XCTAssertEqual(live?.reps, 3)
+        XCTAssertEqual(live?.template_exercise_id, nil)
+        XCTAssertEqual(live?.updated_at, mutationTime)
+        XCTAssertEqual(model.todaySession?.day_template_id, "day-remapped")
+        let persisted = StateSnapshotStore.load(
+            userID: "user-a", defaults: defaults)?.state.sets.first {
+                $0.id == self.fixedUUID.uuidString
+            }
+        XCTAssertEqual(persisted?.weight, 225)
+        XCTAssertEqual(persisted?.template_exercise_id, nil)
+        XCTAssertEqual(
+            StateSnapshotStore.load(
+                userID: "user-a", defaults: defaults)?.state.sessions.first?
+                .day_template_id,
+            "day-remapped")
     }
 
     func testTimeoutQueuesWithoutCompletionOrRest() async {
@@ -8675,5 +9276,160 @@ final class SetOutboxTests: XCTestCase {
             userID: "user-a", defaults: defaults)?.state)
         XCTAssertEqual(snapshot.sessions.first?.status, "discarded")
         XCTAssertEqual(snapshot.sessions.first?.attempt, 0)
+    }
+
+    func testEqualTimestampFinishACKPreservesCompletedSessionDayRemap() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let active = session(
+            status: "in_progress", updatedAt: 100, attempt: 0)
+        let completed = session(
+            status: "completed", updatedAt: 200, attempt: 0)
+        let remapped = SessionRow(
+            id: completed.id,
+            date: completed.date,
+            status: completed.status,
+            day_template_id: "day-remapped",
+            updated_at: completed.updated_at,
+            attempt: completed.attempt)
+        let entered = SetAsyncLatch()
+        let release = SetAsyncLatch()
+        let terminalAPI = SetTerminalAPIStub()
+        terminalAPI.completeHandler = { _, _ in
+            await entered.open()
+            await release.wait()
+            return completed
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults), terminalAPI: terminalAPI,
+            defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: active, sets: [], exercise: ex))
+        model.startWorkout()
+        model.finished = true
+
+        let finish = Task { await model.finishWorkout() }
+        await entered.wait()
+        model.replaceState(with: state(
+            session: remapped, sets: [], exercise: ex))
+        await release.open()
+        await finish.value
+
+        XCTAssertEqual(model.todaySession?.status, "completed")
+        XCTAssertEqual(model.todaySession?.day_template_id, "day-remapped")
+        XCTAssertEqual(
+            StateSnapshotStore.load(
+                userID: "user-a", defaults: defaults)?.state.sessions.first?
+                .day_template_id,
+            "day-remapped")
+    }
+
+    func testEqualTimestampCreateResolutionPreservesPlannedSessionDayRemap() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let created = session(
+            status: "planned", updatedAt: 200, attempt: 0)
+        let remapped = SessionRow(
+            id: created.id,
+            date: created.date,
+            status: created.status,
+            day_template_id: "day-remapped",
+            updated_at: created.updated_at,
+            attempt: created.attempt)
+        let entered = SetAsyncLatch()
+        let release = SetAsyncLatch()
+        let api = SetWriteAPIStub()
+        api.createHandler = { _, _, _ in
+            await entered.open()
+            await release.wait()
+            return created
+        }
+        api.logHandler = { _, _, _ in throw URLError(.timedOut) }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, uuidFactory: { self.fixedUUID },
+            now: { self.fixedDate })
+        let base = state(session: created, sets: [], exercise: ex)
+        model.replaceState(with: StateResponse(
+            plan: base.plan,
+            plan_version: base.plan_version,
+            sessions: [],
+            sets: [],
+            external_events: [],
+            external_activities: [],
+            activities: [],
+            server_time: base.server_time))
+        model.startWorkout()
+
+        let write = Task { await model.logSet(ex, weight: 135, reps: 5) }
+        await entered.wait()
+        let ticket = try! XCTUnwrap(StateSnapshotStore.reserveStateRequest(
+            userID: "user-a", defaults: defaults))
+        XCTAssertNotNil(StateSnapshotStore.commitStateResponse(
+            StateResponse(
+                plan: nil,
+                plan_version: 1,
+                sessions: [remapped],
+                sets: [],
+                external_events: [],
+                external_activities: [],
+                activities: [],
+                server_time: base.server_time + 1_000),
+            ticket: ticket,
+            defaults: defaults))
+        await release.open()
+
+        let acknowledged = await write.value
+        XCTAssertFalse(acknowledged)
+        XCTAssertEqual(model.todaySession?.status, "planned")
+        XCTAssertEqual(model.todaySession?.day_template_id, "day-remapped")
+        XCTAssertEqual(
+            StateSnapshotStore.load(
+                userID: "user-a", defaults: defaults)?.state.sessions.first?
+                .day_template_id,
+            "day-remapped")
+    }
+
+    func testEqualTimestampDiscardACKPreservesDiscardedSessionDayRemap() async {
+        let defaults = defaults()
+        let ex = exercise()
+        let active = session(
+            status: "in_progress", updatedAt: 100, attempt: 0)
+        let discarded = session(
+            status: "discarded", updatedAt: 200, attempt: 0)
+        let remapped = SessionRow(
+            id: discarded.id,
+            date: discarded.date,
+            status: discarded.status,
+            day_template_id: "day-remapped",
+            updated_at: discarded.updated_at,
+            attempt: discarded.attempt)
+        let entered = SetAsyncLatch()
+        let release = SetAsyncLatch()
+        let terminalAPI = SetTerminalAPIStub()
+        terminalAPI.discardHandler = { _, _ in
+            await entered.open()
+            await release.wait()
+            return discarded
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults), terminalAPI: terminalAPI,
+            defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: active, sets: [], exercise: ex))
+        model.startWorkout()
+
+        let discard = Task { await model.discardWorkout() }
+        await entered.wait()
+        model.replaceState(with: state(
+            session: remapped, sets: [], exercise: ex))
+        await release.open()
+        await discard.value
+
+        XCTAssertEqual(
+            StateSnapshotStore.load(
+                userID: "user-a", defaults: defaults)?.state.sessions.first?
+                .day_template_id,
+            "day-remapped")
     }
 }

@@ -39,14 +39,15 @@ That split is what makes two-writer sync simple (§7).
 
 | Decision | Verdict |
 |---|---|
-| Cloudflare Workers + D1 as source of truth | ✅ Correct. SQLite semantics, free tier covers a single user ~1000×, MCP-from-Worker is the natural fit. |
+| Cloudflare Workers + D1 as source of truth | ✅ Correct. SQLite semantics and MCP-from-Worker remain the natural fit. The account moved to Workers Paid on 2026-09-05 after a natural hourly cron exceeded Free's CPU target; the delta and no-op work still reduce latency and usage. |
 | CloudKit rejected for source of truth | ✅ Agree. Claude needs first-class writes from outside Apple's ecosystem; CloudKit S2S is awkward and Apple-bound. SwiftData as **local cache only** is right. |
 | **Two separate Workers (REST + MCP)** | ⚠️ **Pushing back → one Worker, two route groups** (`/api/*`, `/mcp`). They share the D1 binding, schema, domain model, and service layer. Splitting doubles deploy/secret/observability surface for zero isolation benefit in a single-user system. Splitting later is a routing change, not a rewrite. |
 | MCP auth = "bearer token in connector settings" | ⚠️ **Refining.** Fine for Claude Code; claude.ai/desktop custom connectors expect OAuth. Plan: implement a lightweight Cloudflare OAuth provider **and** accept a static bearer. Every surface works; CLI/curl testing stays trivial. (§6) |
 | SwiftData "sync on open + on write" | ⚠️ **Refining.** Add an outbox + client-generated set IDs so a set logged on flaky gym wifi is never lost. Cheap; removes the only real data-loss path. (§7) |
 | Rich plan schema for periodization | ⚠️ **Right-sizing.** Periodization stays **out of rigid columns**. Progression/deload/mesocycle live in a per-exercise `progression` JSON + Claude-written notes. Claude is the periodization engine; the schema just faithfully stores and versions its decisions. |
 
-Net new spend: **$0** — Apple Developer already covered; Cloudflare free tier; domain owned.
+Net new spend: **$5/month + usage** for Workers Paid — Apple Developer is
+already covered and the domain is owned.
 
 ---
 
@@ -55,6 +56,13 @@ Net new spend: **$0** — Apple Developer already covered; Cloudflare free tier;
 Epoch-ms integers for timestamps. `id` is a UUID string. Plan-tree tables
 (`plans`, `day_templates`, `template_exercises`) are the versioned document;
 `set_logs`/`notes`/`sessions` are the append-only log.
+
+This excerpt shows the post-rollout logical application schema. Migration
+`0034` physically adds `set_logs.user_id DEFAULT ''`,
+`set_logs.updated_at DEFAULT 0`, and `activities.updated_at DEFAULT 0` so the
+previous Worker remains compatible between migration and deploy; D1-clock
+backfills and narrow compatibility triggers ensure application-visible rows do
+not retain those placeholders.
 
 ```sql
 CREATE TABLE users (
@@ -145,6 +153,7 @@ CREATE TABLE session_aliases (
 
 CREATE TABLE set_logs (
   id                   TEXT PRIMARY KEY,        -- CLIENT-generated UUID = idempotency key
+  user_id              TEXT NOT NULL,           -- denormalized owner for member-first delta reads (migration 0034)
   session_id           TEXT NOT NULL REFERENCES sessions(id),
   exercise_id          TEXT NOT NULL REFERENCES exercises(id),
   template_exercise_id TEXT REFERENCES template_exercises(id),  -- link to plan slot
@@ -155,6 +164,7 @@ CREATE TABLE set_logs (
   is_warmup            INTEGER NOT NULL DEFAULT 0,
   notes                TEXT,
   logged_at            INTEGER NOT NULL,
+  updated_at           INTEGER NOT NULL,        -- server-owned mutable sync cursor
   source               TEXT NOT NULL,           -- 'ios'|'mcp'
   deleted_at           INTEGER                  -- soft delete (never hard-delete logged data)
 );
@@ -181,9 +191,15 @@ CREATE TABLE audit_log (                        -- every MCP write, for trust/un
 
 CREATE INDEX ix_sets_session ON set_logs(session_id);
 CREATE INDEX ix_sets_ex_time ON set_logs(exercise_id, logged_at);
+CREATE INDEX ix_sets_user_updated ON set_logs(user_id, updated_at);
+CREATE INDEX ix_sessions_user_updated ON sessions(user_id, updated_at);
 CREATE UNIQUE INDEX ux_session_user_date ON sessions(user_id, date);
 CREATE INDEX ix_te_day ON template_exercises(day_template_id, order_index);
 ```
+
+Migration `0034` also creates
+`ix_activities_user_updated ON activities(user_id, updated_at)`; the manual
+activities table is outside this abbreviated schema excerpt.
 
 Periodization note: no `mesocycles`/`weeks` tables. Deloads, wave loading,
 and block changes are Claude editing `target_*`/`progression` and writing a
@@ -196,7 +212,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | Method · Path | Purpose |
 |---|---|
 | `POST /auth/apple` | Body `{identityToken, authorizationCode?, fullName?}` → `{jwt, user}`. Verifies Apple JWT and resolves the caller. When the native client supplies Apple's single-use code, the route reserves that caller against concurrent deletion, exchanges the code, verifies the returned `id_token` has the same Apple subject, and stores only the caller-scoped refresh token before issuing the app JWT. Storage retains the exact reservation until a second acknowledgement, so a D1 commit whose response is lost can still become sticky revocation uncertainty. Code omission remains compatible with older clients. |
-| `GET /api/state?since=<planVersion>&sets_since=<epochMs>` | **The sync pull.** Returns `{plan: tree|null, sessions[], sets[], server_time}`. `plan` is null when `version <= since`; otherwise the full small tree. sessions/sets are deltas. Called on launch/foreground/post-write. |
+| `GET /api/state?since=<planVersion>&sets_since=<epochMs>&events_since=<epochMs>&activities_since=<epochMs>&log_since=<epochMs>` | **The sync pull.** Returns `{plan: tree|null, sessions[], sets[], external_events[], external_activities[], activities[], server_time}`. `plan` is null when `version <= since`; otherwise the full small tree. A zero collection cursor requests a complete current snapshot; an active cursor returns changes plus tombstones. P1 activates the set/session and manual-activity cursors; external cache cursors remain zero until their P2 timestamps represent real changes. `server_time` is captured at request start. Called on launch/foreground/post-write. |
 | `GET /api/today` | Today's session (created from today's template if absent) + its sets + per-exercise last-time actuals + suggested weight. |
 | `POST /api/sessions` | `{date, day_template_id?}` → create/start session. |
 | `PATCH /api/sessions/{id}` | `{status?, perceived_fatigue?, notes?}`. |
@@ -250,7 +266,7 @@ Claude context-aware with zero tool calls.
 - `log_set({exercise, weight, reps, rpe?, is_warmup?, session_date?, notes?})` → auto-creates session, appends, returns running summary.
 - `log_workout_complete({session_date?, perceived_fatigue?, notes?})`
 - `add_note({scope, ref_id?, body})`
-- `update_plan({plan:<full tree>, expected_version?})` → transactional upsert; optimistic concurrency, 409 on version mismatch (Claude refetches + reapplies).
+- `update_plan({plan:<full tree>, expected_version?})` → transactional upsert; a version mismatch returns structured `{conflict:true,current_version}` data in a normal JSON-RPC HTTP 200 response (Claude refetches + reapplies).
 - `update_exercise({target, patch})` → one slot (`target` = template_exercise_id or {day, exercise}).
 - `swap_exercise({day, from_exercise, to_exercise, carry_targets?})`
 - `add_exercise({day, exercise, target_sets, target_reps, target_reps_max?, rest_seconds?, target_rpe?, progression?, order_index?})`
@@ -297,18 +313,65 @@ the OAuth path empirically at milestone (b) before polishing it.
    because POST is idempotent. This kills the offline-data-loss path.
 
 2. **Versioned document** (plan tree): edited by Claude or the member in iOS. Single
-   monotonic `plans.version` + optimistic concurrency. `update_plan` takes
-   `expected_version`; mismatch → 409 → Claude refetches and reapplies
-   (Claude handles this well). App day and schedule writes use the same atomic
-   version check; on 409 the app refetches instead of silently overwriting the
-   coach or another member screen.
+   per-user monotonic `plans.version` + optimistic concurrency. Replacing a plan,
+   or ensuring one only when no active plan exists after archived history,
+   allocates a version greater than every prior plan for that user. Returning an
+   existing active plan does not change it, and replacement never moves the sync
+   cursor backward.
+   MCP `update_plan` takes `expected_version`; a mismatch is a structured
+   `{conflict:true,current_version}` result in a normal JSON-RPC response so
+   Claude refetches and reapplies. App day and schedule writes use the same
+   atomic version check; on HTTP 409 the app refetches instead of silently
+   overwriting the coach or another member screen.
 
 **Flow:** app on launch/foreground/post-write calls
-`GET /api/state?since=<lastPlanVersion>&sets_since=<watermark>`. Plan changed
-→ full tree returned, **full replace** into SwiftData (safe: server is truth,
-tree is small). Sessions/sets returned as deltas. App stores new watermarks.
-Local writes are optimistic (write SwiftData + enqueue outbox + POST;
-reconcile on success, retry-with-backoff on failure).
+`GET /api/state` with the account's plan version and every collection cursor.
+The first request, an account change, a missing/invalidated/undecodable
+snapshot, or legacy cached rows without comparable server cursors sends zero
+and performs a complete reload. A superseded request ticket is simply dropped.
+Otherwise P1 sends active `sets_since` and `log_since` watermarks;
+`events_since` and `activities_since` deliberately remain zero until P2. A
+changed plan returns the full small tree. Set/session and manual activity deltas
+merge by stable id, including tombstones; complete reloads replace their
+collections.
+
+Every mutable log cursor is server-owned. The response captures `server_time`
+before reading any collection, and the client persists the next active
+watermark as `server_time - 60 seconds`. A write that commits after its
+collection was read is therefore newer than the response watermark, while the
+fixed overlap makes boundary and same-millisecond races harmless. Replayed
+rows upsert idempotently by UUID. `set_logs.updated_at` advances on correction,
+discard, slot remap/detach, and soft deletion; `sessions.updated_at` advances on
+every client-visible session change; manual `activities.updated_at` advances
+on insert and soft deletion. Client-authored `logged_at` remains event data and
+is never a sync cursor.
+
+Local set writes are optimistic (write SwiftData + enqueue outbox + POST;
+reconcile on success, retry-with-backoff on failure). Post-outbox reconciliation
+uses the same delta pull. A successful POST acknowledgement is the mutation
+boundary: if a genuinely new or newer ACK is absent from the following delta,
+the app retains it, retires the durable intent, reports success, clears cursors
+for a complete reload, and shows sync uncertainty separately. An old deduped
+UUID may be absent without uncertainty when the pre-POST snapshot already has
+an equal or newer server row. Raw set tombstones stay in the account snapshot
+long enough to order them against delayed acknowledgements, then presentation
+filters them. Account-scoped request tickets prevent a response reserved for
+one sign-in or older account revision from committing into another.
+
+The manual-activity collection also carries a local cursor-capability bit. An
+absent or null legacy `activities` key remains compatible but keeps
+`log_since=0`; a valid non-null collection supplies capability, even when empty;
+and malformed present activity data fails the response so state and cursor
+cannot advance past an undecoded row.
+
+**P1 rollout:** have the P1 Worker artifact ready, apply pending migrations in
+order (`0033`, then additive `0034`), deploy that Worker immediately, and only
+then distribute incremental iOS. If the deploy fails after `0034` commits, roll
+forward with the P1-aware Worker rather than attempting a migration rollback.
+Old iOS clients remain compatible because they send zero cursors. Once an
+incremental client ships, the pre-P1 Worker is not a safe rollback: its
+immutable set cursor can omit later tombstones. Retain a P1-aware rollback
+version or forward-fix instead.
 
 **Conflict reality check:** the only true two-writer race is "Claude edits
 the plan while you're mid-workout." Set logs reference `exercise_id` /
@@ -413,6 +476,6 @@ After each: summary of what changed / what's testable / what's next / what's ope
 | Item | Cost |
 |---|---|
 | Apple Developer Program | $99/yr — **already active** ✅ |
-| Cloudflare Workers + D1 | $0 (free tier, single user) |
+| Cloudflare Workers + D1 | $5/month + usage (Workers Paid; active 2026-09-05) |
 | Domain | already owned |
-| **New spend** | **$0** |
+| **New spend** | **$5/month + usage** |

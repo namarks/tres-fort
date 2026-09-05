@@ -67,6 +67,91 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
         return try JSONDecoder().decode(StateResponse.self, from: data)
     }
 
+    private func set(
+        id: String,
+        deletedAt: Int? = nil,
+        loggedAt: Int = 1_000,
+        updatedAt: Int = 2_000_000_000_001
+    ) -> SetLog {
+        SetLog(
+            id: id,
+            session_id: "session-a",
+            exercise_id: "exercise-a",
+            template_exercise_id: "slot-a",
+            set_index: 0,
+            weight: 100,
+            reps: 5,
+            rpe: nil,
+            is_warmup: 0,
+            logged_at: loggedAt,
+            duration_s: nil,
+            is_timed: 0,
+            deleted_at: deletedAt,
+            updated_at: updatedAt)
+    }
+
+    private func event(id: String, deletedAt: Int? = nil) -> ExternalEvent {
+        ExternalEvent(
+            id: id,
+            source: "intervals",
+            external_id: id,
+            date: "2033-05-18",
+            kind: "ride",
+            title: "Ride",
+            description: nil,
+            planned_duration_sec: 3_600,
+            training_load: nil,
+            intensity: nil,
+            synced_at: 1_000,
+            deleted_at: deletedAt)
+    }
+
+    private func externalActivity(
+        id: String,
+        deletedAt: Int? = nil
+    ) -> ExternalActivity {
+        ExternalActivity(
+            id: id,
+            source: "intervals",
+            external_id: id,
+            date: "2033-05-18",
+            kind: "run",
+            name: "Run",
+            moving_time_sec: 1_800,
+            elapsed_time_sec: nil,
+            distance_m: nil,
+            average_watts: nil,
+            weighted_avg_watts: nil,
+            average_hr: nil,
+            max_hr: nil,
+            training_load: nil,
+            intensity: nil,
+            calories: nil,
+            elevation_gain_m: nil,
+            synced_at: 1_000,
+            deleted_at: deletedAt)
+    }
+
+    private func activity(
+        id: String,
+        loggedAt: Int,
+        deletedAt: Int? = nil
+    ) -> ActivityRow {
+        var row = ActivityRow(
+            id: id,
+            user_id: "user-a",
+            date: "2020-01-01",
+            type: "walk",
+            title: "Backdated walk",
+            duration_minutes: 30,
+            notes: nil,
+            logged_at: loggedAt,
+            source: "manual",
+            deleted_at: deletedAt)
+        row.updated_at = deletedAt ?? 2_000_000_000_001
+        return row
+    }
+
     func testCheckpointRoundTripsWithinOneAccount() {
         let defaults = defaults()
         let checkpoint = WorkoutRunnerCheckpoint(
@@ -127,6 +212,232 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
         XCTAssertEqual(loaded.state.sessions.first?.attempt, 7)
         XCTAssertNil(StateSnapshotStore.load(
             userID: "user-b", defaults: defaults))
+    }
+
+    func testP1PersistsActiveOverlappedCursorsAndLeavesP2CursorsAtZero() throws {
+        let defaults = defaults()
+        let ticket = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(
+            userID: "user-a", defaults: defaults))
+        XCTAssertEqual(ticket.watermarks, .fullReload)
+
+        let serverTime = 2_000_000_123_456
+        let committed = try XCTUnwrap(StateSnapshotStore.commitStateResponse(
+            try state(serverTime: serverTime),
+            ticket: ticket,
+            defaults: defaults))
+        let expected = StateSyncWatermarks(
+            planVersion: 7,
+            setsSince: serverTime - 60_000,
+            eventsSince: 0,
+            activitiesSince: 0,
+            logSince: serverTime - 60_000)
+        XCTAssertEqual(committed.watermarks, expected)
+
+        let next = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(
+            userID: "user-a", defaults: defaults))
+        XCTAssertEqual(next.watermarks, expected)
+    }
+
+    func testManualActivityCursorCapabilityDistinguishesLegacyAndP1Payloads() throws {
+        let serverTime = 2_000_000_123_456
+        let encoded = try JSONEncoder().encode(
+            state(serverTime: serverTime))
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "_manual_activity_cursor_capable")
+
+        object.removeValue(forKey: "activities")
+        let absent = try JSONDecoder().decode(
+            StateResponse.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertFalse(absent.manualActivityCursorCapable)
+        XCTAssertEqual(StateSyncWatermarks.next(after: absent).logSince, 0)
+        let persistedAbsent = try JSONDecoder().decode(
+            StateResponse.self,
+            from: JSONEncoder().encode(absent))
+        XCTAssertFalse(persistedAbsent.manualActivityCursorCapable)
+        XCTAssertEqual(
+            StateSyncWatermarks.next(after: persistedAbsent).logSince, 0)
+
+        object["activities"] = NSNull()
+        let null = try JSONDecoder().decode(
+            StateResponse.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertFalse(null.manualActivityCursorCapable)
+        XCTAssertEqual(StateSyncWatermarks.next(after: null).logSince, 0)
+
+        object["activities"] = []
+        let empty = try JSONDecoder().decode(
+            StateResponse.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertTrue(empty.manualActivityCursorCapable)
+        XCTAssertEqual(
+            StateSyncWatermarks.next(after: empty).logSince,
+            serverTime - StateSyncWatermarks.overlapMilliseconds)
+
+        object["activities"] = [[
+            "id": "manual-a",
+            "user_id": "user-a",
+            "date": "2020-01-01",
+            "type": "walk",
+            "title": "Backdated walk",
+            "duration_minutes": 30,
+            "notes": NSNull(),
+            "logged_at": 1_000,
+            "source": "manual",
+            "deleted_at": NSNull(),
+        ]]
+        let legacyRow = try JSONDecoder().decode(
+            StateResponse.self,
+            from: JSONSerialization.data(withJSONObject: object))
+        XCTAssertTrue(legacyRow.manualActivityCursorCapable)
+        XCTAssertEqual(StateSyncWatermarks.next(after: legacyRow).logSince, 0)
+    }
+
+    func testMalformedManualActivityDoesNotAdvanceCommittedCursor() throws {
+        let defaults = defaults()
+        StateSnapshotStore.save(
+            try state(serverTime: 2_000_000_000_000),
+            userID: "user-a",
+            defaults: defaults)
+        let priorWatermarks = try XCTUnwrap(StateSnapshotStore.load(
+            userID: "user-a", defaults: defaults)?.watermarks)
+        XCTAssertGreaterThan(priorWatermarks.logSince, 0)
+        let ticket = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(
+            userID: "user-a", defaults: defaults))
+
+        let encoded = try JSONEncoder().encode(
+            state(serverTime: 2_000_000_100_000))
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "_manual_activity_cursor_capable")
+        object["activities"] = [["id": 123]]
+        let malformed = try JSONSerialization.data(withJSONObject: object)
+
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            StateResponse.self, from: malformed))
+        XCTAssertTrue(StateSnapshotStore.isCurrent(
+            ticket, defaults: defaults))
+        XCTAssertEqual(
+            StateSnapshotStore.load(
+                userID: "user-a", defaults: defaults)?.watermarks,
+            priorWatermarks)
+        XCTAssertEqual(
+            StateSnapshotStore.reserveStateRequest(
+                userID: "user-a", defaults: defaults)?.watermarks,
+            priorWatermarks)
+    }
+
+    func testP1DeltaMergeDeliversBackdatedActivityAndAppliesTombstonesIdempotently() throws {
+        let defaults = defaults()
+        let baseline = try state(serverTime: 2_000_000_000_000)
+        let initial = StateResponse(
+            plan: baseline.plan,
+            plan_version: baseline.plan_version,
+            sessions: baseline.sessions,
+            sets: [set(id: "set-a")],
+            external_events: [event(id: "event-a")],
+            external_activities: [externalActivity(id: "external-a")],
+            activities: [],
+            server_time: baseline.server_time)
+        StateSnapshotStore.save(
+            initial, userID: "user-a", defaults: defaults)
+
+        let deltaTicket = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(
+            userID: "user-a", defaults: defaults))
+        XCTAssertGreaterThan(deltaTicket.watermarks.logSince, 1_000)
+        let backdated = activity(id: "manual-a", loggedAt: 1_000)
+        let updatedSession = SessionRow(
+            id: "session-a",
+            date: "2033-05-18",
+            status: "complete",
+            day_template_id: "day-a",
+            updated_at: 2_000_000_000_001,
+            attempt: 7)
+        let merged = try XCTUnwrap(StateSnapshotStore.commitStateResponse(
+            StateResponse(
+                plan: nil,
+                plan_version: 7,
+                sessions: [updatedSession],
+                sets: [set(id: "set-a"), set(id: "set-b", loggedAt: 2_000)],
+                // P1 deliberately requests these as full collections.
+                external_events: [event(id: "event-b")],
+                external_activities: [externalActivity(id: "external-b")],
+                activities: [backdated],
+                server_time: 2_000_000_100_000),
+            ticket: deltaTicket,
+            defaults: defaults))
+
+        XCTAssertEqual(merged.state.plan?.name, "Cached Plan")
+        XCTAssertEqual(merged.state.sessions.first?.status, "complete")
+        XCTAssertEqual(Set(merged.state.sets.map(\.id)), ["set-a", "set-b"])
+        XCTAssertEqual(merged.state.activities, [backdated])
+        XCTAssertEqual(merged.state.external_events.map(\.id), ["event-b"])
+        XCTAssertEqual(
+            merged.state.external_activities.map(\.id), ["external-b"])
+        XCTAssertEqual(
+            merged.watermarks?.logSince,
+            2_000_000_100_000 - StateSyncWatermarks.overlapMilliseconds)
+
+        let tombstoneResponse = StateResponse(
+            plan: nil,
+            plan_version: 7,
+            sessions: [],
+            sets: [set(
+                id: "set-a",
+                deletedAt: 2_000_000_110_000,
+                updatedAt: 2_000_000_110_000)],
+            external_events: [],
+            external_activities: [],
+            activities: [activity(
+                id: "manual-a", loggedAt: 1_000,
+                deletedAt: 2_000_000_110_000)],
+            server_time: 2_000_000_120_000)
+        for _ in 0..<2 {
+            let ticket = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(
+                userID: "user-a", defaults: defaults))
+            XCTAssertNotNil(StateSnapshotStore.commitStateResponse(
+                tombstoneResponse, ticket: ticket, defaults: defaults))
+        }
+
+        let final = try XCTUnwrap(StateSnapshotStore.load(
+            userID: "user-a", defaults: defaults))
+        XCTAssertEqual(Set(final.state.sets.map(\.id)), ["set-a", "set-b"])
+        XCTAssertNotNil(
+            final.state.sets.first { $0.id == "set-a" }?.deleted_at)
+        XCTAssertEqual(
+            final.state.sets.first { $0.id == "set-a" }?.updated_at,
+            2_000_000_110_000)
+        XCTAssertTrue(final.state.external_events.isEmpty)
+        XCTAssertTrue(final.state.external_activities.isEmpty)
+        XCTAssertTrue(final.state.activities.isEmpty)
+        XCTAssertEqual(final.state.sessions.first?.status, "complete")
+    }
+
+    func testSameAccountResumesCursorButAccountChangeRequiresFullReload() throws {
+        let defaults = defaults()
+        XCTAssertTrue(StateSyncAccountStore.activate(
+            userID: "user-a", defaults: defaults))
+        StateSnapshotStore.save(
+            try state(planName: "A"), userID: "user-a", defaults: defaults)
+        StateSnapshotStore.save(
+            try state(planName: "B"), userID: "user-b", defaults: defaults)
+
+        XCTAssertFalse(StateSyncAccountStore.activate(
+            userID: "user-a", defaults: defaults))
+        XCTAssertNotEqual(
+            StateSnapshotStore.reserveStateRequest(
+                userID: "user-a", defaults: defaults)?.watermarks,
+            .fullReload)
+
+        XCTAssertTrue(StateSyncAccountStore.activate(
+            userID: "user-b", defaults: defaults))
+        XCTAssertTrue(StateSnapshotStore.requireFullReload(
+            userID: "user-b", defaults: defaults))
+        XCTAssertEqual(
+            StateSnapshotStore.reserveStateRequest(
+                userID: "user-b", defaults: defaults)?.watermarks,
+            .fullReload)
     }
 
     func testLaterReservationRejectsEarlierCommitRegardlessOfServerTime() throws {
@@ -217,6 +528,10 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             ticket, defaults: defaults))
         XCTAssertNil(StateSnapshotStore.load(
             userID: "user-a", defaults: defaults))
+        XCTAssertEqual(
+            StateSnapshotStore.reserveStateRequest(
+                userID: "user-a", defaults: defaults)?.watermarks,
+            .fullReload)
         XCTAssertNil(StateSnapshotStore.commitFullState(
             try state(planName: "Late full response"),
             ticket: ticket,

@@ -80,6 +80,7 @@ enum AccountLocalState {
             userID: userID, defaults: defaults)
         WorkoutRunnerCheckpointStore.clear(userID: userID, defaults: defaults)
         StateSnapshotStore.clear(userID: userID, defaults: defaults)
+        StateSyncAccountStore.clearIfActive(userID: userID, defaults: defaults)
         ExerciseCatalogSnapshotStore.clear(userID: userID, defaults: defaults)
         defaults.removeObject(forKey: intervalsConnectionKey(userID: userID))
         defaults.removeObject(forKey: healthEnabledKey(userID: userID))

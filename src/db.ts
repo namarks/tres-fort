@@ -2470,20 +2470,14 @@ export async function createPlan(
   meta: unknown = null,
 ): Promise<PlanRow> {
   const ts = now();
-  const plan: PlanRow = {
-    id: uuid(),
-    user_id: userId,
-    name,
-    status: 'active',
-    version: 1,
-    meta: meta == null ? null : JSON.stringify(meta),
-    created_at: ts,
-    updated_at: ts,
-  };
+  const planId = uuid();
+  const serializedMeta = meta == null ? null : JSON.stringify(meta);
   // Archive + replace in one D1 transaction. This also serializes against
   // ensureActivePlan's conflict-safe insert: an ensure cannot land between
   // these statements and make the replacement violate ux_one_active_plan.
-  await db.batch([
+  // Allocate from every prior plan inside that transaction so replacement
+  // never moves the per-user sync cursor backward or repeats it.
+  const results = await db.batch<PlanRow>([
     db
       .prepare(
         "UPDATE plans SET status = 'archived', updated_at = ?2 WHERE user_id = ?1 AND status = 'active'",
@@ -2491,19 +2485,17 @@ export async function createPlan(
       .bind(userId, ts),
     db
       .prepare(
-        'INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)',
+        `INSERT INTO plans
+           (id,user_id,name,status,version,meta,created_at,updated_at)
+         SELECT ?1,?2,?3,'active',COALESCE(MAX(version),0)+1,?4,?5,?5
+           FROM plans
+          WHERE user_id=?2
+         RETURNING *`,
       )
-      .bind(
-        plan.id,
-        plan.user_id,
-        plan.name,
-        plan.status,
-        plan.version,
-        plan.meta,
-        plan.created_at,
-        plan.updated_at,
-      ),
+      .bind(planId, userId, name, serializedMeta, ts),
   ]);
+  const plan = results[1]?.results[0];
+  if (!plan) throw new Error('active_plan_replace_missing_result');
   return plan;
 }
 
@@ -2522,27 +2514,21 @@ export async function ensureActivePlan(
   if (existing) return { plan: existing, created: false };
 
   const ts = now();
-  const candidate: PlanRow = {
-    id: uuid(),
-    user_id: userId,
-    name,
-    status: 'active',
-    version: 1,
-    meta: null,
-    created_at: ts,
-    updated_at: ts,
-  };
-  const inserted = await db
+  const candidateId = uuid();
+  const created = await db
     .prepare(
       `INSERT INTO plans
-       (id,user_id,name,status,version,meta,created_at,updated_at)
-       VALUES (?1,?2,?3,'active',1,NULL,?4,?4)
-       ON CONFLICT DO NOTHING`,
+         (id,user_id,name,status,version,meta,created_at,updated_at)
+       SELECT ?1,?2,?3,'active',COALESCE(MAX(version),0)+1,NULL,?4,?4
+         FROM plans
+        WHERE user_id=?2
+       ON CONFLICT DO NOTHING
+       RETURNING *`,
     )
-    .bind(candidate.id, candidate.user_id, candidate.name, ts)
-    .run();
-  if ((inserted.meta.changes ?? 0) === 1) {
-    return { plan: candidate, created: true };
+    .bind(candidateId, userId, name, ts)
+    .first<PlanRow>();
+  if (created) {
+    return { plan: created, created: true };
   }
 
   const winner = await getActivePlan(db, userId);
@@ -3933,13 +3919,15 @@ export async function discardSession(
     db
       .prepare(
         `UPDATE set_logs
-            SET deleted_at = ?2
+            SET deleted_at = ?2,
+                updated_at = MAX(updated_at + 1, ?2)
           WHERE session_id = ?1
             AND deleted_at IS NULL
             AND EXISTS (
               SELECT 1 FROM sessions
                WHERE id = ?1 AND status = 'discarded' AND attempt = ?3
-            )`,
+            )
+          RETURNING id`,
       )
       .bind(canonicalSessionId, ts, casAttempt),
     db
@@ -3967,7 +3955,10 @@ export async function discardSession(
     if (current) return sessionAttemptConflict(casAttempt, current);
     return null;
   }
-  const discardedSets = tombstones!.meta.changes;
+  // Count the outer statement's authoritative returned rows. D1 meta.changes
+  // also includes writes performed by compatibility triggers, so it is not a
+  // logical row count while migration 0034's legacy-update trigger exists.
+  const discardedSets = tombstones!.results.length;
   await writeAudit(
     db,
     userId,
@@ -4176,8 +4167,10 @@ export async function logSet(
     isTimedInt = exRow?.modality === 'timed' || exRow?.modality === 'cardio' ? 1 : 0;
   }
 
+  const setUpdatedAt = now();
   const row: SetLogRow = {
     id: input.id,
+    user_id: userId,
     session_id: canonicalSessionId,
     exercise_id: input.exercise_id,
     template_exercise_id: templateExerciseId,
@@ -4187,7 +4180,8 @@ export async function logSet(
     rpe: input.rpe ?? null,
     is_warmup: isWarmupInt,
     notes: input.notes ?? null,
-    logged_at: input.logged_at ?? now(),
+    logged_at: input.logged_at ?? setUpdatedAt,
+    updated_at: setUpdatedAt,
     source: input.source,
     duration_s: input.duration_s ?? null,
     is_timed: isTimedInt,
@@ -4205,10 +4199,11 @@ export async function logSet(
       db
         .prepare(
           `INSERT INTO set_logs
-           (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at)
-           SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL
+           (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at,user_id,updated_at)
+           SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL,user_id,?17
              FROM sessions
             WHERE id = ?2
+              AND user_id = ?18
               AND status != 'discarded'
               AND status != 'skipped'
               AND attempt = ?15
@@ -4219,6 +4214,7 @@ export async function logSet(
           row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
           row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
           row.duration_s, row.is_timed, casAttempt, attemptScoped ? 1 : 0,
+          row.updated_at, userId,
         ),
       // Claim/start only when this owned UUID now exists. Keeping the INSERT
       // first avoids mutating the session for a globally-colliding UUID, while
@@ -4429,14 +4425,11 @@ export async function patchSet(
   if (!row) return null;
   const has = (field: keyof typeof patch) =>
     Object.prototype.hasOwnProperty.call(patch, field);
-  // WARNING: this soft-delete is INVISIBLE to an incremental `sets_since`
-  // client — the getState sets query gates on the immutable `logged_at`,
-  // not deleted_at (see the WARNING on that query). Only safe while the
-  // iOS client full-reloads; needs a mutable updated_at cursor (follow-up).
+  const ts = now();
   const deletedAt =
     patch.deleted === undefined
       ? row.deleted_at
-      : row.deleted_at ?? now();
+      : row.deleted_at ?? ts;
   // Build a field-only UPDATE. A duration correction must not rewrite a
   // concurrently changed weight/RPE or resurrect a concurrently deleted row;
   // deleted_at is touched only for an explicit soft-delete. Undelete is not a
@@ -4455,6 +4448,8 @@ export async function patchSet(
   if (has('duration_s')) assign('duration_s', patch.duration_s);
   if (has('deleted')) assign('deleted_at', deletedAt);
   if (assignments.length > 0) {
+    values.push(ts);
+    assignments.push(`updated_at=MAX(updated_at + 1, ?${values.length})`);
     await runWorkoutWriteStatement(
       db,
       db
@@ -4493,7 +4488,7 @@ export async function patchSet(
                WHERE session_id = ?1 AND deleted_at IS NULL
             )`,
       )
-      .bind(row.session_id, now(), row.session_attempt),
+      .bind(row.session_id, ts, row.session_attempt),
     );
   }
   // Return a fresh row so the caller sees any disjoint concurrent correction
@@ -4518,6 +4513,10 @@ export async function getState(
   activitiesSince = 0,
   logSince = 0,
 ) {
+  // Capture the response watermark before any collection read. A write that
+  // commits after its collection was read will then have updated_at greater
+  // than this value and cannot be skipped by the next overlapping pull.
+  const serverTime = now();
   const plan = await getActivePlan(db, userId);
   const baseTree =
     plan && plan.version > sincePlanVersion ? await getPlanTree(db, userId) : null;
@@ -4544,19 +4543,25 @@ export async function getState(
     .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND updated_at > ?2 ORDER BY date')
     .bind(userId, setsSince)
     .all<SessionRow>();
-  // WARNING: `logged_at` is an IMMUTABLE incremental cursor — a set
-  // soft-deleted (deleted_at set) AFTER a client's watermark passed its
-  // logged_at is NEVER delivered incrementally (FIX3-class tombstone gap,
-  // like external_events). Only safe because the current iOS client
-  // full-reloads (sets_since=0). An incremental client needs a mutable
-  // set_logs `updated_at` cursor — tracked follow-up; see patchSet.
-  const sets = await db
-    .prepare(
-      `SELECT sl.* FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
-       WHERE s.user_id = ?1 AND sl.logged_at > ?2 ORDER BY sl.logged_at`,
-    )
-    .bind(userId, setsSince)
-    .all<SetLogRow>();
+  // Full reload preserves the existing complete shape. Incremental pulls use
+  // the server-owned mutable cursor directly from the member-first index and
+  // include soft-deleted rows as tombstones.
+  const sets = setsSince > 0
+    ? await db
+        .prepare(
+          `SELECT * FROM set_logs
+            WHERE user_id = ?1 AND updated_at > ?2
+            ORDER BY updated_at, id`,
+        )
+        .bind(userId, setsSince)
+        .all<SetLogRow>()
+    : await db
+        .prepare(
+          `SELECT sl.* FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
+            WHERE s.user_id = ?1 ORDER BY sl.logged_at`,
+        )
+        .bind(userId)
+        .all<SetLogRow>();
   // external_events ride a SEPARATE watermark (synced_at epoch-ms). This is
   // a server-owned reconciled cache: NOT gated on plans.version and a ride
   // sync NEVER bumps it. TWO explicit modes (iOS must match):
@@ -4609,8 +4614,8 @@ export async function getState(
   //  - FULL RELOAD  (log_since absent/0): full current non-deleted set.
   //  - INCREMENTAL  (log_since > 0): every row touched since the cursor
   //    INCLUDING soft-deleted ones, so a syncing client learns about
-  //    removals. Uses `logged_at` as the cursor for inserts and
-  //    `deleted_at` to surface tombstones past the cursor (see
+  //    removals. Uses server-owned `updated_at`, never the client-authored
+  //    event time, so clock skew cannot strand rows (see
   //    listActivitiesForUser for the delta-sync contract).
   const userActivities =
     logSince > 0
@@ -4631,7 +4636,7 @@ export async function getState(
     external_events: events.results,
     external_activities: activities.results,
     activities: userActivities,
-    server_time: now(),
+    server_time: serverTime,
   };
 }
 
@@ -4777,12 +4782,13 @@ export async function logActivity(
   input: ActivityInput,
   source: 'ios' | 'mcp',
 ): Promise<ActivityRow> {
-  const loggedAt = input.logged_at ?? now();
+  const updatedAt = now();
+  const loggedAt = input.logged_at ?? updatedAt;
   await db
     .prepare(
       `INSERT INTO activities
-         (id,user_id,date,type,title,duration_minutes,notes,logged_at,source,deleted_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL)
+         (id,user_id,date,type,title,duration_minutes,notes,logged_at,source,deleted_at,updated_at)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL,?10)
        ON CONFLICT(id) DO NOTHING`,
     )
     .bind(
@@ -4795,6 +4801,7 @@ export async function logActivity(
       input.notes ?? null,
       loggedAt,
       source,
+      updatedAt,
     )
     .run();
   // Re-select so retries return the *original* persisted row (preserving the
@@ -4828,7 +4835,9 @@ export async function softDeleteActivity(
   const ts = now();
   const r = await db
     .prepare(
-      `UPDATE activities SET deleted_at = ?3
+      `UPDATE activities
+          SET deleted_at = ?3,
+              updated_at = MAX(updated_at + 1, ?3)
        WHERE id = ?1 AND user_id = ?2 AND deleted_at IS NULL`,
     )
     .bind(activityId, userId, ts)
@@ -4840,27 +4849,22 @@ export async function softDeleteActivity(
 
 /**
  * Delta-sync read for /api/state. Returns every row TOUCHED since the
- * cursor — both fresh inserts (logged_at > since) AND tombstones
- * (deleted_at > since), so a syncing client can apply removals. Same
- * pattern as the set_logs sync described in DESIGN.md §7. Ordered by
- * logged_at so the client can advance its watermark monotonically.
+ * server-owned cursor, including tombstones, so skewed client event times
+ * cannot strand a row behind a server-time watermark. Same pattern as the
+ * set_logs sync described in DESIGN.md §7.
  */
 export async function listActivitiesForUser(
   db: D1Database,
   userId: string,
   sinceMs: number,
-  limit?: number,
 ): Promise<ActivityRow[]> {
-  const cap = typeof limit === 'number' && limit > 0 ? Math.min(limit, 1000) : 1000;
   const rows = await db
     .prepare(
       `SELECT * FROM activities
-       WHERE user_id = ?1
-         AND (logged_at > ?2 OR (deleted_at IS NOT NULL AND deleted_at > ?2))
-       ORDER BY logged_at
-       LIMIT ?3`,
+       WHERE user_id = ?1 AND updated_at > ?2
+       ORDER BY updated_at, id`,
     )
-    .bind(userId, sinceMs, cap)
+    .bind(userId, sinceMs)
     .all<ActivityRow>();
   return rows.results;
 }
@@ -5181,27 +5185,27 @@ export async function updatePlanTree(
       stmts.push(
         db
           .prepare(
-            `UPDATE sessions SET day_template_id = ?2
+            `UPDATE sessions SET day_template_id = ?2, updated_at = ?6
               WHERE day_template_id = ?1
                 AND EXISTS (
                   SELECT 1 FROM plans
                    WHERE id = ?3 AND user_id = ?4 AND status = 'active' AND version = ?5
                 )`,
           )
-          .bind(oldDayId, newDayId, plan.id, userId, plan.version),
+          .bind(oldDayId, newDayId, plan.id, userId, plan.version, ts),
       );
     } else {
       stmts.push(
         db
           .prepare(
-            `UPDATE sessions SET day_template_id = NULL
+            `UPDATE sessions SET day_template_id = NULL, updated_at = ?5
               WHERE day_template_id = ?1
                 AND EXISTS (
                   SELECT 1 FROM plans
                    WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
                 )`,
           )
-          .bind(oldDayId, plan.id, userId, plan.version),
+          .bind(oldDayId, plan.id, userId, plan.version, ts),
       );
     }
   }
@@ -5211,27 +5215,31 @@ export async function updatePlanTree(
       stmts.push(
         db
           .prepare(
-            `UPDATE set_logs SET template_exercise_id = ?2
+            `UPDATE set_logs
+                SET template_exercise_id = ?2,
+                    updated_at = MAX(updated_at + 1, ?6)
               WHERE template_exercise_id = ?1
                 AND EXISTS (
                   SELECT 1 FROM plans
                    WHERE id = ?3 AND user_id = ?4 AND status = 'active' AND version = ?5
                 )`,
           )
-          .bind(oldTeId, newTeId, plan.id, userId, plan.version),
+          .bind(oldTeId, newTeId, plan.id, userId, plan.version, ts),
       );
     } else {
       stmts.push(
         db
           .prepare(
-            `UPDATE set_logs SET template_exercise_id = NULL
+            `UPDATE set_logs
+                SET template_exercise_id = NULL,
+                    updated_at = MAX(updated_at + 1, ?5)
               WHERE template_exercise_id = ?1
                 AND EXISTS (
                   SELECT 1 FROM plans
                    WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
                 )`,
           )
-          .bind(oldTeId, plan.id, userId, plan.version),
+          .bind(oldTeId, plan.id, userId, plan.version, ts),
       );
     }
   }
@@ -5494,12 +5502,18 @@ export async function deleteTemplateExercise(
 ): Promise<TemplateExerciseRow | null> {
   const slot = await findSlot(db, userId, ref);
   if (!slot) return null;
+  const ts = now();
   await runWorkoutWriteBatch(
     db,
     [
       db
-        .prepare('UPDATE set_logs SET template_exercise_id = NULL WHERE template_exercise_id = ?1')
-        .bind(slot.id),
+        .prepare(
+          `UPDATE set_logs
+              SET template_exercise_id = NULL,
+                  updated_at = MAX(updated_at + 1, ?2)
+            WHERE template_exercise_id = ?1`,
+        )
+        .bind(slot.id, ts),
       db.prepare('DELETE FROM template_exercises WHERE id = ?1').bind(slot.id),
     ],
   );
@@ -6286,7 +6300,9 @@ export async function deleteDayTemplate(
       .bind(userId, dayId, plan.id, writeVersion, ts),
     db
       .prepare(
-        `UPDATE set_logs SET template_exercise_id = NULL
+        `UPDATE set_logs
+            SET template_exercise_id = NULL,
+                updated_at = MAX(updated_at + 1, ?5)
           WHERE template_exercise_id IN (
             SELECT id FROM template_exercises WHERE day_template_id = ?1
           )
@@ -6301,7 +6317,7 @@ export async function deleteDayTemplate(
                  AND active_session.status = 'in_progress'
             )`,
       )
-      .bind(dayId, plan.id, userId, writeVersion),
+      .bind(dayId, plan.id, userId, writeVersion, ts),
     db
       .prepare(
         `DELETE FROM template_exercises WHERE day_template_id = ?1

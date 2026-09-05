@@ -131,6 +131,7 @@ No second editor, no per-session template copies, no weeks table.
 |---|---|---|---|
 | P0 | coordinates_with | plan:member-activation-and-adherence#P0 | Both edit the no-plan and Today entry surfaces; do not run concurrently on the same iOS files. |
 | P1 | coordinates_with | plan:reversible-plan-management#P0 | Snapshots must serialize `tags` and `archived_at`; land whichever ships second against the other's serializer. |
+| P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `day_templates` columns and serializers; whichever lands second rebases onto the other's migration. |
 | P2 | coordinates_with | plan:gym-runner-depth#P0 | Both change the runner's exercise list and value entry; share the runner slice rather than fork it. |
 | P2 | feeds | plan:coaching-feedback-loop | Freestyle sessions and save-as-workout give the coach evidence of what a member actually does when the plan breaks. |
 
@@ -161,22 +162,13 @@ over existing endpoints; it can ship in one slice with no migration.
 - Open: freestyle sessions and group feeds. A freestyle session has no
   template name for `get_group_feed`; show "Freestyle · N exercises" and
   revisit with `group-experience-and-governance`.
-- Naming: `day_templates` is a historical name from the original weekly-split
-  design, where a template was "a training day" (Lower A). The concept this
-  plan works with is a workout, and P0 uses "workout" everywhere a member or
-  the coach sees it. Renaming the table, its foreign keys, the REST paths
-  (`/api/days`), and the MCP tools (`add_day`, `update_day`) is a migration
-  and an API break for no behavior change, so the storage name stays.
-- Constraint, not addressed here: `ux_session_user_date` (migration `0029`)
-  makes one session per member per civil date a hard invariant, and the
-  attempt CAS, calendar cells, and iOS projection all key on that date. Two
-  strength workouts in one day are therefore not representable today, by
-  library or by routine. Supporting it means a session-per-(date, ordinal)
-  model touching `getOrCreateSession`, `PUT /api/calendar/{date}`,
-  `projectCalendar`, and `CalendarProjection.swift` in parity. Record it as
-  a candidate; promote only when a member actually trains twice a day and
-  the second session is not an endurance activity (which already lands in
-  `external_activities` alongside the strength session).
+- Naming and one-session-per-date are both real constraints this plan works
+  within: `day_templates` is a historical name for what is really a workout,
+  and `ux_session_user_date` (migration `0029`) forbids two strength sessions
+  on one civil date. Both are addressed by
+  [Workouts and multi-session days](../workouts-and-multi-session/plan.md);
+  P0 here uses "workout" in every member- and coach-facing string but keeps
+  the storage and API names until that plan's rename lands.
 - `sessions.kind` is the one new session-log column. It is set at creation
   and never changes, so it does not disturb the attempt CAS or the
   `(user_id, date)` uniqueness rule.

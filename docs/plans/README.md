@@ -117,6 +117,11 @@ AI coaching.
   date, add tags and archive, and support a freestyle session that can be
   saved as a workout. The weekly routine becomes one optional use of the
   library.
+- [Workouts and multi-session days](workouts-and-multi-session/plan.md) —
+  **planned**; rename `day_templates` to `workouts` end to end with a
+  compatibility window, then allow an ordered list of sessions per date so a
+  member can record two strength workouts in one day without changing any
+  single-session guarantee.
 - [Bodyweight training support](bodyweight-training-support/plan.md) —
   **planned**; make holds, rep ranges, added load, assistance, and rep-based
   history first-class for calisthenics and bodyweight-first members, and seed

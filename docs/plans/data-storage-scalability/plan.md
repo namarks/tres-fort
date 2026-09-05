@@ -1,6 +1,6 @@
 # Data Storage Scalability
 
-Slug: data-storage-scalability · Status: active · Updated: 2026-09-04 · Theme: platform
+Slug: data-storage-scalability · Status: active · Updated: 2026-09-05 · Theme: platform
 
 ## Goal
 
@@ -40,7 +40,8 @@ Done means:
     immediate mitigation is the paid tier. The measured natural cron also used
     32 ms CPU against Free's nominal 10 ms limit; its successful outcome
     reflects Cloudflare's documented flexibility for infrequent overages, not
-    safe recurring headroom.
+    safe recurring headroom. On 2026-09-05 the owner chose to mitigate on Free;
+    P0.5 records that independently executable slice.
   - Log D1 `meta.rows_read` / `rows_written` per request for `GET /api/state`,
     `GET /api/me`, the `get_history` MCP tool, and per cron tick, as one
     structured console line each (Workers observability is already on).
@@ -63,6 +64,36 @@ Done means:
     census and the natural cron total are captured, with exact personal and
     auth-state counts intentionally omitted from the public repository; the
     three authenticated owner-path totals remain outstanding.
+- [ ] **P0.5 — Fit the natural cron inside the Free CPU limit**
+  - Owner decision 2026-09-05: **Mitigate on Free**. Keep the single hourly
+    webhook-backstop trigger and optimize the activity reconcile; this authorizes
+    local implementation and review of this slice, not a plan purchase,
+    production deployment, migration, or manual production cron trigger.
+  - Bound post-intervals HealthKit candidates to the completed-activity sync
+    window plus one civil day on either side for two-minute cross-midnight
+    matches. Look up intervals winners one additional civil day beyond that so
+    a boundary duplicate is not restored while its adjacent-day winner is still
+    live. Use the existing `external_activities(user_id, date)` index and a
+    kind/time-ordered nearest-match lookup instead of the lifetime
+    HealthKit-by-intervals nested scan. Enforce the existing official-client
+    invariant that a non-null local-wall-clock timestamp encodes the same civil
+    date before a HealthKit write reaches D1. Do not add an index or change the
+    fetch window, webhook-primary behavior, cache ownership, or P2/P4 contracts.
+  - Preserve exact matching behavior: same user and kind, live intervals rows,
+    live or dedup-retired HealthKit rows, non-null local timestamps, inclusive
+    two-minute tolerance, deterministic nearest winner, and restoration when
+    the intervals winner disappears. HealthKit rows deleted for another reason
+    remain untouched.
+  - Evidence: focused tests cover retirement, restoration, source and kind
+    isolation, inclusive tolerance, deterministic ties, window boundaries, and
+    both midnight edges; a real-D1 fixture and query plan prove old history no
+    longer contributes billed reads or matching work on the bounded cron path.
+    Done locally 2026-09-05: implementation, full-suite verification, Wrangler
+    dry-run, and independent exact-head review passed; no migration or trigger
+    change is part of the reviewed source.
+    After a separately authorized exact-source deployment, at least three
+    natural hourly ticks must remain successful and below the Free 10 ms CPU
+    limit before this phase is complete.
 - [ ] **P1 — Sync only what changed (sets and sessions)**
   - Migration: add `set_logs.user_id` (NOT NULL, backfilled from
     `sessions.user_id`, with a parity assertion that every row matches its
@@ -189,19 +220,21 @@ Done means:
 ## Execution frontier
 
 - P0
+- P0.5
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
+| P0.5 | coordinates_with | plan:activity-integration-integrity#P2 | Both exercise activity correction/deletion convergence and the existing intervals-to-HealthKit dedup regression boundary; preserve its semantics and do not edit the same reconcile path concurrently. |
 | P1 | coordinates_with | plan:activity-integration-integrity#P2 | Both change how tombstones ride `/api/state`; land the cursor rule once and share it. |
 | P2 | coordinates_with | plan:activity-integration-integrity#P2 | Both edit the intervals reconcile upsert; do not run concurrently. |
 | P5 | gated_by | external:owner-retention-decision | Deleting or trimming audit and source data is an owner data-retention decision, not an inferred cleanup. |
 
 ## Next step
 
-**Now (@owner):** Foreground the production iOS app and open Profile once, then use the OAuth-connected Claude coach to request bench history once; also choose Paid now or authorize a focused cron CPU mitigation, because the measured 32 ms tick exceeds Free's nominal 10 ms limit despite succeeding.
-**Now (@agent):** Record those three authenticated per-path Workers Logs totals in `decisions.md`; then complete P0 and start P1 locally with the server migration and `getState` before the iOS client. Do not release another production change until the owner resolves the tier-or-mitigation gate.
+**Now (@owner):** Foreground the production iOS app and open Profile once, then use the OAuth-connected Claude coach to request bench history once; these two actions complete the three outstanding authenticated P0 traffic samples. Separately authorize a deploy-only P0.5 production release if the reviewed mitigation should enter natural-tick validation.
+**Now (@agent):** Record the authenticated P0 samples when they arrive and hold the reviewed P0.5 mitigation at the production gate. Stop before any production deployment, migration, manual production cron trigger, plan purchase, or TestFlight build.
 
 ## Notes / open questions
 
@@ -237,6 +270,9 @@ Done means:
 - Production still has unrelated migration
   `0033_gymnastic_strength_catalog.sql` pending. The next repository release
   would apply it before P1's `0034`; neither migration is authorized by this
-  plan writeback.
-- This plan does not authorize a production migration, a plan-tier purchase,
-  or a TestFlight build. Each is a separate owner action.
+  plan writeback. P0.5 is intentionally migration-free; a future separately
+  authorized release of it must use deploy-only delivery rather than
+  `npm run release`, so it does not implicitly apply `0033`.
+- This plan does not authorize a production deployment, production migration,
+  manual production cron trigger, plan-tier purchase, or TestFlight build.
+  Each is a separate owner action.

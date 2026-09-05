@@ -112,6 +112,11 @@ AI coaching.
 - [Member activation and adherence](member-activation-and-adherence/plan.md) —
   **planned**; make onboarding, coach connection, invite continuation, and
   lightweight reminders coherent.
+- [Workout library](workout-library/plan.md) — **planned**; present
+  reusable workouts as the primary object, let a member drop one onto any
+  date, add tags and archive, and support a freestyle session that can be
+  saved as a workout. The weekly routine becomes one optional use of the
+  library.
 - [Bodyweight training support](bodyweight-training-support/plan.md) —
   **planned**; make holds, rep ranges, added load, assistance, and rep-based
   history first-class for calisthenics and bodyweight-first members, and seed

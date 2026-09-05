@@ -180,6 +180,74 @@ tests passed, and diff hygiene passed. The P1 production migration/Worker
 release, production before/after traffic, and iOS distribution remain separate
 delivery evidence and are not authorized by this record.
 
+Repository delivery completed on 2026-09-05 through PR #124. Required CI and
+independent review passed on exact head `cf6cb83`; squash merge `647a9f6` has
+the same tree, and post-merge main CI passed. No deployment, database migration,
+or TestFlight distribution ran as part of that delivery.
+
+P2 uses an explicit rolling-protocol capability rather than inferring safety
+from the external arrays, which older Workers already emit. A P2 Worker adds
+top-level `external_sync_cursors_version: 2` to `/api/state`; compatible iOS
+builds activate both `events_since` and `activities_since` only when the value
+is at least 2. An absent or lower value holds both at zero, so a mixed-version
+rollout or server rollback returns to complete external-cache reloads.
+
+## 2026-09-05 — P2 local change-cursor implementation
+
+P2 makes `synced_at` a true change cursor across both external cache tables.
+Intervals event and activity upserts compare every normalized stored field with
+null-safe equality, ignore raw provider JSON as a change signal, and update raw
+only alongside an extracted-field change. Unchanged and raw-only-different
+responses therefore perform zero writes and leave both raw and the cursor
+unchanged. Corrections, tombstones, resurrection, and cross-source dedup state
+changes advance the cursor strictly even if the Worker clock has not advanced.
+
+A provider HTTP 200 is accepted or rejected as one cache input. Deliberately
+filtered rows are ignored before their irrelevant fields are validated, but a
+missing or malformed planned-event category discriminator, malformed relevant
+id or local civil timestamp, or a non-record array member returns a parse
+failure before any D1 statement runs. This prevents a partially parsed response
+from updating its valid rows and tombstoning previously cached rows that the
+parser skipped. The local timestamp parser accepts the provider's zone-free
+seconds form plus one-to-three fractional digits, validates the civil calendar
+rather than relying on JavaScript date normalization, and rejects zone suffixes
+on a field whose contract is local time.
+
+The reconcile tombstone statement passes all seen provider ids as one JSON
+value and expands it with SQLite `json_each`. Its bind count is constant instead
+of growing with the response, so a normal window cannot cross D1's 100-bound-
+parameter ceiling. Query-plan evidence requires the list subquery to be
+materialized rather than correlated, while 120-row integration cases prove the
+event and activity paths still respect tenant and source boundaries.
+
+Because `activities_since` covers all sources, HealthKit same-UUID retries use
+the same change-only rule. An unchanged retry preserves a dedup-retired row's
+tombstone, canonical bit, and winner provenance; a real extracted revision
+updates the row before the existing deterministic dedup pass restores the
+correct state.
+
+Migration `0035` adds member-first cursor indexes on both external tables. It
+does not backfill application data, but index creation writes entries for every
+existing row once. Afterward, a real cache-row mutation bills three rows in the
+measured schema (base row, existing member/date index, and new member/cursor
+index), while a no-op bills zero. Empty external delta queries name the new
+indexes and read at most two billed rows in the local real-D1 tests.
+
+Local evidence passed 106 focused cache tests, all 44 backend files / 600 tests,
+TypeScript, and all 273 iOS simulator tests. The raw-drift regressions use two
+distinct synthetic response shapes per provider endpoint; they prove the code
+path but are not relabeled as real captures. No authorized sanitized pair of
+same-window intervals.icu responses exists in the repository, so that replay
+remains a live evidence gate alongside the post-release quiet-hour log.
+
+Production rollout remains server-first: have the combined P1/P2 Worker ready,
+apply pending migrations `0033`, `0034`, then additive `0035`, deploy the Worker
+that advertises cursor version 2 immediately, and distribute incremental iOS
+only afterward. If the Worker deploy fails after the migrations commit, roll
+forward with the prepared Worker rather than attempting to reverse an index or
+cursor migration. None of those production or distribution actions is
+authorized by this local record.
+
 ## 2026-09-04 — D1 daily baseline (P0, dashboard aggregate)
 
 Source: D1 → `tres-fort-db` → Overview, "Last 24 hours", region WNAM, read

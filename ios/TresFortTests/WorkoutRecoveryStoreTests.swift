@@ -13,9 +13,10 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
 
     private func state(
         planName: String = "Cached Plan",
-        serverTime: Int = 2_000_000_000_000
+        serverTime: Int = 2_000_000_000_000,
+        externalSyncCursorsVersion: Int? = nil
     ) throws -> StateResponse {
-        let object: [String: Any] = [
+        var object: [String: Any] = [
             "plan": [
                 "id": "plan-a",
                 "name": planName,
@@ -63,6 +64,10 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             "activities": [],
             "server_time": serverTime,
         ]
+        if let externalSyncCursorsVersion {
+            object["external_sync_cursors_version"] =
+                externalSyncCursorsVersion
+        }
         let data = try JSONSerialization.data(withJSONObject: object)
         return try JSONDecoder().decode(StateResponse.self, from: data)
     }
@@ -90,7 +95,11 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             updated_at: updatedAt)
     }
 
-    private func event(id: String, deletedAt: Int? = nil) -> ExternalEvent {
+    private func event(
+        id: String,
+        deletedAt: Int? = nil,
+        syncedAt: Int? = 1_000
+    ) -> ExternalEvent {
         ExternalEvent(
             id: id,
             source: "intervals",
@@ -102,13 +111,14 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             planned_duration_sec: 3_600,
             training_load: nil,
             intensity: nil,
-            synced_at: 1_000,
+            synced_at: syncedAt,
             deleted_at: deletedAt)
     }
 
     private func externalActivity(
         id: String,
-        deletedAt: Int? = nil
+        deletedAt: Int? = nil,
+        syncedAt: Int? = 1_000
     ) -> ExternalActivity {
         ExternalActivity(
             id: id,
@@ -128,7 +138,7 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             intensity: nil,
             calories: nil,
             elevation_gain_m: nil,
-            synced_at: 1_000,
+            synced_at: syncedAt,
             deleted_at: deletedAt)
     }
 
@@ -236,6 +246,281 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
         let next = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(
             userID: "user-a", defaults: defaults))
         XCTAssertEqual(next.watermarks, expected)
+    }
+
+    func testP2ExternalCursorCapabilityUsesOverlapAndComparableRows() throws {
+        let serverTime = 2_000_000_123_456
+        let baseline = try state(serverTime: serverTime)
+        let capable = StateResponse(
+            plan: baseline.plan,
+            plan_version: baseline.plan_version,
+            sessions: baseline.sessions,
+            sets: baseline.sets,
+            external_events: [event(id: "event-a")],
+            external_activities: [externalActivity(id: "activity-a")],
+            activities: baseline.activities,
+            server_time: serverTime,
+            externalSyncCursorsVersion: 2)
+        let expectedCursor = serverTime
+            - StateSyncWatermarks.overlapMilliseconds
+
+        XCTAssertEqual(capable.externalSyncCursorsVersion, 2)
+        XCTAssertEqual(
+            StateSyncWatermarks.next(after: capable).eventsSince,
+            expectedCursor)
+        XCTAssertEqual(
+            StateSyncWatermarks.next(after: capable).activitiesSince,
+            expectedCursor)
+
+        let incomparableEvent = StateResponse(
+            plan: baseline.plan,
+            plan_version: baseline.plan_version,
+            sessions: baseline.sessions,
+            sets: baseline.sets,
+            external_events: [event(id: "event-a", syncedAt: nil)],
+            external_activities: [externalActivity(id: "activity-a")],
+            activities: baseline.activities,
+            server_time: serverTime,
+            externalSyncCursorsVersion: 2)
+        XCTAssertEqual(
+            StateSyncWatermarks.next(after: incomparableEvent).eventsSince,
+            0)
+        XCTAssertEqual(
+            StateSyncWatermarks.next(after: incomparableEvent)
+                .activitiesSince,
+            expectedCursor)
+
+        let incomparableActivity = StateResponse(
+            plan: baseline.plan,
+            plan_version: baseline.plan_version,
+            sessions: baseline.sessions,
+            sets: baseline.sets,
+            external_events: [event(id: "event-a")],
+            external_activities: [externalActivity(
+                id: "activity-a", syncedAt: nil)],
+            activities: baseline.activities,
+            server_time: serverTime,
+            externalSyncCursorsVersion: 2)
+        XCTAssertEqual(
+            StateSyncWatermarks.next(after: incomparableActivity).eventsSince,
+            expectedCursor)
+        XCTAssertEqual(
+            StateSyncWatermarks.next(after: incomparableActivity)
+                .activitiesSince,
+            0)
+    }
+
+    func testP2CapabilityRequiresVersionTwoAndStrictExternalArrays() throws {
+        let serverTime = 2_000_000_123_456
+        for version in [nil, 1] as [Int?] {
+            let response = try state(
+                serverTime: serverTime,
+                externalSyncCursorsVersion: version)
+            let watermarks = StateSyncWatermarks.next(after: response)
+            XCTAssertEqual(watermarks.eventsSince, 0)
+            XCTAssertEqual(watermarks.activitiesSince, 0)
+        }
+
+        let capable = try state(
+            serverTime: serverTime,
+            externalSyncCursorsVersion: 2)
+        XCTAssertEqual(capable.externalSyncCursorsVersion, 2)
+        let persisted = try JSONDecoder().decode(
+            StateResponse.self,
+            from: JSONEncoder().encode(capable))
+        XCTAssertEqual(persisted.externalSyncCursorsVersion, 2)
+
+        let encoded = try JSONEncoder().encode(capable)
+        let baseObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        for key in ["external_events", "external_activities"] {
+            var missing = baseObject
+            missing.removeValue(forKey: key)
+            XCTAssertThrowsError(try JSONDecoder().decode(
+                StateResponse.self,
+                from: JSONSerialization.data(withJSONObject: missing)))
+
+            var null = baseObject
+            null[key] = NSNull()
+            XCTAssertThrowsError(try JSONDecoder().decode(
+                StateResponse.self,
+                from: JSONSerialization.data(withJSONObject: null)))
+
+            var malformed = baseObject
+            malformed[key] = [["id": 123]]
+            XCTAssertThrowsError(try JSONDecoder().decode(
+                StateResponse.self,
+                from: JSONSerialization.data(withJSONObject: malformed)))
+        }
+
+        var malformedCapability = baseObject
+        malformedCapability["external_sync_cursors_version"] = "2"
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            StateResponse.self,
+            from: JSONSerialization.data(withJSONObject: malformedCapability)))
+    }
+
+    func testP2RollbackResetsExternalCursorsThenLegacyFullReplaces() throws {
+        let defaults = defaults()
+        let initialTime = 2_000_000_000_000
+        let baseline = try state(serverTime: initialTime)
+        let initial = StateResponse(
+            plan: baseline.plan,
+            plan_version: baseline.plan_version,
+            sessions: baseline.sessions,
+            sets: baseline.sets,
+            external_events: [event(id: "event-a")],
+            external_activities: [externalActivity(id: "activity-a")],
+            activities: baseline.activities,
+            server_time: initialTime,
+            externalSyncCursorsVersion: 2)
+        StateSnapshotStore.save(
+            initial, userID: "user-a", defaults: defaults)
+
+        let rollbackTicket = try XCTUnwrap(
+            StateSnapshotStore.reserveStateRequest(
+                userID: "user-a", defaults: defaults))
+        XCTAssertGreaterThan(rollbackTicket.watermarks.eventsSince, 0)
+        XCTAssertGreaterThan(rollbackTicket.watermarks.activitiesSince, 0)
+        let rollback = StateResponse(
+            plan: nil,
+            plan_version: baseline.plan_version,
+            sessions: [],
+            sets: [],
+            external_events: [],
+            external_activities: [],
+            activities: [],
+            server_time: initialTime + 100_000)
+        let afterRollback = try XCTUnwrap(
+            StateSnapshotStore.commitStateResponse(
+                rollback,
+                ticket: rollbackTicket,
+                defaults: defaults))
+        XCTAssertEqual(afterRollback.state.external_events.map(\.id), ["event-a"])
+        XCTAssertEqual(
+            afterRollback.state.external_activities.map(\.id), ["activity-a"])
+        XCTAssertEqual(afterRollback.watermarks?.eventsSince, 0)
+        XCTAssertEqual(afterRollback.watermarks?.activitiesSince, 0)
+
+        let legacyFullTicket = try XCTUnwrap(
+            StateSnapshotStore.reserveStateRequest(
+                userID: "user-a", defaults: defaults))
+        XCTAssertEqual(legacyFullTicket.watermarks.eventsSince, 0)
+        XCTAssertEqual(legacyFullTicket.watermarks.activitiesSince, 0)
+        let legacyFull = StateResponse(
+            plan: nil,
+            plan_version: baseline.plan_version,
+            sessions: [],
+            sets: [],
+            external_events: [event(id: "event-b")],
+            external_activities: [externalActivity(id: "activity-b")],
+            activities: [],
+            server_time: initialTime + 200_000)
+        let replaced = try XCTUnwrap(
+            StateSnapshotStore.commitStateResponse(
+                legacyFull,
+                ticket: legacyFullTicket,
+                defaults: defaults))
+        XCTAssertEqual(replaced.state.external_events.map(\.id), ["event-b"])
+        XCTAssertEqual(
+            replaced.state.external_activities.map(\.id), ["activity-b"])
+        XCTAssertEqual(replaced.watermarks?.eventsSince, 0)
+        XCTAssertEqual(replaced.watermarks?.activitiesSince, 0)
+    }
+
+    func testP2ExternalTombstonesMergeIdempotently() throws {
+        let defaults = defaults()
+        let initialTime = 2_000_000_000_000
+        let baseline = try state(serverTime: initialTime)
+        StateSnapshotStore.save(
+            StateResponse(
+                plan: baseline.plan,
+                plan_version: baseline.plan_version,
+                sessions: baseline.sessions,
+                sets: baseline.sets,
+                external_events: [event(id: "event-a")],
+                external_activities: [externalActivity(id: "activity-a")],
+                activities: baseline.activities,
+                server_time: initialTime,
+                externalSyncCursorsVersion: 2),
+            userID: "user-a",
+            defaults: defaults)
+
+        let tombstoneTime = initialTime + 10_000
+        let tombstones = StateResponse(
+            plan: nil,
+            plan_version: baseline.plan_version,
+            sessions: [],
+            sets: [],
+            external_events: [event(
+                id: "event-a",
+                deletedAt: tombstoneTime,
+                syncedAt: tombstoneTime)],
+            external_activities: [externalActivity(
+                id: "activity-a",
+                deletedAt: tombstoneTime,
+                syncedAt: tombstoneTime)],
+            activities: [],
+            server_time: initialTime + 100_000,
+            externalSyncCursorsVersion: 2)
+        for _ in 0..<2 {
+            let ticket = try XCTUnwrap(
+                StateSnapshotStore.reserveStateRequest(
+                    userID: "user-a", defaults: defaults))
+            XCTAssertGreaterThan(ticket.watermarks.eventsSince, 0)
+            XCTAssertGreaterThan(ticket.watermarks.activitiesSince, 0)
+            XCTAssertNotNil(StateSnapshotStore.commitStateResponse(
+                tombstones, ticket: ticket, defaults: defaults))
+        }
+
+        let final = try XCTUnwrap(StateSnapshotStore.load(
+            userID: "user-a", defaults: defaults))
+        XCTAssertTrue(final.state.external_events.isEmpty)
+        XCTAssertTrue(final.state.external_activities.isEmpty)
+        XCTAssertEqual(
+            final.watermarks?.eventsSince,
+            tombstones.server_time - StateSyncWatermarks.overlapMilliseconds)
+        XCTAssertEqual(
+            final.watermarks?.activitiesSince,
+            tombstones.server_time - StateSyncWatermarks.overlapMilliseconds)
+    }
+
+    func testMalformedP2ExternalPayloadDoesNotAdvanceCommittedCursors() throws {
+        for key in ["external_events", "external_activities"] {
+            let defaults = defaults()
+            StateSnapshotStore.save(
+                try state(
+                    serverTime: 2_000_000_000_000,
+                    externalSyncCursorsVersion: 2),
+                userID: "user-a",
+                defaults: defaults)
+            let priorWatermarks = try XCTUnwrap(StateSnapshotStore.load(
+                userID: "user-a", defaults: defaults)?.watermarks)
+            XCTAssertGreaterThan(priorWatermarks.eventsSince, 0)
+            XCTAssertGreaterThan(priorWatermarks.activitiesSince, 0)
+            let ticket = try XCTUnwrap(
+                StateSnapshotStore.reserveStateRequest(
+                    userID: "user-a", defaults: defaults))
+
+            let encoded = try JSONEncoder().encode(try state(
+                serverTime: 2_000_000_100_000,
+                externalSyncCursorsVersion: 2))
+            var object = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: encoded)
+                    as? [String: Any])
+            object[key] = [["id": 123]]
+            let malformed = try JSONSerialization.data(
+                withJSONObject: object)
+
+            XCTAssertThrowsError(try JSONDecoder().decode(
+                StateResponse.self, from: malformed))
+            XCTAssertTrue(StateSnapshotStore.isCurrent(
+                ticket, defaults: defaults))
+            XCTAssertEqual(
+                StateSnapshotStore.load(
+                    userID: "user-a", defaults: defaults)?.watermarks,
+                priorWatermarks)
+        }
     }
 
     func testManualActivityCursorCapabilityDistinguishesLegacyAndP1Payloads() throws {
@@ -419,9 +704,27 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
         XCTAssertTrue(StateSyncAccountStore.activate(
             userID: "user-a", defaults: defaults))
         StateSnapshotStore.save(
-            try state(planName: "A"), userID: "user-a", defaults: defaults)
+            try state(
+                planName: "A",
+                serverTime: 2_000_000_000_000,
+                externalSyncCursorsVersion: 2),
+            userID: "user-a", defaults: defaults)
         StateSnapshotStore.save(
-            try state(planName: "B"), userID: "user-b", defaults: defaults)
+            try state(
+                planName: "B",
+                serverTime: 2_000_000_100_000,
+                externalSyncCursorsVersion: 2),
+            userID: "user-b", defaults: defaults)
+
+        let accountAWatermarks = try XCTUnwrap(StateSnapshotStore.load(
+            userID: "user-a", defaults: defaults)?.watermarks)
+        let accountBWatermarks = try XCTUnwrap(StateSnapshotStore.load(
+            userID: "user-b", defaults: defaults)?.watermarks)
+        XCTAssertGreaterThan(accountAWatermarks.eventsSince, 0)
+        XCTAssertGreaterThan(accountAWatermarks.activitiesSince, 0)
+        XCTAssertNotEqual(
+            accountAWatermarks.eventsSince,
+            accountBWatermarks.eventsSince)
 
         XCTAssertFalse(StateSyncAccountStore.activate(
             userID: "user-a", defaults: defaults))
@@ -438,6 +741,10 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             StateSnapshotStore.reserveStateRequest(
                 userID: "user-b", defaults: defaults)?.watermarks,
             .fullReload)
+        XCTAssertEqual(
+            StateSnapshotStore.load(
+                userID: "user-a", defaults: defaults)?.watermarks,
+            accountAWatermarks)
     }
 
     func testLaterReservationRejectsEarlierCommitRegardlessOfServerTime() throws {

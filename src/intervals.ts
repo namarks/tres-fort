@@ -93,15 +93,50 @@ function num(v: unknown): number | null {
 }
 
 /**
- * Parse an intervals.icu `start_date_local` ("YYYY-MM-DDTHH:MM:SS") to
- * epoch-ms by treating it as UTC. Used ONLY as an ordering key for the
- * group feed — comparing the same civil-time strings across users in
- * different timezones gives a stable, reproducible numeric order without
- * needing a per-user timezone lookup. Returns null on any parse failure.
+ * Validate an intervals.icu `start_date_local` civil timestamp and map it to
+ * the epoch-ms ordering key used by the group feed. `Date.parse` alone is not
+ * sufficient because JavaScript normalises impossible dates (for example,
+ * February 30) instead of rejecting them. Fractional seconds are accepted,
+ * but timezone suffixes are not: this provider field is explicitly local.
  */
-function parseCivilToMs(startLocal: string): number | null {
-  const ms = Date.parse(startLocal + 'Z');
-  return Number.isFinite(ms) ? ms : null;
+function parseCivilTimestamp(v: unknown): { value: string; ms: number } | null {
+  if (typeof v !== 'string') return null;
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/.exec(v);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const millisecond = Number((match[7] ?? '').padEnd(3, '0'));
+  const parsed = new Date(0);
+  parsed.setUTCFullYear(year, month - 1, day);
+  parsed.setUTCHours(hour, minute, second, millisecond);
+  if (
+    parsed.getUTCFullYear() !== year ||
+    parsed.getUTCMonth() !== month - 1 ||
+    parsed.getUTCDate() !== day ||
+    parsed.getUTCHours() !== hour ||
+    parsed.getUTCMinutes() !== minute ||
+    parsed.getUTCSeconds() !== second ||
+    parsed.getUTCMilliseconds() !== millisecond
+  ) {
+    return null;
+  }
+  return { value: v, ms: parsed.getTime() };
+}
+
+/** Provider ids are JSON scalars, but booleans and blank strings are not ids. */
+function providerId(v: unknown): string | null {
+  if (typeof v === 'string') return v.trim().length > 0 ? v : null;
+  return typeof v === 'number' && Number.isFinite(v) ? String(v) : null;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
 function str(v: unknown): string | null {
@@ -179,27 +214,37 @@ export async function fetchPlannedEvents(
   if (!Array.isArray(body)) return { ok: false, reason: 'parse' };
 
   const events: PlannedEvent[] = [];
-  for (const raw of body as Record<string, unknown>[]) {
-    if (!raw || typeof raw !== 'object') continue;
-    if (String(raw.category ?? '') !== 'WORKOUT') continue;
+  for (const item of body) {
+    // A non-record cannot be safely classified as a deliberately ignored
+    // provider row, so fail the complete response closed before D1 mutation.
+    if (!isRecord(item)) return { ok: false, reason: 'parse' };
+    const raw = item;
+    // Category is the discriminator that makes a row intentionally
+    // irrelevant. Missing, non-string, or blank values cannot be safely
+    // classified as non-workouts: accepting the rest of the response could
+    // tombstone cached events omitted by provider schema drift.
+    if (typeof raw.category !== 'string' || raw.category.trim().length === 0) {
+      return { ok: false, reason: 'parse' };
+    }
+    if (raw.category !== 'WORKOUT') continue;
     // Never ingest a (now-legacy) Tres Fort lift export back into the
     // endurance cache. The one-way load export was removed, but WeightTraining
     // events it wrote previously may still exist in a user's intervals.icu
     // account; keeping them out of `external_events` keeps it endurance-only
     // and avoids detectConflicts flagging a lift day against its own old event.
     if (isTresFortExport(raw)) continue;
-    const externalId = raw.id != null ? String(raw.id) : null;
-    const startLocal = str(raw.start_date_local);
-    if (!externalId || !startLocal) continue;
+    const externalId = providerId(raw.id);
+    const startLocal = parseCivilTimestamp(raw.start_date_local);
+    if (externalId === null || startLocal === null) return { ok: false, reason: 'parse' };
     events.push({
       external_id: externalId,
-      date: startLocal.slice(0, 10), // verbatim civil date, no tz math
+      date: startLocal.value.slice(0, 10), // verbatim civil date, no tz math
       // start_date_local is "YYYY-MM-DDTHH:MM:SS" (civil time, no zone).
       // Parse as UTC for an order-stable numeric — across users in different
       // tzs, two events at the same civil time get the same numeric key,
       // which is the correct ordering for a "what happened on each day"
-      // feed. Returns null on parse failure rather than NaN.
-      start_date_local_ms: parseCivilToMs(startLocal),
+      // feed. The full response fails closed if the timestamp is malformed.
+      start_date_local_ms: startLocal.ms,
       kind: kindOf(raw.type),
       title: str(raw.name),
       description: str(raw.description),
@@ -291,22 +336,25 @@ export async function fetchCompletedActivities(
   if (!Array.isArray(body)) return { ok: false, reason: 'parse' };
 
   const activities: CompletedActivity[] = [];
-  for (const raw of body as Record<string, unknown>[]) {
-    if (!raw || typeof raw !== 'object') continue;
+  for (const item of body) {
+    // Completed-feed rows have no category filter, so every unmarked record
+    // is relevant. Non-records fail the complete response closed as well.
+    if (!isRecord(item)) return { ok: false, reason: 'parse' };
+    const raw = item;
     // Skip ONLY our own marker-stamped exports — NOT every WeightTraining
     // row. Unlike the planned-event path, dropping all weight-training here
     // would hide a member's genuine watch-recorded strength activity from
     // the feed/calendar (this cache feeds display only, never the conflict/
     // load math). Marker-only detection keeps real strength, drops exports.
     if (isOwnExportMarker(raw)) continue;
-    const externalId = raw.id != null ? String(raw.id) : null;
-    const startLocal = str(raw.start_date_local);
-    if (!externalId || !startLocal) continue;
+    const externalId = providerId(raw.id);
+    const startLocal = parseCivilTimestamp(raw.start_date_local);
+    if (externalId === null || startLocal === null) return { ok: false, reason: 'parse' };
     activities.push({
       external_id: externalId,
-      date: startLocal.slice(0, 10), // verbatim civil date, no tz math
+      date: startLocal.value.slice(0, 10), // verbatim civil date, no tz math
       // See note on PlannedEvent.start_date_local_ms — same ordering proxy.
-      start_date_local_ms: parseCivilToMs(startLocal),
+      start_date_local_ms: startLocal.ms,
       kind: kindOf(raw.type),
       name: str(raw.name),
       moving_time_sec: num(raw.moving_time),

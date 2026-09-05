@@ -4631,6 +4631,11 @@ export async function getState(
   return {
     plan: tree,
     plan_version: plan?.version ?? 0,
+    // Rollout capability for the two intervals.icu cache cursors. Older
+    // Workers rewrote synced_at on every reconcile, so collection presence
+    // alone cannot tell iOS that a nonzero cursor is safe. P2 lands the event
+    // and activity semantics together; one version gates both collections.
+    external_sync_cursors_version: 2 as const,
     sessions: sessions.results,
     sets: sets.results,
     external_events: events.results,
@@ -7570,9 +7575,30 @@ export async function syncExternalEvents(
              planned_duration_sec=excluded.planned_duration_sec,
              training_load=excluded.training_load,
              intensity=excluded.intensity,
-             raw=excluded.raw,
-             synced_at=excluded.synced_at,
-             deleted_at=NULL`,
+             raw=CASE WHEN
+               external_events.date IS NOT excluded.date OR
+               external_events.start_date_local_ms IS NOT excluded.start_date_local_ms OR
+               external_events.kind IS NOT excluded.kind OR
+               external_events.title IS NOT excluded.title OR
+               external_events.description IS NOT excluded.description OR
+               external_events.planned_duration_sec IS NOT excluded.planned_duration_sec OR
+               external_events.training_load IS NOT excluded.training_load OR
+               external_events.intensity IS NOT excluded.intensity
+             THEN excluded.raw ELSE external_events.raw END,
+             synced_at=CASE
+               WHEN excluded.synced_at > external_events.synced_at THEN excluded.synced_at
+               ELSE external_events.synced_at + 1
+             END,
+             deleted_at=NULL
+           WHERE external_events.deleted_at IS NOT NULL OR
+             external_events.date IS NOT excluded.date OR
+             external_events.start_date_local_ms IS NOT excluded.start_date_local_ms OR
+             external_events.kind IS NOT excluded.kind OR
+             external_events.title IS NOT excluded.title OR
+             external_events.description IS NOT excluded.description OR
+             external_events.planned_duration_sec IS NOT excluded.planned_duration_sec OR
+             external_events.training_load IS NOT excluded.training_load OR
+             external_events.intensity IS NOT excluded.intensity`,
         )
         .bind(
           id,
@@ -7594,10 +7620,10 @@ export async function syncExternalEvents(
 
   // Soft-delete in-window rows that were NOT seen this sync. Rows outside
   // [today,newest] are intentionally left alone (we didn't query them).
-  // Done as a single statement excluding the seen ids.
+  // Done as a single statement excluding the seen ids. Pass the set as one
+  // JSON value: expanding one placeholder per provider row exceeds D1's
+  // 100-bound-parameter ceiling for ordinary-sized calendars.
   const seenIds = [...seen];
-  const placeholders = seenIds.map((_, i) => `?${i + 4}`).join(',');
-  const notInSeen = seenIds.length ? `AND id NOT IN (${placeholders})` : '';
   stmts.push(
     db
       .prepare(
@@ -7606,13 +7632,14 @@ export async function syncExternalEvents(
         // tombstone that kept its old synced_at would never reach an
         // incremental client (it would keep showing the deleted ride).
         `UPDATE external_events
-            SET deleted_at = ?3, synced_at = ?3
+            SET deleted_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
+                synced_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END
           WHERE user_id = ?1
             AND deleted_at IS NULL
-            AND date >= ?2 AND date <= ?${seenIds.length ? seenIds.length + 4 : 4}
-            ${notInSeen}`,
+            AND date >= ?2 AND date <= ?5
+            AND id NOT IN (SELECT CAST(value AS TEXT) FROM json_each(?4))`,
       )
-      .bind(userId, today, ts, ...seenIds, newest),
+      .bind(userId, today, ts, JSON.stringify(seenIds), newest),
   );
 
   await db.batch(stmts);
@@ -7808,9 +7835,44 @@ export async function syncExternalActivities(
              intensity=excluded.intensity,
              calories=excluded.calories,
              elevation_gain_m=excluded.elevation_gain_m,
-             raw=excluded.raw,
-             synced_at=excluded.synced_at,
-             deleted_at=NULL`,
+             raw=CASE WHEN
+               external_activities.date IS NOT excluded.date OR
+               external_activities.start_date_local_ms IS NOT excluded.start_date_local_ms OR
+               external_activities.kind IS NOT excluded.kind OR
+               external_activities.name IS NOT excluded.name OR
+               external_activities.moving_time_sec IS NOT excluded.moving_time_sec OR
+               external_activities.elapsed_time_sec IS NOT excluded.elapsed_time_sec OR
+               external_activities.distance_m IS NOT excluded.distance_m OR
+               external_activities.average_watts IS NOT excluded.average_watts OR
+               external_activities.weighted_avg_watts IS NOT excluded.weighted_avg_watts OR
+               external_activities.average_hr IS NOT excluded.average_hr OR
+               external_activities.max_hr IS NOT excluded.max_hr OR
+               external_activities.training_load IS NOT excluded.training_load OR
+               external_activities.intensity IS NOT excluded.intensity OR
+               external_activities.calories IS NOT excluded.calories OR
+               external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m
+             THEN excluded.raw ELSE external_activities.raw END,
+             synced_at=CASE
+               WHEN excluded.synced_at > external_activities.synced_at THEN excluded.synced_at
+               ELSE external_activities.synced_at + 1
+             END,
+             deleted_at=NULL
+           WHERE external_activities.deleted_at IS NOT NULL OR
+             external_activities.date IS NOT excluded.date OR
+             external_activities.start_date_local_ms IS NOT excluded.start_date_local_ms OR
+             external_activities.kind IS NOT excluded.kind OR
+             external_activities.name IS NOT excluded.name OR
+             external_activities.moving_time_sec IS NOT excluded.moving_time_sec OR
+             external_activities.elapsed_time_sec IS NOT excluded.elapsed_time_sec OR
+             external_activities.distance_m IS NOT excluded.distance_m OR
+             external_activities.average_watts IS NOT excluded.average_watts OR
+             external_activities.weighted_avg_watts IS NOT excluded.weighted_avg_watts OR
+             external_activities.average_hr IS NOT excluded.average_hr OR
+             external_activities.max_hr IS NOT excluded.max_hr OR
+             external_activities.training_load IS NOT excluded.training_load OR
+             external_activities.intensity IS NOT excluded.intensity OR
+             external_activities.calories IS NOT excluded.calories OR
+             external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m`,
         )
         .bind(
           id,
@@ -7845,20 +7907,19 @@ export async function syncExternalActivities(
   // (or Polar/Wahoo) row would be wiped on every intervals cron tick because it
   // is never in `seen`.
   const seenIds = [...seen];
-  const placeholders = seenIds.map((_, i) => `?${i + 4}`).join(',');
-  const notInSeen = seenIds.length ? `AND id NOT IN (${placeholders})` : '';
   stmts.push(
     db
       .prepare(
         `UPDATE external_activities
-            SET deleted_at = ?3, synced_at = ?3
+            SET deleted_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
+                synced_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END
           WHERE user_id = ?1
             AND source = 'intervals'
             AND deleted_at IS NULL
-            AND date >= ?2 AND date <= ?${seenIds.length ? seenIds.length + 4 : 4}
-            ${notInSeen}`,
+            AND date >= ?2 AND date <= ?5
+            AND id NOT IN (SELECT CAST(value AS TEXT) FROM json_each(?4))`,
       )
-      .bind(userId, oldest, ts, ...seenIds, today),
+      .bind(userId, oldest, ts, JSON.stringify(seenIds), today),
   );
 
   await db.batch(stmts);
@@ -7999,10 +8060,25 @@ export async function upsertHealthKitActivity(
          calories=excluded.calories,
          elevation_gain_m=excluded.elevation_gain_m,
          raw=excluded.raw,
-         synced_at=excluded.synced_at,
+         synced_at=CASE
+           WHEN excluded.synced_at > external_activities.synced_at THEN excluded.synced_at
+           ELSE external_activities.synced_at + 1
+         END,
          deleted_at=NULL,
          canonical=1,
-         duplicate_of=NULL`,
+         duplicate_of=NULL
+       WHERE external_activities.date IS NOT excluded.date OR
+         external_activities.start_date_local_ms IS NOT excluded.start_date_local_ms OR
+         external_activities.kind IS NOT excluded.kind OR
+         external_activities.name IS NOT excluded.name OR
+         external_activities.moving_time_sec IS NOT excluded.moving_time_sec OR
+         external_activities.elapsed_time_sec IS NOT excluded.elapsed_time_sec OR
+         external_activities.distance_m IS NOT excluded.distance_m OR
+         external_activities.average_watts IS NOT excluded.average_watts OR
+         external_activities.average_hr IS NOT excluded.average_hr OR
+         external_activities.max_hr IS NOT excluded.max_hr OR
+         external_activities.calories IS NOT excluded.calories OR
+         external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m`,
     )
     .bind(
       id,
@@ -8026,8 +8102,9 @@ export async function upsertHealthKitActivity(
     .run();
   // Cross-source dedup (Codex P2): if this workout also exists from
   // intervals.icu, retire the HealthKit copy so it isn't shown/counted twice.
-  // Runs AFTER the upsert so a re-push (which clears deleted_at via ON CONFLICT)
-  // is immediately re-deduped rather than resurrecting the duplicate.
+  // Runs AFTER the upsert so a real HealthKit revision resets prior provenance
+  // and is immediately re-deduped. An identical retry does not update/reset the
+  // row; this idempotent pass therefore preserves an already-retired duplicate.
   await dedupeHealthKitAgainstIntervals(db, userId);
   const row = await db
     .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
@@ -8186,7 +8263,14 @@ export async function dedupeHealthKitAgainstIntervals(
         db
           .prepare(
             `UPDATE external_activities
-                SET deleted_at = ?2, synced_at = ?2, canonical = 0, duplicate_of = ?3
+                SET deleted_at = CASE
+                      WHEN ?2 > synced_at THEN ?2 ELSE synced_at + 1
+                    END,
+                    synced_at = CASE
+                      WHEN ?2 > synced_at THEN ?2 ELSE synced_at + 1
+                    END,
+                    canonical = 0,
+                    duplicate_of = ?3
               WHERE id = ?1`,
           )
           .bind(h.id, ts, best.id),
@@ -8199,7 +8283,10 @@ export async function dedupeHealthKitAgainstIntervals(
         db
           .prepare(
             `UPDATE external_activities
-                SET synced_at = ?2, duplicate_of = ?3
+                SET synced_at = CASE
+                      WHEN ?2 > synced_at THEN ?2 ELSE synced_at + 1
+                    END,
+                    duplicate_of = ?3
               WHERE id = ?1`,
           )
           .bind(h.id, ts, best.id),
@@ -8211,7 +8298,12 @@ export async function dedupeHealthKitAgainstIntervals(
         db
           .prepare(
             `UPDATE external_activities
-                SET deleted_at = NULL, synced_at = ?2, canonical = 1, duplicate_of = NULL
+                SET deleted_at = NULL,
+                    synced_at = CASE
+                      WHEN ?2 > synced_at THEN ?2 ELSE synced_at + 1
+                    END,
+                    canonical = 1,
+                    duplicate_of = NULL
               WHERE id = ?1`,
           )
           .bind(h.id, ts),

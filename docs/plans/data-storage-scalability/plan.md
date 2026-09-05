@@ -172,8 +172,11 @@ Done means:
     post-acknowledgement delta cannot turn a committed write into apparent
     failure or lose a manual-activity cursor. Done locally 2026-09-05: the
     backend suite passed 43 files / 548 tests, TypeScript passed, and the iOS
-    simulator suite passed 267 tests. Production before/after traffic and
-    delivery evidence remain outstanding.
+    simulator suite passed 267 tests. Repository delivery completed the same
+    day: PR #124's exact reviewed head `cf6cb83` passed required CI, its
+    squash-merge commit `647a9f6` has the identical tree, and post-merge main
+    CI passed. The production migration/Worker release, production before/after
+    traffic, and iOS distribution evidence remain outstanding.
 - [ ] **P2 — Reconcile only what changed (intervals.icu cache)**
   - Change the events and activities upserts to `ON CONFLICT DO UPDATE ...
     WHERE` any extracted column differs from the incoming row, or the row is
@@ -182,14 +185,56 @@ Done means:
     rewritten when an extracted column changed. An unchanged activity
     produces zero writes and does not advance `synced_at`; a changed or
     resurrected one does. No new column.
+  - Treat each successful provider response as one atomic cache input. Rows
+    that are intentionally outside the cache contract remain filtered, but a
+    missing or malformed category discriminator, malformed relevant id or local
+    timestamp, or any non-record array member, fails the complete response
+    before D1 mutation. The prior cache remains byte-for-byte unchanged instead
+    of partially updating valid rows and then tombstoning entries omitted by
+    the parser.
+  - Reconcile provider membership with one JSON-bound id set expanded by
+    SQLite `json_each`, not one placeholder per fetched row. This keeps the
+    tombstone statement at five bound parameters and below D1's 100-parameter
+    ceiling even when an ordinary provider window contains hundreds of rows.
+  - Because `activities_since` spans every source in `external_activities`, an
+    identical HealthKit UUID retry must also be a true no-op. Preserve a
+    dedup-retired HealthKit row's tombstone and provenance on an unchanged
+    retry; a real extracted-field change may refresh it before the existing
+    dedup pass restores the correct canonical state. Raw-only drift is not a
+    change on this path either.
+  - Migration `0035` adds `external_events(user_id, synced_at)` and
+    `external_activities(user_id, synced_at)` so an empty incremental poll
+    seeks into the member's cursor range instead of scanning that member's
+    date cache. Each index costs one additional billed row write on a real
+    mutation; that cost must remain below the quiet-hour writes eliminated by
+    change-aware reconcile.
   - Now that `synced_at` means "changed", switch the iOS `events_since` and
-    `activities_since` cursors to the P1 watermark rule.
+    `activities_since` cursors to the P1 watermark rule. P2 Workers advertise
+    the response-only capability `external_sync_cursors_version: 2`; the app
+    activates both cursors only at version 2 or later and keeps them at zero
+    when the capability is absent or lower, preserving mixed-version and
+    rollback safety without a database migration.
   - Evidence: a test runs the same sync twice and asserts the second pass
     reports zero rows written and unchanged `synced_at`; a test with one
-    altered field asserts one row written; a test replays two real captured
-    intervals.icu responses for the same window, not a static fixture, and
-    asserts zero writes when only `raw` drifted; the P0 cron log shows a
-    quiet hour at zero writes.
+    altered field asserts one logical row mutation and the expected billed
+    write amplification for the base row plus its two indexes; a test replays
+    two real captured intervals.icu responses for the same window, not a
+    static fixture, and asserts zero writes when only `raw` drifted;
+    same-source and dedup-retired HealthKit retries are no-ops; dedup retire,
+    repoint, and restore transitions advance `synced_at` strictly even at the
+    same clock millisecond; query-plan and billed-read tests prove both empty
+    external deltas seek through their member-first cursor indexes; malformed
+    mixed responses leave the existing cache unchanged; 120-row windows
+    reconcile without crossing tenant or source scope; the membership
+    subquery is materialized once rather than correlated per cache row; and
+    the P0 cron log shows a quiet hour at zero writes.
+  - Local pre-delivery evidence on 2026-09-05: 106 focused cache tests and the
+    full backend suite (44 files / 600 tests) passed, TypeScript passed, and the
+    full iOS simulator suite passed 273 tests. Synthetic paired responses prove
+    the raw-only-drift behavior for both provider endpoints without claiming to
+    be production captures. The separately authorized sanitized real-response
+    replay, migration/Worker release, quiet production-hour observation, and
+    iOS distribution remain outstanding.
 - [ ] **P3 — Filing-cabinet tabs (member-first indexes)**
   - Migration: `audit_log(user_id, actor, created_at)` so the profile's
     latest-MCP-action lookup seeks directly instead of walking a member's
@@ -255,6 +300,7 @@ Done means:
 
 - P0
 - P1
+- P2
 
 ## Dependencies
 
@@ -268,7 +314,11 @@ Done means:
 ## Next step
 
 **Now (@owner):** Foreground the production iOS app and open Profile once, then use the OAuth-connected Claude coach to request bench history once; these two actions complete the three outstanding authenticated P0 traffic samples.
-**Now (@agent):** Finish exact-head review and repository delivery of the local P1 slice, then hold its production migration/Worker rollout and iOS distribution at their separate release gates. Record the authenticated P0 samples when they arrive. Stop before any production deployment, migration, manual production cron trigger, plan-tier change, or TestFlight build.
+**Now (@agent):** Implement, verify, independently review, and deliver the local
+P2 slice while holding the combined P1/P2 production migration/Worker rollout
+and iOS distribution at their separate release gates. Record the authenticated
+P0 samples when they arrive. Stop before any production deployment, migration,
+manual production cron trigger, plan-tier change, or TestFlight build.
 
 ## Notes / open questions
 

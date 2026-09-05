@@ -63,6 +63,11 @@ This is deterministic local cost evidence, not proof of production CPU. P0.5
 still requires a separately authorized exact-source deployment followed by at
 least three successful natural cron ticks below Free's 10 ms limit.
 
+The final local source passed all 41 test files / 537 tests, TypeScript,
+planning validation, diff hygiene, a Wrangler dry-run, and independent
+exact-head review. Pull-request checks and merge remain delivery evidence; none
+of these local results authorizes the production gate above.
+
 ## 2026-09-04 — D1 daily baseline (P0, dashboard aggregate)
 
 Source: D1 → `tres-fort-db` → Overview, "Last 24 hours", region WNAM, read

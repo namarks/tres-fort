@@ -88,6 +88,9 @@ Done means:
     isolation, inclusive tolerance, deterministic ties, window boundaries, and
     both midnight edges; a real-D1 fixture and query plan prove old history no
     longer contributes billed reads or matching work on the bounded cron path.
+    Done locally 2026-09-05: implementation, full-suite verification, Wrangler
+    dry-run, and independent exact-head review passed; no migration or trigger
+    change is part of the reviewed source.
     After a separately authorized exact-source deployment, at least three
     natural hourly ticks must remain successful and below the Free 10 ms CPU
     limit before this phase is complete.
@@ -230,8 +233,8 @@ Done means:
 
 ## Next step
 
-**Now (@owner):** Foreground the production iOS app and open Profile once, then use the OAuth-connected Claude coach to request bench history once; these two actions complete the three outstanding authenticated P0 traffic samples.
-**Now (@agent):** Implement and review P0.5 locally while recording those P0 samples when they arrive. Stop before any production deployment, migration, manual production cron trigger, plan purchase, or TestFlight build.
+**Now (@owner):** Foreground the production iOS app and open Profile once, then use the OAuth-connected Claude coach to request bench history once; these two actions complete the three outstanding authenticated P0 traffic samples. Separately authorize a deploy-only P0.5 production release if the reviewed mitigation should enter natural-tick validation.
+**Now (@agent):** Record the authenticated P0 samples when they arrive and hold the reviewed P0.5 mitigation at the production gate. Stop before any production deployment, migration, manual production cron trigger, plan purchase, or TestFlight build.
 
 ## Notes / open questions
 

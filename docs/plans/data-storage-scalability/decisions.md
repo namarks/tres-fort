@@ -28,9 +28,14 @@ pages, read 2026-09-04:
 D1 has hard-enforced the free-tier daily row limits since 2026-09-01
 (<https://developers.cloudflare.com/changelog/post/2026-09-01-d1-free-tier-limit-enforcement/>).
 
-**Upgrade decision: open.** The measured headroom below shows no immediate
-risk at one member. The owner decides whether to move to Paid now or before
-inviting roughly ten more members.
+**Tier-or-mitigation decision: immediate owner gate.** The D1 row totals below
+show headroom at one member, but the later per-invocation evidence recorded a
+32 ms cron tick against Free's nominal 10 ms CPU limit. Cloudflare documents
+limited runtime flexibility for infrequent overages, which explains why this
+invocation could succeed; it does not make repeated overages safe. Before
+relying on the hourly backstop or inviting more members, the owner must either
+move to Paid or authorize and prioritize a focused cron CPU mitigation. This
+record does not authorize a purchase.
 
 ## 2026-09-04 — D1 daily baseline (P0, dashboard aggregate)
 
@@ -111,8 +116,51 @@ traffic. They exclude surrounding session transitions, write-fence work, and
 other route queries. P3 still needs the production P2 savings comparison
 before its indexes may ship.
 
-The remaining P0 baseline requires an explicitly authorized
-instrumentation-only Worker deploy, representative owner app and OAuth MCP
-traffic, at least one natural hourly cron tick, and read-only Workers Logs plus
-production table-count evidence. It requires no D1 migration, production index
-creation, TestFlight build, credential transfer, or manual cron trigger.
+## 2026-09-04 — P0 production release and measured baseline
+
+The reviewed instrumentation-only source was merged as commit
+`bc09faf1415ba9cd3b39c1af6f3a713f42f58a93` (tree
+`123c2c4c050cc3e2696e2c61bda8988ebac71724`) in PR #120. Exact-source
+preflight passed 41 test files / 525 tests, TypeScript, and a Wrangler dry-run.
+Production was then changed with `wrangler deploy` only, not the repository's
+`release` command, because `release` also applies migrations. The deployment
+sent 100% of traffic to version `b537eaeb-2aaa-47ba-bb1f-1c7b44413f3b`;
+`GET /health` returned HTTP 200 with `ok=true`. The migration list was unchanged
+after deployment and still had only `0033_gymnastic_strength_catalog.sql`
+pending, proving this release did not apply a D1 migration.
+
+Read-only production D1 queries captured exact global and owner-attributed
+table counts without returning account identifiers. Both aggregate reads made
+zero writes, and the database size was about 1.35 MB. The exact counts are not
+copied into this public repository because they expose personal training and
+activity volume plus authentication/security state. The cost-relevant scale
+is sufficient here: external activity rows are in the low thousands; set-log
+rows are in the low hundreds; audit rows, sessions, notes, and manual
+activities are each below one hundred. This confirms that storage volume is
+small today while the unbounded external and audit tables remain the growth
+drivers P5 must address.
+
+A separate aggregate predicate also proved that exactly one distinct plan
+owner and exactly one distinct MCP actor joined to the same account, without
+returning an identifier. Its owner-scoped counts were bounded by the global
+census. The proof query made zero writes. Exact personal and auth-state counts
+remain private evidence rather than publishable plan content.
+
+The natural 19:00 PDT hourly cron completed on the deployed version with
+`outcome=ok`: 52 D1 queries, 2,560 rows read, and 62 rows written. The Worker
+invocation used 32 ms CPU and 4,095 ms wall time. Both the live tail and the
+durable Workers Logs event agreed on these counters and the exact script
+version. This is the P0 before-measurement for P2's quiet-hour comparison; it
+is not yet a quiet-hour zero-write result. It is also above Free's 10 ms CPU
+limit. Cloudflare says the runtime has some flexibility for infrequent
+overages, so one `ok` outcome is not evidence of safe headroom; consistent
+overages can be terminated. The owner tier-or-mitigation gate above is
+therefore immediate rather than a future ten-member threshold.
+
+Workers Logs also proved that structured production ingestion works by
+capturing two unauthenticated diagnostic probes with zero D1 queries. They are
+excluded from the owner baseline. P0 still needs one representative
+authenticated foreground `/api/state`, one authenticated Profile `/api/me`,
+and one OAuth MCP `get_history` invocation. No additional deployment,
+migration, index creation, TestFlight build, credential transfer, or manual
+cron trigger is required to collect them.

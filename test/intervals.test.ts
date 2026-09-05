@@ -6,6 +6,8 @@ import {
   type Fetcher,
 } from '../src/intervals';
 import {
+  createD1UsageObserver,
+  dedupeHealthKitAgainstIntervals,
   ensureOwnerUser,
   getMeProfile,
   getRecentActivities,
@@ -714,6 +716,327 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
     expect(hk!.duplicate_of).toBeNull();
     const live = await getRecentActivities(env.DB, userId, { to: TODAY });
     expect(live.map((x) => x.id)).toContain(hkId);
+  });
+
+  it.each([
+    {
+      edge: 'lower',
+      healthKitDate: '2026-05-17',
+      healthKitStart: '2026-05-17T23:59:30Z',
+      intervalsStart: '2026-05-18T00:00:30',
+    },
+    {
+      edge: 'upper',
+      healthKitDate: '2026-05-19',
+      healthKitStart: '2026-05-19T00:00:30Z',
+      intervalsStart: '2026-05-18T23:59:30',
+    },
+  ])(
+    'cross-source dedup: the sync scope catches a tolerance match across its $edge midnight edge',
+    async ({ edge, healthKitDate, healthKitStart, intervalsStart }) => {
+      const userId = await freshUser();
+      const hkId = `healthkit:activity:${userId}:hk-midnight-${edge}`;
+      await env.DB.prepare(
+        `INSERT INTO external_activities
+           (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
+            synced_at,deleted_at,canonical,duplicate_of)
+         VALUES (?1,?2,'healthkit',?3,?4,'ride','Midnight ride',?5,1000,NULL,1,NULL)`,
+      )
+        .bind(hkId, userId, `hk-midnight-${edge}`, healthKitDate, Date.parse(healthKitStart))
+        .run();
+
+      await syncExternalActivities(env.DB, env as unknown as Env, {
+        userId,
+        today: TODAY,
+        pastDays: 0,
+        fetcher: payload([
+          act({
+            id: `iv-midnight-${edge}`,
+            type: 'Ride',
+            start_date_local: intervalsStart,
+          }),
+        ]),
+      } as any);
+
+      const hk = await env.DB.prepare(
+        'SELECT deleted_at, duplicate_of FROM external_activities WHERE id = ?1',
+      )
+        .bind(hkId)
+        .first<{ deleted_at: number | null; duplicate_of: string | null }>();
+      expect(hk?.deleted_at).not.toBeNull();
+      expect(hk?.duplicate_of).toBe(`intervals:activity:${userId}:iv-midnight-${edge}`);
+    },
+  );
+
+  it.each([
+    {
+      edge: 'lower',
+      healthKitDate: '2026-05-17',
+      healthKitStart: '2026-05-17T00:00:30Z',
+      intervalsDate: '2026-05-16',
+      intervalsStart: '2026-05-16T23:59:30Z',
+    },
+    {
+      edge: 'upper',
+      healthKitDate: '2026-05-19',
+      healthKitStart: '2026-05-19T23:59:30Z',
+      intervalsDate: '2026-05-20',
+      intervalsStart: '2026-05-20T00:00:30Z',
+    },
+  ])(
+    'cross-source dedup: an unrelated $edge-boundary duplicate stays retired when its winner is just outside the HealthKit range',
+    async ({ edge, healthKitDate, healthKitStart, intervalsDate, intervalsStart }) => {
+      const userId = await freshUser();
+      const hkId = `healthkit:activity:${userId}:hk-preserved-${edge}`;
+      const ivId = `intervals:activity:${userId}:iv-preserved-${edge}`;
+      await env.DB.prepare(
+        `INSERT INTO external_activities
+           (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
+            synced_at,deleted_at,canonical,duplicate_of)
+         VALUES
+           (?1,?2,'healthkit',?3,?4,'ride','Retired HealthKit',?5,1000,1000,0,?6),
+           (?6,?2,'intervals',?7,?8,'ride','Live Intervals',?9,1000,NULL,1,NULL)`,
+      )
+        .bind(
+          hkId,
+          userId,
+          `hk-preserved-${edge}`,
+          healthKitDate,
+          Date.parse(healthKitStart),
+          ivId,
+          `iv-preserved-${edge}`,
+          intervalsDate,
+          Date.parse(intervalsStart),
+        )
+        .run();
+
+      await syncExternalActivities(env.DB, env as unknown as Env, {
+        userId,
+        today: TODAY,
+        pastDays: 0,
+        fetcher: payload([]),
+      } as any);
+
+      const hk = await env.DB.prepare(
+        'SELECT deleted_at, canonical, duplicate_of FROM external_activities WHERE id = ?1',
+      )
+        .bind(hkId)
+        .first<{ deleted_at: number | null; canonical: number; duplicate_of: string | null }>();
+      expect(hk).toEqual({ deleted_at: 1000, canonical: 0, duplicate_of: ivId });
+    },
+  );
+
+  it.each([
+    { label: 'accepts the inclusive limit', deltaMs: 120_000, intervalsType: 'Ride', retired: true },
+    { label: 'rejects one millisecond outside', deltaMs: 120_001, intervalsType: 'Ride', retired: false },
+    { label: 'isolates a different kind', deltaMs: 0, intervalsType: 'Run', retired: false },
+  ])('cross-source dedup: $label', async ({ deltaMs, intervalsType, retired }) => {
+    const userId = await freshUser();
+    const hkId = `healthkit:activity:${userId}:hk-boundary`;
+    const start = Date.parse('2026-05-10T08:00:00Z');
+    await env.DB.prepare(
+      `INSERT INTO external_activities
+         (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
+          synced_at,deleted_at,canonical,duplicate_of)
+       VALUES (?1,?2,'healthkit','hk-boundary','2026-05-10','ride','HealthKit',
+               ?3,1000,NULL,1,NULL)`,
+    )
+      .bind(hkId, userId, start)
+      .run();
+
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([
+        act({
+          id: 'iv-boundary',
+          type: intervalsType,
+          start_date_local: new Date(start + deltaMs).toISOString().replace('Z', ''),
+        }),
+      ]),
+    } as any);
+
+    const hk = await env.DB.prepare(
+      'SELECT deleted_at, duplicate_of FROM external_activities WHERE id = ?1',
+    )
+      .bind(hkId)
+      .first<{ deleted_at: number | null; duplicate_of: string | null }>();
+    expect(hk).not.toBeNull();
+    expect(hk!.deleted_at !== null).toBe(retired);
+    expect(hk!.duplicate_of).toBe(retired ? `intervals:activity:${userId}:iv-boundary` : null);
+  });
+
+  it.each([
+    {
+      label: 'earlier start before id',
+      candidates: [
+        { suffix: 'a-later', deltaMs: 30_000 },
+        { suffix: 'z-earlier', deltaMs: -30_000 },
+      ],
+      winner: 'z-earlier',
+    },
+    {
+      label: 'lowest id after equal start',
+      candidates: [
+        { suffix: 'z-same', deltaMs: 30_000 },
+        { suffix: 'a-same', deltaMs: 30_000 },
+      ],
+      winner: 'a-same',
+    },
+  ])('cross-source dedup: equal-delta ties choose $label', async ({ candidates, winner }) => {
+    const userId = await freshUser();
+    const start = Date.parse('2026-05-12T08:00:00Z');
+    const hkId = `healthkit:activity:${userId}:hk-tie`;
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO external_activities
+           (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
+            synced_at,deleted_at,canonical,duplicate_of)
+         VALUES (?1,?2,'healthkit','hk-tie','2026-05-12','ride','HealthKit',?3,1000,NULL,1,NULL)`,
+      ).bind(hkId, userId, start),
+      ...candidates.map(({ suffix, deltaMs }) =>
+        env.DB.prepare(
+          `INSERT INTO external_activities
+             (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
+              synced_at,deleted_at,canonical,duplicate_of)
+           VALUES (?1,?2,'intervals',?3,'2026-05-12','ride','Intervals',?4,1000,NULL,1,NULL)`,
+        ).bind(`intervals:activity:${userId}:${suffix}`, userId, suffix, start + deltaMs),
+      ),
+    ]);
+
+    expect(await dedupeHealthKitAgainstIntervals(env.DB, userId)).toBe(1);
+    const hk = await env.DB.prepare(
+      'SELECT duplicate_of FROM external_activities WHERE id = ?1',
+    )
+      .bind(hkId)
+      .first<{ duplicate_of: string | null }>();
+    expect(hk?.duplicate_of).toBe(`intervals:activity:${userId}:${winner}`);
+  });
+
+  it('cross-source dedup: an already-retired row advances to the new deterministic winner', async () => {
+    const userId = await freshUser();
+    const start = Date.parse('2026-05-12T08:00:00Z');
+    const hkId = `healthkit:activity:${userId}:hk-repoint`;
+    const oldWinner = `intervals:activity:${userId}:old-winner`;
+    const newWinner = `intervals:activity:${userId}:new-winner`;
+    await env.DB.prepare(
+      `INSERT INTO external_activities
+         (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
+          synced_at,deleted_at,canonical,duplicate_of)
+       VALUES
+         (?1,?2,'healthkit','hk-repoint','2026-05-12','ride','HealthKit',?3,1000,1000,0,?4),
+         (?4,?2,'intervals','old-winner','2026-05-12','ride','Old winner',?5,1000,NULL,1,NULL),
+         (?6,?2,'intervals','new-winner','2026-05-12','ride','New winner',?7,1000,NULL,1,NULL)`,
+    )
+      .bind(hkId, userId, start, oldWinner, start + 90_000, newWinner, start + 30_000)
+      .run();
+
+    expect(await dedupeHealthKitAgainstIntervals(env.DB, userId)).toBe(1);
+    const hk = await env.DB.prepare(
+      'SELECT synced_at, deleted_at, canonical, duplicate_of FROM external_activities WHERE id = ?1',
+    )
+      .bind(hkId)
+      .first<{
+        synced_at: number;
+        deleted_at: number | null;
+        canonical: number;
+        duplicate_of: string | null;
+      }>();
+    expect(hk).toMatchObject({ deleted_at: 1000, canonical: 0, duplicate_of: newWinner });
+    expect(hk!.synced_at).toBeGreaterThan(1000);
+  });
+
+  it('bounded dedup excludes unrelated history from real D1 billed reads', async () => {
+    const userId = await freshUser();
+    const historyRowsPerSource = 120;
+    const oldStart = Date.parse('2020-01-01T08:00:00Z');
+    await env.DB.prepare(
+      `WITH RECURSIVE seq(n) AS (
+         SELECT 1
+         UNION ALL SELECT n + 1 FROM seq WHERE n < ?2
+       )
+       INSERT INTO external_activities
+         (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
+          synced_at,deleted_at,canonical,duplicate_of)
+       SELECT 'healthkit:history:' || n, ?1, 'healthkit', 'hk-' || n,
+              '2020-01-01', 'ride', 'Historical HealthKit', ?3 + n,
+              1000, NULL, 1, NULL
+         FROM seq`,
+    )
+      .bind(userId, historyRowsPerSource, oldStart)
+      .run();
+    await env.DB.prepare(
+      `WITH RECURSIVE seq(n) AS (
+         SELECT 1
+         UNION ALL SELECT n + 1 FROM seq WHERE n < ?2
+       )
+       INSERT INTO external_activities
+         (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
+          synced_at,deleted_at,canonical,duplicate_of)
+       SELECT 'intervals:history:' || n, ?1, 'intervals', 'iv-' || n,
+              '2020-01-01', 'ride', 'Historical Intervals', ?3 + n + 10800000,
+              1000, NULL, 1, NULL
+         FROM seq`,
+    )
+      .bind(userId, historyRowsPerSource, oldStart)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO external_activities
+         (id,user_id,source,external_id,date,kind,name,start_date_local_ms,
+          synced_at,deleted_at,canonical,duplicate_of)
+       VALUES
+         ('healthkit:current',?1,'healthkit','hk-current',?2,'ride','Current HealthKit',?3,1000,NULL,1,NULL),
+         ('intervals:current',?1,'intervals','iv-current',?2,'ride','Current Intervals',?4,1000,NULL,1,NULL)`,
+    )
+      .bind(
+        userId,
+        TODAY,
+        Date.parse('2026-05-18T07:00:00Z'),
+        Date.parse('2026-05-18T08:00:00Z'),
+      )
+      .run();
+
+    const queryPlan = await env.DB.prepare(
+      `EXPLAIN QUERY PLAN
+       SELECT id, kind, start_date_local_ms, deleted_at, duplicate_of
+         FROM external_activities
+        WHERE user_id = ?1 AND source = 'healthkit'
+          AND start_date_local_ms IS NOT NULL
+          AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)
+          AND date >= ?2 AND date <= ?3`,
+    )
+      .bind(userId, '2026-02-16', '2026-05-19')
+      .all<{ detail: string }>();
+    expect(queryPlan.results.some((row) => row.detail.includes('ix_ext_activities_user_date')))
+      .toBe(true);
+
+    const bounded = createD1UsageObserver(env.DB);
+    expect(
+      await dedupeHealthKitAgainstIntervals(bounded.db, userId, {
+        healthKitFromDate: '2026-02-16',
+        healthKitToDate: '2026-05-19',
+        intervalsFromDate: '2026-02-15',
+        intervalsToDate: '2026-05-20',
+      }),
+    ).toBe(0);
+    const full = createD1UsageObserver(env.DB);
+    expect(await dedupeHealthKitAgainstIntervals(full.db, userId)).toBe(0);
+
+    expect(bounded.usage.query_count).toBe(full.usage.query_count);
+    expect(bounded.usage.rows_written).toBe(0);
+    expect(full.usage.rows_written).toBe(0);
+    expect(full.usage.rows_read - bounded.usage.rows_read).toBeGreaterThanOrEqual(
+      historyRowsPerSource * 2,
+    );
+
+    const sync = createD1UsageObserver(env.DB);
+    const result = await syncExternalActivities(sync.db, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([]),
+    } as any);
+    expect(result.status).toBe('ok');
+    expect(sync.usage.rows_read).toBeLessThan(full.usage.rows_read);
   });
 
   it('CRITICAL GUARD: a 500 leaves the completed cache COMPLETELY untouched', async () => {

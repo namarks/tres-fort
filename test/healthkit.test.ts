@@ -142,6 +142,28 @@ describe('POST /api/activities/healthkit — Apple Health push ingest', () => {
     expect(await bad({ kind: '' })).toBe(400);
   });
 
+  it('rejects a non-null local start timestamp whose UTC-like date disagrees', async () => {
+    const jwt = await devJwt();
+    const w = workout({
+      date: '2026-06-18',
+      start_date_local_ms: Date.parse('2026-06-19T00:00:00Z'),
+    });
+    const response = await SELF.fetch(`${BASE}/api/activities/healthkit`, {
+      method: 'POST',
+      headers: auth(jwt),
+      body: JSON.stringify(w),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'invalid_start_date' });
+
+    const stored = await env.DB.prepare(
+      "SELECT COUNT(*) AS c FROM external_activities WHERE source = 'healthkit' AND external_id = ?1",
+    )
+      .bind(w.id)
+      .first<{ c: number }>();
+    expect(stored?.c).toBe(0);
+  });
+
   it('rounds integer-typed fields so iOS Int? decode never sees a decimal (Codex P2)', async () => {
     const jwt = await devJwt();
     // HealthKit yields Double (TimeInterval / HKQuantity). The INTEGER columns
@@ -155,7 +177,7 @@ describe('POST /api/activities/healthkit — Apple Health push ingest', () => {
           elapsed_time_sec: 1850.4,
           max_hr: 168.9,
           calories: 320.7,
-          start_date_local_ms: 1750243200000.6,
+          start_date_local_ms: Date.parse('2026-06-18T10:00:00Z') + 0.6,
           distance_m: 5000.5, // REAL — keeps the decimal
           average_hr: 145.4, // REAL — keeps the decimal
         }),

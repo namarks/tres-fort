@@ -28,14 +28,40 @@ pages, read 2026-09-04:
 D1 has hard-enforced the free-tier daily row limits since 2026-09-01
 (<https://developers.cloudflare.com/changelog/post/2026-09-01-d1-free-tier-limit-enforcement/>).
 
-**Tier-or-mitigation decision: immediate owner gate.** The D1 row totals below
-show headroom at one member, but the later per-invocation evidence recorded a
-32 ms cron tick against Free's nominal 10 ms CPU limit. Cloudflare documents
-limited runtime flexibility for infrequent overages, which explains why this
-invocation could succeed; it does not make repeated overages safe. Before
-relying on the hourly backstop or inviting more members, the owner must either
-move to Paid or authorize and prioritize a focused cron CPU mitigation. This
-record does not authorize a purchase.
+**Tier-or-mitigation decision: mitigate on Free (2026-09-05).** The D1 row
+totals below show headroom at one member, but the later per-invocation evidence
+recorded a 32 ms cron tick against Free's nominal 10 ms CPU limit. Cloudflare
+documents limited runtime flexibility for infrequent overages, which explains
+why this invocation could succeed; it does not make repeated overages safe.
+The owner authorized a focused local cron CPU mitigation while remaining on
+Free. That decision does not authorize a plan purchase, production deployment,
+migration, manual production cron trigger, or TestFlight build; each remains a
+separate owner action.
+
+## 2026-09-05 — Free-plan mitigation evidence
+
+The selected local change bounds the cron's post-intervals HealthKit candidate
+scan to the affected activity window plus one civil day at each edge, and looks
+up possible intervals winners one further day out so restoration stays correct
+across both boundaries. It retains the public full-history reconciliation path,
+uses the existing `external_activities(user_id, date)` index, and replaces the
+lifetime nested match loop with per-kind time-ordered lookup. It adds no trigger,
+index, migration, or production configuration.
+
+Both official writers derive `date` and `start_date_local_ms` from the same
+local civil timestamp. A value-free production aggregate confirmed zero stored
+rows violate that invariant; the query made zero writes. The local change also
+rejects future non-null HealthKit timestamps whose encoded civil date disagrees
+before they reach D1, so the bounded date lookup does not rely on an unchecked
+API assumption.
+
+A production-shaped real-D1 fixture with 120 old rows from each source measured
+the bounded dedupe at 2 queries, 4 rows read, and 0 rows written, versus 2
+queries, 484 rows read, and 0 rows written for the retained full-history mode.
+The focused activity-sync shape used 6 queries, 10 rows read, and 1 row written.
+This is deterministic local cost evidence, not proof of production CPU. P0.5
+still requires a separately authorized exact-source deployment followed by at
+least three successful natural cron ticks below Free's 10 ms limit.
 
 ## 2026-09-04 — D1 daily baseline (P0, dashboard aggregate)
 

@@ -7850,7 +7850,19 @@ export async function syncExternalActivities(
   // Cross-source dedup (Codex P2): intervals rows just changed, so retire any
   // HealthKit copies that now duplicate one — handles the ordering where the
   // HealthKit push arrived BEFORE the intervals activity synced in.
-  await dedupeHealthKitAgainstIntervals(db, userId);
+  // This reconcile can only change intervals rows in [oldest,today]. Expand
+  // the dedup scope by one civil day on each side so a same workout crossing
+  // midnight still matches within the two-minute tolerance. Historical rows
+  // outside this affected window cannot have changed during this sync.
+  await dedupeHealthKitAgainstIntervals(db, userId, {
+    healthKitFromDate: addDays(oldest, -1),
+    healthKitToDate: addDays(today, 1),
+    // A boundary HealthKit candidate can have a still-live winner on the
+    // adjacent civil day. Look one day beyond the candidate range so that
+    // winner is present and the duplicate is not incorrectly restored.
+    intervalsFromDate: addDays(oldest, -2),
+    intervalsToDate: addDays(today, 2),
+  });
 
   const cnt = await db
     .prepare(
@@ -7895,6 +7907,7 @@ export async function getRecentActivities(
 export interface HealthKitActivityInput {
   id: string; // client UUID = HKWorkout.uuid = idempotency key
   date: string; // device-local YYYY-MM-DD (workout start), verbatim
+  // UTC-like encoding of that same local wall clock; its date must agree.
   start_date_local_ms: number | null;
   kind: string; // normalized lowercase (run|ride|walk|…)
   name: string | null;
@@ -7907,6 +7920,14 @@ export interface HealthKitActivityInput {
   calories: number | null;
   elevation_gain_m: number | null;
   raw: string | null;
+}
+
+/** HealthKit encodes the device-local wall clock as UTC-like epoch ms. */
+export function healthKitDateMatchesStart(date: string, startMs: number | null): boolean {
+  if (startMs === null) return true;
+  if (!Number.isSafeInteger(startMs)) return false;
+  const parsed = new Date(startMs);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
 }
 
 /**
@@ -7934,6 +7955,9 @@ export async function upsertHealthKitActivity(
   userId: string,
   input: HealthKitActivityInput,
 ): Promise<ExternalActivityRow> {
+  if (!healthKitDateMatchesStart(input.date, input.start_date_local_ms)) {
+    throw new Error('healthkit_date_start_mismatch');
+  }
   const id = `healthkit:activity:${userId}:${input.id}`;
   const ts = now();
   await db
@@ -8003,6 +8027,15 @@ export async function upsertHealthKitActivity(
  *  workouts. Tunable. */
 export const ACTIVITY_DEDUP_TOLERANCE_MS = 2 * 60 * 1000;
 
+export interface ActivityDedupeWindow {
+  /** Inclusive device-local range containing HealthKit rows that may change. */
+  healthKitFromDate: string;
+  healthKitToDate: string;
+  /** Inclusive wider range containing every possible intervals winner. */
+  intervalsFromDate: string;
+  intervalsToDate: string;
+}
+
 /**
  * Cross-source dedup: retire HealthKit activities that duplicate an
  * intervals.icu activity for the same user. The same physical workout can
@@ -8022,13 +8055,17 @@ export const ACTIVITY_DEDUP_TOLERANCE_MS = 2 * 60 * 1000;
  * tombstone delta Just Work with no new filters and no iOS change. synced_at is
  * advanced so the change reaches incremental sync clients.
  *
- * BIDIRECTIONAL (Codex P2 follow-up): this is a full reconciliation, not a
- * one-way retire. It also RESTORES a previously-retired HealthKit row when its
- * intervals winner later disappears (the activity is removed upstream → the
- * intervals sync soft-deletes the canonical row, then calls this). Without the
- * restore, both copies would stay hidden and the workout would vanish until the
- * phone re-pushed it. A HealthKit row soft-deleted for any OTHER reason
+ * BIDIRECTIONAL (Codex P2 follow-up): this is a full reconciliation by default,
+ * not a one-way retire. A caller that changed only a bounded date range may
+ * provide a HealthKit candidate range plus a wider intervals-winner range
+ * without scanning unrelated history. It also RESTORES a previously-retired
+ * HealthKit row when its intervals winner later disappears (the activity is
+ * removed upstream → the intervals sync soft-deletes the canonical row, then
+ * calls this). Without restoration, both copies stay hidden until the phone
+ * re-pushes the workout. A HealthKit row soft-deleted for any OTHER reason
  * (duplicate_of IS NULL) is left untouched — we only manage rows WE retired.
+ * If several intervals rows are within tolerance, selection is stable by
+ * (absolute delta, start_date_local_ms, id), ascending.
  *
  * Idempotent: only state CHANGES emit a write (no synced_at churn in steady
  * state). Deterministic + order-independent — called from BOTH write paths (the
@@ -8039,20 +8076,23 @@ export const ACTIVITY_DEDUP_TOLERANCE_MS = 2 * 60 * 1000;
 export async function dedupeHealthKitAgainstIntervals(
   db: D1Database,
   userId: string,
+  window?: ActivityDedupeWindow,
 ): Promise<number> {
+  const dateClause = window ? ' AND date >= ?2 AND date <= ?3' : '';
   // HealthKit rows we manage: currently live (candidates to retire) OR
   // previously retired BY US as a dup (deleted_at + duplicate_of set →
   // candidates to RESTORE if their winner is gone).
+  const hkStatement = db.prepare(
+    `SELECT id, kind, start_date_local_ms, deleted_at, duplicate_of
+       FROM external_activities
+      WHERE user_id = ?1 AND source = 'healthkit'
+        AND start_date_local_ms IS NOT NULL
+        AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)${dateClause}`,
+  );
   const hk = (
-    await db
-      .prepare(
-        `SELECT id, kind, start_date_local_ms, deleted_at, duplicate_of
-           FROM external_activities
-          WHERE user_id = ?1 AND source = 'healthkit'
-            AND start_date_local_ms IS NOT NULL
-            AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)`,
-      )
-      .bind(userId)
+    await (window
+      ? hkStatement.bind(userId, window.healthKitFromDate, window.healthKitToDate)
+      : hkStatement.bind(userId))
       .all<{
         id: string;
         kind: string;
@@ -8064,28 +8104,63 @@ export async function dedupeHealthKitAgainstIntervals(
   if (hk.length === 0) return 0;
   // Live intervals winners (NOT early-returned on empty: with no live winner,
   // any retired dup must be RESTORED).
+  const ivStatement = db.prepare(
+    `SELECT id, kind, start_date_local_ms FROM external_activities
+      WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
+        AND start_date_local_ms IS NOT NULL${dateClause}`,
+  );
   const iv = (
-    await db
-      .prepare(
-        `SELECT id, kind, start_date_local_ms FROM external_activities
-          WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
-            AND start_date_local_ms IS NOT NULL`,
-      )
-      .bind(userId)
+    await (window
+      ? ivStatement.bind(userId, window.intervalsFromDate, window.intervalsToDate)
+      : ivStatement.bind(userId))
       .all<{ id: string; kind: string; start_date_local_ms: number }>()
   ).results;
+
+  // Index candidates by kind and time once. The old nested scan compared every
+  // HealthKit row with every intervals row (O(H*I)); the sorted buckets make
+  // each nearest-match lookup O(log I + candidates within the tolerance).
+  const intervalsByKind = new Map<
+    string,
+    Array<{ id: string; start_date_local_ms: number }>
+  >();
+  for (const candidate of iv) {
+    const candidates = intervalsByKind.get(candidate.kind) ?? [];
+    candidates.push(candidate);
+    intervalsByKind.set(candidate.kind, candidates);
+  }
+  for (const candidates of intervalsByKind.values()) {
+    candidates.sort(
+      (a, b) => a.start_date_local_ms - b.start_date_local_ms || (a.id < b.id ? -1 : 1),
+    );
+  }
 
   const ts = now();
   const stmts: D1PreparedStatement[] = [];
   for (const h of hk) {
-    let best: { id: string } | null = null;
+    let best: { id: string; start_date_local_ms: number } | null = null;
     let bestDelta = Infinity;
-    for (const v of iv) {
-      if (v.kind !== h.kind) continue;
+    const candidates = intervalsByKind.get(h.kind) ?? [];
+    const earliest = h.start_date_local_ms - ACTIVITY_DEDUP_TOLERANCE_MS;
+    const latest = h.start_date_local_ms + ACTIVITY_DEDUP_TOLERANCE_MS;
+    let low = 0;
+    let high = candidates.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (candidates[middle]!.start_date_local_ms < earliest) low = middle + 1;
+      else high = middle;
+    }
+    for (let i = low; i < candidates.length; i += 1) {
+      const v = candidates[i]!;
+      if (v.start_date_local_ms > latest) break;
       const delta = Math.abs(v.start_date_local_ms - h.start_date_local_ms);
-      if (delta <= ACTIVITY_DEDUP_TOLERANCE_MS && delta < bestDelta) {
+      const winsTie =
+        delta === bestDelta &&
+        best !== null &&
+        (v.start_date_local_ms < best.start_date_local_ms ||
+          (v.start_date_local_ms === best.start_date_local_ms && v.id < best.id));
+      if (delta < bestDelta || winsTie) {
         bestDelta = delta;
-        best = { id: v.id };
+        best = v;
       }
     }
     const isRetiredDup = h.deleted_at != null && h.duplicate_of != null;
@@ -8096,6 +8171,19 @@ export async function dedupeHealthKitAgainstIntervals(
           .prepare(
             `UPDATE external_activities
                 SET deleted_at = ?2, synced_at = ?2, canonical = 0, duplicate_of = ?3
+              WHERE id = ?1`,
+          )
+          .bind(h.id, ts, best.id),
+      );
+    } else if (best && h.duplicate_of !== best.id) {
+      // The row is already retired, but the deterministic winner changed.
+      // Advance the tombstone watermark so downstream clients receive the
+      // corrected provenance instead of retaining a stale duplicate_of.
+      stmts.push(
+        db
+          .prepare(
+            `UPDATE external_activities
+                SET synced_at = ?2, duplicate_of = ?3
               WHERE id = ?1`,
           )
           .bind(h.id, ts, best.id),

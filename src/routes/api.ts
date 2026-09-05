@@ -24,6 +24,7 @@ import {
   getMeProfile,
   getGroupWithMembers,
   getHistory,
+  healthKitDateMatchesStart,
   getOrCreateSession,
   getOwnedSessionByDate,
   getDayTemplateInPlan,
@@ -1067,10 +1068,14 @@ apiRoutes.post('/activities/healthkit', async (c) => {
   // start_date_local_ms, moving_time_sec, elapsed_time_sec, max_hr, calories.
   const intOrNull = (v: unknown): number | null =>
     typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null;
+  const startDateLocalMs = intOrNull(b.start_date_local_ms);
+  if (!healthKitDateMatchesStart(b.date, startDateLocalMs)) {
+    return c.json({ error: 'invalid_start_date' }, 400);
+  }
   const row = await upsertHealthKitActivity(c.env.DB, c.get('userId'), {
     id: b.id,
     date: b.date,
-    start_date_local_ms: intOrNull(b.start_date_local_ms),
+    start_date_local_ms: startDateLocalMs,
     kind: b.kind,
     name: typeof b.name === 'string' && b.name.length > 0 ? b.name : null,
     moving_time_sec: intOrNull(b.moving_time_sec),

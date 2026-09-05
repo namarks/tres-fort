@@ -201,6 +201,11 @@ Migration `0034` also creates
 `ix_activities_user_updated ON activities(user_id, updated_at)`; the manual
 activities table is outside this abbreviated schema excerpt.
 
+Migration `0035` adds `external_events(user_id, synced_at)` and
+`external_activities(user_id, synced_at)` cursor indexes. They keep empty P2
+external-cache deltas member-first and constant-cost; each real mutation pays
+one additional indexed row write, while a conditional no-op pays none.
+
 Periodization note: no `mesocycles`/`weeks` tables. Deloads, wave loading,
 and block changes are Claude editing `target_*`/`progression` and writing a
 `notes` row. That's the flexible-without-overengineered line.
@@ -212,7 +217,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | Method · Path | Purpose |
 |---|---|
 | `POST /auth/apple` | Body `{identityToken, authorizationCode?, fullName?}` → `{jwt, user}`. Verifies Apple JWT and resolves the caller. When the native client supplies Apple's single-use code, the route reserves that caller against concurrent deletion, exchanges the code, verifies the returned `id_token` has the same Apple subject, and stores only the caller-scoped refresh token before issuing the app JWT. Storage retains the exact reservation until a second acknowledgement, so a D1 commit whose response is lost can still become sticky revocation uncertainty. Code omission remains compatible with older clients. |
-| `GET /api/state?since=<planVersion>&sets_since=<epochMs>&events_since=<epochMs>&activities_since=<epochMs>&log_since=<epochMs>` | **The sync pull.** Returns `{plan: tree|null, sessions[], sets[], external_events[], external_activities[], activities[], server_time}`. `plan` is null when `version <= since`; otherwise the full small tree. A zero collection cursor requests a complete current snapshot; an active cursor returns changes plus tombstones. P1 activates the set/session and manual-activity cursors; external cache cursors remain zero until their P2 timestamps represent real changes. `server_time` is captured at request start. Called on launch/foreground/post-write. |
+| `GET /api/state?since=<planVersion>&sets_since=<epochMs>&events_since=<epochMs>&activities_since=<epochMs>&log_since=<epochMs>` | **The sync pull.** Returns `{plan: tree|null, plan_version, external_sync_cursors_version, sessions[], sets[], external_events[], external_activities[], activities[], server_time}`. `plan` is null when `version <= since`; otherwise the full small tree. A zero collection cursor requests a complete current snapshot; an active cursor returns changes plus tombstones. P2 Workers return `external_sync_cursors_version: 2`; compatible clients activate the external cursors only for version 2 or later. `server_time` is captured at request start. Called on launch/foreground/post-write. |
 | `GET /api/today` | Today's session (created from today's template if absent) + its sets + per-exercise last-time actuals + suggested weight. |
 | `POST /api/sessions` | `{date, day_template_id?}` → create/start session. |
 | `PATCH /api/sessions/{id}` | `{status?, perceived_fatigue?, notes?}`. |
@@ -329,10 +334,12 @@ the OAuth path empirically at milestone (b) before polishing it.
 The first request, an account change, a missing/invalidated/undecodable
 snapshot, or legacy cached rows without comparable server cursors sends zero
 and performs a complete reload. A superseded request ticket is simply dropped.
-Otherwise P1 sends active `sets_since` and `log_since` watermarks;
-`events_since` and `activities_since` deliberately remain zero until P2. A
-changed plan returns the full small tree. Set/session and manual activity deltas
-merge by stable id, including tombstones; complete reloads replace their
+Otherwise the app sends active `sets_since` and `log_since` watermarks. It also
+sends active `events_since` and `activities_since` watermarks only when the
+last accepted response advertised `external_sync_cursors_version >= 2`; an
+absent or lower capability keeps both external cursors at zero. A changed plan
+returns the full small tree. Set/session, external-cache, and manual-activity
+deltas merge by stable id, including tombstones; complete reloads replace their
 collections.
 
 Every mutable log cursor is server-owned. The response captures `server_time`
@@ -345,6 +352,26 @@ discard, slot remap/detach, and soft deletion; `sessions.updated_at` advances on
 every client-visible session change; manual `activities.updated_at` advances
 on insert and soft deletion. Client-authored `logged_at` remains event data and
 is never a sync cursor.
+
+The intervals.icu event and activity caches use change-aware upserts. An
+existing row updates only when a normalized, extracted field differs or the
+row is being resurrected; an unchanged provider result performs no write and
+does not advance `synced_at`. The stored raw provider JSON is intentionally
+excluded from equality because key order and non-modeled fields may drift; it
+is refreshed only alongside a real extracted-field change. A reconcile
+tombstone advances `synced_at`, so incremental clients receive removals.
+HealthKit same-UUID retries follow the same extracted-field rule because they
+share the activity cursor: an unchanged retry preserves any dedup tombstone and
+provenance, while a real revision updates and then runs the existing dedup pass.
+Every real tombstone, resurrection, dedup retirement, repoint, or restoration
+advances the cursor strictly, including when the Worker clock has not advanced.
+Each provider HTTP 200 is parsed atomically before cache mutation: intentionally
+filtered rows remain ignored, while a missing or malformed planned-event
+category discriminator, malformed relevant id/local timestamp, or non-record
+array member fails the complete fetch and leaves cached rows unchanged.
+Reconciliation passes the seen-id collection as one JSON-bound value expanded
+through `json_each`; the constant five-bind statement avoids D1's
+100-bound-parameter ceiling and materializes the membership list once.
 
 Local set writes are optimistic (write SwiftData + enqueue outbox + POST;
 reconcile on success, retry-with-backoff on failure). Post-outbox reconciliation
@@ -364,14 +391,16 @@ absent or null legacy `activities` key remains compatible but keeps
 and malformed present activity data fails the response so state and cursor
 cannot advance past an undecoded row.
 
-**P1 rollout:** have the P1 Worker artifact ready, apply pending migrations in
-order (`0033`, then additive `0034`), deploy that Worker immediately, and only
-then distribute incremental iOS. If the deploy fails after `0034` commits, roll
-forward with the P1-aware Worker rather than attempting a migration rollback.
-Old iOS clients remain compatible because they send zero cursors. Once an
-incremental client ships, the pre-P1 Worker is not a safe rollback: its
-immutable set cursor can omit later tombstones. Retain a P1-aware rollback
-version or forward-fix instead.
+**P1/P2 rollout:** have the combined Worker artifact ready, apply pending
+migrations in order (`0033`, additive `0034`, then index-only `0035`), deploy
+that Worker immediately, and only then distribute incremental iOS. If the
+deploy fails after the migrations commit, roll forward with the prepared
+Worker rather than attempting a migration rollback. Old iOS clients remain
+compatible because they send zero cursors. Once an incremental client ships,
+the pre-P1 Worker is not a safe rollback: its immutable set cursor can omit
+later tombstones. Retain a P1-aware rollback version or forward-fix instead. If
+the server later rolls back to a P1-aware pre-P2 version, the missing P2
+capability returns external-cache collections to complete reloads.
 
 **Conflict reality check:** the only true two-writer race is "Claude edits
 the plan while you're mid-workout." Set logs reference `exercise_id` /

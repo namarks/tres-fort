@@ -623,7 +623,8 @@ final class SetOutboxTests: XCTestCase {
         planID: String = "plan-a",
         planName: String = "Plan A",
         planVersion: Int = 1,
-        planMeta: String? = nil
+        planMeta: String? = nil,
+        externalSyncCursorsVersion: Int? = nil
     ) -> StateResponse {
         StateResponse(
             plan: PlanTree(
@@ -635,7 +636,9 @@ final class SetOutboxTests: XCTestCase {
             external_events: [],
             external_activities: [],
             activities: [],
-            server_time: serverTime)
+            server_time: serverTime,
+            externalSyncCursorsVersion:
+                externalSyncCursorsVersion)
     }
 
     private func configureSuccess(
@@ -6955,6 +6958,49 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(model.exerciseName(ex.exercise_id), "Current Name")
         XCTAssertEqual(ExerciseCatalogSnapshotStore.load(
             userID: "user-a", defaults: defaults)?.first?.name, "Current Name")
+    }
+
+    func testFailedP2StatePullDoesNotAdvanceExternalCursors() async throws {
+        let defaults = defaults()
+        let ex = exercise()
+        XCTAssertTrue(StateSyncAccountStore.activate(
+            userID: "user-a", defaults: defaults))
+        let liveSession = session(
+            status: "planned",
+            updatedAt: 2_000_000_000_001,
+            attempt: 0)
+        StateSnapshotStore.save(
+            state(
+                session: liveSession,
+                sets: [],
+                days: [day(with: [ex])],
+                serverTime: 2_000_000_000_000,
+                externalSyncCursorsVersion: 2),
+            userID: "user-a",
+            defaults: defaults)
+        let priorWatermarks = try XCTUnwrap(StateSnapshotStore.load(
+            userID: "user-a", defaults: defaults)?.watermarks)
+        XCTAssertGreaterThan(priorWatermarks.eventsSince, 0)
+        XCTAssertGreaterThan(priorWatermarks.activitiesSince, 0)
+
+        let api = SetWriteAPIStub()
+        api.stateWatermarkHandler = { _, watermarks in
+            XCTAssertEqual(watermarks, priorWatermarks)
+            throw URLError(.notConnectedToInternet)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: api,
+            defaults: defaults,
+            now: { self.fixedDate })
+
+        await model.load()
+
+        XCTAssertNotNil(model.loadError)
+        XCTAssertEqual(
+            StateSnapshotStore.load(
+                userID: "user-a", defaults: defaults)?.watermarks,
+            priorWatermarks)
     }
 
     func testLiveInProgressStateValidatesAndRestoresStableRunnerCheckpoint() {

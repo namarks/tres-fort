@@ -126,6 +126,89 @@ describe('fetchPlannedEvents — injected fetcher, never real network', () => {
     expect(res.events[1]).toMatchObject({ external_id: 'e2', kind: 'run', date: '2026-05-22' });
   });
 
+  it.each([
+    [42, '2026-05-20T06:00:00.1'],
+    [42.5, '2026-05-20T06:00:00.12'],
+    [0, '2026-05-20T06:00:00.123'],
+  ])(
+    'normalizes numeric provider id %s and accepts a 1-3 digit fractional local timestamp',
+    async (id, startLocal) => {
+      const res = await fetchPlannedEvents(
+        env.INTERVALS_ICU_API_KEY,
+        env.INTERVALS_ICU_ATHLETE_ID,
+        { today: TODAY, fetcher: payload([ev({ id, start_date_local: startLocal })]) },
+      );
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.events).toEqual([
+        expect.objectContaining({
+          external_id: String(id),
+          date: '2026-05-20',
+          start_date_local_ms: Date.parse(`${startLocal}Z`),
+        }),
+      ]);
+    },
+  );
+
+  it.each(['2026-05-20T06:00:00Z', '2026-05-20T06:00:00+01:00'])(
+    'rejects timezone-suffixed start_date_local %s',
+    async (startLocal) => {
+      const res = await fetchPlannedEvents(
+        env.INTERVALS_ICU_API_KEY,
+        env.INTERVALS_ICU_ATHLETE_ID,
+        { today: TODAY, fetcher: payload([ev({ start_date_local: startLocal })]) },
+      );
+      expect(res).toEqual({ ok: false, reason: 'parse' });
+    },
+  );
+
+  it.each([
+    ['missing category', ev({ category: undefined })],
+    ['non-string category', ev({ category: 42 })],
+    ['blank category', ev({ category: '   ' })],
+    ['missing id', ev({ id: undefined })],
+    ['non-scalar id', ev({ id: { nested: true } })],
+    ['blank id', ev({ id: '   ' })],
+    ['non-finite numeric id', ev({ id: Number.POSITIVE_INFINITY })],
+    ['missing civil timestamp', ev({ start_date_local: undefined })],
+    ['invalid civil timestamp', ev({ start_date_local: '2026-02-30T06:00:00' })],
+  ])('fails the complete response when a relevant row has %s', async (_case, malformed) => {
+    const res = await fetchPlannedEvents(
+      env.INTERVALS_ICU_API_KEY,
+      env.INTERVALS_ICU_ATHLETE_ID,
+      { today: TODAY, fetcher: payload([ev({ id: 'valid' }), malformed]) },
+    );
+    expect(res).toEqual({ ok: false, reason: 'parse' });
+  });
+
+  it.each([null, 'invalid', 42, []])(
+    'fails closed on a non-record array member (%j)',
+    async (malformed) => {
+      const res = await fetchPlannedEvents(
+        env.INTERVALS_ICU_API_KEY,
+        env.INTERVALS_ICU_ATHLETE_ID,
+        { today: TODAY, fetcher: payload([ev({ id: 'valid' }), malformed]) },
+      );
+      expect(res).toEqual({ ok: false, reason: 'parse' });
+    },
+  );
+
+  it('still ignores intentionally filtered rows before relevant-field validation', async () => {
+    const res = await fetchPlannedEvents(
+      env.INTERVALS_ICU_API_KEY,
+      env.INTERVALS_ICU_ATHLETE_ID,
+      {
+        today: TODAY,
+        fetcher: payload([
+          { category: 'RACE' },
+          { category: 'WORKOUT', type: 'WeightTraining' },
+          { category: 'WORKOUT', type: 'Ride', external_id: 'liftcoach:session:old' },
+        ]),
+      },
+    );
+    expect(res).toEqual({ ok: true, events: [] });
+  });
+
   it('non-2xx → {ok:false, http}; thrown/timeout → {ok:false, timeout}', async () => {
     expect(
       await fetchPlannedEvents(env.INTERVALS_ICU_API_KEY, env.INTERVALS_ICU_ATHLETE_ID, {
@@ -253,6 +336,105 @@ describe('syncExternalEvents — reconciled cache, the failed-fetch guard', () =
       .bind(`intervals:${userId}:a`)
       .first<{ deleted_at: number | null }>();
     expect(row!.deleted_at).toBeNull();
+  });
+
+  it('CRITICAL GUARD: a mixed valid + malformed 200 leaves every cache byte untouched', async () => {
+    const userId = await freshUser();
+    await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([ev({ id: 'keep', provider_revision: 1 })]),
+    } as any);
+    const before = await env.DB.prepare(
+      'SELECT * FROM external_events WHERE user_id=?1 ORDER BY id',
+    )
+      .bind(userId)
+      .all();
+
+    const result = await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([
+        ev({ id: 'keep', description: 'must not partially update', provider_revision: 2 }),
+        ev({ id: 'malformed', start_date_local: 'not-a-civil-timestamp' }),
+      ]),
+    } as any);
+    expect(result).toEqual({ status: 'fetch_failed', synced: 0, detail: 'parse' });
+
+    const after = await env.DB.prepare(
+      'SELECT * FROM external_events WHERE user_id=?1 ORDER BY id',
+    )
+      .bind(userId)
+      .all();
+    expect(after.results).toEqual(before.results);
+  });
+
+  it('CRITICAL GUARD: a malformed category cannot partially update or tombstone the cache', async () => {
+    const userId = await freshUser();
+    await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([ev({ id: 'keep', provider_revision: 1 })]),
+    } as any);
+    const before = await env.DB.prepare(
+      'SELECT * FROM external_events WHERE user_id=?1 ORDER BY id',
+    )
+      .bind(userId)
+      .all();
+
+    const result = await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([
+        ev({ id: 'keep', description: 'must not partially update', provider_revision: 2 }),
+        ev({ id: 'malformed-category', category: null }),
+      ]),
+    } as any);
+    expect(result).toEqual({ status: 'fetch_failed', synced: 0, detail: 'parse' });
+
+    const after = await env.DB.prepare(
+      'SELECT * FROM external_events WHERE user_id=?1 ORDER BY id',
+    )
+      .bind(userId)
+      .all();
+    expect(after.results).toEqual(before.results);
+  });
+
+  it('reconciles more than 100 provider rows without crossing tenants', async () => {
+    const userId = await freshUser();
+    const otherUserId = await freshUser();
+    await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([ev({ id: 'removed' })]),
+    } as any);
+    await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId: otherUserId,
+      today: TODAY,
+      fetcher: payload([ev({ id: 'removed' })]),
+    } as any);
+    const otherBefore = await env.DB.prepare('SELECT * FROM external_events WHERE user_id=?1')
+      .bind(otherUserId)
+      .all();
+
+    const providerRows = Array.from({ length: 120 }, (_, i) => ev({ id: `bulk-${i}` }));
+    const result = await syncExternalEvents(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload(providerRows),
+    } as any);
+    expect(result).toMatchObject({ status: 'ok', synced: 120 });
+
+    const removed = await env.DB.prepare(
+      'SELECT deleted_at FROM external_events WHERE user_id=?1 AND external_id=?2',
+    )
+      .bind(userId, 'removed')
+      .first<{ deleted_at: number | null }>();
+    expect(removed!.deleted_at).not.toBeNull();
+    const otherAfter = await env.DB.prepare('SELECT * FROM external_events WHERE user_id=?1')
+      .bind(otherUserId)
+      .all();
+    expect(otherAfter.results).toEqual(otherBefore.results);
   });
 
   it('a genuinely-empty SUCCESSFUL window DOES soft-delete in-window rows', async () => {
@@ -521,6 +703,82 @@ describe('fetchCompletedActivities — injected fetcher, never real network', ()
     expect(res.activities[0]!.average_watts).toBe(150);
   });
 
+  it.each([
+    [84, '2026-05-15T07:00:00.1'],
+    [84.5, '2026-05-15T07:00:00.12'],
+    [0, '2026-05-15T07:00:00.123'],
+  ])(
+    'normalizes numeric provider id %s and accepts a 1-3 digit fractional local timestamp',
+    async (id, startLocal) => {
+      const res = await fetchCompletedActivities(
+        env.INTERVALS_ICU_API_KEY,
+        env.INTERVALS_ICU_ATHLETE_ID,
+        { today: TODAY, fetcher: payload([act({ id, start_date_local: startLocal })]) },
+      );
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.activities).toEqual([
+        expect.objectContaining({
+          external_id: String(id),
+          date: '2026-05-15',
+          start_date_local_ms: Date.parse(`${startLocal}Z`),
+        }),
+      ]);
+    },
+  );
+
+  it.each(['2026-05-15T07:00:00Z', '2026-05-15T07:00:00-08:00'])(
+    'rejects timezone-suffixed start_date_local %s',
+    async (startLocal) => {
+      const res = await fetchCompletedActivities(
+        env.INTERVALS_ICU_API_KEY,
+        env.INTERVALS_ICU_ATHLETE_ID,
+        { today: TODAY, fetcher: payload([act({ start_date_local: startLocal })]) },
+      );
+      expect(res).toEqual({ ok: false, reason: 'parse' });
+    },
+  );
+
+  it.each([
+    ['missing id', act({ id: undefined })],
+    ['non-scalar id', act({ id: ['nested'] })],
+    ['blank id', act({ id: '' })],
+    ['non-finite numeric id', act({ id: Number.NEGATIVE_INFINITY })],
+    ['missing civil timestamp', act({ start_date_local: undefined })],
+    ['invalid civil timestamp', act({ start_date_local: '2026-05-15T25:00:00' })],
+  ])('fails the complete response when a relevant row has %s', async (_case, malformed) => {
+    const res = await fetchCompletedActivities(
+      env.INTERVALS_ICU_API_KEY,
+      env.INTERVALS_ICU_ATHLETE_ID,
+      { today: TODAY, fetcher: payload([act({ id: 'valid' }), malformed]) },
+    );
+    expect(res).toEqual({ ok: false, reason: 'parse' });
+  });
+
+  it.each([null, 'invalid', 42, []])(
+    'fails closed on a non-record array member (%j)',
+    async (malformed) => {
+      const res = await fetchCompletedActivities(
+        env.INTERVALS_ICU_API_KEY,
+        env.INTERVALS_ICU_ATHLETE_ID,
+        { today: TODAY, fetcher: payload([act({ id: 'valid' }), malformed]) },
+      );
+      expect(res).toEqual({ ok: false, reason: 'parse' });
+    },
+  );
+
+  it('still ignores an own-export marker before relevant-field validation', async () => {
+    const res = await fetchCompletedActivities(
+      env.INTERVALS_ICU_API_KEY,
+      env.INTERVALS_ICU_ATHLETE_ID,
+      {
+        today: TODAY,
+        fetcher: payload([{ external_id: 'liftcoach:session:old' }]),
+      },
+    );
+    expect(res).toEqual({ ok: true, activities: [] });
+  });
+
   it('non-2xx → http; thrown → timeout', async () => {
     expect(
       await fetchCompletedActivities(env.INTERVALS_ICU_API_KEY, env.INTERVALS_ICU_ATHLETE_ID, {
@@ -593,6 +851,91 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
       .bind(`intervals:activity:${userId}:a2`)
       .first<{ deleted_at: number | null }>();
     expect(dead!.deleted_at).not.toBeNull();
+  });
+
+  it('CRITICAL GUARD: a mixed valid + malformed 200 leaves every cache byte untouched', async () => {
+    const userId = await freshUser();
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'keep', provider_revision: 1 })]),
+    } as any);
+    const before = await env.DB.prepare(
+      'SELECT * FROM external_activities WHERE user_id=?1 ORDER BY id',
+    )
+      .bind(userId)
+      .all();
+
+    const result = await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([
+        act({ id: 'keep', icu_average_watts: 999, provider_revision: 2 }),
+        act({ id: 'malformed', start_date_local: null }),
+      ]),
+    } as any);
+    expect(result).toEqual({ status: 'fetch_failed', synced: 0, detail: 'parse' });
+
+    const after = await env.DB.prepare(
+      'SELECT * FROM external_activities WHERE user_id=?1 ORDER BY id',
+    )
+      .bind(userId)
+      .all();
+    expect(after.results).toEqual(before.results);
+  });
+
+  it('reconciles more than 100 provider rows without crossing tenant or source scope', async () => {
+    const userId = await freshUser();
+    const otherUserId = await freshUser();
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'removed' })]),
+    } as any);
+    await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId: otherUserId,
+      today: TODAY,
+      fetcher: payload([act({ id: 'removed' })]),
+    } as any);
+
+    const healthKitId = `healthkit:activity:${userId}:bulk-scope`;
+    await env.DB.prepare(
+      `INSERT INTO external_activities
+         (id,user_id,source,external_id,date,kind,name,synced_at,deleted_at)
+       VALUES (?1,?2,'healthkit','bulk-scope',?3,'run','HealthKit run',1000,NULL)`,
+    )
+      .bind(healthKitId, userId, TODAY)
+      .run();
+    const otherBefore = await env.DB.prepare('SELECT * FROM external_activities WHERE user_id=?1')
+      .bind(otherUserId)
+      .all();
+    const healthKitBefore = await env.DB.prepare('SELECT * FROM external_activities WHERE id=?1')
+      .bind(healthKitId)
+      .first();
+
+    const providerRows = Array.from({ length: 120 }, (_, i) => act({ id: `bulk-${i}` }));
+    const result = await syncExternalActivities(env.DB, env as unknown as Env, {
+      userId,
+      today: TODAY,
+      fetcher: payload(providerRows),
+    } as any);
+    expect(result).toMatchObject({ status: 'ok', synced: 120 });
+
+    const removed = await env.DB.prepare(
+      `SELECT deleted_at FROM external_activities
+        WHERE user_id=?1 AND source='intervals' AND external_id=?2`,
+    )
+      .bind(userId, 'removed')
+      .first<{ deleted_at: number | null }>();
+    expect(removed!.deleted_at).not.toBeNull();
+    const otherAfter = await env.DB.prepare('SELECT * FROM external_activities WHERE user_id=?1')
+      .bind(otherUserId)
+      .all();
+    expect(otherAfter.results).toEqual(otherBefore.results);
+    const healthKitAfter = await env.DB.prepare('SELECT * FROM external_activities WHERE id=?1')
+      .bind(healthKitId)
+      .first();
+    expect(healthKitAfter).toEqual(healthKitBefore);
   });
 
   it('MULTI-SOURCE GUARD: an intervals reconcile never tombstones another source (0027)', async () => {

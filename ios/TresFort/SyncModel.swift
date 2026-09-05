@@ -275,6 +275,7 @@ final class SyncModel: ObservableObject {
     private var statePlanVersion = 0
     private var stateServerTime = 0
     private var stateManualActivityCursorCapable = false
+    private var stateExternalSyncCursorsVersion: Int?
 
     init(
         auth: AuthModel,
@@ -697,6 +698,8 @@ final class SyncModel: ObservableObject {
         stateServerTime = state.server_time
         stateManualActivityCursorCapable =
             state.manualActivityCursorCapable
+        stateExternalSyncCursorsVersion =
+            state.externalSyncCursorsVersion
         plan = state.plan
         if isLiveResponse {
             // A replacement model may have cleared or superseded this
@@ -831,7 +834,9 @@ final class SyncModel: ObservableObject {
             // Mutation responses carry no replacement state watermark.
             server_time: stateServerTime,
             manualActivityCursorCapable:
-                stateManualActivityCursorCapable)
+                stateManualActivityCursorCapable,
+            externalSyncCursorsVersion:
+                stateExternalSyncCursorsVersion)
     }
 
     /// Another same-account model removes an intent only after merging its ACK
@@ -1140,7 +1145,9 @@ final class SyncModel: ObservableObject {
             activities: state.activities,
             server_time: state.server_time,
             manualActivityCursorCapable:
-                state.manualActivityCursorCapable)
+                state.manualActivityCursorCapable,
+            externalSyncCursorsVersion:
+                state.externalSyncCursorsVersion)
     }
 
     private struct SetAcknowledgementMergeDecision {
@@ -1241,7 +1248,9 @@ final class SyncModel: ObservableObject {
             activities: state.activities,
             server_time: state.server_time,
             manualActivityCursorCapable:
-                state.manualActivityCursorCapable)
+                state.manualActivityCursorCapable,
+            externalSyncCursorsVersion:
+                state.externalSyncCursorsVersion)
     }
 
     /// Merge a date-level create/revive response without allowing its
@@ -1311,7 +1320,9 @@ final class SyncModel: ObservableObject {
             activities: state.activities,
             server_time: state.server_time,
             manualActivityCursorCapable:
-                state.manualActivityCursorCapable)
+                state.manualActivityCursorCapable,
+            externalSyncCursorsVersion:
+                state.externalSyncCursorsVersion)
     }
 
     /// Apply a terminal response to the mounted model using the same alias and

@@ -107,11 +107,12 @@ enum WorkoutRunnerCheckpointStore {
 }
 
 /// Every cursor accepted by `/api/state`. The plan uses its monotonic document
-/// version; sessions/sets and manual activities use the server clock as their
-/// device-skew-safe watermark. External-event cursor slots are persisted in the
-/// shape but remain explicit zero/full-replace until P2 adds change-only upserts
-/// and matching indexes. An active cursor always uses a fixed overlap so rows
-/// committed at the edge are harmlessly redelivered rather than lost.
+/// version; sessions/sets, external caches, and manual activities use the server
+/// clock as their device-skew-safe watermark. External cursors activate only
+/// when a P2 Worker explicitly declares version 2 change-cursor semantics and
+/// every returned row has a comparable server timestamp. An active cursor
+/// always uses a fixed overlap so rows committed at the edge are harmlessly
+/// redelivered rather than lost.
 struct StateSyncWatermarks: Codable, Equatable {
     static let overlapMilliseconds = 60_000
     static let fullReload = StateSyncWatermarks(
@@ -138,11 +139,21 @@ struct StateSyncWatermarks: Codable, Equatable {
         let hasComparableActivityVersions =
             response.manualActivityCursorCapable
             && response.activities.allSatisfy { $0.updated_at != nil }
+        let externalCursorsCapable =
+            (response.externalSyncCursorsVersion ?? 0)
+            >= StateResponse.externalSyncCursorsCapabilityVersion
+        let hasComparableEventVersions = externalCursorsCapable
+            && response.external_events.allSatisfy { $0.synced_at != nil }
+        let hasComparableExternalActivityVersions = externalCursorsCapable
+            && response.external_activities.allSatisfy {
+                $0.synced_at != nil
+            }
         return StateSyncWatermarks(
             planVersion: max(0, response.plan_version),
             setsSince: hasComparableSetVersions ? overlappedTime : 0,
-            eventsSince: 0,
-            activitiesSince: 0,
+            eventsSince: hasComparableEventVersions ? overlappedTime : 0,
+            activitiesSince: hasComparableExternalActivityVersions
+                ? overlappedTime : 0,
             logSince: hasComparableActivityVersions ? overlappedTime : 0)
     }
 }
@@ -576,7 +587,9 @@ enum StateSnapshotStore {
             activities: activities,
             server_time: response.server_time,
             manualActivityCursorCapable:
-                response.manualActivityCursorCapable)
+                response.manualActivityCursorCapable,
+            externalSyncCursorsVersion:
+                response.externalSyncCursorsVersion)
     }
 
     /// Stable id-based upsert. Replaying an overlap response replaces the same

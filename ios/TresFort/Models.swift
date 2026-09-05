@@ -521,6 +521,12 @@ struct ExternalActivity: Codable, Identifiable, Equatable {
 }
 
 struct StateResponse: Codable {
+    static let externalSyncCursorsCapabilityVersion = 2
+
+    /// P2 Workers send version 2 once both external cache `synced_at`
+    /// columns are true change cursors. Older Workers omit this field and
+    /// must continue receiving zero/full-reload external cursors.
+    let externalSyncCursorsVersion: Int?
     let plan: PlanTree?
     let plan_version: Int
     let sessions: [SessionRow]
@@ -548,6 +554,7 @@ struct StateResponse: Codable {
     private enum CodingKeys: String, CodingKey {
         case plan, plan_version, sessions, sets
         case external_events, external_activities, activities, server_time
+        case externalSyncCursorsVersion = "external_sync_cursors_version"
         case manualActivityCursorCapable = "_manual_activity_cursor_capable"
     }
 
@@ -560,8 +567,10 @@ struct StateResponse: Codable {
         external_activities: [ExternalActivity],
         activities: [ActivityRow],
         server_time: Int,
-        manualActivityCursorCapable: Bool = true
+        manualActivityCursorCapable: Bool = true,
+        externalSyncCursorsVersion: Int? = nil
     ) {
+        self.externalSyncCursorsVersion = externalSyncCursorsVersion
         self.plan = plan
         self.plan_version = plan_version
         self.sessions = sessions
@@ -575,17 +584,34 @@ struct StateResponse: Codable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        externalSyncCursorsVersion = try c.decodeIfPresent(
+            Int.self, forKey: .externalSyncCursorsVersion)
         plan = try c.decodeIfPresent(PlanTree.self, forKey: .plan)
         plan_version = try c.decode(Int.self, forKey: .plan_version)
         sessions = try c.decode([SessionRow].self, forKey: .sessions)
         sets = try c.decode([SetLog].self, forKey: .sets)
-        // Absent key OR JSON null → no rides (defensive, never throws).
-        external_events =
-            (try? c.decodeIfPresent([ExternalEvent].self, forKey: .external_events))
-            .flatMap { $0 } ?? []
-        external_activities =
-            (try? c.decodeIfPresent([ExternalActivity].self, forKey: .external_activities))
-            .flatMap { $0 } ?? []
+        if (externalSyncCursorsVersion ?? 0)
+            >= Self.externalSyncCursorsCapabilityVersion
+        {
+            // A cursor-capable response must contain valid, non-null arrays.
+            // Otherwise accepting [] could commit server_time past rows the
+            // client failed to decode, or erase a full-reload baseline.
+            external_events = try c.decode(
+                [ExternalEvent].self, forKey: .external_events)
+            external_activities = try c.decode(
+                [ExternalActivity].self, forKey: .external_activities)
+        } else {
+            // Legacy/thin responses retain their historical defensive shape.
+            external_events =
+                (try? c.decodeIfPresent(
+                    [ExternalEvent].self, forKey: .external_events))
+                .flatMap { $0 } ?? []
+            external_activities =
+                (try? c.decodeIfPresent(
+                    [ExternalActivity].self,
+                    forKey: .external_activities))
+                .flatMap { $0 } ?? []
+        }
         // Absence/null is backward-compatible, but malformed present data must
         // fail the response. Treating it as [] could commit server_time and
         // advance log_since past manual-activity rows the client never decoded.
@@ -605,6 +631,9 @@ struct StateResponse: Codable {
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(
+            externalSyncCursorsVersion,
+            forKey: .externalSyncCursorsVersion)
         try c.encodeIfPresent(plan, forKey: .plan)
         try c.encode(plan_version, forKey: .plan_version)
         try c.encode(sessions, forKey: .sessions)

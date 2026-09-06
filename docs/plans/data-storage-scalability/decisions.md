@@ -23,16 +23,15 @@ aggregate D1 counters; it does not retain any personal history values.
 The build-31 activation's safe one-shot full reload had already been consumed
 before this tail was available. A read-only source audit found no existing UI
 control that resets sync state non-destructively, so no full-reload sample was
-captured. The owner must decide whether to capture it from a never-launched
-build-31 device or another future safe trigger, or amend the replacement
-evidence to omit it. The owner must also separately accept or reject the
-overall post-release sample set as a substitute for the irrecoverable pre-P1
-per-path baseline. P0 and P1 therefore remain incomplete.
+captured. A never-launched build-31 device or another future safe trigger were
+identified as non-destructive opportunities for a later capture; an amendment
+to the replacement-evidence contract was also identified as an alternative.
 
-P2 is unchanged: the owner must still choose between a later privacy-safe
-capture containing a real provider row and amended acceptance of the existing
-authenticated empty-window evidence plus synthetic raw-only-drift regressions.
-P2 remains incomplete, and the workstream remains gated.
+This traffic capture did not change the previously recorded provider evidence:
+no real provider row was captured, and the retained evidence remains the
+authenticated empty-window capture plus synthetic raw-only-drift regressions.
+Current gates, owner decisions, phase state, and workstream status live only in
+[`plan.md`](plan.md).
 
 ## 2026-09-05 — P1/P2 production release and TestFlight build 31
 

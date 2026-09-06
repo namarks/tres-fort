@@ -3,6 +3,25 @@
 Supporting material for [`plan.md`](plan.md). This file records owner
 decisions and measured baselines; it carries no live checklist.
 
+## 2026-09-06 — Owner acceptance of replacement evidence
+
+The owner accepted the privacy-safe post-release production samples as the
+substitute for the irrecoverable pre-P1 authenticated baseline. The accepted
+production set is the documented incremental `/api/state`, `/api/me`, and OAuth
+`get_history` capture. The unavailable production full-reload sample is omitted;
+the existing deterministic full-reload source and test evidence remains the
+proof of fallback behavior and is not represented as production traffic.
+
+The owner also accepted the authenticated empty-window intervals.icu capture
+plus the existing synthetic raw-only-drift regressions instead of waiting for a
+real provider row. This amendment does not claim that an empty response contains
+a provider row, does not relabel synthetic fixtures as production captures, and
+does not permit retaining credentials or personal response content.
+
+These are evidence-contract decisions only. Current phase state, execution
+frontier, dependencies, and next action remain canonical only in
+[`plan.md`](plan.md).
+
 ## 2026-09-06 — Privacy-safe post-release authenticated traffic samples
 
 A production tail captured only the structured D1 usage lines already emitted
@@ -24,13 +43,13 @@ The build-31 activation's safe one-shot full reload had already been consumed
 before this tail was available. A read-only source audit found no existing UI
 control that resets sync state non-destructively, so no full-reload sample was
 captured. A never-launched build-31 device or another future safe trigger were
-identified as non-destructive opportunities for a later capture; an amendment
-to the replacement-evidence contract was also identified as an alternative.
+identified as non-destructive opportunities for a later capture; the owner
+subsequently chose the evidence-contract amendment recorded above.
 
 This traffic capture did not change the previously recorded provider evidence:
 no real provider row was captured, and the retained evidence remains the
 authenticated empty-window capture plus synthetic raw-only-drift regressions.
-Current gates, owner decisions, phase state, and workstream status live only in
+Current gates, phase state, execution frontier, and workstream status live only in
 [`plan.md`](plan.md).
 
 ## 2026-09-05 — P1/P2 production release and TestFlight build 31
@@ -97,9 +116,9 @@ must complete a fresh Wrangler login before production traffic sampling.
 The authenticated owner paths were not sampled before P1 shipped. That
 historical per-path baseline cannot now be recreated without rolling back to a
 Worker that is unsafe after incremental iOS cursors. The 2026-09-06 classified
-post-release capture now covers incremental `/api/state`, `/api/me`, and OAuth
-`get_history`; the full-reload sample and the owner's explicit acceptance of
-the overall substitution remain outstanding before P0/P1 close.
+post-release capture covers incremental `/api/state`, `/api/me`, and OAuth
+`get_history`; the owner subsequently accepted that substitution and omitted
+the unavailable production full-reload sample as recorded above.
 
 An authorized privacy-preserving in-page intervals.icu capture used only the
 logged-in web-session routes. The event window 2026-09-05 through 2026-12-04,
@@ -109,17 +128,14 @@ browser used its page-local session URL to make those requests, but no cookie,
 token value, athlete identifier, name, or event/activity content left the page
 context, entered tool output, or was copied or retained. Because the provider
 returned no rows, the capture cannot yield two versions of the same row whose
-only change is ignored raw data. It is not relabeled as the required
-real-response replay, no fixture is fabricated, and P2 remains open.
+only change is ignored raw data. It is not relabeled as a real-response replay
+and no fixture is fabricated. The owner subsequently accepted the empty-window
+capture plus existing synthetic raw-only-drift regressions as the amended
+evidence contract recorded above.
 
-Remaining evidence is therefore narrow: the missing full-reload sample or an
-owner-approved amendment, owner acceptance of the overall post-release path
-sample set, and the provider gate. The latter requires either a later privacy-preserving
-capture after a real event/activity is available, or an explicit owner decision
-to amend acceptance to the authenticated empty-window evidence plus the existing
-synthetic raw-only-drift regressions. Neither alternative changes storage scope
-implicitly, and neither may expose owner credentials or personal response
-content.
+The accepted amendments change only the evidence contract. They do not change
+storage scope and do not permit owner credentials or personal response content
+to be exposed or retained.
 
 ## 2026-09-05 — Production release paused for Hono CORS security update
 
@@ -387,9 +403,12 @@ indexes and read at most two billed rows in the local real-D1 tests.
 Local evidence passed 106 focused cache tests, all 44 backend files / 600 tests,
 TypeScript, and all 273 iOS simulator tests. The raw-drift regressions use two
 distinct synthetic response shapes per provider endpoint; they prove the code
-path but are not relabeled as real captures. No authorized sanitized pair of
-same-window intervals.icu responses exists in the repository, so that replay
-remains a live evidence gate alongside the post-release quiet-hour log.
+path but are not relabeled as real captures. At that time, no authorized
+sanitized pair of same-window intervals.icu responses existed in the repository,
+so the real-response replay remained an evidence gate alongside the post-release
+quiet-hour log. The owner resolved that gate on 2026-09-06 by accepting the
+authenticated empty-window capture plus the synthetic regressions, as recorded
+above.
 
 Production rollout remains server-first: have the combined P1/P2 Worker ready,
 apply pending migrations `0033`, `0034`, then additive `0035`, deploy the Worker
@@ -436,11 +455,12 @@ lighter members read less):
 | Rows written (100k / day) | ≈ 50 members with intervals.icu connected |
 | Cron subrequests (50 / tick) | ≈ 20 members with intervals.icu connected |
 
-The plan's back-of-envelope figures (tens, forty, twenty) hold against the
-measured data. The cron per-invocation baseline is now recorded below. What P0
-still owes is the three representative authenticated foreground samples:
-`meta.rows_read` for `/api/state`, `/api/me`, and `get_history`, so P1–P3 can
-show before/after per path; the dashboard gives daily totals only.
+The plan's back-of-envelope figures (tens, forty, twenty) held against the
+measured data. The cron per-invocation baseline was recorded below. At that
+time, P0 still owed three representative authenticated foreground samples:
+`meta.rows_read` for `/api/state`, `/api/me`, and `get_history`; the dashboard
+provided daily totals only. Those paths were captured post-release on
+2026-09-06 and accepted under the evidence amendment recorded above.
 
 ## 2026-09-04 — P0 local instrumentation and index-cost evidence
 
@@ -475,8 +495,10 @@ slot indexes, and adding `audit_log(user_id, actor, created_at)`.
 
 These are controlled index-amplification measurements, not owner-production
 traffic. They exclude surrounding session transitions, write-fence work, and
-other route queries. P3 still needs the production P2 savings comparison
-before its indexes may ship.
+other route queries. At that time, P3 still needed the production P2 savings
+comparison before its indexes could ship. The later optimized natural tick and
+P2 quiet-hour tick measured 64 then zero rows written, respectively, satisfying
+that comparison against the two-row combined MCP mutation amplification.
 
 ## 2026-09-04 — P0 production release and measured baseline
 
@@ -519,10 +541,11 @@ overages, so one `ok` outcome is not evidence of safe headroom; consistent
 overages can be terminated. The owner tier-or-mitigation gate above is
 therefore immediate rather than a future ten-member threshold.
 
-Workers Logs also proved that structured production ingestion works by
-capturing two unauthenticated diagnostic probes with zero D1 queries. They are
-excluded from the owner baseline. P0 still needs one representative
-authenticated foreground `/api/state`, one authenticated Profile `/api/me`,
-and one OAuth MCP `get_history` invocation. No additional deployment,
-migration, index creation, TestFlight build, credential transfer, or manual
-cron trigger is required to collect them.
+Workers Logs also proved that structured production ingestion worked by
+capturing two unauthenticated diagnostic probes with zero D1 queries. They were
+excluded from the owner baseline. At that time, P0 still needed one
+representative authenticated foreground `/api/state`, one authenticated Profile
+`/api/me`, and one OAuth MCP `get_history` invocation. Those paths were captured
+post-release on 2026-09-06 and accepted under the evidence amendment recorded
+above; their collection required no additional deployment, migration, index
+creation, TestFlight build, credential transfer, or manual cron trigger.

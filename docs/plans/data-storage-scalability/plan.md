@@ -1,6 +1,6 @@
 # Data Storage Scalability
 
-Slug: data-storage-scalability · Status: gated · Updated: 2026-09-06 · Theme: platform
+Slug: data-storage-scalability · Status: active · Updated: 2026-09-06 · Theme: platform
 
 ## Goal
 
@@ -30,7 +30,7 @@ Done means:
 
 ## Phases
 
-- [ ] **P0 — Measure before changing anything**
+- [x] **P0 — Measure before changing anything**
   - Owner confirms the Cloudflare Workers plan tier (Free or Paid) in the
     dashboard and records it in `decisions.md`. Done 2026-09-04: Free, with
     the dashboard's 24-hour row totals recorded as the daily baseline. D1 has hard-enforced the Free
@@ -58,8 +58,12 @@ Done means:
     `1cc13fec-3eab-4f95-a0fb-e9d6a1303f52` now cover three identical build-31
     incremental `/api/state` pulls (8 queries / 11 rows read / 0 written each),
     build-31 `/api/me` (6 / 96 / 0), and OAuth `get_history` (6 / 29 / 0), all
-    HTTP 200. Full-reload evidence is still missing, and the owner must accept
-    the overall post-release substitution before P0 closes.
+    HTTP 200. On 2026-09-06 the owner accepted these privacy-safe post-release
+    samples as the substitute for the irrecoverable pre-P1 authenticated
+    baseline and amended the evidence contract to omit the unavailable
+    production full-reload sample. Existing deterministic full-reload source
+    and test evidence remains the fallback proof; it is not relabeled as a
+    production traffic sample.
   - Capture the owner account's baseline: rows read per foreground sync, rows
     written per cron tick, current table row counts, and the rows-written
     delta each proposed index adds on the highest-write tables (`set_logs`,
@@ -71,8 +75,8 @@ Done means:
     and +2 for a combined MCP set mutation plus its audit row. Production table
     census and the natural cron total are captured, with exact personal and
     auth-state counts intentionally omitted from the public repository. The
-    incremental state, profile, and history totals are now captured; only the
-    full-reload traffic sample and owner acceptance remain outstanding.
+    incremental state, profile, and history totals are captured. The owner
+    accepted the measured substitution and full-reload omission on 2026-09-06.
 - [x] **P0.5 — Resolve the natural-cron CPU capacity gate**
   - Initial owner decision 2026-09-05: **Mitigate on Free**. Keep the single
     hourly webhook-backstop trigger and optimize the activity reconcile without
@@ -105,7 +109,7 @@ Done means:
     a successful outcome as headroom. The owner then upgraded to Workers Paid,
     whose hourly-cron CPU allowance resolves this capacity gate while retaining
     the measured optimization.
-- [ ] **P1 — Sync only what changed (sets, sessions, and manual activities)**
+- [x] **P1 — Sync only what changed (sets, sessions, and manual activities)**
   - Migration: add `set_logs.user_id` (NOT NULL, backfilled from
     `sessions.user_id`, with a parity assertion that every row matches its
     session's owner) and server-owned `set_logs.updated_at`. Backfill the mutable
@@ -192,9 +196,11 @@ Done means:
     incremental state, profile, and OAuth history samples were captured on
     2026-09-06; build 31's safe one-shot activation full reload had already been
     consumed, and a read-only source audit found no non-destructive existing UI
-    reset. The full-reload sample and owner acceptance of the overall
-    replacement evidence remain outstanding.
-- [ ] **P2 — Reconcile only what changed (intervals.icu cache)**
+    reset. On 2026-09-06 the owner accepted the post-release production samples
+    as the replacement for the irrecoverable pre-P1 baseline and omitted the
+    unavailable production full-reload sample, relying on the retained
+    deterministic full-reload source and test evidence for fallback behavior.
+- [x] **P2 — Reconcile only what changed (intervals.icu cache)**
   - Change the events and activities upserts to `ON CONFLICT DO UPDATE ...
     WHERE` any extracted column differs from the incoming row, or the row is
     currently tombstoned. `raw`, the whole upstream JSON with derived fields
@@ -234,9 +240,9 @@ Done means:
   - Evidence: a test runs the same sync twice and asserts the second pass
     reports zero rows written and unchanged `synced_at`; a test with one
     altered field asserts one logical row mutation and the expected billed
-    write amplification for the base row plus its two indexes; a test replays
-    two real captured intervals.icu responses for the same window, not a
-    static fixture, and asserts zero writes when only `raw` drifted;
+    write amplification for the base row plus its two indexes; synthetic paired
+    provider responses assert zero writes when only `raw` drifted, while the
+    authenticated provider capture establishes successful empty-window behavior;
     same-source and dedup-retired HealthKit retries are no-ops; dedup retire,
     repoint, and restore transitions advance `synced_at` strictly even at the
     same clock millisecond; query-plan and billed-read tests prove both empty
@@ -267,8 +273,9 @@ Done means:
     but no cookie, token value, athlete identifier, name, or event/activity
     content left the page context, entered tool output, or was copied or
     retained. Empty responses cannot supply two versions of the same row with
-    raw-only drift, so the real-response replay remains outstanding and P2
-    stays open; do not fabricate it.
+    raw-only drift, and no real-response replay is claimed or fabricated. On
+    2026-09-06 the owner amended acceptance to this authenticated empty-window
+    evidence plus the existing synthetic raw-only-drift regressions.
 - [ ] **P3 — Filing-cabinet tabs (member-first indexes)**
   - Migration: `audit_log(user_id, actor, created_at)` so the profile's
     latest-MCP-action lookup seeks directly instead of walking a member's
@@ -285,8 +292,10 @@ Done means:
     the applied migrations plus these changes flips every hot query to the
     member-first index.
   - Cost check: `set_logs` nets one more index (two added, one dropped) and
-    `audit_log` gains one, each billed as a row written on every insert. P3
-    ships only after the P0 delta shows that cost is below P2's savings. The
+    `audit_log` gains one, each billed as a row written on every insert. The
+    optimized pre-P2-to-P2 quiet-hour comparison fell from 64 rows written to zero,
+    while the final P1/P3 shape adds two rows written per combined MCP set and
+    audit mutation, satisfying the planned cost check before P3. The
     unbounded `UPDATE set_logs ... WHERE template_exercise_id = ?` on plan
     rebuild is a full scan today; index it only if P0 shows plan edits are a
     measurable read cost.
@@ -332,9 +341,8 @@ Done means:
 
 ## Execution frontier
 
-- P0
-- P1
-- P2
+- P3
+- P4
 
 ## Dependencies
 
@@ -347,21 +355,12 @@ Done means:
 
 ## Next step
 
-**Now (@owner):** Decide whether to obtain the missing full-reload sample from a
-never-launched build-31 device or another future safe trigger, or amend the
-replacement evidence to omit that sample. The 2026-09-06 privacy-safe production
-capture already retained three identical incremental `/api/state` samples plus
-representative `/api/me` and OAuth `get_history` samples from exact Worker
-version `1cc13fec-3eab-4f95-a0fb-e9d6a1303f52`; build 31's one-shot activation
-full reload had already been consumed, and a read-only source audit found no
-non-destructive existing UI reset. Separately, explicitly accept or reject the
-overall post-release sample set as a substitute for the irrecoverable pre-P1
-baseline. For P2, either wait for a privacy-safe real-row intervals.icu capture
-or amend acceptance to the authenticated empty-window evidence plus the
-existing synthetic raw-only-drift regressions. P0, P1, and P2 remain incomplete
-until their respective evidence decisions are recorded. Do not fabricate
-provider rows, manually trigger production cron, change the plan tier, or infer
-P3/P5 product decisions from scheduler order.
+**Now (@agent):** Implement and independently verify P3 and P4 as separate,
+coordinated slices. Preserve the measured index-cost boundary, avoid conflicting
+migration numbering or shared-test edits, and retain P5's explicit owner
+retention gate. Do not fabricate provider rows, manually trigger production
+cron, change the plan tier, or infer the P5 retention decision from scheduler
+order.
 
 ## Notes / open questions
 

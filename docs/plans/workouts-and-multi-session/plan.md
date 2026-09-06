@@ -190,9 +190,7 @@ Two model corrections that the workout library exposed:
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | coordinates_with | plan:workout-library#P1 | Both add or rename columns on the same table; whichever lands second rebases onto the other's migration and serializer. |
 | P0 | coordinates_with | plan:reversible-plan-management#P0 | Snapshot serialization must use one set of names; agree on `workouts`/`workout_id` before either ships. |
-| P1 | blocked_by | plan:workouts-and-multi-session#P0 | Slot-aware routes and the cell `sessions[]` array should be born with the new names rather than renamed a release later. |
 | P1 | coordinates_with | plan:gym-runner-depth#P0 | Both change the Today runner surface; share the slice, do not fork the runner. |
 | P1 | coordinates_with | plan:data-storage-scalability#P0 | The `(user_id, date, slot)` index replaces the one incremental sync and the hot-path index work rely on. |
 | P1 | feeds | plan:workout-library#P2 | A freestyle session is the most common second session of a day; P2 should allocate a slot rather than fail on the primary. |

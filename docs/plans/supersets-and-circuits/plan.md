@@ -57,14 +57,30 @@ workout is sequenced inside the runner.
     non-final exercises with zero rest. Expose it as `PUT /api/days/{id}/groups` (audited as
     `actor='ios'`) and as the MCP `group_exercises({day, exercises: [...],
     rest_seconds})` tool, both thin wrappers over the same function.
-    `update_exercise` still accepts `group_id` only to move a slot into an
-    existing group or `null` to leave one; `get_current_plan`,
+    Every membership change goes through the same atomic path: joining or
+    leaving an existing group changes which member is last, and because
+    `rest_seconds` encodes both transition and round rest, a one-slot write
+    would leave the former last member's round rest as a transition and
+    promote the joiner's ordinary rest to the round rest. So `groupSlots`
+    accepts an existing `groupId` to rewrite the full member list, and
+    `update_exercise` and `PATCH /api/days/{id}/exercises/{teId}` reject
+    `group_id` with `unknown_fields`; `get_current_plan`,
     `get_today_workout`, and the coach brief render groups in A1/A2 notation
     with the round rest. Each write audits and writes a note like any plan
     mutation.
+  - Wire gating for released clients. The current runner ignores
+    `group_id` and rests `rest_seconds` after every set, so serving a group
+    as stored would make it perform every non-final member with zero rest.
+    A client that does not declare group awareness (the
+    `X-TresFort-Write-Protocol` capability-header pattern) receives the
+    plan tree with `group_id` omitted and every member's `rest_seconds`
+    replaced by the group's round rest, so it degrades to sequential sets
+    with sensible rest. Group-aware clients receive the stored values. MCP
+    reads are always group-aware.
   - Tests: group round trip through `update_plan`, contiguity and equal-sets
-    rejection, delete-member normalization, and MCP authoring of the
-    push-up/squat warm-up with `is_warmup = 1` on both members.
+    rejection, delete-member normalization, the gated wire view for a
+    non-group-aware client, and MCP authoring of the push-up/squat warm-up
+    with `is_warmup = 1` on both members.
 - [ ] **P1 — Round-based runner**
   - The runner iterates a group by rounds: after logging a set of member *i*,
     it cues member *i*'s own `rest_seconds` (the transition rest from P0's
@@ -114,8 +130,8 @@ workout is sequenced inside the runner.
 
 **Now (@owner):** Decide the priority of P0 relative to `gym-runner-depth#P0`.
 P0 is backend and MCP only, so Claude can author supersets before the runner
-change ships; a grouped workout degrades to today's sequential behavior until
-P1 lands, which is safe but not useful on the gym floor.
+change ships; until P1 lands, iOS receives the gated wire view (ungrouped,
+round rest on every member), which is safe but not useful on the gym floor.
 
 ## Notes / open questions
 

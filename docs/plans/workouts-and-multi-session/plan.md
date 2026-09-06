@@ -50,12 +50,18 @@ Two model corrections that the workout library exposed:
   - iOS: rename `DayTemplate`, `dayTemplateID`, `RoutineDayTarget`, and the
     `days` decoding path; decode the new key with fallback to the old one so
     a new build works against a Worker that has not yet been released.
-  - Release: `npm run release` runs the migration before the deploy, so the
-    old Worker serves renamed tables for the seconds between the two steps
-    and every plan read 500s in that window. Ship this as one off-peak
-    release with the down-migration (reverse renames) checked in beside the
-    forward one, and verify the local sequence
-    `db:migrate:local` → `dev` → smoke before running it remotely.
+  - Release: expand-contract, because `npm run release` runs the migration
+    before the deploy and the deployed Worker hard-codes the old
+    identifiers, so a single release would fail every plan-tree request
+    from migration completion until the new deployment propagates. SQLite
+    cannot carry both table names for writes, so the compatibility layer is
+    in the Worker: release A deploys a schema-adaptive Worker that probes
+    `PRAGMA table_info(sessions)` once per isolate for `workout_id` and
+    templates the affected SQL on the detected identifiers; release B runs
+    the rename migration while that Worker keeps serving; release C removes
+    the dual-schema code. Keep the down-migration beside the forward one and
+    verify the sequence locally (`db:migrate:local` → `dev` → smoke) with
+    the release A Worker against both schemas before running it remotely.
 - [ ] **P1 — Ordered sessions per date**
   - Migration: add `sessions.slot INTEGER NOT NULL DEFAULT 0`; drop
     `ux_session_user_date`; create `UNIQUE (user_id, date, slot)`. Every
@@ -165,8 +171,8 @@ Two model corrections that the workout library exposed:
 ## Next step
 
 **Now (@owner):** Confirm the wire-compatibility window for P0 (one
-TestFlight cycle with dual keys) and schedule the rename as an off-peak
-release. P1 waits on P0 and on a member who actually needs two strength
+TestFlight cycle with dual keys) and accept the three-release
+expand-contract rollout for the rename. P1 waits on P0 and on a member who actually needs two strength
 sessions in a day; keep it planned until then.
 
 ## Notes / open questions
@@ -174,9 +180,9 @@ sessions in a day; keep it planned until then.
 - Source: owner request (2026-09-05) following the workout-library plan,
   which recorded both items as constraints it did not address.
 - Rejected for P0: a compatibility `VIEW day_templates` over `workouts`.
-  Views do not accept the old Worker's writes, so it would not close the
-  release window; the window is seconds and a tested down-migration is the
-  cheaper safeguard.
+  Views do not accept the old Worker's writes, so it cannot close the
+  release window. The schema-adaptive Worker in release A is the
+  expand-contract equivalent for SQLite.
 - Rejected for P1: a separate `session_groups` or "training day" table.
   Sessions already carry `date`; an ordinal column is the smallest change
   that preserves every existing single-session guarantee for slot 0.

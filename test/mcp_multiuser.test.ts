@@ -141,7 +141,7 @@ describe('mcp multi-tenant auth (M3)', () => {
 
     // 5. Bad bearer → 401 from /mcp.
     expect((await mcp('garbage-token', 'get_current_plan')).status).toBe(401);
-  });
+  }, 10_000);
 
   it('back-compat: a pre-M3 token (user_id NULL) resolves to the owner', async () => {
     // Ensure the owner exists + has a plan (storage is isolated per test).

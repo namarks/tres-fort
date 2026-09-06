@@ -128,7 +128,6 @@ workout is sequenced inside the runner.
 |---|---|---|---|
 | P0 | coordinates_with | plan:workouts-and-multi-session#P0 | Both add or rename columns on the same plan-tree tables; whichever lands second rebases onto the other's migration and serializer. |
 | P0 | coordinates_with | plan:reversible-plan-management#P0 | Snapshots must serialize `group_id` or a revert silently ungroups a workout. |
-| P1 | blocked_by | plan:supersets-and-circuits#P0 | The runner needs the field and its invariants before it can sequence rounds. |
 | P1 | coordinates_with | plan:gym-runner-depth#P0 | Both change the runner's exercise flow and correction path; share the slice rather than fork the runner. |
 | P1 | coordinates_with | plan:bodyweight-training-support#P1 | Both touch the runner's value-entry controls; serialize the shared surface. |
 | P2 | coordinates_with | plan:workout-library#P0 | Both edit the routine and slot editors; do not run concurrently on the same iOS files. |

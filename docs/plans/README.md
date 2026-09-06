@@ -112,6 +112,20 @@ AI coaching.
 - [Member activation and adherence](member-activation-and-adherence/plan.md) —
   **planned**; make onboarding, coach connection, invite continuation, and
   lightweight reminders coherent.
+- [Workout library](workout-library/plan.md) — **planned**; present
+  reusable workouts as the primary object, let a member drop one onto any
+  date, add tags and archive, and support a freestyle session that can be
+  saved as a workout. The weekly routine becomes one optional use of the
+  library.
+- [Workouts and multi-session days](workouts-and-multi-session/plan.md) —
+  **planned**; rename `day_templates` to `workouts` end to end with a
+  compatibility window, then allow an ordered list of sessions per date so a
+  member can record two strength workouts in one day without changing any
+  single-session guarantee.
+- [Supersets and circuits](supersets-and-circuits/plan.md) — **planned**;
+  let adjacent slots form a group the runner performs in rotation with rest
+  only after the round, authored by the member or Claude, without changing
+  how sets log or roll up.
 - [Bodyweight training support](bodyweight-training-support/plan.md) —
   **planned**; make holds, rep ranges, added load, assistance, and rep-based
   history first-class for calisthenics and bodyweight-first members, and seed

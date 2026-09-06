@@ -1,6 +1,6 @@
 # Gym-Floor Experience
 
-Slug: gym-floor-experience · Status: planned · Updated: 2026-09-03
+Slug: gym-floor-experience · Status: planned · Updated: 2026-09-06
 
 ## Objective
 
@@ -14,6 +14,8 @@ the next scheduled session.
 - plan:bodyweight-training-support
 - plan:member-activation-and-adherence
 - plan:gym-runner-depth
+- plan:workout-library#P0
+- plan:supersets-and-circuits
 
 ## Priority policy
 

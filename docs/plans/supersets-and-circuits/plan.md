@@ -44,17 +44,27 @@ workout is sequenced inside the runner.
     `target_sets`, share the two group rest values, and number at least two.
     A write that would violate them is rejected with `group_conflict`; the
     one exception is removing a member, which normalizes a one-member group
-    to `NULL`. Paths: `addTemplateExercise`, `updateExercise`
-    (`order_index`), `deleteTemplateExercise`, `dedupeDayOrderIndexes`,
-    `swapExercise`, `updatePlanTree`'s rebuild (which carries the three
-    columns through the slot remap), and `deleteDayTemplate`. Reordering a
-    grouped slot outside its group is rejected; moving the whole group is a
-    reorder of all members in one call.
+    to `NULL`. The validator runs on every write that touches a grouped
+    slot, whatever field it changes, so the rule is not a list of fields:
+    while a slot is grouped, `order_index`, `target_sets`, and the three
+    group columns are group-owned and a single-slot write to any of them is
+    rejected; `setGroup` takes an optional `target_sets` to change the whole
+    group's set count atomically. Paths: `addTemplateExercise`,
+    `updateExercise`, `PATCH /api/days/{id}/exercises/{teId}`,
+    `deleteTemplateExercise`, `dedupeDayOrderIndexes`, `swapExercise`,
+    `updatePlanTree`'s rebuild (which carries the three columns through the
+    slot remap), and `deleteDayTemplate`. Reordering a grouped slot outside
+    its group is rejected; moving the whole group is a reorder of all
+    members in one call.
   - All group writes are atomic and go through one service operation:
-    `setGroup(dayId, memberIds, { round_rest, transition_rest })` creates
-    or rewrites a group (assigning a new id when none exists), and
-    `clearGroup(groupId)` nulls the three columns on every member. Both
-    validate, bump `plans.version` once, audit, and write a note. The
+    `setGroup(dayId, groupId, memberIds, { round_rest, transition_rest,
+    target_sets? })` creates or rewrites a group under a caller-generated
+    `groupId` (the shared creation-idempotency rule), and
+    `clearGroup(groupId)` nulls the three columns on every member. An exact
+    retry of `setGroup` whose members and values already match returns the
+    existing group without a version bump or audit row; a different member
+    list under the same id rewrites it. Both validate, bump `plans.version`
+    once when something changes, audit, and write a note. The
     single-slot routes and `update_exercise` reject the three group fields
     with `unknown_fields`, so no path can change one member in isolation.
     Expose `setGroup`/`clearGroup` as `PUT /api/days/{id}/groups` (audited

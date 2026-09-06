@@ -56,10 +56,14 @@ Two model corrections that the workout library exposed:
     from migration completion until the new deployment propagates. SQLite
     cannot carry both table names for writes, so the compatibility layer is
     in the Worker: release A deploys a schema-adaptive Worker that probes
-    `PRAGMA table_info(sessions)` once per isolate for `workout_id` and
-    templates the affected SQL on the detected identifiers; release B runs
-    the rename migration while that Worker keeps serving; release C removes
-    the dual-schema code. Keep the down-migration beside the forward one and
+    `PRAGMA table_info(sessions)` for `workout_id` and templates the
+    affected SQL on the detected identifiers. The probe result is cached
+    per isolate for at most 60 seconds and is dropped immediately on a
+    "no such table" or "no such column" error, after which the statement
+    is retried once with a fresh probe, so an isolate that probed before
+    release B cannot keep issuing old-identifier SQL after the rename.
+    Release B runs the rename migration while that Worker keeps serving;
+    release C removes the dual-schema code. Keep the down-migration beside the forward one and
     verify the sequence locally (`db:migrate:local` → `dev` → smoke) with
     the release A Worker against both schemas before running it remotely.
 - [ ] **P1 — Ordered sessions per date**
@@ -100,13 +104,15 @@ Two model corrections that the workout library exposed:
     /api/calendar/{date}/{slot}`. Set writes are unchanged because they
     already address a session id.
   - Projection: `projectCalendar` groups real sessions per date instead of
-    keeping the first. `CalendarCell.status` stays a single coarse value so
-    released clients are unaffected, derived across the date's sessions by a
-    fixed precedence: any `in_progress` → `in_progress`; else any
-    `completed` → `completed`; else any `planned` → `planned`; else
-    `skipped`. A new `sessions[]` array on the cell lists each slot with its
-    status and workout. `discarded` rows vanish per slot exactly as today.
-    `CalendarProjection.swift` mirrors the grouping and the precedence, and
+    keeping the first, but `CalendarCell.status` is derived from slot 0
+    alone by today's rule (a real non-discarded slot-0 session wins, else
+    the weekly schedule, else rest), so released clients are unaffected and
+    a discarded slot 0 falls through to the schedule even while slot 1
+    survives. A new `sessions[]` array on the cell lists every
+    non-discarded slot above 0 with its status and workout; the earlier
+    idea of a cross-slot status precedence is dropped because it would hide
+    that fall-through. `CalendarProjection.swift` mirrors the slot-0 rule
+    and the list, and
     `test/calendar.test.ts` plus `CalendarProjectionTests.swift` add the
     two-session truth table so parity stays byte-for-byte.
   - MCP: `get_today_workout` and `get_session_log` return every session for
@@ -199,9 +205,14 @@ sessions in a day; keep it planned until then.
   comma-separated list (`slots`, `groups`, `freestyle`, `archive`),
   alongside the existing `X-TresFort-Write-Protocol`; `readCapabilities`
   parses it next to `readAttemptProtocolHeader`. Each plan lists, per new
-  field, the view a non-declaring client gets. The server never trusts a
-  declaring client less than a non-declaring one; the header only widens
-  what is returned.
+  field, the view a non-declaring client gets. Hidden on read implies
+  fenced on write: when a date, slot, or object is withheld from a
+  non-declaring client, every date-scoped create, start, assign, and
+  terminal path returns a stable conflict to that client instead of
+  reusing or re-pinning the hidden row, so an older device cannot log into
+  or finish a workout it cannot see. The server never trusts a declaring
+  client less than a non-declaring one; the header only widens what is
+  returned.
 - Shared rule, schema changes under `npm run release` (migration first,
   deploy second): an additive nullable column with a default is safe in one
   release; anything the deployed Worker names in SQL (an index used as a

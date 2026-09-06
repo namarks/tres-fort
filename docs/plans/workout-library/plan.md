@@ -120,7 +120,14 @@ No second editor, no per-session template copies, no weeks table.
     the schedule for any null-template session, so a client without the
     `freestyle` capability receives freestyle sessions only once they are
     completed (as history with their sets) and never as Today's session;
-    an in-progress freestyle session is invisible to it.
+    an in-progress freestyle session is invisible to it. Per the shared
+    rule, invisible means fenced: while a date holds a live (`planned` or
+    `in_progress`) freestyle session, `POST /api/sessions`,
+    `PUT /api/calendar/{date}`, `PATCH /api/sessions/{id}` status changes,
+    and the MCP session-by-date resolvers return `session_kind_conflict`
+    (409) to a non-`freestyle` client rather than reusing the null-template
+    row and pinning it to a workout, which the current date-scoped
+    `getOrCreateSession` would otherwise do.
   - The runner starts a freestyle session from the rest-day CTA and from the
     calendar for today. Exercises are added from the catalog as you go; the
     prescription shown is the member's last comparable actuals for that

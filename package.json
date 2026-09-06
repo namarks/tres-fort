@@ -19,7 +19,7 @@
     "beta:feedback": "node scripts/beta-feedback-to-issues.mjs"
   },
   "dependencies": {
-    "hono": "^4.6.14",
+    "hono": "^4.12.34",
     "jose": "^5.9.6"
   },
   "devDependencies": {

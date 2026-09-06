@@ -234,7 +234,17 @@ Done means:
     the raw-only-drift behavior for both provider endpoints without claiming to
     be production captures. The separately authorized sanitized real-response
     replay, migration/Worker release, quiet production-hour observation, and
-    iOS distribution remain outstanding.
+    iOS distribution remain outstanding. The owner later authorized those
+    release steps, but exact source `fa4f13b` was held before any migration or
+    deploy when the lockfile audit found the public OAuth routes reached Hono's
+    pre-4.12.34 default-CORS ReDoS. Resume only from the freshly reviewed merged
+    security update; never deploy the superseded source under the earlier
+    preflight evidence. The focused 4.12.34 dependency repair, attack-shaped
+    coverage across all three public OAuth preflight routes, and a deterministic
+    middleware regression against the exact vulnerable splitter passed a
+    zero-finding production audit, all 44 backend files / 604 tests, TypeScript,
+    Wrangler dry-run, planning validation, and diff hygiene locally; repository
+    delivery remains the next gate.
 - [ ] **P3 — Filing-cabinet tabs (member-first indexes)**
   - Migration: `audit_log(user_id, actor, created_at)` so the profile's
     latest-MCP-action lookup seeks directly instead of walking a member's
@@ -313,12 +323,26 @@ Done means:
 
 ## Next step
 
-**Now (@owner):** Foreground the production iOS app and open Profile once, then use the OAuth-connected Claude coach to request bench history once; these two actions complete the three outstanding authenticated P0 traffic samples.
-**Now (@agent):** Implement, verify, independently review, and deliver the local
-P2 slice while holding the combined P1/P2 production migration/Worker rollout
-and iOS distribution at their separate release gates. Record the authenticated
-P0 samples when they arrive. Stop before any production deployment, migration,
-manual production cron trigger, plan-tier change, or TestFlight build.
+**Now (@agent):** Finish delivery of the Hono security update, then fetch and
+prove the freshly merged `origin/main` source before rerunning the complete
+release preflight. Reconfirm that exactly migrations `0033`–`0035` are pending,
+the workout write fence is enabled with no permit, and a current D1 Time Travel
+bookmark is retained; apply those migrations in order and deploy the exact
+Worker immediately afterward. Validate the migration ledger, schema parity,
+fence, tagged version, 100% deployment, health endpoint, and a natural quiet
+hour at zero writes. Capture the authorized sanitized provider replay and
+authenticated P0 traffic samples without retrieving or copying provider
+credentials. After server validation, upload an explicit unused-build-number
+TestFlight build from the same exact source and retain its provenance. Never
+deploy superseded source `fa4f13b`; do not manually trigger production cron or
+change the plan tier. Stop only at a real credential, signing, unused-build-
+number, or owner-device interaction gate that cannot be completed safely.
+
+**Owner input, only when requested:** If the agent cannot exercise the physical
+production app, foreground it and open Profile once, then use the OAuth-
+connected Claude coach to request bench history once. These actions complete
+the outstanding authenticated P0 samples but do not block the already-
+authorized migration and Worker release.
 
 ## Notes / open questions
 
@@ -352,9 +376,10 @@ manual production cron trigger, plan-tier change, or TestFlight build.
   nonzero `sets_since` against immutable `logged_at` and can omit later
   tombstones; retain a P1-aware rollback version or forward-fix instead.
 - Production still has unrelated migration
-  `0033_gymnastic_strength_catalog.sql` pending. The next repository release
-  would apply it before P1's `0034`; neither migration is authorized by this
-  plan writeback. The completed P0.5 release was intentionally deploy-only and
+  `0033_gymnastic_strength_catalog.sql` pending. The owner authorized the
+  combined release on 2026-09-05: apply `0033` before P1's `0034`, then P2's
+  `0035`, and immediately deploy the freshly reviewed merged security head.
+  The completed P0.5 release was intentionally deploy-only and historically
   left `0033` pending.
 - Apply `0034` only with the P1 Worker ready to deploy immediately. If Worker
   deployment fails after the migration commits, roll forward with the P1-aware
@@ -366,6 +391,8 @@ manual production cron trigger, plan-tier change, or TestFlight build.
   limitation is accepted and does not justify disabling the compatibility
   trigger.
 - The owner separately authorized and completed the Workers Paid purchase on
-  2026-09-05. This plan does not authorize another plan-tier change, a P1
-  production deployment or migration, a manual production cron trigger, or a
-  TestFlight build; each remains a separate owner action.
+  2026-09-05, then authorized the combined P1/P2 migrations, exact Worker
+  deployment, sanitized provider evidence, authenticated traffic samples, and
+  post-server-validation TestFlight upload. This does not authorize another
+  plan-tier change, a manual production cron trigger, or retrieving/copying
+  owner-managed provider credentials; those boundaries remain in force.

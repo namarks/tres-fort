@@ -3,6 +3,39 @@
 Supporting material for [`plan.md`](plan.md). This file records owner
 decisions and measured baselines; it carries no live checklist.
 
+## 2026-09-05 — Production release paused for Hono CORS security update
+
+The owner authorized the combined P1/P2 production migration, Worker, and
+subsequent iOS rollout. Exact merged source `fa4f13b` passed the release
+preflight (TypeScript, all 44 backend files / 600 tests, and Wrangler dry-run),
+and live prechecks confirmed only migrations `0033`–`0035` pending, the workout
+write fence enabled with no permit, and a retained D1 Time Travel bookmark.
+No migration or deployment began.
+
+The lockfile audit then found `hono@4.12.19` affected by
+[GHSA-8j4g-w8fx-2239](https://github.com/advisories/GHSA-8j4g-w8fx-2239).
+The vulnerable default CORS preflight parser is reachable on the public OAuth
+discovery, registration, and token routes, so this is a release blocker rather
+than an unrelated advisory. The smallest compatible repair is Hono `4.12.34`,
+the first patched release. Production remains held until that focused update
+passes a zero-production-finding audit, attack-shaped OAuth preflight coverage,
+the full backend/typecheck/dry-run gates, independent exact-head review, and
+repository delivery. The eventual production source must be the new merged
+head; authorization does not permit deploying the now-superseded `fa4f13b`.
+
+The focused repair raises the declared Hono range to `^4.12.34` and locks the
+installed package to `4.12.34`; it changes no application code. Three route-level
+OAuth preflight checks exercise the public routes with a request-header payload
+containing one 16,384-character whitespace run without a comma delimiter and
+confirm the expected wildcard/no-credentials response. A deterministic
+middleware regression also verifies that the attack-shaped payload does not
+invoke the exact vulnerable `\\s*,\\s*` splitter; the same probe observes that
+invocation with Hono 4.12.19 but not 4.12.34. Local evidence passed the production
+dependency audit with zero findings, all 44 backend files / 604 tests,
+TypeScript, the Wrangler dry-run, planning validation, and diff hygiene.
+Repository delivery and a fresh exact-source production preflight remain the
+next gates.
+
 ## 2026-09-05 — Workers plan tier: Paid
 
 After the deployed cron optimization still measured 18 ms CPU on its first

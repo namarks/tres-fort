@@ -3,6 +3,63 @@
 Supporting material for [`plan.md`](plan.md). This file records owner
 decisions and measured baselines; it carries no live checklist.
 
+## 2026-09-05 — P1/P2 production release and TestFlight build 31
+
+The authorized combined release used freshly fetched `origin/main` commit
+`079f0359c898935c68513db74bba384bce260c0c`, tree
+`fec23bff1cb94a83d55eb297a64dac458b2a16f9`. That tree is identical to the
+independently reviewed security-fix head. The complete exact-source preflight
+passed a zero-finding production dependency audit, TypeScript, 44 backend files
+and 604 tests, and Wrangler dry-run. A pre-mutation D1 Time Travel bookmark was
+retained as `000019ba-00000000-000050de-ee07a97da682b08adbefe37f03c2b1f9`.
+
+Live prechecks proved that exactly migrations `0033`, `0034`, and `0035` were
+pending and that the workout write fence was enabled with zero permits. They
+applied successfully in that order. The exact Worker then deployed with source
+and tree annotations plus tag `data-storage-scalability-079f035` as version
+`1cc13fec-3eab-4f95-a0fb-e9d6a1303f52`, deployment
+`73dbf38c-d517-435a-a57d-11e41d256a7f`, at 100% traffic. Post-release checks
+proved no pending migration, zero invalid set/activity cursor rows, the fence
+still enabled with zero permits, and a healthy public endpoint.
+
+The first natural hourly trigger on that exact version completed at 19:00 PDT
+with outcome `ok`, no exceptions, 53 D1 queries, 325 rows read, **zero rows
+written**, 26 ms CPU, and 4,392 ms wall time. This is the retained P2 quiet-hour
+comparison against the P0 baseline; no manual production cron was triggered.
+
+After server validation, the same source archived and exported TresFort
+`0.1.0 (31)` using Xcode 26.3 and XcodeGen 2.45.3. Apple accepted delivery
+`33f6300a-4567-4273-9e2e-b0fd0edd3599` and its build-status endpoint returned
+terminal `VALID`. The exported IPA SHA-256 is
+`2621ff71444a314d31abdd331ba67714c23d73e4ad0294ae9c75a33365795758`;
+the app and widget CDHashes are `0bf7e03851ceb6b3a88470312bf6ab49766bc2d4`
+and `c924bbcbe6fed6da526e4ce439ac09fb6f131152`, both for team
+`8BA2RY6RCA`. The app and widget dSYM UUIDs are
+`43CDB421-CA70-3EF5-B4F3-543A876B9CB3` and
+`737737EE-85C5-3DB6-B270-DD50C1AB31E6`.
+
+An initial build-30 attempt was rejected before ingestion because Apple
+reported 30 as already uploaded. That response established 31 as the next
+valid number. It also exposed that Xcode 26.3 `altool` can print a terminal
+upload error while returning success to the shell, so the release helper's
+unconditional final message was not trustworthy. The helper now streams and
+captures `altool` output, propagates command failures, rejects textual failure,
+and requires an affirmative success marker before reporting an upload. A
+five-case stubbed harness covers zero-exit rejection, normal success with the
+delivery UUID preserved, nonzero exit propagation, and ambiguous output. The
+rejected attempt created no new build.
+
+The authenticated owner paths were not sampled before P1 shipped. That
+historical per-path baseline cannot now be recreated without rolling back to a
+Worker that is unsafe after incremental iOS cursors. The proposed replacement
+is a classified post-release full reload and incremental `/api/state` sample,
+plus one `/api/me` and OAuth `get_history` sample; the owner must explicitly
+accept that substitution before P0/P1 close.
+
+Remaining evidence is therefore narrow: that accepted post-release path sample
+set and a sanitized replay of two real provider responses. Capturing either
+must not expose owner credentials or personal response content.
+
 ## 2026-09-05 — Production release paused for Hono CORS security update
 
 The owner authorized the combined P1/P2 production migration, Worker, and

@@ -86,11 +86,48 @@ xcodebuild \
   -exportOptionsPlist ExportOptions.plist \
   -allowProvisioningUpdates
 
-xcrun altool --upload-app \
+upload_log=$(mktemp "${TMPDIR:-/tmp}/tres-fort-altool.XXXXXX")
+cleanup_upload_log() {
+  rm -f "${upload_log}"
+}
+trap cleanup_upload_log EXIT
+
+# Xcode 26.3's altool can report an App Store Connect rejection in its output
+# while still exiting 0. Stream the output for operator visibility, but retain
+# a copy so the script can require affirmative success and reject textual
+# errors instead of trusting the process status alone.
+if xcrun altool --upload-app \
   --type ios \
   --file build/export/TresFort.ipa \
   --apiKey "${API_KEY_ID}" \
-  --apiIssuer "${API_ISSUER_ID}"
+  --apiIssuer "${API_ISSUER_ID}" 2>&1 | tee "${upload_log}"; then
+  upload_statuses=("${PIPESTATUS[@]}")
+else
+  upload_statuses=("${PIPESTATUS[@]}")
+fi
+
+altool_status="${upload_statuses[0]}"
+tee_status="${upload_statuses[1]}"
+
+if [ "${tee_status}" -ne 0 ]; then
+  echo "Failed to capture altool output; upload status is unknown." >&2
+  exit 1
+fi
+
+if [ "${altool_status}" -ne 0 ]; then
+  echo "altool exited with status ${altool_status}; upload was not accepted." >&2
+  exit "${altool_status}"
+fi
+
+if LC_ALL=C grep -Eiq '(^|[^[:alnum:]_])(error|failed|failure)([^[:alnum:]_]|$)' "${upload_log}"; then
+  echo "altool reported an upload failure despite exiting successfully; upload was not accepted." >&2
+  exit 1
+fi
+
+if ! LC_ALL=C grep -Eiq '^[[:space:]]*UPLOAD SUCCEEDED with no errors[[:space:]]*$' "${upload_log}"; then
+  echo "altool did not report affirmative upload success; upload status is unknown." >&2
+  exit 1
+fi
 
 echo
 echo "Uploaded ${marketing_version} (${next_build}). Apple processes ~10-15 min, then it appears in TestFlight."

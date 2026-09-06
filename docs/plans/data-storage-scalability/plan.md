@@ -51,9 +51,12 @@ Done means:
     `.all()` / `.run()` or a read batch before the numbers are capturable.
     Implemented, reviewed, merged, and deployed without migrations on
     2026-09-04. The natural hourly cron baseline and a privacy-safe production
-    table-census summary are recorded in `decisions.md`; representative
-    authenticated owner REST and MCP traffic is the remaining per-path
-    baseline.
+    table-census summary are recorded in `decisions.md`. The representative
+    authenticated owner REST and MCP paths were not sampled before P1 shipped,
+    so that historical per-path baseline cannot now be recreated without an
+    unsafe rollback. Capture classified post-release full-reload and incremental
+    sync samples plus `/api/me` and `get_history`; the owner must accept that
+    replacement evidence before P0 closes.
   - Capture the owner account's baseline: rows read per foreground sync, rows
     written per cron tick, current table row counts, and the rows-written
     delta each proposed index adds on the highest-write tables (`set_logs`,
@@ -175,8 +178,15 @@ Done means:
     simulator suite passed 267 tests. Repository delivery completed the same
     day: PR #124's exact reviewed head `cf6cb83` passed required CI, its
     squash-merge commit `647a9f6` has the identical tree, and post-merge main
-    CI passed. The production migration/Worker release, production before/after
-    traffic, and iOS distribution evidence remain outstanding.
+    CI passed. Production delivery completed 2026-09-05 from exact merged
+    source `079f035`: migrations `0033`, `0034`, and `0035` applied in order,
+    Worker version `1cc13fec-3eab-4f95-a0fb-e9d6a1303f52` received 100% of
+    traffic with schema/fence/health checks green, and exact-source TestFlight
+    build `0.1.0 (31)` reached Apple's terminal `VALID` state. The historical
+    pre-P1 authenticated per-path sample was not retained and cannot be
+    recreated safely after incremental iOS shipped. Classified post-release
+    full-reload/incremental samples and owner acceptance of that replacement
+    evidence remain outstanding.
 - [ ] **P2 — Reconcile only what changed (intervals.icu cache)**
   - Change the events and activities upserts to `ON CONFLICT DO UPDATE ...
     WHERE` any extracted column differs from the incoming row, or the row is
@@ -232,19 +242,18 @@ Done means:
     full backend suite (44 files / 600 tests) passed, TypeScript passed, and the
     full iOS simulator suite passed 273 tests. Synthetic paired responses prove
     the raw-only-drift behavior for both provider endpoints without claiming to
-    be production captures. The separately authorized sanitized real-response
-    replay, migration/Worker release, quiet production-hour observation, and
-    iOS distribution remain outstanding. The owner later authorized those
-    release steps, but exact source `fa4f13b` was held before any migration or
-    deploy when the lockfile audit found the public OAuth routes reached Hono's
-    pre-4.12.34 default-CORS ReDoS. Resume only from the freshly reviewed merged
-    security update; never deploy the superseded source under the earlier
-    preflight evidence. The focused 4.12.34 dependency repair, attack-shaped
-    coverage across all three public OAuth preflight routes, and a deterministic
-    middleware regression against the exact vulnerable splitter passed a
-    zero-finding production audit, all 44 backend files / 604 tests, TypeScript,
-    Wrangler dry-run, planning validation, and diff hygiene locally; repository
-    delivery remains the next gate.
+    be production captures. Exact source `fa4f13b` was held before any
+    production mutation when the lockfile audit found the public OAuth routes
+    reached Hono's pre-4.12.34 default-CORS ReDoS. The focused 4.12.34 repair,
+    attack-shaped coverage, production audit, full backend suite, TypeScript,
+    Wrangler dry-run, planning validation, independent exact-head review, and
+    repository delivery then passed on merged source `079f035`.
+    Production migrations `0033`-`0035` and the exact Worker were released on
+    2026-09-05. The first natural quiet tick on the new Worker completed with
+    53 D1 queries, 325 rows read, **zero rows written**, 26 ms CPU, 4,392 ms
+    wall time, and no exception. Exact-source TestFlight build `0.1.0 (31)` is
+    terminal `VALID`. Only the separately authorized sanitized real-response
+    replay remains outstanding for P2.
 - [ ] **P3 — Filing-cabinet tabs (member-first indexes)**
   - Migration: `audit_log(user_id, actor, created_at)` so the profile's
     latest-MCP-action lookup seeks directly instead of walking a member's
@@ -323,26 +332,27 @@ Done means:
 
 ## Next step
 
-**Now (@agent):** Finish delivery of the Hono security update, then fetch and
-prove the freshly merged `origin/main` source before rerunning the complete
-release preflight. Reconfirm that exactly migrations `0033`–`0035` are pending,
-the workout write fence is enabled with no permit, and a current D1 Time Travel
-bookmark is retained; apply those migrations in order and deploy the exact
-Worker immediately afterward. Validate the migration ledger, schema parity,
-fence, tagged version, 100% deployment, health endpoint, and a natural quiet
-hour at zero writes. Capture the authorized sanitized provider replay and
-authenticated P0 traffic samples without retrieving or copying provider
-credentials. After server validation, upload an explicit unused-build-number
-TestFlight build from the same exact source and retain its provenance. Never
-deploy superseded source `fa4f13b`; do not manually trigger production cron or
-change the plan tier. Stop only at a real credential, signing, unused-build-
-number, or owner-device interaction gate that cannot be completed safely.
+**Now (@agent):** Release delivery is complete from exact merged source
+`079f035`: migrations `0033`-`0035`, Worker version
+`1cc13fec-3eab-4f95-a0fb-e9d6a1303f52`, the natural zero-write tick, and
+terminal-valid TestFlight build `0.1.0 (31)` all have retained provenance.
+Capture the authorized sanitized real-provider replay without retrieving or
+copying provider credentials, and capture one representative post-release
+authenticated sample each for full-reload and incremental `/api/state`, Profile
+`/api/me`, and OAuth coach `get_history`. The pre-release authenticated
+per-path baseline was not retained and cannot be recreated safely; ask the
+owner whether these post-release samples are accepted as its replacement.
+These owner-device/connected-account interactions and that evidence decision
+are the remaining P0-P2 gate. Do not manually trigger production cron, change
+the plan tier, or infer P3/P5 product decisions from scheduler order.
 
 **Owner input, only when requested:** If the agent cannot exercise the physical
-production app, foreground it and open Profile once, then use the OAuth-
-connected Claude coach to request bench history once. These actions complete
-the outstanding authenticated P0 samples but do not block the already-
-authorized migration and Worker release.
+production app, foreground build 31 for a classified state sync, open Profile
+once, then use the OAuth-connected Claude coach to request bench history once.
+Confirm whether the classified post-release full-reload/incremental evidence is
+an acceptable replacement for the historical pre-P1 per-path sample that was
+not retained. These actions and decision complete the outstanding authenticated
+P0/P1 evidence but do not affect the completed production release.
 
 ## Notes / open questions
 
@@ -375,12 +385,11 @@ authorized migration and Worker release.
   ship, the pre-P1 Worker is no longer a safe rollback target because it reads
   nonzero `sets_since` against immutable `logged_at` and can omit later
   tombstones; retain a P1-aware rollback version or forward-fix instead.
-- Production still has unrelated migration
-  `0033_gymnastic_strength_catalog.sql` pending. The owner authorized the
-  combined release on 2026-09-05: apply `0033` before P1's `0034`, then P2's
-  `0035`, and immediately deploy the freshly reviewed merged security head.
-  The completed P0.5 release was intentionally deploy-only and historically
-  left `0033` pending.
+- Production historically had unrelated migration
+  `0033_gymnastic_strength_catalog.sql` pending after the P0.5 deploy-only
+  release. The owner authorized the combined release on 2026-09-05; `0033`
+  applied before P1's `0034`, then P2's `0035`, followed immediately by the
+  freshly reviewed merged Worker. The ledger now has no pending migration.
 - Apply `0034` only with the P1 Worker ready to deploy immediately. If Worker
   deployment fails after the migration commits, roll forward with the P1-aware
   Worker rather than attempting a migration rollback. For the entire gap, the

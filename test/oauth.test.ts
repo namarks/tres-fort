@@ -1,7 +1,11 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 const BASE = 'https://tres-fort.test';
+const ATTACK_SHAPED_REQUEST_HEADERS =
+  `x-prefix${' '.repeat(16_384)}x-suffix` + ',x-final-header';
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -18,6 +22,73 @@ async function pkce() {
 }
 
 describe('oauth discovery', () => {
+  const preflightRoutes = [
+    ['/.well-known/oauth-protected-resource', 'GET'],
+    ['/oauth/register', 'POST'],
+    ['/oauth/token', 'POST'],
+  ] as const;
+
+  it.each(preflightRoutes)(
+    'handles an attack-shaped default-CORS preflight for %s without enabling credentials',
+    async (path, requestedMethod) => {
+      const r = await SELF.fetch(`${BASE}${path}`, {
+        method: 'OPTIONS',
+        headers: {
+          origin: 'https://untrusted.example',
+          'access-control-request-method': requestedMethod,
+          'access-control-request-headers': ATTACK_SHAPED_REQUEST_HEADERS,
+        },
+      });
+
+      expect(r.status).toBe(204);
+      expect(r.headers.get('access-control-allow-origin')).toBe('*');
+      expect(r.headers.get('access-control-allow-methods')).toBe(
+        'GET,HEAD,PUT,POST,DELETE,PATCH',
+      );
+      expect(
+        r.headers.get('access-control-allow-headers') === ATTACK_SHAPED_REQUEST_HEADERS,
+      ).toBe(true);
+      expect(r.headers.get('access-control-allow-credentials')).toBeNull();
+      expect(r.headers.get('vary')).toBe('Access-Control-Request-Headers');
+      expect(await r.text()).toBe('');
+    },
+  );
+
+  it('does not invoke the vulnerable whitespace regex splitter for the attack shape', async () => {
+    const app = new Hono();
+    app.use('/probe', cors());
+
+    const splitDescriptor = Object.getOwnPropertyDescriptor(RegExp.prototype, Symbol.split);
+    expect(splitDescriptor?.value).toBeTypeOf('function');
+    let vulnerableSplitterInvoked = false;
+
+    Object.defineProperty(RegExp.prototype, Symbol.split, {
+      ...splitDescriptor,
+      value: function (this: RegExp, input: string, limit?: number) {
+        if (this.source === '\\s*,\\s*' && input === ATTACK_SHAPED_REQUEST_HEADERS) {
+          vulnerableSplitterInvoked = true;
+        }
+        return splitDescriptor!.value.call(this, input, limit);
+      },
+    });
+
+    try {
+      const r = await app.request('https://probe.test/probe', {
+        method: 'OPTIONS',
+        headers: {
+          origin: 'https://untrusted.example',
+          'access-control-request-method': 'POST',
+          'access-control-request-headers': ATTACK_SHAPED_REQUEST_HEADERS,
+        },
+      });
+      expect(r.status).toBe(204);
+    } finally {
+      Object.defineProperty(RegExp.prototype, Symbol.split, splitDescriptor!);
+    }
+
+    expect(vulnerableSplitterInvoked).toBe(false);
+  });
+
   it('protected-resource metadata points at the AS', async () => {
     const r = await SELF.fetch(`${BASE}/.well-known/oauth-protected-resource`);
     expect(r.status).toBe(200);

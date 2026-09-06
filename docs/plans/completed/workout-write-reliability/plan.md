@@ -1,6 +1,6 @@
 # Workout Write Reliability
 
-Slug: workout-write-reliability · Status: done · Archived: completed · Updated: 2026-09-03 · Theme: training-trust
+Slug: workout-write-reliability · Status: done · Archived: completed · Updated: 2026-09-05 · Theme: training-trust
 
 ## Goal
 
@@ -116,6 +116,33 @@ boundary is permanent: never roll back to a Worker that lacks the permit
 batches—forward-fix instead. TestFlight/App Store distribution and eventual
 tokenless `legacy` retirement remain separate gates and were not performed
 during this milestone.
+
+On 2026-09-04, the simulator-QA follow-up closed the remaining client usability
+and recovery gaps. Exact reviewed head
+`a4be642b7449cb5556f2931f64e5281aa271448f` made the full-rest surface modal to
+input and accessibility, kept runner controls above the tab bar, moved local
+notification permission to explicit workout preparation, made cue cancellation
+race-safe, and added model-owned retry for durable workout writes without
+requiring a network-path transition. Server `Retry-After` became an
+account-scoped monotonic floor across manual recovery, foregrounding, process
+replacement, and same-user reauthentication. The complete iOS suite passed
+252 tests; the strict-concurrency build, exact-head adversarial review, and CI
+were clean. PR #119 squash-merged as
+`30ef55e70cc8a665328f52d49b199f51850e0245`, and the merged tree exactly matched
+the reviewed tree on its reviewed base.
+
+Later that day, separate explicit owner authorization published internal
+TestFlight build `0.1.0 (30)` from exact remote-main source
+`26dabfc8c2f5ff6555b1ec1a4f68e34654e23d01`, which contains PR #119. The
+pipeline used the build-number override so the source stayed unchanged; archive
+and export succeeded, and Apple's uploader returned `UPLOAD SUCCEEDED` with
+delivery UUID `f14a65c0-cfc9-4e69-92ce-bd50ec1c838b`. The retained IPA digest
+was `7fcce77cb901cb559b470c2a573e520fc5ea6e4aef6d21bdb0fe282ea8af6d48`.
+App Store Connect then reported the build `VALID` and `IN_BETA_TESTING`, assigned
+to the internal `Testers` group with automatic notification enabled. This
+closed the TestFlight gate for the reliability and simulator-QA fixes; it did
+not deploy the Worker, submit an external beta, submit the App Store release,
+or retire the tokenless `legacy` path.
 
 ## Notes / open questions
 

@@ -49,8 +49,12 @@ workout is sequenced inside the runner.
     before the second member joins. `groupSlots(dayId, memberIds,
     roundRest)` validates contiguity and equal `target_sets`, assigns one
     new id, sets each member's transition rest to `0` and the round rest on
-    the last member, and bumps `plans.version` once; `ungroupSlots(groupId)`
-    is its inverse. Expose it as `PUT /api/days/{id}/groups` (audited as
+    the last member, and bumps `plans.version` once.
+    `ungroupSlots(groupId, restSeconds)` clears the id and sets every former
+    member's `rest_seconds` to the supplied value, defaulting to the round
+    rest the last member carried, because `groupSlots` overwrote the
+    members' ordinary rests and clearing the id alone would leave the
+    non-final exercises with zero rest. Expose it as `PUT /api/days/{id}/groups` (audited as
     `actor='ios'`) and as the MCP `group_exercises({day, exercises: [...],
     rest_seconds})` tool, both thin wrappers over the same function.
     `update_exercise` still accepts `group_id` only to move a slot into an

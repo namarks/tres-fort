@@ -59,13 +59,27 @@ Two model corrections that the workout library exposed:
 - [ ] **P1 — Ordered sessions per date**
   - Migration: add `sessions.slot INTEGER NOT NULL DEFAULT 0`; drop
     `ux_session_user_date`; create `UNIQUE (user_id, date, slot)`. Every
-    existing row is slot 0. Slot 0 is the **primary** session and keeps
+    existing row is slot 0. This ships as two releases because the deployed
+    Worker inserts sessions with `ON CONFLICT(user_id, date) DO NOTHING`
+    (`getOrCreateSession`, `setPlannedSession`, `skipPlannedSession`) and
+    SQLite rejects that clause once the named index is gone: release A
+    deploys a compatibility Worker whose inserts use a targetless
+    `ON CONFLICT DO NOTHING`, valid under either index; release B runs the
+    migration and deploys the slot-aware Worker. A test asserts no
+    `ON CONFLICT(user_id, date)` remains in `src/db.ts` before release B. Slot 0 is the **primary** session and keeps
     every current rule unchanged: the attempt CAS, discard revival, the
     `legacy`/`attempt-v1` write protocol, the `0032` trigger (per row, so it
     needs no change), and the `(user, date)` recovery checkpoint.
   - Service layer: every `(user_id, date)` session lookup in `src/db.ts`
     (about eleven) takes an explicit slot and defaults to 0, so existing
-    callers and released clients see no behavior change. `getOrCreateSession`
+    callers see no behavior change. Released iOS builds have no slot field
+    and pick an arbitrary same-date session for Today, so once another
+    device or Claude creates slot 1 they could display, log against, or
+    finish the wrong workout. Gate on the existing capability-header
+    pattern (`X-TresFort-Write-Protocol` in `readAttemptProtocolHeader`):
+    a client that does not declare slot awareness receives only slot-0
+    sessions and their sets from `/api/state`, `/api/today`, and the
+    session routes, and cannot address a slot above 0. `getOrCreateSession`
     gains a `nextSlot` mode that inserts at `MAX(slot)+1` for the date,
     keyed by a client-generated session `id` that is the idempotency key:
     a retry with the same `id` returns the committed row and its slot
@@ -91,7 +105,9 @@ Two model corrections that the workout library exposed:
     `test/calendar.test.ts` plus `CalendarProjectionTests.swift` add the
     two-session truth table so parity stays byte-for-byte.
   - MCP: `get_today_workout` and `get_session_log` return every session for
-    the date; `log_set`, `log_workout_complete`, `set_planned_session`, and
+    the date, and `get_current_session` returns every in-progress session
+    (its `getInProgressSession` query is `LIMIT 1` today) with an optional
+    `slot` selector, so Claude can see both active workouts and their sets; `log_set`, `log_workout_complete`, `set_planned_session`, and
     `skip_planned_session` accept an optional `slot` (default 0) and, for
     `log_set`, resolve an omitted slot to the single in-progress session
     when exactly one exists, otherwise to slot 0. The coach brief names
@@ -102,14 +118,18 @@ Two model corrections that the workout library exposed:
     coarse status with a count badge when more than one session exists; the
     agenda lists each. `WorkoutRecoveryStore` keys its checkpoint by
     `(date, slot)`.
-  - iOS acknowledgement merges become session-scoped.
-    `SyncModel.mergingSetAcknowledgement` and
-    `mergingTerminalAcknowledgement` today collect every cached session on
-    the acknowledged date, drop them all, and re-point their sets at the
+  - Every local session merge becomes session-scoped.
+    `SyncModel.mergingSetAcknowledgement`, `mergingTerminalAcknowledgement`,
+    `mergingSessionResolution`, `applyTerminalAcknowledgementLocally`, and
+    `adoptSessionAliasLocally` today collect every cached session on the
+    acknowledged date, drop them all, and re-point their sets at the
     acknowledged session id; with two sessions on a date that collapses the
-    other workout and misattributes its sets. Match on session id (or
-    `(date, slot)` when the server reassigns an id), leave sibling slots
-    untouched, and cover the two-session case in `SetOutboxTests` and
+    other workout and misattributes its sets, and creating slot 1 goes
+    through the resolution path, so it would erase slot 0 locally. Match on
+    session id (or `(date, slot)` when the server reassigns an id), leave
+    sibling slots untouched, audit `SyncModel` for any other same-date
+    collection before closing the phase, and cover additional-session
+    creation plus the two-session case in `SetOutboxTests` and
     `WorkoutTerminalOutboxTests`.
   - The durable write machinery is also date-scoped today and must move to
     session scope in the same slice: `WorkoutTerminalOutbox` allows one

@@ -48,8 +48,15 @@ Two model corrections that the workout library exposed:
   - The `plans.meta.schedule` contract is unchanged: weekday → workout id,
     `null` = rest. Only the prose describing the value changes.
   - iOS: rename `DayTemplate`, `dayTemplateID`, `RoutineDayTarget`, and the
-    `days` decoding path; decode the new key with fallback to the old one so
-    a new build works against a Worker that has not yet been released.
+    `days` decoding path. Decoding tolerates either key, but that protects
+    reads only: the current Worker exposes `/api/days` and validates
+    `day_template_id`, so a build that sends the new shapes fails every
+    authoring, assignment, and session write. Rollout is therefore
+    server-first: the first iOS build after this plan decodes both keys and
+    keeps sending the old request shapes; only a later build, cut after the
+    dual-key Worker is confirmed live in production, switches its outbound
+    paths and fields. No iOS build ever sends a shape the deployed Worker
+    does not accept.
   - Release: expand-contract, because `npm run release` runs the migration
     before the deploy and the deployed Worker hard-codes the old
     identifiers, so a single release would fail every plan-tree request

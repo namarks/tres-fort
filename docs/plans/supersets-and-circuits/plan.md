@@ -68,9 +68,11 @@ workout is sequenced inside the runner.
     single-slot routes and `update_exercise` reject the three group fields
     with `unknown_fields`, so no path can change one member in isolation.
     Expose `setGroup`/`clearGroup` as `PUT /api/days/{id}/groups` (audited
-    `actor='ios'`) and as the MCP `group_exercises({day, exercises: [...],
-    round_rest, transition_rest?})` and `ungroup_exercises` tools, thin
-    wrappers over the same functions. `get_current_plan`,
+    `actor='ios'`) and as the MCP `group_exercises({day, group_id,
+    exercises: [...], round_rest, transition_rest?, target_sets?})` and
+    `ungroup_exercises({group_id})` tools, thin wrappers over the same
+    functions; `group_id` is required and passed through unchanged so a
+    retried call carries the same idempotency key. `get_current_plan`,
     `get_today_workout`, and the coach brief render groups in A1/A2 notation
     with both rest values.
   - Released-client compatibility (see the shared rule in

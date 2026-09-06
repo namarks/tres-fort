@@ -135,7 +135,7 @@ Keep the shared backend cheap, fast, and correct as membership grows, without
 changing the product data model.
 
 - [Data storage scalability](data-storage-scalability/plan.md) —
-  **active**; make sync incremental, make the intervals reconcile write only
+  **gated**; make sync incremental, make the intervals reconcile write only
   on change, add member-first indexes, and make the cron resilient before
   member count turns the free-tier caps into outages.
 

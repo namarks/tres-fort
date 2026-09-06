@@ -143,10 +143,14 @@ No second editor, no per-session template copies, no weeks table.
     `target_weight` = top working weight; a cardio-modality exercise follows
     the timed branch. Warm-up sets are excluded from the derivation. The
     new workout is unscheduled and, on the same write, the session is
-    re-pointed at it so history attaches to the library entry. The client
-    supplies the new workout's id, so a retry after a lost response returns
-    the same workout instead of creating a second one. This is a plan-tree
-    write and audits normally.
+    re-pointed at it so history attaches to the library entry. The re-point
+    is an assignment change, so the same write advances `sessions.attempt`
+    under the existing rule that every changed workout choice advances the
+    generation; a delayed set intent carrying the old attempt is rejected
+    instead of landing on the saved workout's history. The client supplies
+    the new workout's id, so a retry after a lost response returns the same
+    workout and the already-advanced attempt instead of creating a second
+    workout or bumping again. This is a plan-tree write and audits normally.
   - MCP: `log_set` on a date with no session creates a freestyle session
     when the date has no scheduled workout, instead of a null-template
     planned session, and the coach brief names it as such.

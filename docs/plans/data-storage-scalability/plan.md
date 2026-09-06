@@ -1,6 +1,6 @@
 # Data Storage Scalability
 
-Slug: data-storage-scalability · Status: gated · Updated: 2026-09-05 · Theme: platform
+Slug: data-storage-scalability · Status: gated · Updated: 2026-09-06 · Theme: platform
 
 ## Goal
 
@@ -54,9 +54,12 @@ Done means:
     table-census summary are recorded in `decisions.md`. The representative
     authenticated owner REST and MCP paths were not sampled before P1 shipped,
     so that historical per-path baseline cannot now be recreated without an
-    unsafe rollback. Capture classified post-release full-reload and incremental
-    sync samples plus `/api/me` and `get_history`; the owner must accept that
-    replacement evidence before P0 closes.
+    unsafe rollback. Privacy-safe samples from exact production Worker version
+    `1cc13fec-3eab-4f95-a0fb-e9d6a1303f52` now cover three identical build-31
+    incremental `/api/state` pulls (8 queries / 11 rows read / 0 written each),
+    build-31 `/api/me` (6 / 96 / 0), and OAuth `get_history` (6 / 29 / 0), all
+    HTTP 200. Full-reload evidence is still missing, and the owner must accept
+    the overall post-release substitution before P0 closes.
   - Capture the owner account's baseline: rows read per foreground sync, rows
     written per cron tick, current table row counts, and the rows-written
     delta each proposed index adds on the highest-write tables (`set_logs`,
@@ -67,8 +70,9 @@ Done means:
     +1 row written per set insert/correction/soft-delete, +1 per audit insert,
     and +2 for a combined MCP set mutation plus its audit row. Production table
     census and the natural cron total are captured, with exact personal and
-    auth-state counts intentionally omitted from the public repository; the
-    three authenticated owner-path totals remain outstanding.
+    auth-state counts intentionally omitted from the public repository. The
+    incremental state, profile, and history totals are now captured; only the
+    full-reload traffic sample and owner acceptance remain outstanding.
 - [x] **P0.5 — Resolve the natural-cron CPU capacity gate**
   - Initial owner decision 2026-09-05: **Mitigate on Free**. Keep the single
     hourly webhook-backstop trigger and optimize the activity reconcile without
@@ -185,8 +189,11 @@ Done means:
     build `0.1.0 (31)` reached Apple's terminal `VALID` state. The historical
     pre-P1 authenticated per-path sample was not retained and cannot be
     recreated safely after incremental iOS shipped. Classified post-release
-    full-reload/incremental samples and owner acceptance of that replacement
-    evidence remain outstanding.
+    incremental state, profile, and OAuth history samples were captured on
+    2026-09-06; build 31's safe one-shot activation full reload had already been
+    consumed, and a read-only source audit found no non-destructive existing UI
+    reset. The full-reload sample and owner acceptance of the overall
+    replacement evidence remain outstanding.
 - [ ] **P2 — Reconcile only what changed (intervals.icu cache)**
   - Change the events and activities upserts to `ON CONFLICT DO UPDATE ...
     WHERE` any extracted column differs from the incoming row, or the row is
@@ -340,40 +347,21 @@ Done means:
 
 ## Next step
 
-**Now (@agent):** Release delivery is complete from exact merged source
-`079f035`: migrations `0033`-`0035`, Worker version
-`1cc13fec-3eab-4f95-a0fb-e9d6a1303f52`, the natural zero-write tick, and
-terminal-valid TestFlight build `0.1.0 (31)` all have retained provenance. The
-authorized privacy-preserving provider capture returned only authenticated
-empty arrays, so it does not satisfy the same-row raw-only-drift replay and P2
-remains open. Before production traffic sampling, independently resolve the
-provider-side invalidation of the exposed prior Wrangler OAuth session. Done
-2026-09-05: the owner authorized revocation of the Wrangler row on Cloudflare's
-Connected Applications page, and the row plus its Revoke action were absent
-after confirmation. Now have the owner reauthenticate Wrangler and capture one
-representative post-release authenticated sample each for full-reload and
-incremental `/api/state`, Profile `/api/me`, and OAuth coach `get_history`.
-Ask the owner whether those post-release samples are accepted as replacement
-for the irrecoverable pre-P1 per-path baseline. For the provider gate, either
-wait until the owner can populate or allow capture of a real event/activity,
-or obtain an explicit owner decision amending acceptance to the authenticated
-empty-window evidence plus the existing synthetic raw-drift regressions. Do not
-fabricate provider rows, manually trigger production cron, change the plan tier,
-or infer P3/P5 product decisions from scheduler order.
-
-**Owner input, only when requested:** The exposed prior Wrangler authorization
-has been removed from Cloudflare. Before the agent starts a sanitized production
-tail, complete a fresh Wrangler login. If the agent cannot exercise the physical
-production app, foreground build 31 for classified full-reload and incremental
-state syncs, open Profile once, and use the OAuth-connected Claude coach to
-request bench history once. Confirm whether these post-release samples are an
-acceptable replacement for the
-historical pre-P1 per-path sample that was not retained. Separately, either
-make a real intervals.icu event or activity available for a later
-privacy-preserving capture, or explicitly accept amended
-P2 evidence consisting of the authenticated empty windows plus the existing
-synthetic raw-only-drift tests. These actions and decisions close only their
-stated evidence gates and do not alter the completed production release.
+**Now (@owner):** Decide whether to obtain the missing full-reload sample from a
+never-launched build-31 device or another future safe trigger, or amend the
+replacement evidence to omit that sample. The 2026-09-06 privacy-safe production
+capture already retained three identical incremental `/api/state` samples plus
+representative `/api/me` and OAuth `get_history` samples from exact Worker
+version `1cc13fec-3eab-4f95-a0fb-e9d6a1303f52`; build 31's one-shot activation
+full reload had already been consumed, and a read-only source audit found no
+non-destructive existing UI reset. Separately, explicitly accept or reject the
+overall post-release sample set as a substitute for the irrecoverable pre-P1
+baseline. For P2, either wait for a privacy-safe real-row intervals.icu capture
+or amend acceptance to the authenticated empty-window evidence plus the
+existing synthetic raw-only-drift regressions. P0, P1, and P2 remain incomplete
+until their respective evidence decisions are recorded. Do not fabricate
+provider rows, manually trigger production cron, change the plan tier, or infer
+P3/P5 product decisions from scheduler order.
 
 ## Notes / open questions
 

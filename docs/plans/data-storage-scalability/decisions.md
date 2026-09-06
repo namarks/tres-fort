@@ -3,6 +3,36 @@
 Supporting material for [`plan.md`](plan.md). This file records owner
 decisions and measured baselines; it carries no live checklist.
 
+## 2026-09-06 — Privacy-safe post-release authenticated traffic samples
+
+A production tail captured only the structured D1 usage lines already emitted
+by exact Worker version `1cc13fec-3eab-4f95-a0fb-e9d6a1303f52`. Every sampled
+request completed with HTTP 200:
+
+| Client and path | Representative samples | D1 queries | Rows read | Rows written |
+|---|---:|---:|---:|---:|
+| TestFlight build 31 incremental `GET /api/state` | 3 identical | 8 each | 11 each | 0 each |
+| TestFlight build 31 `GET /api/me` | 1 | 6 | 96 | 0 |
+| OAuth MCP `get_history` via `POST /mcp` | 1 | 6 | 29 | 0 |
+
+No request headers, IP addresses, request bodies, query values, account
+identifiers, credentials, or returned workout history were retained. In
+particular, this evidence records only route classification, HTTP outcome, and
+aggregate D1 counters; it does not retain any personal history values.
+
+The build-31 activation's safe one-shot full reload had already been consumed
+before this tail was available. A read-only source audit found no existing UI
+control that resets sync state non-destructively, so no full-reload sample was
+captured. A never-launched build-31 device or another future safe trigger were
+identified as non-destructive opportunities for a later capture; an amendment
+to the replacement-evidence contract was also identified as an alternative.
+
+This traffic capture did not change the previously recorded provider evidence:
+no real provider row was captured, and the retained evidence remains the
+authenticated empty-window capture plus synthetic raw-only-drift regressions.
+Current gates, owner decisions, phase state, and workstream status live only in
+[`plan.md`](plan.md).
+
 ## 2026-09-05 — P1/P2 production release and TestFlight build 31
 
 The authorized combined release used freshly fetched `origin/main` commit
@@ -66,10 +96,10 @@ must complete a fresh Wrangler login before production traffic sampling.
 
 The authenticated owner paths were not sampled before P1 shipped. That
 historical per-path baseline cannot now be recreated without rolling back to a
-Worker that is unsafe after incremental iOS cursors. The proposed replacement
-is a classified post-release full reload and incremental `/api/state` sample,
-plus one `/api/me` and OAuth `get_history` sample; the owner must explicitly
-accept that substitution before P0/P1 close.
+Worker that is unsafe after incremental iOS cursors. The 2026-09-06 classified
+post-release capture now covers incremental `/api/state`, `/api/me`, and OAuth
+`get_history`; the full-reload sample and the owner's explicit acceptance of
+the overall substitution remain outstanding before P0/P1 close.
 
 An authorized privacy-preserving in-page intervals.icu capture used only the
 logged-in web-session routes. The event window 2026-09-05 through 2026-12-04,
@@ -82,9 +112,9 @@ returned no rows, the capture cannot yield two versions of the same row whose
 only change is ignored raw data. It is not relabeled as the required
 real-response replay, no fixture is fabricated, and P2 remains open.
 
-Remaining evidence is therefore narrow: owner acceptance of the proposed
-post-release path sample set and the provider gate. The latter requires either
-a later privacy-preserving
+Remaining evidence is therefore narrow: the missing full-reload sample or an
+owner-approved amendment, owner acceptance of the overall post-release path
+sample set, and the provider gate. The latter requires either a later privacy-preserving
 capture after a real event/activity is available, or an explicit owner decision
 to amend acceptance to the authenticated empty-window evidence plus the existing
 synthetic raw-only-drift regressions. Neither alternative changes storage scope

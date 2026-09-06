@@ -190,9 +190,12 @@ CREATE TABLE audit_log (                        -- every MCP write, for trust/un
 );
 
 CREATE INDEX ix_sets_session ON set_logs(session_id);
-CREATE INDEX ix_sets_ex_time ON set_logs(exercise_id, logged_at);
 CREATE INDEX ix_sets_user_updated ON set_logs(user_id, updated_at);
+CREATE INDEX ix_sets_user_ex_time ON set_logs(user_id, exercise_id, logged_at);
 CREATE INDEX ix_sessions_user_updated ON sessions(user_id, updated_at);
+CREATE INDEX ix_audit_user_actor_created ON audit_log(user_id, actor, created_at);
+-- oauth_tokens is defined by the OAuth migrations and omitted above.
+CREATE INDEX ix_oauth_tokens_user ON oauth_tokens(user_id);
 CREATE UNIQUE INDEX ux_session_user_date ON sessions(user_id, date);
 CREATE INDEX ix_te_day ON template_exercises(day_template_id, order_index);
 ```
@@ -205,6 +208,13 @@ Migration `0035` adds `external_events(user_id, synced_at)` and
 `external_activities(user_id, synced_at)` cursor indexes. They keep empty P2
 external-cache deltas member-first and constant-cost; each real mutation pays
 one additional indexed row write, while a conditional no-op pays none.
+
+Migration `0036` replaces the cross-member exercise/time index with
+`set_logs(user_id, exercise_id, logged_at)` and adds member-first indexes for
+the profile's `audit_log(user_id, actor, created_at)` and
+`oauth_tokens(user_id)` lookups. Exercise reads still require the joined
+session to have the same `user_id`, preserving that authoritative ownership
+check while the denormalized set owner drives the index seek.
 
 Periodization note: no `mesocycles`/`weeks` tables. Deloads, wave loading,
 and block changes are Claude editing `target_*`/`progression` and writing a

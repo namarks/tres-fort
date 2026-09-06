@@ -4372,7 +4372,8 @@ export async function findRecentMatchingSet(
     .prepare(
       `SELECT sl.* FROM set_logs sl
        JOIN sessions s ON s.id = sl.session_id
-       WHERE s.user_id = ?1
+       WHERE sl.user_id = ?1
+         AND s.user_id = ?1
          AND sl.exercise_id = ?2
          AND sl.weight = ?3
          AND sl.reps = ?4
@@ -5733,7 +5734,8 @@ export async function getHistory(
     .prepare(
       `SELECT sl.*, s.date as session_date FROM set_logs sl
        JOIN sessions s ON s.id = sl.session_id
-       WHERE s.user_id = ?1 AND sl.exercise_id = ?2 AND sl.deleted_at IS NULL
+       WHERE sl.user_id = ?1 AND s.user_id = ?1
+         AND sl.exercise_id = ?2 AND sl.deleted_at IS NULL
          AND sl.is_warmup = 0 AND sl.logged_at BETWEEN ?3 AND ?4
        ORDER BY sl.logged_at`,
     )

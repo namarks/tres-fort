@@ -98,6 +98,13 @@ No second editor, no per-session template copies, no weeks table.
   - When a date falls inside a `plans.meta.trips` range, the calendar and
     Today pickers surface `travel`-tagged workouts first. This is ordering,
     not a rule engine.
+  - Released-client compatibility (shared rule in
+    `workouts-and-multi-session`): archived workouts stay in the plan tree
+    for every client so completed history still renders its workout name;
+    a client without the `archive` capability simply sees them in its
+    pickers, and the resolver rule above turns any attempt to assign one
+    into `unknown_day`, which the released app already handles as a
+    permanent client error.
   - Extend `test/calendar.test.ts` so an archived workout referenced by the
     schedule projects as rest on both backend and iOS
     (`CalendarProjection.swift` already treats a dangling id as rest; make
@@ -109,6 +116,11 @@ No second editor, no per-session template copies, no weeks table.
     `deleteDayTemplate`, the runner's template inference, and
     `projectCalendar` (a freestyle session is a real session and wins for its
     date; it renders with its logged exercises rather than a template name).
+    Released-client compatibility: the current runner infers a template from
+    the schedule for any null-template session, so a client without the
+    `freestyle` capability receives freestyle sessions only once they are
+    completed (as history with their sets) and never as Today's session;
+    an in-progress freestyle session is invisible to it.
   - The runner starts a freestyle session from the rest-day CTA and from the
     calendar for today. Exercises are added from the catalog as you go; the
     prescription shown is the member's last comparable actuals for that
@@ -124,8 +136,10 @@ No second editor, no per-session template copies, no weeks table.
     `target_weight` = top working weight; a cardio-modality exercise follows
     the timed branch. Warm-up sets are excluded from the derivation. The
     new workout is unscheduled and, on the same write, the session is
-    re-pointed at it so history attaches to the library entry. This is a
-    plan-tree write and audits normally.
+    re-pointed at it so history attaches to the library entry. The client
+    supplies the new workout's id, so a retry after a lost response returns
+    the same workout instead of creating a second one. This is a plan-tree
+    write and audits normally.
   - MCP: `log_set` on a date with no session creates a freestyle session
     when the date has no scheduled workout, instead of a null-template
     planned session, and the coach brief names it as such.

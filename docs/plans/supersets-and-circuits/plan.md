@@ -29,69 +29,62 @@ workout is sequenced inside the runner.
 ## Phases
 
 - [ ] **P0 — Group model, serialization, and coach authoring**
-  - Add `template_exercises.group_id` (nullable TEXT UUID) in one migration.
-    Slots that share a `group_id` within the same day form one group.
-    Invariants, enforced in the service layer and `update_plan`: members are
-    contiguous by `order_index`, share one `target_sets`, and a group has at
-    least two members. A single-member group is normalized to `NULL`.
-  - Rest semantics without a second column: inside a group, a member's
-    `rest_seconds` is the transition rest before the next member (default
-    `0`), and the last member's `rest_seconds` is the round rest. Ungrouped
-    slots keep today's meaning unchanged.
-  - `update_plan`'s full-tree rebuild carries `group_id` through the slot
-    remap the way it remaps day ids; `add_exercise`, `update_exercise`, and
-    the REST slot routes accept and return it; `dedupeDayOrderIndexes` and
-    the slot reorder paths keep groups contiguous or reject the move.
-    `/api/state` carries the field in the plan tree.
-  - One atomic grouping operation in the service layer, because the
-    single-slot PATCH routes cannot build a group: the first PATCH would
-    create a one-member group that P0 immediately normalizes back to `NULL`
-    before the second member joins. `groupSlots(dayId, memberIds,
-    roundRest)` validates contiguity and equal `target_sets`, assigns one
-    new id, sets each member's transition rest to `0` and the round rest on
-    the last member, and bumps `plans.version` once.
-    `ungroupSlots(groupId, restSeconds)` clears the id and sets every former
-    member's `rest_seconds` to the supplied value, defaulting to the round
-    rest the last member carried, because `groupSlots` overwrote the
-    members' ordinary rests and clearing the id alone would leave the
-    non-final exercises with zero rest. Expose it as `PUT /api/days/{id}/groups` (audited as
+  - Add three nullable columns to `template_exercises` in one additive
+    migration: `group_id` (TEXT UUID), `group_rest_seconds` (INTEGER, rest
+    after a full round), and `group_transition_seconds` (INTEGER, rest
+    between members inside a round, normally `0`). Slots that share a
+    `group_id` within one day form a group; the two rest values are group
+    attributes stored on every member and validated equal. `rest_seconds`
+    is never touched by grouping: it keeps its ordinary per-slot meaning,
+    is ignored by the runner while a slot is grouped, and is intact again
+    the moment the slot is ungrouped. No value is positional, so which
+    member is last carries no stored meaning.
+  - Cross-slot invariants, checked by one validator that every write path
+    below calls: members are contiguous by `order_index`, share one
+    `target_sets`, share the two group rest values, and number at least two.
+    A write that would violate them is rejected with `group_conflict`; the
+    one exception is removing a member, which normalizes a one-member group
+    to `NULL`. Paths: `addTemplateExercise`, `updateExercise`
+    (`order_index`), `deleteTemplateExercise`, `dedupeDayOrderIndexes`,
+    `swapExercise`, `updatePlanTree`'s rebuild (which carries the three
+    columns through the slot remap), and `deleteDayTemplate`. Reordering a
+    grouped slot outside its group is rejected; moving the whole group is a
+    reorder of all members in one call.
+  - All group writes are atomic and go through one service operation:
+    `setGroup(dayId, memberIds, { round_rest, transition_rest })` creates
+    or rewrites a group (assigning a new id when none exists), and
+    `clearGroup(groupId)` nulls the three columns on every member. Both
+    validate, bump `plans.version` once, audit, and write a note. The
+    single-slot routes and `update_exercise` reject the three group fields
+    with `unknown_fields`, so no path can change one member in isolation.
+    Expose `setGroup`/`clearGroup` as `PUT /api/days/{id}/groups` (audited
     `actor='ios'`) and as the MCP `group_exercises({day, exercises: [...],
-    rest_seconds})` tool, both thin wrappers over the same function.
-    Every membership change goes through the same atomic path: joining or
-    leaving an existing group changes which member is last, and because
-    `rest_seconds` encodes both transition and round rest, a one-slot write
-    would leave the former last member's round rest as a transition and
-    promote the joiner's ordinary rest to the round rest. So `groupSlots`
-    accepts an existing `groupId` to rewrite the full member list, and
-    `update_exercise` and `PATCH /api/days/{id}/exercises/{teId}` reject
-    `group_id` with `unknown_fields`; `get_current_plan`,
+    round_rest, transition_rest?})` and `ungroup_exercises` tools, thin
+    wrappers over the same functions. `get_current_plan`,
     `get_today_workout`, and the coach brief render groups in A1/A2 notation
-    with the round rest. Each write audits and writes a note like any plan
-    mutation.
-  - Wire gating for released clients. The current runner ignores
-    `group_id` and rests `rest_seconds` after every set, so serving a group
-    as stored would make it perform every non-final member with zero rest.
-    A client that does not declare group awareness (the
-    `X-TresFort-Write-Protocol` capability-header pattern) receives the
-    plan tree with `group_id` omitted and every member's `rest_seconds`
-    replaced by the group's round rest, so it degrades to sequential sets
-    with sensible rest. Group-aware clients receive the stored values. MCP
-    reads are always group-aware.
-  - Tests: group round trip through `update_plan`, contiguity and equal-sets
-    rejection, delete-member normalization, the gated wire view for a
-    non-group-aware client, and MCP authoring of the push-up/squat warm-up
-    with `is_warmup = 1` on both members.
+    with both rest values.
+  - Released-client compatibility (see the shared rule in
+    `workouts-and-multi-session`): a client that does not declare the
+    `groups` capability receives the plan tree with the three group columns
+    omitted and each member's `rest_seconds` replaced by the group's
+    `group_rest_seconds`, so the current runner performs the members
+    sequentially with the round rest after every set, which is today's
+    behavior for an ordinary slot. Group-aware clients and MCP receive the
+    stored values.
+  - Tests: group round trip through `update_plan`; every invariant path
+    above rejecting or normalizing; a client-view test for a non-group-aware
+    request; and MCP authoring of the push-up/squat warm-up with
+    `is_warmup = 1` on both members.
 - [ ] **P1 — Round-based runner**
-  - The runner iterates a group by rounds: after logging a set of member *i*,
-    it cues member *i*'s own `rest_seconds` (the transition rest from P0's
-    storage contract; `0` means no cue) and then advances to member *i+1*.
-    After logging the last member's set it cues that member's
-    `rest_seconds`, which is the round rest, and returns to the first
-    member, until every member has reached `target_sets`. The rest cued is
-    always the just-completed member's value, never the next member's.
-    `currentSetNumber` becomes the round number inside a group. Per-slot
-    completion stays keyed on `template_exercise_id`, so history, PRs, and
-    volume rollups are unchanged.
+  - The runner iterates a group by rounds: after logging a set of a
+    non-last member it cues `group_transition_seconds` (`0` means no cue)
+    and advances to the next member; after logging the last member's set it
+    cues `group_rest_seconds` and returns to the first member, until every
+    member has reached `target_sets`. "Last" is derived from `order_index`
+    at run time, never stored. `currentSetNumber` becomes the round number
+    inside a group. Per-slot completion stays keyed on
+    `template_exercise_id`, so history, PRs, and volume rollups are
+    unchanged.
   - The rest overlay and Live Activity show "up next" as the next member,
     not the same exercise; timed members (a plank inside a circuit) reuse the
     existing timed-set path, and warm-up groups render inside the warm-up
@@ -102,11 +95,13 @@ workout is sequenced inside the runner.
 - [ ] **P2 — Editor support in iOS**
   - In `EditWorkoutSheet`, multi-select adjacent slots and choose "Group as
     superset"; a group renders as one card listing its members with the
-    round rest; "Ungroup" clears `group_id`. Reordering moves a group as a
-    unit and refuses to split one.
-  - The slot target sheet exposes transition rest for group members and
-    round rest on the last member with those labels, so the convention from
-    P0 is visible rather than implied.
+    round rest and transition rest as two labeled fields; "Ungroup" calls
+    `clearGroup`, and each member's own rest reappears unchanged. Reordering
+    moves a group as a unit and refuses to split one, matching the server
+    invariant.
+  - A grouped slot's target sheet shows its ordinary rest as inactive while
+    grouped, with the group's values shown on the group card, so nothing
+    about the model is implied by position.
   - Verify a member can author the push-up/squat warm-up plus a working
     superset from the routine editor, run it in P1's runner, and see the
     same structure through `get_current_plan`.
@@ -130,8 +125,9 @@ workout is sequenced inside the runner.
 
 **Now (@owner):** Decide the priority of P0 relative to `gym-runner-depth#P0`.
 P0 is backend and MCP only, so Claude can author supersets before the runner
-change ships; until P1 lands, iOS receives the gated wire view (ungrouped,
-round rest on every member), which is safe but not useful on the gym floor.
+change ships; until P1 lands, iOS receives the compatibility view (group
+columns omitted, round rest on every member), which is safe but not useful on
+the gym floor.
 
 ## Notes / open questions
 
@@ -144,9 +140,16 @@ round rest on every member), which is safe but not useful on the gym floor.
 - Rejected: treating `rest_seconds = 0` as an implicit "superset with the next
   slot". A genuinely zero-rest prescription and a superset would be
   indistinguishable, and the runner could not tell where a group ends.
-- Rejected: a second `group_rest_seconds` column. The last-member convention
-  keeps every existing column meaningful and needs no new editor field for
-  ungrouped slots; P2 labels it explicitly so it is not hidden.
+- Reversed during review: the first draft encoded the round rest
+  positionally as the last member's `rest_seconds` to avoid a new column.
+  Four review findings (ungroup losing rests, membership edits shifting
+  meaning, the runner cueing the wrong member's value, and released clients
+  performing zero-rest sets) all traced to that one choice, so the group's
+  rest values are now their own columns and `rest_seconds` is never
+  repurposed. Redundant storage on every member is validated equal by the
+  same validator that enforces contiguity; a separate `slot_groups` table
+  was still rejected because it would add a third rebuild and remap path to
+  `updatePlanTree` and to plan snapshots for two integers.
 - Open: mixed set counts inside a group (3 rounds of A, 2 of B). The
   equal-sets invariant keeps the runner rule simple; relax it only if a
   member asks, since the plan tree can already express it by splitting the

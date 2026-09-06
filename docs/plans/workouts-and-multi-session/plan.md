@@ -81,10 +81,9 @@ Two model corrections that the workout library exposed:
     callers see no behavior change. Released iOS builds have no slot field
     and pick an arbitrary same-date session for Today, so once another
     device or Claude creates slot 1 they could display, log against, or
-    finish the wrong workout. Gate on the existing capability-header
-    pattern (`X-TresFort-Write-Protocol` in `readAttemptProtocolHeader`):
-    a client that does not declare slot awareness receives only slot-0
-    sessions and their sets from `/api/state`, `/api/today`, and the
+    finish the wrong workout. Under the shared compatibility rule below, a
+    client that does not declare the `slots` capability receives only
+    slot-0 sessions and their sets from `/api/state`, `/api/today`, and the
     session routes, and cannot address a slot above 0. `getOrCreateSession`
     gains a `nextSlot` mode that inserts at `MAX(slot)+1` for the date,
     keyed by a client-generated session `id` that is the idempotency key:
@@ -124,6 +123,19 @@ Two model corrections that the workout library exposed:
     coarse status with a count badge when more than one session exists; the
     agenda lists each. `WorkoutRecoveryStore` keys its checkpoint by
     `(date, slot)`.
+  - Retire the one-session-per-date assumption systematically rather than
+    helper by helper. Acceptance for this phase is an audit with zero
+    unreviewed hits, recorded in the plan: backend, every
+    `WHERE user_id = ?1 AND date = ?2` and every `LIMIT 1` over `sessions`
+    in `src/db.ts` (`getSessionByDate`, `getOwnedSessionByDate`,
+    `getInProgressSession`, `getLastCompletedSession`, `getRecentSessions`,
+    the calendar `byDate` map, group feed and stats, `exportUserData`,
+    account deletion, and the sync delta) plus their nineteen call sites in
+    the routes and MCP tools; iOS, every `sessionsByDate`, `sessionByDate`,
+    `todaySession`, and `.date ==` session comparison in `SyncModel.swift`
+    (forty-seven references today), the outboxes, recovery store, and
+    projection. Each hit is classified as slot-0-only, all-slots, or
+    session-id, and the classification is what the tests assert.
   - Every local session merge becomes session-scoped.
     `SyncModel.mergingSetAcknowledgement`, `mergingTerminalAcknowledgement`,
     `mergingSessionResolution`, `applyTerminalAcknowledgementLocally`, and
@@ -179,6 +191,29 @@ sessions in a day; keep it planned until then.
 
 - Source: owner request (2026-09-05) following the workout-library plan,
   which recorded both items as constraints it did not address.
+- Shared rule, released-client compatibility (applies to this plan,
+  `workout-library`, and `supersets-and-circuits`): a new field or new
+  meaning on an object the released app already decodes must define what a
+  client that does not understand it receives. Clients declare
+  capabilities in one request header, `X-TresFort-Capabilities`, a
+  comma-separated list (`slots`, `groups`, `freestyle`, `archive`),
+  alongside the existing `X-TresFort-Write-Protocol`; `readCapabilities`
+  parses it next to `readAttemptProtocolHeader`. Each plan lists, per new
+  field, the view a non-declaring client gets. The server never trusts a
+  declaring client less than a non-declaring one; the header only widens
+  what is returned.
+- Shared rule, schema changes under `npm run release` (migration first,
+  deploy second): an additive nullable column with a default is safe in one
+  release; anything the deployed Worker names in SQL (an index used as a
+  conflict target, a table or column rename, a dropped column) needs
+  expand-contract with a compatibility Worker deployed first. In these
+  plans: `tags`, `archived_at`, `sessions.kind`, `sessions.slot`, and the
+  three group columns are additive; the `(user_id, date)` index swap and the
+  `workouts` rename are expand-contract and are written up as such above.
+- Shared rule, creation under retries: every operation that creates a row
+  takes a client-generated id as its idempotency key, matching `set_logs`
+  and `sessions`. In these plans that is the additional-session id, the
+  workout id in save-as-workout, and the group id in `setGroup`.
 - Rejected for P0: a compatibility `VIEW day_templates` over `workouts`.
   Views do not accept the old Worker's writes, so it cannot close the
   release window. The schema-adaptive Worker in release A is the

@@ -63,9 +63,12 @@ workout is sequenced inside the runner.
     push-up/squat warm-up with `is_warmup = 1` on both members.
 - [ ] **P1 — Round-based runner**
   - The runner iterates a group by rounds: after logging a set of member *i*,
-    it advances to member *i+1* and cues that member's transition rest (`0`
-    means no cue); after the last member it cues the round rest and returns
-    to the first member, until every member has reached `target_sets`.
+    it cues member *i*'s own `rest_seconds` (the transition rest from P0's
+    storage contract; `0` means no cue) and then advances to member *i+1*.
+    After logging the last member's set it cues that member's
+    `rest_seconds`, which is the round rest, and returns to the first
+    member, until every member has reached `target_sets`. The rest cued is
+    always the just-completed member's value, never the next member's.
     `currentSetNumber` becomes the round number inside a group. Per-slot
     completion stays keyed on `template_exercise_id`, so history, PRs, and
     volume rollups are unchanged.

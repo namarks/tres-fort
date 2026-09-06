@@ -66,12 +66,17 @@ Two model corrections that the workout library exposed:
   - Service layer: every `(user_id, date)` session lookup in `src/db.ts`
     (about eleven) takes an explicit slot and defaults to 0, so existing
     callers and released clients see no behavior change. `getOrCreateSession`
-    gains a `nextSlot` mode that inserts at `MAX(slot)+1` for the date;
-    slots are assigned once and never reused. A slot above 0 can be
+    gains a `nextSlot` mode that inserts at `MAX(slot)+1` for the date,
+    keyed by a client-generated session `id` that is the idempotency key:
+    a retry with the same `id` returns the committed row and its slot
+    instead of allocating again, so a lost response cannot create a
+    duplicate workout. Slots are assigned once and never reused. A slot
+    above 0 can be
     discarded or skipped like the primary; there is no rule that slot 1
     requires slot 0 to be complete.
-  - REST: `POST /api/sessions` accepts `slot` (an exact retry) or
-    `additional: true` (allocate the next slot); `PUT /api/calendar/{date}`
+  - REST: `POST /api/sessions` accepts `slot` (an exact retry of a known
+    slot) or `additional: true` with a required client-generated `id`
+    (allocate the next slot, idempotent on that id); `PUT /api/calendar/{date}`
     keeps its current meaning for slot 0 and gains `PUT
     /api/calendar/{date}/{slot}`. Set writes are unchanged because they
     already address a session id.
@@ -106,6 +111,16 @@ Two model corrections that the workout library exposed:
     `(date, slot)` when the server reassigns an id), leave sibling slots
     untouched, and cover the two-session case in `SetOutboxTests` and
     `WorkoutTerminalOutboxTests`.
+  - The durable write machinery is also date-scoped today and must move to
+    session scope in the same slice: `WorkoutTerminalOutbox` allows one
+    intent per date, `SetOutboxStore.remove(date:)` drops every same-date
+    set, and `supersedeSetIntentsForDiscardBarriers` treats a discard as a
+    date-wide barrier. With two sessions on a date, finishing or discarding
+    one would suppress the sibling's terminal action or delete its queued
+    sets. Intent envelopes, discard barriers, drain predicates, and
+    reconciliation all key on session id (or `(date, slot)`), and the
+    two-session tests above cover finish and discard of one slot while the
+    other has queued sets.
   - Group feed and stats: each session is one feed item; the daily
     consistency count still counts a date once.
   - Sync: `/api/state` session deltas already carry whole rows, so `slot`

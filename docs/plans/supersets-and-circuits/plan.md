@@ -43,10 +43,18 @@ workout is sequenced inside the runner.
     the REST slot routes accept and return it; `dedupeDayOrderIndexes` and
     the slot reorder paths keep groups contiguous or reject the move.
     `/api/state` carries the field in the plan tree.
-  - MCP: `update_exercise` accepts `group_id` (or `null` to ungroup); add a
-    `group_exercises({day, exercises: [...], rest_seconds})` convenience that
-    assigns one new id, sets each member's transition rest to `0`, and sets
-    the round rest on the last member; `get_current_plan`,
+  - One atomic grouping operation in the service layer, because the
+    single-slot PATCH routes cannot build a group: the first PATCH would
+    create a one-member group that P0 immediately normalizes back to `NULL`
+    before the second member joins. `groupSlots(dayId, memberIds,
+    roundRest)` validates contiguity and equal `target_sets`, assigns one
+    new id, sets each member's transition rest to `0` and the round rest on
+    the last member, and bumps `plans.version` once; `ungroupSlots(groupId)`
+    is its inverse. Expose it as `PUT /api/days/{id}/groups` (audited as
+    `actor='ios'`) and as the MCP `group_exercises({day, exercises: [...],
+    rest_seconds})` tool, both thin wrappers over the same function.
+    `update_exercise` still accepts `group_id` only to move a slot into an
+    existing group or `null` to leave one; `get_current_plan`,
     `get_today_workout`, and the coach brief render groups in A1/A2 notation
     with the round rest. Each write audits and writes a note like any plan
     mutation.

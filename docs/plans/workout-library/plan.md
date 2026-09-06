@@ -83,6 +83,15 @@ No second editor, no per-session template copies, no weeks table.
     `projectCalendar` gives a real session precedence over the schedule and
     would otherwise keep showing the archived workout. Archiving is rejected
     while the workout has an in-progress session, matching delete.
+  - Every assignment resolver rejects an archived workout, not only the
+    updated pickers: `setPlanSchedule`, `setPlannedSession`,
+    `getDayTemplateInPlan` as used by `POST /api/sessions` and
+    `PUT /api/calendar/{date}`, and the MCP day-ref lookup all treat
+    `archived_at IS NOT NULL` as unknown. Otherwise an older iOS build that
+    ignores the field, or any caller still holding the id, can reassign it
+    and the resulting real session wins projection and restores it in
+    Today. Add a test that each path returns the same not-found result for
+    an archived id.
     `update_plan`'s rebuild must carry both fields through the day remap.
   - Expose both fields through `get_current_plan`, `add_day`, `update_day`,
     and `PATCH /api/days/{id}`; `/api/state` carries them in the plan tree.

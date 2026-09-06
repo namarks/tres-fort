@@ -97,6 +97,15 @@ Two model corrections that the workout library exposed:
     coarse status with a count badge when more than one session exists; the
     agenda lists each. `WorkoutRecoveryStore` keys its checkpoint by
     `(date, slot)`.
+  - iOS acknowledgement merges become session-scoped.
+    `SyncModel.mergingSetAcknowledgement` and
+    `mergingTerminalAcknowledgement` today collect every cached session on
+    the acknowledged date, drop them all, and re-point their sets at the
+    acknowledged session id; with two sessions on a date that collapses the
+    other workout and misattributes its sets. Match on session id (or
+    `(date, slot)` when the server reassigns an id), leave sibling slots
+    untouched, and cover the two-session case in `SetOutboxTests` and
+    `WorkoutTerminalOutboxTests`.
   - Group feed and stats: each session is one feed item; the daily
     consistency count still counts a date once.
   - Sync: `/api/state` session deltas already carry whole rows, so `slot`

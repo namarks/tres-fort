@@ -1,6 +1,6 @@
 # Data Storage Scalability
 
-Slug: data-storage-scalability · Status: active · Updated: 2026-09-05 · Theme: platform
+Slug: data-storage-scalability · Status: gated · Updated: 2026-09-05 · Theme: platform
 
 ## Goal
 

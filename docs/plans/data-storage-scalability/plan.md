@@ -252,8 +252,16 @@ Done means:
     2026-09-05. The first natural quiet tick on the new Worker completed with
     53 D1 queries, 325 rows read, **zero rows written**, 26 ms CPU, 4,392 ms
     wall time, and no exception. Exact-source TestFlight build `0.1.0 (31)` is
-    terminal `VALID`. Only the separately authorized sanitized real-response
-    replay remains outstanding for P2.
+    terminal `VALID`. An authorized privacy-preserving in-page capture then
+    used only the logged-in intervals.icu web-session routes: events for
+    2026-09-05 through 2026-12-04, activities for 2026-06-07 through
+    2026-09-05, and activities for 2025-09-05 through 2026-09-05 each returned
+    HTTP 200 with an empty array. The browser used its page-local session URL,
+    but no cookie, token value, athlete identifier, name, or event/activity
+    content left the page context, entered tool output, or was copied or
+    retained. Empty responses cannot supply two versions of the same row with
+    raw-only drift, so the real-response replay remains outstanding and P2
+    stays open; do not fabricate it.
 - [ ] **P3 — Filing-cabinet tabs (member-first indexes)**
   - Migration: `audit_log(user_id, actor, created_at)` so the profile's
     latest-MCP-action lookup seeks directly instead of walking a member's
@@ -335,24 +343,37 @@ Done means:
 **Now (@agent):** Release delivery is complete from exact merged source
 `079f035`: migrations `0033`-`0035`, Worker version
 `1cc13fec-3eab-4f95-a0fb-e9d6a1303f52`, the natural zero-write tick, and
-terminal-valid TestFlight build `0.1.0 (31)` all have retained provenance.
-Capture the authorized sanitized real-provider replay without retrieving or
-copying provider credentials, and capture one representative post-release
-authenticated sample each for full-reload and incremental `/api/state`, Profile
-`/api/me`, and OAuth coach `get_history`. The pre-release authenticated
-per-path baseline was not retained and cannot be recreated safely; ask the
-owner whether these post-release samples are accepted as its replacement.
-These owner-device/connected-account interactions and that evidence decision
-are the remaining P0-P2 gate. Do not manually trigger production cron, change
-the plan tier, or infer P3/P5 product decisions from scheduler order.
+terminal-valid TestFlight build `0.1.0 (31)` all have retained provenance. The
+authorized privacy-preserving provider capture returned only authenticated
+empty arrays, so it does not satisfy the same-row raw-only-drift replay and P2
+remains open. Before production traffic sampling, independently resolve the
+provider-side invalidation of the exposed prior Wrangler OAuth session. Done
+2026-09-05: the owner authorized revocation of the Wrangler row on Cloudflare's
+Connected Applications page, and the row plus its Revoke action were absent
+after confirmation. Now have the owner reauthenticate Wrangler and capture one
+representative post-release authenticated sample each for full-reload and
+incremental `/api/state`, Profile `/api/me`, and OAuth coach `get_history`.
+Ask the owner whether those post-release samples are accepted as replacement
+for the irrecoverable pre-P1 per-path baseline. For the provider gate, either
+wait until the owner can populate or allow capture of a real event/activity,
+or obtain an explicit owner decision amending acceptance to the authenticated
+empty-window evidence plus the existing synthetic raw-drift regressions. Do not
+fabricate provider rows, manually trigger production cron, change the plan tier,
+or infer P3/P5 product decisions from scheduler order.
 
-**Owner input, only when requested:** If the agent cannot exercise the physical
-production app, foreground build 31 for a classified state sync, open Profile
-once, then use the OAuth-connected Claude coach to request bench history once.
-Confirm whether the classified post-release full-reload/incremental evidence is
-an acceptable replacement for the historical pre-P1 per-path sample that was
-not retained. These actions and decision complete the outstanding authenticated
-P0/P1 evidence but do not affect the completed production release.
+**Owner input, only when requested:** The exposed prior Wrangler authorization
+has been removed from Cloudflare. Before the agent starts a sanitized production
+tail, complete a fresh Wrangler login. If the agent cannot exercise the physical
+production app, foreground build 31 for classified full-reload and incremental
+state syncs, open Profile once, and use the OAuth-connected Claude coach to
+request bench history once. Confirm whether these post-release samples are an
+acceptable replacement for the
+historical pre-P1 per-path sample that was not retained. Separately, either
+make a real intervals.icu event or activity available for a later
+privacy-preserving capture, or explicitly accept amended
+P2 evidence consisting of the authenticated empty windows plus the existing
+synthetic raw-only-drift tests. These actions and decisions close only their
+stated evidence gates and do not alter the completed production release.
 
 ## Notes / open questions
 

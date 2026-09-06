@@ -49,6 +49,21 @@ five-case stubbed harness covers zero-exit rejection, normal success with the
 delivery UUID preserved, nonzero exit propagation, and ambiguous output. The
 rejected attempt created no new build.
 
+During the release-evidence work, a Wrangler debug log exposed the prior
+Cloudflare OAuth session's refresh grant. `npx wrangler logout` sent Wrangler's
+revocation request and cleared the local authentication state; a subsequent
+`wrangler whoami` reported that Wrangler was unauthenticated and required
+login. Wrangler 4.92.0 does not verify the revocation response before reporting
+success, so local logout alone did not prove provider-side invalidation. The
+Cloudflare dashboard's Connected Applications page still listed exactly one
+Wrangler authorization with a Revoke action. With owner authorization, that
+row was revoked through its Wrangler-specific confirmation dialog; afterward
+the dialog closed and neither the Wrangler row nor any Revoke action remained.
+This independently verifies provider-side authorization removal. No credential
+content was retained. This records supporting release security hygiene only:
+it is not a storage phase, storage evidence, or a completion claim. The owner
+must complete a fresh Wrangler login before production traffic sampling.
+
 The authenticated owner paths were not sampled before P1 shipped. That
 historical per-path baseline cannot now be recreated without rolling back to a
 Worker that is unsafe after incremental iOS cursors. The proposed replacement
@@ -56,9 +71,25 @@ is a classified post-release full reload and incremental `/api/state` sample,
 plus one `/api/me` and OAuth `get_history` sample; the owner must explicitly
 accept that substitution before P0/P1 close.
 
-Remaining evidence is therefore narrow: that accepted post-release path sample
-set and a sanitized replay of two real provider responses. Capturing either
-must not expose owner credentials or personal response content.
+An authorized privacy-preserving in-page intervals.icu capture used only the
+logged-in web-session routes. The event window 2026-09-05 through 2026-12-04,
+the activity window 2026-06-07 through 2026-09-05, and a wider activity window
+2025-09-05 through 2026-09-05 each returned HTTP 200 with an empty array. The
+browser used its page-local session URL to make those requests, but no cookie,
+token value, athlete identifier, name, or event/activity content left the page
+context, entered tool output, or was copied or retained. Because the provider
+returned no rows, the capture cannot yield two versions of the same row whose
+only change is ignored raw data. It is not relabeled as the required
+real-response replay, no fixture is fabricated, and P2 remains open.
+
+Remaining evidence is therefore narrow: owner acceptance of the proposed
+post-release path sample set and the provider gate. The latter requires either
+a later privacy-preserving
+capture after a real event/activity is available, or an explicit owner decision
+to amend acceptance to the authenticated empty-window evidence plus the existing
+synthetic raw-only-drift regressions. Neither alternative changes storage scope
+implicitly, and neither may expose owner credentials or personal response
+content.
 
 ## 2026-09-05 — Production release paused for Hono CORS security update
 

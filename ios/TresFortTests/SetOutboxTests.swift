@@ -12730,3 +12730,105 @@ extension SetOutboxTests {
         XCTAssertFalse(model.canCreateRoutine)
     }
 }
+
+extension SetOutboxTests {
+    func testSupersetLoadsCarryIntoLaterRoundsWhileOffline() async {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let first = exercise(targetSets: 2, targetWeight: 100, groupID: "pair", transitionRest: 0)
+        let second = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 2,
+                              targetWeight: 45, groupID: "pair", transitionRest: 0)
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: session(), sets: [], exercises: [first, second]))
+        model.startWorkout()
+        model.setWeight(112.5)
+        await model.logCurrentSet(expected: first, expectedSetNumber: 1)
+        XCTAssertEqual(model.currentExercise?.id, second.id)
+        XCTAssertEqual(model.weight, 45)
+        model.setWeight(52.5)
+        await model.logCurrentSet(expected: second, expectedSetNumber: 1)
+        XCTAssertEqual(model.currentExercise?.id, first.id)
+        XCTAssertEqual(model.currentSetNumber, 2)
+        XCTAssertEqual(model.weight, 112.5)
+        await model.drainSetOutbox()
+        // Let the same-turn duplicate-tap guard release before another physical set.
+        for _ in 0..<100 {
+            if !model.isSetEntryBlocked(first) { break }
+            await Task.yield()
+        }
+        XCTAssertFalse(model.isSetEntryBlocked(first))
+        await model.logCurrentSet(expected: first, expectedSetNumber: 2)
+        XCTAssertEqual(model.currentExercise?.id, second.id)
+        XCTAssertEqual(model.weight, 52.5)
+        let pending = SetOutboxStore.load(userID: "user-a", defaults: defaults).pending
+        XCTAssertEqual(pending.filter { $0.slotID == first.id }.map { $0.body.weight }, [112.5, 112.5])
+        XCTAssertEqual(model.exercises.first?.target_weight, 100)
+    }
+
+    func testPerExerciseLoadDraftsSurviveNavigationAndColdResume() {
+        let defaults = defaults(), auth = retainedAuth(defaults: defaults)
+        let first = exercise(targetWeight: 100)
+        let second = exercise(id: "slot-b", exerciseID: "exercise-b", targetWeight: 45)
+        let active = session()
+        do {
+            let model = SyncModel(auth: auth, defaults: defaults, now: { self.fixedDate })
+            model.replaceState(with: state(session: active, sets: [], exercises: [first, second]))
+            model.startWorkout()
+            model.setWeight(112.5)
+            model.next()
+            model.setWeight(52.5)
+            model.previous()
+            XCTAssertEqual(model.weight, 112.5)
+            model.next()
+            XCTAssertEqual(model.weight, 52.5)
+        }
+        let cold = SyncModel(auth: auth, defaults: defaults, now: { self.fixedDate })
+        cold.replaceState(with: state(session: active, sets: [], exercises: [first, second]))
+        XCTAssertTrue(cold.hasResumableWorkout)
+        cold.resumeWorkout()
+        XCTAssertEqual(cold.weight, 52.5)
+        cold.previous()
+        XCTAssertEqual(cold.weight, 112.5)
+    }
+
+    func testChangedPrescriptionInvalidatesOnlyItsOwnExerciseDraft() {
+        let defaults = defaults()
+        let first = exercise(targetWeight: 100)
+        let second = exercise(id: "slot-b", exerciseID: "exercise-b", targetWeight: 45)
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: session(), sets: [], exercises: [first, second]))
+        model.startWorkout()
+        model.setWeight(112.5)
+        model.next()
+        model.setWeight(52.5)
+        let changed = exercise(targetWeight: 80)
+        model.replaceState(with: state(session: session(), sets: [], exercises: [changed, second]))
+        model.previous()
+        XCTAssertEqual(model.weight, 80)
+        model.next()
+        XCTAssertEqual(model.weight, 52.5)
+    }
+
+    func testNewWorkoutAttemptDoesNotInheritPriorLoadDrafts() throws {
+        let defaults = defaults(), auth = retainedAuth(defaults: defaults)
+        let ex = exercise(targetWeight: 100)
+        do {
+            let model = SyncModel(auth: auth, defaults: defaults, now: { self.fixedDate })
+            model.replaceState(with: state(session: session(updatedAt: 100, attempt: 0), sets: [], exercise: ex))
+            model.startWorkout()
+            model.setWeight(112.5)
+        }
+        // Carry durable state across a process boundary without carrying the
+        // old model's process-local ownership of the runner's shared artifacts.
+        let coldDefaults = self.defaults()
+        let checkpoint = try XCTUnwrap(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults))
+        WorkoutRunnerCheckpointStore.save(checkpoint, userID: "user-a", defaults: coldDefaults)
+        let next = SyncModel(auth: retainedAuth(defaults: coldDefaults), defaults: coldDefaults, now: { self.fixedDate })
+        next.replaceState(with: state(session: session(status: "planned", updatedAt: 200, attempt: 1), sets: [], exercise: ex))
+        XCTAssertFalse(next.hasResumableWorkout)
+        next.startWorkout()
+        XCTAssertTrue(next.running, next.loadError ?? "New workout did not start")
+        XCTAssertEqual(next.weight, 100)
+    }
+}

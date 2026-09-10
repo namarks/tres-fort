@@ -11,6 +11,7 @@ struct RunnerPrescription: Codable, Equatable {
     let reps: Int
     let duration: Int?
     let rpe: Double?
+    let unit: String?
 
     init(_ exercise: TemplateExercise) {
         slotID = exercise.id
@@ -21,6 +22,7 @@ struct RunnerPrescription: Codable, Equatable {
         reps = exercise.target_reps
         duration = exercise.target_duration_s
         rpe = exercise.target_rpe
+        unit = exercise.exercise_unit
     }
 }
 

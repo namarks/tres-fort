@@ -115,6 +115,7 @@ struct UIFixtureView: View {
                 UIFixtureTrainingView(auth: auth, scenario: scenario)
             }
         }
+        .defaultAppStorage(UIFixtureModel.defaults)
         .tint(Theme.accent)
         .environment(\.openURL, OpenURLAction { _ in .discarded })
         .environment(\.dynamicTypeSize,

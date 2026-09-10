@@ -240,6 +240,30 @@ final class TrainingJourneyTests: XCTestCase {
         XCTAssertEqual(weight.value as? String, "47.5")
     }
 
+    func testKilogramEntryCanSwitchUnitsWithoutChangingTheLoad() {
+        let app = launch("ordinary")
+        let weight = app.buttons["runner.weight"]
+        reveal(weight, in: app)
+        weight.tap()
+        app.segmentedControls["weight.unit"].buttons["kg"].tap()
+        let entry = app.textFields["weight.entry"]
+        let previous = entry.value as? String ?? ""
+        entry.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        entry.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count) + "20")
+        screenshot("kilogram-editor-before-save")
+        XCTAssertEqual(entry.value as? String, "20")
+        app.buttons["Save"].tap()
+        XCTAssertEqual(weight.value as? String, "20")
+        screenshot("kilogram-weight-entry")
+        app.segmentedControls["runner.weight.unit"].buttons["lb"].tap()
+        XCTAssertEqual(weight.value as? String, "44.092")
+        app.segmentedControls["runner.weight.unit"].buttons["kg"].tap()
+        XCTAssertEqual(weight.value as? String, "20")
+        weight.tap()
+        app.buttons["Save"].tap()
+        XCTAssertEqual(weight.value as? String, "20")
+    }
+
     func testRestAndCompletionRemainReachable() {
         let app = launch("ordinary")
         let log = app.buttons["LOG SET 1"]

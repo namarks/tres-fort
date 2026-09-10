@@ -917,6 +917,7 @@ private struct RunnerView: View {
     @State private var weightPrescription: RunnerPrescription?
     @State private var loadingTarget: Double?
     @State private var showingLoading = false
+    @State private var previewFor: TemplateExercise?
     @AppStorage(RestCue.defaultsKey) private var timerCuesEnabled = true
 
     var body: some View {
@@ -1043,14 +1044,14 @@ private struct RunnerView: View {
 
 
                     HStack {
-                        navBtn("← PREV") { sync.previous() }
+                        navBtn("← PREV") { navigate(to: sync.exerciseIndex - 1) }
                             .disabled(sync.exerciseIndex == 0)
                         Text("\(sync.exerciseIndex + 1) / \(sync.exercises.count)")
                             .font(Theme.mono(11)).tracking(1.5).foregroundStyle(Theme.muted)
                             .frame(maxWidth: .infinity)
                         // Non-destructive: just move to the next exercise. Going
                         // out of order no longer strikes out the ones you pass (#3).
-                        navBtn("NEXT →") { sync.next() }
+                        navBtn("NEXT →") { navigate(to: sync.exerciseIndex + 1) }
                             .disabled(sync.exerciseIndex >= sync.exercises.count - 1)
                     }
                     .padding(.top, 24)
@@ -1100,6 +1101,12 @@ private struct RunnerView: View {
             .sheet(isPresented: $showingLoading) {
                 BarbellLoadingView(target: loadingTarget ?? sync.weight)
             }
+            .sheet(item: $previewFor) { selected in
+                exercisePreview(startingAt: selected.id)
+            }
+            .onChange(of: sync.timedActive) {
+                if !sync.timedActive { previewFor = nil }
+            }
             .sheet(isPresented: $editingValues) {
                 if let draft = valueDraft {
                     SetValuesEditor(title: "Next set", values: SetCorrectionValues(
@@ -1142,7 +1149,7 @@ private struct RunnerView: View {
                     let cur = i == sync.exerciseIndex
                     let done = sync.isComplete(e)
                     let skipped = sync.isSkipped(e) && !done
-                    Button { sync.jump(to: i) } label: {
+                    Button { navigate(to: i) } label: {
                         Text(e.exercise_name + (done ? " ✓" : skipped ? " · skipped" : ""))
                             .font(Theme.mono(11, .bold))
                             .strikethrough(skipped, color: Theme.muted)
@@ -1161,6 +1168,67 @@ private struct RunnerView: View {
             }
         }
         .padding(.top, 16)
+    }
+
+    /// Browsing during a hold must not change the executing slot: jumping
+    /// reseeds inputs and invalidates the timer's original set identity.
+    private func navigate(to index: Int) {
+        guard sync.exercises.indices.contains(index) else { return }
+        if sync.timedActive {
+            guard index != sync.exerciseIndex else { return }
+            previewFor = sync.exercises[index]
+        } else {
+            sync.jump(to: index)
+        }
+    }
+
+    private func exercisePreview(startingAt slotID: String) -> some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                if let active = sync.currentExercise, let end = sync.timedEndDate {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let remaining = max(0, Int(ceil(end.timeIntervalSince(context.date))))
+                        Text("\(active.exercise_name) · \(remaining)s remaining")
+                            .font(Theme.mono(13, .bold))
+                            .foregroundStyle(Theme.accent)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(16)
+                            .accessibilityIdentifier("runner.preview.timer")
+                    }
+                }
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(sync.exercises) { ex in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(ex.exercise_name.uppercased())
+                                        .font(Theme.display(28)).foregroundStyle(Theme.text)
+                                    if ex.isWarmup { WarmupTag() }
+                                    Text("\(ex.target_sets) \(ex.group_id == nil ? "sets" : "rounds") · \(ex.group_rest_seconds ?? ex.rest_seconds)s rest")
+                                        .font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                                    prescriptionContext(ex: ex)
+                                }
+                                .padding(16)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Theme.surface)
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
+                                .id(ex.id)
+                            }
+                        }
+                        .padding(16)
+                    }
+                    .onAppear { proxy.scrollTo(slotID, anchor: .top) }
+                }
+            }
+            .background(Theme.bg)
+            .navigationTitle("Workout preview")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Return to timer") { previewFor = nil }
+                }
+            }
+        }
     }
 
     private func loadControl(ex: TemplateExercise) -> some View {
@@ -1381,6 +1449,7 @@ private struct TimedSetView: View {
                     Text("\(remaining)s")
                         .font(Theme.number(64))
                         .foregroundStyle(remaining <= 0 ? Theme.done : Theme.accent)
+                        .accessibilityIdentifier("runner.timer.remaining")
                 }
             } else {
                 Text("\(sync.holdDurationSeconds)s")

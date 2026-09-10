@@ -79,6 +79,71 @@ final class TrainingJourneyTests: XCTestCase {
         screenshot("timed-workout")
     }
 
+    func testTimedSetSurvivesExerciseStripAndPreviousNextPreview() {
+        let app = launch("timed-navigation")
+        let start = app.buttons["START SET 1"]
+        reveal(start, in: app)
+        start.tap()
+        let remaining = app.staticTexts["runner.timer.remaining"]
+        XCTAssertTrue(remaining.waitForExistence(timeout: 5))
+        let initial = Int(remaining.label.dropLast())!
+
+        // Re-selecting the executing exercise is a no-op, not a timer reset.
+        let bike = app.buttons["Stationary Bike"]
+        bike.tap()
+        XCTAssertTrue(remaining.exists)
+        XCTAssertFalse(start.exists)
+
+        for (control, heading) in [("NEXT →", "PUSH-UP"), ("← PREV", "GOBLET SQUAT"),
+                                   ("Push-Up", "PUSH-UP")] {
+            let navigation = app.buttons[control]
+            if control == "Push-Up" { app.swipeDown() }
+            reveal(navigation, in: app)
+            navigation.tap()
+            XCTAssertTrue(app.navigationBars["Workout preview"].waitForExistence(timeout: 5))
+            XCTAssertTrue(app.staticTexts[heading].exists)
+            XCTAssertTrue(app.staticTexts["runner.preview.timer"].label.hasPrefix("Stationary Bike · "))
+            XCTAssertFalse(app.buttons["LOG SET 1"].exists)
+            screenshot("timer-preview-\(heading)")
+            app.buttons["Return to timer"].tap()
+            XCTAssertTrue(remaining.waitForExistence(timeout: 5))
+            XCTAssertLessThan(Int(remaining.label.dropLast())!, initial)
+            XCTAssertFalse(start.exists)
+        }
+        let stop = app.buttons["STOP & LOG"]
+        reveal(stop, in: app)
+        stop.tap()
+        let restDone = app.buttons["rest.done"]
+        if restDone.waitForExistence(timeout: 3) { restDone.tap() }
+        XCTAssertFalse(remaining.exists)
+        // Only the bike was logged; the following exercise still has set 1.
+        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Stationary Bike"].exists)
+        let evidence = app.staticTexts["fixture.scenario"].value as? String ?? ""
+        XCTAssertTrue(evidence.hasPrefix("bike:1;other:0;seconds:"))
+        XCTAssertTrue(evidence.hasSuffix(";warmup:1"))
+    }
+
+    func testTimedSetCompletesWhileExercisePreviewIsOpen() {
+        let app = launch("timed-preview-completion")
+        let start = app.buttons["START SET 1"]
+        reveal(start, in: app)
+        start.tap()
+        app.buttons["Push-Up"].tap()
+        XCTAssertTrue(app.navigationBars["Workout preview"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["runner.preview.timer"].exists)
+        let closed = NSPredicate(format: "exists == false")
+        expectation(for: closed, evaluatedWith: app.navigationBars["Workout preview"])
+        waitForExpectations(timeout: 25)
+        let restDone = app.buttons["rest.done"]
+        if restDone.waitForExistence(timeout: 3) { restDone.tap() }
+        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["STOP & LOG"].exists)
+        XCTAssertEqual(app.staticTexts["fixture.scenario"].value as? String,
+                       "bike:1;other:0;seconds:15;warmup:1")
+        screenshot("timer-completed-during-preview")
+    }
+
     func testPendingSetRemainsVisibleUntilAcknowledged() {
         let app = launch("pending")
         XCTAssertTrue(app.staticTexts["Set queued on this device"].waitForExistence(timeout: 10))

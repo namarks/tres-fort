@@ -9,6 +9,8 @@ enum UIFixtureScenario: String, CaseIterable {
     case ordinary, bodyweight, timed, pending, onboarding, groups, library
     case appStore = "app-store"
     case groupSafety = "group-safety"
+    case timedNavigation = "timed-navigation", timedPreviewCompletion = "timed-preview-completion"
+    var isTimerNavigation: Bool { self == .timedNavigation || self == .timedPreviewCompletion }
     case planChanges = "plan-changes"
     case activationOwner = "activation-owner", activationInvite = "activation-invite"
     case activationManual = "activation-manual", activationCoach = "activation-coach"
@@ -113,6 +115,7 @@ struct UIFixtureView: View {
                 UIFixtureTrainingView(auth: auth, scenario: scenario)
             }
         }
+        .defaultAppStorage(UIFixtureModel.defaults.preferences)
         .tint(Theme.accent)
         .environment(\.openURL, OpenURLAction { _ in .discarded })
         .environment(\.dynamicTypeSize,
@@ -133,7 +136,7 @@ private struct UIFixtureTrainingView: View {
         self.scenario = scenario
         _sync = StateObject(wrappedValue: SyncModel(
             auth: auth, defaults: UIFixtureModel.defaults,
-            now: { CalendarProjection.date(from: "2026-09-08")! },
+            now: { scenario.isTimerNavigation ? Date() : CalendarProjection.date(from: "2026-09-08")! },
             restActivityUpdater: { _, _ in }, restActivityEnder: {},
             restNotificationCanceller: {}))
     }
@@ -143,7 +146,7 @@ private struct UIFixtureTrainingView: View {
             Text("SYNTHETIC · \(scenario.rawValue)")
                 .font(.caption).dynamicTypeSize(.large)
                 .accessibilityIdentifier("fixture.scenario")
-                .accessibilityValue(Text(verbatim: scenario.isHistory ? "\(sync.sets.count) sets" : ""))
+                .accessibilityValue(Text(verbatim: fixtureEvidence))
             if scenario == .onboarding && !auth.onboardingComplete {
                 OnboardingView(auth: auth)
             } else if scenario.isHistory {
@@ -158,6 +161,9 @@ private struct UIFixtureTrainingView: View {
             if ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_FEEDBACK"] == "1" { return }
             if ![.empty, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .groups, .library, .planChanges].contains(scenario) {
                 sync.startWorkout()
+                if scenario.isTimerNavigation {
+                    sync.jump(to: 1)
+                }
                 if [.readyToFinish, .correctionFailure].contains(scenario) {
                     sync.finished = true
                 }
@@ -167,6 +173,13 @@ private struct UIFixtureTrainingView: View {
                 }
             }
         }
+    }
+
+    private var fixtureEvidence: String {
+        if scenario.isHistory { return "\(sync.sets.count) sets" }
+        guard scenario.isTimerNavigation else { return "" }
+        let bike = sync.sets.filter { $0.template_exercise_id == "synthetic-bike" }
+        return "bike:\(bike.count);other:\(sync.sets.count - bike.count);seconds:\(bike.first?.duration_s ?? 0);warmup:\(bike.first?.is_warmup ?? 0)"
     }
 }
 
@@ -318,12 +331,33 @@ private struct UIFixtureServer {
     }
 
     func makeSession(status: String = "in_progress", attempt: Int = 1) -> [String: Any] {
-        ["id": sessionID, "date": "2026-09-08", "status": status,
+        ["id": sessionID, "date": scenario.isTimerNavigation ? CalendarProjection.dateString(Date()) : "2026-09-08", "status": status,
          "workout_id": dayID, "updated_at": revision,
          "attempt": attempt, "write_protocol": "attempt-v1"]
     }
     func makePlan(name: String = "Synthetic Training", workouts: Bool = true) -> [String: Any] {
         if scenario == .appStore { return AppStoreScreenshotData.plan }
+        if scenario.isTimerNavigation {
+            let slots: [[String: Any]] = [
+                ["id": "synthetic-squat", "exercise_id": "synthetic-squat-exercise",
+                 "exercise_name": "Goblet Squat", "exercise_modality": "dumbbell",
+                 "exercise_unit": "lb", "order_index": 0, "target_sets": 2,
+                 "target_reps": 8, "target_weight": 25, "rest_seconds": 60],
+                ["id": "synthetic-bike", "exercise_id": "synthetic-bike-exercise",
+                 "exercise_name": "Stationary Bike", "exercise_modality": "cardio",
+                 "exercise_unit": "lb", "order_index": 1, "target_sets": 1,
+                 "target_reps": 1, "target_duration_s": scenario == .timedNavigation ? 300 : 15,
+                 "is_warmup": 1, "rest_seconds": 0],
+                ["id": "synthetic-pushup", "exercise_id": "synthetic-pushup-exercise",
+                 "exercise_name": "Push-Up", "exercise_modality": "bw",
+                 "exercise_unit": "lb", "order_index": 2, "target_sets": 2,
+                 "target_reps": 10, "rest_seconds": 60]
+            ]
+            return ["id": "synthetic-plan", "name": name, "version": 1,
+                "meta": "{\"schedule\":{\"version\":1,\"week\":{\"\(CalendarProjection.weekdayKey(for: Date()))\":\"synthetic-day\"}}}",
+                "days": [["id": dayID, "name": "Strength + Bike", "order_index": 0,
+                          "exercises": slots]]]
+        }
         if scenario == .library {
             return ["id": "synthetic-plan", "name": "My Workouts", "version": 1,
                 "meta": "{\"schedule\":{\"version\":1,\"week\":{\"tue\":\"synthetic-day\"}}}",

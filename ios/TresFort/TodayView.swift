@@ -669,7 +669,9 @@ private struct RunnerView: View {
     /// has cleared the field — TextField needs a Binding, not a transient
     /// value) so a partially-typed entry isn't lost on a re-render.
     @State private var editingWeight = false
-    @State private var weightDraft = ""
+    @State private var weightDraft = WeightEntryDraft(weight: 0, storedUnit: .lb, unit: .lb)
+    @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = "lb"
+    private var weightUnit: WeightUnit { WeightUnit(rawValue: weightUnitRaw) ?? .lb }
     /// Exercise demo sheet, openable mid-workout — not just from the
     /// pre-start preview (#54).
     @State private var demoFor: TemplateExercise?
@@ -678,6 +680,7 @@ private struct RunnerView: View {
     @State private var weightPrescription: RunnerPrescription?
     @State private var loadingTarget: Double?
     @State private var showingLoading = false
+    @State private var previewFor: TemplateExercise?
     @AppStorage(RestCue.defaultsKey) private var timerCuesEnabled = true
 
     var body: some View {
@@ -700,12 +703,9 @@ private struct RunnerView: View {
                                 currentIndex: sync.exerciseIndex, sync: sync)
                         .padding(.bottom, 22)
 
-                    if let block = ExerciseGroupBlock.blocks(sync.exercises).first(where: { $0.members.contains(where: { $0.id == ex.id }) }),
-                       block.isGroup, let memberIndex = block.members.firstIndex(where: { $0.id == ex.id }) {
-                        Text("\(block.title.uppercased()) · \(block.memberLabel(at: memberIndex)) · \(block.transitionRest)s TRANSITION")
-                            .font(Theme.mono(11, .bold)).foregroundStyle(Theme.accent)
-                            .padding(.bottom, 8)
-                            .accessibilityIdentifier("runner.group")
+                    if let block = ExerciseGroupBlock.blocks(sync.exercises).first(where: { $0.members.contains(where: { $0.id == ex.id }) }), block.isGroup {
+                        groupCard(block, current: ex)
+                            .padding(.bottom, 20)
                     }
 
                     // Keep the compact scoreboard at ordinary sizes; allow
@@ -804,14 +804,14 @@ private struct RunnerView: View {
 
 
                     HStack {
-                        navBtn("← PREV") { sync.previous() }
+                        navBtn("← PREV") { navigate(to: sync.exerciseIndex - 1) }
                             .disabled(sync.exerciseIndex == 0)
                         Text("\(sync.exerciseIndex + 1) / \(sync.exercises.count)")
                             .font(Theme.mono(11)).tracking(1.5).foregroundStyle(Theme.muted)
                             .frame(maxWidth: .infinity)
                         // Non-destructive: just move to the next exercise. Going
                         // out of order no longer strikes out the ones you pass (#3).
-                        navBtn("NEXT →") { sync.next() }
+                        navBtn("NEXT →") { navigate(to: sync.exerciseIndex + 1) }
                             .disabled(sync.exerciseIndex >= sync.exercises.count - 1)
                     }
                     .padding(.top, 24)
@@ -844,13 +844,11 @@ private struct RunnerView: View {
             .sheet(isPresented: $editingWeight) {
                 WeightEditorSheet(
                     draft: $weightDraft,
-                    unit: ex.allowsAssistance ? "lb" : ex.exercise_unit,
                     allowsAssistance: ex.allowsAssistance,
                     onSave: {
                         // Trim and parse — empty / non-numeric drafts cancel
                         // silently rather than zeroing the working weight.
-                        let trimmed = weightDraft.trimmingCharacters(in: .whitespaces)
-                        if let v = Double(trimmed), sync.currentExercise.map(RunnerPrescription.init) == weightPrescription {
+                        if let v = weightDraft.storedWeight, sync.currentExercise.map(RunnerPrescription.init) == weightPrescription {
                             sync.setWeight(v)
                         }
                         editingWeight = false
@@ -861,12 +859,19 @@ private struct RunnerView: View {
             .sheet(isPresented: $showingLoading) {
                 BarbellLoadingView(target: loadingTarget ?? sync.weight)
             }
+            .sheet(item: $previewFor) { selected in
+                exercisePreview(startingAt: selected.id)
+            }
+            .onChange(of: sync.timedActive) {
+                if !sync.timedActive { previewFor = nil }
+            }
             .sheet(isPresented: $editingValues) {
                 if let draft = valueDraft {
                     SetValuesEditor(title: "Next set", values: SetCorrectionValues(
                         weight: draft.weight, reps: draft.reps, rpe: draft.rpe,
                         durationSeconds: draft.prescription.timed ? draft.durationSeconds : nil),
                         timed: draft.prescription.timed, allowsAssistance: ex.allowsAssistance,
+                        storedUnit: WeightUnit(rawValue: ex.exercise_unit) ?? .lb,
                         onSave: { values in
                             sync.setRunnerValues(values, expected: draft.prescription)
                         })
@@ -896,67 +901,183 @@ private struct RunnerView: View {
             .font(Theme.mono(11, .bold)).tracking(1.5)
     }
 
+    private func groupCard(_ block: ExerciseGroupBlock, current: TemplateExercise) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text(block.title.uppercased()).font(Theme.mono(13, .bold))
+                    .accessibilityIdentifier("runner.group")
+                Spacer()
+                Text("ROUND \(min(sync.currentSetNumber, block.rounds)) / \(block.rounds)")
+                    .font(Theme.mono(11, .bold))
+            }
+            .foregroundStyle(Theme.accent)
+            ForEach(Array(block.members.enumerated()), id: \.element.id) { index, member in
+                let active = member.id == current.id
+                HStack(spacing: 10) {
+                    Text(block.memberLabel(at: index)).font(Theme.mono(12, .bold))
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(member.exercise_name).font(.subheadline.weight(.semibold))
+                        Text(member.targetLabel).font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                    }
+                    Spacer()
+                    Text(active ? "NOW" : (sync.isSkipped(member) ? "SKIPPED" : "\(sync.runnerSetsDone(member))/\(member.target_sets)"))
+                        .font(Theme.mono(11, .bold))
+                }
+                .foregroundStyle(active ? Theme.accent : Theme.text)
+                .padding(12)
+                .background(active ? Theme.accent.opacity(0.1) : Theme.surface2)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("runner.group.member.\(member.id)")
+            }
+            Text("Log each exercise to advance automatically.")
+                .font(.caption).foregroundStyle(Theme.text)
+            Text("\(block.roundRest)s rest after each round" + (block.transitionRest > 0 ? " · \(block.transitionRest)s between exercises" : " · No rest between exercises"))
+                .font(.caption).foregroundStyle(Theme.muted)
+        }
+        .padding(16)
+        .background(Theme.surface)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.accent.opacity(0.4)))
+    }
+
     private func jumpStrip(ex: TemplateExercise) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                ForEach(Array(sync.exercises.enumerated()), id: \.element.id) { i, e in
-                    let cur = i == sync.exerciseIndex
-                    let done = sync.isComplete(e)
-                    let skipped = sync.isSkipped(e) && !done
-                    Button { sync.jump(to: i) } label: {
-                        Text(e.exercise_name + (done ? " ✓" : skipped ? " · skipped" : ""))
-                            .font(Theme.mono(11, .bold))
-                            .strikethrough(skipped, color: Theme.muted)
-                            .padding(.horizontal, 12).padding(.vertical, 8)
-                            .frame(minHeight: 44)
-                            .background(cur ? Theme.accent : Theme.surface)
-                            .foregroundStyle(cur ? .black : (done ? Theme.done : Theme.muted))
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8)
-                                .stroke(done && !cur ? Theme.done.opacity(0.3) : .clear))
+                ForEach(ExerciseGroupBlock.blocks(sync.exercises)) { block in
+                    let current = block.members.contains { $0.id == ex.id }
+                    let done = block.members.allSatisfy { sync.runnerSetsDone($0) >= $0.target_sets }
+                    let skipped = block.members.allSatisfy { sync.isSkipped($0) } && !done
+                    let title = block.isGroup ? block.title : block.members[0].exercise_name
+                    Button {
+                        if current { return }
+                        let member = block.members.first(where: { !sync.isSkipped($0) && sync.runnerSetsDone($0) < $0.target_sets }) ?? block.members[0]
+                        if let index = sync.exercises.firstIndex(where: { $0.id == member.id }) { navigate(to: index) }
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(title + (done ? " ✓" : skipped ? " · skipped" : ""))
+                                .font(Theme.mono(11, .bold)).strikethrough(skipped, color: Theme.muted)
+                            if block.isGroup {
+                                Text(block.members.map(\.exercise_name).joined(separator: " + "))
+                                    .font(.caption2).lineLimit(1)
+                            }
+                        }
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .frame(minHeight: 44)
+                        .background(current ? Theme.accent : Theme.surface)
+                        .foregroundStyle(current ? .black : (done ? Theme.done : Theme.muted))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
                     }
-                    .accessibilityLabel(e.exercise_name)
-                    .accessibilityValue(done ? "Complete" : skipped ? "Skipped" : cur ? "Current exercise" : "Not completed")
-                    .accessibilityAddTraits(cur ? [.isSelected] : [])
+                    .accessibilityLabel(title)
+                    .accessibilityValue(done ? "Complete" : skipped ? "Skipped" : current ? "Current exercise" : "Not completed")
+                    .accessibilityAddTraits(current ? [.isSelected] : [])
                 }
             }
         }
         .padding(.top, 16)
     }
 
+    /// Browsing during a hold must not change the executing slot: jumping
+    /// reseeds inputs and invalidates the timer's original set identity.
+    private func navigate(to index: Int) {
+        guard sync.exercises.indices.contains(index) else { return }
+        if sync.timedActive {
+            guard index != sync.exerciseIndex else { return }
+            previewFor = sync.exercises[index]
+        } else {
+            sync.jump(to: index)
+        }
+    }
+
+    private func exercisePreview(startingAt slotID: String) -> some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                if let active = sync.currentExercise, let end = sync.timedEndDate {
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        let remaining = max(0, Int(ceil(end.timeIntervalSince(context.date))))
+                        Text("\(active.exercise_name) · \(remaining)s remaining")
+                            .font(Theme.mono(13, .bold))
+                            .foregroundStyle(Theme.accent)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(16)
+                            .accessibilityIdentifier("runner.preview.timer")
+                    }
+                }
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            ForEach(ExerciseGroupBlock.blocks(sync.exercises)) { block in
+                                VStack(alignment: .leading, spacing: 16) {
+                                    if block.isGroup {
+                                        Text(block.title.uppercased()).font(Theme.mono(13, .bold)).foregroundStyle(Theme.accent)
+                                        Text("\(block.rounds) rounds · \(block.roundRest)s round rest · \(block.transitionRest)s transition")
+                                            .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                                    }
+                                    ForEach(Array(block.members.enumerated()), id: \.element.id) { index, ex in
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            Text((block.isGroup ? block.memberLabel(at: index) + " · " : "") + ex.exercise_name.uppercased())
+                                                .font(Theme.display(28)).foregroundStyle(Theme.text)
+                                            if ex.isWarmup { WarmupTag() }
+                                            if !block.isGroup {
+                                                Text("SETS \(ex.target_sets) · \(ex.rest_seconds)s rest")
+                                                    .font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                                            }
+                                            prescriptionContext(ex: ex)
+                                        }
+                                        .id(ex.id)
+                                    }
+                                }
+                                .padding(16)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Theme.surface)
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
+                            }
+                        }
+                        .padding(16)
+                    }
+                    .onAppear { proxy.scrollTo(slotID, anchor: .top) }
+                }
+            }
+            .background(Theme.bg)
+            .navigationTitle("Workout preview")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Return to timer") { previewFor = nil }
+                }
+            }
+        }
+    }
+
     private func loadControl(ex: TemplateExercise) -> some View {
-        let unit = ex.allowsAssistance ? "lb" : ex.exercise_unit
-        let label: String
-        if ex.allowsAssistance {
-            label = "ADDED LOAD / ASSIST (\(unit)) · TAP TO EDIT"
-        } else if ex.isPerHand {
-            label = "WEIGHT (\(unit)) · EACH HAND · TAP TO EDIT"
-        } else {
-            label = "WEIGHT (\(unit)) · TAP TO EDIT"
+        let storedUnit = WeightUnit(rawValue: ex.exercise_unit) ?? .lb
+        let unit = weightUnit.rawValue
+        let displayedWeight = storedUnit.convert(sync.weight, to: weightUnit)
+        let label = ex.allowsAssistance ? "ADDED LOAD / ASSIST (\(unit)) · TAP TO EDIT"
+            : "WEIGHT (\(unit))" + (ex.isPerHand ? " · EACH HAND" : "") + " · TAP TO EDIT"
+        let value = (ex.allowsAssistance && displayedWeight > 0 ? "+" : "") + WeightUnit.text(displayedWeight)
+        let small = weightUnit == .kg ? 2.5 : 5.0
+        let large = weightUnit == .kg ? 5.0 : 10.0
+        return VStack(spacing: 8) {
+            WeightUnitPicker(selection: Binding(
+                get: { weightUnit }, set: { weightUnitRaw = $0.rawValue }), identifier: "runner.weight.unit")
+                .padding(.top, 16)
+            stepper(
+                label: label,
+                value: value,
+                context: "weight in \(unit)" + (ex.isPerHand ? " per hand" : ""),
+                steps: [
+                    ("−" + WeightUnit.text(large), { sync.adjustWeight(weightUnit.convert(-large, to: storedUnit)) }, true),
+                    ("−" + WeightUnit.text(small), { sync.adjustWeight(weightUnit.convert(-small, to: storedUnit)) }, false),
+                    ("+" + WeightUnit.text(small), { sync.adjustWeight(weightUnit.convert(small, to: storedUnit)) }, false),
+                    ("+" + WeightUnit.text(large), { sync.adjustWeight(weightUnit.convert(large, to: storedUnit)) }, true),
+                ],
+                onTapValue: {
+                    weightDraft = WeightEntryDraft(weight: sync.weight, storedUnit: storedUnit, unit: weightUnit)
+                    weightPrescription = RunnerPrescription(ex)
+                    editingWeight = true
+                })
         }
-        let value: String
-        if ex.allowsAssistance && sync.weight > 0 {
-            value = "+\(SetValueFormatter.number(sync.weight))"
-        } else if ex.allowsAssistance && sync.weight < 0 {
-            value = "−\(SetValueFormatter.number(abs(sync.weight)))"
-        } else {
-            value = SetValueFormatter.number(sync.weight)
-        }
-        return stepper(
-            label: label,
-            value: value,
-            context: "weight in \(unit)" + (ex.isPerHand ? " per hand" : ""),
-            steps: [
-                ("−10", { sync.adjustWeight(-10) }, true),
-                ("−5", { sync.adjustWeight(-5) }, false),
-                ("+5", { sync.adjustWeight(5) }, false),
-                ("+10", { sync.adjustWeight(10) }, true),
-            ],
-            onTapValue: {
-                weightDraft = SetValueFormatter.number(sync.weight)
-                weightPrescription = RunnerPrescription(ex)
-                editingWeight = true
-            })
     }
 
     private func stepper(label: String, value: String, context: String,
@@ -1025,12 +1146,15 @@ private struct RunnerView: View {
     }
 
     private func prescriptionContext(ex: TemplateExercise) -> some View {
-        let load = ex.target_weight.map { SetValueFormatter.number($0) + " lb · " } ?? ""
+        let storedUnit = WeightUnit(rawValue: ex.exercise_unit) ?? .lb
+        let load = ex.target_weight.map { WeightUnit.text(storedUnit.convert($0, to: weightUnit)) + " \(weightUnit.rawValue) · " } ?? ""
         let effort = ex.target_rpe.map { " · RPE " + SetValueFormatter.number($0) } ?? ""
         let target = "PRESCRIBED · " + load + ex.targetLabel + effort
         let previous = sync.comparablePreviousSets(for: ex)
         let previousLabel = previous.map { set in
-            let value = set.valueLabel(timed: ex.isTimed, bodyweight: ex.isBodyweight)
+            let value = SetValueFormatter.value(weight: storedUnit.convert(set.weight, to: weightUnit),
+                reps: set.reps, durationSeconds: set.duration_s, timed: ex.isTimed,
+                bodyweight: ex.isBodyweight, unit: weightUnit.rawValue)
             let effort = set.rpe.map { " RPE " + SetValueFormatter.number($0) } ?? ""
             return value + effort
         }.joined(separator: " · ")
@@ -1040,7 +1164,7 @@ private struct RunnerView: View {
                 Text(cues).font(.subheadline).foregroundStyle(Theme.muted)
             }
             if !previous.isEmpty {
-                Text("LAST TIME · " + previousLabel).font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                Text("LAST TIME (\(weightUnit.rawValue)) · " + previousLabel).font(Theme.mono(11)).foregroundStyle(Theme.muted)
             } else {
                 Text("No comparable previous session").font(.caption).foregroundStyle(Theme.muted)
             }
@@ -1070,8 +1194,9 @@ private struct RunnerView: View {
 /// survives a re-render. Auto-focus + select-all so the typical flow is
 /// tap → keypad up → type → Save.
 private struct WeightEditorSheet: View {
-    @Binding var draft: String
-    let unit: String
+    @Binding var draft: WeightEntryDraft
+    @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = "lb"
+    private var unit: String { draft.unit.rawValue }
     let allowsAssistance: Bool
     let onSave: () -> Void
     let onCancel: () -> Void
@@ -1082,11 +1207,15 @@ private struct WeightEditorSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 20) {
+                    WeightUnitPicker(selection: Binding(get: { draft.unit }, set: {
+                        draft.select($0)
+                        weightUnitRaw = $0.rawValue
+                    }))
                     Text("WEIGHT (\(unit))")
                         .font(Theme.mono(11, .bold)).tracking(2)
                         .foregroundStyle(Theme.muted)
                         .padding(.top, 8)
-                    TextField("0", text: $draft)
+                    TextField("0", text: $draft.text)
                         .keyboardType(allowsAssistance ? .numbersAndPunctuation : .decimalPad)
                         .multilineTextAlignment(.center)
                         .font(Theme.number(56))
@@ -1113,6 +1242,7 @@ private struct WeightEditorSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Save", action: onSave)
+                        .disabled(draft.storedWeight == nil || (!allowsAssistance && (draft.storedWeight ?? -1) < 0))
                         .font(Theme.mono(14, .bold))
                         .foregroundStyle(Theme.accent)
                 }
@@ -1142,6 +1272,7 @@ private struct TimedSetView: View {
                     Text("\(remaining)s")
                         .font(Theme.number(64))
                         .foregroundStyle(remaining <= 0 ? Theme.done : Theme.accent)
+                        .accessibilityIdentifier("runner.timer.remaining")
                 }
             } else {
                 Text("\(sync.holdDurationSeconds)s")

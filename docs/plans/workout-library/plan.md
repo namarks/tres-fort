@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: active · Updated: 2026-09-10 · Theme: gym-floor
+Slug: workout-library · Status: active · Updated: 2026-09-11 · Theme: gym-floor
 
 ## Goal
 
@@ -105,7 +105,7 @@ No second editor, no per-session template copies, no weeks table.
     disabled, then a named Delete/Cancel alert confirms removal. The shared
     mutation and active-workout guards remain in place. Library UI journeys
     run in PR smoke coverage, including row hit areas and cancellation. This
-    follow-up requires a separately authorized app distribution to reach devices.
+    follow-up shipped in the owner-authorized TestFlight 1.0 (38) distribution.
   - Owner-approved action cleanup (2026-09-11): Profile keeps name editing and
     one Account route; export, sign-out and account deletion live inside Account.
     The runner keeps the current set action and values above the tab bar while
@@ -115,9 +115,11 @@ No second editor, no per-session template copies, no weeks table.
     and finishing without new feedback. Removing a required set replaces the
     unavailable final Finish action with Review exercises; returning selects
     unresolved work and checkpoints the runner. Completed slots show their
-    completion state instead of an extra Log action. Regression journeys exercise actual taps through
-    rest, reordering, deletion, and both finish choices. These client changes
-    require a separately authorized distribution to reach devices.
+    completion state instead of an extra Log action. Regression journeys exercise
+    actual taps through rest, reordering, deletion, and both finish choices.
+    These client changes shipped in [TestFlight 1.0 (38)](../app-store-submission/release-38.md),
+    verified VALID and available to internal Testers. Physical-device follow-up
+    remains unverified.
 - [ ] **P1 — Library metadata: tags and archive**
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work
@@ -247,11 +249,14 @@ P0.1 navigation update. P2 freestyle creation and optional saving remain separat
 the implemented Create a workout action explicitly saves to the shared library.
 The navigation design was approved in task
 `01a08dee-930f-7763-9202-29872c440f26`. [PR #178](https://github.com/namarks/tres-fort/pull/178)
-passed final independent review and all required CI. Under the owner's latest-main
-release authorization, its compatible calendar-move Worker was deployed before
-version 1.0 (37) became available to internal Testers. The
-[release record](../app-store-submission/release-37.md) identifies the exact source,
-serving version, TestFlight processing and remaining physical-device limits.
+passed final independent review and all required CI. The current internal client
+is [TestFlight 1.0 (38)](../app-store-submission/release-38.md), released from
+`0ac5d46b5a245c674fbc10727117b264a38db580` after the browsing and action fixes in
+PRs #182 and #183. Apple confirmed VALID processing and internal Testers
+membership. The compatible calendar-move Worker was deployed for the preceding
+[build 37 release](../app-store-submission/release-37.md); build 38's backend
+source is unchanged and required no backend deployment. The current release
+record retains the signed-package evidence and remaining physical-device limits.
 
 **Client verification (@owner):** Legacy-route REST checks and the live workout
 canary remain explicitly owner-deferred, not passed. The existing exception

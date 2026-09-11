@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-09-10 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-09-11 · Theme: release
 
 ## Goal
 
@@ -87,12 +87,21 @@ membership in the internal **Testers** group. Do not upload it again or restore
 the waived canary as an upload gate. Other physical-device coverage remains
 unverified; neither the exception nor public reads establish production writes.
 
-Latest internal distribution: the owner subsequently requested all of latest
-main. [Version 1.0 (37)](release-37.md) includes the workout-runner fixes and
-Today/Calendar navigation from source `2d11be717089bc989afa159e18c2438787465ac7`.
+Latest internal distribution: the owner requested deployment of the merged UI
+fixes. [Version 1.0 (38)](release-38.md) ships workout browsing, compact Profile
+account controls, a pinned set action, simpler editing modes, and corrected
+deletion/completion behavior from source `0ac5d46b5a245c674fbc10727117b264a38db580`.
+Apple confirmed VALID, IN_BETA_TESTING and internal Testers membership. Backend
+source matches build 37's release; this distribution performed no backend or
+database change. Build 38 supersedes build 37 for internal testing without
+changing the App Store review selection or remaining submission/device gates.
+
+Previous internal distribution: [version 1.0 (37)](release-37.md) includes the
+workout-runner fixes and Today/Calendar navigation from source
+`2d11be717089bc989afa159e18c2438787465ac7`.
 Its matching calendar-move Worker was deployed first, and Apple confirmed VALID,
-IN_BETA_TESTING and internal Testers membership. This supersedes builds 35/36
-for internal testing; it does not select an App Store review build or complete
+IN_BETA_TESTING and internal Testers membership. Build 37 superseded builds 35/36
+for internal testing; it did not select an App Store review build or complete
 the remaining submission/device requirements above.
 
 Earlier candidate release record (2026-09-10):

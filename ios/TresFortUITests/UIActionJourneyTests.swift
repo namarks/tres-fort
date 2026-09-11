@@ -136,6 +136,17 @@ final class UIActionJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
     }
 
+    func testCompletedExerciseShowsCompletionInsteadOfANoOpLogAction() {
+        let app = launch("ready-to-finish")
+        tap(app.buttons["Return to exercises"], in: app)
+        XCTAssertTrue(app.staticTexts["runner.exerciseComplete"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["LOG SET 2"].exists)
+        tap(app.buttons["today.workoutActions"], in: app)
+        tap(app.buttons["Finish workout"], in: app)
+        tap(app.buttons["Finish without feedback"], in: app)
+        XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
+    }
+
     func testFinishCanReturnToWorkoutOrExplicitlyFinishWithoutFeedback() {
         let app = launch()
         tap(app.buttons["today.startWorkout"], in: app)

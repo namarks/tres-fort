@@ -4841,6 +4841,15 @@ final class SyncModel: ObservableObject {
         return nil
     }
 
+    /// Final review may retain its cursor when a correction removes a set
+    /// elsewhere. Resume unresolved work using durable runner progress, which
+    /// includes queued sets and excludes skipped exercises.
+    func reviewIncompleteExercises() {
+        guard running, !hasPendingTerminalIntentForCurrentWorkout,
+              !isTerminalMutationInFlight, let index = nextRunnerIncompleteIndex else { return }
+        jump(to: index)
+    }
+
     func jump(to index: Int) {
         guard exercises.indices.contains(index) else { return }
         // Returning from final review is an explicit runner selection too.

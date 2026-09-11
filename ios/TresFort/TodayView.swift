@@ -1306,6 +1306,12 @@ private struct RunnerSetAction: View {
                 .disabled(
                     sync.isTerminalMutationInFlight
                         || sync.hasPendingTerminalIntentForCurrentWorkout)
+            } else if sync.runnerSetsDone(ex) >= ex.target_sets {
+                Text("EXERCISE COMPLETE")
+                    .font(Theme.display(24)).tracking(1.2)
+                    .frame(maxWidth: .infinity).padding(.vertical, 16)
+                    .foregroundStyle(Theme.done)
+                    .accessibilityIdentifier("runner.exerciseComplete")
             } else if ex.isTimed {
                 Button {
                     sync.startTimedSet(
@@ -1572,7 +1578,7 @@ private struct FinishedView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             Button {
-                guard readyToFinish else { sync.jump(to: sync.exerciseIndex); return }
+                guard readyToFinish else { sync.reviewIncompleteExercises(); return }
                 guard let target = sync.terminalActionTarget else { return }
                 Task { await sync.finishResolvedWorkout(expected: target) }
             } label: {

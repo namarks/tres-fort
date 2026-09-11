@@ -113,8 +113,9 @@ No second editor, no per-session template copies, no weeks table.
     and grouping modes. Exercise removal and set deletion require named alerts
     with Cancel. Early finish distinguishes Keep working, Save feedback & finish,
     and finishing without new feedback. Removing a required set replaces the
-    unavailable final Finish action with Review exercises; returning reopens and
-    checkpoints the runner. Regression journeys exercise actual taps through
+    unavailable final Finish action with Review exercises; returning selects
+    unresolved work and checkpoints the runner. Completed slots show their
+    completion state instead of an extra Log action. Regression journeys exercise actual taps through
     rest, reordering, deletion, and both finish choices. These client changes
     require a separately authorized distribution to reach devices.
 - [ ] **P1 — Library metadata: tags and archive**

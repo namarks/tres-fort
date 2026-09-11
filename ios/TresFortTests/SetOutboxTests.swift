@@ -10599,11 +10599,43 @@ extension SetOutboxTests {
         await model.finishResolvedWorkout()
         XCTAssertTrue(terminal.completeCalls.isEmpty)
         XCTAssertTrue(model.running)
-        model.jump(to: model.exerciseIndex)
+        model.reviewIncompleteExercises()
         XCTAssertFalse(model.finished)
         XCTAssertEqual(model.currentExercise?.id, ex.id)
         XCTAssertEqual(model.currentPhysicalSetNumber, 1)
         XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.finished, false)
+    }
+
+    func testFinalReviewResumesEarlierDeletedExerciseInsteadOfCompletedCursor() async throws {
+        let defaults = defaults(), a = exercise(targetSets: 1)
+        let b = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 1)
+        let active = session(updatedAt: 100, attempt: 0)
+        let first = correctionFixture(a), last = correctionFixture(b, id: "last-set")
+        let api = SetWriteAPIStub()
+        api.correctionHandler = { [self] intent, _ in corrected(first, intent: intent, session: active) }
+        api.logHandler = { [self] id, body, _ in
+            .init(set: setLog(body: body, sessionID: id), deduped: false, session: active)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [first, last], exercises: [a, b]))
+        model.startWorkout(); model.jump(to: 1); model.finished = true
+        XCTAssertTrue(model.canFinishResolvedWorkout)
+        XCTAssertTrue(model.enqueueCorrection(set: first, values: nil))
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertEqual(model.currentExercise?.id, b.id)
+        XCTAssertFalse(model.canFinishResolvedWorkout)
+        model.reviewIncompleteExercises()
+        XCTAssertFalse(model.finished)
+        XCTAssertEqual(model.currentExercise?.id, a.id)
+        XCTAssertEqual(model.currentPhysicalSetNumber, 1)
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.currentSlotID, a.id)
+        await model.logCurrentSet(expected: a, expectedSetNumber: 1)
+        await model.drainSetOutbox()
+        XCTAssertEqual(api.logCalls.count, 1)
+        XCTAssertEqual(api.logCalls.first?.body.template_exercise_id, a.id)
+        XCTAssertEqual(model.runnerSetsDone(b), 1)
+        XCTAssertTrue(model.canFinishResolvedWorkout)
     }
 
     func testDelayedCorrectionCannotAcceptSecondLocalEditOrMoveFinalReview() async throws {

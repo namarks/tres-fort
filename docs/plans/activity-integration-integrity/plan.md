@@ -1,6 +1,6 @@
 # Activity Integration Integrity
 
-Slug: activity-integration-integrity · Status: paused · Updated: 2026-09-09 · Theme: connected-training
+Slug: activity-integration-integrity · Status: paused · Updated: 2026-09-11 · Theme: connected-training
 
 ## Goal
 
@@ -77,6 +77,22 @@ repository delivery; its implementation PR carries the exact-head review and CI
 evidence. Rollout and HealthKit write-back remain separate owner decisions.
 
 ## Notes / open questions
+
+- P0 regression repair: Intervals and HealthKit dedup now compares their stored
+  source instants when both are available. Local clock values can differ after
+  travel even for one physical workout; identical wall clocks during the fall
+  DST transition can also represent different workouts. Legacy rows retain the
+  local-clock fallback only when an instant is missing. Absolute matches take
+  precedence, with deterministic time/id ties. Native-session discard uses the
+  same rule, and bounded reconciliation includes the two-date difference
+  possible across the date line. Existing provenance and tombstone deltas
+  retire duplicates and restore surviving copies without deleting source data.
+  Regression fixtures cover both ingestion orders, retries, deletion recovery,
+  time boundaries and user isolation. This is a focused repair to shipped
+  matching, not activation or completion of P2. A later authorized Worker
+  deployment and ordinary reconciliation will apply it to existing recent rows;
+  no new migration or iOS build is required by this repair. Live cleanup and
+  device verification remain release work.
 
 - P1 adds immediate 90-day activity reconciliation after API-key or OAuth
   connect, using the member's stored timezone and existing source fences. A

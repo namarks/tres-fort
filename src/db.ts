@@ -10304,20 +10304,20 @@ export async function syncExternalActivities(
   // HealthKit copies that now duplicate one — handles the ordering where the
   // HealthKit push arrived BEFORE the intervals activity synced in.
   // This reconcile can only change intervals rows in [oldest,today]. Expand
-  // the dedup scope by one civil day on each side so a same workout crossing
-  // midnight still matches within the two-minute tolerance. Historical rows
+  // the dedup scope by two civil days on each side: source clocks on opposite
+  // sides of the date line can differ by two dates for the same instant. Historical rows
   // outside this affected window cannot have changed during this sync.
   await dedupeHealthKitAgainstIntervals(
     db,
     userId,
     {
-      healthKitFromDate: addDays(oldest, -1),
-      healthKitToDate: addDays(today, 1),
+      healthKitFromDate: addDays(oldest, -2),
+      healthKitToDate: addDays(today, 2),
       // A boundary HealthKit candidate can have a still-live winner on the
-      // adjacent civil day. Look one day beyond the candidate range so that
+      // other side of the date line. Look two days beyond the candidate range so that
       // winner is present and the duplicate is not incorrectly restored.
-      intervalsFromDate: addDays(oldest, -2),
-      intervalsToDate: addDays(today, 2),
+      intervalsFromDate: addDays(oldest, -4),
+      intervalsToDate: addDays(today, 4),
     },
     {
       generation: effectiveCredential.generation,
@@ -10429,11 +10429,17 @@ function reconcileNativeHealthKitStatement(
   return workoutDB(db).prepare(`WITH desired AS MATERIALIZED (
     SELECT h.id, COALESCE(${native}, (
       SELECT id FROM (
-        SELECT i.id, i.start_date_local_ms, ABS(i.start_date_local_ms - h.start_date_local_ms) AS delta
+        SELECT i.id,
+          CASE WHEN i.start_date_utc_ms IS NOT NULL AND h.start_date_utc_ms IS NOT NULL
+            THEN 0 ELSE 1 END AS clock_priority,
+          CASE WHEN i.start_date_utc_ms IS NOT NULL AND h.start_date_utc_ms IS NOT NULL
+            THEN i.start_date_utc_ms ELSE i.start_date_local_ms END AS candidate_start,
+          ABS(CASE WHEN i.start_date_utc_ms IS NOT NULL AND h.start_date_utc_ms IS NOT NULL
+            THEN i.start_date_utc_ms - h.start_date_utc_ms
+            ELSE i.start_date_local_ms - h.start_date_local_ms END) AS delta
         FROM external_activities i WHERE i.user_id = h.user_id AND i.source = 'intervals'
           AND i.deleted_at IS NULL AND i.kind = h.kind
-          AND i.start_date_local_ms BETWEEN h.start_date_local_ms - 120000 AND h.start_date_local_ms + 120000
-      ) ORDER BY delta, start_date_local_ms, id LIMIT 1
+      ) WHERE delta <= 120000 ORDER BY clock_priority, delta, candidate_start, id LIMIT 1
     )) AS winner
     FROM external_activities h WHERE h.user_id = ?1 AND h.source = 'healthkit'
       AND (h.deleted_at IS NULL OR h.duplicate_of IS NOT NULL)
@@ -10565,10 +10571,8 @@ export async function upsertHealthKitActivity(
   return row;
 }
 
-/** Start-time tolerance for treating two activities as the same workout. Two
- *  same-kind sessions starting within 2 minutes of each other are, in practice,
- *  the same physical activity arriving from two sources — never two distinct
- *  workouts. Tunable. */
+/** Existing cross-source matching tolerance, applied to the shared clock:
+ * source instants when both are known, otherwise legacy local wall time. */
 export const ACTIVITY_DEDUP_TOLERANCE_MS = 2 * 60 * 1000;
 
 export interface ActivityDedupeWindow {
@@ -10589,7 +10593,12 @@ export interface ActivityDedupeWindow {
  * Rule (deterministic, order-independent — so it's correct whichever source
  * lands first): a non-deleted `healthkit` row is a duplicate of a non-deleted
  * `intervals` row when they share the same `kind` and start within
- * ACTIVITY_DEDUP_TOLERANCE_MS. Intervals wins this pair (richer data — power,
+ * ACTIVITY_DEDUP_TOLERANCE_MS, comparing source instants when BOTH are known.
+ * Only a missing instant permits the legacy local-clock comparison; different
+ * known instants must not match merely because the wall clocks agree (DST).
+ * Absolute matches take priority over legacy matches, then selection is stable
+ * by (absolute delta, candidate start on the selected clock, id), ascending.
+ * Intervals wins this pair (richer data — power,
  * native TSS), so the HealthKit copy is the one retired. A unique native
  * strength match takes precedence and is excluded at both read and write time.
  *
@@ -10609,8 +10618,6 @@ export interface ActivityDedupeWindow {
  * calls this). Without restoration, both copies stay hidden until the phone
  * re-pushes the workout. A HealthKit row soft-deleted for any OTHER reason
  * (duplicate_of IS NULL) is left untouched — we only manage rows WE retired.
- * If several intervals rows are within tolerance, selection is stable by
- * (absolute delta, start_date_local_ms, id), ascending.
  *
  * Idempotent: only state CHANGES emit a write (no synced_at churn in steady
  * state). Deterministic + order-independent — called from BOTH write paths (the
@@ -10629,10 +10636,10 @@ export async function dedupeHealthKitAgainstIntervals(
   // previously retired BY US as a dup (deleted_at + duplicate_of set →
   // candidates to RESTORE if their winner is gone).
   const hkStatement = workoutDB(db).prepare(
-    `SELECT id, kind, start_date_local_ms, deleted_at, duplicate_of
+    `SELECT id, kind, start_date_local_ms, start_date_utc_ms, deleted_at, duplicate_of
        FROM external_activities
       WHERE user_id = ?1 AND source = 'healthkit'
-        AND start_date_local_ms IS NOT NULL
+        AND (start_date_local_ms IS NOT NULL OR start_date_utc_ms IS NOT NULL)
         AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)
         AND ${nativeHealthKitWinnerSQL('external_activities')} IS NULL${dateClause}`,
   );
@@ -10643,7 +10650,8 @@ export async function dedupeHealthKitAgainstIntervals(
       .all<{
         id: string;
         kind: string;
-        start_date_local_ms: number;
+        start_date_local_ms: number | null;
+        start_date_utc_ms: number | null;
         deleted_at: number | null;
         duplicate_of: string | null;
       }>()
@@ -10652,64 +10660,77 @@ export async function dedupeHealthKitAgainstIntervals(
   // Live intervals winners (NOT early-returned on empty: with no live winner,
   // any retired dup must be RESTORED).
   const ivStatement = workoutDB(db).prepare(
-    `SELECT id, kind, start_date_local_ms FROM external_activities
+    `SELECT id, kind, start_date_local_ms, start_date_utc_ms FROM external_activities
       WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
-        AND start_date_local_ms IS NOT NULL${dateClause}`,
+        AND (start_date_local_ms IS NOT NULL OR start_date_utc_ms IS NOT NULL)${dateClause}`,
   );
   const iv = (
     await (window
       ? ivStatement.bind(userId, window.intervalsFromDate, window.intervalsToDate)
       : ivStatement.bind(userId))
-      .all<{ id: string; kind: string; start_date_local_ms: number }>()
+      .all<{ id: string; kind: string; start_date_local_ms: number | null; start_date_utc_ms: number | null }>()
   ).results;
 
   // Index candidates by kind and time once. The old nested scan compared every
   // HealthKit row with every intervals row (O(H*I)); the sorted buckets make
   // each nearest-match lookup O(log I + candidates within the tolerance).
-  const intervalsByKind = new Map<
-    string,
-    Array<{ id: string; start_date_local_ms: number }>
-  >();
+  type Candidate = { id: string; start: number };
+  type ClockIndex = Map<string, Candidate[]>;
+  const absolute: ClockIndex = new Map();
+  const local: ClockIndex = new Map();
+  const legacyLocal: ClockIndex = new Map();
+  const index = (clock: ClockIndex, kind: string, id: string, start: number | null) => {
+    if (start === null) return;
+    const candidates = clock.get(kind) ?? [];
+    candidates.push({ id, start });
+    clock.set(kind, candidates);
+  };
   for (const candidate of iv) {
-    const candidates = intervalsByKind.get(candidate.kind) ?? [];
-    candidates.push(candidate);
-    intervalsByKind.set(candidate.kind, candidates);
+    index(absolute, candidate.kind, candidate.id, candidate.start_date_utc_ms);
+    index(local, candidate.kind, candidate.id, candidate.start_date_local_ms);
+    if (candidate.start_date_utc_ms === null) {
+      index(legacyLocal, candidate.kind, candidate.id, candidate.start_date_local_ms);
+    }
   }
-  for (const candidates of intervalsByKind.values()) {
-    candidates.sort(
-      (a, b) => a.start_date_local_ms - b.start_date_local_ms || (a.id < b.id ? -1 : 1),
-    );
+  for (const clock of [absolute, local, legacyLocal]) {
+    for (const candidates of clock.values()) {
+      candidates.sort((a, b) => a.start - b.start || (a.id < b.id ? -1 : 1));
+    }
   }
-
-  const ts = now();
-  const stmts: D1PreparedStatement[] = [];
-  for (const h of hk) {
-    let best: { id: string; start_date_local_ms: number } | null = null;
+  const nearest = (clock: ClockIndex, kind: string, start: number | null): Candidate | null => {
+    if (start === null) return null;
+    let best: Candidate | null = null;
     let bestDelta = Infinity;
-    const candidates = intervalsByKind.get(h.kind) ?? [];
-    const earliest = h.start_date_local_ms - ACTIVITY_DEDUP_TOLERANCE_MS;
-    const latest = h.start_date_local_ms + ACTIVITY_DEDUP_TOLERANCE_MS;
+    const candidates = clock.get(kind) ?? [];
+    const earliest = start - ACTIVITY_DEDUP_TOLERANCE_MS;
+    const latest = start + ACTIVITY_DEDUP_TOLERANCE_MS;
     let low = 0;
     let high = candidates.length;
     while (low < high) {
       const middle = Math.floor((low + high) / 2);
-      if (candidates[middle]!.start_date_local_ms < earliest) low = middle + 1;
+      if (candidates[middle]!.start < earliest) low = middle + 1;
       else high = middle;
     }
     for (let i = low; i < candidates.length; i += 1) {
       const v = candidates[i]!;
-      if (v.start_date_local_ms > latest) break;
-      const delta = Math.abs(v.start_date_local_ms - h.start_date_local_ms);
-      const winsTie =
-        delta === bestDelta &&
-        best !== null &&
-        (v.start_date_local_ms < best.start_date_local_ms ||
-          (v.start_date_local_ms === best.start_date_local_ms && v.id < best.id));
-      if (delta < bestDelta || winsTie) {
+      if (v.start > latest) break;
+      const delta = Math.abs(v.start - start);
+      // Buckets are sorted by start then id, so equal deltas keep the first.
+      if (delta < bestDelta) {
         bestDelta = delta;
         best = v;
       }
     }
+    return best;
+  };
+
+  const ts = now();
+  const stmts: D1PreparedStatement[] = [];
+  for (const h of hk) {
+    const best = h.start_date_utc_ms === null
+      ? nearest(local, h.kind, h.start_date_local_ms)
+      : nearest(absolute, h.kind, h.start_date_utc_ms)
+        ?? nearest(legacyLocal, h.kind, h.start_date_local_ms);
     const isRetiredDup = h.deleted_at != null && h.duplicate_of != null;
     if (best && !isRetiredDup) {
       // Live HealthKit row duplicating a live intervals activity → retire it.

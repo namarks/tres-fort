@@ -192,7 +192,7 @@ struct TodayView: View {
     /// dependency.
     var onLogActivity: (() -> Void)? = nil
 
-    /// Presents the demoted "Train a different day" override picker.
+    /// Opens the saved workout library from the explicit Today action.
     @State private var showOverridePicker = false
     /// Confirms discarding the in-progress workout (destructive, undo-less).
     @State private var showDiscardConfirm = false
@@ -202,13 +202,10 @@ struct TodayView: View {
     /// without ending the rest timer. Reset whenever `restEndDate` clears so
     /// the next rest starts in the expanded state.
     @State private var restMinimized = false
-    /// Presents the in-app workout editor (add/remove/reorder exercises +
-    /// warm-ups) for the resolved day.
-    @State private var editTarget: EditDayTarget?
-    /// Full member-owned plan/day/schedule editor.
+    /// Direct creation of a named saved workout.
     @State private var showRoutine = false
-    @State private var showPlanHistory = false
-    @State private var showCoachingContext = false
+    @State private var previewTarget: EditDayTarget?
+    @State private var unresolvedDate: AgendaDate?
     /// Keeps a double tap from starting twice while iOS is presenting the
     /// one-time notification permission prompt before a new workout.
     @State private var isPreparingWorkoutStart = false
@@ -229,8 +226,34 @@ struct TodayView: View {
                     if !sync.setCorrections.isEmpty {
                         PendingCorrectionsView(sync: sync)
                     }
-                    RecentPlanChanges(sync: sync) { showPlanHistory = true }
                     content
+                    if let onLogActivity, !sync.running, !sync.finished {
+                        Button(action: onLogActivity) {
+                            Label("Log an activity", systemImage: "figure.walk")
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }
+                        .accessibilityIdentifier("today.logActivity")
+                        .padding(.horizontal, 20).padding(.bottom, 8)
+                    }
+                    if sync.running {
+                        HStack {
+                            if !sync.finished {
+                                Button("End workout") {
+                                    guard let target = sync.terminalActionTarget else { return }
+                                    feedbackPresentation = WorkoutFeedbackPresentation(target: target)
+                                }
+                                .disabled(sync.hasPendingTerminalIntentForCurrentWorkout)
+                            }
+                            Spacer()
+                            Button("Discard", role: .destructive) {
+                                discardTarget = sync.terminalActionTarget
+                                showDiscardConfirm = discardTarget != nil
+                            }
+                            .disabled(sync.hasDiscardIntentForCurrentWorkout)
+                            .accessibilityIdentifier("today.discardWorkout")
+                        }
+                        .frame(minHeight: 44).padding(.horizontal, 20)
+                    }
                 }
                 // The full rest screen is modal. Without explicitly removing
                 // the runner from hit testing and the accessibility tree,
@@ -248,79 +271,8 @@ struct TodayView: View {
             .onChange(of: sync.restEndDate) { _, new in
                 if new == nil { restMinimized = false }
             }
-            // FIX 1: let the plan name degrade gracefully instead of hard-
-            // truncating mid-word. A principal title shows short names full
-            // size on one line, wraps medium names to 2 lines, and scales
-            // long names down to 65% — the meaningful name always shows.
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Text(sync.plan?.name ?? "Très Fort")
-                        .font(Theme.mono(15, .bold))
-                        .foregroundStyle(Theme.text)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.65)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: 280)
-                }
-                // Dedicated "Log activity" affordance — promoted out of the
-                // overflow menu so logging an off-plan activity (Pilates,
-                // walk, "lifted elsewhere") is one tap from the Today tab and
-                // no longer feels tied to the Group tab. Same sheet the Group
-                // FAB opens; both call groupModel.logActivity, and the result
-                // now surfaces on the personal calendar regardless of groups.
-                if let onLogActivity {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            onLogActivity()
-                        } label: {
-                            Image(systemName: "plus.circle")
-                                .foregroundStyle(Theme.accent)
-                        }
-                        .accessibilityLabel("Log activity")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button("Refresh") { Task { await sync.load() } }
-                        Button("Coaching context") { showCoachingContext = true }
-                        Button {
-                            showRoutine = true
-                        } label: {
-                            Label(sync.plan == nil ? "Create workout" : "Workouts",
-                                  systemImage: "calendar.badge.clock")
-                        }
-                        .disabled(sync.plan == nil && !sync.canCreateRoutine)
-                        if sync.plan != nil {
-                            Button("Workout history") { showPlanHistory = true }
-                        }
-                        if let id = sync.running ? sync.selectedDay?.id : sync.todayResolvedDay?.id {
-                            Button {
-                                editTarget = EditDayTarget(id: id)
-                            } label: { Label("Edit exercises", systemImage: "slider.horizontal.3") }
-                        }
-                        if sync.running {
-                            Button("End workout", role: .destructive) {
-                                guard let target = sync.terminalActionTarget else {
-                                    return
-                                }
-                                feedbackPresentation = WorkoutFeedbackPresentation(target: target)
-                            }
-                            .disabled(sync.hasPendingTerminalIntentForCurrentWorkout)
-                            Button("Discard workout", role: .destructive) {
-                                discardTarget = sync.terminalActionTarget
-                                showDiscardConfirm = discardTarget != nil
-                            }
-                            .disabled(sync.hasDiscardIntentForCurrentWorkout)
-                        }
-                        Button("Sign out", role: .destructive) { auth.signOut() }
-                    } label: {
-                        Image(systemName: "ellipsis.circle").foregroundStyle(Theme.muted)
-                            .frame(width: 44, height: 44).contentShape(Rectangle())
-                    }
-                    .accessibilityLabel("Workout options")
-                }
-            }
+            .navigationTitle(sync.running ? "Workout" : "Today")
+            .navigationBarTitleDisplayMode(.inline)
             // The expanded rest screen is modal across the whole app chrome,
             // not just the scroll content. Hiding both bars removes Log
             // Activity, destructive menu actions, and tab switches from taps
@@ -332,23 +284,6 @@ struct TodayView: View {
                 fullRestOverlayVisible ? .hidden : .visible,
                 for: .tabBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
-            .confirmationDialog(
-                "Train a different day",
-                isPresented: $showOverridePicker,
-                titleVisibility: .visible
-            ) {
-                ForEach(sync.plan?.workouts ?? []) { d in
-                    Button(d.title) {
-                        prepareNewWorkout {
-                            sync.startOverride(dayID: d.id)
-                        }
-                    }
-                        .disabled(sync.blocksNewWorkoutStart)
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Starts a one-off session. Your weekly schedule is unchanged; edit it from Workouts.")
-            }
             .confirmationDialog(
                 "Discard this workout?",
                 isPresented: $showDiscardConfirm,
@@ -365,20 +300,25 @@ struct TodayView: View {
             .sheet(item: $feedbackPresentation) { item in
                 WorkoutFeedbackSheet(sync: sync, target: item.target, finishAfterSave: true)
             }
-            .sheet(item: $editTarget) { t in
-                EditWorkoutSheet(sync: sync, dayID: t.id)
+            .sheet(item: $previewTarget) { target in
+                WorkoutDetailsView(sync: sync, workoutID: target.id,
+                                   date: sync.todayString, onStart: startChosenWorkout)
             }
-            .task(id: [sync.plan?.id ?? "", String(sync.plan?.version ?? 0)]) {
-                await sync.refreshRecentPlanChanges()
+            .sheet(item: $unresolvedDate) { target in
+                NavigationStack {
+                    DayAgendaView(sync: sync, dateString: target.id)
+                        .navigationTitle("Workout record")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar { ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { unresolvedDate = nil }
+                        } }
+                }
             }
-            .sheet(isPresented: $showCoachingContext) {
-                CoachingContextView(sync: sync)
-            }
-            .sheet(isPresented: $showPlanHistory) {
-                PlanHistoryView(sync: sync)
+            .sheet(isPresented: $showOverridePicker) {
+                WorkoutsView(sync: sync, onStart: sync.todayIsCompleted ? nil : startChosenWorkout)
             }
             .sheet(isPresented: $showRoutine) {
-                WorkoutsView(sync: sync)
+                CreateWorkoutView(sync: sync, onStart: sync.todayIsCompleted ? nil : startChosenWorkout)
             }
         }
         .preferredColorScheme(.dark)
@@ -409,6 +349,7 @@ struct TodayView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
                 .padding(.top, 6)
+                .accessibilityIdentifier("today.createWorkout")
                 Button("Set up my coach") { auth.requestEntry(.coach) }
                     .frame(minWidth: 44, minHeight: 44)
             }
@@ -420,31 +361,95 @@ struct TodayView: View {
             // completed row (server getOrCreateSession is idempotent on
             // (user,date)), so we never offer an action the data model
             // can't safely honor.
-            WorkoutDoneView(sync: sync)
-        } else if let day = sync.todayResolvedDay {
-            // Workout day (planned / in_progress / projected) — today
-            // resolved via CalendarProjection (the SAME projection the
-            // calendar uses), not a manual A/B default. in_progress
-            // resumes into the runner via the existing start path.
-            TodayWorkoutView(
-                sync: sync, auth: auth, day: day,
-                onOverride: { showOverridePicker = true },
-                onEdit: { editTarget = EditDayTarget(id: day.id) },
-                onStart: {
-                    prepareNewWorkout {
-                        if sync.hasResumableWorkout {
-                            sync.resumeWorkout()
-                        } else {
-                            sync.startToday()
-                        }
-                    }
-                },
-                isPreparingWorkoutStart: isPreparingWorkoutStart)
+            VStack(spacing: 0) {
+                WorkoutDoneView(sync: sync)
+                Button { showOverridePicker = true } label: {
+                    todayRoute("Choose a workout", subtitle: "View and edit your library")
+                }
+                .accessibilityIdentifier("today.chooseWorkout")
+                Button { showRoutine = true } label: {
+                    todayRoute("Create a workout", subtitle: "Save a workout for another day")
+                }
+                .accessibilityIdentifier("today.createWorkout")
+            }
+            .padding(.horizontal, 20)
         } else {
-            // Pure rest day (or skipped) — no primary START CTA.
-            RestDayView(
-                sync: sync,
-                onOverride: { showOverridePicker = true })
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    Text(sync.todayString).font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                    if let workout = sync.todayPreviewWorkout {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text(sync.hasResumableWorkout ? "In progress" : "Scheduled for today")
+                                .font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                            Text(workout.name).font(Theme.display(30)).foregroundStyle(Theme.text)
+                            Text("\(workout.exercises.count) exercises")
+                                .font(.subheadline).foregroundStyle(Theme.muted)
+                            Button("View workout", systemImage: "chevron.right") { previewTarget = EditDayTarget(id: workout.id) }
+                                .frame(minHeight: 44).accessibilityIdentifier("today.viewWorkout")
+                            Button(isPreparingWorkoutStart ? "Preparing…" : sync.hasResumableWorkout ? "Continue workout" : "Start workout") {
+                                prepareNewWorkout {
+                                    if sync.hasResumableWorkout { sync.resumeWorkout() }
+                                    else { sync.startToday() }
+                                }
+                            }
+                            .buttonStyle(WorkoutPrimaryButtonStyle())
+                            .accessibilityIdentifier("today.startWorkout")
+                            .disabled(workout.exercises.isEmpty || isPreparingWorkoutStart
+                                || (sync.blocksNewWorkoutStart && !sync.hasResumableWorkout))
+                        }
+                        .padding(20).background(Theme.surface)
+                        .clipShape(RoundedRectangle(cornerRadius: 16))
+                    } else if let session = sync.todaySession,
+                              ["planned", "in_progress"].contains(session.status) {
+                        Text("Workout needs review").font(Theme.display(30)).foregroundStyle(Theme.text)
+                        Text("There is a workout for today, but its saved workout details are unavailable. Your recorded sets are still available.")
+                            .foregroundStyle(Theme.muted)
+                        Button("View workout record") { unresolvedDate = AgendaDate(id: session.date) }
+                            .frame(minHeight: 44).accessibilityIdentifier("today.viewUnresolvedWorkout")
+                        Button("Refresh workout") { Task { await sync.load() } }.frame(minHeight: 44)
+                    } else {
+                        Text("Nothing scheduled").font(Theme.display(30)).foregroundStyle(Theme.text)
+                        Text("Choose a saved workout or create one for today.")
+                            .foregroundStyle(Theme.muted)
+                    }
+                    Button { showOverridePicker = true } label: {
+                        todayRoute("Choose a workout", subtitle: "From your library")
+                    }
+                    .accessibilityIdentifier("today.chooseWorkout")
+                    Button { showRoutine = true } label: {
+                        todayRoute("Create a workout", subtitle: "Build your own workout")
+                    }
+                    .accessibilityIdentifier("today.createWorkout")
+                    .disabled(sync.blocksNewWorkoutStart)
+                    if let error = sync.loadError {
+                        Text(error).font(.footnote).foregroundStyle(Theme.danger)
+                    }
+                }
+                .padding(20)
+            }
+            .refreshable { await sync.load() }
+        }
+    }
+
+    private func todayRoute(_ title: String, subtitle: String) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(title).font(.headline).foregroundStyle(Theme.text)
+                Text(subtitle).font(.subheadline).foregroundStyle(Theme.muted)
+            }
+            Spacer()
+            Image(systemName: "chevron.right").foregroundStyle(Theme.muted)
+        }
+        .frame(minHeight: 56)
+    }
+
+    private func startChosenWorkout(_ id: String) {
+        showOverridePicker = false
+        showRoutine = false
+        previewTarget = nil
+        prepareNewWorkout {
+            if sync.hasResumableWorkout && sync.resumableCheckpoint?.selectedDayID == id { sync.resumeWorkout() }
+            else { sync.startOverride(dayID: id) }
         }
     }
 
@@ -465,77 +470,6 @@ struct TodayView: View {
     }
 }
 
-// MARK: - Rest day (schedule-driven)
-
-/// Shown when today's projection resolves to rest (or a skipped session).
-/// Surfaces the next upcoming workout found by forward-scanning the SAME
-/// projection, plus a **primary "Start a workout" CTA** that opens the
-/// override picker. The CTA matters because a rest-day projection can also
-/// follow a discard (vanish to schedule) on a day that isn't scheduled —
-/// without an obvious restart, the day looks stranded. Pair to the
-/// finished-view's demoted `OverrideButton`, which stays demoted there
-/// (the workout is done — "different day" is intentionally low-priority).
-private struct RestDayView: View {
-    @ObservedObject var sync: SyncModel
-    let onOverride: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("TODAY")
-                            .font(Theme.mono(11, .bold)).tracking(2)
-                            .foregroundStyle(Theme.muted)
-                        Text("— Rest day —")
-                            .font(Theme.display(40))
-                            .foregroundStyle(Theme.text)
-                        Text("Nothing scheduled. Recover.")
-                            .font(Theme.mono(13)).foregroundStyle(Theme.muted)
-                    }
-                    .padding(20)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-
-                    if let next = sync.nextWorkout() {
-                        NextWorkoutCard(sync: sync, next: next)
-                    }
-
-                    if let err = sync.loadError {
-                        Text(err).font(Theme.mono(12)).foregroundStyle(Theme.danger)
-                    }
-                }
-                .padding(16)
-            }
-            .refreshable { await sync.load() }
-
-            // Primary CTA: ensures a rest day (recurring rest OR post-
-            // discard fall-through) is never stranded — one tap to pick a
-            // template and start. Same picker the workout-day "different
-            // day" override uses (`onOverride` → showOverridePicker).
-            StartWorkoutCTA(
-                onOverride: onOverride,
-                connectionTitle: sync.needsLiveWorkoutValidation
-                    ? sync.liveWorkoutValidationActionTitle
-                    : nil)
-                .padding(16)
-                .disabled(
-                    (sync.plan?.workouts.isEmpty ?? true)
-                        || sync.hasUnacknowledgedDiscardForToday
-                        || sync.blocksNewWorkoutStart)
-        }
-    }
-}
-
-// MARK: - Next workout card (tappable → full preview)
-
-/// The "NEXT WORKOUT" card, shared by the rest-day and workout-complete
-/// screens. Tapping it opens the SAME full workout preview the calendar
-/// uses (`DayAgendaView`) as a sheet for the upcoming date — so "what's
-/// tomorrow's session" is one tap from Today, not a trip to the Calendar
-/// tab. Preview only: DayAgendaView is read-only for future dates (start
-/// still happens from the Today screen on the day itself).
 private struct AgendaDate: Identifiable { let id: String }
 
 private struct NextWorkoutCard: View {
@@ -601,11 +535,12 @@ private struct WorkoutDoneView: View {
     @ObservedObject var sync: SyncModel
     /// Confirms discarding the just-completed session ("didn't really do
     /// this" — e.g. an accidental/test End workout).
+    @State private var recordDate: AgendaDate?
     @State private var showDiscardConfirm = false
     @State private var discardTarget: WorkoutTerminalActionTarget?
 
     private var doneTemplateTitle: String {
-        sync.todayResolvedDay?.title.uppercased() ?? "WORKOUT"
+        sync.sessionDisplayTemplate(forDateString: sync.todayString, allowScheduleInference: false)?.name ?? "Workout"
     }
 
     /// Logged WORKING sets for today's completed session — warmups
@@ -635,11 +570,13 @@ private struct WorkoutDoneView: View {
                     Text(doneTemplateTitle)
                         .font(Theme.mono(13, .bold)).tracking(1)
                         .foregroundStyle(Theme.accent)
-                    if let session = sync.sessionsByDate[sync.todayString] {
-                        WorkoutSummaryView(sync: sync, sessionID: session.id)
-                        let feedback = WorkoutFeedback(notes: session.notes, perceivedFatigue: session.perceived_fatigue)
-                        if !feedback.isEmpty { SavedWorkoutFeedbackView(feedback: feedback) }
+                    Text("\(todaySets.count) working sets · \(Set(todaySets.map(\.exercise_id)).count) exercises")
+                        .font(.subheadline).foregroundStyle(Theme.muted)
+                    Button("View workout", systemImage: "chevron.right") {
+                        recordDate = AgendaDate(id: sync.todayString)
                     }
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("today.viewCompletedWorkout")
                 }
                 .padding(20)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -654,220 +591,44 @@ private struct WorkoutDoneView: View {
                     Text(err).font(Theme.mono(12)).foregroundStyle(Theme.danger)
                 }
 
-                // Demoted, non-primary escape hatch: an accidental/test
-                // "End workout" recorded a session you didn't really do.
-                // Discard throws it away and the day reverts to its normal
-                // schedule (no SQL, fully reversible by just redoing it).
-                Button(role: .destructive) {
-                    discardTarget = sync.terminalActionTarget
-                    showDiscardConfirm = discardTarget != nil
-                } label: {
-                    Text("Discard — didn't really do this")
-                        .font(Theme.mono(12, .bold)).tracking(1)
-                        .foregroundStyle(Theme.danger)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                }
-                .buttonStyle(.plain)
-                .disabled(sync.hasDiscardIntentForCurrentWorkout)
+
             }
             .padding(16)
         }
         .refreshable { await sync.load() }
-        .confirmationDialog(
-            "Discard this workout?",
-            isPresented: $showDiscardConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Discard — don't save", role: .destructive) {
-                guard let target = discardTarget else { return }
-                Task { await sync.discardWorkout(expected: target) }
-            }
-            Button("Keep workout", role: .cancel) {}
-        } message: {
-            Text("The sets you logged will be deleted and this session won't count. The day goes back to its normal schedule. This can't be undone.")
-        }
-    }
-}
-
-// MARK: - Workout day (schedule-driven)
-
-/// Shown when today's projection resolves to a workout. Renders the
-/// resolved template's exercises + the primary START WORKOUT CTA. The
-/// runner executes whatever `sync.startToday` selected (the resolved
-/// template), not a manual A/B default.
-private struct TodayWorkoutView: View {
-    @ObservedObject var sync: SyncModel
-    @ObservedObject var auth: AuthModel
-    let day: Workout
-    let onOverride: () -> Void
-    let onEdit: () -> Void
-    let onStart: () -> Void
-    let isPreparingWorkoutStart: Bool
-    @State private var demoFor: TemplateExercise?
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("TODAY · \(day.title.uppercased())")
-                        .font(Theme.mono(11, .bold)).tracking(2)
-                        .foregroundStyle(Theme.muted).padding(.bottom, 6)
-                    ForEach(ExerciseGroupBlock.blocks(day.exercises)) { block in
-                        VStack(alignment: .leading, spacing: 12) {
-                            if block.isGroup {
-                                HStack {
-                                    Text(block.title.uppercased()).font(Theme.mono(12, .bold)).foregroundStyle(Theme.accent)
-                                    if block.isWarmup { WarmupTag() }
-                                }
-                                Text("\(block.rounds) rounds · \(block.roundRest)s round rest · \(block.transitionRest)s transition")
-                                    .font(Theme.mono(11)).foregroundStyle(Theme.muted)
-                            }
-                            ForEach(Array(block.members.enumerated()), id: \.element.id) { index, ex in
-                                HStack(spacing: 8) {
-                                    if block.isGroup {
-                                        Text(block.memberLabel(at: index)).font(Theme.mono(12, .bold)).foregroundStyle(Theme.accent)
-                                    }
-                                    Text(ex.exercise_name.uppercased())
-                                        .font(Theme.display(22)).foregroundStyle(Theme.text)
-                                    DemoInfoButton(exerciseName: ex.exercise_name) { demoFor = ex }
-                                    if ex.isWarmup && !block.isWarmup { WarmupTag() }
-                                    if ex.isWarmup && !block.isGroup { WarmupTag() }
-                                    Spacer()
-                                    Text(ex.targetLabel)
-                                        .font(Theme.mono(14)).foregroundStyle(Theme.muted)
-                                }
-                            }
+        .sheet(item: $recordDate) { date in
+            NavigationStack {
+                DayAgendaView(sync: sync, dateString: date.id)
+                    .navigationTitle("Workout record")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { recordDate = nil }
                         }
-                        .padding(16)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Theme.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        ToolbarItem(placement: .bottomBar) {
+                            Button("Discard workout", role: .destructive) {
+                                let target = sync.terminalActionTarget
+                                discardTarget = target?.date == date.id ? target : nil
+                                showDiscardConfirm = discardTarget != nil
+                            }
+                            .disabled(sync.hasDiscardIntentForCurrentWorkout)
+                        }
                     }
-                    if let err = sync.loadError {
-                        Text(err).font(Theme.mono(12)).foregroundStyle(Theme.danger)
+                    .confirmationDialog("Discard this workout?", isPresented: $showDiscardConfirm,
+                                        titleVisibility: .visible) {
+                        Button("Discard — don't save", role: .destructive) {
+                            guard let target = discardTarget else { return }
+                            Task { await sync.discardWorkout(expected: target); recordDate = nil }
+                        }
+                        Button("Keep workout", role: .cancel) {}
+                    } message: {
+                        Text("The logged sets will be removed and this workout will no longer count.")
                     }
-                    EditWorkoutButton(onEdit: onEdit).padding(.top, 6)
-                    OverrideButton(
-                        onOverride: onOverride,
-                        blocked: sync.blocksNewWorkoutStart,
-                        connectionTitle: sync.needsLiveWorkoutValidation
-                            ? sync.liveWorkoutValidationBlockTitle
-                            : nil)
-                }
-                .padding(16)
             }
-            .refreshable { await sync.load() }
-
-            Button {
-                onStart()
-            } label: {
-                Text(isPreparingWorkoutStart
-                    ? "PREPARING…"
-                    : (sync.hasResumableWorkout
-                        ? "RESUME WORKOUT"
-                        : (sync.needsLiveWorkoutValidation
-                            ? sync.liveWorkoutValidationActionTitle
-                            : "START WORKOUT")))
-                    .font(Theme.display(26)).tracking(1.5)
-                    .frame(maxWidth: .infinity).padding(.vertical, 18)
-            }
-            .background(Theme.accent).foregroundStyle(.black)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
-            .disabled(
-                day.exercises.isEmpty
-                    || isPreparingWorkoutStart
-                    || sync.hasUnacknowledgedDiscardForToday
-                    || (sync.blocksNewWorkoutStart
-                        && !sync.hasResumableWorkout))
-            .padding(16)
-        }
-        .sheet(item: $demoFor) { ex in
-            ExerciseDemoSheet(
-                exerciseID: ex.exercise_id,
-                name: ex.exercise_name,
-                primaryMuscle: sync.catalogRow(ex.exercise_id)?.primary_muscle
-                    ?? ex.exercise_modality,
-                secondaryMuscles: [],
-                modality: ex.exercise_modality,
-                laterality: ex.exercise_laterality ?? "bilateral",
-                loadMode: ex.exercise_load_mode ?? "total",
-                demoSlug: ex.exercise_demo_slug,
-                jwt: auth.featureJWT
-            )
+            .preferredColorScheme(.dark)
         }
     }
 }
-
-/// Demoted, secondary affordance — never the primary CTA. Opens the
-/// day/template override picker.
-/// Primary "Start a workout" CTA used on RestDayView. Same visual weight
-/// as the schedule-day "START WORKOUT" button (Theme.accent fill, display
-/// font, glow), but opens the day picker rather than auto-starting today's
-/// resolved template — a rest day has no resolved template, so the user
-/// chooses which day (A/B) to run. The picker itself is the existing
-/// `showOverridePicker` confirmationDialog on TodayView.
-private struct StartWorkoutCTA: View {
-    let onOverride: () -> Void
-    let connectionTitle: String?
-    var body: some View {
-        Button(action: onOverride) {
-            Text(connectionTitle ?? "START A WORKOUT")
-                .font(Theme.display(26)).tracking(1.5)
-                .frame(maxWidth: .infinity).padding(.vertical, 18)
-        }
-        .background(Theme.accent).foregroundStyle(.black)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
-        .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
-    }
-}
-
-private struct OverrideButton: View {
-    let onOverride: () -> Void
-    let blocked: Bool
-    let connectionTitle: String?
-    var body: some View {
-        Button(action: onOverride) {
-            HStack(spacing: 6) {
-                Text(connectionTitle
-                    ?? (blocked
-                        ? "Resume saved workout first"
-                        : "Train a different day"))
-                    .font(Theme.mono(13, .bold))
-                Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold))
-            }
-            .foregroundStyle(Theme.muted)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-            .background(Theme.surface.opacity(0.6))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-        }
-        .disabled(blocked)
-    }
-}
-
-/// Demoted secondary affordance: opens the in-app workout editor to tweak
-/// today's exercises (add one, drop one, add an erg warm-up) without Claude.
-private struct EditWorkoutButton: View {
-    let onEdit: () -> Void
-    var body: some View {
-        Button(action: onEdit) {
-            HStack(spacing: 6) {
-                Image(systemName: "slider.horizontal.3").font(.system(size: 11, weight: .bold))
-                Text("Edit workout")
-                    .font(Theme.mono(13, .bold))
-            }
-            .foregroundStyle(Theme.muted)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 12)
-            .background(Theme.surface.opacity(0.6))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-        }
-    }
-}
-
-// MARK: - shared: segmented progress bar
 
 private struct ProgressBar: View {
     let exercises: [TemplateExercise]

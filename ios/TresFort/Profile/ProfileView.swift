@@ -32,9 +32,11 @@ struct ProfileView: View {
     @ObservedObject var groupModel: GroupModel
     @ObservedObject var auth: AuthModel
     @ObservedObject var health: HealthKitSyncModel
+    var sync: SyncModel? = nil
 
     @State private var showJoin = false
     @State private var showCreate = false
+    @State private var showTrainingOverview = false
     @State private var showNameEditor = false
     @State private var accountExportDocument: AccountExportDocument?
     @State private var accountExportFilename = "tres-fort-account-export.json"
@@ -72,6 +74,9 @@ struct ProfileView: View {
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showJoin) { JoinGroupSheet(groupModel: groupModel) }
         .sheet(isPresented: $showCreate) { CreateGroupSheet(groupModel: groupModel) }
+        .sheet(isPresented: $showTrainingOverview) {
+            if let sync { CoachingContextView(sync: sync) }
+        }
         .sheet(isPresented: $showNameEditor) {
             EditDisplayNameSheet(
                 initialName: groupModel.me?.display_name ?? "",
@@ -231,6 +236,18 @@ struct ProfileView: View {
     @ViewBuilder
     private var coachSection: some View {
         Section {
+            if sync != nil {
+                Button {
+                    showTrainingOverview = true
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Training overview")
+                        Text("Recorded training and plan settings your coach can read.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityIdentifier("profile.trainingOverview")
+            }
             if groupModel.me?.claude.connected == true {
                 HStack(spacing: 10) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)

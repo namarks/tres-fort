@@ -92,6 +92,25 @@ describe.each([false, true])('wire contracts with migrated=%s', (migrated) => {
     expect(retry.body.session.attempt).toBe(assigned.body.session.attempt);
   });
 
+  it('moves a date with released request keys and dual acknowledgement fields', async () => {
+    const next = new Date(`${today}T12:00:00Z`);
+    next.setUTCDate(next.getUTCDate() + 1);
+    const toDate = next.toISOString().slice(0, 10);
+    const request = { id: crypto.randomUUID(), to_date: toDate, today,
+      day_template_id: gym.id, expected_plan_id: tree.id, expected_version: tree.version,
+      expected_from_attempt: 0, expected_to_attempt: 0 };
+    const move = await api(`calendar/${today}/move`, 'POST', request);
+    expect(move.status).toBe(200);
+    expect(move.body.from).toMatchObject({ date: today, status: 'skipped',
+      workout_id: null, day_template_id: null, attempt: 1 });
+    expect(move.body.to).toMatchObject({ date: toDate, status: 'planned',
+      workout_id: gym.id, day_template_id: gym.id, attempt: 1 });
+    expect(await api(`calendar/${today}/move`, 'POST', request)).toEqual(move);
+    const unchanged = (await api('plan/active')).body;
+    expect(unchanged.version).toBe(tree.version);
+    expect(unchanged.meta).toBe(tree.meta);
+  });
+
   it('retains the historical account export collection name', async () => {
     const exported = (await api('me/export')).body;
     expect(exported.training.day_templates).toEqual(exported.training.workouts);

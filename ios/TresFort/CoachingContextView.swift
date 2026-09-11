@@ -45,7 +45,7 @@ struct CoachingContextView: View {
                         .font(Theme.mono(11)).foregroundStyle(Theme.muted)
                 }.padding(20).foregroundStyle(Theme.text)
             }
-            .background(Theme.background).navigationTitle("Coaching context")
+            .background(Theme.background).navigationTitle("Training overview")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }.preferredColorScheme(.dark)

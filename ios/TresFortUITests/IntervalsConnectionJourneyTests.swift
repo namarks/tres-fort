@@ -37,7 +37,7 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
     }
 
     private func assertImportedActivity(_ app: XCUIApplication) {
-        tap(app.tabBars.buttons["History"], in: app)
+        tap(app.tabBars.buttons["Calendar"], in: app)
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Morning ride")).firstMatch.waitForExistence(timeout: 10))
     }
 

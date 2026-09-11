@@ -8,10 +8,9 @@ final class WorkoutLibraryJourneyTests: XCTestCase {
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "library"
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
-        XCTAssertTrue(app.buttons["Workout options"].waitForExistence(timeout: 10))
-        app.buttons["Workout options"].tap()
-        app.buttons["Workouts"].tap()
-        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["today.chooseWorkout"].waitForExistence(timeout: 10))
+        app.buttons["today.chooseWorkout"].tap()
+        XCTAssertTrue(app.navigationBars["Choose a workout"].waitForExistence(timeout: 5))
         return app
     }
 
@@ -29,12 +28,12 @@ final class WorkoutLibraryJourneyTests: XCTestCase {
         app.buttons["Use on a date"].tap()
         XCTAssertTrue(app.buttons["assignLibraryWorkout"].waitForExistence(timeout: 5))
         app.buttons["assignLibraryWorkout"].tap()
-        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Choose a workout"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.staticTexts["workoutSchedule-hotel"].label, "On demand")
         let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         image.name = "workout-library"; image.lifetime = .keepAlways; add(image)
-        app.navigationBars["Workouts"].buttons["Done"].tap()
-        XCTAssertTrue(app.staticTexts["TODAY · HOTEL"].waitForExistence(timeout: 5))
+        app.navigationBars["Choose a workout"].buttons["Done"].tap()
+        XCTAssertTrue(app.staticTexts["Hotel"].waitForExistence(timeout: 5))
     }
 
     func testDeleteIsExplicitAndSeparateFromUnschedule() {

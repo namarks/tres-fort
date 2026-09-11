@@ -385,6 +385,22 @@ struct APIClient {
         let ok: Bool
         let session: SessionRow
     }
+    struct CalendarMoveRequest: Equatable {
+        let id: String
+        let fromDate: String
+        let toDate: String
+        let today: String
+        let workoutID: String
+        let planID: String
+        let planVersion: Int
+        let fromAttempt: Int
+        let toAttempt: Int
+    }
+    struct CalendarMoveResult: Decodable {
+        let ok: Bool
+        let from: SessionRow
+        let to: SessionRow
+    }
     struct RestorePlanResult: Decodable {
         let ok: Bool
         let plan_id: String
@@ -542,6 +558,15 @@ struct APIClient {
         }
         if let expectedAttempt { body["expected_attempt"] = expectedAttempt }
         return try await put("api/calendar/\(date)", body: body, jwt: jwt)
+    }
+
+    func moveCalendarWorkout(_ request: CalendarMoveRequest, jwt: String) async throws -> CalendarMoveResult {
+        try await post("api/calendar/\(request.fromDate)/move", body: [
+            "id": request.id, "to_date": request.toDate, "today": request.today,
+            workoutWireFormat.idKey: request.workoutID, "expected_plan_id": request.planID,
+            "expected_version": request.planVersion, "expected_from_attempt": request.fromAttempt,
+            "expected_to_attempt": request.toAttempt,
+        ], jwt: jwt)
     }
 
     @discardableResult
@@ -924,9 +949,17 @@ protocol RoutineEditingAPI {
         expectedAttempt: Int?,
         jwt: String
     ) async throws -> APIClient.CalendarWriteResult
+    func moveCalendarWorkout(_ request: APIClient.CalendarMoveRequest, jwt: String) async throws -> APIClient.CalendarMoveResult
+
 }
 
 extension APIClient: RoutineEditingAPI {}
+
+extension RoutineEditingAPI {
+    func moveCalendarWorkout(_ request: APIClient.CalendarMoveRequest, jwt: String) async throws -> APIClient.CalendarMoveResult {
+        throw APIError.http(501, "calendar_move_unavailable")
+    }
+}
 
 /// Narrow terminal-session seam used only to prove the P0 exclusion between
 /// destructive/completing session mutations and new set persistence.

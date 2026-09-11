@@ -30,6 +30,7 @@ private struct ExerciseReplacementTarget: Identifiable {
 struct EditWorkoutSheet: View {
     @ObservedObject var sync: SyncModel
     let dayID: String
+    var onDone: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var adding = false
@@ -47,7 +48,12 @@ struct EditWorkoutSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if sync.workoutEditorRefreshNeeded {
+                if day != nil {
+                    Text("Edits apply to this saved workout whenever you use it. Completed records stay unchanged.")
+                        .font(.footnote).foregroundStyle(Theme.muted)
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                }
+                if day == nil || sync.workoutEditorRefreshNeeded {
                     refreshError(sync.loadError)
                 }
                 Group {
@@ -57,14 +63,14 @@ struct EditWorkoutSheet: View {
                         emptyState
                     }
                 }
-                .disabled(sync.workoutEditorRefreshNeeded || mutationWorking)
+                .disabled(day == nil || sync.workoutEditorRefreshNeeded || mutationWorking)
             }
             .background(Theme.background)
-            .navigationTitle("Edit workout")
+            .navigationTitle(day.map { "Edit \($0.name)" } ?? "Workout unavailable")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { dismiss() }.foregroundStyle(Theme.accent)
+                    Button("Done") { if let onDone { onDone() } else { dismiss() } }.foregroundStyle(Theme.accent)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -85,7 +91,7 @@ struct EditWorkoutSheet: View {
                     }
                     .accessibilityLabel("Workout actions")
                     .accessibilityIdentifier("editor.actions")
-                    .disabled(sync.workoutEditorRefreshNeeded || mutationWorking || selectingGroup)
+                    .disabled(day == nil || sync.workoutEditorRefreshNeeded || mutationWorking || selectingGroup)
                 }
             }
             .toolbarColorScheme(.dark, for: .navigationBar)
@@ -321,9 +327,10 @@ struct EditWorkoutSheet: View {
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Text("NO EXERCISES YET")
+            Text(day == nil ? "WORKOUT NOT LOADED" : "NO EXERCISES YET")
                 .font(Theme.display(24)).foregroundStyle(Theme.text)
-            Text("Use ＋ to add an exercise or a warm-up.")
+            Text(day == nil ? "Refresh to load this workout, or close the editor if it was removed."
+                 : "Use ＋ to add an exercise or a warm-up.")
                 .font(Theme.mono(13)).foregroundStyle(Theme.muted)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

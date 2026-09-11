@@ -8,14 +8,16 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         let contract = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "ExerciseGroups", withExtension: "json"))
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "groups"
         app.launchEnvironment["TRESFORT_UI_GROUP_CONTRACT"] = try String(contentsOf: contract, encoding: .utf8)
-        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        // Notification permission is covered by the activation journeys.
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-restAudioCuesEnabled", "NO"]
         app.launch()
-        XCTAssertTrue(app.buttons["Workout options"].waitForExistence(timeout: 10))
-        app.buttons["Workout options"].tap()
-        app.buttons["Workouts"].tap()
+        XCTAssertTrue(app.buttons["today.chooseWorkout"].waitForExistence(timeout: 10))
+        app.buttons["today.chooseWorkout"].tap()
         let workout = app.buttons.containing(.staticText, identifier: "Warm-up and strength").firstMatch
         XCTAssertTrue(workout.waitForExistence(timeout: 10))
         workout.tap()
+        XCTAssertTrue(app.buttons["workoutDetails.edit"].waitForExistence(timeout: 5))
+        app.buttons["workoutDetails.edit"].tap()
         XCTAssertTrue(app.buttons["editor.actions"].waitForExistence(timeout: 5))
         return app
     }
@@ -65,12 +67,13 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Superset A"].exists)
         XCTAssertTrue(app.staticTexts["Round rest: 30s"].exists)
         author(app, slots: ["group-bench", "group-row"], roundRestDecrements: 4, transition: true)
-        reveal(app.staticTexts["Superset B"], in: app)
+        reveal(app.buttons["Edit Superset B"], in: app)
         XCTAssertTrue(app.staticTexts["Transition rest: 15s"].exists)
         screenshot("authored-two-groups")
-        app.navigationBars["Edit workout"].buttons["Done"].tap()
-        app.navigationBars["Workouts"].buttons["Done"].tap()
-        let start = app.buttons["START WORKOUT"]
+        app.navigationBars["Edit Warm-up and strength"].buttons["Done"].tap()
+        app.navigationBars["Warm-up and strength"].buttons["Done"].tap()
+        app.navigationBars["Choose a workout"].buttons["Done"].tap()
+        let start = app.buttons["today.startWorkout"]
         reveal(start, in: app)
         screenshot("group-workout-preview")
         start.tap()

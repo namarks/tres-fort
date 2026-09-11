@@ -72,7 +72,7 @@ struct RecentPlanChanges: View {
                         .accessibilityIdentifier("planChanges.dismiss")
                     }
                     .font(.caption).frame(minHeight: 44)
-                    Text("Dismissed changes stay in Workout history.")
+                    Text("Dismissed changes stay in Plan changes.")
                         .font(.caption2).foregroundStyle(Theme.muted)
                 }
                 .padding(14).background(Theme.surface)

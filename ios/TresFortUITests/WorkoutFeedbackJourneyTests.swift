@@ -49,6 +49,8 @@ final class WorkoutFeedbackJourneyTests: XCTestCase {
         let finish = app.buttons["FINISH"]
         reveal(finish, app: app); finish.tap()
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
+        let record = app.buttons["today.viewCompletedWorkout"]
+        reveal(record, app: app); record.tap()
     }
     private func screenshot(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
@@ -116,7 +118,7 @@ final class WorkoutFeedbackJourneyTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["feedback.saved-note"].waitForExistence(timeout: 5))
         app.terminate()
         let reopened = launch(reuse: true)
-        let resume = reopened.buttons["RESUME WORKOUT"]
+        let resume = reopened.buttons["today.startWorkout"]
         XCTAssertTrue(resume.waitForExistence(timeout: 10)); resume.tap()
         XCTAssertTrue(reopened.staticTexts["feedback.saved-note"].waitForExistence(timeout: 5))
         XCTAssertEqual(reopened.staticTexts["feedback.saved-note"].label, "Saved before relaunch")
@@ -139,6 +141,8 @@ final class WorkoutFeedbackJourneyTests: XCTestCase {
             let choice = app.buttons[useMine ? "Use my feedback" : "Keep saved feedback"]
             reveal(choice, app: app); choice.tap()
             XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
+        let record = app.buttons["today.viewCompletedWorkout"]
+        reveal(record, app: app); record.tap()
             XCTAssertEqual(app.staticTexts["feedback.saved-note"].label, useMine ? "My approved feedback" : "Newer saved feedback")
             app.terminate()
         }

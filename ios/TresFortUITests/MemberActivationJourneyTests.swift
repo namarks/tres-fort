@@ -42,11 +42,12 @@ final class MemberActivationJourneyTests: XCTestCase {
     }
 
     private func completeFirstWorkout(_ app: XCUIApplication) {
-        if app.buttons["START A WORKOUT"].exists {
-            tap(app.buttons["START A WORKOUT"], in: app)
-            tap(app.buttons["Workout A"], in: app)
+        if app.buttons["today.startWorkout"].exists {
+            tap(app.buttons["today.startWorkout"], in: app)
         } else {
-            tap(app.buttons["START WORKOUT"], in: app)
+            tap(app.buttons["today.chooseWorkout"], in: app)
+            tap(app.buttons["library.workout.synthetic-day"], in: app)
+            tap(app.buttons["workoutDetails.start"], in: app)
         }
         // Real entry asks for rest-notification permission before starting.
         // Exercise that prompt on this disposable simulator; existence waits
@@ -127,7 +128,7 @@ final class MemberActivationJourneyTests: XCTestCase {
         onboard(app)
         tap(app.buttons["Build my first workout"], in: app)
         tap(app.buttons["Create workout"], in: app)
-        XCTAssertTrue(app.navigationBars["Edit workout"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["Edit Workout A"].waitForExistence(timeout: 10))
         tap(app.buttons["editor.actions"], in: app)
         tap(app.buttons["Add exercise"], in: app)
         tap(app.buttons.containing(.staticText, identifier: "Barbell Squat").firstMatch, in: app)
@@ -136,7 +137,7 @@ final class MemberActivationJourneyTests: XCTestCase {
         sets.buttons["Decrement"].tap()
         app.steppers["2 sets"].buttons["Decrement"].tap()
         tap(app.buttons["Add to workout"], in: app)
-        tap(app.navigationBars["Edit workout"].buttons["Done"], in: app)
+        tap(app.navigationBars["Edit Workout A"].buttons["Done"], in: app)
         tap(app.navigationBars["Workouts"].buttons["Done"], in: app)
         completeFirstWorkout(app)
         tap(app.tabBars.buttons["Profile"], in: app)

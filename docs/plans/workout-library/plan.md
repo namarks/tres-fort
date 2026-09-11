@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: active · Updated: 2026-09-09 · Theme: gym-floor
+Slug: workout-library · Status: active · Updated: 2026-09-10 · Theme: gym-floor
 
 ## Goal
 
@@ -68,6 +68,37 @@ No second editor, no per-session template copies, no weeks table.
   - No schema or Worker change. Update `docs/DESIGN.md` §4 and §9 wording so
     "day template" is described as a library workout that the schedule may
     reference.
+- [x] **P0.1 — Today and Calendar navigation**
+  - Owner-approved design: Today has a compact scheduled/completed workout
+    card, explicit View workout, Start/Continue workout, Choose a workout,
+    Create a workout, and Log an activity actions. Remove the duplicate
+    top-right Workouts entry and the idle plus/overflow menus.
+  - The library opens a named workout before starting or editing it. Editors
+    name their exact saved workout and distinguish saved prescriptions from
+    completed records. Plan changes lives in the library; Training overview
+    lives in Profile's Coach section. Keep runner recovery, feedback, timers,
+    terminal actions, and the full completed record reachable.
+  - Rename History to Calendar, retain exercise progress, and make date
+    assignment/replacement/removal explicit. Keep weekly scheduling separate;
+    moving a workout must preserve both dates under concurrent writes.
+  - Create-from-Today opens a named saved-workout creator and editor, explicitly
+    described as a library write. The preview's one-off creation and optional
+    saving require a separate product decision and P2 compatibility work; the
+    implementation question remains open in the design task.
+  - Verify synthetic iOS journeys for every new route, ambiguous/null workout
+    identity, compact completion, date scope, and preservation of recorded sets.
+  - Delivered a receipt-backed atomic move endpoint without a migration. Both
+    date attempts advance together; concurrent changes reject the whole move.
+    Date notes/fatigue, weekly scheduling, and completed records are preserved.
+    Acknowledged writes retain success when refresh fails; creation recovers
+    through a read-only refresh and failed finishes retain the discard path.
+  - Local evidence: the iOS smoke suite completed 499 unit tests (one skipped)
+    and 28 UI journeys without failures. Focused navigation journeys additionally
+    cover removal without a saved-workout identity, unresolved real-session
+    records, first-workout creation recovery, and both terminal recovery paths.
+    All 70 backend test files passed; the final calendar/dual-schema subset
+    passed 112 tests. Typecheck, plan graph and verification-script checks passed.
+    Final independent local review found no actionable regressions.
 - [ ] **P1 — Library metadata: tags and archive**
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work
@@ -192,7 +223,16 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@owner):** Complete the deferred legacy-route REST checks during the
+**Now (@agent):** P1 library metadata remains planned and outside the completed
+P0.1 navigation update. P2 freestyle creation and optional saving remain separate;
+the implemented Create a workout action explicitly saves to the shared library.
+The navigation design was approved in task
+`01a08dee-930f-7763-9202-29872c440f26`. Exact-head independent review and required
+CI gate repository integration. Deploy the compatible calendar-move Worker
+before distributing this client; deployment and TestFlight distribution remain
+separate owner actions. This repository change does not perform either release.
+
+**Client rollout (@owner):** Complete the deferred legacy-route REST checks during the
 separately authorized client rollout before distributing the first compatible
 Workouts TestFlight build. Library P0 is merged and verified in
 [PR #161](https://github.com/namarks/tres-fort/pull/161). The Workouts surface

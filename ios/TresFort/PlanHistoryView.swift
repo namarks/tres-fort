@@ -60,6 +60,7 @@ enum PlanHistoryPresentation {
 
 struct PlanHistoryView: View {
     @ObservedObject var sync: SyncModel
+    var onCorrect: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @State private var history: PlanHistoryResponse?
     @State private var comparison: PlanComparisonResponse?
@@ -83,6 +84,7 @@ struct PlanHistoryView: View {
                             Task {
                                 await sync.load()
                                 if let error = sync.loadError { errorMessage = error }
+                                else if let onCorrect { onCorrect() }
                                 else { showEditor = true }
                             }
                         }
@@ -97,7 +99,7 @@ struct PlanHistoryView: View {
                     if value != nil { withAnimation { proxy.scrollTo("comparison", anchor: .top) } }
                 }
             }
-            .navigationTitle("Workout history")
+            .navigationTitle("Plan changes")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } } }
             .task { await loadInitialHistory() }

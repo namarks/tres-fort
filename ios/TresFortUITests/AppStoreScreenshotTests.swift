@@ -13,7 +13,7 @@ final class AppStoreScreenshotTests: XCTestCase {
                                "-restAudioCuesEnabled", "NO"]
         app.launch()
         XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["START WORKOUT"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["fixture.scenario"].exists)
         return app
     }
@@ -45,20 +45,19 @@ final class AppStoreScreenshotTests: XCTestCase {
     func testCaptureTodayWorkoutsAndHistory() {
         let app = launch()
         capture("01-today")
-        tap(app.buttons["Workout options"], in: app)
-        tap(app.buttons["Workouts"], in: app)
-        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
+        tap(app.buttons["today.chooseWorkout"], in: app)
+        XCTAssertTrue(app.navigationBars["Choose a workout"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["Strength A"].exists)
         capture("03-workouts")
-        tap(app.navigationBars["Workouts"].buttons["Done"], in: app)
-        tap(app.tabBars.buttons["History"], in: app)
-        XCTAssertTrue(app.segmentedControls.buttons["Exercises"].waitForExistence(timeout: 5))
+        tap(app.navigationBars["Choose a workout"].buttons["Done"], in: app)
+        tap(app.tabBars.buttons["Calendar"], in: app)
+        XCTAssertTrue(app.buttons["calendar.exerciseProgress"].waitForExistence(timeout: 5))
         capture("04-history")
     }
 
     func testCaptureRunnerAndFeedback() {
         let app = launch()
-        tap(app.buttons["START WORKOUT"], in: app)
+        tap(app.buttons["today.startWorkout"], in: app)
         let log = app.buttons["LOG SET 1"]
         XCTAssertTrue(log.waitForExistence(timeout: 5))
         // The real runner scrolls under the translucent tab bar. Frame the
@@ -74,7 +73,6 @@ final class AppStoreScreenshotTests: XCTestCase {
         }
         XCTAssertLessThan(log.frame.maxY, app.tabBars.firstMatch.frame.minY - 12)
         capture("02-runner")
-        tap(app.buttons["Workout options"], in: app)
         tap(app.buttons["End workout"], in: app)
         XCTAssertTrue(app.textViews["feedback.note"].waitForExistence(timeout: 5))
         tap(app.textViews["feedback.note"], in: app)

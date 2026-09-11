@@ -64,6 +64,8 @@ enum RoutineCreationPolicy {
 /// coach reads and edits. There is intentionally no separate "manual" plan.
 struct WorkoutsView: View {
     @ObservedObject var sync: SyncModel
+    var onStart: ((String) -> Void)? = nil
+    var date: String? = nil
     @Environment(\.dismiss) private var dismiss
 
     @State private var planName = "My Training"
@@ -73,18 +75,11 @@ struct WorkoutsView: View {
     @State private var addingDay = false
     @State private var renamingDay: Workout?
     @State private var deletingDay: Workout?
+    @State private var detailTarget: WorkoutTarget?
     @State private var editTarget: WorkoutTarget?
     @State private var assignmentTarget: Workout?
-    @State private var scheduleDraft: [String: String] = [:]
-    @State private var loadedScheduleIdentity: [String] = []
     @State private var creatingRoutine = false
     @State private var showHistory = false
-
-    private let weekdayNames = [
-        "mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
-        "thu": "Thursday", "fri": "Friday", "sat": "Saturday",
-        "sun": "Sunday",
-    ]
 
     var body: some View {
         NavigationStack {
@@ -98,7 +93,7 @@ struct WorkoutsView: View {
                 }
             }
             .background(Theme.background)
-            .navigationTitle("Workouts")
+            .navigationTitle(onStart == nil && date == nil ? "Workouts" : "Choose a workout")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -148,6 +143,12 @@ struct WorkoutsView: View {
             } message: {
                 Text("Past sessions and logged sets stay in your history. Recurring weekdays using this workout become rest days.")
             }
+            .sheet(item: $detailTarget) { target in
+                WorkoutDetailsView(sync: sync, workoutID: target.id, date: date,
+                                   onStart: onStart.map { start in
+                    { id in dismiss(); start(id) }
+                })
+            }
             .sheet(item: $editTarget) { target in
                 EditWorkoutSheet(sync: sync, dayID: target.id)
             }
@@ -155,10 +156,10 @@ struct WorkoutsView: View {
                 WorkoutDateSheet(sync: sync, workout: workout)
             }
             .sheet(isPresented: $showHistory) {
-                PlanHistoryView(sync: sync)
+                PlanHistoryView(sync: sync, onCorrect: { showHistory = false })
             }
             .task(id: [sync.plan?.id ?? "", String(sync.plan?.version ?? 0)]) {
-                reconcileScheduleDraft()
+                await sync.refreshRecentPlanChanges()
             }
         }
         .preferredColorScheme(.dark)
@@ -210,7 +211,7 @@ struct WorkoutsView: View {
                     ForEach(sync.plan?.workouts ?? []) { day in
                         HStack(spacing: 10) {
                             Button {
-                                editTarget = WorkoutTarget(id: day.id)
+                                detailTarget = WorkoutTarget(id: day.id)
                             } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(day.name)
@@ -227,6 +228,7 @@ struct WorkoutsView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("library.workout.\(day.id)")
                             .disabled(sync.isRoutineMutationInFlight)
 
                             Menu {
@@ -273,43 +275,15 @@ struct WorkoutsView: View {
             } header: {
                 Text("Workouts")
             } footer: {
-                Text("Tap a workout to add, edit, remove, or reorder exercises and targets.")
-            }
-
-            Section {
-                ForEach(PlanSchedule.weekdayKeys, id: \.self) { key in
-                    Picker(weekdayNames[key] ?? key, selection: scheduleBinding(key)) {
-                        Text("Rest").tag("")
-                        ForEach(sync.plan?.workouts ?? []) { day in
-                            Text(day.name).tag(day.id)
-                        }
-                    }
-                    .disabled(sync.isRoutineMutationInFlight)
-                }
-
-                Button {
-                    Task { await sync.saveRecurringSchedule(scheduleDraft) }
-                } label: {
-                    HStack {
-                        Spacer()
-                        if sync.isRoutineMutationInFlight { ProgressView().tint(Theme.accent) }
-                        Text("Save weekly schedule")
-                            .font(Theme.mono(13, .bold))
-                        Spacer()
-                    }
-                }
-                .disabled(sync.isRoutineMutationInFlight)
-            } header: {
-                Text("Weekly schedule · optional")
-            } footer: {
-                Text("These choices recur and drive Today. Use the calendar for one-date changes; those do not alter this schedule.")
+                Text("Open a workout to view its exercises, start it, or edit the saved workout.")
             }
 
             Section("Changes") {
+                RecentPlanChanges(sync: sync) { showHistory = true }
                 Button {
                     showHistory = true
                 } label: {
-                    Label("Workout history", systemImage: "clock.arrow.circlepath")
+                    Label("Plan changes", systemImage: "clock.arrow.circlepath")
                 }
                 .disabled(sync.isRoutineMutationInFlight)
             }
@@ -319,21 +293,6 @@ struct WorkoutsView: View {
             }
         }
         .scrollContentBackground(.hidden)
-    }
-
-    private func scheduleBinding(_ key: String) -> Binding<String> {
-        Binding(
-            get: { scheduleDraft[key] ?? "" },
-            set: { scheduleDraft[key] = $0 })
-    }
-
-    private func reconcileScheduleDraft() {
-        let reconciled = RoutineScheduleDraftPolicy.reconcile(
-            currentDraft: scheduleDraft,
-            loadedIdentity: loadedScheduleIdentity,
-            plan: sync.plan)
-        scheduleDraft = reconciled.draft
-        loadedScheduleIdentity = reconciled.identity
     }
 
     private func createRoutine() {

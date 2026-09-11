@@ -24,7 +24,7 @@ each exercise's chosen load in subsequent rounds of the same workout.
     from its prescription. No recurring plan or logged-data rewrite.
   - Verify conversion, offline rounds, cold resume, prescription changes,
     new attempts, grouped UI, and all timer regression journeys.
-- [ ] **P1 — Reviewed repository delivery**
+- [x] **P1 — Reviewed repository delivery**
   - Publish the coherent branch and require independent review of its exact
     head, all configured CI checks, and post-merge evidence.
 - [ ] **P2 — App distribution**
@@ -33,7 +33,7 @@ each exercise's chosen load in subsequent rounds of the same workout.
 
 ## Execution frontier
 
-- P1
+- P2
 
 ## Dependencies
 
@@ -43,37 +43,35 @@ each exercise's chosen load in subsequent rounds of the same workout.
 
 ## Next step
 
-**Now (@agent):** Complete exact-head review and configured CI for
-[PR #179](https://github.com/namarks/tres-fort/pull/179), then merge and verify
-the integration result. Nick explicitly authorized this repository delivery
-on 2026-09-10. The source-publication gate is resolved.
-App distribution remains a separate gate.
+**Now (@owner):** Authorize iOS distribution of the integrated source using
+the existing release procedure and device checks. Repository delivery is
+complete; this workstream has not distributed an app build.
 
 ## Evidence and scope
 
-The original timer-only change was committed as `806c080`. Before refreshing
-against current main, the combined source passed the unsigned iPhone 17 /
-iOS 26.2 build, all 456 unit tests, six affected
-UI journeys (timer navigation and completion, exact lb entry, kg switching,
-correction, and complete alternating superset rounds), and four dedicated
-accessibility audits. Earlier UI failures were isolated to synthetic test
-setup and corrected; production source hashes match across these successful
-checks. The initial combined invocation was not a full green suite; required
-remote CI and independent review remain pending. The branch now includes
-main's protected local storage and newer synthetic fixtures; input drafts
-retain the existing protected checkpoint storage and ownership guards.
-Only the lb/kg setting uses the preference store. Reverification of this
-integrated source is required. No app has been distributed by this workstream.
+[PR #179](https://github.com/namarks/tres-fort/pull/179) merged as
+`adcba1d08a4181a95100f31c4853859e1c9dc320`. Its exact reviewed head was
+`a5dd7e26f2331af0abfa9fc73c2fe588352dd92e`; fresh independent review found no
+remaining issues, its one review thread was resolved, and all eight configured
+checks passed in [CI run 34557345674](https://github.com/namarks/tres-fort/actions/runs/34557345674).
+The merge retained the reviewed tree
+`1590c9c0f5aef25e1c88745d7fdc590ea7692dce`, and ancestry on remote main was verified.
 
-Independent review identified an upgrade regression: checkpoints predating
-the unit field lost edited inputs despite unchanged prescriptions. The
-regression reproduced before correction. Missing legacy units now retain
-the exercise's existing stored-unit interpretation while all known fields
-must still match; explicit unit changes still invalidate drafts. Tests cover
-resuming an old-format checkpoint, navigation, persistence, and known-unit
-invalidation. Fresh verification and review of the correction are pending.
+Final local verification used an unsigned iPhone 17 / iOS 26.2 build: 503 unit
+tests passed, with one existing physical-device-only file-protection test
+skipped, and all four core timer/superset/kg UI journeys passed. The broader
+integrated run also passed all 21 workout UI checks, including four
+accessibility audits. The final source manifest matches every tested iOS input.
 
-Local evidence is retained in the task's `runner-feedback` artifact folder;
-the final source manifest and result summaries identify the tested snapshot.
-Superset execution uses the existing structured group metadata and scheduler;
-this work does not infer groups from names or change the member's live plan.
+Independent review identified an upgrade regression in checkpoints without
+unit metadata. The regression reproduced before correction and now passes
+through resume, navigation and persistence. Missing legacy units preserve the
+exercise's existing stored-unit interpretation when all known prescription
+fields match; explicit unit changes still invalidate stale drafts. Per-slot
+inputs retain the protected checkpoint storage and account/session/attempt
+ownership guards. Only the lb/kg setting uses the preference store.
+
+Circuit and superset execution uses existing structured group metadata and
+automatic progression. This work does not infer groups from names or change
+the member's live plan. No deployment, migration, or app distribution occurred
+in this workstream.

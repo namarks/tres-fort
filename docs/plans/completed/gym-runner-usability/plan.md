@@ -1,6 +1,6 @@
 # Gym Runner Usability
 
-Slug: gym-runner-usability · Status: active · Updated: 2026-09-10 · Theme: gym-floor
+Slug: gym-runner-usability · Status: done · Updated: 2026-09-10 · Theme: gym-floor · Archived: completed
 
 ## Goal
 
@@ -27,25 +27,18 @@ each exercise's chosen load in subsequent rounds of the same workout.
 - [x] **P1 — Reviewed repository delivery**
   - Publish the coherent branch and require independent review of its exact
     head, all configured CI checks, and post-merge evidence.
-- [ ] **P2 — App distribution**
-  - Release the reviewed iOS source under separate owner authority, with
-    the repository's device checks and distribution procedure.
-
-## Execution frontier
-
-- P2
-
-## Dependencies
-
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P2 | gated_by | external:owner-ios-distribution | Local implementation does not authorize an app release. |
+- [x] **P2 — App distribution**
+  - Release the reviewed iOS source under separate owner authority using
+    the repository's distribution procedure. Record completed checks and
+    any owner-deferred device/canary coverage.
 
 ## Next step
 
-**Now (@owner):** Authorize iOS distribution of the integrated source using
-the existing release procedure and device checks. Repository delivery is
-complete; this workstream has not distributed an app build.
+Complete. The owner authorized distribution and explicitly requested latest
+main. Version 1.0 (37) is VALID and IN_BETA_TESTING in the internal Testers group;
+its matching backend serves all traffic. See the
+[release record](../../app-store-submission/release-37.md) for exact source,
+verification, processing and the existing device/canary verification limits.
 
 ## Evidence and scope
 
@@ -73,5 +66,6 @@ ownership guards. Only the lb/kg setting uses the preference store.
 
 Circuit and superset execution uses existing structured group metadata and
 automatic progression. This work does not infer groups from names or change
-the member's live plan. No deployment, migration, or app distribution occurred
-in this workstream.
+the member's live plan. The integrated source was distributed with the latest
+Today/Calendar navigation update in build 37. No migration or production
+training-record mutation was performed by this release workflow.

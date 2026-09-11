@@ -227,21 +227,23 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 P0.1 navigation update. P2 freestyle creation and optional saving remain separate;
 the implemented Create a workout action explicitly saves to the shared library.
 The navigation design was approved in task
-`01a08dee-930f-7763-9202-29872c440f26`. Exact-head independent review and required
-CI gate repository integration. Deploy the compatible calendar-move Worker
-before distributing this client; deployment and TestFlight distribution remain
-separate owner actions. This repository change does not perform either release.
+`01a08dee-930f-7763-9202-29872c440f26`. [PR #178](https://github.com/namarks/tres-fort/pull/178)
+passed final independent review and all required CI. Under the owner's latest-main
+release authorization, its compatible calendar-move Worker was deployed before
+version 1.0 (37) became available to internal Testers. The
+[release record](../app-store-submission/release-37.md) identifies the exact source,
+serving version, TestFlight processing and remaining physical-device limits.
 
-**Client rollout (@owner):** Complete the deferred legacy-route REST checks during the
-separately authorized client rollout before distributing the first compatible
-Workouts TestFlight build. Library P0 is merged and verified in
+**Client verification (@owner):** Legacy-route REST checks and the live workout
+canary remain explicitly owner-deferred, not passed. The existing exception
+permits the completed internal distribution; do not reintroduce those checks
+as a pending upload gate. Library P0 is merged and verified in
 [PR #161](https://github.com/namarks/tres-fort/pull/161). The Workouts surface
 includes schedule badges, separate Unschedule and Delete workout actions,
 and a today-or-future date picker using the shared
 assignment guard and attempt-CAS writer. The first build keeps released outgoing
-request shapes and can ship during the rename's compatibility window after
-separate TestFlight authorization. The compatibility Worker and migration 0045
-are now released. The
+request shapes and has shipped during the rename's compatibility window.
+The compatibility Worker and migration 0045 are now released. The
 [canonical rollout status](../workouts-and-multi-session/plan.md#next-step) records
 the production evidence and the owner-approved deferral of live REST authoring,
 date-assignment and session-write checks to the client rollout. Canonical-route

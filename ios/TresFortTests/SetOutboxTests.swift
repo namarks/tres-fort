@@ -12732,6 +12732,52 @@ extension SetOutboxTests {
 }
 
 extension SetOutboxTests {
+    func testLegacyCheckpointKeepsEditedInputsAfterUpgradeAndNavigation() throws {
+        let defaults = defaults(), active = session()
+        let first = exercise(timed: true, targetWeight: 10)
+        let second = exercise(id: "slot-b", exerciseID: "exercise-b")
+        let input = RunnerInputState(prescription: RunnerPrescription(first),
+            weight: 12.5, reps: 1, rpe: 7.5, durationSeconds: 75)
+        let checkpoint = WorkoutRunnerCheckpoint(date: fixedCivilDate, sessionID: active.id,
+            selectedDayID: "day-a", currentSlotID: first.id, skippedSlotIDs: [],
+            workoutStartedAtMS: Int(fixedDate.timeIntervalSince1970 * 1_000), finished: false, input: input)
+        var encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(checkpoint)) as? [String: Any])
+        var oldInput = try XCTUnwrap(encoded["input"] as? [String: Any])
+        var oldPrescription = try XCTUnwrap(oldInput["prescription"] as? [String: Any])
+        oldPrescription.removeValue(forKey: "unit")
+        oldInput["prescription"] = oldPrescription
+        encoded["input"] = oldInput
+        encoded.removeValue(forKey: "inputsBySlot")
+        XCTAssertTrue(defaults.set(try JSONSerialization.data(withJSONObject: encoded),
+                                  forKey: WorkoutRunnerCheckpointStore.scopedKey(userID: "user-a")))
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [], exercises: [first, second]))
+        XCTAssertTrue(model.hasResumableWorkout)
+        model.resumeWorkout()
+        XCTAssertEqual(model.currentInputState, input)
+        model.next()
+        model.previous()
+        XCTAssertEqual(model.currentInputState, input)
+        let recovered = try XCTUnwrap(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults))
+        XCTAssertEqual(recovered.inputsBySlot?[first.id], input)
+    }
+
+    func testKnownChangedUnitStillInvalidatesRunnerDraft() throws {
+        let ex = exercise(targetWeight: 100)
+        let draft = RunnerInputState(prescription: RunnerPrescription(ex),
+            weight: 112.5, reps: 7, rpe: 8, durationSeconds: 45)
+        var encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(draft)) as? [String: Any])
+        var prescription = try XCTUnwrap(encoded["prescription"] as? [String: Any])
+        prescription["unit"] = "kg"
+        encoded["prescription"] = prescription
+        let wrongUnit = try JSONDecoder().decode(RunnerInputState.self,
+            from: JSONSerialization.data(withJSONObject: encoded))
+        let seeded = RunnerInputPolicy.seed(ex, previous: nil, draft: wrongUnit)
+        XCTAssertEqual(seeded.weight, 100)
+        XCTAssertEqual(seeded.reps, ex.target_reps)
+        XCTAssertNil(seeded.rpe)
+    }
+
     func testSupersetLoadsCarryIntoLaterRoundsWhileOffline() async {
         let defaults = defaults(), api = SetWriteAPIStub()
         api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }

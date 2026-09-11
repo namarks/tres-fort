@@ -4558,7 +4558,7 @@ final class SyncModel: ObservableObject {
             inputs[legacy.prescription.slotID] = legacy
         }
         inputs = inputs.filter { id, input in
-            exercises.contains { $0.id == id && RunnerPrescription($0) == input.prescription }
+            exercises.contains { $0.id == id && input.prescription.matches(current: RunnerPrescription($0)) }
         }
         if let currentInputState { inputs[currentInputState.prescription.slotID] = currentInputState }
         return inputs

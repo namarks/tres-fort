@@ -43,10 +43,10 @@ each exercise's chosen load in subsequent rounds of the same workout.
 
 ## Next step
 
-**Now (@agent):** Publish `fix/timer-survives-exercise-preview`, obtain
-independent review of its exact current head, and merge after terminal-green
-configured CI. Nick explicitly authorized this repository delivery on
-2026-09-10. Verify the integrated source against current main before review.
+**Now (@agent):** Complete exact-head review and configured CI for
+[PR #179](https://github.com/namarks/tres-fort/pull/179), then merge and verify
+the integration result. Nick explicitly authorized this repository delivery
+on 2026-09-10. The source-publication gate is resolved.
 App distribution remains a separate gate.
 
 ## Evidence and scope
@@ -64,6 +64,14 @@ main's protected local storage and newer synthetic fixtures; input drafts
 retain the existing protected checkpoint storage and ownership guards.
 Only the lb/kg setting uses the preference store. Reverification of this
 integrated source is required. No app has been distributed by this workstream.
+
+Independent review identified an upgrade regression: checkpoints predating
+the unit field lost edited inputs despite unchanged prescriptions. The
+regression reproduced before correction. Missing legacy units now retain
+the exercise's existing stored-unit interpretation while all known fields
+must still match; explicit unit changes still invalidate drafts. Tests cover
+resuming an old-format checkpoint, navigation, persistence, and known-unit
+invalidation. Fresh verification and review of the correction are pending.
 
 Local evidence is retained in the task's `runner-feedback` artifact folder;
 the final source manifest and result summaries identify the tested snapshot.

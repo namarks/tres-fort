@@ -11,7 +11,7 @@ struct RunnerPrescription: Codable, Equatable {
     let reps: Int
     let duration: Int?
     let rpe: Double?
-    let unit: String?
+    private(set) var unit: String?
 
     init(_ exercise: TemplateExercise) {
         slotID = exercise.id
@@ -23,6 +23,16 @@ struct RunnerPrescription: Codable, Equatable {
         duration = exercise.target_duration_s
         rpe = exercise.target_rpe
         unit = exercise.exercise_unit
+    }
+
+    /// Older checkpoints already stored values in the exercise's catalog
+    /// unit, but did not record that unit alongside the prescription. Retain
+    /// their inputs when every known field matches; explicit unit changes
+    /// still invalidate a newer draft.
+    func matches(current: Self) -> Bool {
+        var comparable = self
+        if comparable.unit == nil { comparable.unit = current.unit }
+        return comparable == current
     }
 }
 
@@ -59,7 +69,10 @@ enum RunnerInputPolicy {
 
     static func seed(_ exercise: TemplateExercise, previous: SetLog?, draft: RunnerInputState?) -> RunnerInputState {
         let prescription = RunnerPrescription(exercise)
-        if let draft, draft.prescription == prescription { return draft }
+        if let draft, draft.prescription.matches(current: prescription) {
+            return RunnerInputState(prescription: prescription, weight: draft.weight,
+                reps: draft.reps, rpe: draft.rpe, durationSeconds: draft.durationSeconds)
+        }
         return RunnerInputState(
             prescription: prescription,
             weight: exercise.exercise_modality == "cardio" ? 0

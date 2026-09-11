@@ -89,10 +89,19 @@ evidence. Rollout and HealthKit write-back remain separate owner decisions.
   retire duplicates and restore surviving copies without deleting source data.
   Regression fixtures cover both ingestion orders, retries, deletion recovery,
   time boundaries and user isolation. This is a focused repair to shipped
-  matching, not activation or completion of P2. A later authorized Worker
-  deployment and ordinary reconciliation will apply it to existing recent rows;
-  no new migration or iOS build is required by this repair. Live cleanup and
-  device verification remain release work.
+  matching, not activation or completion of P2.
+- The owner-approved matching repair was deployed on 2026-09-11 from PR #185
+  source `1b596a19cadc308cdf7ec7380b9d133360a2bea9`, tree
+  `651ec8500b5c2af99dd48b776962cc660ac70af5`. Worker version
+  `a02cc743-bf51-43eb-ba42-9176e7ac07e6` serves 100% of traffic; `/health`
+  passed. The prior version is `aed5a37a-3c18-4b62-8bf2-c4c3a1b66c9f`.
+  No migration, configuration change or iOS distribution was needed. The
+  deployed service function was previewed and then run for the affected account
+  and recent date window through a temporary remote D1 binding. Verification
+  confirmed source rows were preserved, Intervals rows were unchanged, duplicate
+  tombstones reached incremental state and were absent from full state. This
+  proves explicit reconciliation, not a natural cron tick or a physical-device
+  refresh; the device must still receive its normal state pull. P2 remains paused.
 
 - P1 adds immediate 90-day activity reconciliation after API-key or OAuth
   connect, using the member's stored timezone and existing source fences. A

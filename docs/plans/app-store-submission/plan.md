@@ -87,7 +87,15 @@ membership in the internal **Testers** group. Do not upload it again or restore
 the waived canary as an upload gate. Other physical-device coverage remains
 unverified; neither the exception nor public reads establish production writes.
 
-Candidate release record (2026-09-10):
+Latest internal distribution: the owner subsequently requested all of latest
+main. [Version 1.0 (37)](release-37.md) includes the workout-runner fixes and
+Today/Calendar navigation from source `2d11be717089bc989afa159e18c2438787465ac7`.
+Its matching calendar-move Worker was deployed first, and Apple confirmed VALID,
+IN_BETA_TESTING and internal Testers membership. This supersedes builds 35/36
+for internal testing; it does not select an App Store review build or complete
+the remaining submission/device requirements above.
+
+Earlier candidate release record (2026-09-10):
 
 - [PR #175](https://github.com/namarks/tres-fort/pull/175) passed independent review
   at `88bb610352973a08d6d8dd9b9810adf86fbd1720`, with all eight review threads

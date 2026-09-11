@@ -10582,6 +10582,30 @@ extension SetOutboxTests {
         XCTAssertEqual(model.setCorrections.first?.deliveryState, .queued)
     }
 
+    func testDeletingLastSetMakesFinalReviewRequireMoreWork() async throws {
+        let defaults = defaults(), ex = exercise(targetSets: 1)
+        let active = session(updatedAt: 100, attempt: 0), original = correctionFixture(ex)
+        let api = SetWriteAPIStub(), terminal = SetTerminalAPIStub()
+        api.correctionHandler = { [self] intent, _ in corrected(original, intent: intent, session: active) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            terminalAPI: terminal, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [original], exercise: ex))
+        model.startWorkout(); model.finished = true
+        XCTAssertTrue(model.canFinishResolvedWorkout)
+        XCTAssertTrue(model.enqueueCorrection(set: original, values: nil))
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertTrue(model.setCorrections.isEmpty)
+        XCTAssertFalse(model.canFinishResolvedWorkout)
+        await model.finishResolvedWorkout()
+        XCTAssertTrue(terminal.completeCalls.isEmpty)
+        XCTAssertTrue(model.running)
+        model.jump(to: model.exerciseIndex)
+        XCTAssertFalse(model.finished)
+        XCTAssertEqual(model.currentExercise?.id, ex.id)
+        XCTAssertEqual(model.currentPhysicalSetNumber, 1)
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.finished, false)
+    }
+
     func testDelayedCorrectionCannotAcceptSecondLocalEditOrMoveFinalReview() async throws {
         let defaults = defaults(), ex = exercise(targetSets: 1)
         let active = session(updatedAt: 100, attempt: 0), original = correctionFixture(ex)

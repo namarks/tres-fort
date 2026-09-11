@@ -82,10 +82,9 @@ struct ProfileView: View {
                 initialName: groupModel.me?.display_name ?? "",
                 onSave: { try await groupModel.updateDisplayName($0) })
         }
-        .confirmationDialog(
+        .alert(
             "Permanently delete your account?",
-            isPresented: $showDeleteConfirmation,
-            titleVisibility: .visible
+            isPresented: $showDeleteConfirmation
         ) {
             Button("Delete Account", role: .destructive) {
                 Task { await deleteConfirmedAccount() }
@@ -153,55 +152,73 @@ struct ProfileView: View {
     // MARK: - Account
 
     private var accountSection: some View {
-        Section("Account") {
-            HStack {
-                Text("Name")
-                Spacer()
-                Text(groupModel.me?.display_name.flatMap { $0.isEmpty ? nil : $0 }
-                     ?? "Not set")
-                    .foregroundStyle(.secondary)
-                Button("Edit") { showNameEditor = true }
-                    .font(.footnote)
-            }
-            if let email = groupModel.me?.email, !email.isEmpty {
-                LabeledContent("Apple ID", value: email)
-            }
-            Button {
-                Task { await downloadAccountData() }
-            } label: {
-                if isExportingAccount {
-                    HStack {
-                        ProgressView().controlSize(.small)
-                        Text("Preparing account data…")
-                    }
-                } else {
-                    Label("Download account data", systemImage: "square.and.arrow.down")
+        Section {
+            Button { showNameEditor = true } label: {
+                HStack {
+                    Text(groupModel.me?.display_name.flatMap { $0.isEmpty ? nil : $0 }
+                         ?? "Set your name")
+                        .foregroundStyle(Theme.text)
+                    Spacer()
+                    Text("Edit name").foregroundStyle(Theme.accent)
                 }
+                .frame(minHeight: 44).contentShape(Rectangle())
             }
-            .disabled(isExportingAccount || isDeletingAccount || auth.accountDeletionPending)
-            Text("Saves a JSON file containing your profile and training data. It excludes credentials, access tokens, invite codes, and other members’ private data.")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            Button(role: .destructive) { auth.signOut() } label: {
-                Text("Sign out")
-            }
-            .disabled(isDeletingAccount || auth.accountDeletionPending)
-            Button(role: .destructive) {
-                showDeleteConfirmation = true
+            .accessibilityIdentifier("profile.editName")
+            NavigationLink {
+                accountSettings
             } label: {
-                if isDeletingAccount {
-                    HStack {
-                        ProgressView().controlSize(.small)
-                        Text("Deleting account…")
-                    }
-                } else {
-                    Text(auth.accountDeletionPending
-                         ? "Retry account deletion"
-                         : "Delete account")
-                }
+                Label("Account", systemImage: "person.crop.circle")
             }
-            .disabled(isDeletingAccount)
+            .accessibilityIdentifier("profile.account")
         }
+    }
+
+    private var accountSettings: some View {
+        Form {
+            if let email = groupModel.me?.email, !email.isEmpty {
+                Section { LabeledContent("Apple ID", value: email) }
+            }
+            Section {
+                Button {
+                    Task { await downloadAccountData() }
+                } label: {
+                    if isExportingAccount {
+                        HStack {
+                            ProgressView().controlSize(.small)
+                            Text("Preparing account data…")
+                        }
+                    } else {
+                        Label("Download account data", systemImage: "square.and.arrow.down")
+                    }
+                }
+                .disabled(isExportingAccount || isDeletingAccount || auth.accountDeletionPending)
+            } footer: {
+                Text("Saves a JSON file containing your profile and training data. It excludes credentials, access tokens, invite codes, and other members’ private data.")
+            }
+            Section {
+                Button(role: .destructive) { auth.signOut() } label: {
+                    Text("Sign out")
+                }
+                .disabled(isDeletingAccount || auth.accountDeletionPending)
+                Button(role: .destructive) {
+                    showDeleteConfirmation = true
+                } label: {
+                    if isDeletingAccount {
+                        HStack {
+                            ProgressView().controlSize(.small)
+                            Text("Deleting account…")
+                        }
+                    } else {
+                        Text(auth.accountDeletionPending
+                             ? "Retry account deletion"
+                             : "Delete account")
+                    }
+                }
+                .disabled(isDeletingAccount)
+            }
+        }
+        .navigationTitle("Account")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     private func downloadAccountData() async {

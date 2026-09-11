@@ -655,6 +655,17 @@ private struct UIFixtureServer {
                 "target_sets": body["target_sets"] ?? NSNull(), "cleared": ids.isEmpty]
             groupReceipts[receiptKey] = ack
             response = ack
+        case ("POST", "/api/sessions") where scenario == .appStore:
+            // The screenshot fixture includes earlier sessions. Starting today
+            // must bind today's session, never the first historical record.
+            if let existing = sessions.first(where: { $0["date"] as? String == body["date"] as? String }) {
+                response = existing
+            } else {
+                guard body["expected_attempt"] as? Int == 0 else { throw URLError(.badServerResponse) }
+                let session = makeSession(attempt: 0)
+                sessions.append(session)
+                response = session
+            }
         case ("POST", "/api/sessions"):
             if sessions.isEmpty {
                 guard body["expected_attempt"] as? Int == 0 else { throw URLError(.badServerResponse) }
@@ -680,8 +691,44 @@ private struct UIFixtureServer {
             set["logged_at"] = revision
             sets.removeAll { ($0["id"] as? String) == (set["id"] as? String) }
             sets.append(set)
-            sessions = [makeSession(attempt: sessions.first?["attempt"] as? Int ?? 0)]
-            response = ["set": set, "session": sessions[0], "deduped": false]
+            let current = makeSession(attempt: sessions.first(where: { $0["id"] as? String == sessionID })?["attempt"] as? Int ?? 0)
+            sessions.removeAll { $0["id"] as? String == sessionID }
+            sessions.append(current)
+            response = ["set": set, "session": current, "deduped": false]
+        case ("DELETE", let path) where scenario == .appStore && path.hasPrefix("/api/days/\(dayID)/exercises/"):
+            let slotID = String(path.split(separator: "/").last ?? "")
+            var days = plan!["days"] as! [[String: Any]]
+            let index = days.firstIndex { $0["id"] as? String == dayID }!
+            var slots = days[index]["exercises"] as! [[String: Any]]
+            guard slots.contains(where: { $0["id"] as? String == slotID }) else { throw URLError(.badServerResponse) }
+            slots.removeAll { $0["id"] as? String == slotID }
+            days[index]["exercises"] = slots
+            plan?["days"] = days
+            let version = (plan?["version"] as? Int ?? 1) + 1
+            plan?["version"] = version
+            response = ["id": slotID]
+        case ("PATCH", let path) where scenario == .appStore && path.hasPrefix("/api/days/\(dayID)/exercises/"):
+            let slotID = String(path.split(separator: "/").last ?? "")
+            var days = plan!["days"] as! [[String: Any]]
+            let dayIndex = days.firstIndex { $0["id"] as? String == dayID }!
+            var slots = days[dayIndex]["exercises"] as! [[String: Any]]
+            guard let from = slots.firstIndex(where: { $0["id"] as? String == slotID }),
+                  let to = body["order_index"] as? Int, slots.indices.contains(to) else { throw URLError(.badServerResponse) }
+            let slot = slots.remove(at: from)
+            slots.insert(slot, at: to)
+            for index in slots.indices { slots[index]["order_index"] = index }
+            days[dayIndex]["exercises"] = slots
+            plan?["days"] = days
+            let version = (plan?["version"] as? Int ?? 1) + 1
+            plan?["version"] = version
+            response = ["id": slotID]
+        case ("PATCH", "/api/sets/synthetic-set") where scenario == .readyToFinish && body["deleted"] as? Bool == true:
+            guard let index = sets.firstIndex(where: { $0["id"] as? String == "synthetic-set" }) else { throw URLError(.badServerResponse) }
+            sets[index]["deleted_at"] = revision
+            sets[index]["updated_at"] = revision
+            var corrected = sets[index]
+            corrected["session"] = sessions[0]
+            response = corrected
         case ("PATCH", "/api/sets/synthetic-set"):
             status = 422; response = ["error": "Synthetic correction rejected"]
         case ("PATCH", "/api/sessions/\(sessionID)"):
@@ -698,19 +745,22 @@ private struct UIFixtureServer {
                 response = ["error": "session_feedback_conflict", "current_session": sessions[0]]
                 break
             }
-            var completed = makeSession(status: "completed", attempt: sessions.first?["attempt"] as? Int ?? 0)
-            completed["notes"] = body["notes"] ?? sessions.first?["notes"]
-            completed["perceived_fatigue"] = body["perceived_fatigue"] ?? sessions.first?["perceived_fatigue"]
-            sessions = [completed]
-            response = sessions[0]
+            let current = sessions.first { $0["id"] as? String == sessionID }
+            var completed = makeSession(status: "completed", attempt: current?["attempt"] as? Int ?? 0)
+            completed["notes"] = body["notes"] ?? current?["notes"]
+            completed["perceived_fatigue"] = body["perceived_fatigue"] ?? current?["perceived_fatigue"]
+            sessions.removeAll { $0["id"] as? String == sessionID }
+            sessions.append(completed)
+            response = completed
         case ("GET", "/api/sessions/\(sessionID)/summary"):
-            let workingSets = sets.filter { $0["is_warmup"] as? Int == 0 }
+            let workingSets = sets.filter { $0["is_warmup"] as? Int == 0 && $0["session_id"] as? String == sessionID && $0["deleted_at"] == nil }
             let totalReps = workingSets.reduce(0) { $0 + ($1["reps"] as? Int ?? 0) }
             let externalVolume = workingSets.reduce(0.0) {
                 $0 + ($1["weight"] as? Double ?? 0) * Double($1["reps"] as? Int ?? 0)
             }
-            response = ["version": 1, "session_id": sessionID, "date": "2026-09-08", "attempt": sessions.first?["attempt"] ?? 0,
-                "final": sessions.first?["status"] as? String == "completed", "working_sets": workingSets.count,
+            let current = sessions.first { $0["id"] as? String == sessionID }
+            response = ["version": 1, "session_id": sessionID, "date": "2026-09-08", "attempt": current?["attempt"] ?? 0,
+                "final": current?["status"] as? String == "completed", "working_sets": workingSets.count,
                 "total_reps": totalReps, "external_load_volume": externalVolume,
                 "cohorts": [], "records": [], "targets_available": false, "targets": []]
         default:

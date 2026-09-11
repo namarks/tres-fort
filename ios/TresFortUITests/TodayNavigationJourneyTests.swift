@@ -160,6 +160,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
         app.launch()
         tap(app.buttons["FINISH"], in: app)
         XCTAssertTrue(app.staticTexts["WORKOUT FINISH WAITING TO SYNC"].waitForExistence(timeout: 10))
+        tap(app.buttons["today.workoutActions"], in: app)
         let discard = app.buttons["today.discardWorkout"]
         XCTAssertTrue(discard.isEnabled)
         tap(discard, in: app)

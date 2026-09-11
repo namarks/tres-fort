@@ -146,6 +146,7 @@ struct SetValuesEditor: View {
     @State private var rpe: String
     @State private var duration: String
     @State private var error: String?
+    @State private var showDeleteConfirmation = false
 
     init(title: String, values: SetCorrectionValues, setDescription: String? = nil,
          timed: Bool, allowsAssistance: Bool, storedUnit: WeightUnit = .lb,
@@ -201,9 +202,9 @@ struct SetValuesEditor: View {
                 valueField("RPE (optional)", placeholder: "—", text: $rpe, keyboard: .decimalPad)
                 if allowsAssistance { Text("Use a negative load for assistance, 0 for bodyweight, or a positive added load.").font(.caption) }
                 if let error { Text(error).foregroundStyle(.red) }
-                if let onDelete {
+                if onDelete != nil {
                     Button("Delete set", role: .destructive) {
-                        if onDelete() { dismiss() } else { error = "Workout changed. Close this sheet and review the set again." }
+                        showDeleteConfirmation = true
                     }
                     .accessibilityLabel("Delete " + (setDescription ?? "set"))
                 }
@@ -211,6 +212,15 @@ struct SetValuesEditor: View {
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
             .onAppear { weight.select(WeightUnit(rawValue: weightUnitRaw) ?? .lb) }
+            .alert("Delete \(setDescription ?? "this set")?", isPresented: $showDeleteConfirmation) {
+                Button("Delete set", role: .destructive) {
+                    if onDelete?() == true { dismiss() }
+                    else { error = "Workout changed. Close this sheet and review the set again." }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This set will be removed from your workout record and totals.")
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

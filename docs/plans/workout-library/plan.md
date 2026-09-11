@@ -106,6 +106,17 @@ No second editor, no per-session template copies, no weeks table.
     mutation and active-workout guards remain in place. Library UI journeys
     run in PR smoke coverage, including row hit areas and cancellation. This
     follow-up requires a separately authorized app distribution to reach devices.
+  - Owner-approved action cleanup (2026-09-11): Profile keeps name editing and
+    one Account route; export, sign-out and account deletion live inside Account.
+    The runner keeps the current set action and values above the tab bar while
+    inputs scroll. Workout editing separates normal rows from explicit reorder
+    and grouping modes. Exercise removal and set deletion require named alerts
+    with Cancel. Early finish distinguishes Keep working, Save feedback & finish,
+    and finishing without new feedback. Removing a required set replaces the
+    unavailable final Finish action with Review exercises; returning reopens and
+    checkpoints the runner. Regression journeys exercise actual taps through
+    rest, reordering, deletion, and both finish choices. These client changes
+    require a separately authorized distribution to reach devices.
 - [ ] **P1 — Library metadata: tags and archive**
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work

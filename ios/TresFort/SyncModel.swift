@@ -4843,6 +4843,9 @@ final class SyncModel: ObservableObject {
 
     func jump(to index: Int) {
         guard exercises.indices.contains(index) else { return }
+        // Returning from final review is an explicit runner selection too.
+        // Persist the reopened state with the selected exercise below.
+        finished = false
         // Explicit focus supersedes deferred repair and every older pending
         // deletion. A deletion initiated after this choice remains eligible.
         deferredGroupRepair = nil
@@ -5008,12 +5011,13 @@ final class SyncModel: ObservableObject {
     /// refresh may reopen work before SwiftUI removes that view. Revalidate
     /// the completion state at action time; the overflow menu intentionally
     /// keeps `finishWorkout()` as its explicit early-end path.
+    var canFinishResolvedWorkout: Bool {
+        running && finished && !exercises.isEmpty
+            && exercises.allSatisfy { isRunnerResolved($0) }
+    }
+
     func finishResolvedWorkout() async {
-        guard running,
-              finished,
-              !exercises.isEmpty,
-              exercises.allSatisfy({ isRunnerResolved($0) })
-        else { return }
+        guard canFinishResolvedWorkout else { return }
         await finishWorkout()
     }
 

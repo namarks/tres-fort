@@ -104,7 +104,7 @@ final class WorkoutFeedbackJourneyTests: XCTestCase {
                 app.buttons["Cancel recording"].tap()
                 XCTAssertEqual(app.textViews["feedback.note"].value as? String, "")
             }
-            app.buttons["Skip"].tap()
+            app.buttons["Cancel"].tap()
             finish(app)
             XCTAssertFalse(app.staticTexts["feedback.saved-note"].exists)
             app.terminate()

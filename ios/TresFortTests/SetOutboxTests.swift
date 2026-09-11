@@ -335,6 +335,7 @@ private final class SetRoutineEditingAPIStub: RoutineEditingAPI {
     var deleteDayHandler: ((String, Int, String) async throws -> APIClient.DeleteWorkoutResult)?
     var scheduleHandler: (([String: String], String, Int, String) async throws -> APIClient.ScheduleWriteResult)?
     var calendarHandler: ((String, String?, Int?, String) async throws -> APIClient.CalendarWriteResult)?
+    var calendarMoveHandler: ((APIClient.CalendarMoveRequest) async throws -> APIClient.CalendarMoveResult)?
     private(set) var updateDayCalls = 0
     private(set) var deleteDayCalls = 0
     private(set) var scheduleCalls = 0
@@ -411,6 +412,11 @@ private final class SetRoutineEditingAPIStub: RoutineEditingAPI {
         scheduleCalls += 1
         guard let scheduleHandler else { throw URLError(.badServerResponse) }
         return try await scheduleHandler(week, expectedPlanID, expectedVersion, jwt)
+    }
+
+    func moveCalendarWorkout(_ request: APIClient.CalendarMoveRequest, jwt: String) async throws -> APIClient.CalendarMoveResult {
+        guard let calendarMoveHandler else { throw URLError(.badServerResponse) }
+        return try await calendarMoveHandler(request)
     }
 
     func setCalendarDate(
@@ -12728,5 +12734,110 @@ extension SetOutboxTests {
         XCTAssertFalse(model.canCreateRoutine)
         auth.signOut()
         XCTAssertFalse(model.canCreateRoutine)
+    }
+}
+
+@MainActor
+extension SetOutboxTests {
+    func testTodayPreviewNeverFallsBackToUnrelatedSelectedOrFirstWorkout() {
+        let defaults = defaults()
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), defaults: defaults, now: { self.fixedDate })
+        let workout = day(with: [exercise()])
+        let key = CalendarProjection.weekdayKey(forDateString: fixedCivilDate)!
+        let meta = "{\"schedule\":{\"version\":1,\"week\":{\"\(key)\":\"day-a\"}}}"
+        for (status, id, schedule, expected): (String, String?, String?, String?) in [
+            ("planned", nil, nil, nil), ("in_progress", nil, nil, nil),
+            ("planned", "removed-workout", meta, nil),
+            ("completed", nil, meta, nil), ("skipped", nil, meta, nil),
+            ("planned", nil, meta, "day-a"), ("planned", "day-a", nil, "day-a"),
+        ] {
+            let row = SessionRow(id: UUID().uuidString, date: fixedCivilDate, status: status, workout_id: id, attempt: 0)
+            model.replaceState(with: state(session: row, sets: [], workouts: [workout], planMeta: schedule))
+            model.selectedDayID = workout.id
+            XCTAssertEqual(model.todayPreviewWorkout?.id, expected, "\(status), \(id ?? "null")")
+        }
+    }
+
+    func testCalendarAssignmentAcknowledgementStillSucceedsWhenRefreshFails() async {
+        let defaults = defaults(), api = SetRoutineEditingAPIStub(), stateAPI = SetWriteAPIStub()
+        let row = session(status: "planned", attempt: 1)
+        api.calendarHandler = { _, _, _, _ in .init(ok: true, session: row) }
+        stateAPI.stateHandler = { _ in throw URLError(.notConnectedToInternet) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: stateAPI,
+            routineEditingAPI: api, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: row, sets: [], workouts: [day(with: [exercise()])]))
+        let accepted = await model.setCalendarOverride(date: fixedCivilDate, dayID: "day-a")
+        XCTAssertTrue(accepted)
+        XCTAssertNotNil(model.loadError)
+        XCTAssertEqual(api.calendarCalls, 1)
+    }
+
+    func testCalendarMoveCapturesBothDatesAndRetainsReceiptOnRetry() async throws {
+        let defaults = defaults(), api = SetRoutineEditingAPIStub(), stateAPI = SetWriteAPIStub()
+        let from = session(status: "planned", attempt: 3)
+        let toDate = "2037-01-06"
+        var requests: [APIClient.CalendarMoveRequest] = []
+        api.calendarMoveHandler = { request in
+            requests.append(request)
+            if requests.count == 1 { throw URLError(.networkConnectionLost) }
+            return .init(ok: true,
+                         from: SessionRow(id: from.id, date: from.date, status: "skipped", workout_id: nil, attempt: 4),
+                         to: SessionRow(id: "destination", date: toDate, status: "planned", workout_id: "day-a", attempt: 1))
+        }
+        stateAPI.stateHandler = { _ in throw URLError(.notConnectedToInternet) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: stateAPI,
+            routineEditingAPI: api, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: from, sets: [], workouts: [day(with: [exercise()])]))
+        let request = try XCTUnwrap(model.calendarMoveRequest(from: fixedCivilDate, to: toDate, workoutID: "day-a"))
+        XCTAssertEqual(request.fromAttempt, 3); XCTAssertEqual(request.toAttempt, 0)
+        XCTAssertEqual(request.planID, "plan-a"); XCTAssertEqual(request.planVersion, 1)
+        let first = await model.moveCalendarWorkout(request)
+        let retry = await model.moveCalendarWorkout(request)
+        XCTAssertFalse(first); XCTAssertTrue(retry)
+        XCTAssertEqual(requests, [request, request])
+        XCTAssertNotNil(model.loadError, "The committed move stays acknowledged despite refresh failure")
+    }
+
+    func testCalendarMoveBlocksOccupiedDatesAndLocallyRunningWorkouts() {
+        let defaults = defaults()
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), defaults: defaults, now: { self.fixedDate })
+        let from = session(status: "planned", attempt: 3)
+        model.replaceState(with: state(session: from, sets: [], workouts: [day(with: [exercise()])]))
+        XCTAssertNil(model.calendarMoveRequest(from: fixedCivilDate, to: fixedCivilDate, workoutID: "day-a"))
+        model.sessions.append(session(id: "occupied", date: "2037-01-06", status: "planned", attempt: 1))
+        XCTAssertNil(model.calendarMoveRequest(from: fixedCivilDate, to: "2037-01-06", workoutID: "day-a"))
+        model.startWorkout()
+        XCTAssertTrue(model.running)
+        XCTAssertNil(model.calendarMoveRequest(from: fixedCivilDate, to: "2037-01-07", workoutID: "day-a"))
+    }
+
+    func testQueuedCalendarMoveRechecksCivilDayBeforeWriting() async throws {
+        let defaults = defaults(), api = SetRoutineEditingAPIStub(), stateAPI = SetWriteAPIStub()
+        let entered = SetAsyncLatch(), release = SetAsyncLatch()
+        let from = session(status: "planned", attempt: 0)
+        var now = fixedDate
+        var moves = 0
+        api.scheduleHandler = { _, _, _, _ in
+            await entered.open(); await release.wait()
+            return .init(ok: true, version: 2, schedule: PlanSchedule(version: 2, week: [:]))
+        }
+        api.calendarMoveHandler = { _ in
+            moves += 1
+            throw URLError(.badServerResponse)
+        }
+        stateAPI.stateHandler = { [self] _ in state(session: from, sets: [], exercise: exercise()) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(), routineEditingAPI: api, defaults: defaults, now: { now })
+        model.replaceState(with: state(session: from, sets: [], exercise: exercise()))
+        let request = try XCTUnwrap(model.calendarMoveRequest(from: fixedCivilDate, to: "2037-01-06", workoutID: "day-a"))
+        let schedule = Task { await model.saveRecurringSchedule([:]) }
+        await entered.wait()
+        let move = Task { await model.moveCalendarWorkout(request) }
+        for _ in 0..<20 { await Task.yield() }
+        now = now.addingTimeInterval(86_400)
+        await release.open(); await schedule.value
+        let accepted = await move.value
+        XCTAssertFalse(accepted)
+        XCTAssertEqual(moves, 0)
     }
 }

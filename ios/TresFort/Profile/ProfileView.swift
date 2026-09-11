@@ -32,6 +32,7 @@ struct ProfileView: View {
     @ObservedObject var groupModel: GroupModel
     @ObservedObject var auth: AuthModel
     @ObservedObject var health: HealthKitSyncModel
+    var sync: SyncModel? = nil
 
     @State private var showJoin = false
     @State private var showCreate = false
@@ -231,6 +232,18 @@ struct ProfileView: View {
     @ViewBuilder
     private var coachSection: some View {
         Section {
+            if let sync {
+                NavigationLink {
+                    CoachingContextView(sync: sync)
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Training overview")
+                        Text("Recorded training and plan settings your coach can read.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
+                .accessibilityIdentifier("profile.trainingOverview")
+            }
             if groupModel.me?.claude.connected == true {
                 HStack(spacing: 10) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)

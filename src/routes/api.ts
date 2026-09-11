@@ -67,6 +67,7 @@ import {
   comparePlanVersions,
   setPlanSchedule,
   setPlannedSession,
+  moveCalendarWorkout,
   skipPlannedSession,
   setGroupDisplayName,
   setUserDisplayName,
@@ -512,6 +513,30 @@ apiRoutes.put('/calendar/:date', async (c) => {
     'ios',
   );
   return c.json(workoutWire(result));
+});
+
+apiRoutes.post('/calendar/:date/move', async (c) => {
+  const date = c.req.param('date');
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const civilDate: FieldRule = (value) => typeof value === 'string' && ISO_DATE_RE.test(value)
+    && Number.isFinite(Date.parse(`${value}T12:00:00Z`))
+    && new Date(`${value}T12:00:00Z`).toISOString().slice(0, 10) === value;
+  const invalid = invalidMutationFields(b, {
+    id: (value) => typeof value === 'string' && UUID_RE.test(value),
+    to_date: civilDate, today: civilDate, workout_id: isNonEmptyString,
+    expected_plan_id: isNonEmptyString, expected_version: isPositiveInteger,
+    expected_from_attempt: isNonNegativeInteger, expected_to_attempt: isNonNegativeInteger,
+  }, {});
+  if (!civilDate(date) || invalid.length) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const result = await moveCalendarWorkout(c.env.DB, c.get('userId'), {
+    id: String(b.id), from_date: date, to_date: String(b.to_date), today: String(b.today),
+    workout_id: String(b.workout_id), expected_plan_id: String(b.expected_plan_id),
+    expected_version: Number(b.expected_version), expected_from_attempt: Number(b.expected_from_attempt),
+    expected_to_attempt: Number(b.expected_to_attempt),
+  });
+  return c.json(workoutWire(result), 'error' in result ? 409 : 200);
 });
 
 // Group authoring always carries an observed plan version. Empty membership

@@ -253,6 +253,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `DELETE /api/workouts/{id}/exercises/{teId}` | Remove a slot; detaches (NULLs) historical `set_logs.template_exercise_id`. |
 | `PUT /api/workouts/{id}/groups` | `{group_id, exercises:[slot IDs], expected_version, round_rest, transition_rest?, target_sets?, order_index?}` creates or rewrites a group; optional `order_index` moves the complete block. Send `exercises:[]` with only `group_id` and `expected_version` to ungroup. Uses the same atomic, audited service as MCP. An exact acknowledged retry returns the original result before stale-version rejection, without reapplying a superseded grouping. |
 | `PUT /api/plan/schedule` | Replace the recurring weekday → day/rest map with optimistic concurrency on both `expected_plan_id` and `expected_version`. |
+| `POST /api/calendar/{date}/move` | Move one projected or unstarted workout to an empty date. The request pins the workout, active plan/version, both observed attempts and a caller UUID. Source rest, destination assignment and audit receipt commit atomically. Both attempts advance; an identical retry returns its original acknowledgement. A concurrent change to either date or the weekly schedule rejects the whole move. |
 | `PUT /api/calendar/{date}` | Assign one concrete date to a day (`workout_id`) or rest (`null`) without changing the recurring schedule or plan version. `expected_attempt=0` represents no observed assignment; the first assignment and every changed choice advance the session attempt, while an identical retry is idempotent. Started/completed sessions cannot be reassigned, and iOS also fences the mutation against a locally running workout before its first set creates the server session or a hard travel blackout. |
 
 Canonical routes use `/api/workouts`; `/api/days` remains an alias for one
@@ -665,7 +666,11 @@ history; incremental network pulls do not make it constant-cost. See the
 [measured client evidence](plans/completed/app-quality-and-maintainability/evidence/p2/README.md)
 for datasets, budgets and memory tradeoffs.
 
-- **Today:** exercise list, big weight/reps steppers, log-set button, rest
+- **Today:** compact scheduled/completed card with named workout details,
+  explicit Start/Continue, Choose a workout, Create a workout, and Log an
+  activity actions. Choose opens the shared library; Create saves a named
+  library entry before opening its editor. Completed records open separately.
+  The active runner retains its exercise list, big weight/reps steppers, log-set button, rest
   timer overlay + Live Activity trigger + **audio cue when rest ends** (RestCue:
   chime/haptic/speech, headphone-aware), last-time chips per exercise. Per-set
   completion keys on `template_exercise_id` (the slot), not `exercise_id`, so the
@@ -674,12 +679,17 @@ for datasets, budgets and memory tradeoffs.
   (`EditWorkoutSheet`), editing the active plan's library workout via the REST
   editor endpoints. Members and Claude share the versioned prescription; this is the executor
   letting you tweak the session in front of you.
-- **History:** per-exercise Swift Charts trend, last-session preview.
+- **Calendar:** past and future dates, explicit date assignment/removal/move,
+  and separate routes to the repeating weekly schedule and exercise progress
+  (Swift Charts trend and last-session preview). A move requires the compatible
+  Worker before distributing this client; repository delivery does not deploy it.
+  Date notes and fatigue stay on their original dates when the assignment moves.
 - **Workouts:** keep reusable workouts with weekday badges or "On demand".
-  Edit prescriptions, use a workout on a date, or configure an optional weekly
-  schedule. Unschedule clears recurring weekdays only; Delete workout retains
+  Open named details before editing prescriptions or using a workout on a date.
+  Plan changes and recent-change review live in this library. Unschedule clears recurring weekdays only; Delete workout retains
   the existing history-preserving deletion semantics. Calendar exceptions use
   the shared attempt-CAS writer and leave the weekly schedule unchanged.
+- **Profile:** Training overview lives in the Coach section alongside coach setup.
 - **Auth:** Sign in with Apple → Keychain JWT; 401 → re-auth.
 - **No in-app chat** (by design — you chat in the Claude app; this reflects state).
 - UI per the React artifact (dark scoreboard, condensed display type, mono

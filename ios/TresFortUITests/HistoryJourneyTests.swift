@@ -11,8 +11,8 @@ final class HistoryJourneyTests: XCTestCase {
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "history-progress"
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
-        XCTAssertTrue(app.segmentedControls.buttons["Exercises"].waitForExistence(timeout: 15))
-        app.segmentedControls.buttons["Exercises"].tap()
+        XCTAssertTrue(app.buttons["calendar.exerciseProgress"].waitForExistence(timeout: 15))
+        app.buttons["calendar.exerciseProgress"].tap()
         app.buttons["history.exercise.exercise-0"].tap()
         let chart = app.descendants(matching: .any).matching(identifier: "history.progress.chart")
         XCTAssertTrue(chart.firstMatch.waitForExistence(timeout: 5))
@@ -53,7 +53,7 @@ final class HistoryJourneyTests: XCTestCase {
         let expectedCount = fixture == "history-small" ? "288 sets" : "24960 sets"
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch() // Seed once; excluded from cached cold launch samples.
-        XCTAssertTrue(app.segmentedControls.buttons["Exercises"].waitForExistence(timeout: 15))
+        XCTAssertTrue(app.buttons["calendar.exerciseProgress"].waitForExistence(timeout: 15))
         XCTAssertEqual(app.staticTexts["fixture.scenario"].value as? String, expectedCount, "Seed must be loaded before terminating")
         app.terminate()
         app.launchEnvironment["TRESFORT_UI_REUSE_HISTORY"] = "1"
@@ -61,14 +61,14 @@ final class HistoryJourneyTests: XCTestCase {
             var times: [String: Double] = [:]
             var start = Date()
             app.launch()
-            XCTAssertTrue(app.segmentedControls.buttons["Exercises"].waitForExistence(timeout: 15))
+            XCTAssertTrue(app.buttons["calendar.exerciseProgress"].waitForExistence(timeout: 15))
             XCTAssertEqual(app.staticTexts["fixture.scenario"].value as? String, expectedCount, "Cached launch must retain seeded rows")
             times["cached_launch_to_calendar_wall_ms"] = Date().timeIntervalSince(start) * 1_000
             start = Date()
             app.swipeUp()
             times["calendar_swipe_wall_ms"] = Date().timeIntervalSince(start) * 1_000
             start = Date()
-            app.segmentedControls.buttons["Exercises"].tap()
+            app.buttons["calendar.exerciseProgress"].tap()
             let row = app.buttons.matching(identifier: "history.exercise.exercise-0").firstMatch
             // Only a viewport is built eagerly; scroll to a real history row.
             for _ in 0..<12 where !row.exists || !row.isHittable { app.swipeUp() }

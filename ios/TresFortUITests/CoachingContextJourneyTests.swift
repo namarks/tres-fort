@@ -5,14 +5,14 @@ final class CoachingContextJourneyTests: XCTestCase {
     func testAuthoredContextAndRecentFeedbackRetainRecordedSetSemantics() throws {
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "CoachingContext", withExtension: "json"))
         let app = XCUIApplication()
-        app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "plan-changes"
+        app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "app-store"
         app.launchEnvironment["TRESFORT_UI_COACHING_CONTRACT"] = String(decoding: try Data(contentsOf: url), as: UTF8.self)
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
-        XCTAssertTrue(app.buttons["Workout options"].waitForExistence(timeout: 15))
-        app.buttons["Workout options"].tap()
-        app.buttons["Coaching context"].tap()
-        XCTAssertTrue(app.navigationBars["Coaching context"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.tabBars.buttons["Profile"].waitForExistence(timeout: 15))
+        app.tabBars.buttons["Profile"].tap()
+        app.buttons["profile.trainingOverview"].tap()
+        XCTAssertTrue(app.navigationBars["Training overview"].waitForExistence(timeout: 10))
         app.buttons["coaching.session.recent"].tap()
         let hold = app.staticTexts["Plank: 45s · bodyweight"]
         for _ in 0..<4 where !hold.isHittable { app.swipeUp() }

@@ -7910,6 +7910,125 @@ export async function deleteWorkout(
   return { ok: true, version: updatedPlan.version };
 }
 
+export interface CalendarMoveInput {
+  id: string;
+  from_date: string;
+  to_date: string;
+  today: string;
+  workout_id: string;
+  expected_plan_id: string;
+  expected_version: number;
+  expected_from_attempt: number;
+  expected_to_attempt: number;
+}
+
+export interface CalendarMoveAcknowledgement {
+  ok: true;
+  from: SessionRow;
+  to: SessionRow;
+}
+
+/** Two date exceptions and their retry receipt commit together. Notes and
+ * fatigue remain on their original dates, as with a date assignment/removal. */
+export async function moveCalendarWorkout(db: D1Database, userId: string, input: CalendarMoveInput): Promise<
+  CalendarMoveAcknowledgement | { error: 'calendar_move_conflict' | 'invalid_move' | 'idempotency_conflict' }
+> {
+  const args = JSON.stringify(input);
+  const receiptID = `calendar-move:${input.id}`;
+  const readReceipt = async () => {
+    const row = await workoutDB(db).prepare(
+      'SELECT user_id,args,result FROM audit_log WHERE id=?1').bind(receiptID)
+      .first<{ user_id: string; args: string; result: string }>();
+    if (!row) return null;
+    if (row.user_id !== userId || row.args !== args) return { error: 'idempotency_conflict' as const };
+    return JSON.parse(row.result).acknowledgement as CalendarMoveAcknowledgement;
+  };
+  const previous = await readReceipt();
+  if (previous) return previous;
+  if (input.from_date === input.to_date || input.from_date < input.today || input.to_date < input.today) {
+    return { error: 'invalid_move' };
+  }
+  const plan = await getPlanTree(db, userId);
+  if (!plan || plan.id !== input.expected_plan_id || plan.version !== input.expected_version
+      || !plan.workouts.some((workout) => workout.id === input.workout_id)) {
+    return { error: 'calendar_move_conflict' };
+  }
+  const rows = (await workoutDB(db).prepare(
+    'SELECT * FROM sessions WHERE user_id=?1 AND date IN (?2,?3)')
+    .bind(userId, input.from_date, input.to_date).all<SessionRow>()).results;
+  const from = rows.find((row) => row.date === input.from_date);
+  const to = rows.find((row) => row.date === input.to_date);
+  if ((from?.attempt ?? 0) !== input.expected_from_attempt || (to?.attempt ?? 0) !== input.expected_to_attempt
+      || rows.some((row) => !['planned', 'skipped', 'discarded'].includes(row.status))) {
+    return { error: 'calendar_move_conflict' };
+  }
+  const meta = parsePlanMeta(plan.meta);
+  const project = (date: string) => projectCalendar(plan, meta.schedule, rows, date, date,
+    input.today, plan.workouts.map((workout) => workout.id), meta.trips)[0];
+  const origin = project(input.from_date);
+  const destination = project(input.to_date);
+  const resolvedWorkout = (cell: CalendarCell | undefined) => {
+    if (!cell || cell.suppresses_schedule_and_endurance) return null;
+    if (cell.status === 'skipped' || cell.status === 'rest') return null;
+    if (cell.workout_id) return cell.workout_id;
+    if (cell.real && cell.status === 'planned') {
+      const id = meta.schedule.week[weekdayOf(cell.date)];
+      return plan.workouts.some((workout) => workout.id === id) ? id : null;
+    }
+    return null;
+  };
+  if (!origin || !destination || origin.suppresses_schedule_and_endurance
+      || destination.suppresses_schedule_and_endurance || resolvedWorkout(origin) !== input.workout_id
+      || resolvedWorkout(destination) !== null) return { error: 'calendar_move_conflict' };
+
+  const ts = Math.max(now(), (from?.updated_at ?? 0) + 1, (to?.updated_at ?? 0) + 1);
+  const newRow = (date: string, old: SessionRow | undefined, workoutId: string | null): SessionRow => ({
+    id: old?.id ?? uuid(), user_id: userId, plan_id: plan.id, date,
+    workout_id: workoutId, status: workoutId ? 'planned' : 'skipped',
+    started_at: null, completed_at: null,
+    perceived_fatigue: old?.perceived_fatigue ?? null, notes: old?.notes ?? null,
+    runner_targets: null, created_at: old?.created_at ?? ts, updated_at: ts,
+    attempt: (old?.attempt ?? 0) + 1, write_protocol: old?.write_protocol ?? 'legacy',
+  });
+  const acknowledgement: CalendarMoveAcknowledgement = { ok: true,
+    from: newRow(input.from_date, from, null), to: newRow(input.to_date, to, input.workout_id) };
+  const nonce = uuid();
+  const conditions: string[] = [];
+  const bindings: unknown[] = [receiptID, userId, args, JSON.stringify({ nonce, acknowledgement }), ts,
+    plan.id, plan.version];
+  // Fence the observed assignment and annotations, including absence, in one transaction.
+  for (const [date, row] of [[input.from_date, from], [input.to_date, to]] as const) {
+    const index = bindings.length + 1;
+    bindings.push(date, JSON.stringify(row ? [row.id, row.attempt, row.status, row.workout_id, row.updated_at,
+      row.notes, row.perceived_fatigue] : null));
+    conditions.push(`COALESCE((SELECT json_array(id,attempt,status,workout_id,updated_at,notes,perceived_fatigue)
+      FROM sessions WHERE user_id=?2 AND date=?${index}), 'null')=?${index + 1}`);
+  }
+  const statements = [workoutDB(db).prepare(
+    `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+     SELECT ?1,?2,'ios','move_calendar_workout',?3,?4,?5
+     WHERE EXISTS (SELECT 1 FROM plans WHERE id=?6 AND user_id=?2 AND status='active' AND version=?7)
+       AND ${conditions.join(' AND ')}
+     ON CONFLICT(id) DO NOTHING`).bind(...bindings)];
+  for (const row of [acknowledgement.from, acknowledgement.to]) {
+    statements.push(workoutDB(db).prepare(
+      `INSERT INTO sessions (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,
+        perceived_fatigue,notes,runner_targets,created_at,updated_at,attempt,write_protocol)
+       SELECT ?1,?2,?3,?4,?5,?6,NULL,NULL,?13,?14,NULL,?7,?8,?9,?10
+       WHERE EXISTS (SELECT 1 FROM audit_log WHERE id=?11 AND user_id=?2 AND json_extract(result,'$.nonce')=?12)
+       ON CONFLICT(user_id,date) DO UPDATE SET
+         plan_id=excluded.plan_id,workout_id=excluded.workout_id,status=excluded.status,
+         started_at=NULL,completed_at=NULL,runner_targets=NULL,
+         updated_at=excluded.updated_at,attempt=excluded.attempt`)
+      .bind(row.id, row.user_id, row.plan_id, row.workout_id, row.date, row.status,
+        row.created_at, row.updated_at, row.attempt, row.write_protocol, receiptID, nonce,
+        row.perceived_fatigue, row.notes));
+  }
+  const results = await runWorkoutWriteBatch(db, statements);
+  if (results[0]?.meta.changes === 1) return acknowledgement;
+  return await readReceipt() ?? { error: 'calendar_move_conflict' };
+}
+
 /**
  * One-off: pin a specific date to a day template (or clear to a bare planned
  * session). Writes/updates a sessions row ONLY — append-only log, NO version

@@ -72,12 +72,12 @@ struct MainTabView: View {
                 }
                 .tag(Tab.today)
             HistoryView(sync: sync)
-                .tabItem { Label("History", systemImage: "calendar") }
+                .tabItem { Label("Calendar", systemImage: "calendar") }
                 .tag(Tab.history)
             GroupTabView(groupModel: groupModel, auth: auth)
                 .tabItem { Label("Group", systemImage: "person.2.fill") }
                 .tag(Tab.group)
-            ProfileView(groupModel: groupModel, auth: auth, health: health)
+            ProfileView(groupModel: groupModel, auth: auth, health: health, sync: sync)
                 .tabItem { Label("Profile", systemImage: "person.crop.circle") }
                 .tag(Tab.profile)
         }

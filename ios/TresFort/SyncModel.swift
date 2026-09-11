@@ -457,6 +457,8 @@ final class SyncModel: ObservableObject {
     /// Bind every request to the account that created this model. An old
     /// MainTab task may finish after AuthModel switches users; it must never
     /// continue using the replacement account's bearer.
+    var exerciseDemoJWT: String? { currentJWT }
+
     private var currentJWT: String? {
         guard let accountID, auth.userID == accountID else { return nil }
         return auth.featureJWT
@@ -5465,7 +5467,8 @@ final class SyncModel: ObservableObject {
                 auth.noteAccountStatePersisted(for: accountID)
                 return nil
             }
-            guard loadError == nil else { return nil }
+            // The write was acknowledged. A failed refresh remains visible in
+            // loadError, but must not turn that acknowledgement into a retry.
             return result
         } catch {
             if case let APIError.http(code, body) = error,
@@ -5611,19 +5614,59 @@ final class SyncModel: ObservableObject {
         return nil
     }
 
-    func setCalendarOverride(date: String, dayID: String?) async {
+    @discardableResult
+    func setCalendarOverride(date: String, dayID: String?) async -> Bool {
         if let reason = calendarAssignmentUnavailableReason(date: date) {
             loadError = reason
-            return
+            return false
         }
         // Zero is the explicit CAS token for "no assignment row observed".
         // The Worker persists the first choice as attempt one, so two clients
         // creating different overrides from the same empty view cannot both win.
         let expectedAttempt = sessionsByDate[date]?.attempt ?? 0
-        _ = await performRoutineMutation { api, jwt in
+        let result = await performRoutineMutation { api, jwt in
             try await api.setCalendarDate(
                 date, dayID: dayID, expectedAttempt: expectedAttempt, jwt: jwt)
         } as APIClient.CalendarWriteResult?
+        return result != nil
+    }
+
+    func calendarMoveUnavailableReason(from: String, to: String, workoutID: String) -> String? {
+        if from == to { return "Choose a different date." }
+        if let reason = calendarAssignmentUnavailableReason(date: from) { return reason }
+        if let reason = calendarAssignmentUnavailableReason(date: to) { return reason }
+        if previewWorkout(forDateString: from)?.id != workoutID { return "The original workout changed. Reopen the date to review it." }
+        if previewWorkout(forDateString: to) != nil { return "This date already has a workout. Choose an empty date." }
+        return nil
+    }
+
+    func calendarMoveRequest(from: String, to: String, workoutID: String) -> APIClient.CalendarMoveRequest? {
+        guard let plan, calendarMoveUnavailableReason(from: from, to: to, workoutID: workoutID) == nil else { return nil }
+        return .init(id: UUID().uuidString, fromDate: from, toDate: to, today: todayString,
+                     workoutID: workoutID, planID: plan.id, planVersion: plan.version,
+                     fromAttempt: sessionsByDate[from]?.attempt ?? 0,
+                     toAttempt: sessionsByDate[to]?.attempt ?? 0)
+    }
+
+    func moveCalendarWorkout(_ request: APIClient.CalendarMoveRequest) async -> Bool {
+        // Retry uses the same request and receipt id, even after a lost response.
+        // Local runners and the civil-day boundary remain current action gates.
+        guard request.fromDate >= todayString, request.toDate >= todayString,
+              !runnerProtectsCalendarDate(request.fromDate), !runnerProtectsCalendarDate(request.toDate) else {
+            loadError = "This move is no longer available. Reopen Calendar to review both dates."
+            return false
+        }
+        let result = await performRoutineMutation { api, jwt in
+            // Another edit can finish while this request waits for the shared
+            // mutation slot. Check runner ownership and the date again here.
+            guard request.fromDate >= self.todayString, request.toDate >= self.todayString,
+                  !self.runnerProtectsCalendarDate(request.fromDate),
+                  !self.runnerProtectsCalendarDate(request.toDate) else {
+                throw APIError.http(409, "calendar_move_unavailable")
+            }
+            return try await api.moveCalendarWorkout(request, jwt: jwt)
+        } as APIClient.CalendarMoveResult?
+        return result != nil
     }
 
     // MARK: rest timer
@@ -5995,6 +6038,29 @@ final class SyncModel: ObservableObject {
                 ?? selectedDay ?? plan?.workouts.first
         case .rest, .none, .unavailable, .light:
             return nil   // unreachable (guarded by isWorkout)
+        }
+    }
+
+    /// Identity for preview/edit navigation. Display fallbacks used by legacy
+    /// runners are not authority to open an unrelated saved workout's editor.
+    var todayPreviewWorkout: Workout? {
+        let today = todayString
+        if let checkpoint = resumableCheckpoint, checkpoint.date == today {
+            return workout(id: checkpoint.selectedDayID)
+        }
+        return previewWorkout(forDateString: today, today: today)
+    }
+
+    func previewWorkout(forDateString date: String, today: String? = nil) -> Workout? {
+        let today = today ?? todayString
+        switch projection(for: date, today: today) {
+        case .projected(let id): return workout(id: id)
+        case .session(let status, let blackout):
+            guard Self.isWorkoutStatus(status) else { return nil }
+            if let explicitID = sessionsByDate[date]?.workout_id { return workout(id: explicitID) }
+            return sessionDisplayTemplate(forDateString: date,
+                                          allowScheduleInference: blackout == nil && date >= today && status != "completed")
+        case .rest, .none, .unavailable, .light: return nil
         }
     }
 

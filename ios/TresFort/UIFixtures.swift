@@ -156,7 +156,7 @@ private struct UIFixtureTrainingView: View {
             guard !scenario.isHistory else { return }
             await sync.load()
             if ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_FEEDBACK"] == "1" { return }
-            if ![.empty, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .groups, .planChanges].contains(scenario) {
+            if ![.empty, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .groups, .library, .planChanges].contains(scenario) {
                 sync.startWorkout()
                 if [.readyToFinish, .correctionFailure].contains(scenario) {
                     sync.finished = true
@@ -207,6 +207,8 @@ private struct UIFixtureServer {
     var sets: [[String: Any]] = []
     var groupReceipts: [String: [String: Any]] = [:]
     var returnedFeedbackConflict = false
+    var failCreatedWorkoutRefresh = false
+    var failedEnsureRequest = false
     var signInAttempts = 0
     var stateAttempts = 0
     var inviteAttempts = 0
@@ -268,6 +270,21 @@ private struct UIFixtureServer {
         if scenario == .appStore {
             sessions = AppStoreScreenshotData.sessions
             sets = AppStoreScreenshotData.sets
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_UNASSIGNED_DATE"] == "1" {
+                sessions.append(["id": "unassigned-date", "date": "2026-09-09",
+                    "status": "planned", "workout_id": NSNull(), "attempt": 1,
+                    "updated_at": revision, "write_protocol": "attempt-v1"])
+            }
+            if let status = ProcessInfo.processInfo.environment["TRESFORT_UI_UNRESOLVED_TODAY"] {
+                var unresolved = makeSession(status: status)
+                unresolved["workout_id"] = status == "planned" ? NSNull() : "removed-workout" as Any
+                sessions.append(unresolved)
+                if status == "planned" { plan?["meta"] = "{}" }
+                if status == "in_progress", var set = sets.first {
+                    set["id"] = "unresolved-set"; set["session_id"] = sessionID
+                    sets.append(set)
+                }
+            }
         }
         if scenario == .intervalsReauth {
             intervalsReauth = true
@@ -421,6 +438,10 @@ private struct UIFixtureServer {
             response = ["group_id": "synthetic-group", "days": 371, "server_time": revision, "members": []]
         case ("GET", "/api/state"):
             stateAttempts += 1
+            if failCreatedWorkoutRefresh {
+                failCreatedWorkoutRefresh = false
+                throw URLError(.notConnectedToInternet)
+            }
             if [.loadFailure, .cachedEmpty, .cachedPlan].contains(scenario) { throw URLError(.notConnectedToInternet) }
             if scenario == .serverFailure && stateAttempts == 1 {
                 status = 500; response = ["error": "synthetic_server_failure"]; break
@@ -470,14 +491,20 @@ private struct UIFixtureServer {
                  "modality": slot["exercise_modality"]!, "unit": "lb", "primary_muscle": "full body"]
             }
         case ("GET", "/api/exercises"):
-            if scenario == .appStore { response = AppStoreScreenshotData.catalog; break }
             if let fixture = coachingFixture { response = fixture["catalog"]!; break }
+            if scenario == .appStore { response = AppStoreScreenshotData.catalog; break }
             response = [["id": "synthetic-exercise",
                 "name": scenario == .bodyweight ? "Pull-Up" : scenario == .timed ? "Plank" : "Barbell Squat",
                 "modality": scenario == .bodyweight ? "bw" : scenario == .timed ? "timed" : "barbell",
                 "unit": "lb", "primary_muscle": "legs"]]
         case ("PUT", "/api/plan/active"):
+            let ensureFailure = ProcessInfo.processInfo.environment["TRESFORT_UI_ENSURE_FAILURE"]
+            if ensureFailure == "request", !failedEnsureRequest {
+                failedEnsureRequest = true
+                status = 503; response = ["error": "Synthetic ensure failure"]; break
+            }
             plan = makePlan(name: body["name"] as? String ?? "My Training", workouts: false)
+            failCreatedWorkoutRefresh = ensureFailure == "refresh"
             response = ["plan": ["id": "synthetic-plan", "name": plan!["name"]!, "version": 1], "created": true]
         case ("PUT", "/api/plan/schedule") where scenario == .library:
             let version = (plan?["version"] as? Int ?? 1) + 1
@@ -485,11 +512,29 @@ private struct UIFixtureServer {
             plan?["meta"] = String(data: try JSONSerialization.data(withJSONObject: ["schedule": schedule]), encoding: .utf8)
             plan?["version"] = version
             response = ["ok": true, "version": version, "schedule": schedule]
-        case ("PUT", "/api/calendar/2026-09-08") where scenario == .library:
-            let row: [String: Any] = ["id": sessionID, "date": "2026-09-08", "status": "planned",
-                "day_template_id": body["day_template_id"] ?? NSNull(), "attempt": 1, "updated_at": revision]
-            sessions = [row]
+        case ("PUT", let path) where path.hasPrefix("/api/calendar/"):
+            let date = String(path.split(separator: "/").last!)
+            let prior = sessions.first { $0["date"] as? String == date }
+            guard body["expected_attempt"] as? Int == (prior?["attempt"] as? Int ?? 0) else {
+                status = 409; response = ["error": "synthetic_calendar_attempt_mismatch"]; break
+            }
+            let workout = body["day_template_id"] as? String
+            let row: [String: Any] = ["id": prior?["id"] ?? "assignment-\(date)", "date": date,
+                "status": workout == nil ? "skipped" : "planned",
+                "day_template_id": workout as Any? ?? NSNull(),
+                "attempt": (prior?["attempt"] as? Int ?? 0) + 1, "updated_at": revision]
+            sessions.removeAll { $0["date"] as? String == date }; sessions.append(row)
             response = ["ok": true, "session": row]
+        case ("POST", "/api/calendar/2026-09-08/move") where scenario == .appStore:
+            guard body["to_date"] as? String == "2026-09-09", body["today"] as? String == "2026-09-08",
+                  body["day_template_id"] as? String == dayID,
+                  body["expected_plan_id"] as? String == "synthetic-plan", body["expected_version"] as? Int == 1,
+                  body["expected_from_attempt"] as? Int == 0, body["expected_to_attempt"] as? Int == 0,
+                  UUID(uuidString: body["id"] as? String ?? "") != nil else { throw URLError(.badServerResponse) }
+            let from: [String: Any] = ["id": "move-from", "date": "2026-09-08", "status": "skipped", "attempt": 1, "updated_at": revision]
+            let to: [String: Any] = ["id": "move-to", "date": "2026-09-09", "status": "planned", "day_template_id": dayID, "attempt": 1, "updated_at": revision]
+            sessions += [from, to]
+            response = ["ok": true, "from": from, "to": to]
         case ("DELETE", "/api/days/hotel") where scenario == .library:
             let remaining = (plan?["days"] as? [[String: Any]] ?? []).filter { $0["id"] as? String != "hotel" }
             let version = (plan?["version"] as? Int ?? 1) + 1
@@ -508,11 +553,15 @@ private struct UIFixtureServer {
             days[0]["exercises"] = [slot]; plan?["days"] = days; plan?["version"] = 3
             response = ["id": "synthetic-slot"]
         case ("POST", "/api/days"):
-            var day: [String: Any] = ["id": dayID, "name": body["name"] ?? "Workout A",
-                                      "order_index": 0, "exercises": []]
-            day["label"] = NSNull()
-            plan?["days"] = [day]; plan?["version"] = 2
-            response = ["id": dayID]
+            var days = plan?["days"] as? [[String: Any]] ?? []
+            let id = days.isEmpty ? dayID : "created-workout"
+            let day: [String: Any] = ["id": id, "name": body["name"] ?? "Workout A",
+                                      "order_index": days.count, "exercises": []]
+            days.append(day)
+            let version = (plan?["version"] as? Int ?? 0) + 1
+            plan?["days"] = days; plan?["version"] = version
+            failCreatedWorkoutRefresh = ProcessInfo.processInfo.environment["TRESFORT_UI_CREATE_REFRESH_FAILURE"] == "1"
+            response = ["id": id]
         case ("PUT", "/api/days/\(dayID)/groups") where scenario == .groups:
             let receiptKey = String(data: try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]), encoding: .utf8)!
             if let receipt = groupReceipts[receiptKey] { response = receipt; break }
@@ -581,6 +630,10 @@ private struct UIFixtureServer {
         case ("PATCH", "/api/sets/synthetic-set"):
             status = 422; response = ["error": "Synthetic correction rejected"]
         case ("PATCH", "/api/sessions/\(sessionID)"):
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_FINISH_FAILURE"] == "1",
+               body["status"] as? String == "completed" {
+                status = 503; response = ["error": "Synthetic finish failure"]; break
+            }
             if ProcessInfo.processInfo.environment["TRESFORT_UI_FEEDBACK_CONFLICT"] == "1", !returnedFeedbackConflict {
                 returnedFeedbackConflict = true
                 sessions[0]["notes"] = "Newer saved feedback"

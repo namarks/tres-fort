@@ -5,24 +5,15 @@ private func fmtW(_ w: Double) -> String {
     w.rounded() == w ? String(Int(w)) : String(format: "%.1f", w)
 }
 
-/// The single home for "my training history," two ways to look back:
-///   • Calendar — a month grid that condenses, as you scroll into the feed,
-///     into a contribution heatmap; the reverse-chron feed of training days
-///     sits beneath it. Tap a day (grid) or a row (feed) for full detail.
-///   • Exercises — per-lift progress (est 1RM trend, last session).
-/// The nav bar holds ONLY the centered segmented control — no trailing item,
-/// so toggling segments never shifts the picker or leaves a blank slot. The
-/// calendar owns its own "Today" affordance (and its month state) internally.
+/// Calendar combines the upcoming schedule with recorded training. Exercise
+/// progress and the recurring weekly schedule have explicit, separate routes.
 struct HistoryView: View {
     @ObservedObject var sync: SyncModel
 
-    enum Segment: String, CaseIterable, Identifiable {
-        case calendar, exercises
-        var id: String { rawValue }
-        var label: String { self == .calendar ? "Calendar" : "Exercises" }
-    }
+    enum Segment { case calendar, exercises }
 
     @State private var segment: Segment = .calendar
+    @State private var showWeeklySchedule = false
 
     var body: some View {
         NavigationStack {
@@ -34,25 +25,25 @@ struct HistoryView: View {
                     }
                     switch segment {
                     case .calendar:
-                        CalendarMonthView(sync: sync)
+                        CalendarMonthView(sync: sync,
+                                          onExerciseProgress: { segment = .exercises },
+                                          onWeeklySchedule: { showWeeklySchedule = true })
                     case .exercises:
                         ExerciseHistoryList(sync: sync)
                     }
                 }
             }
+            .navigationTitle(segment == .calendar ? "Calendar" : "Exercise progress")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Picker("View", selection: $segment) {
-                        ForEach(Segment.allCases) { s in
-                            Text(s.label).tag(s)
-                        }
+                if segment == .exercises {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Calendar", systemImage: "chevron.left") { segment = .calendar }
                     }
-                    .pickerStyle(.segmented)
-                    .frame(width: 240)
                 }
             }
             .toolbarColorScheme(.dark, for: .navigationBar)
+            .sheet(isPresented: $showWeeklySchedule) { WeeklyScheduleView(sync: sync) }
         }
         .preferredColorScheme(.dark)
     }

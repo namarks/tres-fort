@@ -37,9 +37,11 @@ final class TrainingJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["Create a workout"].waitForExistence(timeout: 10))
         screenshot("verified-empty-plan")
         app.buttons["Create a workout"].tap()
-        reveal(app.buttons["Create workout"], in: app)
-        app.buttons["Create workout"].tap()
-        XCTAssertTrue(app.staticTexts["Workout A"].waitForExistence(timeout: 10))
+        let name = app.textFields["createWorkout.name"]
+        XCTAssertTrue(name.waitForExistence(timeout: 5)); name.tap(); name.typeText("Workout A")
+        reveal(app.buttons["createWorkout.create"], in: app)
+        app.buttons["createWorkout.create"].tap()
+        XCTAssertTrue(app.navigationBars["Edit Workout A"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["Create workout"].exists)
         screenshot("created-first-workout")
     }

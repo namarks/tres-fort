@@ -63,6 +63,8 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
 // offset drives the condense morph.
 struct CalendarMonthView: View {
     @ObservedObject var sync: SyncModel
+    var onExerciseProgress: (() -> Void)? = nil
+    var onWeeklySchedule: (() -> Void)? = nil
 
     /// First day of the displayed month (anchored to its 1st). Self-owned now
     /// — the in-calendar "Today" button resets it; prev/next arrows shift it.
@@ -95,7 +97,16 @@ struct CalendarMonthView: View {
             get: { selectedDate.map(IdentifiedDate.init) },
             set: { selectedDate = $0?.id })
         ) { wrapped in
-            DayAgendaView(sync: sync, dateString: wrapped.id)
+            NavigationStack {
+                DayAgendaView(sync: sync, dateString: wrapped.id)
+                    .navigationTitle("Workout date")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { selectedDate = nil }
+                        }
+                    }
+            }
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -162,6 +173,22 @@ struct CalendarMonthView: View {
 
     private func feedContent(_ availableHeight: CGFloat) -> some View {
         LazyVStack(spacing: 12) {
+            if let onWeeklySchedule {
+                Button(action: onWeeklySchedule) {
+                    Label("Weekly schedule", systemImage: "calendar.badge.clock")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                }
+                .accessibilityIdentifier("calendar.weeklySchedule")
+            }
+            if let onExerciseProgress {
+                Button(action: onExerciseProgress) {
+                    Label("Exercise progress", systemImage: "chart.xyaxis.line")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                }
+                .accessibilityIdentifier("calendar.exerciseProgress")
+            }
             feed
         }
         .padding(.top, 12)
@@ -548,6 +575,7 @@ struct CalendarMonthView: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier("calendar.date.\(ymd)")
     }
 
 }

@@ -23,6 +23,8 @@ struct DayAgendaView: View {
     @ObservedObject var sync: SyncModel
     let dateString: String
     @State private var showDateEditor = false
+    @State private var confirmRemoval = false
+    @State private var movingWorkout: Workout?
 
     private var prettyDate: String {
         guard let d = CalendarProjection.date(from: dateString) else { return dateString }
@@ -50,7 +52,7 @@ struct DayAgendaView: View {
                         Button {
                             showDateEditor = true
                         } label: {
-                            Label("Choose workout for this date", systemImage: "calendar.badge.clock")
+                            Label("Choose a workout", systemImage: "calendar.badge.clock")
                                 .font(Theme.mono(13, .bold))
                                 .foregroundStyle(Theme.accent)
                                 .frame(maxWidth: .infinity)
@@ -59,7 +61,23 @@ struct DayAgendaView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("calendar.chooseWorkout")
                         .disabled(sync.isRoutineMutationInFlight)
+                        if let workout = sync.previewWorkout(forDateString: dateString) {
+                            Button("Move workout to another date") { movingWorkout = workout }
+                                .frame(minHeight: 44)
+                                .disabled(sync.isRoutineMutationInFlight)
+                                .accessibilityIdentifier("calendar.moveWorkout")
+                        }
+                        if sync.previewWorkout(forDateString: dateString) != nil
+                            || sync.sessionsByDate[dateString]?.status == "planned" {
+                            Button("Remove workout from this date", role: .destructive) { confirmRemoval = true }
+                                .frame(minHeight: 44)
+                                .disabled(sync.isRoutineMutationInFlight)
+                                .accessibilityIdentifier("calendar.removeWorkout")
+                        }
+                        Text("Changes apply to this date only. Your weekly schedule stays the same.")
+                            .font(.footnote).foregroundStyle(Theme.muted)
                     }
                     content(proj, today: today)
                     if let error = sync.loadError {
@@ -82,35 +100,20 @@ struct DayAgendaView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .confirmationDialog(
-            "Choose workout for this date",
-            isPresented: $showDateEditor,
-            titleVisibility: .visible
-        ) {
-            ForEach(sync.plan?.workouts ?? []) { day in
-                Button(day.name) {
-                    Task {
-                        await sync.setCalendarOverride(
-                            date: dateString, dayID: day.id)
-                    }
-                }
-                .disabled(
-                    proj.suppressesScheduleAndEndurance
-                        || sync.isRoutineMutationInFlight
-                        || (dateString == today && sync.running))
+        .sheet(item: $movingWorkout) { workout in
+            MoveWorkoutDateSheet(sync: sync, workout: workout, fromDate: dateString)
+        }
+        .sheet(isPresented: $showDateEditor) {
+            WorkoutsView(sync: sync, date: dateString)
+        }
+        .confirmationDialog("Remove workout from this date?", isPresented: $confirmRemoval,
+                            titleVisibility: .visible) {
+            Button("Remove workout", role: .destructive) {
+                Task { await sync.setCalendarOverride(date: dateString, dayID: nil) }
             }
-            Button("Rest day") {
-                Task {
-                    await sync.setCalendarOverride(date: dateString, dayID: nil)
-                }
-            }
-            .disabled(
-                proj.suppressesScheduleAndEndurance
-                    || sync.isRoutineMutationInFlight
-                    || (dateString == today && sync.running))
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This changes only \(prettyDate). Your recurring weekly schedule stays the same.")
+            Text("This date becomes a rest day. The saved workout and weekly schedule stay available.")
         }
     }
 
@@ -118,7 +121,7 @@ struct DayAgendaView: View {
         projection: DayProjection,
         today: String
     ) -> Bool {
-        !(sync.plan?.workouts.isEmpty ?? true)
+        sync.plan != nil
             && sync.calendarAssignmentUnavailableReason(date: dateString, today: today) == nil
     }
 
@@ -225,7 +228,10 @@ struct DayAgendaView: View {
         today: String,
         allowScheduleInference: Bool = true
     ) -> Workout? {
-        sync.sessionDisplayTemplate(
+        if let id = realSession?.workout_id {
+            return sync.workout(id: id)
+        }
+        return sync.sessionDisplayTemplate(
             forDateString: dateString,
             allowScheduleInference:
                 allowScheduleInference && dateString >= today)

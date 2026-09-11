@@ -39,27 +39,31 @@ each exercise's chosen load in subsequent rounds of the same workout.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P1 | gated_by | external:owner-source-publication | Automatic approval review rejected the initial GitHub push; publication approval remains pending. |
 | P2 | gated_by | external:owner-ios-distribution | Local implementation does not authorize an app release. |
 
 ## Next step
 
-**Now (@owner):** Authorize publication of the combined local
-`fix/timer-survives-exercise-preview` branch. Then obtain independent review
-of the exact current head and terminal-green required CI before merging.
+**Now (@agent):** Publish `fix/timer-survives-exercise-preview`, obtain
+independent review of its exact current head, and merge after terminal-green
+configured CI. Nick explicitly authorized this repository delivery on
+2026-09-10. Verify the integrated source against current main before review.
 App distribution remains a separate gate.
 
 ## Evidence and scope
 
-The timer-only change is locally committed as `806c080`. The combined source
-passes the unsigned iPhone 17 / iOS 26.2 build, all 456 unit tests, six affected
+The original timer-only change was committed as `806c080`. Before refreshing
+against current main, the combined source passed the unsigned iPhone 17 /
+iOS 26.2 build, all 456 unit tests, six affected
 UI journeys (timer navigation and completion, exact lb entry, kg switching,
 correction, and complete alternating superset rounds), and four dedicated
 accessibility audits. Earlier UI failures were isolated to synthetic test
 setup and corrected; production source hashes match across these successful
 checks. The initial combined invocation was not a full green suite; required
-remote CI and independent review remain pending. No source has been published
-or app distributed.
+remote CI and independent review remain pending. The branch now includes
+main's protected local storage and newer synthetic fixtures; input drafts
+retain the existing protected checkpoint storage and ownership guards.
+Only the lb/kg setting uses the preference store. Reverification of this
+integrated source is required. No app has been distributed by this workstream.
 
 Local evidence is retained in the task's `runner-feedback` artifact folder;
 the final source manifest and result summaries identify the tested snapshot.

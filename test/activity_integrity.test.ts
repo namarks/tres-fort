@@ -129,16 +129,22 @@ describe('native strength and HealthKit identity', () => {
     } finally { await env.DB.prepare('DROP TRIGGER test_reconcile_abort').run(); }
   });
 
-  it('returns to the existing Intervals winner when the native session is discarded', async () => {
+  it.each([
+    { label:'legacy local clock', localOffset:0, utcOffset:null, matches:true },
+    { label:'same instant with different local clocks', localOffset:-14_400_000, utcOffset:0, matches:true },
+    { label:'different instants with the same local clock', localOffset:0, utcOffset:3_600_000, matches:false },
+  ])('reconciles Intervals after native discard using $label', async ({localOffset,utcOffset,matches}) => {
     const {userId,sessionId}=await seed();
     const ivId=`intervals:activity:${userId}:strength`;
     await env.DB.prepare(`INSERT INTO external_activities
-      (id,user_id,source,external_id,date,kind,start_date_local_ms,synced_at)
-      VALUES (?1,?2,'intervals','strength',?3,'strength',?4,1)`).bind(ivId,userId,date,start).run();
+      (id,user_id,source,external_id,date,kind,start_date_local_ms,start_date_utc_ms,synced_at)
+      VALUES (?1,?2,'intervals','strength',?3,'strength',?4,?5,1)`)
+      .bind(ivId,userId,date,start+localOffset,utcOffset===null?null:start+utcOffset).run();
     const row=await upsertHealthKitActivity(env.DB,userId,health());
     expect(row.duplicate_of).toBe(`session:${sessionId}`);
     await discardSession(env.DB,userId,sessionId,0);
-    expect(await env.DB.prepare('SELECT duplicate_of FROM external_activities WHERE id=?1').bind(row.id).first('duplicate_of')).toBe(ivId);
+    expect(await env.DB.prepare('SELECT duplicate_of FROM external_activities WHERE id=?1').bind(row.id).first('duplicate_of'))
+      .toBe(matches ? ivId : null);
     expect(await dedupeHealthKitAgainstIntervals(env.DB,userId)).toBe(0);
   });
 

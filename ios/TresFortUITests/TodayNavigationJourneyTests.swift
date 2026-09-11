@@ -2,11 +2,12 @@ import XCTest
 
 final class TodayNavigationJourneyTests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
-    private func launch(unassignedDate: Bool = false, createRefreshFailure: Bool = false) -> XCUIApplication {
+    private func launch(unassignedDate: Bool = false, createRefreshFailure: Bool = false, moveConflict: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "app-store"
         if unassignedDate { app.launchEnvironment["TRESFORT_UI_UNASSIGNED_DATE"] = "1" }
         if createRefreshFailure { app.launchEnvironment["TRESFORT_UI_CREATE_REFRESH_FAILURE"] = "1" }
+        if moveConflict { app.launchEnvironment["TRESFORT_UI_MOVE_CONFLICT"] = "1" }
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-restAudioCuesEnabled", "NO"]
         app.launch()
         XCTAssertTrue(app.buttons["today.viewWorkout"].waitForExistence(timeout: 10))
@@ -87,6 +88,22 @@ final class TodayNavigationJourneyTests: XCTestCase {
         tap(app.buttons["Remove workout"], in: app)
         XCTAssertTrue(app.buttons["calendar.chooseWorkout"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["calendar.removeWorkout"].exists)
+    }
+
+    func testCalendarMoveConflictRefreshesAndAllowsARevisedRequest() {
+        let app = launch(moveConflict: true)
+        tap(app.tabBars.buttons["Calendar"], in: app)
+        tap(app.buttons["calendar.date.2026-09-08"], in: app)
+        tap(app.buttons["calendar.moveWorkout"], in: app)
+        let picker = app.datePickers["calendar.moveDate"]
+        tap(picker.buttons.matching(NSPredicate(format: "label CONTAINS 'September 9'")).firstMatch, in: app)
+        tap(app.buttons["calendar.confirmMove"], in: app)
+        XCTAssertTrue(app.buttons["Refresh calendar"].waitForExistence(timeout: 5))
+        XCTAssertTrue(picker.isEnabled)
+        XCTAssertEqual(app.buttons["calendar.confirmMove"].label, "Move workout")
+        tap(app.buttons["calendar.confirmMove"], in: app)
+        XCTAssertTrue(app.buttons["calendar.chooseWorkout"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["calendar.moveWorkout"].exists)
     }
 
     func testAcknowledgedCreationRecoversThroughRefreshWithoutCreatingAgain() {

@@ -32,5 +32,8 @@ final class CoachingContextJourneyTests: XCTestCase {
         XCTAssertGreaterThan(stress.frame.height, 100, "Long authored context must wrap rather than clip to one line")
         let plan = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         plan.name = "coaching-authored-context"; plan.lifetime = .keepAlways; add(plan)
+        app.navigationBars["Training overview"].buttons["Done"].tap()
+        XCTAssertTrue(app.navigationBars["Profile"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.navigationBars["Training overview"].exists)
     }
 }

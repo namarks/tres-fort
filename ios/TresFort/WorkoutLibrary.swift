@@ -123,15 +123,23 @@ struct MoveWorkoutDateSheet: View {
                         guard let request else { return }
                         saving = true
                         Task {
-                            let accepted = await sync.moveCalendarWorkout(request)
+                            let outcome = await sync.moveCalendarWorkout(request)
                             saving = false
-                            if accepted { dismiss() }
+                            switch outcome {
+                            case .acknowledged: dismiss()
+                            case .needsReview: self.request = nil
+                            case .retrySameRequest: break
+                            }
                         }
                     }
                     .disabled(saving || sync.isRoutineMutationInFlight || (request == nil
                         && sync.calendarMoveUnavailableReason(from: fromDate, to: dateString, workoutID: workout.id) != nil))
                     .accessibilityIdentifier("calendar.confirmMove")
-                    if let error = sync.loadError { Text(error).foregroundStyle(Theme.danger) }
+                    if let error = sync.loadError {
+                        Text(error).foregroundStyle(Theme.danger)
+                        Button("Refresh calendar") { Task { await sync.load() } }
+                            .disabled(saving || sync.isRoutineMutationInFlight)
+                    }
                 }
             }
             .navigationTitle("Move workout")

@@ -36,6 +36,7 @@ struct ProfileView: View {
 
     @State private var showJoin = false
     @State private var showCreate = false
+    @State private var showTrainingOverview = false
     @State private var showNameEditor = false
     @State private var accountExportDocument: AccountExportDocument?
     @State private var accountExportFilename = "tres-fort-account-export.json"
@@ -73,6 +74,9 @@ struct ProfileView: View {
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showJoin) { JoinGroupSheet(groupModel: groupModel) }
         .sheet(isPresented: $showCreate) { CreateGroupSheet(groupModel: groupModel) }
+        .sheet(isPresented: $showTrainingOverview) {
+            if let sync { CoachingContextView(sync: sync) }
+        }
         .sheet(isPresented: $showNameEditor) {
             EditDisplayNameSheet(
                 initialName: groupModel.me?.display_name ?? "",
@@ -232,9 +236,9 @@ struct ProfileView: View {
     @ViewBuilder
     private var coachSection: some View {
         Section {
-            if let sync {
-                NavigationLink {
-                    CoachingContextView(sync: sync)
+            if sync != nil {
+                Button {
+                    showTrainingOverview = true
                 } label: {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Training overview")

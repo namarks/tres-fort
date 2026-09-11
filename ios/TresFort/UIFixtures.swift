@@ -209,6 +209,7 @@ private struct UIFixtureServer {
     var returnedFeedbackConflict = false
     var failCreatedWorkoutRefresh = false
     var failedEnsureRequest = false
+    var returnedMoveConflict = false
     var signInAttempts = 0
     var stateAttempts = 0
     var inviteAttempts = 0
@@ -528,9 +529,15 @@ private struct UIFixtureServer {
         case ("POST", "/api/calendar/2026-09-08/move") where scenario == .appStore:
             guard body["to_date"] as? String == "2026-09-09", body["today"] as? String == "2026-09-08",
                   body["day_template_id"] as? String == dayID,
-                  body["expected_plan_id"] as? String == "synthetic-plan", body["expected_version"] as? Int == 1,
+                  body["expected_plan_id"] as? String == "synthetic-plan",
+                  body["expected_version"] as? Int == plan?["version"] as? Int,
                   body["expected_from_attempt"] as? Int == 0, body["expected_to_attempt"] as? Int == 0,
                   UUID(uuidString: body["id"] as? String ?? "") != nil else { throw URLError(.badServerResponse) }
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_MOVE_CONFLICT"] == "1", !returnedMoveConflict {
+                returnedMoveConflict = true
+                plan?["version"] = 2
+                status = 409; response = ["error": "calendar_move_conflict"]; break
+            }
             let from: [String: Any] = ["id": "move-from", "date": "2026-09-08", "status": "skipped", "attempt": 1, "updated_at": revision]
             let to: [String: Any] = ["id": "move-to", "date": "2026-09-09", "status": "planned", "day_template_id": dayID, "attempt": 1, "updated_at": revision]
             sessions += [from, to]

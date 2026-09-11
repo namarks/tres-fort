@@ -5648,25 +5648,37 @@ final class SyncModel: ObservableObject {
                      toAttempt: sessionsByDate[to]?.attempt ?? 0)
     }
 
-    func moveCalendarWorkout(_ request: APIClient.CalendarMoveRequest) async -> Bool {
+    enum CalendarMoveOutcome: Equatable { case acknowledged, needsReview, retrySameRequest }
+
+    func moveCalendarWorkout(_ request: APIClient.CalendarMoveRequest) async -> CalendarMoveOutcome {
         // Retry uses the same request and receipt id, even after a lost response.
         // Local runners and the civil-day boundary remain current action gates.
         guard request.fromDate >= todayString, request.toDate >= todayString,
               !runnerProtectsCalendarDate(request.fromDate), !runnerProtectsCalendarDate(request.toDate) else {
             loadError = "This move is no longer available. Reopen Calendar to review both dates."
-            return false
+            return .needsReview
         }
+        var definitiveConflict = false
         let result = await performRoutineMutation { api, jwt in
             // Another edit can finish while this request waits for the shared
             // mutation slot. Check runner ownership and the date again here.
             guard request.fromDate >= self.todayString, request.toDate >= self.todayString,
                   !self.runnerProtectsCalendarDate(request.fromDate),
                   !self.runnerProtectsCalendarDate(request.toDate) else {
+                definitiveConflict = true
                 throw APIError.http(409, "calendar_move_unavailable")
             }
-            return try await api.moveCalendarWorkout(request, jwt: jwt)
+            do {
+                return try await api.moveCalendarWorkout(request, jwt: jwt)
+            } catch {
+                // A 409 acknowledges rejection, so a refreshed choice needs a
+                // new request. Network/server failures keep the original receipt.
+                if (error as? APIError)?.httpStatus == 409 { definitiveConflict = true }
+                throw error
+            }
         } as APIClient.CalendarMoveResult?
-        return result != nil
+        if result != nil { return .acknowledged }
+        return definitiveConflict ? .needsReview : .retrySameRequest
     }
 
     // MARK: rest timer

@@ -12793,7 +12793,7 @@ extension SetOutboxTests {
         XCTAssertEqual(request.planID, "plan-a"); XCTAssertEqual(request.planVersion, 1)
         let first = await model.moveCalendarWorkout(request)
         let retry = await model.moveCalendarWorkout(request)
-        XCTAssertFalse(first); XCTAssertTrue(retry)
+        XCTAssertEqual(first, .retrySameRequest); XCTAssertEqual(retry, .acknowledged)
         XCTAssertEqual(requests, [request, request])
         XCTAssertNotNil(model.loadError, "The committed move stays acknowledged despite refresh failure")
     }
@@ -12837,7 +12837,25 @@ extension SetOutboxTests {
         now = now.addingTimeInterval(86_400)
         await release.open(); await schedule.value
         let accepted = await move.value
-        XCTAssertFalse(accepted)
+        XCTAssertEqual(accepted, .needsReview)
         XCTAssertEqual(moves, 0)
+    }
+
+    func testCalendarMoveConflictAllowsANewRequestFromRefreshedState() async throws {
+        let defaults = defaults(), api = SetRoutineEditingAPIStub(), stateAPI = SetWriteAPIStub()
+        let from = session(status: "planned", attempt: 0)
+        api.calendarMoveHandler = { _ in throw APIError.http(409, "calendar_move_conflict") }
+        stateAPI.stateHandler = { [self] _ in
+            return state(session: from, sets: [], workouts: [day(with: [exercise()])], planVersion: 2)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(), routineEditingAPI: api, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: from, sets: [], exercise: exercise()))
+        let original = try XCTUnwrap(model.calendarMoveRequest(from: fixedCivilDate, to: "2037-01-06", workoutID: "day-a"))
+        let outcome = await model.moveCalendarWorkout(original)
+        XCTAssertEqual(outcome, .needsReview)
+        let revised = try XCTUnwrap(model.calendarMoveRequest(from: fixedCivilDate, to: "2037-01-07", workoutID: "day-a"))
+        XCTAssertNotEqual(revised.id, original.id)
+        XCTAssertEqual(revised.planVersion, 2)
     }
 }

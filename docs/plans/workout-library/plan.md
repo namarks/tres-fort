@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: active · Updated: 2026-09-10 · Theme: gym-floor
+Slug: workout-library · Status: active · Updated: 2026-09-11 · Theme: gym-floor
 
 ## Goal
 
@@ -105,7 +105,7 @@ No second editor, no per-session template copies, no weeks table.
     disabled, then a named Delete/Cancel alert confirms removal. The shared
     mutation and active-workout guards remain in place. Library UI journeys
     run in PR smoke coverage, including row hit areas and cancellation. This
-    follow-up requires a separately authorized app distribution to reach devices.
+    follow-up shipped in the owner-authorized TestFlight 1.0 (38) distribution.
   - Owner-approved action cleanup (2026-09-11): Profile keeps name editing and
     one Account route; export, sign-out and account deletion live inside Account.
     The runner keeps the current set action and values above the tab bar while
@@ -115,9 +115,11 @@ No second editor, no per-session template copies, no weeks table.
     and finishing without new feedback. Removing a required set replaces the
     unavailable final Finish action with Review exercises; returning selects
     unresolved work and checkpoints the runner. Completed slots show their
-    completion state instead of an extra Log action. Regression journeys exercise actual taps through
-    rest, reordering, deletion, and both finish choices. These client changes
-    require a separately authorized distribution to reach devices.
+    completion state instead of an extra Log action. Regression journeys exercise
+    actual taps through rest, reordering, deletion, and both finish choices.
+    These client changes shipped in [TestFlight 1.0 (38)](../app-store-submission/release-38.md),
+    verified VALID and available to internal Testers. Physical-device follow-up
+    remains unverified.
 - [ ] **P1 — Library metadata: tags and archive**
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work

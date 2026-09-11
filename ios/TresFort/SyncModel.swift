@@ -1761,7 +1761,7 @@ final class SyncModel: ObservableObject {
             finished: normalizedFinished,
             sessionAttempt: serverSession?.attempt ?? checkpoint.sessionAttempt,
             restartDiscardedAttempt: serverSession == nil ? checkpoint.restartDiscardedAttempt : nil,
-            input: checkpoint.input, groupProgress: day.exercises.first(where: { $0.id == normalizedCurrentSlotID }).flatMap(checkpointGroup),
+            input: checkpoint.input, inputsBySlot: checkpoint.inputsBySlot, groupProgress: day.exercises.first(where: { $0.id == normalizedCurrentSlotID }).flatMap(checkpointGroup),
             focus: normalizedFocus, feedback: checkpoint.feedback)
         if normalized != checkpoint {
             guard replaceRunnerCheckpoint(
@@ -1817,7 +1817,7 @@ final class SyncModel: ObservableObject {
             finished: finished,
             sessionAttempt: todaySession?.attempt,
             restartDiscardedAttempt: runnerRestartDiscardedAttempt,
-            input: currentInputState, groupProgress: currentExercise.flatMap { groupProgress(for: $0) }, focus: runnerFocus, deferredGroupRepair: deferredGroupRepair, feedback: workoutFeedback)
+            input: currentInputState, inputsBySlot: runnerInputsForCheckpoint(), groupProgress: currentExercise.flatMap { groupProgress(for: $0) }, focus: runnerFocus, deferredGroupRepair: deferredGroupRepair, feedback: workoutFeedback)
         let expected = persistedRunnerCheckpoint
         guard replaceRunnerCheckpoint(checkpoint, ifCurrent: expected) else {
             relinquishStaleRunnerCheckpoint()
@@ -1856,7 +1856,7 @@ final class SyncModel: ObservableObject {
             finished: checkpoint.finished,
             sessionAttempt: session.attempt ?? checkpoint.sessionAttempt,
             restartDiscardedAttempt: nil,
-            input: checkpoint.input, groupProgress: checkpoint.groupProgress, focus: checkpoint.focus, deferredGroupRepair: checkpoint.deferredGroupRepair, feedback: checkpoint.feedback)
+            input: checkpoint.input, inputsBySlot: checkpoint.inputsBySlot, groupProgress: checkpoint.groupProgress, focus: checkpoint.focus, deferredGroupRepair: checkpoint.deferredGroupRepair, feedback: checkpoint.feedback)
         guard replaceRunnerCheckpoint(bound, ifCurrent: checkpoint) else {
             relinquishStaleRunnerCheckpoint()
             return
@@ -2110,7 +2110,7 @@ final class SyncModel: ObservableObject {
             finished: checkpoint.finished,
             sessionAttempt: checkpoint.sessionAttempt,
             restartDiscardedAttempt: checkpoint.restartDiscardedAttempt,
-            input: checkpoint.input, groupProgress: checkpoint.groupProgress, focus: checkpoint.focus, deferredGroupRepair: checkpoint.deferredGroupRepair, feedback: checkpoint.feedback)
+            input: checkpoint.input, inputsBySlot: checkpoint.inputsBySlot, groupProgress: checkpoint.groupProgress, focus: checkpoint.focus, deferredGroupRepair: checkpoint.deferredGroupRepair, feedback: checkpoint.feedback)
         guard replaceRunnerCheckpoint(normalized, ifCurrent: checkpoint) else {
             relinquishStaleRunnerCheckpoint()
             return
@@ -4213,7 +4213,7 @@ final class SyncModel: ObservableObject {
             skippedSlotIDs: checkpoint.skippedSlotIDs, workoutStartedAtMS: checkpoint.workoutStartedAtMS,
             finished: slotID == nil ? checkpoint.finished : false, sessionAttempt: checkpoint.sessionAttempt,
             restartDiscardedAttempt: checkpoint.restartDiscardedAttempt,
-            input: checkpoint.input, groupProgress: progress, focus: runnerFocus, deferredGroupRepair: deferredGroupRepair, feedback: checkpoint.feedback)
+            input: checkpoint.input, inputsBySlot: checkpoint.inputsBySlot, groupProgress: progress, focus: runnerFocus, deferredGroupRepair: deferredGroupRepair, feedback: checkpoint.feedback)
         guard replaceRunnerCheckpoint(replacement, ifCurrent: checkpoint) else { return false }
         persistedRunnerCheckpoint = replacement
         if resumableCheckpoint == checkpoint { resumableCheckpoint = replacement }
@@ -4550,6 +4550,20 @@ final class SyncModel: ObservableObject {
         skipRest()
     }
 
+    /// Keep only drafts for the same slot and current prescription. This map
+    /// inherits the checkpoint's account, date, session, attempt and CAS fence.
+    private func runnerInputsForCheckpoint() -> [String: RunnerInputState] {
+        var inputs = persistedRunnerCheckpoint?.inputsBySlot ?? [:]
+        if let legacy = persistedRunnerCheckpoint?.input {
+            inputs[legacy.prescription.slotID] = legacy
+        }
+        inputs = inputs.filter { id, input in
+            exercises.contains { $0.id == id && input.prescription.matches(current: RunnerPrescription($0)) }
+        }
+        if let currentInputState { inputs[currentInputState.prescription.slotID] = currentInputState }
+        return inputs
+    }
+
     var currentInputState: RunnerInputState? {
         guard let ex = currentExercise else { return nil }
         return RunnerInputState(prescription: RunnerPrescription(ex), weight: weight,
@@ -4568,7 +4582,7 @@ final class SyncModel: ObservableObject {
         guard let ex = currentExercise else { return }
         let input = RunnerInputPolicy.seed(ex,
             previous: comparablePreviousSets(for: ex).last,
-            draft: persistedRunnerCheckpoint?.input)
+            draft: persistedRunnerCheckpoint?.inputsBySlot?[ex.id] ?? persistedRunnerCheckpoint?.input)
         weight = input.weight
         reps = input.reps
         rpe = input.rpe

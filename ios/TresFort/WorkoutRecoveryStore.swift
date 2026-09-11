@@ -48,6 +48,9 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
     let workoutStartedAtMS: Int
     let finished: Bool
     let input: RunnerInputState?
+    /// Per-slot workout drafts survive alternating rounds and navigation.
+    /// Optional for checkpoints created before per-exercise input recovery.
+    let inputsBySlot: [String: RunnerInputState]?
     /// Progress observed when this exact focus was chosen; nil on legacy checkpoints.
     let groupProgress: GroupRunnerProgress?
     /// A newer explicit selection supersedes older pending correction actions.
@@ -67,6 +70,7 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
         sessionAttempt: Int? = nil,
         restartDiscardedAttempt: Int? = nil,
         input: RunnerInputState? = nil,
+        inputsBySlot: [String: RunnerInputState]? = nil,
         groupProgress: GroupRunnerProgress? = nil,
         focus: RunnerFocusState? = nil,
         deferredGroupRepair: RunnerGroupRepair? = nil,
@@ -82,6 +86,7 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
         self.workoutStartedAtMS = workoutStartedAtMS
         self.finished = finished
         self.input = input
+        self.inputsBySlot = inputsBySlot
         self.groupProgress = groupProgress
         self.focus = focus
         self.deferredGroupRepair = deferredGroupRepair

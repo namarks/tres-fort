@@ -74,6 +74,9 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         reveal(start, in: app)
         screenshot("group-workout-preview")
         start.tap()
+        let allowNotifications = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+            .alerts.buttons["Allow"]
+        if allowNotifications.waitForExistence(timeout: 5) { allowNotifications.tap() }
 
         let names = ["PUSH-UP", "BODYWEIGHT SQUAT", "PUSH-UP", "BODYWEIGHT SQUAT",
                      "BENCH PRESS", "BARBELL ROW", "BENCH PRESS", "BARBELL ROW"]
@@ -81,6 +84,31 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         for index in names.indices {
             let name = app.staticTexts[names[index]]
             XCTAssertTrue(name.waitForExistence(timeout: 10))
+            if index == 0 {
+                screenshot("superset-runner-before-header-check")
+                XCTAssertTrue(app.descendants(matching: .any)["runner.group"].waitForExistence(timeout: 5))
+                XCTAssertTrue(app.descendants(matching: .any)["runner.group.member.group-pushup"].exists)
+                XCTAssertTrue(app.descendants(matching: .any)["runner.group.member.group-squat"].exists)
+                XCTAssertTrue(app.staticTexts["Log each exercise to advance automatically."].exists)
+            }
+            if index >= 4 {
+                let weight = app.buttons["runner.weight"]
+                for _ in 0..<5 where !weight.isHittable { app.swipeDown() }
+                reveal(weight, in: app)
+                if index < 6 {
+                    weight.tap()
+                    app.segmentedControls["weight.unit"].buttons["kg"].tap()
+                    let entry = app.textFields["weight.entry"]
+                    let previous = entry.value as? String ?? ""
+                    entry.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+                    entry.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: previous.count)
+                                   + (index == 4 ? "20" : "15"))
+                    XCTAssertEqual(entry.value as? String, index == 4 ? "20" : "15")
+                    app.buttons["Save"].tap()
+                }
+                XCTAssertEqual(weight.value as? String, index % 2 == 0 ? "20" : "15")
+                if index == 6 { screenshot("superset-second-round-retains-kilograms") }
+            }
             let log = app.buttons["LOG ROUND \(rounds[index])"]
             reveal(log, in: app)
             if index == 0 || index == 4 { screenshot("group-runner-member-\(index)") }

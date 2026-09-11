@@ -8,6 +8,7 @@ struct SetReviewList: View {
     let sets: [SetLog]
     let pending: [PendingSetIntent]
     @State private var editing: ReviewItem?
+    @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = "lb"
 
     private struct ReviewItem: Identifiable {
         let set: SetLog?
@@ -38,6 +39,7 @@ struct SetReviewList: View {
                 timed: item.set.map { sync.isTimedSet($0) } ?? item.pending!.body.is_timed,
                 allowsAssistance: sync.isBodyweightExercise(item.exerciseID)
                     || sync.isTimedExercise(item.exerciseID),
+                storedUnit: WeightUnit(rawValue: sync.catalogRow(item.exerciseID)?.unit ?? "lb") ?? .lb,
                 onSave: { values in
                     if let set = item.set { return sync.enqueueCorrection(set: set, values: values) }
                     return sync.enqueueCorrection(pending: item.pending!, values: values)
@@ -61,6 +63,8 @@ struct SetReviewList: View {
     }
 
     private func row(_ item: ReviewItem) -> some View {
+        let unit = WeightUnit(rawValue: weightUnitRaw) ?? .lb
+        let storedUnit = WeightUnit(rawValue: sync.catalogRow(item.exerciseID)?.unit ?? "lb") ?? .lb
         let correction = sync.correction(for: item.id)
         let timed = item.set.map { sync.isTimedSet($0) } ?? item.pending!.body.is_timed
         return VStack(alignment: .leading, spacing: 6) {
@@ -70,10 +74,11 @@ struct SetReviewList: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(sync.exerciseName(item.exerciseID)).font(Theme.mono(11))
                     Text(SetValueFormatter.value(
-                        weight: item.values.weight, reps: item.values.reps,
+                        weight: storedUnit.convert(item.values.weight, to: unit), reps: item.values.reps,
                         durationSeconds: item.values.durationSeconds, timed: timed,
-                        bodyweight: sync.isBodyweightExercise(item.exerciseID)))
+                        bodyweight: sync.isBodyweightExercise(item.exerciseID), unit: unit.rawValue))
                         .font(Theme.mono(14, .bold))
+                    if item.values.weight != 0 { Text("Load in \(unit.rawValue)").font(.caption).foregroundStyle(Theme.muted) }
                     if let rpe = item.values.rpe { Text("RPE \(SetValueFormatter.number(rpe))").font(.caption) }
                     if (item.set?.is_warmup == 1) || item.pending?.body.is_warmup == true {
                         Text("Warm-up").font(.caption).foregroundStyle(Theme.muted)
@@ -97,8 +102,8 @@ struct SetReviewList: View {
                     .font(.caption).foregroundStyle(failed ? Theme.danger : Theme.muted)
                 if let values = correction.values {
                     Text("Requested: " + SetValueFormatter.value(
-                        weight: values.weight, reps: values.reps, durationSeconds: values.durationSeconds,
-                        timed: timed, bodyweight: sync.isBodyweightExercise(item.exerciseID)))
+                        weight: storedUnit.convert(values.weight, to: unit), reps: values.reps, durationSeconds: values.durationSeconds,
+                        timed: timed, bodyweight: sync.isBodyweightExercise(item.exerciseID), unit: unit.rawValue))
                         .font(.caption).foregroundStyle(Theme.muted)
                 }
                 if failed {
@@ -135,26 +140,27 @@ struct SetValuesEditor: View {
     let onSave: (SetCorrectionValues) -> Bool
     let onDelete: (() -> Bool)?
     @Environment(\.dismiss) private var dismiss
-    @State private var weight: String
+    @State private var weight: WeightEntryDraft
+    @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = "lb"
     @State private var reps: String
     @State private var rpe: String
     @State private var duration: String
     @State private var error: String?
 
     init(title: String, values: SetCorrectionValues, setDescription: String? = nil,
-         timed: Bool, allowsAssistance: Bool,
+         timed: Bool, allowsAssistance: Bool, storedUnit: WeightUnit = .lb,
          onSave: @escaping (SetCorrectionValues) -> Bool, onDelete: (() -> Bool)? = nil) {
         self.title = title; self.setDescription = setDescription
         self.timed = timed; self.allowsAssistance = allowsAssistance
         self.onSave = onSave; self.onDelete = onDelete
-        _weight = State(initialValue: SetValueFormatter.number(values.weight))
+        _weight = State(initialValue: WeightEntryDraft(weight: values.weight, storedUnit: storedUnit, unit: storedUnit))
         _reps = State(initialValue: String(values.reps))
         _rpe = State(initialValue: values.rpe.map(SetValueFormatter.number) ?? "")
         _duration = State(initialValue: String(values.durationSeconds ?? (timed ? values.reps : 30)))
     }
 
     private var values: SetCorrectionValues? {
-        guard let weight = Double(weight), weight.isFinite, allowsAssistance || weight >= 0,
+        guard let weight = weight.storedWeight, allowsAssistance || weight >= 0,
               let reps = Int(reps), reps >= 0,
               rpe.isEmpty || Double(rpe).map({ $0.isFinite && (0...10).contains($0) }) == true,
               !timed || Int(duration).map({ $0 > 0 }) == true else { return nil }
@@ -183,8 +189,12 @@ struct SetValuesEditor: View {
     var body: some View {
         NavigationStack {
             Form {
-                valueField(allowsAssistance ? "Load / assist (lb)" : "Weight (lb)",
-                           placeholder: "Weight", text: $weight, keyboard: .numbersAndPunctuation)
+                WeightUnitPicker(selection: Binding(get: { weight.unit }, set: {
+                    weight.select($0)
+                    weightUnitRaw = $0.rawValue
+                }))
+                valueField(allowsAssistance ? "Load / assist (\(weight.unit.rawValue))" : "Weight (\(weight.unit.rawValue))",
+                           placeholder: "Weight", text: $weight.text, keyboard: .numbersAndPunctuation)
                 valueField(timed ? "Duration (seconds)" : "Reps",
                            placeholder: timed ? "Seconds" : "Reps", text: timed ? $duration : $reps,
                            keyboard: .numberPad)
@@ -200,6 +210,7 @@ struct SetValuesEditor: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+            .onAppear { weight.select(WeightUnit(rawValue: weightUnitRaw) ?? .lb) }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

@@ -7934,13 +7934,15 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
   CalendarMoveAcknowledgement | { error: 'calendar_move_conflict' | 'invalid_move' | 'idempotency_conflict' }
 > {
   const args = JSON.stringify(input);
-  const receiptID = `calendar-move:${input.id}`;
+  const receiptID = input.id;
   const readReceipt = async () => {
     const row = await workoutDB(db).prepare(
-      'SELECT user_id,args,result FROM audit_log WHERE id=?1').bind(receiptID)
-      .first<{ user_id: string; args: string; result: string }>();
+      'SELECT user_id,tool,args,result FROM audit_log WHERE id=?1').bind(receiptID)
+      .first<{ user_id: string; tool: string; args: string; result: string }>();
     if (!row) return null;
-    if (row.user_id !== userId || row.args !== args) return { error: 'idempotency_conflict' as const };
+    if (row.user_id !== userId || row.tool !== 'move_calendar_workout' || row.args !== args) {
+      return { error: 'idempotency_conflict' as const };
+    }
     return JSON.parse(row.result).acknowledgement as CalendarMoveAcknowledgement;
   };
   const previous = await readReceipt();

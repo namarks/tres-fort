@@ -35,6 +35,16 @@ describe('atomic one-date workout moves', () => {
     expect(await env.DB.prepare('SELECT version,meta FROM plans WHERE id=?1').bind(f.plan).first())
       .toEqual({ version: 1, meta: f.meta });
     expect((await env.DB.prepare('SELECT COUNT(*) AS n FROM audit_log WHERE user_id=?1').bind(f.user).first<{ n: number }>())?.n).toBe(1);
+    expect(await env.DB.prepare('SELECT id,tool FROM audit_log WHERE user_id=?1').bind(f.user).first())
+      .toEqual({ id: f.input.id, tool: 'move_calendar_workout' });
+  });
+
+  it('rejects a receipt UUID already used by another audit operation', async () => {
+    const f = await fixture();
+    await env.DB.prepare("INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at) VALUES (?1,?2,'ios','other_operation',?3,'{}',0)")
+      .bind(f.input.id, f.user, JSON.stringify(f.input)).run();
+    expect(await moveCalendarWorkout(env.DB, f.user, f.input)).toEqual({ error: 'idempotency_conflict' });
+    expect(await f.rows()).toEqual([]);
   });
 
   it('rejects an occupied or started destination without changing either date', async () => {

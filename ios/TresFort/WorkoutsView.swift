@@ -127,13 +127,12 @@ struct WorkoutsView: View {
                             || renameDayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button("Cancel", role: .cancel) { renamingDay = nil }
             }
-            .confirmationDialog(
+            .alert(
                 "Delete \(deletingDay?.name ?? "this workout")?",
                 isPresented: Binding(
                     get: { deletingDay != nil },
                     set: { if !$0 { deletingDay = nil } }
-                ),
-                titleVisibility: .visible
+                )
             ) {
                 Button("Delete workout", role: .destructive) { deleteWorkout() }
                     .disabled(
@@ -209,26 +208,37 @@ struct WorkoutsView: View {
                         .font(Theme.mono(12)).foregroundStyle(Theme.muted)
                 } else {
                     ForEach(sync.plan?.workouts ?? []) { day in
-                        HStack(spacing: 10) {
+                        HStack(spacing: 0) {
                             Button {
                                 detailTarget = WorkoutTarget(id: day.id)
                             } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(day.name)
-                                        .font(Theme.mono(15, .bold))
-                                        .foregroundStyle(Theme.text)
-                                    Text(WorkoutLibraryPolicy.scheduleBadge(workoutID: day.id, plan: sync.plan))
-                                        .font(Theme.mono(10, .bold)).foregroundStyle(Theme.accent)
-                                        .accessibilityIdentifier("workoutSchedule-\(day.id)")
-                                    Text(day.exercises.isEmpty
-                                         ? "No exercises yet"
-                                         : "\(day.exercises.count) exercise\(day.exercises.count == 1 ? "" : "s")")
-                                        .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                                HStack(spacing: 12) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(day.name)
+                                            .font(Theme.mono(15, .bold))
+                                            .foregroundStyle(Theme.text)
+                                        Text(WorkoutLibraryPolicy.scheduleBadge(workoutID: day.id, plan: sync.plan))
+                                            .font(Theme.mono(10, .bold)).foregroundStyle(Theme.accent)
+                                            .accessibilityIdentifier("workoutSchedule-\(day.id)")
+                                        Text(day.exercises.isEmpty
+                                             ? "No exercises yet"
+                                             : "\(day.exercises.count) exercise\(day.exercises.count == 1 ? "" : "s")")
+                                            .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(Theme.muted)
+                                        .accessibilityHidden(true)
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.leading, 16)
+                                .padding(.trailing, 8)
+                                .padding(.vertical, 14)
+                                .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .accessibilityIdentifier("library.workout.\(day.id)")
+                            .accessibilityHint("Opens workout details")
                             .disabled(sync.isRoutineMutationInFlight)
 
                             Menu {
@@ -252,12 +262,29 @@ struct WorkoutsView: View {
                                 .disabled(sync.running && sync.selectedDayID == day.id)
                             } label: {
                                 Image(systemName: "ellipsis.circle")
+                                    .font(.system(size: 18))
                                     .foregroundStyle(Theme.muted)
+                                    .frame(width: 44, height: 44)
+                                    .contentShape(Rectangle())
                             }
+                            .padding(.trailing, 4)
                             .disabled(sync.isRoutineMutationInFlight)
                             .accessibilityLabel("Actions for \(day.name)")
                         }
+                        .listRowInsets(EdgeInsets())
                         .listRowBackground(Theme.surface)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            // Confirm first; a destructive swipe role would animate
+                            // the row away before the member chooses to delete it.
+                            Button {
+                                deletingDay = day
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            .tint(.red)
+                            .disabled(sync.isRoutineMutationInFlight
+                                || (sync.running && sync.selectedDayID == day.id))
+                        }
                         .moveDisabled(sync.isRoutineMutationInFlight)
                     }
                     .onMove(perform: moveDays)

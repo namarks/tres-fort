@@ -13,6 +13,8 @@ struct CreateWorkoutView: View {
     @State private var createdID: String?
     @State private var editing = true
     @State private var authority: CreationAuthority?
+    @State private var hadUncertainAttempt = false
+    @State private var needsLibraryReview = false
 
     private struct CreationAuthority {
         let planID: String
@@ -53,11 +55,20 @@ struct CreateWorkoutView: View {
                                                                       name: name.trimmingCharacters(in: .whitespacesAndNewlines))
                                     }
                                     guard let authority else { return }
-                                    createdID = await sync.addWorkoutDay(name: authority.name,
-                                        expectedPlanID: authority.planID, expectedVersion: authority.version)
+                                    switch await sync.createLibraryWorkout(name: authority.name,
+                                        expectedPlanID: authority.planID, expectedVersion: authority.version) {
+                                    case let .created(id): createdID = id
+                                    case .needsReview:
+                                        // A first-attempt conflict proves no creation. A
+                                        // conflict after a lost reply cannot disprove that
+                                        // earlier commit, so require library inspection.
+                                        if hadUncertainAttempt { needsLibraryReview = true }
+                                        else { self.authority = nil }
+                                    case .retrySameRequest: hadUncertainAttempt = true
+                                    }
                                 }
                             }
-                            .disabled(creating || sync.isRoutineMutationInFlight
+                            .disabled(creating || needsLibraryReview || sync.isRoutineMutationInFlight
                                       || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                                       || (sync.plan == nil && !sync.canCreateRoutine))
                             .accessibilityIdentifier("createWorkout.create")
@@ -65,7 +76,9 @@ struct CreateWorkoutView: View {
                         if let error = sync.loadError {
                             Text(error).foregroundStyle(Theme.danger)
                             if authority != nil {
-                                Text("If the library changed, close this screen and review it before creating another workout.")
+                                Text(needsLibraryReview
+                                     ? "The earlier request may have saved. Close this screen and check your workout library before creating another workout."
+                                     : "Retry uses the same request to avoid saving a duplicate workout.")
                                     .font(.footnote).foregroundStyle(Theme.muted)
                             }
                         }

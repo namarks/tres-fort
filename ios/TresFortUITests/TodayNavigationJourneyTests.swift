@@ -2,12 +2,13 @@ import XCTest
 
 final class TodayNavigationJourneyTests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
-    private func launch(unassignedDate: Bool = false, createRefreshFailure: Bool = false, moveConflict: Bool = false) -> XCUIApplication {
+    private func launch(unassignedDate: Bool = false, createRefreshFailure: Bool = false, moveConflict: Bool = false, creationFailure: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "app-store"
         if unassignedDate { app.launchEnvironment["TRESFORT_UI_UNASSIGNED_DATE"] = "1" }
         if createRefreshFailure { app.launchEnvironment["TRESFORT_UI_CREATE_REFRESH_FAILURE"] = "1" }
         if moveConflict { app.launchEnvironment["TRESFORT_UI_MOVE_CONFLICT"] = "1" }
+        if let creationFailure { app.launchEnvironment["TRESFORT_UI_CREATE_FAILURE"] = creationFailure }
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-restAudioCuesEnabled", "NO"]
         app.launch()
         XCTAssertTrue(app.buttons["today.viewWorkout"].waitForExistence(timeout: 10))
@@ -120,6 +121,35 @@ final class TodayNavigationJourneyTests: XCTestCase {
         tap(app.navigationBars["Hotel session"].buttons["Done"], in: app)
         tap(app.buttons["today.chooseWorkout"], in: app)
         XCTAssertEqual(app.buttons.matching(identifier: "library.workout.created-workout").count, 1)
+    }
+
+    func testCreationConflictAllowsFreshAuthorityWithoutDuplicatingAnUncertainCreation() {
+        for failure in ["conflict", "lost-response"] {
+            let app = launch(creationFailure: failure)
+            tap(app.buttons["today.createWorkout"], in: app)
+            let name = app.textFields["createWorkout.name"]
+            tap(name, in: app); name.typeText("Hotel session")
+            let create = app.buttons["createWorkout.create"]
+            tap(create, in: app)
+            let expectedLabel = failure == "conflict" ? "Create workout" : "Retry creation"
+            expectation(for: NSPredicate(format: "label == %@ AND enabled == true", expectedLabel), evaluatedWith: create)
+            waitForExpectations(timeout: 10)
+            XCTAssertEqual(name.isEnabled, failure == "conflict")
+            XCTAssertEqual(name.value as? String, "Hotel session")
+            tap(create, in: app)
+            if failure == "conflict" {
+                XCTAssertTrue(app.navigationBars["Edit Hotel session"].waitForExistence(timeout: 5))
+                tap(app.navigationBars["Edit Hotel session"].buttons["Done"], in: app)
+                tap(app.navigationBars["Hotel session"].buttons["Done"], in: app)
+            } else {
+                XCTAssertTrue(app.staticTexts["The earlier request may have saved. Close this screen and check your workout library before creating another workout."].waitForExistence(timeout: 5))
+                XCTAssertFalse(create.isEnabled)
+                tap(app.buttons["Cancel"], in: app)
+            }
+            tap(app.buttons["today.chooseWorkout"], in: app)
+            XCTAssertEqual(app.buttons.matching(identifier: "library.workout.created-workout").count, 1)
+            app.terminate()
+        }
     }
 
     func testDiscardRemainsReachableAfterFinishFails() {

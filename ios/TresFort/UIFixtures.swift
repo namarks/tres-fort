@@ -262,6 +262,7 @@ private struct UIFixtureServer {
         return ["id": "synthetic-group", "name": "Synthetic Crew", "created_by": "synthetic-owner", "created_at": 1, "members": members]
     }
     var planRestored = false
+    var returnedCreationFailure = false
     var revision = 1_788_912_000_000
     let dayID = "synthetic-day", sessionID = "synthetic-session"
 
@@ -594,6 +595,15 @@ private struct UIFixtureServer {
             days[0]["exercises"] = [slot]; plan?["days"] = days; plan?["version"] = 3
             response = ["id": "synthetic-slot"]
         case ("POST", "/api/days"):
+            let creationFailure = ProcessInfo.processInfo.environment["TRESFORT_UI_CREATE_FAILURE"]
+            if creationFailure == "conflict", !returnedCreationFailure {
+                returnedCreationFailure = true
+                let changedVersion = (plan?["version"] as? Int ?? 0) + 1
+                plan?["version"] = changedVersion
+            }
+            guard body["expected_version"] as? Int == plan?["version"] as? Int else {
+                status = 409; response = ["conflict": true, "current_version": plan?["version"] ?? 0]; break
+            }
             var days = plan?["days"] as? [[String: Any]] ?? []
             let id = days.isEmpty ? dayID : "created-workout"
             let day: [String: Any] = ["id": id, "name": body["name"] ?? "Workout A",
@@ -601,6 +611,10 @@ private struct UIFixtureServer {
             days.append(day)
             let version = (plan?["version"] as? Int ?? 0) + 1
             plan?["days"] = days; plan?["version"] = version
+            if creationFailure == "lost-response", !returnedCreationFailure {
+                returnedCreationFailure = true
+                throw URLError(.networkConnectionLost)
+            }
             failCreatedWorkoutRefresh = ProcessInfo.processInfo.environment["TRESFORT_UI_CREATE_REFRESH_FAILURE"] == "1"
             response = ["id": id]
         case ("PUT", "/api/days/\(dayID)/groups") where scenario == .groups:

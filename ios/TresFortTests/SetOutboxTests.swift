@@ -12858,6 +12858,26 @@ extension SetOutboxTests {
         XCTAssertNotEqual(revised.id, original.id)
         XCTAssertEqual(revised.planVersion, 2)
     }
+
+    func testWorkoutCreationDistinguishesConflictEvenWhenConflictRefreshFails() async {
+        for status in [409, 503] {
+            let defaults = defaults(), api = SetRoutineEditingAPIStub(), stateAPI = SetWriteAPIStub()
+            api.addDayHandler = { name, planID, version, _ in
+                XCTAssertEqual(name, "Hotel session")
+                XCTAssertEqual(planID, "plan-a")
+                XCTAssertEqual(version, 1)
+                throw APIError.http(status, "synthetic_failure")
+            }
+            stateAPI.stateHandler = { _ in throw URLError(.notConnectedToInternet) }
+            let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: stateAPI,
+                catalogAPI: SetCatalogAPIStub(), routineEditingAPI: api,
+                defaults: defaults, now: { self.fixedDate })
+            model.replaceState(with: state(session: session(), sets: [], exercise: exercise()))
+            let result = await model.createLibraryWorkout(name: "Hotel session", expectedPlanID: "plan-a", expectedVersion: 1)
+            XCTAssertEqual(result, status == 409 ? .needsReview : .retrySameRequest)
+            XCTAssertNotNil(model.loadError)
+        }
+    }
 }
 
 extension SetOutboxTests {

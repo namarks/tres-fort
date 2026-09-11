@@ -5534,18 +5534,35 @@ final class SyncModel: ObservableObject {
         expectedPlanID: String? = nil,
         expectedVersion: Int? = nil
     ) async -> String? {
-        guard let currentPlan = plan else { return nil }
+        if case let .created(id) = await createLibraryWorkout(name: name,
+            expectedPlanID: expectedPlanID, expectedVersion: expectedVersion) { return id }
+        return nil
+    }
+
+    enum WorkoutCreationOutcome: Equatable { case created(String), needsReview, retrySameRequest }
+
+    func createLibraryWorkout(
+        name: String,
+        expectedPlanID: String? = nil,
+        expectedVersion: Int? = nil
+    ) async -> WorkoutCreationOutcome {
+        guard let currentPlan = plan else { return .retrySameRequest }
         let planID = expectedPlanID ?? currentPlan.id
         let version = expectedVersion ?? currentPlan.version
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty else { return nil }
-        return await performRoutineMutation { api, jwt in
-            try await api.addWorkout(
-                name: clean,
-                expectedPlanID: planID,
-                expectedVersion: version,
-                jwt: jwt)
-        }?.id
+        guard !clean.isEmpty else { return .needsReview }
+        var definitiveConflict = false
+        let result = await performRoutineMutation { api, jwt in
+            do {
+                return try await api.addWorkout(name: clean, expectedPlanID: planID,
+                    expectedVersion: version, jwt: jwt)
+            } catch {
+                if (error as? APIError)?.httpStatus == 409 { definitiveConflict = true }
+                throw error
+            }
+        }
+        if let result { return .created(result.id) }
+        return definitiveConflict ? .needsReview : .retrySameRequest
     }
 
     func renameWorkoutDay(dayID: String, name: String) async {

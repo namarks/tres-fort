@@ -99,6 +99,13 @@ No second editor, no per-session template copies, no weeks table.
     All 70 backend test files passed; the final calendar/dual-schema subset
     passed 112 tests. Typecheck, plan graph and verification-script checks passed.
     Final independent local review found no actionable regressions.
+  - Follow-up browsing repair (2026-09-10): the workout label, blank space,
+    padding and disclosure chevron open named details; secondary actions have
+    a 44-point target. Swipe left reveals Delete with full-swipe execution
+    disabled, then a named Delete/Cancel alert confirms removal. The shared
+    mutation and active-workout guards remain in place. Library UI journeys
+    run in PR smoke coverage, including row hit areas and cancellation. This
+    follow-up requires a separately authorized app distribution to reach devices.
 - [ ] **P1 — Library metadata: tags and archive**
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work

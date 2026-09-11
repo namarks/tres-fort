@@ -41,12 +41,63 @@ final class WorkoutLibraryJourneyTests: XCTestCase {
         app.buttons["Actions for Hotel"].tap()
         XCTAssertFalse(app.buttons["Unschedule"].isEnabled)
         app.buttons["Delete workout"].tap()
-        XCTAssertTrue(app.buttons["Delete workout"].waitForExistence(timeout: 5))
-        app.buttons["Delete workout"].tap()
+        let confirmation = app.alerts["Delete Hotel?"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        confirmation.buttons["Delete workout"].tap()
         let gone = NSPredicate(format: "exists == false")
         expectation(for: gone, evaluatedWith: app.buttons["Actions for Hotel"])
         waitForExpectations(timeout: 5)
         XCTAssertTrue(app.buttons["Actions for Gym"].exists)
+        XCTAssertEqual(app.staticTexts["workoutSchedule-synthetic-day"].label, "Tue")
+    }
+
+    func testWorkoutOpensFromEmptyRowSpaceAndDisclosure() {
+        let app = launch()
+        let row = app.buttons["library.workout.hotel"]
+        // Exercise blank horizontal space, vertical padding, and the chevron.
+        // A label-center tap alone does not catch the original plain-button gap.
+        for point in [CGVector(dx: 0.7, dy: 0.5), CGVector(dx: 0.5, dy: 0.08),
+                      CGVector(dx: 0.96, dy: 0.5)] {
+            XCTAssertTrue(row.waitForExistence(timeout: 5))
+            row.coordinate(withNormalizedOffset: point).tap()
+            let details = app.navigationBars["Hotel"]
+            XCTAssertTrue(details.waitForExistence(timeout: 5))
+            XCTAssertTrue(app.buttons["workoutDetails.edit"].exists)
+            details.buttons["Done"].tap()
+        }
+        let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        image.name = "workout-library-row-navigation"; image.lifetime = .keepAlways; add(image)
+        let actions = app.buttons["Actions for Hotel"]
+        XCTAssertGreaterThanOrEqual(actions.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(actions.frame.height, 44)
+        actions.coordinate(withNormalizedOffset: CGVector(dx: 0.1, dy: 0.1)).tap()
+        XCTAssertTrue(app.buttons["Use on a date"].waitForExistence(timeout: 5))
+    }
+
+    func testSwipeDeleteRequiresConfirmationAndCancelKeepsWorkout() {
+        let app = launch()
+        let row = app.buttons["library.workout.hotel"]
+        row.swipeLeft()
+        XCTAssertTrue(app.buttons["Delete"].waitForExistence(timeout: 5))
+        XCTAssertTrue(row.exists, "Swiping must not remove a workout")
+        XCTAssertFalse(app.alerts["Delete Hotel?"].exists, "Full swipe must not execute Delete")
+        app.buttons["Delete"].tap()
+        let confirmation = app.alerts["Delete Hotel?"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        image.name = "workout-library-delete-confirmation"; image.lifetime = .keepAlways; add(image)
+        confirmation.buttons["Cancel"].tap()
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.tap()
+        XCTAssertTrue(app.navigationBars["Hotel"].waitForExistence(timeout: 5))
+        app.navigationBars["Hotel"].buttons["Done"].tap()
+        row.swipeLeft()
+        app.buttons["Delete"].tap()
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        confirmation.buttons["Delete workout"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: row)
+        waitForExpectations(timeout: 5)
+        XCTAssertTrue(app.buttons["library.workout.synthetic-day"].exists)
         XCTAssertEqual(app.staticTexts["workoutSchedule-synthetic-day"].label, "Tue")
     }
 }

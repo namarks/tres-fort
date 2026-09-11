@@ -40,7 +40,7 @@ final class ExerciseGroupJourneyTests: XCTestCase {
 
     private func author(_ app: XCUIApplication, slots: [String], roundRestDecrements: Int, transition: Bool) {
         app.buttons["editor.actions"].tap()
-        app.buttons["Select exercises"].tap()
+        app.buttons["Group exercises"].tap()
         for slot in slots {
             let select = app.buttons["editor.select.\(slot)"]
             reveal(select, in: app)
@@ -113,9 +113,16 @@ final class ExerciseGroupJourneyTests: XCTestCase {
                 if index == 6 { screenshot("superset-second-round-retains-kilograms") }
             }
             let log = app.buttons["LOG ROUND \(rounds[index])"]
-            reveal(log, in: app)
+            XCTAssertTrue(log.waitForExistence(timeout: 5))
+            XCTAssertTrue(log.isEnabled)
+            XCTAssertTrue(app.frame.contains(log.frame))
+            XCTAssertGreaterThanOrEqual(log.frame.height, 44)
             if index == 0 || index == 4 { screenshot("group-runner-member-\(index)") }
-            log.tap()
+            // iOS can report isHittable=false after restoring the rest screen's
+            // navigation chrome even though this visible footer receives taps.
+            // Exercise its actual touch target; the exact next member/rest and
+            // fixture sequence below prove the tap logged one physical set.
+            log.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
             if index == 0 || index == 2 {
                 // A zero transition advances immediately without a rest cue.
                 XCTAssertTrue(app.staticTexts[names[index + 1]].waitForExistence(timeout: 5))
@@ -131,8 +138,13 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         }
         XCTAssertTrue(app.staticTexts["READY TO FINISH"].waitForExistence(timeout: 10))
         let finish = app.buttons["FINISH"]
-        reveal(finish, in: app)
-        finish.tap()
+        XCTAssertTrue(finish.waitForExistence(timeout: 5))
+        XCTAssertTrue(finish.isEnabled)
+        XCTAssertTrue(app.frame.contains(finish.frame))
+        XCTAssertGreaterThanOrEqual(finish.frame.height, 44)
+        // The final pinned action follows the same rest/chrome transition as
+        // Log. Verify a real touch and the acknowledged completion below.
+        finish.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["Synthetic member sequence mismatch"].exists)
         screenshot("completed-alternating-workout")

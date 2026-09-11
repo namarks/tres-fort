@@ -87,28 +87,44 @@ struct WorkoutFeedbackSheet: View {
                     Section { Text("This workout changed. Close this sheet and review its current feedback before saving again.") }
                 }
             }
-            .navigationTitle("Feedback")
+            .navigationTitle(finishAfterSave ? "Finish workout" : "Feedback")
             .navigationBarTitleDisplayMode(.inline)
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if finishAfterSave {
+                    VStack(spacing: 8) {
+                        Button(action: saveFeedback) {
+                            Text("Save feedback & finish")
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent).foregroundStyle(.black)
+                        .disabled(editor.isRecording || editor.isStarting || editor.isFinalizing)
+                        .accessibilityIdentifier("feedback.saveAndFinish")
+                        Button(editor.initial?.isEmpty == false ? "Finish with saved feedback" : "Finish without feedback") {
+                            editor.stop()
+                            dismiss()
+                            Task { await sync.finishWorkout(expected: target) }
+                        }
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("feedback.finishWithoutChanges")
+                    }
+                    .padding(.horizontal, 20).padding(.vertical, 8)
+                    .frame(maxWidth: .infinity)
+                    .background(Theme.background)
+                }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Skip") {
+                    Button(finishAfterSave ? "Keep working" : "Cancel") {
                         editor.stop()
                         dismiss()
-                        if finishAfterSave { Task { await sync.finishWorkout(expected: target) } }
                     }
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save feedback") {
-                        guard sync.saveWorkoutFeedback(editor.approvedFeedback(), expected: target, previous: editor.initial) else {
-                            saveFailed = true
-                            return
-                        }
-                        dismiss()
-                        if finishAfterSave, let savedTarget = sync.terminalActionTarget {
-                            Task { await sync.finishWorkout(expected: savedTarget) }
-                        }
+                if !finishAfterSave {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Save feedback", action: saveFeedback)
+                            .disabled(editor.isRecording || editor.isStarting || editor.isFinalizing)
                     }
-                    .disabled(editor.isRecording || editor.isStarting)
                 }
                 ToolbarItemGroup(placement: .keyboard) {
                     Spacer()
@@ -120,6 +136,17 @@ struct WorkoutFeedbackSheet: View {
             if phase == .background { editor.interrupt() }
         }
         .onDisappear { editor.stop() }
+    }
+
+    private func saveFeedback() {
+        guard sync.saveWorkoutFeedback(editor.approvedFeedback(), expected: target, previous: editor.initial) else {
+            saveFailed = true
+            return
+        }
+        dismiss()
+        if finishAfterSave, let savedTarget = sync.terminalActionTarget {
+            Task { await sync.finishWorkout(expected: savedTarget) }
+        }
     }
 }
 

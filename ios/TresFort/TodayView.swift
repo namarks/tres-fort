@@ -235,30 +235,11 @@ struct TodayView: View {
                         .accessibilityIdentifier("today.logActivity")
                         .padding(.horizontal, 20).padding(.bottom, 8)
                     }
-                    if sync.running {
-                        HStack {
-                            if !sync.finished {
-                                Button("End workout") {
-                                    guard let target = sync.terminalActionTarget else { return }
-                                    feedbackPresentation = WorkoutFeedbackPresentation(target: target)
-                                }
-                                .disabled(sync.hasPendingTerminalIntentForCurrentWorkout)
-                            }
-                            Spacer()
-                            Button("Discard", role: .destructive) {
-                                discardTarget = sync.terminalActionTarget
-                                showDiscardConfirm = discardTarget != nil
-                            }
-                            .disabled(sync.hasDiscardIntentForCurrentWorkout)
-                            .accessibilityIdentifier("today.discardWorkout")
-                        }
-                        .frame(minHeight: 44).padding(.horizontal, 20)
-                    }
                 }
                 // The full rest screen is modal. Without explicitly removing
                 // the runner from hit testing and the accessibility tree,
                 // assistive actions can start/log a hidden set underneath it.
-                .allowsHitTesting(!fullRestOverlayVisible)
+                .disabled(fullRestOverlayVisible)
                 .accessibilityHidden(fullRestOverlayVisible)
                 if sync.restEndDate != nil {
                     if restMinimized {
@@ -273,6 +254,31 @@ struct TodayView: View {
             }
             .navigationTitle(sync.running ? "Workout" : "Today")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                if sync.running {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            if !sync.finished {
+                                Button("Finish workout", systemImage: "checkmark.circle") {
+                                    guard let target = sync.terminalActionTarget else { return }
+                                    feedbackPresentation = WorkoutFeedbackPresentation(target: target)
+                                }
+                                .disabled(sync.hasPendingTerminalIntentForCurrentWorkout)
+                            }
+                            Button("Discard workout", systemImage: "trash", role: .destructive) {
+                                discardTarget = sync.terminalActionTarget
+                                showDiscardConfirm = discardTarget != nil
+                            }
+                            .disabled(sync.hasDiscardIntentForCurrentWorkout)
+                            .accessibilityIdentifier("today.discardWorkout")
+                        } label: {
+                            Image(systemName: "ellipsis.circle")
+                        }
+                        .accessibilityLabel("Workout actions")
+                        .accessibilityIdentifier("today.workoutActions")
+                    }
+                }
+            }
             // The expanded rest screen is modal across the whole app chrome,
             // not just the scroll content. Hiding both bars removes Log
             // Activity, destructive menu actions, and tab switches from taps
@@ -284,10 +290,9 @@ struct TodayView: View {
                 fullRestOverlayVisible ? .hidden : .visible,
                 for: .tabBar)
             .toolbarColorScheme(.dark, for: .navigationBar)
-            .confirmationDialog(
+            .alert(
                 "Discard this workout?",
-                isPresented: $showDiscardConfirm,
-                titleVisibility: .visible
+                isPresented: $showDiscardConfirm
             ) {
                 Button("Discard — don't save", role: .destructive) {
                     guard let target = discardTarget else { return }
@@ -686,160 +691,138 @@ private struct RunnerView: View {
     var body: some View {
         if let ex = sync.currentExercise {
             let displayedSetNumber = sync.currentSetNumber
-            let physicalSetNumber = sync.currentPhysicalSetNumber
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    if sync.workoutStart != nil {
-                        TimelineView(.periodic(from: .now, by: 1)) { _ in
-                            let e = sync.workoutElapsedSeconds
-                            Text("WORKOUT  \(e / 60):\(String(format: "%02d", e % 60))")
-                                .font(Theme.mono(11, .bold)).tracking(2)
-                                .foregroundStyle(Theme.muted)
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        if sync.workoutStart != nil {
+                            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                                let e = sync.workoutElapsedSeconds
+                                Text("WORKOUT  \(e / 60):\(String(format: "%02d", e % 60))")
+                                    .font(Theme.mono(11, .bold)).tracking(2)
+                                    .foregroundStyle(Theme.muted)
+                            }
+                            .padding(.bottom, 12)
                         }
-                        .padding(.bottom, 12)
-                    }
 
-                    ProgressBar(exercises: sync.exercises,
-                                currentIndex: sync.exerciseIndex, sync: sync)
-                        .padding(.bottom, 22)
+                        ProgressBar(exercises: sync.exercises,
+                                    currentIndex: sync.exerciseIndex, sync: sync)
+                            .padding(.bottom, 22)
 
-                    if let block = ExerciseGroupBlock.blocks(sync.exercises).first(where: { $0.members.contains(where: { $0.id == ex.id }) }), block.isGroup {
-                        groupCard(block, current: ex)
-                            .padding(.bottom, 20)
-                    }
+                        if let block = ExerciseGroupBlock.blocks(sync.exercises).first(where: { $0.members.contains(where: { $0.id == ex.id }) }), block.isGroup {
+                            groupCard(block, current: ex)
+                                .padding(.bottom, 20)
+                        }
 
-                    // Keep the compact scoreboard at ordinary sizes; allow
-                    // the full exercise name to wrap at accessibility sizes.
-                    HStack(alignment: .center, spacing: 10) {
-                        Text(ex.exercise_name.uppercased())
-                            .font(Theme.display(52)).foregroundStyle(Theme.text)
-                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
-                            .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.4)
-                            .fixedSize(horizontal: false, vertical: true)
-                        DemoInfoButton(exerciseName: ex.exercise_name) { demoFor = ex }
-                        if ex.isWarmup { WarmupTag() }
-                        Spacer(minLength: 0)
-                    }
-                    .frame(minHeight: 56)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                        // Keep the compact scoreboard at ordinary sizes; allow
+                        // the full exercise name to wrap at accessibility sizes.
+                        HStack(alignment: .center, spacing: 10) {
+                            Text(ex.exercise_name.uppercased())
+                                .font(Theme.display(52)).foregroundStyle(Theme.text)
+                                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                                .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.4)
+                                .fixedSize(horizontal: false, vertical: true)
+                            DemoInfoButton(exerciseName: ex.exercise_name) { demoFor = ex }
+                            if ex.isWarmup { WarmupTag() }
+                            Spacer(minLength: 0)
+                        }
+                        .frame(minHeight: 56)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
-                    let metadataLayout = dynamicTypeSize.isAccessibilitySize
-                        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
-                        : AnyLayout(HStackLayout())
-                    metadataLayout {
-                        let complete = sync.isComplete(ex)
-                        meta(ex.group_id == nil ? "SET" : "ROUND", "\(min(displayedSetNumber, ex.target_sets))",
-                             complete ? "OF \(ex.target_sets) ✓" : "OF \(ex.target_sets)")
-                        if !dynamicTypeSize.isAccessibilitySize { Spacer() }
-                        meta("TARGET", ex.targetLabel, "")
-                        if !dynamicTypeSize.isAccessibilitySize { Spacer() }
-                        meta(ex.group_id == nil ? "REST" : "ROUND REST",
-                             "\(ex.group_rest_seconds ?? ex.rest_seconds)s", "")
-                    }
-                    .padding(.top, 12)
+                        let metadataLayout = dynamicTypeSize.isAccessibilitySize
+                            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                            : AnyLayout(HStackLayout())
+                        metadataLayout {
+                            let complete = sync.isComplete(ex)
+                            meta(ex.group_id == nil ? "SET" : "ROUND", "\(min(displayedSetNumber, ex.target_sets))",
+                                 complete ? "OF \(ex.target_sets) ✓" : "OF \(ex.target_sets)")
+                            if !dynamicTypeSize.isAccessibilitySize { Spacer() }
+                            meta("TARGET", ex.targetLabel, "")
+                            if !dynamicTypeSize.isAccessibilitySize { Spacer() }
+                            meta(ex.group_id == nil ? "REST" : "ROUND REST",
+                                 "\(ex.group_rest_seconds ?? ex.rest_seconds)s", "")
+                        }
+                        .padding(.top, 12)
 
-                    prescriptionContext(ex: ex)
-                    Button {
-                        valueDraft = sync.currentInputState
-                        editingValues = true
-                    } label: {
-                        Text("Edit weight, \(ex.isTimed ? "duration" : "reps") & RPE")
-                            .font(Theme.mono(12, .bold)).frame(minHeight: 44).contentShape(Rectangle())
-                    }
-                    .accessibilityLabel("Edit next set for \(ex.exercise_name)")
-                    .disabled(sync.timedActive || sync.isSetEntryBlocked(ex))
-                    if let rpe = sync.rpe {
-                        Text("LOGGING RPE \(SetValueFormatter.number(rpe))")
-                            .font(Theme.mono(11)).foregroundStyle(Theme.accent)
-                    }
-                    Toggle("Timer sounds", isOn: $timerCuesEnabled)
-                        .font(Theme.mono(11)).tint(Theme.accent)
-                        .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
-                    jumpStrip(ex: ex)
-
-                    if ex.showsLoadControl {
-                        loadControl(ex: ex).disabled(sync.timedActive)
-                    }
-                    if ex.exercise_modality == "barbell", ex.exercise_unit == "lb" {
+                        prescriptionContext(ex: ex)
                         Button {
-                            loadingTarget = sync.weight
-                            showingLoading = true
+                            valueDraft = sync.currentInputState
+                            editingValues = true
                         } label: {
-                            Text("Plates & warm-up guide")
+                            Text("Edit weight, \(ex.isTimed ? "duration" : "reps") & RPE")
                                 .font(Theme.mono(12, .bold)).frame(minHeight: 44).contentShape(Rectangle())
                         }
-                    }
-
-                    if ex.isTimed {
-                        TimedSetView(sync: sync, ex: ex)
-                    } else {
-                        stepper(label: "REPS", value: "\(sync.reps)", context: "reps",
-                                steps: [("−1", { sync.adjustReps(-1) }, false),
-                                        ("+1", { sync.adjustReps(1) }, false)])
-
-                        Button {
-                            // Bind the intent to what this tap displayed. The
-                            // Task may begin after an earlier tap advanced the
-                            // runner, and must never log that successor slot.
-                            let renderedExercise = ex
-                            Task {
-                                await sync.logCurrentSet(
-                                    expected: renderedExercise,
-                                    expectedSetNumber: physicalSetNumber)
-                            }
-                        } label: {
-                            Text(ex.group_id == nil ? "LOG SET \(displayedSetNumber)" : "LOG ROUND \(displayedSetNumber)")
-                                .font(Theme.display(26)).tracking(1.2)
-                                .frame(maxWidth: .infinity).padding(.vertical, 18)
+                        .accessibilityLabel("Edit next set for \(ex.exercise_name)")
+                        .disabled(sync.timedActive || sync.isSetEntryBlocked(ex))
+                        if let rpe = sync.rpe {
+                            Text("LOGGING RPE \(SetValueFormatter.number(rpe))")
+                                .font(Theme.mono(11)).foregroundStyle(Theme.accent)
                         }
-                        .background(Theme.accent).foregroundStyle(.black)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                        .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
-                        .padding(.top, 18)
-                        .disabled(sync.isSetEntryBlocked(ex))
-                        .opacity(sync.isSetEntryBlocked(ex) ? 0.55 : 1)
+                        Toggle("Timer sounds", isOn: $timerCuesEnabled)
+                            .font(Theme.mono(11)).tint(Theme.accent)
+                            .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
+                        jumpStrip(ex: ex)
+
+                        if ex.showsLoadControl {
+                            loadControl(ex: ex).disabled(sync.timedActive)
+                        }
+                        if ex.exercise_modality == "barbell", ex.exercise_unit == "lb" {
+                            Button {
+                                loadingTarget = sync.weight
+                                showingLoading = true
+                            } label: {
+                                Text("Plates & warm-up guide")
+                                    .font(Theme.mono(12, .bold)).frame(minHeight: 44).contentShape(Rectangle())
+                            }
+                        }
+
+                        if ex.isTimed {
+                            TimedSetView(sync: sync, ex: ex)
+                        } else {
+                            stepper(label: "REPS", value: "\(sync.reps)", context: "reps",
+                                    steps: [("−1", { sync.adjustReps(-1) }, false),
+                                            ("+1", { sync.adjustReps(1) }, false)])
+                        }
+
+                        completedChips(ex: ex)
+
+
+                        HStack {
+                            navBtn("← PREV") { navigate(to: sync.exerciseIndex - 1) }
+                                .disabled(sync.exerciseIndex == 0)
+                            Text("\(sync.exerciseIndex + 1) / \(sync.exercises.count)")
+                                .font(Theme.mono(11)).tracking(1.5).foregroundStyle(Theme.muted)
+                                .frame(maxWidth: .infinity)
+                            // Non-destructive: just move to the next exercise. Going
+                            // out of order no longer strikes out the ones you pass (#3).
+                            navBtn("NEXT →") { navigate(to: sync.exerciseIndex + 1) }
+                                .disabled(sync.exerciseIndex >= sync.exercises.count - 1)
+                        }
+                        .padding(.top, 24)
+
+                        // Explicit, lower-emphasis "I'm not doing this one" — strikes
+                        // the exercise out and drops it from the queue so the workout
+                        // can finish without it. Kept SEPARATE from NEXT so plain
+                        // forward navigation never marks anything skipped (#3).
+                        Button { sync.skip() } label: {
+                            Text("Skip this exercise")
+                                .font(Theme.mono(11, .bold)).tracking(1)
+                                .foregroundStyle(Theme.muted)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12).frame(minHeight: 44)
+                        }
+                        .accessibilityLabel("Skip \(ex.exercise_name)")
+                        .padding(.top, 8)
                     }
-
-                    completedChips(ex: ex)
-
-
-                    HStack {
-                        navBtn("← PREV") { navigate(to: sync.exerciseIndex - 1) }
-                            .disabled(sync.exerciseIndex == 0)
-                        Text("\(sync.exerciseIndex + 1) / \(sync.exercises.count)")
-                            .font(Theme.mono(11)).tracking(1.5).foregroundStyle(Theme.muted)
-                            .frame(maxWidth: .infinity)
-                        // Non-destructive: just move to the next exercise. Going
-                        // out of order no longer strikes out the ones you pass (#3).
-                        navBtn("NEXT →") { navigate(to: sync.exerciseIndex + 1) }
-                            .disabled(sync.exerciseIndex >= sync.exercises.count - 1)
-                    }
-                    .padding(.top, 24)
-
-                    // Explicit, lower-emphasis "I'm not doing this one" — strikes
-                    // the exercise out and drops it from the queue so the workout
-                    // can finish without it. Kept SEPARATE from NEXT so plain
-                    // forward navigation never marks anything skipped (#3).
-                    Button { sync.skip() } label: {
-                        Text("Skip this exercise")
-                            .font(Theme.mono(11, .bold)).tracking(1)
-                            .foregroundStyle(Theme.muted)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12).frame(minHeight: 44)
-                    }
-                    .accessibilityLabel("Skip \(ex.exercise_name)")
-                    .padding(.top, 8)
+                    .padding(20)
+                    // When a rest is running the floating RestPill sits at the
+                    // top-centre; reserve space so it never lands on the WORKOUT
+                    // timer + progress bar (#53). Invisible when the full rest
+                    // overlay is up (it covers the runner anyway).
+                    .padding(.top, sync.restEndDate != nil ? 52 : 0)
                 }
-                .padding(20)
-                // Native tab bars can overlay the tail of a tall runner. Keep
-                // enough scroll content below Prev/Next/Skip for those controls
-                // to clear the bar on every supported phone size.
-                .padding(.bottom, 88)
-                // When a rest is running the floating RestPill sits at the
-                // top-centre; reserve space so it never lands on the WORKOUT
-                // timer + progress bar (#53). Invisible when the full rest
-                // overlay is up (it covers the runner anyway).
-                .padding(.top, sync.restEndDate != nil ? 52 : 0)
+                // A sibling keeps the action inside the runner's hit-testing
+                // bounds as the full rest screen hides and restores app chrome.
+                RunnerSetAction(sync: sync, ex: ex)
             }
             .sheet(isPresented: $editingWeight) {
                 WeightEditorSheet(
@@ -1260,8 +1243,6 @@ private struct TimedSetView: View {
     let ex: TemplateExercise
 
     var body: some View {
-        let displayedSetNumber = sync.currentSetNumber
-        let physicalSetNumber = sync.currentPhysicalSetNumber
         VStack(spacing: 16) {
             Text(sync.timedActive ? "HOLD" : "DURATION")
                 .font(Theme.mono(10, .bold)).tracking(2).foregroundStyle(Theme.muted)
@@ -1280,19 +1261,58 @@ private struct TimedSetView: View {
                     .foregroundStyle(Theme.text)
             }
 
-            if sync.timedActive {
+        }
+        .frame(maxWidth: .infinity)
+        .padding(20)
+        .background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 14))
+        .padding(.top, 16)
+    }
+}
+
+/// The current set action stays above the tab bar while inputs scroll. Keep
+/// the rendered slot and physical set number bound to the logging intent.
+private struct RunnerSetAction: View {
+    @ObservedObject var sync: SyncModel
+    let ex: TemplateExercise
+    @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = "lb"
+
+    var body: some View {
+        let displayedSetNumber = sync.currentSetNumber
+        let physicalSetNumber = sync.currentPhysicalSetNumber
+        let unit = WeightUnit(rawValue: weightUnitRaw) ?? .lb
+        let storedUnit = WeightUnit(rawValue: ex.exercise_unit) ?? .lb
+        VStack(spacing: 6) {
+            Text(ex.exercise_name)
+                .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
+                .fixedSize(horizontal: false, vertical: true)
+            let values = SetValueFormatter.value(
+                weight: storedUnit.convert(sync.weight, to: unit), reps: sync.reps,
+                durationSeconds: ex.isTimed ? sync.holdDurationSeconds : nil, timed: ex.isTimed,
+                bodyweight: ex.isBodyweight, unit: unit.rawValue)
+            Text(values + (!ex.isTimed && sync.weight != 0 ? " · \(unit.rawValue)" : "")
+                 + (sync.rpe.map { " · RPE \(SetValueFormatter.number($0))" } ?? ""))
+                .font(.caption).foregroundStyle(Theme.muted)
+                .accessibilityIdentifier("runner.setSummary")
+            if ex.isTimed && sync.timedActive {
                 Button {
                     Task { await sync.stopTimedSet() }
                 } label: {
                     Text("STOP & LOG").font(Theme.display(24)).tracking(1.2)
                         .frame(maxWidth: .infinity).padding(.vertical, 16)
+                        .contentShape(Rectangle())
                 }
                 .background(Theme.surface2).foregroundStyle(Theme.text)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .disabled(
                     sync.isTerminalMutationInFlight
                         || sync.hasPendingTerminalIntentForCurrentWorkout)
-            } else {
+            } else if sync.runnerSetsDone(ex) >= ex.target_sets {
+                Text("EXERCISE COMPLETE")
+                    .font(Theme.display(24)).tracking(1.2)
+                    .frame(maxWidth: .infinity).padding(.vertical, 16)
+                    .foregroundStyle(Theme.done)
+                    .accessibilityIdentifier("runner.exerciseComplete")
+            } else if ex.isTimed {
                 Button {
                     sync.startTimedSet(
                         expected: ex,
@@ -1301,18 +1321,32 @@ private struct TimedSetView: View {
                     Text(ex.group_id == nil ? "START SET \(displayedSetNumber)" : "START ROUND \(displayedSetNumber)")
                         .font(Theme.display(24)).tracking(1.2)
                         .frame(maxWidth: .infinity).padding(.vertical, 16)
+                        .contentShape(Rectangle())
                 }
                 .background(Theme.accent).foregroundStyle(.black)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .shadow(color: Theme.accent.opacity(0.35), radius: 18, y: 8)
                 .disabled(sync.isSetEntryBlocked(ex))
                 .opacity(sync.isSetEntryBlocked(ex) ? 0.55 : 1)
+            } else {
+                Button {
+                    Task { await sync.logCurrentSet(expected: ex, expectedSetNumber: physicalSetNumber) }
+                } label: {
+                    Text(ex.group_id == nil ? "LOG SET \(displayedSetNumber)" : "LOG ROUND \(displayedSetNumber)")
+                        .font(Theme.display(26)).tracking(1.2)
+                        .frame(maxWidth: .infinity).padding(.vertical, 16)
+                        .contentShape(Rectangle())
+                }
+                .background(Theme.accent).foregroundStyle(.black)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .disabled(sync.isSetEntryBlocked(ex))
+                .opacity(sync.isSetEntryBlocked(ex) ? 0.55 : 1)
             }
         }
+        .padding(.horizontal, 20).padding(.vertical, 10)
         .frame(maxWidth: .infinity)
-        .padding(20)
-        .background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 14))
-        .padding(.top, 16)
+        .background(Theme.background)
+        .buttonStyle(.plain)
     }
 }
 
@@ -1494,14 +1528,15 @@ private struct FinishedView: View {
     var body: some View {
         let finishPending = sync.currentTerminalIntent?.action == .finish
             && sync.currentTerminalIntent?.deliveryState != .acknowledged
+        let readyToFinish = sync.canFinishResolvedWorkout
         ScrollView {
             VStack(spacing: 16) {
-                Text(finishPending ? "WAITING" : "SETS DONE")
+                Text(finishPending ? "WAITING" : readyToFinish ? "SETS DONE" : "REVIEW SETS")
                     .font(Theme.display(finishPending ? 64 : 58))
                     .foregroundStyle(Theme.done)
                 Text(finishPending
                     ? "FINISH SAVED ON THIS DEVICE"
-                    : "READY TO FINISH")
+                    : readyToFinish ? "READY TO FINISH" : "EXERCISES TO COMPLETE")
                     .font(Theme.mono(11, .bold)).tracking(2)
                     .foregroundStyle(Theme.muted)
 
@@ -1531,26 +1566,33 @@ private struct FinishedView: View {
                     $0.session_id == sync.todaySession?.id && $0.deleted_at == nil
                 }, pending: sync.setOutbox.pending.filter { $0.date == sync.todayString })
                 WorkoutFeedbackEntry(sync: sync)
-                Button { sync.jump(to: sync.exerciseIndex) } label: {
-                    Text("Return to exercises").frame(minHeight: 44).contentShape(Rectangle())
+                if readyToFinish {
+                    Button { sync.jump(to: sync.exerciseIndex) } label: {
+                        Text("Return to exercises").frame(minHeight: 44).contentShape(Rectangle())
+                    }
+                    .disabled(sync.hasPendingTerminalIntentForCurrentWorkout)
                 }
-                .disabled(sync.hasPendingTerminalIntentForCurrentWorkout)
 
-                Button {
-                    guard let target = sync.terminalActionTarget else { return }
-                    Task { await sync.finishResolvedWorkout(expected: target) }
-                } label: {
-                    Text(finishPending ? "WAITING TO SYNC" : "FINISH")
-                        .font(Theme.display(24)).tracking(1.5)
-                        .frame(maxWidth: .infinity).padding(.vertical, 16)
-                }
-                .background(Theme.accent).foregroundStyle(.black)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .padding(.top, 24)
-                .disabled(
-                    sync.hasPendingTerminalIntentForCurrentWorkout)
             }
             .padding(28)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            Button {
+                guard readyToFinish else { sync.reviewIncompleteExercises(); return }
+                guard let target = sync.terminalActionTarget else { return }
+                Task { await sync.finishResolvedWorkout(expected: target) }
+            } label: {
+                Text(finishPending ? "WAITING TO SYNC" : readyToFinish ? "FINISH WORKOUT" : "REVIEW EXERCISES")
+                    .font(Theme.display(24)).tracking(1.5)
+                    .frame(maxWidth: .infinity).padding(.vertical, 16)
+            }
+            .background(Theme.accent).foregroundStyle(.black)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .accessibilityIdentifier(readyToFinish || finishPending ? "FINISH" : "finished.reviewExercises")
+            .disabled(
+                sync.hasPendingTerminalIntentForCurrentWorkout)
+            .padding(.horizontal, 20).padding(.vertical, 10)
+            .background(Theme.background)
         }
     }
 

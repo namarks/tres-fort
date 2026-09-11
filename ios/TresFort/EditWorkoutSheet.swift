@@ -42,6 +42,8 @@ struct EditWorkoutSheet: View {
     @State private var selectedSlots: Set<String> = []
     @State private var editingGroup: ExerciseGroupEditTarget?
     @State private var mutationWorking = false
+    @State private var reordering = false
+    @State private var removingExercise: ExerciseEditTarget?
 
     private var day: Workout? { sync.workout(id: dayID) }
 
@@ -66,32 +68,45 @@ struct EditWorkoutSheet: View {
                 .disabled(day == nil || sync.workoutEditorRefreshNeeded || mutationWorking)
             }
             .background(Theme.background)
-            .navigationTitle(day.map { "Edit \($0.name)" } ?? "Workout unavailable")
+            .navigationTitle(reordering ? "Reorder exercises" : day.map { "Edit \($0.name)" } ?? "Workout unavailable")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Done") { if let onDone { onDone() } else { dismiss() } }.foregroundStyle(Theme.accent)
+                if !reordering {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Done") { if let onDone { onDone() } else { dismiss() } }.foregroundStyle(Theme.accent)
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button { addPresetWarmup = false; adding = true } label: {
-                            Label("Add exercise", systemImage: "plus")
-                        }
-                        Button { addPresetWarmup = true; adding = true } label: {
-                            Label("Add warm-up", systemImage: "flame")
-                        }
-                        Button {
-                            selectedSlots = []
-                            selectingGroup = true
+                    if reordering {
+                        Button("Done") { reordering = false }
+                            .accessibilityLabel("Done reordering")
+                            .accessibilityIdentifier("editor.doneReordering")
+                    } else {
+                        Menu {
+                            Button { addPresetWarmup = false; adding = true } label: {
+                                Label("Add exercise", systemImage: "plus")
+                            }
+                            Button { addPresetWarmup = true; adding = true } label: {
+                                Label("Add warm-up", systemImage: "flame")
+                            }
+                            Button {
+                                selectedSlots = []
+                                selectingGroup = true
+                            } label: {
+                                Label("Group exercises", systemImage: "checkmark.circle")
+                            }
+                            Button {
+                                reordering = true
+                            } label: {
+                                Label("Reorder exercises", systemImage: "arrow.up.arrow.down")
+                            }
                         } label: {
-                            Label("Select exercises", systemImage: "checkmark.circle")
+                            Image(systemName: "ellipsis.circle").foregroundStyle(Theme.accent)
                         }
-                    } label: {
-                        Image(systemName: "plus.circle.fill").foregroundStyle(Theme.accent)
+                        .accessibilityLabel("Workout actions")
+                        .accessibilityIdentifier("editor.actions")
+                        .disabled(day == nil || sync.workoutEditorRefreshNeeded || mutationWorking || selectingGroup)
                     }
-                    .accessibilityLabel("Workout actions")
-                    .accessibilityIdentifier("editor.actions")
-                    .disabled(day == nil || sync.workoutEditorRefreshNeeded || mutationWorking || selectingGroup)
                 }
             }
             .toolbarColorScheme(.dark, for: .navigationBar)
@@ -111,6 +126,14 @@ struct EditWorkoutSheet: View {
             }
             .sheet(item: $editingGroup) { target in
                 EditExerciseGroupSheet(sync: sync, dayID: dayID, target: target)
+            }
+            .alert("Remove \(removingExercise?.exercise.exercise_name ?? "exercise")?",
+                   isPresented: Binding(get: { removingExercise != nil }, set: { if !$0 { removingExercise = nil } }),
+                   presenting: removingExercise) { target in
+                Button("Remove exercise", role: .destructive) { removeSlot(target.id) }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("This removes the exercise from this saved workout. Previously logged sets stay in your history.")
             }
             .safeAreaInset(edge: .bottom) {
                 if selectingGroup { selectionBar }
@@ -186,18 +209,21 @@ struct EditWorkoutSheet: View {
                 if block.isGroup {
                     groupCard(block)
                         .deleteDisabled(true)
-                        .moveDisabled(selectingGroup)
+                        .moveDisabled(!reordering)
                         .listRowBackground(Theme.surface)
                 } else {
                     exerciseRow(block.members[0])
-                        .deleteDisabled(selectingGroup)
-                        .moveDisabled(selectingGroup)
+                        .deleteDisabled(true)
+                        .moveDisabled(!reordering)
                         .listRowBackground(Theme.surface)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            if !selectingGroup && !reordering {
+                                Button("Remove", role: .destructive) {
+                                    removingExercise = ExerciseEditTarget(exercise: block.members[0])
+                                }
+                            }
+                        }
                 }
-            }
-            .onDelete { offsets in
-                guard let i = offsets.first, !blocks[i].isGroup else { return }
-                removeSlot(blocks[i].members[0].id)
             }
             .onMove { offsets, newOffset in
                 guard let source = offsets.first, offsets.count == 1, let version = sync.plan?.version else { return }
@@ -224,7 +250,7 @@ struct EditWorkoutSheet: View {
             }
         }
         .scrollContentBackground(.hidden)
-        .environment(\.editMode, .constant(selectingGroup ? .inactive : .active))
+        .environment(\.editMode, .constant(reordering ? .active : .inactive))
     }
 
     private func groupCard(_ block: ExerciseGroupBlock) -> some View {
@@ -248,7 +274,7 @@ struct EditWorkoutSheet: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Edit \(block.title)")
-                .disabled(selectingGroup)
+                .disabled(selectingGroup || reordering)
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("\(block.rounds) rounds")
@@ -282,38 +308,44 @@ struct EditWorkoutSheet: View {
             Button {
                 editingExercise = ExerciseEditTarget(exercise: ex)
             } label: {
-                HStack(spacing: 10) {
+                let layout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 10))
+                layout {
                     if let label { Text(label).font(Theme.mono(13, .bold)).foregroundStyle(Theme.accent) }
                     VStack(alignment: .leading, spacing: 3) {
                         Text(ex.exercise_name).font(Theme.mono(15, .bold)).foregroundStyle(Theme.text)
                         Text(ex.group_id == nil ? "\(ex.targetLabel) · \(ex.rest_seconds)s rest" : ex.targetLabel)
                             .font(Theme.mono(12)).foregroundStyle(Theme.muted)
                     }
-                    Spacer()
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                     if ex.isWarmup { WarmupTag() }
-                    Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.dim)
+                    if !reordering && !selectingGroup && !dynamicTypeSize.isAccessibilitySize {
+                        Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.dim)
+                    }
                 }
-                .frame(minHeight: 44)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(selectingGroup)
+            .disabled(selectingGroup || reordering)
             .accessibilityIdentifier("editor.slot.\(ex.id)")
-            Menu {
-                Button("Replace with…", systemImage: "arrow.triangle.2.circlepath") {
-                    guard let plan = sync.plan,
-                          let current = plan.workouts.first(where: { $0.id == dayID })?
-                            .exercises.first(where: { $0.id == ex.id }) else { return }
-                    replacingExercise = ExerciseReplacementTarget(exercise: current, version: plan.version)
+            if !selectingGroup && !reordering {
+                Menu {
+                    Button("Replace with…", systemImage: "arrow.triangle.2.circlepath") {
+                        guard let plan = sync.plan,
+                              let current = plan.workouts.first(where: { $0.id == dayID })?
+                                .exercises.first(where: { $0.id == ex.id }) else { return }
+                        replacingExercise = ExerciseReplacementTarget(exercise: current, version: plan.version)
+                    }
+                    Button("Remove exercise", role: .destructive) {
+                        removingExercise = ExerciseEditTarget(exercise: ex)
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle").foregroundStyle(Theme.accent).frame(width: 44, height: 44)
                 }
-                if ex.group_id != nil {
-                    Button("Remove exercise", role: .destructive) { removeSlot(ex.id) }
-                }
-            } label: {
-                Image(systemName: "ellipsis.circle").foregroundStyle(Theme.accent).frame(width: 44, height: 44)
+                .disabled(selectingGroup)
+                .accessibilityLabel("Options for \(ex.exercise_name)")
             }
-            .disabled(selectingGroup)
-            .accessibilityLabel("Options for \(ex.exercise_name)")
         }
     }
 
@@ -330,7 +362,7 @@ struct EditWorkoutSheet: View {
             Text(day == nil ? "WORKOUT NOT LOADED" : "NO EXERCISES YET")
                 .font(Theme.display(24)).foregroundStyle(Theme.text)
             Text(day == nil ? "Refresh to load this workout, or close the editor if it was removed."
-                 : "Use ＋ to add an exercise or a warm-up.")
+                 : "Use Workout actions to add an exercise or a warm-up.")
                 .font(Theme.mono(13)).foregroundStyle(Theme.muted)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

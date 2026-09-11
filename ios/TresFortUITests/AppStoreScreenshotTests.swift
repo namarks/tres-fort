@@ -60,20 +60,11 @@ final class AppStoreScreenshotTests: XCTestCase {
         tap(app.buttons["today.startWorkout"], in: app)
         let log = app.buttons["LOG SET 1"]
         XCTAssertTrue(log.waitForExistence(timeout: 5))
-        // The real runner scrolls under the translucent tab bar. Frame the
-        // capture with its primary action fully above the bar. Base the drag
-        // on its overlap so the same journey also works on CI's smaller phone.
-        for _ in 0..<3 where log.frame.maxY >= app.tabBars.firstMatch.frame.minY - 12 {
-            let overlap = log.frame.maxY - (app.tabBars.firstMatch.frame.minY - 24)
-            let distance = min(0.25, max(0.05, overlap / app.frame.height + 0.02))
-            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.70))
-                .press(forDuration: 0.05, thenDragTo:
-                    app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.70 - distance)),
-                       withVelocity: .slow, thenHoldForDuration: 0.3)
-        }
-        XCTAssertLessThan(log.frame.maxY, app.tabBars.firstMatch.frame.minY - 12)
+        XCTAssertTrue(log.isHittable, "Logging must be available without scrolling")
+        XCTAssertLessThan(log.frame.maxY, app.tabBars.firstMatch.frame.minY)
         capture("02-runner")
-        tap(app.buttons["End workout"], in: app)
+        tap(app.buttons["today.workoutActions"], in: app)
+        tap(app.buttons["Finish workout"], in: app)
         XCTAssertTrue(app.textViews["feedback.note"].waitForExistence(timeout: 5))
         tap(app.textViews["feedback.note"], in: app)
         app.textViews["feedback.note"].typeText("Steady reps today. Keep this weight next time.")

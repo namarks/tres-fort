@@ -58,7 +58,14 @@ final class MemberActivationJourneyTests: XCTestCase {
         if app.buttons["rest.done"].waitForExistence(timeout: 3) {
             tap(app.buttons["rest.done"], in: app)
         }
-        tap(app.buttons["FINISH"], in: app)
+        let finish = app.buttons["FINISH"]
+        XCTAssertTrue(finish.waitForExistence(timeout: 5))
+        XCTAssertTrue(finish.isEnabled)
+        XCTAssertTrue(app.frame.contains(finish.frame))
+        XCTAssertGreaterThanOrEqual(finish.frame.height, 44)
+        // After rest restores the app chrome, XCTest can misreport this pinned
+        // button's hittability. A physical tap must complete the workout below.
+        finish.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
         let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         image.name = "activation-first-completion"; image.lifetime = .keepAlways; add(image)

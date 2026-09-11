@@ -249,11 +249,14 @@ P0.1 navigation update. P2 freestyle creation and optional saving remain separat
 the implemented Create a workout action explicitly saves to the shared library.
 The navigation design was approved in task
 `01a08dee-930f-7763-9202-29872c440f26`. [PR #178](https://github.com/namarks/tres-fort/pull/178)
-passed final independent review and all required CI. Under the owner's latest-main
-release authorization, its compatible calendar-move Worker was deployed before
-version 1.0 (37) became available to internal Testers. The
-[release record](../app-store-submission/release-37.md) identifies the exact source,
-serving version, TestFlight processing and remaining physical-device limits.
+passed final independent review and all required CI. The current internal client
+is [TestFlight 1.0 (38)](../app-store-submission/release-38.md), released from
+`0ac5d46b5a245c674fbc10727117b264a38db580` after the browsing and action fixes in
+PRs #182 and #183. Apple confirmed VALID processing and internal Testers
+membership. The compatible calendar-move Worker was deployed for the preceding
+[build 37 release](../app-store-submission/release-37.md); build 38's backend
+source is unchanged and required no backend deployment. The current release
+record retains the signed-package evidence and remaining physical-device limits.
 
 **Client verification (@owner):** Legacy-route REST checks and the live workout
 canary remain explicitly owner-deferred, not passed. The existing exception

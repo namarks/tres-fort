@@ -276,9 +276,12 @@ final class TrainingJourneyTests: XCTestCase {
         screenshot("journey-rest-complete")
         done.tap()
         let finish = app.buttons["FINISH"]
-        reveal(finish, in: app)
+        XCTAssertTrue(finish.waitForExistence(timeout: 5))
+        XCTAssertTrue(finish.isEnabled)
+        XCTAssertTrue(app.frame.contains(finish.frame))
+        XCTAssertGreaterThanOrEqual(finish.frame.height, 44)
         screenshot("journey-finish")
-        finish.tap()
+        finish.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
     }
 

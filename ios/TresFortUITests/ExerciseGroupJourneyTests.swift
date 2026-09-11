@@ -138,8 +138,13 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         }
         XCTAssertTrue(app.staticTexts["READY TO FINISH"].waitForExistence(timeout: 10))
         let finish = app.buttons["FINISH"]
-        reveal(finish, in: app)
-        finish.tap()
+        XCTAssertTrue(finish.waitForExistence(timeout: 5))
+        XCTAssertTrue(finish.isEnabled)
+        XCTAssertTrue(app.frame.contains(finish.frame))
+        XCTAssertGreaterThanOrEqual(finish.frame.height, 44)
+        // The final pinned action follows the same rest/chrome transition as
+        // Log. Verify a real touch and the acknowledged completion below.
+        finish.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["Synthetic member sequence mismatch"].exists)
         screenshot("completed-alternating-workout")

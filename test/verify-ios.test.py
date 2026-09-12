@@ -139,7 +139,8 @@ else: print('synthetic-tool-version')
             self.assertEqual(result.returncode,0,result.stderr)
             args=[args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building'][-1]
             selections.extend(arg.removeprefix('-only-testing:') for arg in args if arg.startswith('-only-testing:'))
-        self.assertEqual(len(selections),15)
+        self.assertEqual(len(selections),16)
+        self.assertIn("TresFortUITests/TrainingJourneyTests/testSwapExerciseMidWorkoutPreservesCompletedSetAndRoutine", selections)
         self.assertIn("TresFortUITests/TodayNavigationJourneyTests", selections)
         self.assertIn("TresFortUITests/UIActionJourneyTests", selections)
         self.assertIn("TresFortUITests/WorkoutLibraryJourneyTests", selections)
@@ -148,7 +149,7 @@ else: print('synthetic-tool-version')
         self.assertIn("TresFortUITests/MemberActivationJourneyTests", selections)
         self.assertIn("TresFortUITests/IntervalsConnectionJourneyTests", selections)
         self.assertIn("TresFortUITests/GroupSafetyJourneyTests", selections)
-        self.assertEqual(len(set(selections)),15)
+        self.assertEqual(len(set(selections)),16)
         self.assertIn('TresFortTests',selections)
         root=SCRIPT.parents[1]/'ios'
         for selection in selections:

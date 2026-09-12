@@ -852,7 +852,7 @@ final class SyncModel: ObservableObject {
                 runnerFocus.isExplicit = false
             }
             if let repair = deferredGroupRepair,
-               plan?.workouts.first(where: { $0.id == repair.dayID })
+               runnerDay(id: repair.dayID)
                 .flatMap({ RunnerGroupRepair(groupID: repair.groupID, day: $0) }) != repair {
                 deferredGroupRepair = nil
             }
@@ -4272,7 +4272,8 @@ final class SyncModel: ObservableObject {
               intent.date == checkpoint.date, intent.date == todayString,
               intent.expectedAttempt == (todaySession?.attempt ?? checkpoint.sessionAttempt ?? 0),
               let day = runnerDay(id: checkpoint.selectedDayID),
-              let slot = day.exercises.first(where: { $0.id == intent.slotID && $0.exercise_id == intent.exerciseID })
+              let slot = day.exercises.first(where: { $0.id == intent.slotID
+                  && approvedExerciseIDs(for: $0, date: intent.date).contains(intent.exerciseID) })
         else { return nil }
         return slot.group_id
     }
@@ -4317,7 +4318,8 @@ final class SyncModel: ObservableObject {
               intent.expectedAttempt == (todaySession?.attempt ?? checkpoint.sessionAttempt ?? 0),
               let day = runnerDay(id: checkpoint.selectedDayID),
               let sessionID = todaySession?.id ?? checkpoint.sessionID,
-              let slot = day.exercises.first(where: { $0.id == intent.slotID && $0.exercise_id == intent.exerciseID }),
+              let slot = day.exercises.first(where: { $0.id == intent.slotID
+                  && approvedExerciseIDs(for: $0, sessionID: sessionID).contains(intent.exerciseID) }),
               let id = slot.group_id,
               let repair = RunnerGroupRepair(groupID: id, day: day),
               intent.runnerGroupRepair == nil || intent.runnerGroupRepair == repair,
@@ -4358,7 +4360,8 @@ final class SyncModel: ObservableObject {
               checkpoint.sessionID == nil || checkpoint.sessionID == sessionID,
               intent.expectedAttempt == (todaySession?.attempt ?? checkpoint.sessionAttempt ?? 0),
               let day = runnerDay(id: checkpoint.selectedDayID),
-              let slot = day.exercises.first(where: { $0.id == intent.slotID && $0.exercise_id == intent.exerciseID }),
+              let slot = day.exercises.first(where: { $0.id == intent.slotID
+                  && approvedExerciseIDs(for: $0, sessionID: sessionID).contains(intent.exerciseID) }),
               let id = slot.group_id,
               intent.runnerGroupRepair == nil || intent.runnerGroupRepair == RunnerGroupRepair(groupID: id, day: day),
               observedGroupID == id || observedGroupProgress[id]?.members.contains(where: { $0.completedIDs.contains(intent.setID) }) == true,

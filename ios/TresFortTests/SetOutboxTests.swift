@@ -13208,4 +13208,61 @@ extension SetOutboxTests {
         XCTAssertFalse(model.isSwappingExercise)
         XCTAssertNotNil(model.workoutSwapTarget)
     }
+
+    func testDeletingOriginalSetAfterWorkoutSwapReopensCompletedSuperset() async throws {
+        for (liveReadFirst, duringHold) in [(false, false), (true, false), (false, true), (true, true)] {
+            let defaults = defaults(), api = SetWriteAPIStub()
+            let original = exercise(targetSets: 1, groupID: "group-a")
+            let replacement = exercise(exerciseID: "replacement", targetSets: 1,
+                unsetWeight: true, groupID: "group-a")
+            let partner = exercise(id: "slot-b", exerciseID: "b", targetSets: 1, groupID: "group-a")
+            let following = exercise(id: "slot-c", exerciseID: "c", timed: duringHold)
+            let active = try swappedSession(session(updatedAt: 100, attempt: 0),
+                original: original, replacement: replacement)
+            let oldSet = correctionFixture(original), partnerSet = correctionFixture(partner, id: "partner-set")
+            let slots = [original, partner, following]
+            let entered = SetAsyncLatch(), release = SetAsyncLatch()
+            var deletion: SetCorrectionResult?
+            api.correctionHandler = { [self] intent, _ in
+                let result = corrected(oldSet, intent: intent, session: active)
+                deletion = result
+                await entered.open()
+                await release.wait()
+                return result
+            }
+            api.logHandler = { [self] id, body, _ in
+                .init(set: setLog(body: body, sessionID: id), deduped: false, session: active)
+            }
+            let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                defaults: defaults, now: { self.fixedDate })
+            model.replaceState(with: state(session: active, sets: [oldSet, partnerSet], exercises: slots))
+            model.startWorkout()
+            model.jump(to: 2)
+            XCTAssertEqual(model.currentExercise, following)
+            if duringHold { model.startTimedSet(expected: following, expectedSetNumber: 1, at: fixedDate) }
+            XCTAssertEqual(model.runnerSetsDone(replacement), 1)
+            XCTAssertTrue(model.enqueueCorrection(set: oldSet, values: nil))
+            XCTAssertNotNil(model.setCorrections.first?.runnerGroupRepair)
+            let drain = Task { await model.drainWorkoutWriteOutboxes() }
+            await entered.wait()
+            if liveReadFirst {
+                model.replaceState(with: state(session: active,
+                    sets: [try XCTUnwrap(deletion).set, partnerSet], exercises: slots))
+            }
+            await release.open()
+            await drain.value
+            XCTAssertTrue(model.setCorrections.isEmpty)
+            XCTAssertEqual(model.runnerSetsDone(replacement), 0)
+            if duringHold {
+                XCTAssertTrue(model.timedActive)
+                model.replaceState(with: state(session: active,
+                    sets: [try XCTUnwrap(deletion).set, partnerSet], exercises: slots))
+                XCTAssertNotNil(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.deferredGroupRepair)
+                await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(30))
+            }
+            XCTAssertEqual(model.currentExercise, replacement)
+            XCTAssertFalse(model.finished)
+            XCTAssertEqual(model.plan?.workouts.first?.exercises.first, original)
+        }
+    }
 }

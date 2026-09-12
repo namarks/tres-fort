@@ -250,6 +250,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `POST /api/workouts/{id}/exercises` | Add an exercise slot (incl. `is_warmup`, `target_duration_s`). |
 | `PATCH /api/workouts/{id}/exercises/{teId}` | Edit one slot in place (targets / rest / warm-up flag / order). |
 | `POST /api/workouts/{id}/exercises/{teId}/swap` | `{to_exercise, expected_version}` — replace the exact caller-owned active slot, preserving its saved prescription, position, warm-up flag, and identity. Invalid carried targets return 400; a stale plan version returns 409. Historical sets retain their original exercise and values. |
+| `POST /api/sessions/{id}/exercises/{teId}/swap` | `{to_exercise, expected_attempt, expected_version, expected_revision}` — replace one exercise for the observed session attempt. Persist original and replacement slot snapshots in `sessions.exercise_swaps`; preserve the recurring plan, existing sets and group position. Only the same rep/timed measure is accepted. Clear exercise-specific load, cues and progression; the runner seeds the replacement from its own comparable history. |
 | `DELETE /api/workouts/{id}/exercises/{teId}` | Remove a slot; detaches (NULLs) historical `set_logs.template_exercise_id`. |
 | `PUT /api/workouts/{id}/groups` | `{group_id, exercises:[slot IDs], expected_version, round_rest, transition_rest?, target_sets?, order_index?}` creates or rewrites a group; optional `order_index` moves the complete block. Send `exercises:[]` with only `group_id` and `expected_version` to ungroup. Uses the same atomic, audited service as MCP. An exact acknowledged retry returns the original result before stale-version rejection, without reapplying a superseded grouping. |
 | `PUT /api/plan/schedule` | Replace the recurring weekday → day/rest map with optimistic concurrency on both `expected_plan_id` and `expected_version`. |
@@ -313,6 +314,32 @@ version 2 includes snapshots, and account deletion removes them. See the
 [snapshot contract and release boundary](plans/completed/reversible-plan-management/decisions.md).
 
 ---
+
+### Workout-only exercise substitutions
+
+Migration `0050_session_exercise_swaps.sql` adds nullable `sessions.exercise_swaps`
+JSON with an attempt, monotonic swap revision and per-slot original/replacement
+snapshots plus the movements performed for that slot. The session attempt and
+plan version are checked at the write boundary; the session update and iOS audit
+commit in one protected D1 batch. A stale picker returns 409. The recurring plan
+version and historical set rows do not change. Swaps ride ordinary session deltas,
+account export and local snapshot/acknowledgement ordering. An envelope from an
+older attempt is inactive after restart, reassignment or calendar movement.
+
+The runner projects a replacement only while its original slot still matches the
+current prescription. It counts accepted and pending sets for the explicitly
+approved movements against that one slot, preserving progress across a mid-round
+swap without conflating duplicate movement slots. Each new set keeps the actual
+exercise ID; history and summary continue to use the persisted set values.
+The picker is searchable, ranks the same primary muscle first and states its
+workout-only scope. Finish/stop an active timed set before swapping. Saving a swap
+requires connectivity; ordinary set logging retains its existing offline queue.
+A saved substitution can resume even before the first set is logged.
+
+Release requires separate authority: apply migration 0050, deploy the reviewed
+Worker, verify its session-swap route and only then distribute the iOS build.
+Retain the existing workout rename compatibility gates. No production or app
+release is implied by repository delivery.
 
 ## 5. MCP server — the product
 

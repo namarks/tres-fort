@@ -67,7 +67,7 @@ enum RunnerInputPolicy {
         }.sorted { $0.logged_at < $1.logged_at }
     }
 
-    static func seed(_ exercise: TemplateExercise, previous: SetLog?, draft: RunnerInputState?) -> RunnerInputState {
+    static func seed(_ exercise: TemplateExercise, previous: SetLog?, draft: RunnerInputState?, defaultWeight: Double = 45) -> RunnerInputState {
         let prescription = RunnerPrescription(exercise)
         if let draft, draft.prescription.matches(current: prescription) {
             return RunnerInputState(prescription: prescription, weight: draft.weight,
@@ -76,7 +76,7 @@ enum RunnerInputPolicy {
         return RunnerInputState(
             prescription: prescription,
             weight: exercise.exercise_modality == "cardio" ? 0
-                : exercise.target_weight ?? previous?.weight ?? (exercise.isTimed || exercise.isBodyweight ? 0 : 45),
+                : exercise.target_weight ?? previous?.weight ?? (exercise.isTimed || exercise.isBodyweight ? 0 : defaultWeight),
             reps: exercise.target_reps,
             rpe: exercise.target_rpe,
             durationSeconds: exercise.holdSeconds)

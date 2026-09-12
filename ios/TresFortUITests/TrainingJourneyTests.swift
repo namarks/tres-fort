@@ -71,6 +71,26 @@ final class TrainingJourneyTests: XCTestCase {
         screenshot("acknowledged-completion")
     }
 
+    func testSwapExerciseMidWorkoutPreservesCompletedSetAndRoutine() {
+        let app = launch("workout-swap")
+        let swap = app.buttons["runner.swap-exercise"]
+        reveal(swap, in: app)
+        swap.tap()
+        XCTAssertTrue(app.navigationBars["Swap exercise"].waitForExistence(timeout: 5))
+        screenshot("workout-swap-picker")
+        app.buttons.containing(.staticText, identifier: "Dumbbell Goblet Squat").firstMatch.tap()
+        app.buttons["runner.confirm-swap"].tap()
+        XCTAssertTrue(app.staticTexts["DUMBBELL GOBLET SQUAT"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["LOG SET 2"].exists)
+        XCTAssertEqual(app.staticTexts["runner.setSummary"].label, "0 × 5")
+        screenshot("workout-swapped-exercise")
+        reveal(app.buttons["LOG SET 2"], in: app)
+        app.buttons["LOG SET 2"].tap()
+        let evidence = NSPredicate(format: "value == %@", "original:1;replacement:1;plan:1")
+        expectation(for: evidence, evaluatedWith: app.staticTexts["fixture.scenario"])
+        waitForExpectations(timeout: 5)
+    }
+
     func testBodyweightAndTimedRunnerFixtures() {
         let bodyweight = launch("bodyweight")
         XCTAssertTrue(bodyweight.buttons["LOG SET 1"].waitForExistence(timeout: 10))

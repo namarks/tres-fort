@@ -95,7 +95,10 @@ final class UIActionJourneyTests: XCTestCase {
         let reorder = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder'")).firstMatch
         XCTAssertTrue(reorder.exists)
         let row = app.buttons["editor.slot.a-row"]
-        reorder.press(forDuration: 0.5, thenDragTo: row)
+        let dragStart = reorder.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        // Cross the next row's midpoint before releasing so the insertion position is unambiguous.
+        let dragEnd = row.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.9))
+        dragStart.press(forDuration: 0.5, thenDragTo: dragEnd)
         expectation(for: NSPredicate { _, _ in squat.frame.minY > row.frame.minY }, evaluatedWith: squat)
         waitForExpectations(timeout: 5)
         tap(app.buttons["editor.doneReordering"], in: app)

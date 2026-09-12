@@ -74,7 +74,14 @@ struct MainTabView: View {
             HistoryView(sync: sync)
                 .tabItem { Label("Calendar", systemImage: "calendar") }
                 .tag(Tab.history)
-            GroupTabView(groupModel: groupModel, auth: auth)
+            Group {
+                if auth.isReviewAccount {
+                    ContentUnavailableView("Personal sign-in required", systemImage: "person.2.fill",
+                        description: Text("This shared sample account cannot join real groups. Sign out in Profile > Account, then use Sign in with Apple to review group features."))
+                } else {
+                    GroupTabView(groupModel: groupModel, auth: auth)
+                }
+            }
                 .tabItem { Label("Group", systemImage: "person.2.fill") }
                 .tag(Tab.group)
             ProfileView(groupModel: groupModel, auth: auth, health: health, sync: sync)

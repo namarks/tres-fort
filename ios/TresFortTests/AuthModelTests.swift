@@ -49,6 +49,11 @@ private final class AuthAPIStub: AuthAPI {
         return try authResult.get()
     }
 
+    func authReview(username: String, password: String) async throws -> AuthResponse {
+        if let authHandler { return try await authHandler() }
+        return try authResult.get()
+    }
+
     func renewAppSession(jwt: String) async throws -> SessionRenewalResponse {
         renewalCalls += 1
         if let renewalHandler { return try await renewalHandler(jwt) }
@@ -119,7 +124,7 @@ final class AuthModelTests: XCTestCase {
         return defaults
     }
 
-    private func jwt(expiration: Date, subject: String = "user-a") -> String {
+    private func jwt(expiration: Date, subject: String = "user-a", review: Bool = false) -> String {
         func base64URL(_ data: Data) -> String {
             data.base64EncodedString()
                 .replacingOccurrences(of: "+", with: "-")
@@ -129,7 +134,8 @@ final class AuthModelTests: XCTestCase {
         let header = try! JSONSerialization.data(withJSONObject: ["alg": "HS256"])
         let payload = try! JSONSerialization.data(withJSONObject: [
             "exp": Int(expiration.timeIntervalSince1970),
-            "sub": subject
+            "sub": subject,
+            "app_review": review
         ])
         return "\(base64URL(header)).\(base64URL(payload)).signature"
     }
@@ -2587,4 +2593,64 @@ extension AuthModelTests {
         let callback = try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?ok=1&generation=7&sync_after=42")!)
         XCTAssertEqual(callback.activitySyncAfter, 42)
     }
+    func testReviewSignInSkipsPersonalIntentsAppleAndLegacyData() async throws {
+        let local = defaults(), api = AuthAPIStub(), tokens = MemoryTokenStore()
+        let checker = AppleCredentialCheckerStub()
+        local.set(true, forKey: AccountLocalState.legacyHealthEnabledKey)
+        let token = jwt(expiration: .distantFuture, subject: "review-user", review: true)
+        api.authResult = .success(AuthResponse(jwt: token, user: UserDTO(id: "review-user", display_name: "App Review", email: nil)))
+        let auth = AuthModel(api: api, tokenStore: tokens, appleCredentialChecker: checker, defaults: local)
+        auth.requestEntry(.coach)
+        await auth.signInForReview(username: "app-review", password: "synthetic-password")
+        XCTAssertEqual(auth.phase, .signedIn)
+        XCTAssertTrue(auth.isReviewAccount)
+        XCTAssertTrue(auth.onboardingComplete)
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+        XCTAssertNil(auth.appleCredentialUserID)
+        await auth.checkAppleCredentialState()
+        XCTAssertTrue(checker.checkedUserIDs.isEmpty)
+        AccountLocalState.bindLegacyState(userID: "review-user", defaults: local)
+        XCTAssertFalse(local.bool(forKey: AccountLocalState.healthEnabledKey(userID: "review-user")))
+        XCTAssertTrue(local.bool(forKey: AccountLocalState.legacyHealthEnabledKey))
+        let restored = AuthModel(api: api, tokenStore: tokens, defaults: local)
+        XCTAssertTrue(restored.isReviewAccount)
+        XCTAssertTrue(local.bool(forKey: AccountLocalState.legacyHealthEnabledKey))
+        api.deletionResult = .success(AccountDeletionResponse(ok: true, owner_tombstoned: false, apple_revocation: .manualRequired))
+        try await auth.deleteAccount()
+        XCTAssertEqual(auth.phase, .signedOut)
+        XCTAssertFalse(auth.postDeletionAppleRevocationRequired)
+        XCTAssertTrue(local.bool(forKey: AccountLocalState.legacyHealthEnabledKey))
+        XCTAssertFalse(local.bool(forKey: AccountLocalState.reviewAccountKey(userID: "review-user")))
+    }
+
+    func testReviewDeletionCleanupRetryPreservesPersonalLegacyData() {
+        let local = defaults()
+        let marker = AccountLocalState.reviewAccountKey(userID: "review-user")
+        let receipt = AccountLocalState.accountDeletionKey(userID: "review-user")
+        local.set(true, forKey: marker)
+        local.set(true, forKey: AccountLocalState.legacyHealthEnabledKey)
+        local.recordInvalidData(Data([1]), forKey: receipt)
+
+        XCTAssertFalse(AccountLocalState.clear(userID: "review-user", defaults: local))
+        XCTAssertTrue(local.bool(forKey: marker))
+        XCTAssertTrue(local.bool(forKey: AccountLocalState.legacyHealthEnabledKey))
+        XCTAssertTrue(local.eraseAfterAccountDeletion(forKey: receipt))
+        XCTAssertTrue(AccountLocalState.clear(userID: "review-user", defaults: local))
+        XCTAssertFalse(local.bool(forKey: marker))
+        XCTAssertTrue(local.bool(forKey: AccountLocalState.legacyHealthEnabledKey))
+    }
+
+    func testReviewSignInRejectsPersonalTokenAndHidesCredentialErrorBody() async {
+        let api = AuthAPIStub(), tokens = MemoryTokenStore()
+        let auth = AuthModel(api: api, tokenStore: tokens, defaults: defaults())
+        api.authResult = .success(AuthResponse(jwt: sessionToken(for: "personal-user"), user: UserDTO(id: "personal-user", display_name: nil, email: nil)))
+        await auth.signInForReview(username: "app-review", password: "synthetic-password")
+        XCTAssertEqual(auth.phase, .error("session identity mismatch"))
+        XCTAssertNil(auth.jwt)
+        api.authResult = .failure(APIError.http(401, "must-never-display-submitted-password"))
+        await auth.signInForReview(username: "app-review", password: "synthetic-password")
+        XCTAssertEqual(auth.phase, .error("The reviewer username or password is incorrect."))
+        XCTAssertNil(tokens.token)
+    }
+
 }

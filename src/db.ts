@@ -1,4 +1,5 @@
 import { sharedText, type GroupReportReason } from './groupSafety';
+import { APP_REVIEW_SUB } from './appReview';
 import { shareWorkoutSchemaCache, workoutDB } from './workoutSchema';
 import { validActivitySourceTime } from './activityTime';
 import { diagnosticErrorType } from './errors';
@@ -667,6 +668,7 @@ async function insertOwnerUnlessTombstoned(
   displayName: string | null,
   requireEmptyUsers: boolean,
 ): Promise<User | null> {
+  if (appleSub === APP_REVIEW_SUB) return null;
   const candidate: User = {
     id: uuid(),
     apple_sub: appleSub,
@@ -697,7 +699,7 @@ async function insertOwnerUnlessTombstoned(
         WHERE NOT EXISTS (
                 SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
               )
-          AND (?6 = 0 OR NOT EXISTS (SELECT 1 FROM users))
+          AND (?6 = 0 OR NOT EXISTS (SELECT 1 FROM users WHERE apple_sub != ?7))
        ON CONFLICT(apple_sub) DO NOTHING`,
     )
     .bind(
@@ -707,6 +709,7 @@ async function insertOwnerUnlessTombstoned(
       candidate.display_name,
       candidate.created_at,
       requireEmptyUsers ? 1 : 0,
+      APP_REVIEW_SUB,
     )
     .run();
   return workoutDB(db)
@@ -736,6 +739,7 @@ export async function claimOrCreateOwner(
   displayName: string | null,
   ownerSubLocked: boolean,
 ): Promise<User | null> {
+  if (appleSub === APP_REVIEW_SUB) return null;
   const byApple = await workoutDB(db)
     .prepare(
       `SELECT u.* FROM users u
@@ -846,6 +850,7 @@ export async function findOwnerRow(
   db: D1Database,
   ownerAppleSub: string | undefined,
 ): Promise<User | null> {
+  if (ownerAppleSub === APP_REVIEW_SUB) return null;
   if (ownerAppleSub) {
     return await workoutDB(db)
       .prepare(
@@ -874,12 +879,49 @@ export async function findOwnerRow(
   return await workoutDB(db)
     .prepare(
       `SELECT u.* FROM users u
-        WHERE NOT EXISTS (
+        WHERE u.apple_sub != ?1 AND NOT EXISTS (
                 SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1
               )
         ORDER BY u.created_at LIMIT 1`,
     )
+    .bind(APP_REVIEW_SUB)
     .first<User>();
+}
+
+/** Create the shared sample principal and its initial plan in one transaction.
+ * Repeat/concurrent sign-in never resets edits. After deletion a fresh UUID
+ * prevents old bearers regaining access. No owner/provider data is copied. */
+export async function ensureAppReviewUser(db: D1Database): Promise<User | null> {
+  const userId = uuid(), planId = uuid(), workoutId = uuid(), ts = now();
+  const sql = workoutDB(db);
+  const statements = [
+    sql.prepare(`INSERT INTO users (id,apple_sub,display_name,created_at)
+      VALUES (?1,?2,'App Review',?3) ON CONFLICT(apple_sub) DO NOTHING`)
+      .bind(userId, APP_REVIEW_SUB, ts),
+    sql.prepare(`INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at)
+      SELECT ?1,id,'Sample training','active',1,?3,?4,?4 FROM users WHERE id=?2`)
+      .bind(planId, userId, JSON.stringify({ schedule: { version: 1, week: {
+        mon: workoutId, tue: null, wed: workoutId, thu: null, fri: workoutId, sat: null, sun: null,
+      } } }), ts),
+    sql.prepare(`INSERT INTO workouts (id,plan_id,name,day_label,order_index,created_at,updated_at)
+      SELECT ?1,id,'Sample strength','Strength A',0,?3,?3 FROM plans WHERE id=?2`)
+      .bind(workoutId, planId, ts),
+  ];
+  for (const [index, exercise] of ['ex_back_squat', 'ex_bench', 'ex_barbell_row'].entries()) {
+    statements.push(sql.prepare(`INSERT INTO template_exercises
+      (id,workout_id,exercise_id,order_index,target_sets,target_reps,rest_seconds,created_at,updated_at)
+      SELECT ?1,id,?3,?4,3,5,90,?5,?5 FROM workouts WHERE id=?2`)
+      .bind(uuid(), workoutId, exercise, index, ts));
+  }
+  statements.push(preparePlanSnapshotInsert(db, {
+    userId, planId, actor: 'system', operation: 'app_review_sample', createdAt: ts,
+  }));
+  statements.push(sql.prepare(`INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+    SELECT ?1,id,'system','app_review_sample','{}','created',?3 FROM users WHERE id=?2`)
+    .bind(uuid(), userId, ts));
+  await sql.batch(statements);
+  const user = await sql.prepare('SELECT * FROM users WHERE apple_sub=?1').bind(APP_REVIEW_SUB).first<User>();
+  return user && !(await isAccountDeletionInProgress(db, user.id)) ? user : null;
 }
 
 /**
@@ -897,7 +939,8 @@ export async function isBootstrapClaimEligible(db: D1Database): Promise<boolean>
     return false;
   }
   const rows = await workoutDB(db)
-    .prepare('SELECT apple_sub FROM users')
+    .prepare('SELECT apple_sub FROM users WHERE apple_sub != ?1')
+    .bind(APP_REVIEW_SUB)
     .all<{ apple_sub: string }>();
   if (rows.results.length === 0) return true;
   if (rows.results.length === 1) {

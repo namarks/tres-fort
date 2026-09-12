@@ -12,6 +12,7 @@ enum AccountLocalState {
     /// A failed migration must never let a later Apple account claim the
     /// original install's queue or Health anchor on the next load.
     static func claimLegacyState(userID: String, defaults: LocalPersistence) -> Bool {
+        guard !defaults.bool(forKey: reviewAccountKey(userID: userID)) else { return false }
         if defaults.string(forKey: legacyOwnerKey) != nil {
             return legacyStateBelongs(to: userID, defaults: defaults)
         }
@@ -20,6 +21,7 @@ enum AccountLocalState {
     }
 
     static func legacyStateBelongs(to userID: String, defaults: LocalPersistence) -> Bool {
+        guard !defaults.bool(forKey: reviewAccountKey(userID: userID)) else { return false }
         guard let owner = defaults.string(forKey: legacyOwnerKey) else { return true }
         return owner == legacyOwnerDigest(userID)
     }
@@ -53,6 +55,10 @@ enum AccountLocalState {
 
     static func appleCredentialUserKey(userID: String) -> String {
         "com.nmarkspdx.liftcoach.apple-credential-user.v1.\(userID)"
+    }
+
+    static func reviewAccountKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.review-account.v1.\(userID)"
     }
 
     static func onboardedKey(userID: String) -> String {
@@ -150,7 +156,13 @@ enum AccountLocalState {
         guard erased else { return false }
         if ownsLegacy, !defaults.removeObject(forKey: legacyOwnerKey) { return false }
         guard defaults.removeObject(forKey: appleCredentialUserKey(userID: userID)),
-              defaults.removeObject(forKey: onboardedKey(userID: userID)) else { return false }
-        return defaults.removeObject(forKey: accountDeletionKey(userID: userID))
+              defaults.removeObject(forKey: onboardedKey(userID: userID)),
+              defaults.removeObject(forKey: accountDeletionKey(userID: userID)) else { return false }
+        // Keep the review marker through every fallible cleanup step. A
+        // retry must never mistake this account for the legacy data owner.
+        if defaults.bool(forKey: reviewAccountKey(userID: userID)) {
+            return defaults.removeObject(forKey: reviewAccountKey(userID: userID))
+        }
+        return true
     }
 }

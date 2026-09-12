@@ -87,6 +87,7 @@ final class HealthKitSyncModel: ObservableObject {
     }
 
     private var currentJWT: String? {
+        guard !auth.isReviewAccount else { return nil }
         guard let accountID, auth.userID == accountID,
               defaults.recoveryGeneration == storageGeneration else { return nil }
         return auth.featureJWT

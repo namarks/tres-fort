@@ -56,11 +56,17 @@ struct ProfileView: View {
         NavigationStack {
             Form {
                 accountSection
+                if auth.isReviewAccount {
+                    Section("Shared sample account") {
+                        Text("Use sample data only. Workouts, history, export, and deletion work in this account. Sign out and use Sign in with Apple for personal connections, Claude, and groups.")
+                    }
+                } else {
                 coachSection
                 integrationsSection
                 groupsSection
                 Section {
                     NavigationLink("Group safety") { GroupSafetyView(model: groupModel) }
+                }
                 }
                 Section("About Très Fort") {
                     PrivacyPolicyLink()

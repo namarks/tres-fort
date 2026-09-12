@@ -13604,3 +13604,25 @@ extension SetOutboxTests {
         XCTAssertFalse(replacement.timedActive)
     }
 }
+
+extension SetOutboxTests {
+    func testSignOutBeforeResumeRemovesTimedAlertsFromPreviousProcess() async {
+        let defaults = defaults(), auth = auth(defaults: defaults)
+        let center = RestNotificationCenterStub()
+        center.installPendingForTests("timed-set-cue-previous-process")
+        center.installDeliveredForTests("timed-set-cue-previous-delivered")
+        center.installPendingForTests("unrelated-alert")
+        let coordinator = RestNotificationCoordinator(center: center, prefix: "timed-set-cue")
+        // A newly launched model has not claimed runner ownership or learned
+        // the prior process's request identifier. Cancellation must discover it.
+        let model = SyncModel(auth: auth, defaults: defaults, now: { self.fixedDate },
+            timedNotificationCanceller: { coordinator.cancel() })
+        XCTAssertFalse(model.running)
+
+        auth.signOut()
+        await coordinator.waitForSchedulingForTests()
+
+        XCTAssertEqual(center.pendingIDs, ["unrelated-alert"])
+        XCTAssertTrue(center.deliveredIDs.isEmpty)
+    }
+}

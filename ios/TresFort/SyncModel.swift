@@ -1964,7 +1964,11 @@ final class SyncModel: ObservableObject {
         // Clear both an active hold and a completion awaiting OS delivery
         // before this account's feature epoch is revoked. A retired model
         // must leave the replacement owner's process-shared alert alone.
-        if canControlSharedRestArtifacts { timedNotificationCanceller() }
+        // With no live owner (for example after a process restart), cancel()
+        // also discovers prefix-matched alerts left in Notification Center.
+        if canInitiateBoundFeatureAction, !runnerArtifactsOwnedByOther {
+            timedNotificationCanceller()
+        }
         pendingTimedCueGeneration = nil
         clearTimedSet(cancelCue: false)
         guard canControlSharedRestArtifacts else {

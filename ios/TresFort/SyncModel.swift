@@ -183,7 +183,12 @@ final class SyncModel: ObservableObject {
     // Rest timer (local Live Activity arrives in milestone g).
     private(set) var restControlID: String?
     private(set) var timedControlID: String?
+    private var timedCountdown: TimedSetCountdown?
     private var timedCueGeneration: Int?
+    private var pendingTimedCueGeneration: Int?
+    private let timedCuePlayer: @MainActor (TimedSetCountdown.Cue, Date) -> Bool
+    private let timedCueFinisher: @MainActor (Int, () -> Bool) async -> Bool
+    private let timedNotificationCanceller: @MainActor () -> Void
     @Published var restEndDate: Date?
     @Published var restExercise: String = ""
     @Published var restTotal: Int = 0
@@ -359,11 +364,23 @@ final class SyncModel: ObservableObject {
         restActivityEnder: @escaping () -> Void = {
             RestLiveActivity.endNow()
         },
+        timedCuePlayer: @escaping @MainActor (TimedSetCountdown.Cue, Date) -> Bool = { cue, deadline in
+            RestCue.playTimedCue(cue, deadline: deadline)
+        },
+        timedCueFinisher: @escaping @MainActor (Int, () -> Bool) async -> Bool = { generation, canFinish in
+            await RestCue.finishTimedCueAfterResume(generation: generation, when: canFinish)
+        },
+        timedNotificationCanceller: @escaping @MainActor () -> Void = {
+            RestCue.cancelTimedNotification()
+        },
         restNotificationCanceller: @escaping @MainActor () -> Void = {
             RestCue.cancelNotification()
         }
     ) {
         self.auth = auth
+        self.timedCuePlayer = timedCuePlayer
+        self.timedCueFinisher = timedCueFinisher
+        self.timedNotificationCanceller = timedNotificationCanceller
         self.accountID = auth.userID
         self.featureSessionEpoch = auth.featureSessionEpoch
         self.setWriteAPI = setWriteAPI
@@ -1944,6 +1961,16 @@ final class SyncModel: ObservableObject {
         // for the replacement model that inherits the durable outbox.
         cancelWorkoutWriteRetry(
             resetAttempt: true, clearServerDeadline: false)
+        // Clear both an active hold and a completion awaiting OS delivery
+        // before this account's feature epoch is revoked. A retired model
+        // must leave the replacement owner's process-shared alert alone.
+        // With no live owner (for example after a process restart), cancel()
+        // also discovers prefix-matched alerts left in Notification Center.
+        if canInitiateBoundFeatureAction, !runnerArtifactsOwnedByOther {
+            timedNotificationCanceller()
+        }
+        pendingTimedCueGeneration = nil
+        clearTimedSet(cancelCue: false)
         guard canControlSharedRestArtifacts else {
             relinquishLocalRest()
             return
@@ -4699,6 +4726,30 @@ final class SyncModel: ObservableObject {
               !hasPendingTerminalIntentForCurrentWorkout,
               !isSetEntryBlocked(ex)
         else { return }
+        if let pendingCue = pendingTimedCueGeneration {
+            // Resolve the previous timer's notification before scheduling a
+            // replacement in that same OS slot. A quick new START can precede
+            // MainTabView's asynchronous foreground recovery.
+            Task { [weak self] in
+                guard let self else { return }
+                await self.finishPendingTimedCue()
+                if self.pendingTimedCueGeneration != nil {
+                    // START explicitly acknowledges the previous completion.
+                    // After checking delivery/trying its tone, a hardware audio
+                    // failure must not prevent the member exercising. Only
+                    // this explicit action may retire a still-undelivered cue.
+                    guard self.pendingTimedCueGeneration == pendingCue,
+                          self.canInitiateBoundFeatureAction,
+                          self.canControlSharedRestArtifacts,
+                          RestCue.acknowledgeTimedCompletion(generation: pendingCue)
+                    else { return }
+                    self.pendingTimedCueGeneration = nil
+                }
+                self.startTimedSet(expected: renderedExercise,
+                    expectedSetNumber: expectedSetNumber, at: start)
+            }
+            return
+        }
         if restEndDate != nil { skipRest() }
         skipped.remove(ex.id)
         timedControlID = UUID().uuidString
@@ -4728,6 +4779,9 @@ final class SyncModel: ObservableObject {
         guard persistRunnerCheckpoint() else { return }
         RestLiveActivity.start(exercise: ex.exercise_name, endDate: endDate,
                                upNext: "\(holdDurationSeconds)s", timerKind: "set", controlID: timedControlID)
+        pendingTimedCueGeneration = nil
+        timedCountdown = TimedSetCountdown(end: endDate)
+        RestCue.prepareTimedCues()
         timedCueGeneration = RestCue.scheduleTimedNotification(at: endDate)
         scheduleTimedSetCompletion()
     }
@@ -4738,21 +4792,48 @@ final class SyncModel: ObservableObject {
     private func scheduleTimedSetCompletion() {
         timedSetCompletionTask?.cancel()
         guard let attempt = timedSetAttempt else { return }
-        let delay = max(0, attempt.endDate.timeIntervalSince(now()))
-        let maximumDelay = Double(UInt64.max / 1_000_000_000)
-        let nanoseconds = UInt64(min(delay, maximumDelay) * 1_000_000_000)
         timedSetCompletionTask = Task { [weak self] in
-            if nanoseconds > 0 {
-                try? await Task.sleep(nanoseconds: nanoseconds)
+            while !Task.isCancelled {
+                // Release the model before sleeping so an abandoned runner
+                // cannot be kept alive by its own countdown task.
+                let wake: Date? = {
+                    guard let self, self.timedSetAttempt == attempt,
+                          self.validatedTimedSetAttempt(requiring: attempt) != nil
+                    else { return nil }
+                    let date = self.now()
+                    if date >= attempt.endDate { return attempt.endDate }
+                    self.playTimedCountdownCue(at: date)
+                    return self.timedCountdown?.nextWake(after: date)
+                }()
+                guard let wake else { return }
+                let delay = max(0, wake.timeIntervalSince(self?.now() ?? Date()))
+                if delay == 0 {
+                    if wake < attempt.endDate { continue }
+                    guard let self, self.timedSetAttempt == attempt else { return }
+                    // Detach before commit clears timer state, avoiding
+                    // cancellation of the completion's own work.
+                    self.timedSetCompletionTask = nil
+                    await self.finishTimedSetIfDue(requiring: attempt)
+                    return
+                }
+                let maximumDelay = Double(UInt64.max / 1_000_000_000)
+                do {
+                    try await Task.sleep(nanoseconds:
+                        UInt64(min(delay, maximumDelay) * 1_000_000_000))
+                } catch { return }
             }
-            guard !Task.isCancelled, let self else { return }
-            guard self.timedSetAttempt == attempt else { return }
-            // This task owns the expiry path now. Detach it from the model
-            // before commit clears timer state so the network write does not
-            // inherit a cancellation from cancelling itself.
-            self.timedSetCompletionTask = nil
-            await self.finishTimedSetIfDue(requiring: attempt)
         }
+    }
+
+    /// Shared by the deadline task and completion. No notification lookup or
+    /// persistence/network work may delay the audible end of the set.
+    @discardableResult
+    func playTimedCountdownCue(at date: Date) -> Bool {
+        guard validatedTimedSetAttempt() != nil,
+              let cue = timedCountdown?.cue(at: date),
+              let end = timedEndDate
+        else { return false }
+        return timedCuePlayer(cue, end)
     }
 
     private func clearTimedSet(cancelCue: Bool = true) {
@@ -4761,6 +4842,8 @@ final class SyncModel: ObservableObject {
             RestLiveActivity.endNow()
         }
         timedControlID = nil
+        timedCountdown = nil
+        timedCueGeneration = nil
         timedSetCompletionTask?.cancel()
         timedSetCompletionTask = nil
         timedActive = false
@@ -4822,6 +4905,10 @@ final class SyncModel: ObservableObject {
     /// Complete only after the stored deadline. Called by both the model-owned
     /// task and foreground recovery after iOS resumes a suspended app.
     func finishTimedSetIfDue(at date: Date? = nil) async {
+        if !timedActive {
+            await finishPendingTimedCue()
+            return
+        }
         guard let validated = validatedTimedSetAttempt(),
               (date ?? now()) >= validated.attempt.endDate
         else { return }
@@ -4857,9 +4944,17 @@ final class SyncModel: ObservableObject {
         held: Int
     ) async {
         guard timedSetAttempt == validated.attempt, timedActive else { return }
-        let cueGeneration = held >= validated.attempt.holdSeconds ? timedCueGeneration : nil
+        let reachedDeadline = held >= validated.attempt.holdSeconds && now() >= validated.attempt.endDate
+        let playedCompletion = reachedDeadline && playTimedCountdownCue(at: now())
+        let pendingCue = reachedDeadline && !playedCompletion ? timedCueGeneration : nil
         let ex = validated.exercise
-        clearTimedSet(cancelCue: cueGeneration == nil)
+        // Only an audible foreground completion or an explicit early stop can
+        // cancel immediately. Foreground catch-up checks actual OS delivery.
+        clearTimedSet(cancelCue: pendingCue == nil)
+        pendingTimedCueGeneration = pendingCue
+        if pendingCue != nil {
+            Task { [weak self] in await self?.finishPendingTimedCue() }
+        }
         skipped.remove(ex.id)   // logging work un-skips this slot
         persistRunnerCheckpoint()
         let secs = max(1, held)
@@ -4877,10 +4972,19 @@ final class SyncModel: ObservableObject {
         normalizeMountedRunnerAfterLocalCommit(for: date)
         reopenFailedRunnerIntentIfStable(for: date)
         repairDeferredGroupSelection()
-        if let cueGeneration,
-           let alreadyCued = await RestCue.finishTimedNotification(generation: cueGeneration),
-           canInitiateBoundFeatureAction, !alreadyCued {
-            RestCue.play(upNext: "", timedSet: true)
+    }
+
+    /// Background execution can log the set before its OS alert is delivered.
+    /// Retain this handoff after timer state clears so a quick foreground
+    /// return still checks delivery, without replaying an already heard tone.
+    private func finishPendingTimedCue() async {
+        guard let generation = pendingTimedCueGeneration,
+              canInitiateBoundFeatureAction else { return }
+        let finished = await timedCueFinisher(generation, { [weak self] in
+            self?.canInitiateBoundFeatureAction == true
+        })
+        if finished, pendingTimedCueGeneration == generation {
+            pendingTimedCueGeneration = nil
         }
     }
 
@@ -6484,6 +6588,7 @@ extension SyncModel {
     func refreshTimerCues() {
         guard canInitiateBoundFeatureAction, canControlSharedRestArtifacts else { return }
         if !RestCue.enabled {
+            pendingTimedCueGeneration = nil
             RestCue.cancelNotification()
             RestCue.cancelTimedNotification()
         } else if timedActive, let end = timedEndDate, end > now() {

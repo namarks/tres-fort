@@ -480,6 +480,10 @@ private final class RestNotificationCenterStub: RestNotificationCenterProviding 
         pendingIDs.append(identifier)
     }
 
+    func installDeliveredForTests(_ identifier: String) {
+        deliveredIDs.append(identifier)
+    }
+
     func removePendingNotificationRequests(withIdentifiers identifiers: [String]) {
         if deliverDuringPendingRemoval {
             deliveredIDs.append(contentsOf: pendingIDs.filter(
@@ -13085,6 +13089,272 @@ extension SetOutboxTests {
     }
 }
 
+extension SetOutboxTests {
+    func testTimedCountdownSoundsBeforeSetIsQueuedAndNeverDuplicates() async {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let hold = exercise(timed: true)
+        let next = exercise(id: "slot-b", exerciseID: "exercise-b")
+        var clock = fixedDate
+        var cues: [TimedSetCountdown.Cue] = []
+        var queuedCounts: [Int] = []
+        weak var observed: SyncModel?
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { clock }, timedCuePlayer: { cue, _ in
+                cues.append(cue)
+                queuedCounts.append(observed?.setOutbox.pending.count ?? -1)
+                return true
+            })
+        observed = model
+        model.replaceState(with: state(session: session(), sets: [], exercises: [hold, next]))
+        model.startWorkout()
+        model.setHoldDuration(8)
+        model.startTimedSet(expected: hold, expectedSetNumber: 1)
+        // Workout previews are view-local; the executing model stays here.
+        // The TrainingJourney UI tests exercise opening those previews.
+        XCTAssertTrue(model.timedActive)
+        for second in stride(from: 5, through: 1, by: -1) {
+            clock = fixedDate.addingTimeInterval(Double(8 - second))
+            model.playTimedCountdownCue(at: clock)
+        }
+        clock = fixedDate.addingTimeInterval(8)
+        await model.finishTimedSetIfDue()
+        XCTAssertEqual(cues, [.tick(5), .tick(4), .tick(3), .tick(2), .tick(1), .complete])
+        XCTAssertEqual(queuedCounts, [0, 0, 0, 0, 0, 0])
+        XCTAssertFalse(model.timedActive)
+        XCTAssertEqual(model.setOutbox.pending.first?.body.duration_s, 8)
+        await model.finishTimedSetIfDue()
+        XCTAssertEqual(cues.count, 6)
+    }
+
+    func testStoppingTimedSetEarlyCancelsRemainingBeatsAndCompletion() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), hold = exercise(timed: true)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        var clock = fixedDate
+        var cues: [TimedSetCountdown.Cue] = []
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { clock }, timedCuePlayer: { cue, _ in cues.append(cue); return true })
+        model.replaceState(with: state(session: session(), sets: [], exercise: hold))
+        model.startWorkout()
+        model.setHoldDuration(8)
+        model.startTimedSet(expected: hold, expectedSetNumber: 1)
+        clock = fixedDate.addingTimeInterval(3)
+        model.playTimedCountdownCue(at: clock)
+        await model.stopTimedSet()
+        clock = fixedDate.addingTimeInterval(8)
+        model.playTimedCountdownCue(at: clock)
+        await model.finishTimedSetIfDue()
+        XCTAssertEqual(cues, [.tick(5)])
+        XCTAssertEqual(model.setOutbox.pending.first?.body.duration_s, 3)
+    }
+
+    func testDelayedForegroundTimedSetStillLogsAndPlaysCompletion() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), hold = exercise(timed: true)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        var clock = fixedDate
+        var cues: [TimedSetCountdown.Cue] = []
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { clock }, timedCuePlayer: { cue, _ in cues.append(cue); return true })
+        model.replaceState(with: state(session: session(), sets: [], exercise: hold))
+        model.startWorkout()
+        model.setHoldDuration(8)
+        model.startTimedSet(expected: hold, expectedSetNumber: 1)
+        clock = fixedDate.addingTimeInterval(20)
+        await model.finishTimedSetIfDue()
+        XCTAssertEqual(cues, [.complete])
+        XCTAssertFalse(model.timedActive)
+        XCTAssertEqual(model.setOutbox.pending.first?.body.duration_s, 8)
+    }
+}
+
+
+extension SetOutboxTests {
+    func testDeadlineTaskPlaysShortCountdownAndCompletesWithoutAView() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), hold = exercise(timed: true)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let origin = Date()
+        let completed = expectation(description: "Deadline tone")
+        var cues: [TimedSetCountdown.Cue] = []
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults,
+            now: { self.fixedDate.addingTimeInterval(Date().timeIntervalSince(origin)) },
+            timedCuePlayer: { cue, _ in
+                cues.append(cue)
+                if cue == .complete { completed.fulfill() }
+                return true
+            })
+        prepare(model, exercise: hold, session: session(), running: true)
+        model.setHoldDuration(1)
+        model.startTimedSet(expected: hold, expectedSetNumber: 1)
+        await fulfillment(of: [completed], timeout: 3)
+        XCTAssertEqual(cues, [.tick(1), .complete])
+        XCTAssertFalse(model.timedActive)
+        XCTAssertEqual(model.setOutbox.pending.first?.body.duration_s, 1)
+    }
+}
+
+
+extension SetOutboxTests {
+    func testForegroundCatchUpChecksActualNotificationDelivery() async {
+        for wasDelivered in [false, true] {
+            let center = RestNotificationCenterStub()
+            let coordinator = RestNotificationCoordinator(center: center, prefix: "timed-set-cue")
+            coordinator.schedule(at: Date().addingTimeInterval(30), timedSet: true)
+            await coordinator.waitForSchedulingForTests()
+            if wasDelivered {
+                center.installDeliveredForTests(center.pendingIDs[0])
+            }
+            var playbackAttempts = 0
+            let delivered = await coordinator.finish(generation: coordinator.currentGeneration,
+                when: { true }, playFallback: { playbackAttempts += 1; return true })
+            XCTAssertEqual(playbackAttempts, wasDelivered ? 0 : 1)
+            // Only false authorizes a replacement foreground tone; true
+            // confirms the OS already sounded it and prevents replay.
+            XCTAssertEqual(delivered, wasDelivered)
+            XCTAssertTrue(center.pendingIDs.isEmpty)
+            XCTAssertTrue(center.deliveredIDs.isEmpty)
+        }
+    }
+
+    func testInactiveCatchUpPreservesThePendingCompletionNotification() async {
+        let center = RestNotificationCenterStub()
+        let coordinator = RestNotificationCoordinator(center: center, prefix: "timed-set-cue")
+        coordinator.schedule(at: Date().addingTimeInterval(30), timedSet: true)
+        await coordinator.waitForSchedulingForTests()
+        let pending = center.pendingIDs
+        XCTAssertEqual(pending.count, 1)
+        let delivered = await coordinator.finish(generation: coordinator.currentGeneration, when: { false })
+        XCTAssertNil(delivered)
+        XCTAssertEqual(center.pendingIDs, pending)
+        coordinator.cancel()
+    }
+
+    func testTimedCompletionDefersNotificationCleanupWhenImmediateAudioIsSuppressed() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), hold = exercise(timed: true)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        var clock = fixedDate
+        let fallback = expectation(description: "Check notification before replacement tone")
+        var cues: [TimedSetCountdown.Cue] = []
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { clock },
+            timedCuePlayer: { cue, _ in cues.append(cue); return false },
+            timedCueFinisher: { _, canFinish in
+                XCTAssertTrue(canFinish())
+                fallback.fulfill()
+                return true
+            })
+        prepare(model, exercise: hold, session: session(), running: true)
+        model.setHoldDuration(8)
+        model.startTimedSet(expected: hold, expectedSetNumber: 1)
+        clock = fixedDate.addingTimeInterval(8.1)
+        await model.finishTimedSetIfDue()
+        await fulfillment(of: [fallback], timeout: 3)
+        XCTAssertEqual(cues, [.complete])
+        XCTAssertFalse(model.timedActive)
+        XCTAssertEqual(model.setOutbox.pending.first?.body.duration_s, 8)
+    }
+}
+
+
+extension SetOutboxTests {
+    func testBackgroundCompletionCanFinishNotificationHandoffAfterTimerStateClears() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), hold = exercise(timed: true)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        var clock = fixedDate
+        var isForeground = false
+        var deliveries = 0
+        let backgroundAttempt = expectation(description: "Background handoff attempted")
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { clock }, timedCuePlayer: { _, _ in false },
+            timedCueFinisher: { _, canFinish in
+                XCTAssertTrue(canFinish())
+                if !isForeground {
+                    backgroundAttempt.fulfill()
+                    return false
+                }
+                deliveries += 1
+                return true
+            })
+        prepare(model, exercise: hold, session: session(), running: true)
+        model.setHoldDuration(8)
+        model.startTimedSet(expected: hold, expectedSetNumber: 1)
+        clock = fixedDate.addingTimeInterval(8.1)
+        await model.finishTimedSetIfDue()
+        await fulfillment(of: [backgroundAttempt], timeout: 3)
+        XCTAssertFalse(model.timedActive)
+        XCTAssertEqual(deliveries, 0)
+        isForeground = true
+        await model.finishTimedSetIfDue()
+        await model.finishTimedSetIfDue()
+        XCTAssertEqual(deliveries, 1)
+    }
+}
+
+
+extension SetOutboxTests {
+    func testNewTimedSetChecksPreviousHandoffThenCanAcknowledgeFailedAudio() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), hold = exercise(timed: true)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        var clock = fixedDate
+        var isForeground = false
+        let backgroundAttempt = expectation(description: "Background completion retained")
+        let resolving = expectation(description: "New start checks old delivery")
+        let release = SetAsyncLatch()
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { clock }, timedCuePlayer: { _, _ in false },
+            timedCueFinisher: { _, canFinish in
+                XCTAssertTrue(canFinish())
+                if !isForeground {
+                    backgroundAttempt.fulfill()
+                    return false
+                }
+                resolving.fulfill()
+                await release.wait()
+                return false // Simulated AVAudioPlayer failure after delivery lookup.
+            })
+        prepare(model, exercise: hold, session: session(), running: true)
+        model.setHoldDuration(8)
+        model.startTimedSet(expected: hold, expectedSetNumber: 1)
+        clock = fixedDate.addingTimeInterval(8.1)
+        await model.finishTimedSetIfDue()
+        await fulfillment(of: [backgroundAttempt], timeout: 3)
+        await model.drainSetOutbox()
+        XCTAssertFalse(model.isSetEntryBlocked(hold))
+        isForeground = true
+        model.startTimedSet(expected: hold, expectedSetNumber: model.currentPhysicalSetNumber)
+        await fulfillment(of: [resolving], timeout: 3)
+        XCTAssertFalse(model.timedActive, "The replacement must not erase the unresolved alert")
+        await release.open()
+        for _ in 0..<100 {
+            if model.timedActive { break }
+            await Task.yield()
+        }
+        XCTAssertTrue(model.timedActive)
+        XCTAssertEqual(model.timedStartDate, clock)
+    }
+}
+
+
+extension SetOutboxTests {
+    func testFailedFallbackPlaybackRetainsNotificationUntilSuccessfulRetry() async {
+        let center = RestNotificationCenterStub()
+        let coordinator = RestNotificationCoordinator(center: center, prefix: "timed-set-cue")
+        coordinator.schedule(at: Date().addingTimeInterval(30), timedSet: true)
+        await coordinator.waitForSchedulingForTests()
+        let pending = center.pendingIDs
+        let generation = coordinator.currentGeneration
+        let failed = await coordinator.finish(generation: generation,
+            when: { true }, playFallback: { false })
+        XCTAssertNil(failed)
+        XCTAssertEqual(center.pendingIDs, pending)
+        XCTAssertEqual(coordinator.currentGeneration, generation)
+        let retried = await coordinator.finish(generation: generation,
+            when: { true }, playFallback: { true })
+        XCTAssertEqual(retried, false)
+        XCTAssertTrue(center.pendingIDs.isEmpty)
+    }
+}
+
 @MainActor
 private final class SessionSwapAPIStub: SessionExerciseSwapAPI {
     var calls = 0
@@ -13264,5 +13534,95 @@ extension SetOutboxTests {
             XCTAssertFalse(model.finished)
             XCTAssertEqual(model.plan?.workouts.first?.exercises.first, original)
         }
+    }
+}
+
+extension SetOutboxTests {
+    func testSignOutCancelsActiveAndPendingTimedAlerts() async {
+        for completeBeforeSignOut in [false, true] {
+            let defaults = defaults(), api = SetWriteAPIStub(), hold = exercise(timed: true)
+            let auth = auth(defaults: defaults)
+            api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+            var clock = fixedDate
+            var cancellations = 0
+            let backgroundAttempt = completeBeforeSignOut
+                ? expectation(description: "Completion awaits delivery") : nil
+            let model = SyncModel(auth: auth, setWriteAPI: api, defaults: defaults,
+                now: { clock }, timedCuePlayer: { _, _ in false },
+                timedCueFinisher: { _, _ in
+                    backgroundAttempt?.fulfill()
+                    return false
+                },
+                timedNotificationCanceller: {
+                    cancellations += 1
+                    RestCue.cancelTimedNotification()
+                })
+            prepare(model, exercise: hold, session: session(), running: true)
+            model.setHoldDuration(8)
+            model.startTimedSet(expected: hold, expectedSetNumber: 1)
+            if completeBeforeSignOut {
+                clock = fixedDate.addingTimeInterval(8.1)
+                await model.finishTimedSetIfDue()
+                await fulfillment(of: [backgroundAttempt!], timeout: 3)
+            }
+            XCTAssertEqual(cancellations, 0)
+
+            auth.signOut()
+
+            XCTAssertEqual(cancellations, 1, "Cancel even after the timer has committed in the background")
+            XCTAssertFalse(model.timedActive)
+            XCTAssertNil(model.timedEndDate)
+            XCTAssertNotNil(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults))
+            await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(30))
+            XCTAssertEqual(cancellations, 1)
+        }
+    }
+
+    func testRetiredTimerModelCannotCancelReplacementOwnersAlertAtSignOut() {
+        let defaults = defaults(), hold = exercise(timed: true), active = session()
+        let auth = auth(defaults: defaults)
+        var oldCancellations = 0, replacementCancellations = 0
+        let older = SyncModel(auth: auth, defaults: defaults, now: { self.fixedDate },
+            timedNotificationCanceller: { oldCancellations += 1 })
+        prepare(older, exercise: hold, session: active, running: true)
+        older.startTimedSet(expected: hold, expectedSetNumber: 1)
+        let replacement = SyncModel(auth: auth, defaults: defaults, now: { self.fixedDate },
+            timedNotificationCanceller: {
+                replacementCancellations += 1
+                RestCue.cancelTimedNotification()
+            })
+        replacement.replaceState(with: state(session: active, sets: [], exercise: hold))
+        replacement.resumeWorkout()
+        replacement.startTimedSet(expected: hold, expectedSetNumber: 1)
+        XCTAssertTrue(replacement.timedActive)
+
+        auth.signOut()
+
+        XCTAssertEqual(oldCancellations, 0)
+        XCTAssertEqual(replacementCancellations, 1)
+        XCTAssertFalse(older.timedActive)
+        XCTAssertFalse(replacement.timedActive)
+    }
+}
+
+extension SetOutboxTests {
+    func testSignOutBeforeResumeRemovesTimedAlertsFromPreviousProcess() async {
+        let defaults = defaults(), auth = auth(defaults: defaults)
+        let center = RestNotificationCenterStub()
+        center.installPendingForTests("timed-set-cue-previous-process")
+        center.installDeliveredForTests("timed-set-cue-previous-delivered")
+        center.installPendingForTests("unrelated-alert")
+        let coordinator = RestNotificationCoordinator(center: center, prefix: "timed-set-cue")
+        // A newly launched model has not claimed runner ownership or learned
+        // the prior process's request identifier. Cancellation must discover it.
+        let model = SyncModel(auth: auth, defaults: defaults, now: { self.fixedDate },
+            timedNotificationCanceller: { coordinator.cancel() })
+        XCTAssertFalse(model.running)
+
+        auth.signOut()
+        await coordinator.waitForSchedulingForTests()
+
+        XCTAssertEqual(center.pendingIDs, ["unrelated-alert"])
+        XCTAssertTrue(center.deliveredIDs.isEmpty)
     }
 }

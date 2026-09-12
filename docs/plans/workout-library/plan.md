@@ -121,7 +121,7 @@ No second editor, no per-session template copies, no weeks table.
     verified VALID and available to internal Testers. Physical-device follow-up
     remains unverified.
 - [ ] **P0.2 — Substitute unavailable equipment during a workout**
-  - [x] **(a) Session-scoped swap delivery**
+  - [ ] **(a) Session-scoped swap delivery**
     - Add an in-runner, searchable Swap exercise picker for the current workout.
       Retain completed-set identities, set progress and superset membership;
       show replacement-specific load and demo information. An active timed set
@@ -134,8 +134,12 @@ No second editor, no per-session template copies, no weeks table.
     - Verified real-D1 writes, restart/isolation/conflicts, iOS recovery,
       replacement logging, and the visible picker journey. Local verification:
       1,020 backend tests; 520 iOS unit tests (one existing skip, no failures);
-      swap, timer-navigation and superset UI journeys. The implementation PR
-      retains the exact-head CI and review record. No production/app release.
+      swap, timer-navigation and superset UI journeys. Implementation commit
+      `0ca62f7` is on local branch `feat/in-workout-exercise-swap`. Independent
+      review, publication, CI and merge remain pending; no production/app release.
+      Automatic approval review rejected the push/PR on 2026-09-12 because
+      explicit publication authority and trusted remote ownership were not
+      established. The prepared change is ready for owner publication approval.
   - [ ] **(b) Authorized Worker and client release**
     - With separate owner authority, apply migration 0050, deploy the reviewed
       Worker and verify the new session route before distributing the iOS build.
@@ -258,6 +262,7 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 | P0 | blocked_by | plan:workouts-and-multi-session#P0(a) | The selected goal establishes canonical workout terminology and compatible clients before the library UI. Production rollout and compatibility cleanup do not block this repository slice. |
 | P0 | coordinates_with | plan:member-activation-and-adherence#P0 | Both edit the no-plan and Today entry surfaces; do not run concurrently on the same iOS files. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
+| P0.2(a) | gated_by | external:owner-workout-swap-publication | Explicit approval is required after automatic publication review rejected the push and PR. |
 | P0.2(b) | gated_by | external:owner-workout-swap-release | Migration, Worker deployment and iOS distribution need separate owner authority. |
 
 
@@ -266,9 +271,10 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@owner):** Authorize P0.2(b) only after the P0.2(a) implementation PR has
-passed its exact-head delivery gates. Migration 0050, Worker deployment and client
-distribution remain separate from repository delivery. P1 library metadata
+**Now (@owner):** Authorize publishing the tested local P0.2(a) branch, independent
+review and merge after CI. The implementation and local verification are complete;
+publication was blocked by automatic approval review. Migration 0050, Worker
+deployment and client distribution remain the separate P0.2(b) release gate. P1 library metadata
 remains planned and outside the completed P0.1 navigation update. P2 freestyle creation and optional saving remain separate;
 the implemented Create a workout action explicitly saves to the shared library.
 The navigation design was approved in task

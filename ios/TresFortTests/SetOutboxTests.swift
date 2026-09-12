@@ -13085,7 +13085,7 @@ extension SetOutboxTests {
 }
 
 extension SetOutboxTests {
-    func testTimedCountdownContinuesDuringPreviewAndSoundsBeforeSetIsQueued() async {
+    func testTimedCountdownSoundsBeforeSetIsQueuedAndNeverDuplicates() async {
         let defaults = defaults(), api = SetWriteAPIStub()
         api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
         let hold = exercise(timed: true)
@@ -13104,7 +13104,9 @@ extension SetOutboxTests {
         model.startWorkout()
         model.setHoldDuration(8)
         model.startTimedSet(expected: hold, expectedSetNumber: 1)
-        model.next() // Preview must not own the executing countdown.
+        // Workout previews are view-local; the executing model stays here.
+        // The TrainingJourney UI tests exercise opening those previews.
+        XCTAssertTrue(model.timedActive)
         for second in stride(from: 5, through: 1, by: -1) {
             clock = fixedDate.addingTimeInterval(Double(8 - second))
             model.playTimedCountdownCue(at: clock)

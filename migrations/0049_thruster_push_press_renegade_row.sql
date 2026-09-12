@@ -9,9 +9,16 @@
 --
 -- Conventions (see 0011 / 0014 / 0021):
 --   - laterality 'unilateral' = reps are logged per side (renegade row rows
---     one arm at a time); tonnage doubles.
---   - load_mode 'per_hand' = two dumbbells held simultaneously, the number
---     is the weight of ONE dumbbell. The barbell thruster stays 'total'.
+--     one arm at a time); the rollups double the reps.
+--   - load_mode 'per_hand' = two dumbbells MOVE on every rep, the number is
+--     the weight of ONE dumbbell and the rollups double the load (dumbbell
+--     thruster, dumbbell push press). The barbell thruster stays 'total'.
+--   - The renegade row is 'unilateral' + 'total', the one-arm convention
+--     (0014: "a one-arm movement (the number is just that dumbbell)", like
+--     ex_one_arm_db_row). Only the rowed dumbbell moves on a rep; the other
+--     is a stationary support, so per_hand would double the load on top of
+--     the per-side rep doubling and report 25 lb x 10/side as 1,000 lb
+--     instead of 500 lb.
 --   - demo_slug stays NULL: free-exercise-db only carries kettlebell or
 --     barbell push-press variants (Kettlebell_Thruster,
 --     Double_Kettlebell_Push_Press, Alternating_Renegade_Row) and 0021 does
@@ -54,6 +61,6 @@ VALUES
   ('ex_db_thruster', 'Dumbbell Thruster', 'quads', '["shoulders","glutes","triceps","core"]', 'dumbbell', 'lb',
    '["dumbbell thruster", "dumbbell thrusters", "db thruster", "db thrusters"]', 0, 'bilateral', 'per_hand', NULL),
   ('ex_renegade_row', 'Renegade Row', 'core', '["back","biceps","shoulders","triceps"]', 'dumbbell', 'lb',
-   '["renegade row", "renegade rows", "plank row", "plank rows", "dumbbell renegade row", "db renegade row"]', 0, 'unilateral', 'per_hand', NULL),
+   '["renegade row", "renegade rows", "plank row", "plank rows", "dumbbell renegade row", "db renegade row"]', 0, 'unilateral', 'total', NULL),
   ('ex_db_push_press', 'Dumbbell Push Press', 'shoulders', '["quads","triceps","glutes"]', 'dumbbell', 'lb',
    '["dumbbell push press", "dumbbell push presses", "db push press", "db push presses"]', 0, 'bilateral', 'per_hand', NULL);

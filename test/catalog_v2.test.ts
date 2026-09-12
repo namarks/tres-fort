@@ -446,13 +446,15 @@ describe('0049 thruster, dumbbell push press and renegade row catalog', () => {
     // Two dumbbells racked at the shoulders: the number is ONE dumbbell.
     { id: 'ex_db_thruster', name: 'Dumbbell Thruster', primary_muscle: 'quads', modality: 'dumbbell', laterality: 'bilateral', load_mode: 'per_hand' },
     // Rowed one arm at a time from a plank on two dumbbells: reps are per
-    // side AND the number is one dumbbell (the 0021 B-stance RDL combo).
+    // side, and the load is 'total' like the one-arm dumbbell row because
+    // only the rowed dumbbell moves (the other is a stationary support).
+    // per_hand would double the load on top of the per-side rep doubling.
     // Resisting rotation is the point, so it rolls up as core work.
-    { id: 'ex_renegade_row', name: 'Renegade Row', primary_muscle: 'core', modality: 'dumbbell', laterality: 'unilateral', load_mode: 'per_hand' },
+    { id: 'ex_renegade_row', name: 'Renegade Row', primary_muscle: 'core', modality: 'dumbbell', laterality: 'unilateral', load_mode: 'total' },
     { id: 'ex_db_push_press', name: 'Dumbbell Push Press', primary_muscle: 'shoulders', modality: 'dumbbell', laterality: 'bilateral', load_mode: 'per_hand' },
   ];
 
-  it('adds the four rows with implement, per-side and per-hand semantics', async () => {
+  it('adds the four rows with implement, per-side and load-mode semantics', async () => {
     for (const expected of rows) {
       const row = await env.DB.prepare(
         'SELECT id,name,primary_muscle,modality,unit,laterality,load_mode,demo_slug,created_at FROM exercises WHERE id = ?1',
@@ -527,8 +529,9 @@ describe('0049 thruster, dumbbell push press and renegade row catalog', () => {
       Object.fromEntries(all.map((e: { id: string }) => [e.id, e]));
     expect(byId['ex_renegade_row']).toBeTruthy();
     expect(byId['ex_renegade_row']!.laterality).toBe('unilateral');
-    expect(byId['ex_renegade_row']!.load_mode).toBe('per_hand');
+    expect(byId['ex_renegade_row']!.load_mode).toBe('total');
     expect(byId['ex_db_push_press']!.load_mode).toBe('per_hand');
+    expect(byId['ex_db_thruster']!.load_mode).toBe('per_hand');
     expect(byId['ex_thruster']!.load_mode).toBe('total');
     expect(byId['ex_db_thruster']!.demo_slug).toBeNull();
   });

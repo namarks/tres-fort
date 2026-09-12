@@ -17,6 +17,7 @@ final class AuthModel: ObservableObject {
 
     @Published var phase: Phase = .signedOut
     @Published var jwt: String?
+    var isReviewAccount: Bool { jwt.flatMap(Self.claims)?["app_review"] as? Bool == true }
     @Published private(set) var isRenewing = false
     @Published private(set) var appleCredentialUserID: String?
     @Published private(set) var reauthenticationReason: String?
@@ -232,6 +233,13 @@ final class AuthModel: ObservableObject {
             forKey: Self.postDeletionAppleRevocationKey)
         let token = tokenStore.load()
         let persistedUserID = defaults.string(forKey: Self.userIDKey)
+        if let token, Self.claims(of: token)?["app_review"] as? Bool == true,
+           let reviewID = Self.subject(of: token) {
+            guard defaults.set(true, forKey: AccountLocalState.reviewAccountKey(userID: reviewID)) else {
+                phase = .error("Saved data needs recovery before reviewer sign-in.")
+                return
+            }
+        }
         userID = persistedUserID
         if let current = readEntryIntents() {
             pendingEntryIntents = current.filter { $0.accountID == nil || $0.accountID == userID }
@@ -251,7 +259,7 @@ final class AuthModel: ObservableObject {
                 // mixed pair; preserve A's pointer for explicit recovery.
                 tokenStore.clear()
                 reauthenticationReason =
-                    "Your saved session could not be matched to this account. Sign in with Apple again to reconnect it."
+                    "Your saved session could not be matched to this account. Sign in again to reconnect it."
             } else {
                 if persistedUserID == nil {
                     // Upgrade older installs that have a valid app JWT but
@@ -269,7 +277,7 @@ final class AuthModel: ObservableObject {
             // credential cannot safely be paired with account-scoped state.
             tokenStore.clear()
             reauthenticationReason =
-                "Your saved session needs to be renewed. Sign in with Apple again to reconnect this account."
+                "Your saved session needs to be renewed. Sign in again to reconnect this account."
         }
         // Migrate the prior install flag only to its known account. A newly
         // signed-in independent member must not inherit another member's setup.
@@ -380,47 +388,90 @@ final class AuthModel: ObservableObject {
                 phase = .error("session identity mismatch")
                 return
             }
-            // A failed bind may leave previously unbound links on disk. Do
-            // not let a different account claim them after reauthentication.
-            if let previousAccount = userID, previousAccount != res.user.id {
-                guard persistEntryIntents([]) else {
-                    phase = .error("Saved navigation needs recovery before changing accounts.")
-                    return
-                }
-                pendingEntryIntents = []
-            }
-            if featureJWT != nil {
-                notifyFeatureSessionBoundary()
-            }
-            AccountLocalState.bindLegacyState(
-                userID: res.user.id, defaults: defaults)
-            featureSessionEpoch &+= 1
-            tokenStore.save(res.jwt)
-            jwt = res.jwt
-            userID = res.user.id
-            defaults.set(res.user.id, forKey: Self.userIDKey)
-            accountDeletionPending = defaults.string(
-                forKey: AccountLocalState.accountDeletionKey(
-                    userID: res.user.id)) != nil
-            if let appleUserID {
-                appleCredentialUserID = appleUserID
-                defaults.set(
-                    appleUserID,
-                    forKey: AccountLocalState.appleCredentialUserKey(
-                        userID: res.user.id))
-            }
-            reauthenticationReason = nil
-            let onboardingKey = AccountLocalState.onboardedKey(userID: res.user.id)
-            if defaults.object(forKey: onboardingKey) == nil {
-                defaults.set(false, forKey: onboardingKey)
-            }
-            onboardingComplete = defaults.bool(forKey: onboardingKey)
-            bindEntryIntents(to: res.user.id)
-            phase = .signedIn
+            finishSignIn(res, appleUserID: appleUserID)
         } catch {
             guard signInRequestID == requestID, featureSessionEpoch == epoch else { return }
             phase = .error(error.localizedDescription)
         }
+    }
+
+    func signInForReview(username: String, password: String) async {
+        let requestID = UUID()
+        signInRequestID = requestID
+        let epoch = featureSessionEpoch
+        guard !accountDeletionPending else { return }
+        phase = .working("Signing in…")
+        do {
+            let res = try await api.authReview(username: username, password: password)
+            guard signInRequestID == requestID, featureSessionEpoch == epoch else { return }
+            guard Self.subject(of: res.jwt) == res.user.id,
+                  Self.claims(of: res.jwt)?["app_review"] as? Bool == true else {
+                phase = .error("session identity mismatch")
+                return
+            }
+            // Never carry a personal invitation, coach intent, or unscoped
+            // legacy training into the shared sample account.
+            guard persistEntryIntents([]) else {
+                phase = .error("Saved navigation needs recovery before changing accounts.")
+                return
+            }
+            pendingEntryIntents = []
+            finishSignIn(res, appleUserID: nil, review: true)
+        } catch let APIError.http(code, _) {
+            guard signInRequestID == requestID, featureSessionEpoch == epoch else { return }
+            phase = .error(code == 401 ? "The reviewer username or password is incorrect."
+                : "Reviewer sign-in is unavailable. Please try again later or contact support.")
+        } catch {
+            guard signInRequestID == requestID, featureSessionEpoch == epoch else { return }
+            phase = .error("Could not connect. Check your connection and try again.")
+        }
+    }
+
+    private func finishSignIn(_ res: AuthResponse, appleUserID: String?, review: Bool = false) {
+        // A failed bind may leave previously unbound links on disk. Do
+        // not let a different account claim them after reauthentication.
+        if let previousAccount = userID, previousAccount != res.user.id {
+            guard persistEntryIntents([]) else {
+                phase = .error("Saved navigation needs recovery before changing accounts.")
+                return
+            }
+            pendingEntryIntents = []
+        }
+        if featureJWT != nil {
+            notifyFeatureSessionBoundary()
+        }
+        if review {
+            guard defaults.set(true, forKey: AccountLocalState.reviewAccountKey(userID: res.user.id)) else {
+                phase = .error("Saved data needs recovery before reviewer sign-in.")
+                return
+            }
+        }
+        if !review {
+            AccountLocalState.bindLegacyState(userID: res.user.id, defaults: defaults)
+        }
+        featureSessionEpoch &+= 1
+        tokenStore.save(res.jwt)
+        jwt = res.jwt
+        userID = res.user.id
+        defaults.set(res.user.id, forKey: Self.userIDKey)
+        accountDeletionPending = defaults.string(
+            forKey: AccountLocalState.accountDeletionKey(
+                userID: res.user.id)) != nil
+        appleCredentialUserID = appleUserID
+        if let appleUserID {
+            defaults.set(
+                appleUserID,
+                forKey: AccountLocalState.appleCredentialUserKey(
+                    userID: res.user.id))
+        }
+        reauthenticationReason = nil
+        let onboardingKey = AccountLocalState.onboardedKey(userID: res.user.id)
+        if review || defaults.object(forKey: onboardingKey) == nil {
+            defaults.set(review, forKey: onboardingKey)
+        }
+        onboardingComplete = defaults.bool(forKey: onboardingKey)
+        bindEntryIntents(to: res.user.id)
+        phase = .signedIn
     }
 
     /// Decode unverified claims only to bind local account state and schedule
@@ -469,7 +520,7 @@ final class AuthModel: ObservableObject {
             guard jwt == token, userID == initiatingUserID else { return }
             guard Self.subject(of: renewed.jwt) == initiatingUserID else {
                 requireReauthentication(
-                    reason: "Your renewed session could not be matched to this account. Sign in with Apple again to reconnect it.")
+                    reason: "Your renewed session could not be matched to this account. Sign in again to reconnect it.")
                 return
             }
             tokenStore.save(renewed.jwt)
@@ -506,7 +557,7 @@ final class AuthModel: ObservableObject {
             return
         case .revoked, .notFound:
             requireReauthentication(
-                reason: "Your Apple authorization needs to be renewed. Sign in with Apple again to reconnect this account. Your queued workouts remain on this device.")
+                reason: "Your Apple authorization needs to be renewed. Sign in again to reconnect this account. Your queued workouts remain on this device.")
         }
     }
 
@@ -560,6 +611,7 @@ final class AuthModel: ObservableObject {
         guard let token = jwt, let accountID = userID else {
             throw APIError.http(401, "missing_session")
         }
+        let requiresAppleRevocation = !isReviewAccount
         let deletionKeyName = AccountLocalState.accountDeletionKey(userID: accountID)
         let idempotencyKey: String
         if let existingKey = defaults.string(forKey: deletionKeyName) {
@@ -589,7 +641,9 @@ final class AuthModel: ObservableObject {
             if userID == accountID {
                 accountDeletionPending = false
                 let reason = body.contains("reauthentication_required")
-                    ? "Sign in with Apple again to confirm account deletion."
+                    ? (requiresAppleRevocation
+                        ? "Sign in with Apple again to confirm account deletion."
+                        : "Sign in again to confirm account deletion.")
                     : nil
                 requireReauthentication(reason: reason)
             }
@@ -605,7 +659,7 @@ final class AuthModel: ObservableObject {
             // this exact absence is returned.
             try completeAccountDeletion(
                 for: accountID,
-                requiresManualAppleRevocation: true)
+                requiresManualAppleRevocation: requiresAppleRevocation)
             return
         }
         guard response.ok else {
@@ -615,7 +669,7 @@ final class AuthModel: ObservableObject {
         try completeAccountDeletion(
             for: accountID,
             requiresManualAppleRevocation:
-                response.apple_revocation != .revoked)
+                requiresAppleRevocation && response.apple_revocation != .revoked)
     }
 
     /// Always erase the account that initiated deletion, even if a different

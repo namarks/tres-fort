@@ -186,4 +186,26 @@ final class MemberActivationJourneyTests: XCTestCase {
         tap(app.buttons["Try again"], in: app)
         XCTAssertTrue(app.buttons["Create a workout"].waitForExistence(timeout: 10))
     }
+    func testReviewerLoginUsesSampleAccountAndCanSignOut() {
+        let app = launch("sign-in")
+        tap(app.buttons["Reviewer sign-in"], in: app)
+        tap(app.textFields["review.username"], in: app)
+        app.textFields["review.username"].typeText("app-review")
+        tap(app.secureTextFields["review.password"], in: app)
+        app.secureTextFields["review.password"].typeText("synthetic-review-password-only-for-tests")
+        tap(app.buttons["review.submit"], in: app)
+        XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 10))
+        tap(app.tabBars.buttons["Group"], in: app)
+        XCTAssertTrue(app.staticTexts["Personal sign-in required"].waitForExistence(timeout: 5))
+        tap(app.tabBars.buttons["Profile"], in: app)
+        XCTAssertTrue(app.staticTexts["Shared sample account"].waitForExistence(timeout: 5))
+        tap(app.buttons["profile.account"], in: app)
+        tap(app.buttons["Sign out"], in: app)
+        XCTAssertTrue(app.buttons["Reviewer sign-in"].waitForExistence(timeout: 5))
+        let screenshot = XCTAttachment(screenshot: app.screenshot())
+        screenshot.name = "Reviewer sign-in after sample session"
+        screenshot.lifetime = .keepAlways
+        add(screenshot)
+    }
+
 }

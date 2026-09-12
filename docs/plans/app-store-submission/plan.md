@@ -66,19 +66,33 @@ preparation and TestFlight availability do not mean public release.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P4 | gated_by | external:appstore-connect-editing-access | The upload key cannot write App Review contact details, and Chrome requires owner sign-in plus dismissal of its extension popup. Complete the prepared package once editing access is restored. |
+| P4 | gated_by | external:app-review-access-activation | The replacement reviewer login needs an owner-managed credential and separately authorized deployment/distribution before its private App Store fields can be completed. |
 
 ## Next step
 
-**Now (@owner, agent completes App Store fields afterward):** Sign into App Store
-Connect in the release host's Chrome tab and dismiss its extension popup. The
-existing upload key returned 403 FORBIDDEN_ERROR for the private review-contact
-write; no contact was saved. The supplied phone is retained only in the private
-release package. After access is restored, save the prepared contact, listing,
-screenshots and truthful privacy/rating/reviewer information; select the verified
-build and manual release, and resolve Apple's actual submission requirements.
-Agreements remain owner-deferred and unverified. No review submission or public
-release has occurred.
+**Now (@agent):** Finish the approved [reviewer login](reviewer-access.md), verify
+its isolation and account lifecycle, obtain exact-head independent review and all
+required CI, and prepare the replacement release. App Store Connect rejected
+**Add for Review** because the required reviewer username/password were blank;
+the previous Sign in with Apple instructions did not satisfy that form. The owner
+approved adding a dedicated sample login and preparing a new build. Activation
+and its owner-managed credential remain separate from repository delivery.
+
+The owner is completing App Store Connect manually on another Mac. Do not ask for
+sign-in on the agent's browser. The owner has saved listing copy, the running-aware
+Claude paragraph, five iPhone screenshots, subtitle/category, review contact,
+pricing/US availability, and manual release. Build 38 was selected during the
+walkthrough. The privacy questionnaire was completed with account-linked contact,
+health/fitness, content and identifier declarations; subsequent aggregate-diagnostic
+recommendations and privacy publication still need final readback. The private
+release package retains provider evidence and contact details; never copy those
+contact values or credentials into repository documentation. Agreements remain
+owner-deferred. The actual error above means no review submission occurred.
+
+The content-rights check confirmed the exercise asset license and commercial
+Intervals API terms. Garmin attribution for imported Garmin-derived data remains
+unverified in the candidate and needs resolution before declaring the complete
+submission package ready.
 
 The owner explicitly deferred the live workout canary and observation and asked
 to ship ASAP. The retained signed **1.0 (35)** IPA was uploaded successfully at

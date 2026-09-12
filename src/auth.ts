@@ -4,6 +4,7 @@
 import { sign, verify } from 'hono/jwt';
 import { createMiddleware } from 'hono/factory';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
+import { APP_REVIEW_SUB, appReviewAllows, appReviewEnabled } from './appReview';
 import type { HonoEnv } from './types';
 import {
   accountDeletionContinuationMatches,
@@ -40,6 +41,7 @@ export async function issueAppJwt(
     nowSeconds?: number;
     ttlSeconds?: number;
     authTimeSeconds?: number;
+    appReview?: boolean;
   } = {},
 ): Promise<string> {
   const nowSec = options.nowSeconds ?? Math.floor(Date.now() / 1000);
@@ -48,6 +50,7 @@ export async function issueAppJwt(
   return sign(
     {
       sub: userId,
+      ...(options.appReview ? { app_review: true } : {}),
       iat: nowSec,
       auth_time: authTimeSec,
       exp: Math.min(
@@ -133,7 +136,7 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
   // commits (and prevents rolling renewal from resurrecting the session).
   const livePrincipal = await c.env.DB
     .prepare(
-      `SELECT 1 AS x FROM users
+      `SELECT apple_sub FROM users
         WHERE id = ?1
           AND NOT EXISTS (
                 SELECT 1 FROM account_deletion_intents
@@ -145,7 +148,7 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
               )`,
     )
     .bind(c.get('userId'))
-    .first<{ x: number }>();
+    .first<{ apple_sub: string }>();
   if (!livePrincipal) {
     // Once deletion is claimed, a signed JWT is accepted only for an exact
     // continuation of that same DELETE. The service verifies the durable
@@ -153,6 +156,18 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
     if (!isDeletionRequest) return c.json({ error: 'invalid_token' }, 401);
     await next();
     return;
+  }
+  const appReview = livePrincipal.apple_sub === APP_REVIEW_SUB;
+  c.set('appReview', appReview);
+  if (appReview) {
+    if (payload.app_review !== true || !appReviewEnabled(c.env)) {
+      return c.json({ error: 'invalid_token' }, 401);
+    }
+    if (!appReviewAllows(c.req.method, c.req.path)) {
+      return c.json({ error: 'review_account_requires_personal_sign_in' }, 403);
+    }
+  } else if (payload.app_review === true) {
+    return c.json({ error: 'invalid_token' }, 401);
   }
   // The device sends its IANA timezone on EVERY authenticated request, so
   // "today" on the MCP side tracks the user across zones even when they only

@@ -1,4 +1,6 @@
 import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
+import { appReviewEnabled, validAppReviewCredentials } from '../appReview';
 import type { HonoEnv, PublicUser, User } from '../types';
 import {
   appleProviderConfig,
@@ -15,6 +17,7 @@ import {
 } from '../auth';
 import {
   acknowledgeAppleGrantExchange,
+  ensureAppReviewUser,
   beginAppleGrantExchange,
   claimOrCreateOwner,
   finishAppleGrantExchange,
@@ -124,6 +127,19 @@ export function createAuthRoutes(
     ...overrides,
   };
   const routes = new Hono<HonoEnv>();
+
+  routes.post('/review', bodyLimit({ maxSize: 2048 }), async (c) => {
+    c.header('Cache-Control', 'no-store');
+    if (!appReviewEnabled(c.env)) return c.json({ error: 'review_login_unavailable' }, 404);
+    const body: unknown = await c.req.json().catch(() => null);
+    if (!(await validAppReviewCredentials(c.env, body))) {
+      return c.json({ error: 'invalid_review_credentials' }, 401);
+    }
+    const user = await ensureAppReviewUser(c.env.DB);
+    if (!user) return c.json({ error: 'account_deletion_in_progress' }, 409);
+    const jwt = await dependencies.issueAppJwt(user.id, c.env.APP_JWT_SECRET, { appReview: true });
+    return c.json({ jwt, user: publicUser(user) });
+  });
 
   routes.post('/apple', async (c) => {
     const body = await c.req.json<{
@@ -386,6 +402,7 @@ export function createAuthRoutes(
       {
         nowSeconds: nowSec,
         authTimeSeconds: authTimeSec,
+        appReview: c.get('appReview'),
       },
     );
     return c.json({ jwt });

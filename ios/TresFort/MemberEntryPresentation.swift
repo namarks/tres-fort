@@ -21,6 +21,10 @@ struct MemberEntryPresentation: ViewModifier {
             .task(id: auth.nextEntryIntent?.id) { presentNext() }
             .sheet(isPresented: $showing, onDismiss: finishPresented) {
                 if let presentation = presented {
+                    if auth.isReviewAccount && presentation.intent.destination != .workouts {
+                        ContentUnavailableView("Personal sign-in required", systemImage: "person.crop.circle",
+                            description: Text("Sign out in Profile > Account and use Sign in with Apple for personal connections and groups."))
+                    } else {
                     switch presentation.intent.destination {
                     case let .invite(code):
                         JoinInviteConfirmSheet(groupModel: groupModel, code: code) {
@@ -39,6 +43,7 @@ struct MemberEntryPresentation: ViewModifier {
                         }
                     case .workouts:
                         WorkoutsView(sync: sync)
+                    }
                     }
                 }
             }

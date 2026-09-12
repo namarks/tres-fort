@@ -413,6 +413,14 @@ private struct UIFixtureServer {
         var response: Any
         var status = 200
         switch (method, path) {
+        case ("POST", "/auth/review") where scenario == .signIn:
+            guard body["username"] as? String == "app-review",
+                  body["password"] as? String == "synthetic-review-password-only-for-tests" else {
+                return (401, try JSONSerialization.data(withJSONObject: ["error": "invalid_review_credentials"]))
+            }
+            let payload = try JSONSerialization.data(withJSONObject: ["sub": syntheticUserID, "exp": 4_000_000_000, "app_review": true])
+                .base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+            response = ["jwt": "e30.\(payload).synthetic", "user": ["id": syntheticUserID, "display_name": "App Review"]]
         case ("POST", "/auth/apple"):
             signInAttempts += 1
             if ProcessInfo.processInfo.environment["TRESFORT_UI_AUTH_RETRY"] == "1", signInAttempts == 1 {

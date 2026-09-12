@@ -13083,3 +13083,103 @@ extension SetOutboxTests {
         XCTAssertEqual(next.weight, 100)
     }
 }
+
+extension SetOutboxTests {
+    func testTimedCountdownContinuesDuringPreviewAndSoundsBeforeSetIsQueued() async {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let hold = exercise(timed: true)
+        let next = exercise(id: "slot-b", exerciseID: "exercise-b")
+        var clock = fixedDate
+        var cues: [TimedSetCountdown.Cue] = []
+        var queuedCounts: [Int] = []
+        weak var observed: SyncModel?
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { clock }, timedCuePlayer: { cue, _ in
+                cues.append(cue)
+                queuedCounts.append(observed?.setOutbox.pending.count ?? -1)
+            })
+        observed = model
+        model.replaceState(with: state(session: session(), sets: [], exercises: [hold, next]))
+        model.startWorkout()
+        model.setHoldDuration(8)
+        model.startTimedSet(expected: hold, expectedSetNumber: 1)
+        model.next() // Preview must not own the executing countdown.
+        for second in stride(from: 5, through: 1, by: -1) {
+            clock = fixedDate.addingTimeInterval(Double(8 - second))
+            model.playTimedCountdownCue(at: clock)
+        }
+        clock = fixedDate.addingTimeInterval(8)
+        await model.finishTimedSetIfDue()
+        XCTAssertEqual(cues, [.tick(5), .tick(4), .tick(3), .tick(2), .tick(1), .complete])
+        XCTAssertEqual(queuedCounts, [0, 0, 0, 0, 0, 0])
+        XCTAssertFalse(model.timedActive)
+        XCTAssertEqual(model.setOutbox.pending.first?.body.duration_s, 8)
+        await model.finishTimedSetIfDue()
+        XCTAssertEqual(cues.count, 6)
+    }
+
+    func testStoppingTimedSetEarlyCancelsRemainingBeatsAndCompletion() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), hold = exercise(timed: true)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        var clock = fixedDate
+        var cues: [TimedSetCountdown.Cue] = []
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { clock }, timedCuePlayer: { cue, _ in cues.append(cue) })
+        model.replaceState(with: state(session: session(), sets: [], exercise: hold))
+        model.startWorkout()
+        model.setHoldDuration(8)
+        model.startTimedSet(expected: hold, expectedSetNumber: 1)
+        clock = fixedDate.addingTimeInterval(3)
+        model.playTimedCountdownCue(at: clock)
+        await model.stopTimedSet()
+        clock = fixedDate.addingTimeInterval(8)
+        model.playTimedCountdownCue(at: clock)
+        await model.finishTimedSetIfDue()
+        XCTAssertEqual(cues, [.tick(5)])
+        XCTAssertEqual(model.setOutbox.pending.first?.body.duration_s, 3)
+    }
+
+    func testOverdueTimedSetStillLogsWithoutPlayingLateCompletion() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), hold = exercise(timed: true)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        var clock = fixedDate
+        var cues: [TimedSetCountdown.Cue] = []
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { clock }, timedCuePlayer: { cue, _ in cues.append(cue) })
+        model.replaceState(with: state(session: session(), sets: [], exercise: hold))
+        model.startWorkout()
+        model.setHoldDuration(8)
+        model.startTimedSet(expected: hold, expectedSetNumber: 1)
+        clock = fixedDate.addingTimeInterval(20)
+        await model.finishTimedSetIfDue()
+        XCTAssertTrue(cues.isEmpty)
+        XCTAssertFalse(model.timedActive)
+        XCTAssertEqual(model.setOutbox.pending.first?.body.duration_s, 8)
+    }
+}
+
+
+extension SetOutboxTests {
+    func testDeadlineTaskPlaysShortCountdownAndCompletesWithoutAView() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), hold = exercise(timed: true)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let origin = Date()
+        let completed = expectation(description: "Deadline tone")
+        var cues: [TimedSetCountdown.Cue] = []
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults,
+            now: { self.fixedDate.addingTimeInterval(Date().timeIntervalSince(origin)) },
+            timedCuePlayer: { cue, _ in
+                cues.append(cue)
+                if cue == .complete { completed.fulfill() }
+            })
+        prepare(model, exercise: hold, session: session(), running: true)
+        model.setHoldDuration(1)
+        model.startTimedSet(expected: hold, expectedSetNumber: 1)
+        await fulfillment(of: [completed], timeout: 3)
+        XCTAssertEqual(cues, [.tick(1), .complete])
+        XCTAssertFalse(model.timedActive)
+        XCTAssertEqual(model.setOutbox.pending.first?.body.duration_s, 1)
+    }
+}

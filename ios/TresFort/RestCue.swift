@@ -118,7 +118,9 @@ final class RestNotificationCoordinator {
             let content = UNMutableNotificationContent()
             content.title = timedSet ? "Set timer complete" : "Rest's up"
             content.body = timedSet ? "Your timed set has reached its target." : "Time for your next set."
-            content.sound = .default
+            content.sound = timedSet
+                ? UNNotificationSound(named: UNNotificationSoundName("timed-set-complete.wav"))
+                : .default
             content.interruptionLevel = .timeSensitive
             let trigger = UNTimeIntervalNotificationTrigger(
                 timeInterval: max(end.timeIntervalSince(now()), 1),
@@ -164,16 +166,6 @@ final class RestNotificationCoordinator {
             removeRestNotifications(
                 pending: pending, delivered: delivered)
         }
-    }
-
-    var currentGeneration: Int { generation }
-
-    func finish(generation expected: Int) async -> Bool? {
-        guard generation == expected else { return nil }
-        let delivered = await notificationWasDelivered()
-        guard generation == expected else { return nil }
-        cancel()
-        return delivered
     }
 
     func waitForSchedulingForTests() async {
@@ -239,14 +231,13 @@ enum RestCue {
     private static let timedNotificationCoordinator = RestNotificationCoordinator(
         center: SystemRestNotificationCenter(), prefix: "timed-set-cue")
 
-    static func scheduleTimedNotification(at end: Date) -> Int {
+    static func scheduleTimedNotification(at end: Date) {
         if enabled { timedNotificationCoordinator.schedule(at: end, timedSet: true) }
-        return timedNotificationCoordinator.currentGeneration
+    }
+    static var preserveTimedNotification: Bool {
+        UIApplication.shared.applicationState != .active
     }
     static func cancelTimedNotification() { timedNotificationCoordinator.cancel() }
-    static func finishTimedNotification(generation: Int) async -> Bool? {
-        await timedNotificationCoordinator.finish(generation: generation)
-    }
 
     /// Honors the @AppStorage toggle (absent key → default ON).
     static var enabled: Bool {
@@ -292,22 +283,80 @@ enum RestCue {
         notificationCoordinator.cancel()
     }
 
-    static func play(upNext: String, timedSet: Bool = false) {
+    private static var tickPlayer: AVAudioPlayer?
+    private static var completionPlayer: AVAudioPlayer?
+    private static var audioGeneration = 0
+    private static var activeSince = Date()
+    private static let foregroundObserver = NotificationCenter.default.addObserver(
+        forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main
+    ) { _ in
+        MainActor.assumeIsolated { activeSince = Date() }
+    }
+
+    static func prepareTimedCues() {
+        _ = foregroundObserver
+        _ = activeSince
+        if tickPlayer == nil { tickPlayer = makePlayer("timed-set-tick") }
+        if completionPlayer == nil { completionPlayer = makePlayer("timed-set-complete") }
+    }
+
+    private static func makePlayer(_ name: String) -> AVAudioPlayer? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "wav"),
+              let player = try? AVAudioPlayer(contentsOf: url) else { return nil }
+        // Load the tiny PCM asset now; activate audio only at a cue so a
+        // long hold does not duck music before the countdown begins.
+        return player
+    }
+
+    static func playTimedCue(_ cue: TimedSetCountdown.Cue, deadline: Date) {
+        guard enabled, UIApplication.shared.applicationState == .active else { return }
+        prepareTimedCues()
+        // If the phone was locked across zero, its notification owns the end
+        // tone. Never duplicate it on a fast foreground return either.
+        if cue == .complete, activeSince > deadline { return }
+        let player = cue == .complete ? completionPlayer : tickPlayer
+        guard let player else { return }
+        let token = activateAudio()
+        player.currentTime = 0
+        player.play()
+        if cue == .complete {
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+        // Keep music ducked continuously between the final five beats. A
+        // superseding beat/rest cue owns the session, so old callbacks cannot
+        // cut off its audio or restore the music prematurely.
+        releaseAudio(after: cue == .complete ? player.duration + 0.1 : 1.2,
+                     generation: token)
+    }
+
+    private static func activateAudio() -> Int {
+        audioGeneration &+= 1
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playback, options: [.duckOthers, .mixWithOthers])
+        try? session.setActive(true)
+        return audioGeneration
+    }
+
+    private static func releaseAudio(after delay: TimeInterval, generation: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+            guard generation == audioGeneration else { return }
+            try? AVAudioSession.sharedInstance().setActive(false,
+                options: .notifyOthersOnDeactivation)
+        }
+    }
+
+    static func play(upNext: String) {
         guard enabled else { return }
 
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playback,
-                                 options: [.duckOthers, .mixWithOthers])
-        try? session.setActive(true)
+        let token = activateAudio()
 
         // Short, distinctive system chime to grab attention before the speech.
         AudioServicesPlaySystemSound(1057)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
 
-        let phrase = timedSet ? "Set timer complete." : (
-            upNext.isEmpty || upNext.uppercased() == "DONE"
-                ? "Rest's up. Workout complete."
-                : "Rest's up. Up next, \(upNext).")
+        let phrase = upNext.isEmpty || upNext.uppercased() == "DONE"
+            ? "Rest's up. Workout complete."
+            : "Rest's up. Up next, \(upNext)."
         let utterance = AVSpeechUtterance(string: phrase)
         utterance.voice = TimerCueVoice.preferred()
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
@@ -317,8 +366,6 @@ enum RestCue {
         // Un-duck other audio shortly after the utterance would have finished.
         // (AVSpeechSynthesizerDelegate would be tidier, but this avoids holding
         // a delegate object for a fire-and-forget cue.)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-            try? session.setActive(false, options: .notifyOthersOnDeactivation)
-        }
+        releaseAudio(after: 3, generation: token)
     }
 }

@@ -335,6 +335,7 @@ struct PlanComparisonResponse: Codable, Equatable {
 }
 
 struct SessionRow: Codable, Identifiable {
+    var exercise_swaps: String? = nil
     var notes: String? = nil
     var perceived_fatigue: Int? = nil
     var summary: WorkoutSummary? = nil
@@ -834,12 +835,13 @@ extension PlanTree {
 
 extension SessionRow {
     private enum CodingKeys: String, CodingKey {
-        case notes, perceived_fatigue
+        case notes, perceived_fatigue, exercise_swaps
         case id, date, status, workout_id, day_template_id, summary, updated_at, attempt, write_protocol
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        exercise_swaps = try c.decodeIfPresent(String.self, forKey: .exercise_swaps)
         notes = try c.decodeIfPresent(String.self, forKey: .notes)
         perceived_fatigue = try c.decodeIfPresent(Int.self, forKey: .perceived_fatigue)
         id = try c.decode(String.self, forKey: .id)
@@ -861,6 +863,7 @@ extension SessionRow {
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(exercise_swaps, forKey: .exercise_swaps)
         try c.encodeIfPresent(notes, forKey: .notes)
         try c.encodeIfPresent(perceived_fatigue, forKey: .perceived_fatigue)
         try c.encode(id, forKey: .id)

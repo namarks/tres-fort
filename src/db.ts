@@ -1,3 +1,4 @@
+import { applicableSessionSwap, parseSessionExerciseSwaps } from './sessionExerciseSwaps';
 import { sharedText, type GroupReportReason } from './groupSafety';
 import { APP_REVIEW_SUB } from './appReview';
 import { shareWorkoutSchemaCache, workoutDB } from './workoutSchema';
@@ -5198,10 +5199,16 @@ export async function logSet(
   let slotIsWarmup: number | null = null;
   if (templateExerciseId) {
     const slot = await workoutDB(db)
-      .prepare('SELECT is_warmup, exercise_id FROM template_exercises WHERE id = ?1')
-      .bind(templateExerciseId)
+      .prepare(`SELECT te.is_warmup, te.exercise_id FROM template_exercises te
+        JOIN workouts w ON w.id=te.workout_id JOIN plans p ON p.id=w.plan_id
+        WHERE te.id=?1 AND p.user_id=?2`)
+      .bind(templateExerciseId, userId)
       .first<{ is_warmup: number; exercise_id: string }>();
-    if (!slot || slot.exercise_id !== input.exercise_id) {
+    const approvedSwap = parseSessionExerciseSwaps(targetSession.exercise_swaps, targetSession.attempt).entries.find(
+      (entry) => entry.original.id === templateExerciseId
+        && entry.original.exercise_id === slot?.exercise_id
+        && entry.exercise_ids.includes(input.exercise_id));
+    if (!slot || (slot.exercise_id !== input.exercise_id && !approvedSwap)) {
       templateExerciseId = null; // dangling or swapped slot → exercise-only log
     } else {
       slotIsWarmup = slot.is_warmup === 1 ? 1 : 0;
@@ -5628,6 +5635,59 @@ export async function patchSet(
 }
 
 // ---- read models ---------------------------------------------------------
+
+/** Change a movement for this attempt only. Session CAS + plan-version CAS are
+ * enforced in the same transaction as the audit. No log or plan is rewritten. */
+export async function swapSessionExercise(db: D1Database, userId: string, sessionId: string,
+  slotId: string, input: { to_exercise: string; expected_attempt: number;
+    expected_version: number; expected_revision: number }) {
+  const session = await workoutDB(db).prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
+    .bind(sessionId, userId).first<SessionRow>();
+  if (!session) return { error: 'not_found' as const };
+  if (session.attempt !== input.expected_attempt || !['planned', 'in_progress'].includes(session.status)) {
+    return { error: 'session_conflict' as const };
+  }
+  const plan = await getPlanTree(db, userId);
+  if (!plan || plan.version !== input.expected_version) return { error: 'plan_conflict' as const };
+  const slot = plan.workouts.flatMap((day) => day.exercises).find((slot) => slot.id === slotId);
+  if (!slot) return { error: 'not_found' as const };
+  const swaps = parseSessionExerciseSwaps(session.exercise_swaps, session.attempt);
+  if (swaps.revision !== input.expected_revision) return { error: 'swap_conflict' as const };
+  const exercise = await resolveExercise(db, input.to_exercise);
+  if (!exercise) return { error: 'exercise_not_found' as const };
+  const destination = await workoutDB(db).prepare('SELECT * FROM exercises WHERE id=?1')
+    .bind(exercise.id).first<{ id: string; name: string; unit: string; primary_muscle: string;
+      modality: string; laterality: string; load_mode: string; demo_slug: string | null }>();
+  if (!destination) return { error: 'exercise_not_found' as const };
+  const timed = ['timed', 'cardio'].includes(slot.exercise_modality) || slot.target_duration_s != null;
+  if (timed !== ['timed', 'cardio'].includes(destination.modality)) {
+    return { error: 'incompatible_measure' as const };
+  }
+  const previous = applicableSessionSwap(session.exercise_swaps, slot, session.attempt);
+  const replacement: EnrichedTemplateExercise = { ...slot,
+    exercise_id: destination.id, exercise_name: destination.name, exercise_unit: destination.unit,
+    exercise_muscle: destination.primary_muscle, exercise_modality: destination.modality,
+    exercise_laterality: destination.laterality, exercise_load_mode: destination.load_mode,
+    exercise_demo_slug: destination.demo_slug, target_weight: null, cues: null, progression: null };
+  const entry = { original: slot, replacement,
+    exercise_ids: [...new Set([slot.exercise_id, ...(previous?.exercise_ids ?? []), destination.id])] };
+  const next = JSON.stringify({ attempt: session.attempt, revision: swaps.revision + 1,
+    entries: [...swaps.entries.filter((entry) => entry.original.id !== slotId), entry] });
+  const auditID = uuid();
+  const results = await runWorkoutWriteBatch(db, [
+    workoutDB(db).prepare(`UPDATE sessions SET exercise_swaps=?3, updated_at=MAX(updated_at+1,?4)
+      WHERE id=?1 AND user_id=?2 AND attempt=?5 AND status IN ('planned','in_progress')
+        AND exercise_swaps IS ?6
+        AND EXISTS (SELECT 1 FROM plans WHERE id=?7 AND user_id=?2 AND status='active' AND version=?8)
+      RETURNING *`).bind(sessionId, userId, next, now(), input.expected_attempt,
+        session.exercise_swaps ?? null, plan.id, input.expected_version),
+    workoutDB(db).prepare(`INSERT INTO audit_log(id,user_id,actor,tool,args,result,created_at)
+      SELECT ?1,?2,'ios','swap_session_exercise',?3,?4,?5 WHERE changes()>0`)
+      .bind(auditID, userId, JSON.stringify({ session_id: sessionId, slot_id: slotId, ...input }), next, now()),
+  ]);
+  const updated = results[0]?.results[0] as SessionRow | undefined;
+  return updated ?? { error: 'swap_conflict' as const };
+}
 
 export async function getState(
   db: D1Database,
@@ -8032,7 +8092,7 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
     workout_id: workoutId, status: workoutId ? 'planned' : 'skipped',
     started_at: null, completed_at: null,
     perceived_fatigue: old?.perceived_fatigue ?? null, notes: old?.notes ?? null,
-    runner_targets: null, created_at: old?.created_at ?? ts, updated_at: ts,
+    runner_targets: null, exercise_swaps: null, created_at: old?.created_at ?? ts, updated_at: ts,
     attempt: (old?.attempt ?? 0) + 1, write_protocol: old?.write_protocol ?? 'legacy',
   });
   const acknowledgement: CalendarMoveAcknowledgement = { ok: true,

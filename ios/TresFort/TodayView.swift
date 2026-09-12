@@ -680,6 +680,7 @@ private struct RunnerView: View {
     /// Exercise demo sheet, openable mid-workout — not just from the
     /// pre-start preview (#54).
     @State private var demoFor: TemplateExercise?
+    @State private var swapTarget: WorkoutSwapTarget?
     @State private var editingValues = false
     @State private var valueDraft: RunnerInputState?
     @State private var weightPrescription: RunnerPrescription?
@@ -783,6 +784,21 @@ private struct RunnerView: View {
                                             ("+1", { sync.adjustReps(1) }, false)])
                         }
 
+                        Button {
+                            swapTarget = sync.workoutSwapTarget
+                        } label: {
+                            Label("Swap exercise", systemImage: "arrow.triangle.swap")
+                                .font(Theme.mono(12, .bold))
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                        }
+                        .foregroundStyle(Theme.accent)
+                        .disabled(sync.workoutSwapTarget == nil)
+                        .accessibilityIdentifier("runner.swap-exercise")
+                        if sync.timedActive {
+                            Text("Finish or stop the timer to swap exercises.")
+                                .font(.caption).foregroundStyle(Theme.muted)
+                        }
+
                         completedChips(ex: ex)
 
 
@@ -823,6 +839,9 @@ private struct RunnerView: View {
                 // A sibling keeps the action inside the runner's hit-testing
                 // bounds as the full rest screen hides and restores app chrome.
                 RunnerSetAction(sync: sync, ex: ex)
+            }
+            .sheet(item: $swapTarget) { target in
+                WorkoutExerciseSwapSheet(sync: sync, target: target)
             }
             .sheet(isPresented: $editingWeight) {
                 WeightEditorSheet(

@@ -624,6 +624,7 @@ final class SetOutboxTests: XCTestCase {
         warmup: Bool = false,
         modality: String? = nil,
         targetWeight: Double? = nil,
+        unsetWeight: Bool = false,
         groupID: String? = nil,
         roundRest: Int = 75,
         transitionRest: Int = 10
@@ -641,7 +642,7 @@ final class SetOutboxTests: XCTestCase {
             target_reps_max: nil,
             target_rpe: nil,
             rest_seconds: 90,
-            target_weight: targetWeight ?? (timed || resolvedBodyweight ? 0 : 100),
+            target_weight: unsetWeight ? nil : targetWeight ?? (timed || resolvedBodyweight ? 0 : 100),
             cues: nil,
             exercise_modality: resolvedModality,
             exercise_laterality: "bilateral",
@@ -13351,5 +13352,187 @@ extension SetOutboxTests {
             when: { true }, playFallback: { true })
         XCTAssertEqual(retried, false)
         XCTAssertTrue(center.pendingIDs.isEmpty)
+    }
+}
+
+@MainActor
+private final class SessionSwapAPIStub: SessionExerciseSwapAPI {
+    var calls = 0
+    var handler: (() async throws -> SessionRow)?
+    func swapSessionExercise(sessionID: String, slotID: String, exerciseID: String,
+        expectedAttempt: Int, expectedVersion: Int, expectedRevision: Int, jwt: String) async throws -> SessionRow {
+        calls += 1
+        guard let handler else { throw URLError(.notConnectedToInternet) }
+        return try await handler()
+    }
+}
+
+extension SetOutboxTests {
+    private func swappedSession(_ active: SessionRow, original: TemplateExercise,
+                                replacement: TemplateExercise) throws -> SessionRow {
+        var response = active
+        response.updated_at = (active.updated_at ?? 0) + 1
+        response.exercise_swaps = String(data: try JSONEncoder().encode(SessionExerciseSwaps(revision: 1,
+            entries: [SessionExerciseSwap(original: original, replacement: replacement,
+                exercise_ids: [original.exercise_id, replacement.exercise_id])])), encoding: .utf8)
+        return response
+    }
+
+    func testWorkoutSwapPreservesPlanPriorSetsAndRestThenLogsReplacement() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub(), swap = SessionSwapAPIStub()
+        let original = exercise(targetWeight: 100)
+        let replacement = exercise(exerciseID: "replacement", unsetWeight: true)
+        let duplicate = exercise(id: "slot-b", targetSets: 3)
+        let active = session(updatedAt: 100, attempt: 0)
+        let oldSet = SetLog(id: "old", session_id: active.id, exercise_id: original.exercise_id,
+            template_exercise_id: original.id, set_index: 1, weight: 100, reps: 5, rpe: nil,
+            is_warmup: 0, logged_at: 100, duration_s: nil, is_timed: 0, deleted_at: nil)
+        let response = try swappedSession(active, original: original, replacement: replacement)
+        swap.handler = { response }
+        api.logHandler = { _, body, _ in
+            APIClient.SetLogResult(set: self.setLog(body: body), deduped: false, session: response)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            sessionSwapAPI: swap, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [oldSet], exercises: [original, duplicate]))
+        model.startWorkout()
+        model.startRest(seconds: 90, name: original.exercise_name)
+        let rest = model.restEndDate, start = model.workoutStart
+        let target = try XCTUnwrap(model.workoutSwapTarget)
+        let saved = await model.swapWorkoutExercise(target, with: replacement.exercise_id)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(model.currentExercise, replacement)
+        XCTAssertEqual(model.plan?.workouts[0].exercises[0], original)
+        XCTAssertEqual(model.runnerSetsDone(replacement), 1)
+        XCTAssertEqual(model.runnerSetsDone(duplicate), 0)
+        XCTAssertEqual(model.currentSetNumber, 2)
+        XCTAssertEqual(model.restEndDate, rest)
+        XCTAssertEqual(model.workoutStart, start)
+        XCTAssertEqual(model.weight, 0)
+        XCTAssertEqual(model.sets.first?.exercise_id, original.exercise_id)
+        await model.logCurrentSet(expected: replacement, expectedSetNumber: 2)
+        await model.drainSetOutbox()
+        XCTAssertEqual(api.logCalls.first?.body.exercise_id, replacement.exercise_id)
+        XCTAssertEqual(model.runnerSetsDone(replacement), 2)
+        XCTAssertEqual(model.currentExercise, replacement)
+    }
+
+    func testWorkoutSwapResumesBeforeFirstSetAndDoesNotReachNextAttempt() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub(), swap = SessionSwapAPIStub()
+        let original = exercise(), replacement = exercise(exerciseID: "replacement", unsetWeight: true)
+        let planned = session(status: "planned", updatedAt: 100, attempt: 0)
+        let response = try swappedSession(planned, original: original, replacement: replacement)
+        api.createHandler = { _, _, _ in planned }
+        swap.handler = { response }
+        let auth = retainedAuth(defaults: defaults)
+        let model = SyncModel(auth: auth, setWriteAPI: api, sessionSwapAPI: swap,
+            defaults: defaults, now: { self.fixedDate })
+        prepare(model, exercise: original, running: true)
+        let saved = await model.swapWorkoutExercise(try XCTUnwrap(model.workoutSwapTarget), with: replacement.exercise_id)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(api.createCalls.count, 1)
+        let cold = SyncModel(auth: auth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        cold.replaceState(with: state(session: response, sets: [], exercise: original))
+        XCTAssertTrue(cold.hasResumableWorkout)
+        cold.resumeWorkout()
+        XCTAssertEqual(cold.currentExercise, replacement)
+        cold.replaceState(with: state(session: session(status: "planned", updatedAt: 200, attempt: 1),
+            sets: [], exercise: original))
+        XCTAssertEqual(cold.selectedDay?.exercises.first, original)
+    }
+
+    func testWorkoutSwapKeepsSupersetRoundAndRejectsStalePickerAndActiveTimer() async throws {
+        let defaults = defaults(), swap = SessionSwapAPIStub()
+        let original = exercise(groupID: "g"), partner = exercise(id: "slot-b", exerciseID: "b", groupID: "g")
+        let replacement = exercise(exerciseID: "replacement", unsetWeight: true, groupID: "g")
+        let active = session(updatedAt: 100, attempt: 0)
+        swap.handler = { try self.swappedSession(active, original: original, replacement: replacement) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), sessionSwapAPI: swap,
+            defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [], exercises: [original, partner]))
+        model.startWorkout()
+        let stale = try XCTUnwrap(model.workoutSwapTarget)
+        model.next()
+        let rejected = await model.swapWorkoutExercise(stale, with: replacement.exercise_id)
+        XCTAssertFalse(rejected)
+        XCTAssertEqual(swap.calls, 0)
+        model.previous()
+        let saved = await model.swapWorkoutExercise(try XCTUnwrap(model.workoutSwapTarget), with: replacement.exercise_id)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(model.currentExercise?.group_id, "g")
+        XCTAssertEqual(model.currentSetNumber, 1)
+        model.timedActive = true
+        XCTAssertNil(model.workoutSwapTarget)
+    }
+
+    func testWorkoutSwapFailureRetainsCurrentExerciseAndCanRetry() async throws {
+        let defaults = defaults(), swap = SessionSwapAPIStub()
+        let original = exercise(), active = session(updatedAt: 100, attempt: 0)
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), sessionSwapAPI: swap,
+            defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [], exercise: original))
+        model.startWorkout()
+        let saved = await model.swapWorkoutExercise(try XCTUnwrap(model.workoutSwapTarget), with: "replacement")
+        XCTAssertFalse(saved)
+        XCTAssertEqual(model.currentExercise, original)
+        XCTAssertFalse(model.isSwappingExercise)
+        XCTAssertNotNil(model.workoutSwapTarget)
+    }
+
+    func testDeletingOriginalSetAfterWorkoutSwapReopensCompletedSuperset() async throws {
+        for (liveReadFirst, duringHold) in [(false, false), (true, false), (false, true), (true, true)] {
+            let defaults = defaults(), api = SetWriteAPIStub()
+            let original = exercise(targetSets: 1, groupID: "group-a")
+            let replacement = exercise(exerciseID: "replacement", targetSets: 1,
+                unsetWeight: true, groupID: "group-a")
+            let partner = exercise(id: "slot-b", exerciseID: "b", targetSets: 1, groupID: "group-a")
+            let following = exercise(id: "slot-c", exerciseID: "c", timed: duringHold)
+            let active = try swappedSession(session(updatedAt: 100, attempt: 0),
+                original: original, replacement: replacement)
+            let oldSet = correctionFixture(original), partnerSet = correctionFixture(partner, id: "partner-set")
+            let slots = [original, partner, following]
+            let entered = SetAsyncLatch(), release = SetAsyncLatch()
+            var deletion: SetCorrectionResult?
+            api.correctionHandler = { [self] intent, _ in
+                let result = corrected(oldSet, intent: intent, session: active)
+                deletion = result
+                await entered.open()
+                await release.wait()
+                return result
+            }
+            api.logHandler = { [self] id, body, _ in
+                .init(set: setLog(body: body, sessionID: id), deduped: false, session: active)
+            }
+            let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                defaults: defaults, now: { self.fixedDate })
+            model.replaceState(with: state(session: active, sets: [oldSet, partnerSet], exercises: slots))
+            model.startWorkout()
+            model.jump(to: 2)
+            XCTAssertEqual(model.currentExercise, following)
+            if duringHold { model.startTimedSet(expected: following, expectedSetNumber: 1, at: fixedDate) }
+            XCTAssertEqual(model.runnerSetsDone(replacement), 1)
+            XCTAssertTrue(model.enqueueCorrection(set: oldSet, values: nil))
+            XCTAssertNotNil(model.setCorrections.first?.runnerGroupRepair)
+            let drain = Task { await model.drainWorkoutWriteOutboxes() }
+            await entered.wait()
+            if liveReadFirst {
+                model.replaceState(with: state(session: active,
+                    sets: [try XCTUnwrap(deletion).set, partnerSet], exercises: slots))
+            }
+            await release.open()
+            await drain.value
+            XCTAssertTrue(model.setCorrections.isEmpty)
+            XCTAssertEqual(model.runnerSetsDone(replacement), 0)
+            if duringHold {
+                XCTAssertTrue(model.timedActive)
+                model.replaceState(with: state(session: active,
+                    sets: [try XCTUnwrap(deletion).set, partnerSet], exercises: slots))
+                XCTAssertNotNil(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.deferredGroupRepair)
+                await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(30))
+            }
+            XCTAssertEqual(model.currentExercise, replacement)
+            XCTAssertFalse(model.finished)
+            XCTAssertEqual(model.plan?.workouts.first?.exercises.first, original)
+        }
     }
 }

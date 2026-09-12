@@ -7,6 +7,7 @@ import SwiftUI
 enum UIFixtureScenario: String, CaseIterable {
     case signIn = "sign-in", empty, loadFailure = "load-failure"
     case ordinary, bodyweight, timed, pending, onboarding, groups, library
+    case workoutSwap = "workout-swap"
     case appStore = "app-store"
     case groupSafety = "group-safety"
     case timedNavigation = "timed-navigation", timedPreviewCompletion = "timed-preview-completion"
@@ -177,6 +178,9 @@ private struct UIFixtureTrainingView: View {
 
     private var fixtureEvidence: String {
         if scenario.isHistory { return "\(sync.sets.count) sets" }
+        if scenario == .workoutSwap {
+            return "original:\(sync.sets.filter { $0.exercise_id == "synthetic-exercise" }.count);replacement:\(sync.sets.filter { $0.exercise_id == "synthetic-replacement" }.count);plan:\(sync.plan?.version ?? 0)"
+        }
         guard scenario.isTimerNavigation else { return "" }
         let bike = sync.sets.filter { $0.template_exercise_id == "synthetic-bike" }
         return "bike:\(bike.count);other:\(sync.sets.count - bike.count);seconds:\(bike.first?.duration_s ?? 0);warmup:\(bike.first?.is_warmup ?? 0)"
@@ -274,7 +278,7 @@ private struct UIFixtureServer {
             plan = makePlan()
             sessions = [.groups, .library, .planChanges].contains(scenario) ? [] : [makeSession()]
             if scenario == .planChanges { plan?["version"] = 3 }
-            if [.readyToFinish, .correctionFailure].contains(scenario) {
+            if [.readyToFinish, .correctionFailure, .workoutSwap].contains(scenario) {
                 sets = [["id": "synthetic-set", "session_id": sessionID,
                     "exercise_id": "synthetic-exercise", "template_exercise_id": "synthetic-slot",
                     "set_index": 1, "weight": 45, "reps": 5, "is_warmup": 0,
@@ -378,6 +382,7 @@ private struct UIFixtureServer {
             "target_sets": 1, "target_reps": 5, "rest_seconds": 0,
             "target_weight": modality == "barbell" ? 45 : 0]
         if scenario == .timed { slot["target_duration_s"] = 5 }
+        if scenario == .workoutSwap { slot["target_sets"] = 3 }
         let meta = scenario == .activationManual ? "{}"
             : "{\"schedule\":{\"version\":1,\"week\":{\"tue\":\"synthetic-day\"}}}"
         return ["id": "synthetic-plan", "name": name, "version": 1, "meta": meta,
@@ -534,6 +539,9 @@ private struct UIFixtureServer {
                 ["id": slot["exercise_id"]!, "name": slot["exercise_name"]!,
                  "modality": slot["exercise_modality"]!, "unit": "lb", "primary_muscle": "full body"]
             }
+        case ("GET", "/api/exercises") where scenario == .workoutSwap:
+            response = [["id": "synthetic-exercise", "name": "Barbell Squat", "modality": "barbell", "unit": "lb", "primary_muscle": "legs"],
+                        ["id": "synthetic-replacement", "name": "Dumbbell Goblet Squat", "modality": "dumbbell", "unit": "lb", "primary_muscle": "legs"]]
         case ("GET", "/api/exercises"):
             if let fixture = coachingFixture { response = fixture["catalog"]!; break }
             if scenario == .appStore { response = AppStoreScreenshotData.catalog; break }
@@ -680,7 +688,25 @@ private struct UIFixtureServer {
                 sessions = [makeSession(attempt: 0)]
             }
             response = sessions[0]
+        case ("POST", "/api/sessions/\(sessionID)/exercises/synthetic-slot/swap") where scenario == .workoutSwap:
+            guard body["to_exercise"] as? String == "synthetic-replacement",
+                  body["expected_attempt"] as? Int == sessions[0]["attempt"] as? Int,
+                  body["expected_version"] as? Int == 1,
+                  body["expected_revision"] as? Int == 0 else { throw URLError(.badServerResponse) }
+            let original = (plan!["days"] as! [[String: Any]])[0]["exercises"] as! [[String: Any]]
+            var replacement = original[0]
+            replacement["exercise_id"] = "synthetic-replacement"
+            replacement["exercise_name"] = "Dumbbell Goblet Squat"
+            replacement["exercise_modality"] = "dumbbell"
+            replacement["target_weight"] = NSNull()
+            let envelope: [String: Any] = ["attempt": sessions[0]["attempt"]!, "revision": 1,
+                "entries": [["original": original[0], "replacement": replacement,
+                             "exercise_ids": ["synthetic-exercise", "synthetic-replacement"]]]]
+            sessions[0]["exercise_swaps"] = String(decoding: try JSONSerialization.data(withJSONObject: envelope), as: UTF8.self)
+            sessions[0]["updated_at"] = revision
+            response = sessions[0]
         case ("POST", "/api/sessions/\(sessionID)/sets"):
+
             if scenario == .pending { throw URLError(.notConnectedToInternet) }
             if scenario == .groups, !sets.contains(where: { $0["id"] as? String == body["id"] as? String }) {
                 let indices = groupFixture["execution_indices"] as! [Int]
@@ -699,7 +725,8 @@ private struct UIFixtureServer {
             set["logged_at"] = revision
             sets.removeAll { ($0["id"] as? String) == (set["id"] as? String) }
             sets.append(set)
-            let current = makeSession(attempt: sessions.first(where: { $0["id"] as? String == sessionID })?["attempt"] as? Int ?? 0)
+            var current = makeSession(attempt: sessions.first(where: { $0["id"] as? String == sessionID })?["attempt"] as? Int ?? 0)
+            current["exercise_swaps"] = sessions.first { $0["id"] as? String == sessionID }?["exercise_swaps"]
             sessions.removeAll { $0["id"] as? String == sessionID }
             sessions.append(current)
             response = ["set": set, "session": current, "deduped": false]

@@ -190,6 +190,7 @@ export interface TemplateExerciseRow {
 }
 
 export interface SessionRow {
+  exercise_swaps?: string | null;
   runner_targets?: string | null;
   id: string;
   user_id: string;

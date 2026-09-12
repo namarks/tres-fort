@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: active · Updated: 2026-09-11 · Theme: gym-floor
+Slug: workout-library · Status: active · Updated: 2026-09-12 · Theme: gym-floor
 
 ## Goal
 
@@ -120,6 +120,30 @@ No second editor, no per-session template copies, no weeks table.
     These client changes shipped in [TestFlight 1.0 (38)](../app-store-submission/release-38.md),
     verified VALID and available to internal Testers. Physical-device follow-up
     remains unverified.
+- [ ] **P0.2 — Substitute unavailable equipment during a workout**
+  - [x] **(a) Session-scoped swap implementation**
+    - Add an in-runner, searchable Swap exercise picker for the current workout.
+      Retain completed-set identities, set progress and superset membership;
+      show replacement-specific load and demo information. An active timed set
+      must finish or stop first. Keep the reusable workout unchanged.
+    - Store original/replacement slot snapshots and a swap revision on the
+      existing session, scoped to its attempt. Use plan-version and session CAS,
+      protected atomic audit, ordinary session deltas and account persistence.
+      Reopening before the first set must preserve the choice; stale pickers and
+      later attempts cannot inherit an old change. Same rep/timed measure only.
+    - Verified real-D1 writes, restart/isolation/conflicts, iOS recovery,
+      replacement logging, and the visible picker journey. Local verification:
+      1,020 backend tests; 520 iOS unit tests (one existing skip, no failures);
+      swap, timer-navigation and superset UI journeys. The owner authorized
+      publication, independent review and merge after passing CI on 2026-09-12.
+      The pull request from `feat/in-workout-exercise-swap` carries exact-head
+      review and CI evidence. Production migration, deployment and app release
+      remain outside this repository delivery.
+  - [ ] **(b) Authorized Worker and client release**
+    - With separate owner authority, apply migration 0050, deploy the reviewed
+      Worker and verify the new session route before distributing the iOS build.
+      Retain the workout-rename compatibility gates and record device evidence.
+
 - [ ] **P1 — Library metadata: tags and archive**
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work
@@ -237,6 +261,7 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 | P0 | blocked_by | plan:workouts-and-multi-session#P0(a) | The selected goal establishes canonical workout terminology and compatible clients before the library UI. Production rollout and compatibility cleanup do not block this repository slice. |
 | P0 | coordinates_with | plan:member-activation-and-adherence#P0 | Both edit the no-plan and Today entry surfaces; do not run concurrently on the same iOS files. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
+| P0.2(b) | gated_by | external:owner-workout-swap-release | Migration, Worker deployment and iOS distribution need separate owner authority. |
 
 
 Freestyle sessions and save-as-workout will supply more logged evidence to the
@@ -244,8 +269,10 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@agent):** P1 library metadata remains planned and outside the completed
-P0.1 navigation update. P2 freestyle creation and optional saving remain separate;
+**Now (@owner):** P0.2(b) requires separate release authority after the P0.2(a)
+pull request passes independent review and CI and merges. Apply migration 0050,
+deploy and verify the Worker, then distribute the client. P1 library metadata
+remains planned and outside the completed P0.1 navigation update. P2 freestyle creation and optional saving remain separate;
 the implemented Create a workout action explicitly saves to the shared library.
 The navigation design was approved in task
 `01a08dee-930f-7763-9202-29872c440f26`. [PR #178](https://github.com/namarks/tres-fort/pull/178)
@@ -294,11 +321,11 @@ the completed goal's scope.
   the versioned tree, force every editor and MCP tool to handle two shapes,
   and break `set_logs.template_exercise_id` history for one of them.
   The renamed `workouts` table is the same library.
-- Rejected: per-session copies of a template for one-off edits. Editing
-  today's slot in `EditWorkoutSheet` already edits the library workout, which
-  is the right default for a coach-owned plan; a member who wants a
-  variation adds a second library workout. Freestyle (P2) covers the
-  genuinely unplanned case without a copy.
+- P0.2 updates the earlier one-off-edit decision in response to the owner's
+  2026-09-12 unavailable-machine request: the active runner substitutes a single
+  slot for that session attempt. It stores slot snapshots on the session,
+  without creating library workout copies. The library editor still edits the
+  reusable prescription; freestyle (P2) remains separate.
 - Open: whether `archived_at` should also apply to `template_exercises`
   (retire a slot without detaching history). Defer until a member asks;
   delete-with-detach exists today.

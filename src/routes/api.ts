@@ -1,3 +1,4 @@
+import { swapSessionExercise } from '../db';
 import { isGroupReportReason } from '../groupSafety';
 import { workoutExportWire, workoutInput, workoutWire } from '../workoutWire';
 import { Hono } from 'hono';
@@ -629,6 +630,26 @@ apiRoutes.on('POST', ['/workouts/:id/exercises', '/days/:id/exercises'], async (
   }, { actor: 'ios', operation: 'add_exercise', args: b });
   if ('error' in row) return c.json(workoutWire(row), 400);
   return c.json(workoutWire(row), 201);
+});
+
+// A workout-only substitution is an edit of the observed session attempt.
+apiRoutes.post('/sessions/:id/exercises/:teId/swap', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const invalid = invalidMutationFields(b, { to_exercise: isNonEmptyString,
+    expected_attempt: isNonNegativeInteger, expected_version: isPositiveInteger,
+    expected_revision: isNonNegativeInteger }, {});
+  invalid.push(...Object.keys(b).filter((key) => !['to_exercise', 'expected_attempt',
+    'expected_version', 'expected_revision'].includes(key)));
+  if (invalid.length) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const result = await swapSessionExercise(c.env.DB, c.get('userId'), c.req.param('id'), c.req.param('teId'), {
+    to_exercise: String(b.to_exercise), expected_attempt: Number(b.expected_attempt),
+    expected_version: Number(b.expected_version), expected_revision: Number(b.expected_revision),
+  });
+  if ('error' in result) return c.json(result, result.error === 'not_found' ? 404
+    : ['exercise_not_found', 'incompatible_measure'].includes(result.error) ? 400 : 409);
+  return c.json(workoutWire(result));
 });
 
 // Replace the exact slot using its saved prescription. New callers pin the

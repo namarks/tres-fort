@@ -222,6 +222,8 @@ final class SyncModel: ObservableObject {
     private let setWriteAPI: any SetWriteAPI
     private let terminalAPI: any WorkoutTerminalAPI
     private let catalogAPI: any ExerciseCatalogAPI
+    private let sessionSwapAPI: any SessionExerciseSwapAPI
+    @Published private(set) var isSwappingExercise = false
     private let planEditingAPI: any PlanEditingAPI
     private let routineEditingAPI: any RoutineEditingAPI
     private unowned let auth: AuthModel
@@ -337,6 +339,7 @@ final class SyncModel: ObservableObject {
         setWriteAPI: any SetWriteAPI = APIClient(),
         terminalAPI: any WorkoutTerminalAPI = APIClient(),
         catalogAPI: any ExerciseCatalogAPI = APIClient(),
+        sessionSwapAPI: any SessionExerciseSwapAPI = APIClient(),
         planEditingAPI: any PlanEditingAPI = APIClient(),
         routineEditingAPI: any RoutineEditingAPI = APIClient(),
         defaults: LocalPersistence = .standard,
@@ -378,6 +381,7 @@ final class SyncModel: ObservableObject {
         self.setWriteAPI = setWriteAPI
         self.terminalAPI = terminalAPI
         self.catalogAPI = catalogAPI
+        self.sessionSwapAPI = sessionSwapAPI
         self.planEditingAPI = planEditingAPI
         self.routineEditingAPI = routineEditingAPI
         self.defaults = defaults
@@ -538,7 +542,8 @@ final class SyncModel: ObservableObject {
 
     var selectedDay: Workout? {
         guard let plan else { return nil }
-        return plan.workouts.first { $0.id == selectedDayID } ?? plan.workouts.first
+        guard let day = plan.workouts.first(where: { $0.id == selectedDayID }) ?? plan.workouts.first else { return nil }
+        return runnerDay(id: day.id)
     }
 
     var terminalActionTarget: WorkoutTerminalActionTarget? {
@@ -859,7 +864,7 @@ final class SyncModel: ObservableObject {
                 runnerFocus.isExplicit = false
             }
             if let repair = deferredGroupRepair,
-               plan?.workouts.first(where: { $0.id == repair.dayID })
+               runnerDay(id: repair.dayID)
                 .flatMap({ RunnerGroupRepair(groupID: repair.groupID, day: $0) }) != repair {
                 deferredGroupRepair = nil
             }
@@ -1169,6 +1174,7 @@ final class SyncModel: ObservableObject {
             return submittedSession
         }
         return SessionRow(
+            exercise_swaps: submittedSession.exercise_swaps,
             notes: submittedSession.notes, perceived_fatigue: submittedSession.perceived_fatigue,
             id: result.set.session_id,
             date: submittedSession.date,
@@ -1213,6 +1219,7 @@ final class SyncModel: ObservableObject {
         aliasIDs.insert(acknowledgedSession.id)
         aliasIDs.insert(acceptedSet.session_id)
         let canonical = SessionRow(
+            exercise_swaps: source.exercise_swaps,
             notes: source.notes, perceived_fatigue: source.perceived_fatigue,
             id: acceptedSet.session_id,
             date: acknowledgedSession.date,
@@ -1414,6 +1421,7 @@ final class SyncModel: ObservableObject {
                 current!, with: response, kind: .resolution)
         let source = advancesAttempt || responseWins ? response : current!
         let canonical = SessionRow(
+            exercise_swaps: source.exercise_swaps,
             notes: source.notes, perceived_fatigue: source.perceived_fatigue,
             id: response.id,
             date: response.date,
@@ -1696,9 +1704,7 @@ final class SyncModel: ObservableObject {
         guard checkpoint.date == todayString,
               terminalOutbox.intent(for: checkpoint.date) == nil,
               serverSession?.status == "in_progress" || unstartedFeedback,
-              let day = plan?.workouts.first(where: {
-                  $0.id == checkpoint.selectedDayID
-              }),
+              let day = runnerDay(id: checkpoint.selectedDayID),
               !day.exercises.isEmpty,
               checkpoint.workoutStartedAtMS > 0,
               let currentSlotID = checkpoint.currentSlotID,
@@ -1799,7 +1805,7 @@ final class SyncModel: ObservableObject {
     /// An explicit feedback save is durable even before the first set creates
     /// a session. A live read must still prove the original attempt is safe.
     private func canResumeUnstartedFeedback(_ checkpoint: WorkoutRunnerCheckpoint, session: SessionRow?) -> Bool {
-        guard checkpoint.feedback != nil else { return false }
+        guard checkpoint.feedback != nil || !(session?.exerciseSwaps.entries.isEmpty ?? true) else { return false }
         guard let session else { return checkpoint.sessionID == nil }
         guard checkpointAttemptMatches(checkpoint, serverSession: session) else { return false }
         return session.status == "planned" || (checkpoint.sessionID == nil
@@ -2016,7 +2022,7 @@ final class SyncModel: ObservableObject {
         clearTimedSet()
         observedGroupProgress = [:]
         guard let checkpoint = persistedRunnerCheckpoint,
-              let day = plan?.workouts.first(where: { $0.id == checkpoint.selectedDayID }),
+              let day = runnerDay(id: checkpoint.selectedDayID),
               let index = day.exercises.firstIndex(where: { $0.id == checkpoint.currentSlotID })
         else {
             // A first checkpoint could not be saved, or the live plan no
@@ -2222,6 +2228,7 @@ final class SyncModel: ObservableObject {
             sessions.filter { $0.date == staleSession.date }.map(\.id))
         aliasedSessionIDs.insert(staleSession.id)
         let canonicalSession = SessionRow(
+            exercise_swaps: staleSession.exercise_swaps,
             notes: staleSession.notes, perceived_fatigue: staleSession.perceived_fatigue,
             id: committedSet.session_id,
             date: staleSession.date,
@@ -2320,6 +2327,7 @@ final class SyncModel: ObservableObject {
                 && ($0.isWarmup ? 1 : 0) == warm
                 && $0.isTimed == ex.isTimed
         }.count == 1
+        let approved = approvedExerciseIDs(for: ex, sessionID: sessionID)
         return sets.filter { s in
             guard s.session_id == sessionID, s.deleted_at == nil else { return false }
             // The per-set flag is authoritative after migration 0024. Legacy
@@ -2334,7 +2342,7 @@ final class SyncModel: ObservableObject {
             // trusted — a stale link after a swap or mode flip must never count
             // toward, or complete, the replacement slot.
             if let teid = s.template_exercise_id {
-                return teid == ex.id && s.exercise_id == ex.exercise_id && s.is_warmup == warm
+                return teid == ex.id && approved.contains(s.exercise_id) && s.is_warmup == warm
             }
             return unique && s.exercise_id == ex.exercise_id && s.is_warmup == warm
         }
@@ -2580,7 +2588,7 @@ final class SyncModel: ObservableObject {
     ) -> Bool {
         intent.date == date
             && intent.slotID == ex.id
-            && intent.body.exercise_id == ex.exercise_id
+            && approvedExerciseIDs(for: ex, date: date).contains(intent.body.exercise_id)
             && intent.body.is_warmup == ex.isWarmup
             && intent.body.is_timed == ex.isTimed
     }
@@ -2591,7 +2599,7 @@ final class SyncModel: ObservableObject {
     }
 
     func isSetEntryBlocked(_ ex: TemplateExercise) -> Bool {
-        if hasPendingTerminalIntentForCurrentWorkout || isTerminalMutationInFlight {
+        if hasPendingTerminalIntentForCurrentWorkout || isTerminalMutationInFlight || isSwappingExercise {
             return true
         }
         if setSlotsInFlight.contains(ex.id) { return true }
@@ -4090,6 +4098,83 @@ final class SyncModel: ObservableObject {
 
     // MARK: runner
 
+    private func runnerDay(id: String) -> Workout? {
+        guard let day = plan?.workouts.first(where: { $0.id == id }) else { return nil }
+        let session = todaySession ?? sessions.first { $0.date == todayString }
+        return session?.applyingExerciseSwaps(to: day) ?? day
+    }
+
+    private func approvedExerciseIDs(for ex: TemplateExercise, sessionID: String? = nil,
+                                     date: String? = nil) -> Set<String> {
+        let session = sessionID.flatMap { id in sessions.first { $0.id == id } }
+            ?? sessions.first { $0.date == (date ?? todayString) }
+        guard let base = plan?.workouts.flatMap(\.exercises).first(where: { $0.id == ex.id }),
+              let swap = session?.exerciseSwap(for: base), swap.replacement == ex
+        else { return [ex.exercise_id] }
+        return Set(swap.exercise_ids)
+    }
+
+    var workoutSwapTarget: WorkoutSwapTarget? {
+        guard running, !finished, !timedActive, !isSwappingExercise,
+              !isTerminalMutationInFlight, !hasPendingTerminalIntentForCurrentWorkout,
+              let session = terminalActionTarget, let exercise = currentExercise,
+              !isSetEntryBlocked(exercise), let version = plan?.version else { return nil }
+        return WorkoutSwapTarget(session: session, exercise: exercise,
+            planVersion: version, revision: todaySession?.exerciseSwaps.revision ?? 0)
+    }
+
+    @discardableResult
+    func swapWorkoutExercise(_ target: WorkoutSwapTarget, with exerciseID: String) async -> Bool {
+        guard let jwt = currentJWT, canInitiateBoundFeatureAction,
+              matchesTerminalActionTarget(target.session), running, !finished, !timedActive,
+              !isSwappingExercise, !isTerminalMutationInFlight, !hasPendingTerminalIntentForCurrentWorkout,
+              currentExercise == target.exercise, plan?.version == target.planVersion,
+              (todaySession?.exerciseSwaps.revision ?? 0) == target.revision else { return false }
+        isSwappingExercise = true
+        defer { isSwappingExercise = false }
+        do {
+            var session = todaySession
+            if session == nil {
+                let created = try await setWriteAPI.createSession(date: target.session.date,
+                    workoutID: selectedDayID, expectedAttempt: target.session.sessionAttempt ?? 0,
+                    restartDiscardedAttempt: target.session.restartDiscardedAttempt, jwt: jwt)
+                guard canInitiateBoundFeatureAction, matchesTerminalActionTarget(target.session) else { return false }
+                session = acceptSessionResolution(created)
+                if let session { bindRunnerCheckpoint(to: session) }
+            }
+            guard let session, ["planned", "in_progress"].contains(session.status),
+                  currentExercise == target.exercise, plan?.version == target.planVersion,
+                  session.exerciseSwaps.revision == target.revision,
+                  canInitiateBoundFeatureAction, running, !timedActive else { return false }
+            let response = try await sessionSwapAPI.swapSessionExercise(sessionID: session.id,
+                slotID: target.exercise.id, exerciseID: exerciseID, expectedAttempt: session.attempt ?? 0,
+                expectedVersion: target.planVersion, expectedRevision: target.revision, jwt: jwt)
+            // Persist the acknowledgement through the shared session ordering boundary.
+            // A later refresh failure must not invite the same swap a second time.
+            guard let accepted = acceptSessionResolution(response), canInitiateBoundFeatureAction,
+                  accepted.attempt == session.attempt else { return false }
+            if running, currentExercise?.id == target.exercise.id {
+                skipped.remove(target.exercise.id)
+                seedInputs()
+                rememberGroupProgress()
+                persistRunnerCheckpoint()
+                updateRestActivityAfterRunnerNormalization()
+            }
+            return true
+        } catch {
+            guard canInitiateBoundFeatureAction else { return false }
+            if case APIError.http(409, _) = error {
+                await loadAfterMutation()
+                loadError = "This workout changed. Reopen Swap exercise to choose again."
+            } else if case APIError.http(400, _) = error {
+                loadError = "Choose a replacement that uses the same reps or timer as this exercise."
+            } else {
+                handle(error, jwt: jwt)
+            }
+            return false
+        }
+    }
+
     var exercises: [TemplateExercise] { selectedDay?.exercises ?? [] }
     var currentExercise: TemplateExercise? {
         exercises.indices.contains(exerciseIndex) ? exercises[exerciseIndex] : nil
@@ -4198,8 +4283,9 @@ final class SyncModel: ObservableObject {
               let checkpoint = persistedRunnerCheckpoint,
               intent.date == checkpoint.date, intent.date == todayString,
               intent.expectedAttempt == (todaySession?.attempt ?? checkpoint.sessionAttempt ?? 0),
-              let day = plan?.workouts.first(where: { $0.id == checkpoint.selectedDayID }),
-              let slot = day.exercises.first(where: { $0.id == intent.slotID && $0.exercise_id == intent.exerciseID })
+              let day = runnerDay(id: checkpoint.selectedDayID),
+              let slot = day.exercises.first(where: { $0.id == intent.slotID
+                  && approvedExerciseIDs(for: $0, date: intent.date).contains(intent.exerciseID) })
         else { return nil }
         return slot.group_id
     }
@@ -4242,9 +4328,10 @@ final class SyncModel: ObservableObject {
         guard intent.isDelete, let checkpoint = persistedRunnerCheckpoint,
               checkpoint.date == intent.date, intent.date == todayString,
               intent.expectedAttempt == (todaySession?.attempt ?? checkpoint.sessionAttempt ?? 0),
-              let day = plan?.workouts.first(where: { $0.id == checkpoint.selectedDayID }),
+              let day = runnerDay(id: checkpoint.selectedDayID),
               let sessionID = todaySession?.id ?? checkpoint.sessionID,
-              let slot = day.exercises.first(where: { $0.id == intent.slotID && $0.exercise_id == intent.exerciseID }),
+              let slot = day.exercises.first(where: { $0.id == intent.slotID
+                  && approvedExerciseIDs(for: $0, sessionID: sessionID).contains(intent.exerciseID) }),
               let id = slot.group_id,
               let repair = RunnerGroupRepair(groupID: id, day: day),
               intent.runnerGroupRepair == nil || intent.runnerGroupRepair == repair,
@@ -4284,8 +4371,9 @@ final class SyncModel: ObservableObject {
               sessionID == (todaySession?.id ?? checkpoint.sessionID),
               checkpoint.sessionID == nil || checkpoint.sessionID == sessionID,
               intent.expectedAttempt == (todaySession?.attempt ?? checkpoint.sessionAttempt ?? 0),
-              let day = plan?.workouts.first(where: { $0.id == checkpoint.selectedDayID }),
-              let slot = day.exercises.first(where: { $0.id == intent.slotID && $0.exercise_id == intent.exerciseID }),
+              let day = runnerDay(id: checkpoint.selectedDayID),
+              let slot = day.exercises.first(where: { $0.id == intent.slotID
+                  && approvedExerciseIDs(for: $0, sessionID: sessionID).contains(intent.exerciseID) }),
               let id = slot.group_id,
               intent.runnerGroupRepair == nil || intent.runnerGroupRepair == RunnerGroupRepair(groupID: id, day: day),
               observedGroupID == id || observedGroupProgress[id]?.members.contains(where: { $0.completedIDs.contains(intent.setID) }) == true,
@@ -4515,9 +4603,7 @@ final class SyncModel: ObservableObject {
               let checkpoint = resumableCheckpoint,
               (candidate?.id == checkpoint.sessionID && candidate?.status == "in_progress")
                 || canResumeUnstartedFeedback(checkpoint, session: candidate),
-              let day = plan?.workouts.first(where: {
-                  $0.id == checkpoint.selectedDayID
-              }),
+              let day = runnerDay(id: checkpoint.selectedDayID),
               let currentSlotID = checkpoint.currentSlotID,
               let index = day.exercises.firstIndex(where: {
                   $0.id == currentSlotID
@@ -4596,7 +4682,8 @@ final class SyncModel: ObservableObject {
         guard let ex = currentExercise else { return }
         let input = RunnerInputPolicy.seed(ex,
             previous: comparablePreviousSets(for: ex).last,
-            draft: persistedRunnerCheckpoint?.inputsBySlot?[ex.id] ?? persistedRunnerCheckpoint?.input)
+            draft: persistedRunnerCheckpoint?.inputsBySlot?[ex.id] ?? persistedRunnerCheckpoint?.input,
+            defaultWeight: todaySession?.exerciseSwaps.entries.contains { $0.replacement == ex } == true ? 0 : 45)
         weight = input.weight
         reps = input.reps
         rpe = input.rpe
@@ -4992,6 +5079,7 @@ final class SyncModel: ObservableObject {
     /// session (so it is NOT requeued, #3) and advances to the next
     /// unresolved exercise; ends the workout if none remain.
     func skip() {
+        guard !isSwappingExercise else { return }
         // Skip is a terminal decision for the rendered hold even when there is
         // no next slot and `jump` therefore never calls `seedInputs`.
         clearTimedSet()
@@ -5068,6 +5156,7 @@ final class SyncModel: ObservableObject {
     }
 
     func finishWorkout() async {
+        guard !isSwappingExercise else { return }
         guard canInitiateBoundFeatureAction, currentJWT != nil else { return }
         let date = todaySession?.date ?? todayString
         if terminalOutbox.intent(for: date) == nil {
@@ -5122,7 +5211,7 @@ final class SyncModel: ObservableObject {
     func finishResolvedWorkout(
         expected target: WorkoutTerminalActionTarget
     ) async {
-        guard matchesTerminalActionTarget(target) else { return }
+        guard !isSwappingExercise, matchesTerminalActionTarget(target) else { return }
         await finishResolvedWorkout()
     }
 
@@ -5133,6 +5222,7 @@ final class SyncModel: ObservableObject {
     /// the runner/Live Activity don't linger; `load()` then pulls the
     /// vanished state. Restarting the day creates a fresh session.
     func discardWorkout() async {
+        guard !isSwappingExercise else { return }
         guard canInitiateBoundFeatureAction, currentJWT != nil else { return }
         let date = todaySession?.date ?? todayString
         let intent = WorkoutTerminalIntent(
@@ -5161,7 +5251,7 @@ final class SyncModel: ObservableObject {
     }
 
     func discardWorkout(expected target: WorkoutTerminalActionTarget) async {
-        guard matchesTerminalActionTarget(target) else { return }
+        guard !isSwappingExercise, matchesTerminalActionTarget(target) else { return }
         await discardWorkout()
     }
 

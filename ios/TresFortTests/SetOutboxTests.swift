@@ -13536,3 +13536,71 @@ extension SetOutboxTests {
         }
     }
 }
+
+extension SetOutboxTests {
+    func testSignOutCancelsActiveAndPendingTimedAlerts() async {
+        for completeBeforeSignOut in [false, true] {
+            let defaults = defaults(), api = SetWriteAPIStub(), hold = exercise(timed: true)
+            let auth = auth(defaults: defaults)
+            api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+            var clock = fixedDate
+            var cancellations = 0
+            let backgroundAttempt = completeBeforeSignOut
+                ? expectation(description: "Completion awaits delivery") : nil
+            let model = SyncModel(auth: auth, setWriteAPI: api, defaults: defaults,
+                now: { clock }, timedCuePlayer: { _, _ in false },
+                timedCueFinisher: { _, _ in
+                    backgroundAttempt?.fulfill()
+                    return false
+                },
+                timedNotificationCanceller: {
+                    cancellations += 1
+                    RestCue.cancelTimedNotification()
+                })
+            prepare(model, exercise: hold, session: session(), running: true)
+            model.setHoldDuration(8)
+            model.startTimedSet(expected: hold, expectedSetNumber: 1)
+            if completeBeforeSignOut {
+                clock = fixedDate.addingTimeInterval(8.1)
+                await model.finishTimedSetIfDue()
+                await fulfillment(of: [backgroundAttempt!], timeout: 3)
+            }
+            XCTAssertEqual(cancellations, 0)
+
+            auth.signOut()
+
+            XCTAssertEqual(cancellations, 1, "Cancel even after the timer has committed in the background")
+            XCTAssertFalse(model.timedActive)
+            XCTAssertNil(model.timedEndDate)
+            XCTAssertNotNil(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults))
+            await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(30))
+            XCTAssertEqual(cancellations, 1)
+        }
+    }
+
+    func testRetiredTimerModelCannotCancelReplacementOwnersAlertAtSignOut() {
+        let defaults = defaults(), hold = exercise(timed: true), active = session()
+        let auth = auth(defaults: defaults)
+        var oldCancellations = 0, replacementCancellations = 0
+        let older = SyncModel(auth: auth, defaults: defaults, now: { self.fixedDate },
+            timedNotificationCanceller: { oldCancellations += 1 })
+        prepare(older, exercise: hold, session: active, running: true)
+        older.startTimedSet(expected: hold, expectedSetNumber: 1)
+        let replacement = SyncModel(auth: auth, defaults: defaults, now: { self.fixedDate },
+            timedNotificationCanceller: {
+                replacementCancellations += 1
+                RestCue.cancelTimedNotification()
+            })
+        replacement.replaceState(with: state(session: active, sets: [], exercise: hold))
+        replacement.resumeWorkout()
+        replacement.startTimedSet(expected: hold, expectedSetNumber: 1)
+        XCTAssertTrue(replacement.timedActive)
+
+        auth.signOut()
+
+        XCTAssertEqual(oldCancellations, 0)
+        XCTAssertEqual(replacementCancellations, 1)
+        XCTAssertFalse(older.timedActive)
+        XCTAssertFalse(replacement.timedActive)
+    }
+}

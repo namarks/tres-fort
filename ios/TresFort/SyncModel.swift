@@ -188,6 +188,7 @@ final class SyncModel: ObservableObject {
     private var pendingTimedCueGeneration: Int?
     private let timedCuePlayer: @MainActor (TimedSetCountdown.Cue, Date) -> Bool
     private let timedCueFinisher: @MainActor (Int, () -> Bool) async -> Bool
+    private let timedNotificationCanceller: @MainActor () -> Void
     @Published var restEndDate: Date?
     @Published var restExercise: String = ""
     @Published var restTotal: Int = 0
@@ -369,6 +370,9 @@ final class SyncModel: ObservableObject {
         timedCueFinisher: @escaping @MainActor (Int, () -> Bool) async -> Bool = { generation, canFinish in
             await RestCue.finishTimedCueAfterResume(generation: generation, when: canFinish)
         },
+        timedNotificationCanceller: @escaping @MainActor () -> Void = {
+            RestCue.cancelTimedNotification()
+        },
         restNotificationCanceller: @escaping @MainActor () -> Void = {
             RestCue.cancelNotification()
         }
@@ -376,6 +380,7 @@ final class SyncModel: ObservableObject {
         self.auth = auth
         self.timedCuePlayer = timedCuePlayer
         self.timedCueFinisher = timedCueFinisher
+        self.timedNotificationCanceller = timedNotificationCanceller
         self.accountID = auth.userID
         self.featureSessionEpoch = auth.featureSessionEpoch
         self.setWriteAPI = setWriteAPI
@@ -1956,6 +1961,12 @@ final class SyncModel: ObservableObject {
         // for the replacement model that inherits the durable outbox.
         cancelWorkoutWriteRetry(
             resetAttempt: true, clearServerDeadline: false)
+        // Clear both an active hold and a completion awaiting OS delivery
+        // before this account's feature epoch is revoked. A retired model
+        // must leave the replacement owner's process-shared alert alone.
+        if canControlSharedRestArtifacts { timedNotificationCanceller() }
+        pendingTimedCueGeneration = nil
+        clearTimedSet(cancelCue: false)
         guard canControlSharedRestArtifacts else {
             relinquishLocalRest()
             return

@@ -66,13 +66,21 @@ preparation and TestFlight availability do not mean public release.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P4 | gated_by | external:app-review-access-activation | The replacement reviewer login needs an owner-managed credential and separately authorized deployment/distribution before its private App Store fields can be completed. |
+| P4 | gated_by | external:app-review-access-activation | The replacement reviewer login needs an owner-managed credential, signing-key access on the release Mac, and separately authorized deployment/distribution before its private App Store fields can be completed. |
 
 ## Next step
 
-**Now (@agent):** Finish the approved [reviewer login](reviewer-access.md), verify
-its isolation and account lifecycle, obtain exact-head independent review and all
-required CI, and prepare the replacement release. App Store Connect rejected
+**Now (@agent):** Finish exact-head independent review and required CI for the
+approved [reviewer login](reviewer-access.md) in [PR #187](https://github.com/namarks/tres-fort/pull/187),
+then merge and complete replacement-release preparation. Local checks passed all
+1,014 backend tests, 78 authentication model tests, the reviewer simulator journey,
+typecheck, plan graph, website/uploader/query-plan checks, and a Worker dry run.
+The Release archive compiled as version 1.0 (39), iPhone-only, with its privacy
+manifest; it is **unsigned and not uploadable**. macOS rejected signing-key use
+with `errSecInternalComponent` and reported `User interaction is not allowed` on
+the Mac mini. The owner needs to restore keychain access there; no credential
+was requested in chat or changed. The review's sample-schedule finding is fixed
+with a real-calendar projection assertion and awaits fresh review. App Store Connect rejected
 **Add for Review** because the required reviewer username/password were blank;
 the previous Sign in with Apple instructions did not satisfy that form. The owner
 approved adding a dedicated sample login and preparing a new build. Activation

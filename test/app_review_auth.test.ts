@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import { decode } from 'hono/jwt';
 import { APP_REVIEW_SUB, APP_REVIEW_USERNAME } from '../src/appReview';
 import { issueAppJwt } from '../src/auth';
-import { ensureAppReviewUser, ensureOwnerUser, findOwnerRow, getPlanTree, getActivePlan, createGroup, createInvite, isBootstrapClaimEligible } from '../src/db';
+import { ensureAppReviewUser, ensureOwnerUser, findOwnerRow, getPlanTree, getProjectedCalendar, createGroup, createInvite, isBootstrapClaimEligible } from '../src/db';
 import { createAuthRoutes } from '../src/routes/auth';
 import { apiRoutes } from '../src/routes/api';
 import { intervalsAuthRoutes } from '../src/routes/intervalsAuth';
@@ -52,10 +52,13 @@ describe('dedicated reviewer authentication', () => {
     expect(a.user.id).toBe(b.user.id);
     expect(a.user.id).not.toBe(owner.id);
     expect(decode(a.jwt).payload.app_review).toBe(true);
-    const plan = (await getActivePlan(env.DB, a.user.id))!;
     const tree = await getPlanTree(env.DB, a.user.id);
     expect(tree!.workouts).toHaveLength(1);
     expect(tree!.workouts[0]!.exercises).toHaveLength(3);
+    const calendar = await getProjectedCalendar(env.DB, a.user.id, '2026-05-18', '2026-05-24', '2026-05-18');
+    expect(calendar.map(cell => cell.status)).toEqual(['projected', 'rest', 'projected', 'rest', 'projected', 'rest', 'rest']);
+    expect(calendar.filter(cell => cell.status === 'projected').map(cell => cell.workout_id))
+      .toEqual(Array(3).fill(tree!.workouts[0]!.id));
     expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM plan_snapshots WHERE user_id=?1').bind(a.user.id).first<number>('n')).toBe(1);
     expect((await request('/api/me/profile','PATCH',{display_name:'Review edits'},a.jwt)).status).toBe(200);
     await login();

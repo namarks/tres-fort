@@ -900,7 +900,9 @@ export async function ensureAppReviewUser(db: D1Database): Promise<User | null> 
       .bind(userId, APP_REVIEW_SUB, ts),
     sql.prepare(`INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at)
       SELECT ?1,id,'Sample training','active',1,?3,?4,?4 FROM users WHERE id=?2`)
-      .bind(planId, userId, JSON.stringify({ schedule: { mon: workoutId, wed: workoutId, fri: workoutId } }), ts),
+      .bind(planId, userId, JSON.stringify({ schedule: { version: 1, week: {
+        mon: workoutId, tue: null, wed: workoutId, thu: null, fri: workoutId, sat: null, sun: null,
+      } } }), ts),
     sql.prepare(`INSERT INTO workouts (id,plan_id,name,day_label,order_index,created_at,updated_at)
       SELECT ?1,id,'Sample strength','Strength A',0,?3,?3 FROM plans WHERE id=?2`)
       .bind(workoutId, planId, ts),

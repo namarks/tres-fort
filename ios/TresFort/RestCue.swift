@@ -168,6 +168,18 @@ final class RestNotificationCoordinator {
         }
     }
 
+    var currentGeneration: Int { generation }
+
+    /// A foreground catch-up can wait for notification evidence. Recheck both
+    /// request identity and lifecycle after that await before cancelling it.
+    func finish(generation expected: Int, when canFinish: () -> Bool) async -> Bool? {
+        guard generation == expected else { return nil }
+        let delivered = await notificationWasDelivered()
+        guard generation == expected, canFinish() else { return nil }
+        cancel()
+        return delivered
+    }
+
     func waitForSchedulingForTests() async {
         await scheduleTask?.value
         await cleanupTask?.value
@@ -231,11 +243,17 @@ enum RestCue {
     private static let timedNotificationCoordinator = RestNotificationCoordinator(
         center: SystemRestNotificationCenter(), prefix: "timed-set-cue")
 
-    static func scheduleTimedNotification(at end: Date) {
+    static func scheduleTimedNotification(at end: Date) -> Int {
         if enabled { timedNotificationCoordinator.schedule(at: end, timedSet: true) }
+        return timedNotificationCoordinator.currentGeneration
     }
-    static var preserveTimedNotification: Bool {
-        UIApplication.shared.applicationState != .active
+
+    static func finishTimedCueAfterResume(generation: Int, when canFinish: () -> Bool) async -> Bool {
+        guard let delivered = await timedNotificationCoordinator.finish(
+            generation: generation,
+            when: { UIApplication.shared.applicationState == .active && canFinish() }) else { return false }
+        if !delivered { _ = playTimedTone(.complete) }
+        return true
     }
     static func cancelTimedNotification() { timedNotificationCoordinator.cancel() }
 
@@ -308,18 +326,23 @@ enum RestCue {
         return player
     }
 
-    static func playTimedCue(_ cue: TimedSetCountdown.Cue, deadline: Date) {
-        guard enabled, UIApplication.shared.applicationState == .active else { return }
+    static func playTimedCue(_ cue: TimedSetCountdown.Cue, deadline: Date) -> Bool {
         prepareTimedCues()
-        // If the phone was locked across zero, its notification owns the end
-        // tone. Never duplicate it on a fast foreground return either.
-        if cue == .complete, activeSince > deadline { return }
+        // A timer that crossed zero while inactive needs notification delivery
+        // evidence first. A continuously foregrounded timer sounds immediately,
+        // even when the main actor was busy past its deadline.
+        if cue == .complete, activeSince > deadline { return false }
+        return playTimedTone(cue)
+    }
+
+    private static func playTimedTone(_ cue: TimedSetCountdown.Cue) -> Bool {
+        guard enabled, UIApplication.shared.applicationState == .active else { return false }
         let player = cue == .complete ? completionPlayer : tickPlayer
-        guard let player else { return }
+        guard let player else { return false }
         let token = activateAudio()
         player.currentTime = 0
-        player.play()
-        if cue == .complete {
+        let played = player.play()
+        if played, cue == .complete {
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         }
         // Keep music ducked continuously between the final five beats. A
@@ -327,6 +350,7 @@ enum RestCue {
         // cut off its audio or restore the music prematurely.
         releaseAudio(after: cue == .complete ? player.duration + 0.1 : 1.2,
                      generation: token)
+        return played
     }
 
     private static func activateAudio() -> Int {

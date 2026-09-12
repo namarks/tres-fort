@@ -33,9 +33,9 @@ final class TimedSetCountdownTests: XCTestCase {
         XCTAssertEqual(countdown.cue(at: end.addingTimeInterval(0.05)), .complete)
     }
 
-    func testOverdueResumeNeverReplaysAnAlarm() {
+    func testDelayedForegroundCompletionIsStillAvailableOnce() {
         var countdown = TimedSetCountdown(end: end)
-        XCTAssertNil(countdown.cue(at: end.addingTimeInterval(10)))
+        XCTAssertEqual(countdown.cue(at: end.addingTimeInterval(10)), .complete)
         XCTAssertNil(countdown.cue(at: end.addingTimeInterval(11)))
     }
 

@@ -1,7 +1,8 @@
 import Foundation
 
 /// Deadline-based cue selection: late wakeups skip missed beats instead of
-/// playing a burst, and reopening an expired timer never replays its alarm.
+/// playing a burst. Completion delivery uses app lifecycle and notification
+/// evidence, since a slow foreground task still needs to sound the final tone.
 struct TimedSetCountdown {
     enum Cue: Equatable {
         case tick(Int)
@@ -19,9 +20,6 @@ struct TimedSetCountdown {
         let second = max(0, Int(ceil(remaining)))
         guard second < lastSecond else { return nil }
         lastSecond = second
-        // The completion cue is useful at the deadline, not after returning
-        // from a suspended app. The notification covers that background case.
-        guard remaining > -1 else { return nil }
         return second == 0 ? .complete : .tick(second)
     }
 

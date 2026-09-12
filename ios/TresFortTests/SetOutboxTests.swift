@@ -13203,7 +13203,10 @@ extension SetOutboxTests {
             if wasDelivered {
                 center.installDeliveredForTests(center.pendingIDs[0])
             }
-            let delivered = await coordinator.finish(generation: coordinator.currentGeneration, when: { true })
+            var playbackAttempts = 0
+            let delivered = await coordinator.finish(generation: coordinator.currentGeneration,
+                when: { true }, playFallback: { playbackAttempts += 1; return true })
+            XCTAssertEqual(playbackAttempts, wasDelivered ? 0 : 1)
             // Only false authorizes a replacement foreground tone; true
             // confirms the OS already sounded it and prevents replay.
             XCTAssertEqual(delivered, wasDelivered)
@@ -13327,5 +13330,26 @@ extension SetOutboxTests {
         }
         XCTAssertTrue(model.timedActive)
         XCTAssertEqual(model.timedStartDate, clock)
+    }
+}
+
+
+extension SetOutboxTests {
+    func testFailedFallbackPlaybackRetainsNotificationUntilSuccessfulRetry() async {
+        let center = RestNotificationCenterStub()
+        let coordinator = RestNotificationCoordinator(center: center, prefix: "timed-set-cue")
+        coordinator.schedule(at: Date().addingTimeInterval(30), timedSet: true)
+        await coordinator.waitForSchedulingForTests()
+        let pending = center.pendingIDs
+        let generation = coordinator.currentGeneration
+        let failed = await coordinator.finish(generation: generation,
+            when: { true }, playFallback: { false })
+        XCTAssertNil(failed)
+        XCTAssertEqual(center.pendingIDs, pending)
+        XCTAssertEqual(coordinator.currentGeneration, generation)
+        let retried = await coordinator.finish(generation: generation,
+            when: { true }, playFallback: { true })
+        XCTAssertEqual(retried, false)
+        XCTAssertTrue(center.pendingIDs.isEmpty)
     }
 }

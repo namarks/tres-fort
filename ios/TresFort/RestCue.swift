@@ -172,10 +172,14 @@ final class RestNotificationCoordinator {
 
     /// A foreground catch-up can wait for notification evidence. Recheck both
     /// request identity and lifecycle after that await before cancelling it.
-    func finish(generation expected: Int, when canFinish: () -> Bool) async -> Bool? {
+    func finish(generation expected: Int, when canFinish: () -> Bool,
+                playFallback: () -> Bool = { true }) async -> Bool? {
         guard generation == expected else { return nil }
         let delivered = await notificationWasDelivered()
         guard generation == expected, canFinish() else { return nil }
+        // Do not erase the OS backstop if AVAudioPlayer cannot start. An
+        // already-delivered notification needs no replacement playback.
+        guard delivered || playFallback() else { return nil }
         cancel()
         return delivered
     }
@@ -249,11 +253,13 @@ enum RestCue {
     }
 
     static func finishTimedCueAfterResume(generation: Int, when canFinish: () -> Bool) async -> Bool {
-        guard let delivered = await timedNotificationCoordinator.finish(
+        let resolved = await timedNotificationCoordinator.finish(
             generation: generation,
-            when: { UIApplication.shared.applicationState == .active && canFinish() }) else { return false }
-        if !delivered { _ = playTimedTone(.complete) }
-        return true
+            when: { UIApplication.shared.applicationState == .active && canFinish() },
+            playFallback: { !enabled || playTimedTone(.complete) })
+        // Deliberately muted cues are resolved, so turning audio off never
+        // blocks the next set. An actual playback failure retains the alert.
+        return resolved != nil
     }
     static func cancelTimedNotification() { timedNotificationCoordinator.cancel() }
 

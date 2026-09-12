@@ -13291,7 +13291,7 @@ extension SetOutboxTests {
 
 
 extension SetOutboxTests {
-    func testNewTimedSetWaitsForPreviousBackgroundNotificationHandoff() async {
+    func testNewTimedSetChecksPreviousHandoffThenCanAcknowledgeFailedAudio() async {
         let defaults = defaults(), api = SetWriteAPIStub(), hold = exercise(timed: true)
         api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
         var clock = fixedDate
@@ -13309,7 +13309,7 @@ extension SetOutboxTests {
                 }
                 resolving.fulfill()
                 await release.wait()
-                return true
+                return false // Simulated AVAudioPlayer failure after delivery lookup.
             })
         prepare(model, exercise: hold, session: session(), running: true)
         model.setHoldDuration(8)

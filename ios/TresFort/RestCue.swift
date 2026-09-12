@@ -168,6 +168,12 @@ final class RestNotificationCoordinator {
         }
     }
 
+    func cancel(generation expected: Int) -> Bool {
+        guard generation == expected else { return false }
+        cancel()
+        return true
+    }
+
     var currentGeneration: Int { generation }
 
     /// A foreground catch-up can wait for notification evidence. Recheck both
@@ -262,6 +268,9 @@ enum RestCue {
         return resolved != nil
     }
     static func cancelTimedNotification() { timedNotificationCoordinator.cancel() }
+    static func acknowledgeTimedCompletion(generation: Int) -> Bool {
+        timedNotificationCoordinator.cancel(generation: generation)
+    }
 
     /// Honors the @AppStorage toggle (absent key → default ON).
     static var enabled: Bool {

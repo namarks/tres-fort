@@ -1964,9 +1964,12 @@ final class SyncModel: ObservableObject {
         // Clear both an active hold and a completion awaiting OS delivery
         // before this account's feature epoch is revoked. A retired model
         // must leave the replacement owner's process-shared alert alone.
-        // With no live owner (for example after a process restart), cancel()
-        // also discovers prefix-matched alerts left in Notification Center.
-        if canInitiateBoundFeatureAction, !runnerArtifactsOwnedByOther {
+        // An unresumed model after process restart may clean orphaned alerts.
+        // A running, retired model must not take that path just because the
+        // current owner's boundary callback ran first and released ownership.
+        let canCleanOrphanedTimedAlerts = !running && canInitiateBoundFeatureAction
+            && !runnerArtifactsOwnedByOther
+        if canControlSharedRestArtifacts || canCleanOrphanedTimedAlerts {
             timedNotificationCanceller()
         }
         pendingTimedCueGeneration = nil
@@ -6588,6 +6591,7 @@ extension SyncModel {
     func refreshTimerCues() {
         guard canInitiateBoundFeatureAction, canControlSharedRestArtifacts else { return }
         if !RestCue.enabled {
+            timedCueGeneration = nil
             pendingTimedCueGeneration = nil
             RestCue.cancelNotification()
             RestCue.cancelTimedNotification()

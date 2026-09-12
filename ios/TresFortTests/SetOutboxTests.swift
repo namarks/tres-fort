@@ -13626,3 +13626,43 @@ extension SetOutboxTests {
         XCTAssertTrue(center.deliveredIDs.isEmpty)
     }
 }
+
+extension SetOutboxTests {
+    func testDisablingSoundsDuringHoldDoesNotBlockNextTimedSet() async {
+        let preference = UserDefaults.standard.object(forKey: RestCue.defaultsKey)
+        defer { UserDefaults.standard.set(preference, forKey: RestCue.defaultsKey) }
+        UserDefaults.standard.set(true, forKey: RestCue.defaultsKey)
+        let defaults = defaults(), api = SetWriteAPIStub(), hold = exercise(timed: true, targetSets: 3)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        var clock = fixedDate
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { clock },
+            timedCuePlayer: { _, _ in RestCue.enabled },
+            timedCueFinisher: { _, _ in
+                XCTFail("A deliberately muted or immediately played completion needs no handoff")
+                return false
+            })
+        prepare(model, exercise: hold, session: session(), running: true)
+        model.setHoldDuration(8)
+        model.startTimedSet(expected: hold, expectedSetNumber: 1)
+        UserDefaults.standard.set(false, forKey: RestCue.defaultsKey)
+        model.refreshTimerCues()
+        clock = fixedDate.addingTimeInterval(8.1)
+        await model.finishTimedSetIfDue()
+        await model.drainSetOutbox()
+        // The runner's automatic send can already own the drain. Wait for
+        // that in-flight write to settle before simulating the next tap.
+        for _ in 0..<100 where model.isSetEntryBlocked(hold) { await Task.yield() }
+        XCTAssertFalse(model.isSetEntryBlocked(hold))
+
+        model.startTimedSet(expected: hold, expectedSetNumber: model.currentPhysicalSetNumber)
+        XCTAssertTrue(model.timedActive, "Turning sounds off must not retain a canceled delivery generation")
+
+        UserDefaults.standard.set(true, forKey: RestCue.defaultsKey)
+        model.refreshTimerCues()
+        clock = fixedDate.addingTimeInterval(16.2)
+        await model.finishTimedSetIfDue()
+        XCTAssertFalse(model.timedActive)
+        XCTAssertEqual(model.setOutbox.pending.count, 2)
+    }
+}

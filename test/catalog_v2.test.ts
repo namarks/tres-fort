@@ -1,6 +1,7 @@
 /**
- * 0020 (demo_slug backfill), 0021 (v2 catalog expansion), and 0033
- * (gymnastic-strength expansion) contracts.
+ * 0020 (demo_slug backfill), 0021 (v2 catalog expansion), 0033
+ * (gymnastic-strength expansion) and 0049 (thruster / dumbbell push press /
+ * renegade row) contracts.
  *
  *  - 0020 adds a nullable demo_slug column and backfills 127 of the 138
  *    pre-existing rows from free-exercise-db ids. The 11 unmapped rows
@@ -101,14 +102,15 @@ describe('0020 demo_slug backfill', () => {
 });
 
 describe('0021 catalog v2 (bodyweight + unilateral expansion)', () => {
-  it('catalog grows to 276 rows after cardio and gymnastic-strength seeds', async () => {
+  it('catalog grows to 280 rows after cardio, gymnastic-strength and loaded-conditioning seeds', async () => {
     const { count } = (await env.DB.prepare(
       'SELECT COUNT(*) AS count FROM exercises',
     ).first<{ count: number }>())!;
     // ex_kb_swing re-listed as INSERT OR IGNORE no-op — net 108 new at 0021.
     // Migrations apply cumulatively, so the absolute total also includes the
-    // 8 erg/cardio rows seeded by 0026 and 22 gymnastic-strength rows in 0033.
-    expect(count).toBe(276);
+    // 8 erg/cardio rows seeded by 0026, 22 gymnastic-strength rows in 0033
+    // and 4 thruster / dumbbell push press / renegade row rows in 0049.
+    expect(count).toBe(280);
   });
 
   it('adds priority bodyweight at-home rows', async () => {
@@ -426,5 +428,136 @@ describe('0033 gymnastic-strength catalog', () => {
       'SELECT COUNT(*) AS c FROM exercises',
     ).first<{ c: number }>())!.c;
     expect(after).toBe(before);
+  });
+});
+
+describe('0049 thruster, dumbbell push press and renegade row catalog', () => {
+  const rows: Array<{
+    id: string;
+    name: string;
+    primary_muscle: string;
+    modality: string;
+    laterality: string;
+    load_mode: string;
+  }> = [
+    // The barbell thruster is the base movement the dumbbell variant is
+    // described against; one bar means the number is the whole load.
+    { id: 'ex_thruster', name: 'Thruster', primary_muscle: 'quads', modality: 'barbell', laterality: 'bilateral', load_mode: 'total' },
+    // Two dumbbells racked at the shoulders: the number is ONE dumbbell.
+    { id: 'ex_db_thruster', name: 'Dumbbell Thruster', primary_muscle: 'quads', modality: 'dumbbell', laterality: 'bilateral', load_mode: 'per_hand' },
+    // Rowed one arm at a time from a plank on two dumbbells: reps are per
+    // side, and the load is 'total' like the one-arm dumbbell row because
+    // only the rowed dumbbell moves (the other is a stationary support).
+    // per_hand would double the load on top of the per-side rep doubling.
+    // Resisting rotation is the point, so it rolls up as core work.
+    { id: 'ex_renegade_row', name: 'Renegade Row', primary_muscle: 'core', modality: 'dumbbell', laterality: 'unilateral', load_mode: 'total' },
+    { id: 'ex_db_push_press', name: 'Dumbbell Push Press', primary_muscle: 'shoulders', modality: 'dumbbell', laterality: 'bilateral', load_mode: 'per_hand' },
+  ];
+
+  it('adds the four rows with implement, per-side and load-mode semantics', async () => {
+    for (const expected of rows) {
+      const row = await env.DB.prepare(
+        'SELECT id,name,primary_muscle,modality,unit,laterality,load_mode,demo_slug,created_at FROM exercises WHERE id = ?1',
+      )
+        .bind(expected.id)
+        .first<typeof expected & { unit: string; demo_slug: string | null; created_at: number }>();
+      expect(row, `${expected.id} missing`).toBeTruthy();
+      expect(row!.name, `${expected.id} name`).toBe(expected.name);
+      expect(row!.primary_muscle, `${expected.id} primary_muscle`).toBe(expected.primary_muscle);
+      expect(row!.modality, `${expected.id} modality`).toBe(expected.modality);
+      expect(row!.unit, `${expected.id} unit`).toBe('lb');
+      expect(row!.laterality, `${expected.id} laterality`).toBe(expected.laterality);
+      expect(row!.load_mode, `${expected.id} load_mode`).toBe(expected.load_mode);
+      // free-exercise-db only has kettlebell / barbell push-press variants;
+      // no cross-implement demo pairing, the demo sheet shows the cue card.
+      expect(row!.demo_slug, `${expected.id} demo_slug`).toBeNull();
+      expect(row!.created_at, `${expected.id} created_at`).toBe(0);
+    }
+  });
+
+  it('resolves canonical names, plurals and DB abbreviations', async () => {
+    const cases: Array<[string, string]> = [
+      ['Thruster', 'ex_thruster'],
+      ['thrusters', 'ex_thruster'],
+      ['barbell thruster', 'ex_thruster'],
+      ['BB Thruster', 'ex_thruster'],
+      ['front squat to press', 'ex_thruster'],
+      ['Dumbbell Thruster', 'ex_db_thruster'],
+      ['dumbbell thrusters', 'ex_db_thruster'],
+      ['DB thruster', 'ex_db_thruster'],
+      ['db thrusters', 'ex_db_thruster'],
+      ['Renegade Row', 'ex_renegade_row'],
+      ['renegade rows', 'ex_renegade_row'],
+      ['plank row', 'ex_renegade_row'],
+      ['plank rows', 'ex_renegade_row'],
+      ['dumbbell renegade row', 'ex_renegade_row'],
+      ['DB renegade row', 'ex_renegade_row'],
+      ['Dumbbell Push Press', 'ex_db_push_press'],
+      ['dumbbell push presses', 'ex_db_push_press'],
+      ['DB push press', 'ex_db_push_press'],
+      ['db push presses', 'ex_db_push_press'],
+    ];
+    for (const [query, exId] of cases) {
+      const exercise = await resolveExercise(env.DB, query);
+      expect((exercise as { id: string } | null)?.id, query).toBe(exId);
+    }
+  });
+
+  it('leaves the legacy press and row phrases on their original rows', async () => {
+    // REGRESSION GUARD: the new rows must not capture the phrases lifters
+    // already use for the barbell push press, the dumbbell bench press, the
+    // barbell row or the one-arm dumbbell row.
+    const cases: Array<[string, string]> = [
+      ['push press', 'ex_push_press'],
+      ['dumbbell press', 'ex_db_press'],
+      ['db press', 'ex_db_press'],
+      ['press', 'ex_ohp'],
+      ['db ohp', 'ex_db_ohp'],
+      ['row', 'ex_barbell_row'],
+      ['db row', 'ex_one_arm_db_row'],
+      ['dumbbell row', 'ex_one_arm_db_row'],
+    ];
+    for (const [query, exId] of cases) {
+      const exercise = await resolveExercise(env.DB, query);
+      expect((exercise as { id: string } | null)?.id, query).toBe(exId);
+    }
+  });
+
+  it('list_exercises (MCP) surfaces the new rows with their load semantics', async () => {
+    const all = await call('list_exercises', {});
+    const byId: Record<string, { load_mode?: string; laterality?: string; demo_slug?: string | null }> =
+      Object.fromEntries(all.map((e: { id: string }) => [e.id, e]));
+    expect(byId['ex_renegade_row']).toBeTruthy();
+    expect(byId['ex_renegade_row']!.laterality).toBe('unilateral');
+    expect(byId['ex_renegade_row']!.load_mode).toBe('total');
+    expect(byId['ex_db_push_press']!.load_mode).toBe('per_hand');
+    expect(byId['ex_db_thruster']!.load_mode).toBe('per_hand');
+    expect(byId['ex_thruster']!.load_mode).toBe('total');
+    expect(byId['ex_db_thruster']!.demo_slug).toBeNull();
+  });
+
+  it('re-running 0049 is a no-op', async () => {
+    const before = (await env.DB.prepare(
+      'SELECT COUNT(*) AS c FROM exercises',
+    ).first<{ c: number }>())!.c;
+    const migration = (
+      env.TEST_MIGRATIONS as Array<{ name: string; queries: string[] }>
+    ).find((candidate) => candidate.name.includes('0049'));
+    expect(migration, '0049 migration missing').toBeTruthy();
+    for (const query of migration!.queries) await env.DB.prepare(query).run();
+    const after = (await env.DB.prepare(
+      'SELECT COUNT(*) AS c FROM exercises',
+    ).first<{ c: number }>())!.c;
+    expect(after).toBe(before);
+    const thruster = await env.DB.prepare(
+      "SELECT aliases FROM exercises WHERE id = 'ex_thruster'",
+    ).first<{ aliases: string }>();
+    expect(JSON.parse(thruster!.aliases)).toEqual([
+      'thruster',
+      'thrusters',
+      'barbell thruster',
+      'bb thruster',
+      'front squat to press',
+    ]);
   });
 });

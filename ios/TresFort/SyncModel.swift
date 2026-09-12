@@ -4624,6 +4624,19 @@ final class SyncModel: ObservableObject {
               !hasPendingTerminalIntentForCurrentWorkout,
               !isSetEntryBlocked(ex)
         else { return }
+        if pendingTimedCueGeneration != nil {
+            // Resolve the previous timer's notification before scheduling a
+            // replacement in that same OS slot. A quick new START can precede
+            // MainTabView's asynchronous foreground recovery.
+            Task { [weak self] in
+                guard let self else { return }
+                await self.finishPendingTimedCue()
+                guard self.pendingTimedCueGeneration == nil else { return }
+                self.startTimedSet(expected: renderedExercise,
+                    expectedSetNumber: expectedSetNumber, at: start)
+            }
+            return
+        }
         if restEndDate != nil { skipRest() }
         skipped.remove(ex.id)
         timedControlID = UUID().uuidString

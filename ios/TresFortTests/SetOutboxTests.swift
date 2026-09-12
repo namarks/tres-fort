@@ -13285,3 +13285,47 @@ extension SetOutboxTests {
         XCTAssertEqual(deliveries, 1)
     }
 }
+
+
+extension SetOutboxTests {
+    func testNewTimedSetWaitsForPreviousBackgroundNotificationHandoff() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), hold = exercise(timed: true)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        var clock = fixedDate
+        var isForeground = false
+        let backgroundAttempt = expectation(description: "Background completion retained")
+        let resolving = expectation(description: "New start checks old delivery")
+        let release = SetAsyncLatch()
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { clock }, timedCuePlayer: { _, _ in false },
+            timedCueFinisher: { _, canFinish in
+                XCTAssertTrue(canFinish())
+                if !isForeground {
+                    backgroundAttempt.fulfill()
+                    return false
+                }
+                resolving.fulfill()
+                await release.wait()
+                return true
+            })
+        prepare(model, exercise: hold, session: session(), running: true)
+        model.setHoldDuration(8)
+        model.startTimedSet(expected: hold, expectedSetNumber: 1)
+        clock = fixedDate.addingTimeInterval(8.1)
+        await model.finishTimedSetIfDue()
+        await fulfillment(of: [backgroundAttempt], timeout: 3)
+        await model.drainSetOutbox()
+        XCTAssertFalse(model.isSetEntryBlocked(hold))
+        isForeground = true
+        model.startTimedSet(expected: hold, expectedSetNumber: model.currentPhysicalSetNumber)
+        await fulfillment(of: [resolving], timeout: 3)
+        XCTAssertFalse(model.timedActive, "The replacement must not erase the unresolved alert")
+        await release.open()
+        for _ in 0..<100 {
+            if model.timedActive { break }
+            await Task.yield()
+        }
+        XCTAssertTrue(model.timedActive)
+        XCTAssertEqual(model.timedStartDate, clock)
+    }
+}

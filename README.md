@@ -1,16 +1,16 @@
 # tres-fort
 
-An AI-coached lifting system. **Claude is the coach** — it adapts your training plan
-through conversation (via MCP). A **native iOS app** is the gym
+An AI-coached lifting system. **Bring your own AI coach** — connect Codex, Claude,
+or another compatible AI app to adapt your training plan through MCP. A **native iOS app** is the gym
 executor: you run the workout and log sets there. A **Cloudflare Worker + D1**
-is the single source of truth that both Claude and the app read and write.
+is the single source of truth that both your AI coach and the app read and write.
 
 The app has no in-app chat. Members can create routines, edit workouts and
-assign workout/rest dates directly; Claude can also build, adjust and analyze
+assign workout/rest dates directly; your AI coach can also build, adjust and analyze
 training through MCP. Both clients use the same versioned plan writers.
 
 ```
-   Claude (any chat)          iOS app (SwiftUI)
+   Your AI app               iOS app (SwiftUI)
         │  MCP                      │  REST + Sign in with Apple
         ▼                           ▼
         └────────► Cloudflare Worker + D1 ◄────────┘
@@ -36,10 +36,10 @@ concurrency guards; sync merges deltas and tombstones by stable ID.
 - `GET /api/state` is the single sync pull (versioned plan + session/set
   deltas).
 
-### 2. MCP server — how Claude reads/writes
+### 2. MCP server — how AI apps read/write
 A Streamable-HTTP MCP server at `/mcp` exposing the same service layer:
 
-- **Read:** `get_current_plan`, `get_today_workout`, `get_current_session`,
+- **Read:** `get_coach_brief`, `get_current_plan`, `get_today_workout`, `get_current_session`,
   `get_session_log`, `get_history`, `get_volume_trend`, `list_exercises`,
   `get_upcoming_rides`, `get_recent_activities`, `get_group_feed`
 - **Write:** `log_set`, `correct_set`, `delete_set`, `log_activity`, `log_workout_complete`,
@@ -51,7 +51,7 @@ A Streamable-HTTP MCP server at `/mcp` exposing the same service layer:
   `set_planned_session`, `skip_planned_session`, `set_race`,
   `set_periodization`, `add_trip`, `update_trip`, `remove_trip`,
   `set_stress_model`, `refresh_rides`
-- **Resource:** `coach://state/current` — a compact brief Claude can read at
+- **Resource:** `coach://state/current` — a compact brief clients can read at
   chat start. Plus a `coach_brief` prompt.
 
 Writes record an `audit_log` trail; plan changes also record a coaching note.
@@ -59,9 +59,9 @@ Writes record an `audit_log` trail; plan changes also record a coaching note.
 second entry. These records preserve per-user attribution across clients.
 
 **Auth (dual):**
-- **Static bearer** — trivial for Claude Code / curl.
+- **Static bearer** — operator-only access; never distributed to members.
 - **OAuth 2.1** (RFC 9728 / 8414 / 7591, PKCE, refresh, per-user
-  passphrase consent) — for claude.ai / Claude desktop custom connectors.
+  passphrase consent) — for Codex, Claude, and other compatible remote MCP clients.
 
 ### 3. iOS app — the gym executor
 SwiftUI, iOS 17+, XcodeGen-managed. A guided **workout runner**:
@@ -74,7 +74,7 @@ SwiftUI, iOS 17+, XcodeGen-managed. A guided **workout runner**:
   ends (headphones-friendly, default on).
 - **Edit workout** sheet (from Today or the runner's overflow menu): add /
   remove / reorder exercises and warm-ups in place — writes straight to the
-  same versioned plan tree Claude edits.
+  same versioned plan tree your coach edits.
 - Whole-workout stopwatch + per-set duration; **timed exercises** (planks/
   holds) become a START SET countdown that auto-logs.
 - Account-scoped JSON snapshots and durable outboxes in UserDefaults provide
@@ -115,68 +115,46 @@ npx wrangler deploy
 No secrets are committed; they live only as Cloudflare Worker secrets.
 `wrangler.jsonc` carries non-sensitive config (D1 id, bundle id).
 
-## Connect Claude to the MCP server
+## Connect your AI coach
 
-This is what makes Claude your coach. Pick the path for how you use Claude.
-The two credentials below are **Cloudflare Worker secrets you set during
-deploy** (`MCP_STATIC_TOKEN`, `OWNER_AUTH_PASSPHRASE`) — keep them in a
-password manager; they are never stored in this repo.
+Open the iOS app → **Profile → Coach → Set up your AI coach**. Choose Codex,
+Claude, or Other compatible app, review the data-sharing disclosure, and generate
+a personal connect code. Enter that code only on the Très Fort consent page.
+Every member uses their own account; no operator secret or group membership is needed.
 
-### Option A — Claude desktop / claude.ai / Claude mobile (OAuth)
-
-Custom connectors are added on **claude.ai (web) or the Claude desktop
-app**. Once added they're tied to your account and usable from the **Claude
-mobile app** too. Requires a paid Claude plan (Pro/Max); custom connectors
-aren't on the free tier.
-
-1. **Settings → Connectors → Add custom connector.**
-2. **Name:** anything (e.g. `Très Fort`).
-3. **URL:** `https://<your-worker>.workers.dev/mcp`
-4. **Leave the Advanced fields (OAuth Client ID / Secret) blank** — the
-   server supports Dynamic Client Registration (RFC 7591), so Claude
-   registers itself automatically. Click **Add**.
-5. Claude discovers the OAuth endpoints and opens a **consent screen**
-   titled "Connect Très Fort" with a **Connect code** field.
-6. Get your code and enter it → **Authorize**. The connector now shows as
-   **Connected**, scoped to whichever user the code belongs to:
-   - **Owner:** your `OWNER_AUTH_PASSPHRASE` Worker secret works as the code, or
-   - **Any user** (including group members): open the app → **Profile →
-     Coach** and copy your personal connect code (a per-user passphrase set
-     via `POST /api/me/mcp-passphrase`, PBKDF2-hashed in D1 — no Worker
-     secret needed).
-7. In a new chat, make sure the connector is enabled, and ask
-   *"what's my current plan?"* — it should call `get_current_plan` and
-   read your live database.
-
-> The OAuth flow uses PKCE + refresh tokens, all served by the Worker
-> itself (no third-party auth provider). Tokens are stored in your D1 and
-> scoped to the user who authorized them.
-
-### Option B — Claude Code (static bearer)
+For Codex, use the server URL shown in setup:
 
 ```bash
-claude mcp add --transport http --scope user tres-fort \
-  https://<your-worker>.workers.dev/mcp \
-  --header "Authorization: Bearer <MCP_STATIC_TOKEN>"
+codex mcp add tres-fort --url "https://<your-worker>.workers.dev/mcp"
+codex mcp login tres-fort
 ```
 
-Restart Claude Code, then in a fresh session ask *"what's my plan?"*.
+Claude setup uses its custom-connector settings. Other apps must support remote
+Streamable HTTP MCP, OAuth discovery, Dynamic Client Registration, PKCE S256,
+and refresh tokens. A model name or API key alone is not a connection.
+[Connection guide and compatibility checks](docs/COACH-CONNECTIONS.md).
 
-### Cost
+Start a conversation with “Use Très Fort to load my coaching brief.” The coach
+reads the same plan and history as the app. Ask explicitly for changes; logging
+sets in iOS does not authorize the coach to duplicate those logs.
 
-Talking to Claude with this connector is **normal Claude usage on your
-subscription plan** — MCP tool calls are just tool-use inside a chat. The
-backend contains **no AI** (the Worker is pure data), so the pay-per-token
-Anthropic API is never involved. Cloudflare Workers + D1 stay within the
-free tier at single-user scale.
+### Product and usage model
 
-### Using it
+The free product lets members bring their own supported AI accounts or subscriptions.
+Conversations and model execution stay in their chosen app, under that app's
+availability, billing and usage limits. Très Fort supplies authenticated data tools
+and pays its own infrastructure costs; it does not supply model API credits.
+A future paid package could include in-app coaching and API usage if economics
+support it. No in-app model runner, provider key storage, pricing, or billing is
+implemented or enabled by this version.
 
-Once connected, in any chat: *"build me a 4-day upper/lower, double
-progression on the main lifts"*, *"swap RDL for good mornings Wednesday"*,
-*"add a deadlift day"*, *"I'm beat today, drop the volume"*, *"how's bench
-trending?"*. Claude reads/writes your plan and history live via the tools;
-you execute and log in the iOS app. Both sides share one database.
+### Connection lifecycle
+
+Multiple AI apps can connect to one member's plan. Profile reports aggregate coach
+access. **Disconnect all AI apps** revokes that member's OAuth connections,
+while preserving training records and other members' connections. Rotating the
+connect code does not revoke existing grants. Removing the connection cannot
+remove information already retrieved into an AI conversation.
 
 ## iOS: build
 

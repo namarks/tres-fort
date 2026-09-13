@@ -1814,7 +1814,7 @@ final class AuthModelTests: XCTestCase {
                         connected: false,
                         athlete_id: nil,
                         needs_reauth: nil),
-                    claude: .init(
+                    coach: .init(
                         is_owner: false,
                         connected: false,
                         last_active: nil),
@@ -1875,7 +1875,7 @@ final class AuthModelTests: XCTestCase {
                         connected: false,
                         athlete_id: nil,
                         needs_reauth: nil),
-                    claude: .init(
+                    coach: .init(
                         is_owner: false,
                         connected: false,
                         last_active: nil),
@@ -2387,7 +2387,7 @@ extension AuthModelTests {
             intervals: .init(connected: connected, athlete_id: connected ? "athlete-a" : nil,
                 needs_reauth: false, credential_generation: generation, sync_pending: pending,
                 last_synced_at: pending ? nil : lastSyncedAt),
-            claude: .init(is_owner: false, connected: false, last_active: nil), health: nil)
+            coach: .init(is_owner: false, connected: false, last_active: nil), health: nil)
     }
 
     func testIntervalsAcknowledgementSurvivesOutageAndRetriesWithoutCredentials() async throws {

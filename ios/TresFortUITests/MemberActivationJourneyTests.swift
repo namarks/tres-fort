@@ -148,8 +148,32 @@ final class MemberActivationJourneyTests: XCTestCase {
         tap(app.navigationBars["Workouts"].buttons["Done"], in: app)
         completeFirstWorkout(app)
         tap(app.tabBars.buttons["Profile"], in: app)
-        tap(app.buttons.containing(.staticText, identifier: "Set up your Claude coach").firstMatch, in: app)
+        tap(app.buttons.containing(.staticText, identifier: "Set up your AI coach").firstMatch, in: app)
         XCTAssertTrue(app.navigationBars["Connect your coach"].waitForExistence(timeout: 5))
+    }
+
+    func testCoachSetupOffersCodexClaudeAndOtherApps() {
+        let app = launch("activation-manual")
+        tap(app.buttons["Sign in with Apple"], in: app)
+        onboard(app)
+        tap(app.buttons["Enter Très Fort"], in: app)
+        tap(app.buttons["Set up my coach"], in: app)
+        let picker = app.buttons["coach.app-picker"]
+        tap(picker, in: app)
+        tap(app.buttons["Claude"], in: app)
+        XCTAssertTrue(app.staticTexts["coach.data-sharing"].label.contains("Anthropic"))
+        tap(picker, in: app)
+        tap(app.buttons["Other compatible app"], in: app)
+        XCTAssertTrue(app.staticTexts["coach.data-sharing"].label.contains("configured model provider"))
+        tap(picker, in: app)
+        tap(app.buttons["Codex"], in: app)
+        tap(app.buttons["Generate connect code"], in: app)
+        tap(app.buttons.containing(.staticText, identifier: "Add server").firstMatch, in: app)
+        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "codex mcp add tres-fort --url")).firstMatch.exists)
+        tap(app.buttons.containing(.staticText, identifier: "Sign in").firstMatch, in: app)
+        XCTAssertTrue(app.staticTexts["codex mcp login tres-fort"].exists)
+        let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        image.name = "codex-coach-setup"; image.lifetime = .keepAlways; add(image)
     }
 
     func testEmptyTodayOffersCoachSetupDirectly() {

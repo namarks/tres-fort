@@ -1,15 +1,17 @@
 # tres-fort — Design Doc
 
-> Claude is the coach. It adapts the shared plan through conversation; members
-> can also author reusable workouts and workout dates directly in iOS.
+> The user chooses their AI coach (Codex, Claude, or another compatible app).
+> It adapts the shared plan through conversation; members can also author
+> reusable workouts and workout dates directly in iOS.
 > You execute and log in a native iOS app. A Cloudflare backend is the
-> single source of truth that both Claude (via MCP) and the app read/write.
+> single source of truth that both the coach (via MCP) and the app read/write.
 
 Status: **IMPLEMENTED** — all milestones (a–i) shipped; intervals.icu
 integration, groups/invites (M1/M2), and multisport (endurance) coaching
 added post-milestone.
 Date: 2026-07-30 · Owner: Nick · Apple Developer Program: **Active** ·
-Claude surface: all (auth designed OAuth-capable with static-bearer fallback).
+Coaching surface: external AI apps over MCP and per-user OAuth; static bearer remains operator-only.
+See [Coach connections](COACH-CONNECTIONS.md) for supported setup and rollout compatibility.
 
 Project name `tres-fort` (originally scaffolded as `lift-coach`).
 
@@ -174,12 +176,12 @@ CREATE TABLE set_logs (
   deleted_at           INTEGER                  -- soft delete (never hard-delete logged data)
 );
 
-CREATE TABLE notes (                            -- Claude's coaching reasoning, durable
+CREATE TABLE notes (                            -- coaching reasoning, durable
   id         TEXT PRIMARY KEY,
   user_id    TEXT NOT NULL REFERENCES users(id),
   scope      TEXT NOT NULL,                     -- plan|session|exercise|general
   ref_id     TEXT,
-  author     TEXT NOT NULL,                     -- claude|nick
+  author     TEXT NOT NULL,                     -- coach|nick; historical claude values retained
   body       TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );

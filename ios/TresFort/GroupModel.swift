@@ -28,7 +28,7 @@ final class GroupModel: ObservableObject {
     @Published var groups: [GroupSummary] = []
     @Published var selectedGroupID: String?
     /// Account + setup snapshot (GET /api/me) for the Profile tab. Holds
-    /// server-derived intervals + Claude-connector status.
+    /// server-derived intervals + coach-connector status.
     @Published var me: MeProfile?
     @Published private(set) var groupSafety: GroupSafetyState?
 
@@ -381,7 +381,7 @@ final class GroupModel: ObservableObject {
         }
     }
 
-    /// Pull the account/setup snapshot (intervals + Claude status) for the
+    /// Pull the account/setup snapshot (intervals + coach status) for the
     /// Profile tab. Failure leaves any cached `me` in place.
     func refreshMe() async {
         guard let jwt = currentJWT else { return }
@@ -1012,42 +1012,44 @@ final class GroupModel: ObservableObject {
         await refreshMe()
     }
 
-    // MARK: - Claude connect code (M3)
+    // MARK: - Coach connect code (M3)
 
     /// Generate a fresh MCP connect code, store it server-side, and return the
-    /// plaintext for one-time display. The user copies it into Claude's custom
-    /// connector to bind their own AI coach to this account. The server keeps
+    /// plaintext for one-time display. The user copies it into their AI app's
+    /// connection flow to bind their own AI coach to this account. The server keeps
     /// only a PBKDF2 hash, so the plaintext lives only here and on the user's
-    /// screen — regenerating just rotates it (existing linked Claude sessions
+    /// screen — regenerating just rotates it (existing linked AI app sessions
     /// keep working, since their token was already bound at authorize time).
-    func generateClaudeConnectCode() async throws -> String {
+    func generateCoachConnectCode() async throws -> String {
         guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")
         }
         let code = Self.makeConnectCode()
         try await api.setMcpConnectCode(code, jwt: jwt)
+        guard isCurrentBearer(jwt) else { throw CancellationError() }
         await refreshMe()
+        guard isCurrentBearer(jwt) else { throw CancellationError() }
         return code
     }
 
     /// Returns true when the post-revocation profile refresh also succeeded.
     /// A false result still means revocation committed; callers must not retry
     /// the destructive request merely because the follow-up read failed.
-    func disconnectClaude() async throws -> Bool {
+    func disconnectCoach() async throws -> Bool {
         guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")
         }
-        _ = try await api.disconnectClaude(jwt: jwt)
+        _ = try await api.disconnectCoach(jwt: jwt)
         guard isCurrentBearer(jwt) else { return true }
         if let current = me {
             me = MeProfile(
                 display_name: current.display_name,
                 email: current.email,
                 intervals: current.intervals,
-                claude: .init(
-                    is_owner: current.claude.is_owner,
+                coach: .init(
+                    is_owner: current.coach.is_owner,
                     connected: false,
-                    last_active: current.claude.last_active),
+                    last_active: current.coach.last_active),
                 health: current.health)
         }
         do {

@@ -88,7 +88,8 @@ const SERVER_INFO = { name: 'tres-fort', version: '0.1.0' };
 // stops phantom/duplicate set_logs when the user is just narrating a workout
 // they are already logging in the iOS app.
 const SERVER_INSTRUCTIONS =
-  "You are the user's strength coach. The iOS app is the primary set " +
+  "You are the user's strength coach. Start by calling get_coach_brief. " +
+  "The iOS app is the primary set " +
   'logger: the user records their own reps and weights in the gym. Your ' +
   'job in chat is to coach (review history, adapt the plan, motivate, ' +
   'answer questions) — NOT to mirror what they are logging. Do NOT call ' +
@@ -167,6 +168,8 @@ interface Tool {
   ) => Promise<unknown>;
   /** Write tools are audited; `note` (if it returns text) is persisted. */
   write?: boolean;
+  /** Explicitly verified read-only tool; omitted for legacy tools. */
+  readOnly?: boolean;
   /** Plan writer persisted its audit/note in the same D1 transaction. */
   atomicWrite?: boolean;
   /** The service writes its own audit trail; do not duplicate it in dispatch. */
@@ -296,6 +299,15 @@ function updateWorkoutTool(operation: 'update_day' | 'update_workout'): Tool {
 }
 
 const TOOLS: Record<string, Tool> = {
+  get_coach_brief: {
+    readOnly: true,
+    description: 'Start a coaching conversation here. Read the current training plan, recent sessions, feedback, activity context and coaching rules. Available to clients that do not load MCP resources or prompts.',
+    inputSchema: obj({}),
+    handler: async (_args, env, userId) => ({
+      instructions: SERVER_INSTRUCTIONS,
+      brief: await buildStateBrief(env, userId),
+    }),
+  },
   get_current_plan: {
     description:
       'Get the active training plan: reusable workouts with optional recurring scheduling, exercises, target sets/reps/RPE, rest, progression rules, and form cues.',
@@ -875,8 +887,8 @@ const TOOLS: Record<string, Tool> = {
       'automatically). `type` is free-form lower-case (e.g. "pilates", ' +
       '"yoga", "walk", "cardio", "other"). `date` defaults to the user\'s ' +
       'civil "today" in their device timezone if omitted. The activity ' +
-      "id is generated server-side; Claude isn't an outbox retrying like " +
-      'iOS, so client-side idempotency keys are unnecessary.',
+      'id is generated server-side. Check recent activities before retrying ' +
+      'an uncertain result to avoid recording the same activity twice.',
     inputSchema: obj(
       {
         type: { type: 'string', description: 'lower-case freeform: pilates|cardio|yoga|walk|other|...' },
@@ -965,7 +977,7 @@ const TOOLS: Record<string, Tool> = {
         userId,
         String(a.scope),
         typeof a.ref_id === 'string' ? a.ref_id : null,
-        'claude',
+        'coach',
         String(a.body),
       );
       return { ok: true };
@@ -1800,7 +1812,7 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
   };
   return [
     '# tres-fort — current state',
-    'Auto-loaded context. Use the tools for anything deeper.',
+    'Current training context. Use the tools for anything deeper.',
     '```json',
     JSON.stringify(workoutWire(brief), null, 2),
     '```',
@@ -1833,6 +1845,7 @@ async function dispatch(
           name,
           description: t.description,
           inputSchema: t.inputSchema,
+          ...(t.readOnly ? { annotations: { readOnlyHint: true } } : {}),
         })),
       });
     case 'tools/call': {
@@ -1845,7 +1858,7 @@ async function dispatch(
         if (tool.write && !tool.atomicWrite && !tool.handlerAudited) {
           await writeAudit(env.DB, userId, name, args, JSON.stringify(result));
           const noteBody = tool.note?.(args, result);
-          if (noteBody) await writeNote(env.DB, userId, 'plan', null, 'claude', noteBody);
+          if (noteBody) await writeNote(env.DB, userId, 'plan', null, 'coach', noteBody);
         }
         return ok(req.id, {
           content: [{ type: 'text', text: JSON.stringify(workoutWire(result), null, 2) }],

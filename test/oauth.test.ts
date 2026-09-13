@@ -132,10 +132,11 @@ describe('oauth full PKCE flow', () => {
     expect(page.status).toBe(200);
     const consent = await page.text();
     expect(consent).toContain('passphrase');
-    expect(consent).toContain('Claude, operated by Anthropic');
+    expect(consent).toContain('<strong>Claude</strong>');
+    expect(consent).toContain('this app and its configured AI provider');
     expect(consent).toContain('imported Apple Health and Intervals.icu workouts');
     expect(consent).toContain('https://tresfort.app/privacy');
-    expect(consent).toContain('Allow Claude access');
+    expect(consent).toContain('Allow access');
 
     // 2b. wrong passphrase is rejected
     const bad = new FormData();
@@ -191,7 +192,7 @@ describe('oauth full PKCE flow', () => {
     });
     expect(mcp.status).toBe(200);
     const tools = (await mcp.json<any>()).result.tools as Array<{ name: string }>;
-    expect(tools).toHaveLength(43);
+    expect(tools).toHaveLength(44);
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
       'get_plan_history', 'compare_plan_versions', 'restore_plan', 'discard_workout', 'group_exercises', 'ungroup_exercises',
     ]));

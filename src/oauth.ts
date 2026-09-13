@@ -1,7 +1,7 @@
 // OAuth 2.1 authorization server for the MCP resource. Implements the
-// subset MCP clients (claude.ai / desktop) need: RFC 9728 protected-resource
+// features used by external AI apps: RFC 9728 protected-resource
 // metadata, RFC 8414 AS metadata, RFC 7591 dynamic client registration,
-// authorization-code + PKCE (S256) + refresh, single-user consent gate.
+// authorization-code + PKCE (S256) + refresh, per-account consent.
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { Env, HonoEnv } from './types';
@@ -167,11 +167,16 @@ oauthRoutes.post('/oauth/register', async (c) => {
 
 // ---- authorize (single-user consent gate) --------------------------------
 
-function consentPage(params: Record<string, string>, error?: string): string {
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function consentPage(params: Record<string, string>, clientName: string | null, error?: string): string {
   const hidden = Object.entries(params)
     .map(
       ([k, v]) =>
-        `<input type="hidden" name="${k}" value="${v.replace(/"/g, '&quot;')}">`,
+        `<input type="hidden" name="${k}" value="${escapeHtml(v)}">`,
     )
     .join('');
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>tres-fort</title>
@@ -185,18 +190,19 @@ button{width:100%;margin-top:14px;padding:12px;background:#fff;color:#000;border
 border-radius:8px;font-weight:600;font-size:15px;cursor:pointer}
 .err{color:#ff6b6b;font-size:13px;margin-top:10px}</style></head>
 <body><form method="POST" action="/oauth/authorize">${hidden}
-<h1>Connect Très Fort</h1><p>Paste your connect code to link Claude to your training. Get it in the Très Fort app under Profile → Coach.</p>
-<p>Allowing access lets Claude, operated by Anthropic, read your training plan, workout history, saved feedback and available group information, including imported Apple Health and Intervals.icu workouts. It also lets Claude change your plan and record training updates.</p>
-<p>You can disconnect Claude in Profile to stop future access. This does not delete information already retrieved into Claude conversations. The Apple Health group-sharing switch does not limit your own coach’s access. Review the <a href="https://tresfort.app/privacy">Très Fort privacy policy</a> and <a href="https://www.anthropic.com/legal/privacy">Anthropic privacy policy</a>.</p>
+<h1>Connect Très Fort</h1><p>Paste your connect code to link your AI app to your training. Get it in the Très Fort app under Profile → Coach.</p>
+<p>App name supplied by the connecting client: <strong>${escapeHtml(clientName || 'AI app')}</strong>. Only continue if you started this connection in an app you trust.</p>
+<p>Allowing access lets this app and its configured AI provider read your training plan, workout history, saved feedback and available group information, including imported Apple Health and Intervals.icu workouts. It also lets the app change your plan and record training updates.</p>
+<p>You can disconnect all AI apps in Profile to stop future access through these connections. This does not delete information already retrieved into AI conversations. The Apple Health group-sharing switch does not limit your own coach’s access. Review the <a href="https://tresfort.app/privacy">Très Fort privacy policy</a> and your chosen app and model provider’s privacy policies before approving.</p>
 <input type="password" name="passphrase" placeholder="Connect code" autofocus>
-${error ? `<div class="err">${error}</div>` : ''}
-<button type="submit">Allow Claude access</button></form></body></html>`;
+${error ? `<div class="err">${escapeHtml(error)}</div>` : ''}
+<button type="submit">Allow access</button></form></body></html>`;
 }
 
 async function loadClient(env: Env, clientId: string) {
   return env.DB.prepare('SELECT * FROM oauth_clients WHERE client_id = ?1')
     .bind(clientId)
-    .first<{ client_id: string; redirect_uris: string }>();
+    .first<{ client_id: string; redirect_uris: string; client_name: string | null }>();
 }
 
 oauthRoutes.get('/oauth/authorize', async (c) => {
@@ -220,7 +226,7 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
       state: q.state ?? '',
       scope: q.scope ?? 'mcp',
       resource: q.resource ?? '',
-    }),
+    }, client.client_name),
   );
 });
 
@@ -256,13 +262,13 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
   }
   if (!userId) {
     return c.html(
-      consentPage(params, 'That code did not match — open Très Fort → Profile → Coach to copy the current one.'),
+      consentPage(params, client.client_name, 'That code did not match — open Très Fort → Profile → Coach to copy the current one.'),
       401,
     );
   }
   if (await isAccountDeletionInProgress(c.env.DB, userId)) {
     return c.html(
-      consentPage(params, 'That account is being deleted and cannot be connected.'),
+      consentPage(params, client.client_name, 'That account is being deleted and cannot be connected.'),
       401,
     );
   }
@@ -296,7 +302,7 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
     .run();
   if (inserted.meta.changes !== 1) {
     return c.html(
-      consentPage(params, 'That account is being deleted and cannot be connected.'),
+      consentPage(params, client.client_name, 'That account is being deleted and cannot be connected.'),
       401,
     );
   }

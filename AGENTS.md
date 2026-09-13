@@ -4,8 +4,8 @@ Durable repository guidance for coding agents working in this repository.
 
 ## What this is
 
-An AI-coached lifting system. Claude (via MCP) adapts the training plan
-through conversation; members can also author reusable workouts and workout dates in
+An AI-coached lifting system. The user chooses an external AI app (Codex,
+Claude, or another compatible MCP client) to adapt the training plan; members can also author reusable workouts and workout dates in
 the native iOS gym executor; a single
 Cloudflare Worker + D1 database is the source of truth both sides read/write.
 The backend contains **no AI** — it is pure data. Full rationale, schema, and
@@ -67,7 +67,7 @@ Repository delivery does not prove production migration or client rollout.
 
 **One Worker, route groups, one service layer.** `src/index.ts` mounts
 `/auth`, `/auth/intervals` (intervals.icu OAuth connect), `/api` (iOS REST,
-app-JWT), `/mcp` (Claude), OAuth discovery, `/webhooks` (intervals.icu push
+app-JWT), `/mcp` (external AI apps), OAuth discovery, `/webhooks` (intervals.icu push
 receiver, `src/routes/webhooks.ts` — public, authenticated by a body
 `secret` rather than app-JWT/MCP bearer), `/privacy` (App Store Connect
 compliance page), and `/join/:code` + AASA (`src/routes/invites.ts` —
@@ -191,7 +191,8 @@ owner; an OAuth access token maps to the user it was bound to at
   vitest config) — never enabled in production.
 
 **Every accepted MCP mutation** records an `audit_log` row and (for plan changes) a
-Claude-authored `notes` row. This visible/reversible trail is the
+provider-neutral `notes` row (`author='coach'`; historical `claude` rows remain).
+This visible/reversible trail is the
 substitute for per-tool scopes (now recorded per user) — preserve it when
 adding write tools. Plan tools use `atomicWrite` so dispatcher attribution is
 not repeated after the service transaction. A no-op adjustment does not create
@@ -216,7 +217,7 @@ bearers and Apple/app sessions keep their separate lifecycles. See the
 Streamable HTTP, single `application/json` responses (no server-initiated
 streams). Natural-language exercise arguments are run through an alias
 resolver (`resolveExercise`) before hitting the catalog. Current tools:
-`get_current_plan`, `get_plan_history`, `compare_plan_versions`, `restore_plan`,
+`get_coach_brief`, `get_current_plan`, `get_plan_history`, `compare_plan_versions`, `restore_plan`,
 `get_today_workout`, `get_current_session`,
 `get_session_log`, `get_history`, `get_volume_trend`, `list_exercises`,
 `get_upcoming_rides`, `get_recent_activities`, `get_group_feed`, `log_set`,

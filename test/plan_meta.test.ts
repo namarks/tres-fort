@@ -94,18 +94,18 @@ describe('plan meta: race / periodization / trips / stress_model (M2)', () => {
     base = built.plan.version as number;
   });
 
-  it('set_race stores the race, bumps the version, and writes audit + Claude note', async () => {
+  it('set_race stores the race, bumps the version, and writes audit + coach note', async () => {
     const race = await call('set_race', RACE);
     expect(race.ok).toBe(true);
     expect(race.version).toBe(base + 1);
     expect(race.race).toMatchObject({ name: 'Salem 70.3', date: '2027-07-18', priority: 'A', location: 'Salem, OR' });
     expect((await call('get_current_plan', {})).race).toMatchObject({ name: 'Salem 70.3', discipline: 'triathlon' });
 
-    // every meta write is audited; plan-change notes are Claude-authored
+    // every meta write is audited; plan-change notes are coach-authored
     const audit = await env.DB.prepare("SELECT COUNT(*) AS c FROM audit_log WHERE tool = 'set_race'").first<{ c: number }>();
     expect(audit!.c).toBe(1);
     const note = await env.DB.prepare(
-      "SELECT COUNT(*) AS c FROM notes WHERE author='claude' AND body LIKE 'Set A-race%'",
+      "SELECT COUNT(*) AS c FROM notes WHERE author='coach' AND body LIKE 'Set A-race%'",
     ).first<{ c: number }>();
     expect(note!.c).toBe(1);
   });

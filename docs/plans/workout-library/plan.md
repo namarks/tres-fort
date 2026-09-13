@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: active · Updated: 2026-09-12 · Theme: gym-floor
+Slug: workout-library · Status: active · Updated: 2026-09-13 · Theme: gym-floor
 
 ## Goal
 
@@ -152,6 +152,34 @@ No second editor, no per-session template copies, no weeks table.
       processing. Follow the coordinated App Store release record for review
       submission; public release remains manual.
 
+- [x] **P0.3(a) — Exercise-first creation and lookup (repository)**
+  - Owner priority on 2026-09-13: improve creation and exercise discovery before
+    library tags/archive. Today, Calendar, onboarding, and Add workout open exercise
+    selection immediately. Keep selection local until Save; naming is optional
+    on the following review screen with an unused `Workout N` default.
+  - Reuse one picker for creation, Add exercise, and Add warm-up. Keep search
+    visible, match names, catalog aliases, muscle and equipment, and compose it
+    with All / Upper body / Lower body / Core filters derived from the catalog's
+    primary muscle. These are exercise filters, separate from P1 workout tags.
+  - Preserve selection order across queries and filters. Preview initial targets;
+    continue into the existing prescription editor after creation. Rep exercises
+    start at 3 × 8, holds at 3 × 45 seconds, cardio at five minutes, with zero
+    load pending member selection and manual progression.
+  - Extend `POST /api/workouts` and its released `/api/days` alias with optional
+    `exercise_ids` (1–50 unique catalog IDs). Require observed plan ID/version
+    for this path. Validate the complete list before one atomic workout/slot/
+    version/audit/snapshot write; an uncertain retry keeps its captured request.
+    Existing name-only clients remain compatible. No schema migration.
+  - Verify search/filter composition, cancellation without writes, unnamed
+    creation, slot order, rejected/concurrent requests, lost responses and
+    acknowledged-save/failed-refresh recovery on the real model and D1.
+- [ ] **P0.3(b) — Release exercise-first creation**
+  - After repository review and CI pass, obtain owner release authority for the
+    compatible Worker, then an iOS build containing P0.3(a). No migration is
+    introduced here. The server must accept `exercise_ids` before distributing
+    this client; do not fall back to sequential or empty-workout writes.
+  - Retain exact deployed source and client distribution evidence separately.
+    This UX request does not authorize deployment, TestFlight or App Review.
 - [ ] **P1 — Library metadata: tags and archive**
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work
@@ -254,6 +282,7 @@ No second editor, no per-session template copies, no weeks table.
 
 ## Execution frontier
 
+- P0.3(b)
 - P1
 
 ## Dependencies
@@ -268,6 +297,8 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 |---|---|---|---|
 | P0 | blocked_by | plan:workouts-and-multi-session#P0(a) | The selected goal establishes canonical workout terminology and compatible clients before the library UI. Production rollout and compatibility cleanup do not block this repository slice. |
 | P0 | coordinates_with | plan:member-activation-and-adherence#P0 | Both edit the no-plan and Today entry surfaces; do not run concurrently on the same iOS files. |
+| P0.3(a) | coordinates_with | plan:member-activation-and-adherence#P0 | Both use first-workout entry and the shared exercise catalog. |
+| P0.3(b) | gated_by | external:exercise-first-release-approval | Owner authority is needed for the compatible Worker and later iOS distribution. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
 | P0.2(b) | gated_by | external:release-40-deployment-approval | Migration 0050 is applied and verified; automatic approval review requires explicit approval for the pinned production Worker deployment. |
 | P0.2(c) | gated_by | external:release-40-signing-approval | The replacement upload and review submission are owner-authorized; Xcode automatic distribution signing requires explicit approval. |
@@ -278,16 +309,34 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@owner):** Answer the pending Worker deployment and Xcode automatic
-signing approvals for P0.2(b)/(c). Migration 0050 is already applied and verified;
-do not apply it again. The reviewed replacement is pinned to
-`9373d6f0acad9a9ef444e54fe9c9d8a8b7ad24c8` and archived as 1.0 (40), but the
-Worker has not been redeployed and build 40 has not been uploaded. Follow the
-[App Store release record](../app-store-submission/plan.md#next-step) for the
-remaining P1/P2 prerequisites, authenticated post-deployment route verification,
-exact-source upload and manual-public-release boundary. P1 library metadata
-remains planned and outside the completed P0.1 navigation update. P2 freestyle creation and optional saving remain separate;
-the implemented Create a workout action explicitly saves to the shared library.
+**Now (@owner):** Authorize P0.3(b) when ready to release the exercise-first
+creation flow: deploy the compatible Worker before distributing its iOS build.
+There is no new migration. P1 tags/archive is the next repository slice; P2
+freestyle remains separate. This implementation request does not authorize
+production deployment, TestFlight, or App Review changes.
+
+P0.3(a) implementation and local verification are complete. All 1,101 backend
+tests passed across the repository's three CI shards (78 files); the focused
+D1 creation suite covers nine cases. Four focused iOS unit tests and twelve
+distinct UI journeys passed, including unnamed multi-selection and onboarding
+through first-workout completion. Final picker/review screenshots were visually
+checked on iPhone 17 / iOS 26.2. Local independent review found no remaining
+actionable regressions. Hosted exact-head review and all required CI checks
+remain merge gates for this implementation PR.
+
+The combined local backend process timed out in a multi-case validation test
+and later in an unchanged swap test. The new independent validation cases were
+split without changing timeouts. The unchanged swap suite passed in isolation,
+and complete coverage passed using the existing CI shards with fresh runtimes;
+no checks or assertions were removed.
+
+**Release coordination:** P0.2(b)/(c) remains owned by the
+[App Store release record](../app-store-submission/plan.md#next-step). Its live
+Worker, Apple processing, signing and submission evidence must be reconciled
+there rather than inferred from repository completion here. The release task's
+build 40 handoff is separate from P0.3 and must not silently change source.
+P1 metadata and P2 freestyle remain separate planned work.
+
 The navigation design was approved in task
 `01a08dee-930f-7763-9202-29872c440f26`. [PR #178](https://github.com/namarks/tres-fort/pull/178)
 passed final independent review and all required CI. The last documented internal

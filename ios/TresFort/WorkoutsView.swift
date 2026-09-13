@@ -68,9 +68,6 @@ struct WorkoutsView: View {
     var date: String? = nil
     @Environment(\.dismiss) private var dismiss
 
-    @State private var planName = "My Training"
-    @State private var firstDayName = "Workout A"
-    @State private var newDayName = ""
     @State private var renameDayName = ""
     @State private var addingDay = false
     @State private var renamingDay: Workout?
@@ -78,7 +75,6 @@ struct WorkoutsView: View {
     @State private var detailTarget: WorkoutTarget?
     @State private var editTarget: WorkoutTarget?
     @State private var assignmentTarget: Workout?
-    @State private var creatingRoutine = false
     @State private var showHistory = false
 
     var body: some View {
@@ -86,8 +82,6 @@ struct WorkoutsView: View {
             Group {
                 if sync.plan == nil && !sync.canCreateRoutine {
                     PlanLoadRecoveryView(sync: sync)
-                } else if sync.plan == nil {
-                    createRoutineForm
                 } else {
                     routineList
                 }
@@ -106,15 +100,10 @@ struct WorkoutsView: View {
                 }
             }
             .toolbarColorScheme(.dark, for: .navigationBar)
-            .alert("Add workout", isPresented: $addingDay) {
-                TextField("Workout name", text: $newDayName)
-                Button("Add") { addWorkout() }
-                    .disabled(
-                        sync.isRoutineMutationInFlight
-                            || newDayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Save a reusable workout to use whenever you need it. A weekly schedule is optional.")
+            .sheet(isPresented: $addingDay) {
+                CreateWorkoutView(sync: sync, onStart: onStart.map { start in
+                    { id in dismiss(); start(id) }
+                })
             }
             .alert("Rename workout", isPresented: Binding(
                 get: { renamingDay != nil },
@@ -164,47 +153,11 @@ struct WorkoutsView: View {
         .preferredColorScheme(.dark)
     }
 
-    private var createRoutineForm: some View {
-        Form {
-            Section {
-                TextField("Training plan name", text: $planName)
-                TextField("First workout", text: $firstDayName)
-            } header: {
-                Text("Your first workout")
-            } footer: {
-                Text("Keep workouts for the gym, travel, or a quick session. Use them on demand or add an optional weekly schedule.")
-            }
-
-            Section {
-                Button {
-                    createRoutine()
-                } label: {
-                    HStack {
-                        Spacer()
-                        if creatingRoutine { ProgressView().tint(Theme.accent) }
-                        Text(creatingRoutine ? "Creating…" : "Create workout")
-                            .font(Theme.mono(14, .bold))
-                        Spacer()
-                    }
-                }
-                .disabled(
-                    creatingRoutine || !sync.canCreateRoutine
-                        || planName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || firstDayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-
-            if let error = sync.loadError {
-                Section { Text(error).foregroundStyle(Theme.danger) }
-            }
-        }
-        .scrollContentBackground(.hidden)
-    }
-
     private var routineList: some View {
         List {
             Section {
                 if let days = sync.plan?.workouts, days.isEmpty {
-                    Text("Add your first workout, then choose exercises and targets.")
+                    Text("Choose exercises to build your first workout.")
                         .font(Theme.mono(12)).foregroundStyle(Theme.muted)
                 } else {
                     ForEach(sync.plan?.workouts ?? []) { day in
@@ -291,7 +244,6 @@ struct WorkoutsView: View {
                 }
 
                 Button {
-                    newDayName = "Workout \((sync.plan?.workouts.count ?? 0) + 1)"
                     addingDay = true
                 } label: {
                     Label("Add workout", systemImage: "plus.circle.fill")
@@ -320,37 +272,6 @@ struct WorkoutsView: View {
             }
         }
         .scrollContentBackground(.hidden)
-    }
-
-    private func createRoutine() {
-        creatingRoutine = true
-        Task {
-            defer { creatingRoutine = false }
-            guard let ensured = await sync.ensureRoutinePlan(name: planName) else { return }
-            // Complete a previously interrupted bootstrap when ensure returns
-            // the same still-empty plan. If another writer already added a
-            // day, load that winner without appending a duplicate.
-            guard RoutineCreationPolicy.shouldAddFirstDay(
-                    wasCreated: ensured.created,
-                    ensuredPlanID: ensured.plan.id,
-                    loadedPlanID: sync.plan?.id,
-                    loadedDayCount: sync.plan?.workouts.count ?? 0),
-                  let dayID = await sync.addWorkoutDay(
-                    name: firstDayName,
-                    expectedPlanID: ensured.plan.id,
-                    expectedVersion: ensured.plan.version)
-            else { return }
-            editTarget = WorkoutTarget(id: dayID)
-        }
-    }
-
-    private func addWorkout() {
-        guard !sync.isRoutineMutationInFlight else { return }
-        let name = newDayName
-        Task {
-            guard let dayID = await sync.addWorkoutDay(name: name) else { return }
-            editTarget = WorkoutTarget(id: dayID)
-        }
     }
 
     private func renameDay() {

@@ -357,6 +357,8 @@ apiRoutes.on('POST', ['/workouts', '/days'], async (c) => {
       order_index: isNonNegativeInteger,
       expected_plan_id: isNonEmptyString,
       expected_version: isPositiveInteger,
+      exercise_ids: (value) => Array.isArray(value) && value.length > 0 && value.length <= 50
+        && value.every(isNonEmptyString) && new Set(value).size === value.length,
     },
   );
   if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
@@ -365,6 +367,9 @@ apiRoutes.on('POST', ['/workouts', '/days'], async (c) => {
   }
   if (hasOwn(b, 'expected_version') && b.expected_version !== plan.version) {
     return c.json(workoutWire({ conflict: true, current_version: plan.version }), 409);
+  }
+  if (hasOwn(b, 'exercise_ids') && (!hasOwn(b, 'expected_plan_id') || !hasOwn(b, 'expected_version'))) {
+    return c.json(workoutWire({ error: 'invalid_fields', fields: ['expected_plan_id', 'expected_version'] }), 400);
   }
   const orderIndex = hasOwn(b, 'order_index')
     ? Number(b.order_index)
@@ -377,7 +382,9 @@ apiRoutes.on('POST', ['/workouts', '/days'], async (c) => {
     typeof b.day_label === 'string' ? b.day_label : null,
     orderIndex,
     { actor: 'ios', operation: c.req.path.startsWith('/api/workouts') ? 'add_workout' : 'add_day', args: b },
+    b.exercise_ids as string[] | undefined,
   );
+  if ('error' in row) return c.json(workoutWire(row), 400);
   if ('conflict' in row) return c.json(workoutWire(row), 409);
   return c.json(workoutWire(row), 201);
 });

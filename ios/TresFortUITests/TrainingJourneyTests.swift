@@ -37,6 +37,10 @@ final class TrainingJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["Create a workout"].waitForExistence(timeout: 10))
         screenshot("verified-empty-plan")
         app.buttons["Create a workout"].tap()
+        XCTAssertFalse(app.textFields["createWorkout.name"].exists)
+        let selection = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "exercisePicker.exercise.")).firstMatch
+        XCTAssertTrue(selection.waitForExistence(timeout: 5)); selection.tap()
+        app.buttons["createWorkout.review"].tap()
         let name = app.textFields["createWorkout.name"]
         XCTAssertTrue(name.waitForExistence(timeout: 5)); name.tap(); name.typeText("Workout A")
         reveal(app.buttons["createWorkout.create"], in: app)

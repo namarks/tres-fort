@@ -45,7 +45,7 @@ struct MemberEntryPresentation: ViewModifier {
                         CoachApprovalView(auth: auth, requestID: request,
                             accountName: groupModel.me?.display_name ?? "Your signed-in Très Fort account") { showing = false }
                     case .workouts:
-                        WorkoutsView(sync: sync)
+                        CreateWorkoutView(sync: sync)
                     }
                     }
                 }

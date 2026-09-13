@@ -3794,7 +3794,18 @@ export async function addWorkoutAtVersion(
   dayLabel: string | null,
   orderIndex: number,
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_day' },
-): Promise<WorkoutRow | PlanVersionConflict> {
+  exerciseIds: string[] = [],
+): Promise<WorkoutRow | PlanVersionConflict | { error: 'invalid_exercises' }> {
+  // Resolve every selection before opening the versioned write. The complete
+  // workout, slots, audit and snapshot then share one CAS transaction.
+  if (exerciseIds.length > 50 || new Set(exerciseIds).size !== exerciseIds.length) {
+    return { error: 'invalid_exercises' };
+  }
+  const catalog = exerciseIds.length ? await workoutDB(db).prepare(
+    'SELECT id, modality FROM exercises WHERE id IN (SELECT value FROM json_each(?1))',
+  ).bind(JSON.stringify(exerciseIds)).all<{ id: string; modality: string }>() : { results: [] };
+  if (catalog.results.length !== exerciseIds.length) return { error: 'invalid_exercises' };
+  const modalities = new Map(catalog.results.map((exercise) => [exercise.id, exercise.modality]));
   const ts = now();
   const row: WorkoutRow = {
     id: uuid(),
@@ -3843,6 +3854,20 @@ export async function addWorkoutAtVersion(
         .bind(day.id, index, ts, plan.id, userId, -plan.version),
     ),
   ];
+  for (const [index, exerciseId] of exerciseIds.entries()) {
+    const modality = modalities.get(exerciseId);
+    const cardio = modality === 'cardio';
+    const timed = modality === 'timed';
+    statements.push(workoutDB(db).prepare(
+      `INSERT INTO template_exercises
+       (id,workout_id,exercise_id,order_index,target_sets,target_reps,rest_seconds,
+        target_weight,target_duration_s,progression,is_warmup,created_at,updated_at)
+       SELECT ?1,?2,?3,?4,?5,?6,120,0,?7,'{"type":"manual"}',0,?8,?8
+       WHERE EXISTS (SELECT 1 FROM plans
+         WHERE id=?9 AND user_id=?10 AND version=-?11 AND plan_write_nonce=?12)`,
+    ).bind(uuid(), row.id, exerciseId, index, cardio ? 1 : 3, cardio ? 1 : timed ? 45 : 8,
+      cardio ? 300 : timed ? 45 : null, ts, plan.id, userId, plan.version, nonce));
+  }
   const versionResultIndex = statements.length;
   statements.push(...preparePlanWriteFinish(db, plan, { ...attribution, result: row.id }, ts, nonce));
   const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
@@ -4140,6 +4165,7 @@ export async function getExercises(
     laterality: string;
     load_mode: string;
     demo_slug: string | null;
+    aliases: string | null;
   }[]
 > {
   const where: string[] = [];
@@ -4157,7 +4183,7 @@ export async function getExercises(
     where.push(`lower(modality) = ?${binds.length}`);
   }
   const sql =
-    'SELECT id, name, primary_muscle, modality, unit, laterality, load_mode, demo_slug FROM exercises' +
+    'SELECT id, name, primary_muscle, modality, unit, laterality, load_mode, demo_slug, aliases FROM exercises' +
     (where.length ? ' WHERE ' + where.join(' AND ') : '') +
     ' ORDER BY name';
   const stmt = workoutDB(db).prepare(sql);
@@ -4171,6 +4197,7 @@ export async function getExercises(
     laterality: string;
     load_mode: string;
     demo_slug: string | null;
+    aliases: string | null;
   }>();
   return r.results;
 }

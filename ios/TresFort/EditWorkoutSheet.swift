@@ -577,36 +577,17 @@ private struct AddExerciseSheet: View {
     let dayID: String
     let presetWarmup: Bool
     @Environment(\.dismiss) private var dismiss
-    @State private var query = ""
-
-    private var filtered: [ExerciseCatalog] {
-        let all = sync.catalog.sorted { $0.name < $1.name }
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return all }
-        return all.filter {
-            $0.name.lowercased().contains(q) || $0.primary_muscle.lowercased().contains(q)
-        }
-    }
-
     var body: some View {
         NavigationStack {
-            List(filtered) { ex in
+            ExercisePickerList(catalog: sync.catalog, reload: { await sync.load() }) { ex in
                 NavigationLink {
                     ConfigureExerciseView(
                         sync: sync, dayID: dayID, exercise: ex,
                         presetWarmup: presetWarmup, onDone: { dismiss() })
                 } label: {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(ex.name).font(Theme.mono(14, .bold)).foregroundStyle(Theme.text)
-                        Text("\(ex.primary_muscle) · \(ex.modality)")
-                            .font(Theme.mono(11)).foregroundStyle(Theme.muted)
-                    }
+                    ExerciseCatalogLabel(exercise: ex)
                 }
-                .listRowBackground(Theme.surface)
             }
-            .scrollContentBackground(.hidden)
-            .background(Theme.background)
-            .searchable(text: $query, prompt: "Search exercises (try “erg”)")
             .navigationTitle(presetWarmup ? "Add warm-up" : "Add exercise")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

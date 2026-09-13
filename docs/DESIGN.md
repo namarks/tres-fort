@@ -256,7 +256,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `GET /api/me/export` | Download the signed caller's portable account and training-data snapshot as a non-cacheable JSON attachment. Excludes credentials, tokens, invite capabilities, and other members' private data. |
 | `DELETE /api/me` | Permanently delete the signed caller after explicit in-app confirmation and recent Apple authentication. A UUID-bound intent serializes provider revocation and local deletion; a durable receipt makes a lost success response safe to acknowledge. The response reports `apple_revocation: revoked|manual_required`; provider failure, legacy accounts without a stored token, or an uncertain exchange never retain local data and instead trigger the manual Apple Account handoff. |
 | `PUT /api/plan/active` | Idempotently ensure an active plan for manual authoring. Returns the existing winner on retry/concurrent coach creation and never archives it; explicit plan replacement archives and inserts atomically so the two creation paths cannot violate the one-active-plan invariant. |
-| `POST /api/workouts` | Add a workout day; omitted `order_index` appends densely. The first-day flow pins both `expected_plan_id` and `expected_version` to the plan returned by `PUT /api/plan/active`; app and MCP adds use the same atomic plan-version writer. |
+| `POST /api/workouts` | Add a library workout; omitted `order_index` appends densely. Optional `exercise_ids` (1–50 unique catalog IDs) saves ordered initial slots in the same versioned transaction and requires `expected_plan_id` plus `expected_version`. Invalid selections create nothing. The first-day flow pins both `expected_plan_id` and `expected_version` to the plan returned by `PUT /api/plan/active`; app and MCP adds use the same atomic plan-version writer. |
 | `PATCH /api/workouts/{id}` | `{name?, day_label?, order_index?, notes?, expected_version?}` — rename/reorder a day through the same atomic plan-version writer as MCP. |
 | `DELETE /api/workouts/{id}?expected_version=` | Remove a day and scrub its recurring assignments. Completed history is detached, direct or same-plan schedule-resolved planned sessions become explicit rest, and removal is rejected while that day has a direct, same-plan schedule-resolved, or locally running workout. |
 | `POST /api/workouts/{id}/exercises` | Add an exercise slot (incl. `is_warmup`, `target_duration_s`). |
@@ -753,8 +753,9 @@ for datasets, budgets and memory tradeoffs.
 
 - **Today:** compact scheduled/completed card with named workout details,
   explicit Start/Continue, Choose a workout, Create a workout, and Log an
-  activity actions. Choose opens the shared library; Create saves a named
-  library entry before opening its editor. Completed records open separately.
+  activity actions. Choose opens the shared library; Create starts with searchable, body-region-filtered exercise selection, then
+  previews the selection and optional name before one atomic library save and
+  the existing prescription editor. Completed records open separately.
   The active runner retains its exercise list, big weight/reps steppers, log-set button, rest
   timer overlay + Live Activity trigger + **audio cue when rest ends** (RestCue:
   chime/haptic/speech, headphone-aware), last-time chips per exercise. Per-set

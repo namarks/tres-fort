@@ -49,12 +49,13 @@ ordinary training organization and review, not diagnosis or treatment.
 `write` contract already controls auditing. Reads have `readOnlyHint: true` and
 `destructiveHint: false`. Audited actions have `readOnlyHint: false`.
 
-Append-only operations (`add_note`, `log_activity`, `add_exercise`,
-`add_workout` and its `add_day` alias) have `destructiveHint: false`: they add
-records rather than erase existing training. Other writes advertise
+Append-only operations (`add_note` and `log_activity`) have
+`destructiveHint: false`. Other writes advertise
 `destructiveHint: true` because they may replace prescriptions, correct values,
 remove/soft-delete data, change scheduling or reconcile imported caches. That
 includes restore operations and modifications that remain visible in history.
+`add_exercise`, `add_workout` and its `add_day` alias can shift existing order
+indices, so they also advertise `destructiveHint: true`.
 `log_set` is also potentially destructive: reopening a discarded legacy session
 can clear its old assignment and feedback. `refresh_rides` is an action that refreshes a cache, not a read-only query.
 

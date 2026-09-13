@@ -153,7 +153,8 @@ The iPhone implementation uses an explicit account approval screen. The OAuth
 page links from the Worker to the website's narrowly associated
 `/coach/authorize?request=<opaque-id>` path. Opening the link alone grants no
 access. Signed-out users finish sign-in/onboarding before reviewing it. The
-request expires in ten minutes. Allow/Deny are exclusive; expired or used
+request expires in ten minutes. A successful approval starts a fresh ten-minute
+code-exchange window. Allow/Deny are exclusive; expired or used
 requests cannot issue another code. The app returns the one-time PKCE-bound
 code to the registered HTTPS callback. No model key or subscription credential
 is requested by Très Fort.

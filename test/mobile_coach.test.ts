@@ -1,5 +1,5 @@
 import { applyD1Migrations, env, SELF } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { issueAppJwt } from '../src/auth';
 import { decideMobileCoachRequest, purgeExpiredMobileCoachRequests } from '../src/db';
 
@@ -84,6 +84,27 @@ describe('mobile coach approval', () => {
     expect((await exchange(code, r)).status).toBe(400);
     expect((await decision(r.id, { decision: 'allow' })).status).toBe(410);
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE user_id = ?1 AND tool = 'approve_coach_connection'").bind(MEMBER).first('n')).toBe(1);
+  });
+
+  it('gives a last-moment approval a full exchange window and still consumes the request once', async () => {
+    const r = await request();
+    const approvedAt = Date.now();
+    await env.DB.prepare('UPDATE oauth_mobile_requests SET expires_at = ?2 WHERE id = ?1')
+      .bind(r.id, approvedAt + 1).run();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(approvedAt);
+    let result: Awaited<ReturnType<typeof decideMobileCoachRequest>>;
+    try {
+      result = await decideMobileCoachRequest(env.DB, r.id, MEMBER, true);
+      expect(result?.code).toBeTruthy();
+      expect(await env.DB.prepare('SELECT created_at, expires_at FROM oauth_codes WHERE code = ?1')
+        .bind(result!.code!).first()).toEqual({ created_at: approvedAt, expires_at: approvedAt + 600_000 });
+      clock.mockReturnValue(approvedAt + 2);
+      expect(await decideMobileCoachRequest(env.DB, r.id, MEMBER, true)).toBeNull();
+    } finally {
+      clock.mockRestore();
+    }
+    expect((await exchange(result!.code!, r)).status).toBe(200);
+    expect((await exchange(result!.code!, r)).status).toBe(400);
   });
 
   it('disconnects an approved connection before its code is exchanged', async () => {

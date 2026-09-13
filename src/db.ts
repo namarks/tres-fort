@@ -12795,7 +12795,7 @@ export async function decideMobileCoachRequest(
       (code, client_id, redirect_uri, code_challenge, code_challenge_method,
        scope, resource, expires_at, created_at, user_id)
       SELECT ?4, client_id, redirect_uri, code_challenge, 'S256', 'mcp', resource,
-             MIN(expires_at, ?2 + 600000), ?2, ?3
+             ?2 + 600000, ?2, ?3
       FROM oauth_mobile_requests WHERE id = ?1 AND expires_at > ?2 AND ${liveUser}`)
       .bind(id, timestamp, userId, code),
     db.prepare(`INSERT INTO audit_log (id, user_id, actor, tool, args, result, created_at)

@@ -150,6 +150,32 @@ describe('external AI client compatibility', () => {
     expect(me.coach.connected).toBe(true);
   });
 
+  it.each(['add_exercise', 'add_workout', 'add_day'])('%s warns before inserting ahead of existing plan entries', async (name) => {
+    const access = connections.get('Codex')!.access_token;
+    const catalog = await (await rpc(access, 'tools/list')).json<any>();
+    expect(catalog.result.tools.find((t: any) => t.name === name).annotations)
+      .toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    const current = await tool(access, 'get_current_plan');
+    await tool(access, 'update_plan', { expected_version: current.version, workouts: [
+      { name: 'A', day_label: 'A', order_index: 0, exercises: [
+        { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
+      ] },
+    ] });
+    const original = await env.DB.prepare(`SELECT d.id, t.id AS exercise_id FROM workouts d
+      JOIN template_exercises t ON t.workout_id = d.id
+      JOIN plans p ON p.id = d.plan_id WHERE p.user_id = ?1`).bind(MEMBER)
+      .first<{ id: string; exercise_id: string }>();
+    if (name === 'add_exercise') {
+      await tool(access, name, { day: 'A', exercise: 'Overhead Press', target_sets: 3, target_reps: 5, order_index: 0 });
+      expect(await env.DB.prepare('SELECT order_index FROM template_exercises WHERE id = ?1')
+        .bind(original!.exercise_id).first('order_index')).toBe(1);
+    } else {
+      await tool(access, name, { name: 'B', order_index: 0 });
+      expect(await env.DB.prepare('SELECT order_index FROM workouts WHERE id = ?1')
+        .bind(original!.id).first('order_index')).toBe(1);
+    }
+  });
+
   it('warns that log_set can clear old feedback when reopening a discarded legacy session', async () => {
     const access = connections.get('Codex')!.access_token;
     const catalog = await (await rpc(access, 'tools/list')).json<any>();

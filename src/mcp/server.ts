@@ -220,7 +220,7 @@ function addWorkoutTool(operation: 'add_day' | 'add_workout'): Tool {
       ['name'],
     ),
     write: true,
-    appendOnly: true,
+    // Inserting at an occupied index rewrites existing workout order values.
     atomicWrite: true,
     handler: async (a, env, userId) => {
       let plan = await getActivePlan(env.DB, userId);
@@ -1191,7 +1191,7 @@ const TOOLS: Record<string, Tool> = {
       ['day', 'exercise', 'target_sets', 'target_reps'],
     ),
     write: true,
-    appendOnly: true,
+    // Inserting at an occupied index rewrites existing exercise order values.
     atomicWrite: true,
     handler: async (a, env, userId) => {
       const groupFields = Object.keys(a).filter((key) => ['group_id', 'group_rest_seconds', 'group_transition_seconds'].includes(key));

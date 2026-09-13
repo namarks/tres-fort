@@ -1,4 +1,5 @@
 import { coachingSession, coachingPlanMeta } from '../coachingContext';
+import { TRAINING_PROFILE_COACH_GUIDANCE } from '../trainingProfile';
 import { workoutInput, workoutWire } from '../workoutWire';
 import { workoutDB } from '../workoutSchema';
 // Minimal, spec-correct MCP server over Streamable HTTP (JSON-RPC 2.0,
@@ -9,6 +10,7 @@ import type { Env } from '../types';
 import { coachGroupSlots, coachGroupSummary } from '../exerciseGroupViews';
 import { isGroupId } from '../exerciseGroups';
 import {
+  getTrainingProfile,
   addWorkoutAtVersion,
   addTemplateExercise,
   addTrip,
@@ -100,7 +102,7 @@ const SERVER_INSTRUCTIONS =
   'get_current_session / get_today_workout are evidence the user is ' +
   'logging in-app right now; assume any set they mention is already ' +
   'recorded. When in doubt, ask before logging. Use correct_set for value ' +
-  'mistakes and delete_set only to remove a phantom or duplicate set.';
+  'mistakes and delete_set only to remove a phantom or duplicate set. ' + TRAINING_PROFILE_COACH_GUIDANCE;
 const DEFAULT_PROTOCOL = '2025-06-18';
 const SUPPORTED_PROTOCOLS = new Set(['2025-06-18', '2025-03-26', '2024-11-05']);
 
@@ -314,7 +316,8 @@ const TOOLS: Record<string, Tool> = {
     inputSchema: obj({}),
     handler: async (_a, env, userId) => {
       const tree = await getPlanTree(env.DB, userId);
-      if (!tree) return { plan: null, note: 'No active plan yet.' };
+      const training_profile = await getTrainingProfile(env.DB, userId);
+      if (!tree) return { plan: null, training_profile, note: 'No active plan yet.' };
       // Fold in the resolved recurring weekly schedule (weekday → day name).
       const schedule = await getResolvedScheduleNames(env.DB, userId);
       // Conflict-aware with zero extra calls: a compact 28-day lift/ride
@@ -332,6 +335,7 @@ const TOOLS: Record<string, Tool> = {
       const meta = parsePlanMeta(tree.meta);
       return {
         ...tree,
+        training_profile,
         workouts: tree.workouts.map((day) => ({ ...day, exercises: coachGroupSlots(day.exercises) })),
         schedule,
         ride_conflicts,
@@ -1757,6 +1761,7 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
   });
   const brief = {
     today,
+    training_profile: await getTrainingProfile(env.DB, userId),
     active_plan: tree
       ? {
           id: tree.id,

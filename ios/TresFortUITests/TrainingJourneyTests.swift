@@ -231,6 +231,9 @@ final class TrainingJourneyTests: XCTestCase {
         reveal(start, in: app)
         screenshot("journey-onboarding-welcome")
         start.tap()
+        let skipSetup = app.buttons["trainingSetup.skip"]
+        reveal(skipSetup, in: app)
+        skipSetup.tap()
         let skipGroup = app.buttons["I don't have a code"]
         reveal(skipGroup, in: app)
         screenshot("journey-onboarding-group")

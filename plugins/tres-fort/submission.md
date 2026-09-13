@@ -77,7 +77,7 @@ explicit account consent, host write approval, tenant checks or version checks.
    supplies it directly to the portal's protected review-credentials field.
    Never commit, print or transfer that code through agent tools. Reviewers can
    use the web consent form without an iPhone or Apple-account credentials.
-4. Release migration `0051`, website association/fallback, updated iOS build and
+4. Release migration `0052`, website association/fallback, updated iOS build and
    Worker under the release gate in the connection guide. Verify their exact
    release revisions and run the real-device round trip before scanning tools.
 5. Host the exact domain challenge issued by the portal on the MCP host at

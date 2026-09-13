@@ -155,7 +155,7 @@ and the app does not invent a Connect URL while awaiting a provider-issued one.
 
 Release order under explicit owner authority:
 
-1. Apply migration `0051` before any Worker code that accesses its new table.
+1. Apply migration `0052` before any Worker code that accesses its new table.
 2. Deploy the website AASA, fallback page and no-referrer/no-store headers;
    verify the exact public assets, including JSON Content-Type on the AASA.
 3. Distribute an iOS build with `applinks:tresfort.app` and the approval screen.

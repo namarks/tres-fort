@@ -37,6 +37,7 @@ struct ProfileView: View {
     @State private var showJoin = false
     @State private var showCreate = false
     @State private var showTrainingOverview = false
+    @State private var showTrainingProfile = false
     @State private var showNameEditor = false
     @State private var accountExportDocument: AccountExportDocument?
     @State private var accountExportFilename = "tres-fort-account-export.json"
@@ -56,6 +57,12 @@ struct ProfileView: View {
         NavigationStack {
             Form {
                 accountSection
+                if !auth.isReviewAccount {
+                Section("Your training") {
+                    Button("Training profile") { showTrainingProfile = true }
+                        .accessibilityIdentifier("profile.trainingProfile")
+                }
+                }
                 if auth.isReviewAccount {
                     Section("Shared sample account") {
                         Text("Use sample data only. Workouts, history, export, and deletion work in this account. Sign out and use Sign in with Apple for personal connections, AI coaching, and groups.")
@@ -79,6 +86,9 @@ struct ProfileView: View {
         }
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showJoin) { JoinGroupSheet(groupModel: groupModel) }
+        .sheet(isPresented: $showTrainingProfile) {
+            TrainingSetupView(auth: auth, showStarters: false) { showTrainingProfile = false }
+        }
         .sheet(isPresented: $showCreate) { CreateGroupSheet(groupModel: groupModel) }
         .sheet(isPresented: $showTrainingOverview) {
             if let sync { CoachingContextView(sync: sync) }

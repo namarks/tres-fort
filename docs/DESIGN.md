@@ -422,7 +422,7 @@ models, lifecycles, and revocation paths → decoupled on purpose.
   the grant deadlines. Static bearers and Apple/app sessions remain separate.
   A lost successful exchange response requires
   reauthorization. See the [coach contract](plans/completed/coach-access-integrity/decisions.md).
-- **Mobile account approval (migration `0051`).** A validated HTTPS OAuth
+- **Mobile account approval (migration `0052`).** A validated HTTPS OAuth
   request can open `https://tresfort.app/coach/authorize?request=<opaque-id>`.
   The website association and iOS entitlement claim only that approval path;
   the different domain lets Safari hand off from the Worker consent page.
@@ -684,6 +684,35 @@ edits = right-sized.
 ---
 
 ## 9. iOS app
+
+**Starting point and training profile.** Optional onboarding before group and
+integration setup captures overall fitness goals, intended activities (including
+running, swimming and cycling), weekly activity context, strength availability,
+experience, equipment, movement exclusions and optional dated working sets.
+Consistency is the product emphasis. `GET/PUT /api/me/training-profile` stores a
+private account-owned JSON document with its own compare-and-swap version,
+independent of plan replacement. Identical desired-state retries are acknowledged
+without advancing its version. The profile is editable from Profile and exposed
+to the authenticated coach in `get_current_plan` and `coach://state/current`,
+including before the first plan exists. Reports remain distinct from measured
+training; activity selection alone does not prescribe other sports or their load.
+
+`GET /api/starter-workouts` returns curated equipment-matched previews, with
+excluded movement patterns removed. `POST /api/starter-workouts/:id` accepts the
+observed profile version and atomically creates a first library workout, slots,
+plan version, audit, snapshot and account-scoped receipt. It cannot replace or
+append to an existing library, and the receipt makes lost-response retries
+idempotent. An empty-plan bootstrap uses the existing `ensureActivePlan` writer.
+Starters use manual progression and an explicit zero load pending member
+selection, so the runner never supplies its usual fallback weight. Optional
+reported weights are coaching context, not automatically transferred to starter
+prescriptions. The account export includes the profile and receipt; permanent
+deletion removes both, including for a tombstoned owner. Unfinished iOS drafts
+use the existing protected account-scoped local store and reject late responses
+after an account or feature-session change. Migration `0051_training_profile`
+must precede the compatible Worker, followed by iOS distribution; respect the
+existing staged order for earlier migrations. Repository delivery does not
+authorize those production steps.
 
 SwiftUI, iOS 17+. The main-actor `SyncModel` publishes in-memory presentation
 arrays and coordinates networking, account epochs, attempt-bound writes and

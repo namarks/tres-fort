@@ -18,6 +18,7 @@ struct OnboardingView: View {
     @StateObject private var groupModel: GroupModel
 
     @StateObject private var flow: OnboardingFlow
+    @State private var showTrainingSetup = false
     private var step: OnboardingFlow.Step { flow.step }
 
     init(auth: AuthModel, defaults: LocalPersistence = .standard) {
@@ -47,6 +48,13 @@ struct OnboardingView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showTrainingSetup) {
+            let checkpoint = flow.checkpoint
+            TrainingSetupView(auth: auth) {
+                showTrainingSetup = false
+                advance(from: checkpoint)
+            }
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -54,7 +62,7 @@ struct OnboardingView: View {
         switch step {
         case .welcome:
             WelcomeStep(invitePending: auth.pendingInviteCode != nil,
-                        onContinue: { advance(from: checkpoint) })
+                        onContinue: { showTrainingSetup = true })
         case .group:
             JoinGroupStep(groupModel: groupModel,
                           onDone: { advance(from: checkpoint) },

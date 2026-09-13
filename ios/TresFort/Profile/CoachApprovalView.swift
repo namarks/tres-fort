@@ -123,7 +123,7 @@ struct CoachApprovalView: View {
                         Text("Only allow access if you started this connection in an app you trust.")
                     }
                     Section("Requested access") {
-                        Text("Read your training plan, workout history, saved feedback and available group information, including imported Apple Health and Intervals.icu workouts.")
+                        Text("Read your training profile and plan, workout history, saved feedback and available group information, including imported Apple Health and Intervals.icu workouts.")
                         Text("Change your plan and record training updates.")
                         Text("Your AI app and its configured model provider receive the information they request. Review their privacy policies before approving. Apple Health group sharing does not limit your own coach’s access.")
                         Text("Disconnect AI apps in Profile to stop future access. This does not delete data already retrieved into AI conversations.")

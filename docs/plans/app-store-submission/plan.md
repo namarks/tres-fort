@@ -39,19 +39,22 @@ preparation and TestFlight availability do not mean public release.
   - Verify free pricing, US-only availability and applicable agreements; request
     owner confirmation for fields inaccessible to existing tools.
 - [ ] **P3 — Exact candidate and production verification**
-  - Independently review the final head and pass all required checks.
-  - Read deployed source/configuration and migration ledger; prepare an exact
-    migration/deployment proposal if the candidate needs a newer backend.
-  - After deployment, verify the authenticated session-swap route and retain
-    the existing workout-name compatibility checks before exporting/uploading
-    build 40. A public health response does not establish those API behaviors.
-  - After separate release authorization, archive/upload the chosen build,
-    verify Apple processing and version, and retain source identity.
-  - Retain physical-iPhone verification results and any explicit owner deferral
-    without claiming unperformed checks passed. The owner deferred the live
-    pre-upload workout canary and its observation on 2026-09-10. Other physical
-    coverage remains unverified; reuse the [device procedure](../completed/coaching-feedback-loop/device-verification.md)
-    when that follow-up resumes.
+  - [ ] **(a) Compatible production backend**
+    - Independently review the final head and pass all required checks.
+    - Read deployed source/configuration and migration ledger; prepare an exact
+      migration/deployment proposal if the candidate needs a newer backend.
+    - After deployment, verify the authenticated session-swap route and retain
+      the existing workout-name compatibility checks before exporting/uploading
+      build 40. A public health response does not establish those API behaviors.
+    - Retain physical-iPhone verification results and any explicit owner deferral
+      without claiming unperformed checks passed. The owner deferred the live
+      pre-upload workout canary and its observation on 2026-09-10. Other physical
+      coverage remains unverified; reuse the [device procedure](../completed/coaching-feedback-loop/device-verification.md)
+      when that follow-up resumes.
+  - [ ] **(b) Signed candidate and Apple processing**
+    - After P3(a) verification and separate release/signing authorization,
+      validate/export/upload the chosen archive, verify Apple processing and
+      version, and retain exact source identity.
 - [ ] **P4 — Submission-ready handoff**
   - After approval of concrete App Store changes, publish metadata, screenshots,
     privacy answers and reviewer details, and select the verified build.
@@ -69,8 +72,8 @@ preparation and TestFlight availability do not mean public release.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P3 | gated_by | external:release-40-deployment-approval | Automatic approval review requires explicit owner approval to deploy the pinned build 40 Worker; migration 0050 is applied and verified. |
-| P3 | gated_by | external:release-40-signing-approval | Automatic approval review requires explicit owner approval for Xcode to manage Apple certificates, app IDs and provisioning profiles for build 40. |
+| P3(a) | gated_by | external:release-40-deployment-approval | Automatic approval review requires explicit owner approval to deploy the pinned build 40 Worker; migration 0050 is applied and verified. |
+| P3(b) | gated_by | external:release-40-signing-approval | Automatic approval review requires explicit owner approval for Xcode to manage Apple certificates, app IDs and provisioning profiles for build 40. |
 | P4 | gated_by | external:app-store-owner-fields | Confirm any account agreements or privacy publication fields inaccessible to existing tools before final review submission. |
 
 ## Next step

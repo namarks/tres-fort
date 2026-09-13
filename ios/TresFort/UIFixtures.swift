@@ -286,6 +286,7 @@ private struct UIFixtureServer {
         return "header." + data.base64EncodedString().replacingOccurrences(of: "=", with: "") + ".synthetic"
     }
     let safetyPeerID = "c3223561-0e27-4727-b369-681078533ca6"
+    var healthSharing = ProcessInfo.processInfo.environment["TRESFORT_UI_HEALTH_SHARED"] == "1"
     var safetyBlocked = false
     var safetyRestricted = false
     var syntheticGroup: [String: Any] {
@@ -509,10 +510,16 @@ private struct UIFixtureServer {
             }
             response = ["acknowledged": true, "plan_id": "synthetic-plan", "workout_id": dayID, "version": 1]
         case ("GET", "/api/me"):
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_HEALTH_PROFILE_FAIL"] == "1" {
+                throw URLError(.notConnectedToInternet)
+            }
             response = ["display_name": "Synthetic member", "email": NSNull(),
                 "intervals": intervalsStatus,
                 "claude": ["is_owner": scenario == .activationOwner, "connected": coachConnected],
-                "health": ["sharing_in_group": false]]
+                "health": ["sharing_in_group": healthSharing]]
+        case ("PATCH", "/api/me/health-sharing"):
+            healthSharing = body["enabled"] as? Bool ?? false
+            response = ["sharing_in_group": healthSharing]
         case ("PATCH", "/api/me/integrations/intervals") where scenario.isIntervals:
             intervalsGeneration += 1
             intervalsConnected = body["api_key"] is String

@@ -57,8 +57,14 @@ complete P2 on an iPhone.
   permission/refresh/removal, five-year cached exercise history, sparse trend
   selection, all Progress drill-downs, empty history and accessibility text.
   The three Progress journeys passed again after final heading/date-label
-  refinements. The checked-in iOS sources match that passing build's manifest.
-  The implementation PR carries exact-head independent review and CI evidence.
+  refinements. Its source manifest is retained with the local build evidence.
+  A review correction makes Apple Health settings read current workout-sharing
+  status on every entry instead of inferring false from an unloaded Profile.
+  Missing or failed reads stay unknown with retry; existing sharing remains
+  removable when workout sync is disconnected. Three sharing-read model tests
+  and five Progress journeys cover recovery, account boundaries and saved
+  opt-out. The final source manifest and exact-head review/CI evidence are
+  retained with the implementation PR and local verification artifacts.
 
 - `npm run plans:check` passes: 8 current plans, 16 edges, 2 initiatives.
 - Disposable iPhone 17 / iOS 26.2 build and focused tests passed on 2026-09-12:

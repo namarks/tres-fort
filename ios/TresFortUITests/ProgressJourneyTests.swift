@@ -3,9 +3,11 @@ import XCTest
 final class ProgressJourneyTests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
-    private func launch(largeText: Bool = false, empty: Bool = false) -> XCUIApplication {
+    private func launch(largeText: Bool = false, empty: Bool = false, shared: Bool = false, profileFailure: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "progress"
+        if shared { app.launchEnvironment["TRESFORT_UI_HEALTH_SHARED"] = "1" }
+        if profileFailure { app.launchEnvironment["TRESFORT_UI_HEALTH_PROFILE_FAIL"] = "1" }
         if empty { app.launchEnvironment["TRESFORT_UI_PROGRESS_EMPTY"] = "1" }
         if largeText { app.launchEnvironment["TRESFORT_UI_LARGE_TEXT"] = "1" }
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
@@ -67,6 +69,37 @@ final class ProgressJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["calendar.weeklySchedule"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["calendar.exerciseProgress"].exists)
         XCTAssertFalse(app.buttons["history.weight"].exists)
+    }
+
+    func testHealthShortcutLoadsSharingBeforeProfileAndCanDisableIt() {
+        let app = launch(shared: true)
+        tap(app.buttons["progress.weightSettings"], in: app)
+        let sharing = app.switches["health.workoutSharing"]
+        for _ in 0..<10 where !sharing.exists || !sharing.isHittable { app.swipeUp() }
+        XCTAssertTrue(sharing.waitForExistence(timeout: 5))
+        XCTAssertEqual(sharing.value as? String, "1")
+        tap(sharing, in: app)
+        XCTAssertTrue(app.staticTexts["health.sharingOff"].waitForExistence(timeout: 5))
+        app.buttons["Done"].tap()
+        tap(app.buttons["progress.weightSettings"], in: app)
+        let off = app.staticTexts["health.sharingOff"]
+        for _ in 0..<10 where !off.exists || !off.isHittable { app.swipeUp() }
+        XCTAssertTrue(off.waitForExistence(timeout: 5), "Reopening must confirm the server saved the opt-out")
+        XCTAssertFalse(app.switches["health.workoutSharing"].exists)
+    }
+
+    func testHealthShortcutKeepsFailedSharingReadUnknownAfterRetry() {
+        let app = launch(shared: true, profileFailure: true)
+        tap(app.buttons["progress.weightSettings"], in: app)
+        let retry = app.buttons["health.retrySharing"]
+        for _ in 0..<10 where !retry.exists || !retry.isHittable { app.swipeUp() }
+        XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["health.sharingOff"].exists)
+        XCTAssertFalse(app.switches["health.workoutSharing"].exists)
+        tap(retry, in: app)
+        XCTAssertTrue(retry.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["health.sharingOff"].exists)
+        XCTAssertFalse(app.switches["health.workoutSharing"].exists)
     }
 
     func testEmptyProgressExplainsHowTrainingStartsWithoutRequiringWeight() {

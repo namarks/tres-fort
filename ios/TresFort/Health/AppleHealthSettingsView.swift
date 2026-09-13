@@ -11,11 +11,11 @@ struct AppleHealthSettingsView: View {
     @ObservedObject var groupModel: GroupModel
 
     @State private var connecting = false
-    /// Mirrors `me.health.sharing_in_group`. Seeded on appear; `suppressSync`
-    /// guards the seeding/revert writes from re-triggering the network PATCH.
-    @State private var sharing = false
-    @State private var suppressSync = false
+    @State private var sharing: Bool?
+    @State private var loadingSharing = false
+    @State private var sharingError: String?
     @State private var togglingShare = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Form {
@@ -23,14 +23,7 @@ struct AppleHealthSettingsView: View {
             if health.isAvailable {
                 actionSection
                 BodyWeightAccessSection(model: health.weight)
-                // Sharing stays reachable while connected OR while the server
-                // still has it ON — so a user who disconnects Apple Health with
-                // sharing left on can still turn off group visibility for their
-                // already-pushed rows (disconnect stops syncing but doesn't flip
-                // the server-side opt-in or delete those rows).
-                if health.enabled || sharing {
-                    sharingSection
-                }
+                sharingSection
                 if health.enabled || health.anchorResetPending {
                     disconnectSection
                 }
@@ -44,11 +37,9 @@ struct AppleHealthSettingsView: View {
         }
         .navigationTitle("Apple Health")
         .navigationBarTitleDisplayMode(.inline)
-        .task {
-            // Seed the toggle from server truth without firing a PATCH.
-            suppressSync = true
-            sharing = groupModel.me?.health?.sharing_in_group ?? false
-            suppressSync = false
+        .task { await loadSharing() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await loadSharing() } }
         }
     }
 
@@ -130,17 +121,46 @@ struct AppleHealthSettingsView: View {
 
     // MARK: - Group-feed sharing
 
-    @ViewBuilder
     private var sharingSection: some View {
         Section {
-            Toggle("Show in group feed", isOn: $sharing)
-                .disabled(togglingShare)
-                .onChange(of: sharing) { _, newValue in
-                    guard !suppressSync else { return }
-                    Task { await applySharing(newValue) }
+            if loadingSharing {
+                ProgressView("Checking workout sharing…")
+            } else if let sharing {
+                // Keep an existing opt-in reachable after workout sync is
+                // disconnected: stopping imports does not unshare old rows.
+                if health.enabled || sharing {
+                    Toggle("Show in group feed", isOn: Binding(
+                        get: { self.sharing ?? false },
+                        set: { value in Task { await applySharing(value) } }))
+                        .disabled(togglingShare)
+                        .accessibilityIdentifier("health.workoutSharing")
+                } else {
+                    Text("Workout sharing is off")
+                        .accessibilityIdentifier("health.sharingOff")
                 }
+            }
+            if let sharingError { Text(sharingError).font(.footnote).foregroundStyle(.orange) }
+            if sharing == nil && !loadingSharing {
+                Button("Retry sharing status") { Task { await loadSharing() } }
+                    .accessibilityIdentifier("health.retrySharing")
+            }
+        } header: {
+            Text("Workout sharing")
         } footer: {
             Text("Off by default. When on, your Apple Health workouts appear to other members of your groups. Your lifting and intervals.icu activities are unaffected.")
+        }
+    }
+
+    private func loadSharing() async {
+        guard !loadingSharing, !togglingShare else { return }
+        loadingSharing = true
+        sharingError = nil
+        defer { loadingSharing = false }
+        do {
+            sharing = try await groupModel.readHealthSharing()
+        } catch {
+            sharing = nil
+            sharingError = "Couldn’t load workout sharing. Please try again."
         }
     }
 
@@ -174,15 +194,16 @@ struct AppleHealthSettingsView: View {
     }
 
     private func applySharing(_ newValue: Bool) async {
+        guard let previous = sharing, !togglingShare, !loadingSharing else { return }
         togglingShare = true
+        sharing = newValue
+        sharingError = nil
         defer { togglingShare = false }
         do {
             try await groupModel.setHealthSharing(newValue)
         } catch {
-            // Revert the toggle without re-firing the PATCH.
-            suppressSync = true
-            sharing = !newValue
-            suppressSync = false
+            sharing = previous
+            sharingError = "Couldn’t update workout sharing. Please try again."
         }
     }
 

@@ -63,7 +63,6 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
 // offset drives the condense morph.
 struct CalendarMonthView: View {
     @ObservedObject var sync: SyncModel
-    var onExerciseProgress: (() -> Void)? = nil
     var onWeeklySchedule: (() -> Void)? = nil
 
     /// First day of the displayed month (anchored to its 1st). Self-owned now
@@ -187,14 +186,6 @@ struct CalendarMonthView: View {
                         .padding(16)
                 }
                 .accessibilityIdentifier("calendar.weeklySchedule")
-            }
-            if let onExerciseProgress {
-                Button(action: onExerciseProgress) {
-                    Label("Exercise progress", systemImage: "chart.xyaxis.line")
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(16)
-                }
-                .accessibilityIdentifier("calendar.exerciseProgress")
             }
             feed
         }

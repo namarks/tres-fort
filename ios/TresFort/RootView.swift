@@ -7,13 +7,14 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var defaults: LocalPersistence = .standard
     var now: () -> Date = Date.init
+    var weightReader: (any BodyWeightReading)? = nil
 
     var body: some View {
         Group {
             switch model.phase {
             case .signedIn:
                 if model.onboardingComplete {
-                    MainTabView(auth: model, defaults: defaults, now: now)
+                    MainTabView(auth: model, defaults: defaults, now: now, weightReader: weightReader)
                         .id("\(model.featureSessionEpoch)-\(defaults.recoveryGeneration)")
                 } else {
                     OnboardingView(auth: model, defaults: defaults)

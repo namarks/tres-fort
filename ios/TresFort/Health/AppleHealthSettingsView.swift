@@ -20,19 +20,9 @@ struct AppleHealthSettingsView: View {
     var body: some View {
         Form {
             statusSection
-            Section("How your workouts are used") {
-                Text("With the permissions you grant, Très Fort uploads workout records to its server: activity type, source, dates, duration, distance, calories, elevation and heart-rate summaries when available. An authorized AI app and its configured model provider can read these records. Group sharing is separate and off by default.")
-                    .font(.footnote)
-                PrivacyPolicyLink()
-            }
             if health.isAvailable {
-                Section {
-                    NavigationLink("Weight", destination: BodyWeightView(model: health.weight))
-                        .accessibilityIdentifier("health.weight")
-                } footer: {
-                    Text("Connect weight separately to view your measurements and trend on this iPhone.")
-                }
                 actionSection
+                BodyWeightAccessSection(model: health.weight)
                 // Sharing stays reachable while connected OR while the server
                 // still has it ON — so a user who disconnects Apple Health with
                 // sharing left on can still turn off group visibility for their
@@ -45,6 +35,12 @@ struct AppleHealthSettingsView: View {
                     disconnectSection
                 }
             }
+            Section("How your workouts are used") {
+                Text("With the permissions you grant, Très Fort uploads workout records to its server: activity type, source, dates, duration, distance, calories, elevation and heart-rate summaries when available. An authorized AI app and its configured model provider can read these records. Group sharing is separate and off by default.")
+                    .font(.footnote)
+                PrivacyPolicyLink()
+            }
+
         }
         .navigationTitle("Apple Health")
         .navigationBarTitleDisplayMode(.inline)

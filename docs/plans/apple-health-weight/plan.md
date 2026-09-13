@@ -1,12 +1,15 @@
-# Apple Health Weight
+# Progress and Apple Health Weight
 
-Slug: apple-health-weight · Status: gated · Updated: 2026-09-12 · Theme: member-experience
+Slug: apple-health-weight · Status: gated · Updated: 2026-09-13 · Theme: member-experience
 
 ## Goal
 
 Let a member view their Apple Health weight in Tres Fort, including Withings
 measurements already shared with Health, with a dated latest reading and a
-30/90-day trend. Weight access is a separate opt-in from workout uploads.
+30/90-day trend. Bring strength, optional weight and completed-workout
+consistency together in a Progress tab. Weight access stays an optional data
+permission under the existing Apple Health connection, separate from workout
+upload permission.
 
 ## Phases
 
@@ -18,9 +21,17 @@ measurements already shared with Health, with a dated latest reading and a
     account teardown, and keep permission intent scoped to the signed-in user.
   - Verify calculations, empty/denied reads, deletion refresh, unit switching,
     disconnect races, account isolation, and the native view using synthetic data.
+- [x] **P3 — Bring training trends into Progress**
+  - Add a Progress tab with recent lifts, per-exercise trends/best sets,
+    completed-workout consistency and optional Apple Health weight.
+  - Keep Calendar focused on dates, recorded training and weekly scheduling.
+  - Manage Read weight in Profile → Connections → Apple Health, with a shortcut
+    from Progress to the same settings. Do not add a second provider connection.
+  - Verify civil-week boundaries, completed-state filtering, cached history,
+    navigation, permission changes and accessibility text using synthetic data.
 - [ ] **P2 — Verify on an authorized device build**
-  - After authorized iOS distribution, connect Weight from Calendar or
-    Profile → Connections → Apple Health → Weight on an iPhone with readings.
+  - After authorized iOS distribution, enable Read weight in Profile →
+    Connections → Apple Health, then open Progress → Weight on an iPhone with readings.
   - Verify Apple's weight permission sheet, a real dated measurement and its
     source, relaunch/foreground refresh, permission revocation and reconnect.
   - Verify a Withings measurement after it arrives in Apple Health; this does
@@ -34,10 +45,20 @@ measurements already shared with Health, with a dated latest reading and a
 
 ## Next step
 
-**Now (@owner):** After the implementation passes PR review/CI and merges,
-authorize an iOS distribution containing it and complete P2 on an iPhone.
+**Now (@owner):** After the P3 implementation passes exact-head independent
+PR review and CI and merges, authorize an iOS distribution containing it and
+complete P2 on an iPhone.
 
 ## Verification evidence
+
+- P3 passed a disposable iPhone 17 / iOS 26.2 unsigned build and 30 focused
+  checks on 2026-09-13: 22 calculation/lifecycle tests and eight UI journeys.
+  These cover civil-week boundaries, current completed records, weight
+  permission/refresh/removal, five-year cached exercise history, sparse trend
+  selection, all Progress drill-downs, empty history and accessibility text.
+  The three Progress journeys passed again after final heading/date-label
+  refinements. The checked-in iOS sources match that passing build's manifest.
+  The implementation PR carries exact-head independent review and CI evidence.
 
 - `npm run plans:check` passes: 8 current plans, 16 edges, 2 initiatives.
 - Disposable iPhone 17 / iOS 26.2 build and focused tests passed on 2026-09-12:
@@ -70,6 +91,13 @@ authorize an iOS distribution containing it and complete P2 on an iPhone.
 - Apple conceals read-denial status. Finishing the permission sheet records
   intent only. Empty results explain both missing data and permission checks.
 - Workout-sync connection and group-sharing controls retain their existing
-  meaning; the separate weight disconnect only clears weight from this view.
+  meaning; turning off Read weight clears the private weight projection.
 - Server/coach access or Intervals weight import would require a separate
   product decision about collection, provenance and consent.
+
+- On 2026-09-13 Nick approved a dedicated Progress tab after clarifying that
+  Apple Health already supplies the connection. P3 reuses exercise metrics and
+  load/mode cohorts. Its consistency chart counts completed native workout
+  records by civil date, uses Monday–Sunday weeks and labels the partial current
+  week. Imported and separately logged activities remain in Calendar; the chart
+  does not claim an all-sport completion rate or compare against a scheduled goal.

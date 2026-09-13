@@ -3,6 +3,7 @@ import SwiftUI
 
 struct BodyWeightView: View {
     @ObservedObject var model: BodyWeightModel
+    var onManageAccess: () -> Void = {}
     @Environment(\.scenePhase) private var scenePhase
     @State private var days = 30
     @State private var unit: BodyWeightUnit = Locale.current.measurementSystem == .us ? .pounds : .kilograms
@@ -10,9 +11,16 @@ struct BodyWeightView: View {
     var body: some View {
         Form {
             if model.requiresPersonalSignIn {
-                Section { Text("Sign in with your personal account to connect Apple Health weight.") }
+                Section { Text("Sign in with your personal account to view Apple Health weight.") }
             } else if !model.isAvailable {
                 Section { Text("Apple Health isn’t available on this device.") }
+            } else if !model.enabled {
+                Section {
+                    Text("Weight is optional").font(.headline)
+                    Text("Enable weight access in Apple Health settings to see measurements and trends here.")
+                    Button("Manage Apple Health", action: onManageAccess)
+                        .accessibilityIdentifier("weight.manageAccess")
+                }
             } else {
                 if let history = model.history, let latest = history.latest {
                     Section("Latest measurement") {
@@ -47,29 +55,23 @@ struct BodyWeightView: View {
                             Text(model.isConnecting ? "Requesting access…" : "Reading weight…")
                         }
                     } else {
-                        Button(model.enabled ? "Refresh weight" : "Connect weight") {
-                            Task {
-                                if model.enabled { await model.refresh() }
-                                else { await model.connect() }
-                            }
-                        }
+                        Button("Refresh weight") { Task { await model.refresh() } }
                         .accessibilityIdentifier("weight.connectOrRefresh")
                     }
                 } footer: {
                     Text("Read your weight from Apple Health, including measurements shared by Withings and other scales. Weight stays on this device and is visible only to you in Très Fort.")
                 }
-                if model.enabled {
-                    Section {
-                        Button("Disconnect weight", role: .destructive) { model.disconnect() }
-                            .accessibilityIdentifier("weight.disconnect")
-                    } footer: {
-                        Text("Stops reading weight and clears this view. Your measurements remain in Apple Health.")
-                    }
-                }
+
             }
         }
         .navigationTitle("Weight")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Apple Health", action: onManageAccess)
+                    .accessibilityIdentifier("weight.settings")
+            }
+        }
         .task { await model.refresh() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await model.refresh() } }

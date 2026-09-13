@@ -2,13 +2,13 @@
 import SwiftUI
 
 @MainActor
-private final class FixtureWeightReader: BodyWeightReading {
+final class FixtureWeightReader: BodyWeightReading {
     let isAvailable = true
     private var reads = 0
     func requestAuthorization() async throws {}
     func read(from: Date, through: Date) async throws -> [BodyWeightMeasurement] {
         reads += 1
-        if ProcessInfo.processInfo.environment["TRESFORT_UI_WEIGHT_EMPTY"] == "1" || reads > 1 { return [] }
+        if ProcessInfo.processInfo.environment["TRESFORT_UI_WEIGHT_EMPTY"] == "1" || (ProcessInfo.processInfo.environment["TRESFORT_UI_WEIGHT_CLEAR_ON_REFRESH"] == "1" && reads > 1) { return [] }
         return (0..<20).map { day in
             BodyWeightMeasurement(id: UUID(),
                 date: through.addingTimeInterval(-Double(day) * 86_400 - 60),
@@ -20,6 +20,7 @@ private final class FixtureWeightReader: BodyWeightReading {
 
 struct BodyWeightFixtureView: View {
     @StateObject private var model: BodyWeightModel
+    @State private var showSettings = false
 
     init(auth: AuthModel) {
         _model = StateObject(wrappedValue: BodyWeightModel(auth: auth, defaults: UIFixtureModel.defaults,
@@ -28,7 +29,14 @@ struct BodyWeightFixtureView: View {
 
     var body: some View {
         NavigationStack {
-            BodyWeightView(model: model)
+            BodyWeightView(model: model, onManageAccess: { showSettings = true })
+        }
+        .sheet(isPresented: $showSettings) {
+            NavigationStack {
+                Form { BodyWeightAccessSection(model: model) }
+                    .navigationTitle("Apple Health")
+                    .toolbar { Button("Done") { showSettings = false } }
+            }
         }
         .preferredColorScheme(.dark)
     }

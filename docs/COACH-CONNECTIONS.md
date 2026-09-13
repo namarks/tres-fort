@@ -137,6 +137,16 @@ package may bundle in-app coaching and API calls when cost and product economics
 justify it; its pricing, usage limits, billing and provider decisions remain future work.
 
 
+For local browser regression verification, apply migrations to a disposable
+local D1, start `wrangler dev --local --port 8787 --var
+OWNER_AUTH_PASSPHRASE:synthetic-browser-consent`, then run
+`npm run test:oauth-browser`. This uses only literal loopback addresses and
+synthetic credentials. It checks IPv4 and IPv6 initial consent, retries and
+PKCE exchange in Chrome with JavaScript disabled. Set `CHROME_BIN` if Chrome
+is outside the default macOS application path. IPv6 callbacks use an automatic
+navigation page because [CSP source lists](https://www.w3.org/TR/CSP3/#framework-directive-source-list)
+cannot express IPv6 literals.
+
 ## Mobile approval and public plugin release
 
 The iPhone implementation uses an explicit account approval screen. The OAuth

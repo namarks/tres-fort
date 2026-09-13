@@ -8,6 +8,7 @@ const MEMBER = '74794029-c461-43b4-9021-5f29d544dc60';
 const OTHER = '7a56e10e-4120-41d0-a1d1-f508f0c736aa';
 const clients = [
   { name: 'Codex', redirect: 'http://127.0.0.1:45213/callback/tres-fort-test', registeredRedirect: 'http://127.0.0.1/callback/tres-fort-test' },
+  { name: 'IPv6 native app', redirect: 'http://[::1]:45213/callback/tres-fort-test', registeredRedirect: 'http://[::1]/callback/tres-fort-test' },
   { name: 'Claude', redirect: 'https://claude.ai/api/mcp/auth_callback' },
   { name: 'Other AI app', redirect: 'http://127.0.0.1:39117/oauth/callback' },
 ];
@@ -35,7 +36,9 @@ async function connect(name: string, redirect: string, passphrase: string, regis
   });
   const page = await SELF.fetch(`${BASE}/oauth/authorize?${params}`);
   expect(page.status).toBe(200);
-  expect(page.headers.get('Content-Security-Policy')).toContain(`form-action 'self' ${new URL(redirect).origin};`);
+  const ipv6 = new URL(redirect).hostname.startsWith('[');
+  expect(page.headers.get('Content-Security-Policy')).toContain(ipv6
+    ? "form-action 'self';" : `form-action 'self' ${new URL(redirect).origin};`);
   const html = await page.text();
   expect(html).toContain('this app and its configured AI provider');
   expect(html).toContain('App name supplied by the connecting client');
@@ -45,8 +48,17 @@ async function connect(name: string, redirect: string, passphrase: string, regis
   const authorized = await SELF.fetch(`${BASE}/oauth/authorize`, {
     method: 'POST', body: params, redirect: 'manual',
   });
-  expect(authorized.status).toBe(302);
-  const callback = new URL(authorized.headers.get('location')!);
+  expect(authorized.status).toBe(ipv6 ? 200 : 302);
+  expect(authorized.headers.get('Cache-Control')).toBe('no-store');
+  expect(authorized.headers.get('Referrer-Policy')).toBe('no-referrer');
+  let destination = authorized.headers.get('location');
+  if (ipv6) {
+    const navigation = await authorized.text();
+    expect(navigation).toContain('<meta http-equiv="refresh"');
+    expect(navigation).not.toContain('<script');
+    destination = navigation.match(/<a href="([^"]+)"/)![1]!.replaceAll('&amp;', '&');
+  }
+  const callback = new URL(destination!);
   expect(callback.origin + callback.pathname).toBe(redirect);
   expect(callback.searchParams.get('state')).toBe('state&<literal>');
   if (registeredRedirect !== redirect) {

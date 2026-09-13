@@ -145,9 +145,13 @@ describe('native loopback OAuth callbacks', () => {
     const submitted = await SELF.fetch(`${BASE}/oauth/authorize`, {
       method: 'POST', body: params, redirect: 'manual',
     });
-    expect(submitted.status).toBe(valid ? 302 : 400);
+    const ipv6 = valid && new URL(redirect).hostname.startsWith('[');
+    expect(submitted.status).toBe(valid ? (ipv6 ? 200 : 302) : 400);
     if (valid) {
-      const callback = new URL(submitted.headers.get('location')!);
+      const destination = ipv6
+        ? (await submitted.text()).match(/<a href="([^"]+)"/)![1]!.replaceAll('&amp;', '&')
+        : submitted.headers.get('location')!;
+      const callback = new URL(destination);
       expect(callback.port).toBe('45213');
       expect(callback.pathname).toBe(new URL(redirect).pathname);
       expect(callback.searchParams.has('code')).toBe(true);

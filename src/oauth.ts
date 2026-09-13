@@ -198,6 +198,15 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+function consentPolicy(callback: URL): string {
+  // Chromium checks the POST redirect against form-action. CSP cannot express
+  // IPv6 literal sources, so those callbacks use a separate navigation page.
+  // All other callbacks allow only their validated origin (or custom scheme).
+  const formCallback = callback.hostname.startsWith('[') ? ''
+    : ` ${callback.origin === 'null' ? callback.protocol : callback.origin}`;
+  return `default-src 'none'; style-src 'unsafe-inline'; form-action 'self'${formCallback}; frame-ancestors 'none'; base-uri 'none'`;
+}
+
 function consentPage(params: Record<string, string>, clientName: string | null, error?: string, mobileRequest?: string): string {
   const hidden = Object.entries(params)
     .map(
@@ -249,13 +258,9 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
   }
   c.header('Cache-Control', 'no-store');
   c.header('Referrer-Policy', 'no-referrer');
-  // Chromium applies form-action to the POST's redirect as well. Permit
-  // only this already-validated callback origin (including native loopback
-  // port); URL.origin serialization cannot inject a policy directive.
   let callback: URL;
   try { callback = new URL(q.redirect_uri); } catch { return c.text('invalid redirect_uri', 400); }
-  const formCallback = callback.origin === 'null' ? `${callback.protocol}` : callback.origin;
-  c.header('Content-Security-Policy', `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${formCallback}; frame-ancestors 'none'; base-uri 'none'`);
+  c.header('Content-Security-Policy', consentPolicy(callback));
   // Only HTTPS callbacks can complete on the phone. Desktop loopback clients
   // retain the existing consent form. A request ID never grants access.
   let mobileRequest: string | undefined;
@@ -294,6 +299,11 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
   if (!client) return c.text('invalid client_id', 400);
   const allowed: string[] = JSON.parse(client.redirect_uris);
   if (!redirectAllowed(allowed, f('redirect_uri'))) return c.text('invalid redirect_uri', 400);
+  let callback: URL;
+  try { callback = new URL(f('redirect_uri')); } catch { return c.text('invalid redirect_uri', 400); }
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  c.header('Content-Security-Policy', consentPolicy(callback));
 
   const params = {
     client_id: f('client_id'),
@@ -363,10 +373,20 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
       401,
     );
   }
-  const url = new URL(params.redirect_uri);
-  url.searchParams.set('code', code);
-  if (params.state) url.searchParams.set('state', params.state);
-  return c.redirect(url.toString(), 302);
+  callback.searchParams.set('code', code);
+  if (params.state) callback.searchParams.set('state', params.state);
+  if (callback.hostname.startsWith('[')) {
+    // Complete the same-origin POST before navigating, so form-action stays
+    // restricted to 'self' without an invalid IPv6 source or a broad http:
+    // allowance. The one-time code remains bound to this exact callback/PKCE.
+    const destination = escapeHtml(callback.toString());
+    return c.html(`<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="0;url=${destination}"><title>Return to your AI app</title>
+</head><body><p>Returning to your AI app…</p>
+<p>If nothing happens, <a href="${destination}" rel="noreferrer">continue to your AI app</a>.</p></body></html>`);
+  }
+  return c.redirect(callback.toString(), 302);
 });
 
 // ---- token ---------------------------------------------------------------

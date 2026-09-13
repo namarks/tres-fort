@@ -36,7 +36,9 @@ Repository delivery and actual provider connection/release evidence remain disti
     Link, with expiring one-use requests, PKCE-bound callbacks and account fences.
   - Local checks: 1,057 backend tests; 551 iOS unit tests passed and one
     existing skip; mobile consent UI journey; Chrome 152 form redirect/PKCE
-    round trip; plugin, site, TypeScript and plan validation. Local review found
+    round trip (IPv4/IPv6, initial consent and retry, JavaScript disabled);
+    eight focused iOS session/approval tests after the renewal fix; plugin,
+    site, TypeScript and plan validation. Local review found
     a Chromium CSP redirect regression and an understated legacy logging hint;
     both are fixed with behavioral regression coverage. Unfinished approvals
     remain cancellable from Profile even before a token exists.

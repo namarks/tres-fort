@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-09-11 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-09-12 · Theme: release
 
 ## Goal
 
@@ -66,41 +66,52 @@ preparation and TestFlight availability do not mean public release.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P4 | gated_by | external:app-review-access-activation | The replacement reviewer login needs an owner-managed credential, signing-key access on the release Mac, and separately authorized deployment/distribution before its private App Store fields can be completed. |
+| P4 | gated_by | external:app-store-owner-fields | Confirm any account agreements or privacy publication fields inaccessible to existing tools before final review submission. |
 
 ## Next step
 
-**Now (@agent):** Finish exact-head independent review and required CI for the
-approved [reviewer login](reviewer-access.md) in [PR #187](https://github.com/namarks/tres-fort/pull/187),
-then merge and complete replacement-release preparation. Local checks passed all
-1,014 backend tests, 78 authentication model tests, the reviewer simulator journey,
-typecheck, plan graph, website/uploader/query-plan checks, and a Worker dry run.
-The Release archive compiled as version 1.0 (39), iPhone-only, with its privacy
-manifest; it is **unsigned and not uploadable**. macOS rejected signing-key use
-with `errSecInternalComponent` and reported `User interaction is not allowed` on
-the Mac mini. The owner needs to restore keychain access there; no credential
-was requested in chat or changed. The review's sample-schedule finding is fixed
-with a real-calendar projection assertion and awaits fresh review. App Store Connect rejected
-**Add for Review** because the required reviewer username/password were blank;
-the previous Sign in with Apple instructions did not satisfy that form. The owner
-approved adding a dedicated sample login and preparing a new build. Activation
-and its owner-managed credential remain separate from repository delivery.
+**Now (@agent):** Finish exact-head integration checks for the
+[Garmin attribution fix](attribution.md) and [retired reviewer login](reviewer-access.md),
+then merge and deploy the pinned release source. The owner approved the fixes,
+compatible Worker deployment, replacement upload and Apple review submission on
+2026-09-12. Keep manual public release; no public-release authorization is implied.
 
-The owner is completing App Store Connect manually on another Mac. Do not ask for
-sign-in on the agent's browser. The owner has saved listing copy, the running-aware
-Claude paragraph, five iPhone screenshots, subtitle/category, review contact,
-pricing/US availability, and manual release. Build 38 was selected during the
-walkthrough. The privacy questionnaire was completed with account-linked contact,
-health/fitness, content and identifier declarations; subsequent aggregate-diagnostic
-recommendations and privacy publication still need final readback. The private
-release package retains provider evidence and contact details; never copy those
-contact values or credentials into repository documentation. Agreements remain
-owner-deferred. The actual error above means no review submission occurred.
+The replacement **1.0 (40)** archive is pinned to reviewed source
+`9373d6f0acad9a9ef444e54fe9c9d8a8b7ad24c8`, tree
+`f2a29e8e21e94bfc6f25b85b1406849a9ea3433d`. Xcode's desktop Release archive
+succeeded, code signing verifies, both app and widget report 1.0 (40), and all
+293 tracked snapshot inputs still match. Build 40 was unused at preparation.
+It has **not** been exported for App Store distribution, uploaded or submitted.
+The automatic approval review blocked Xcode's distribution-signing step because
+automatic signing may create or update Apple certificates, app IDs and profiles;
+specific owner approval of that signing approach is required before continuing.
+Existing matching profiles and a distribution identity were verified, but the
+manual profile picker did not accept them. Do not retry the blocked automatic
+step without the missing approval or substitute shell signing as a bypass.
 
-The content-rights check confirmed the exercise asset license and commercial
-Intervals API terms. Garmin attribution for imported Garmin-derived data remains
-unverified in the candidate and needs resolution before declaring the complete
-submission package ready.
+PR #192's onboarding work advanced main during archive preparation. PR #193's
+repository integration includes that upstream work, but the prepared release
+remains pinned to the source above; a later integration commit must not silently
+replace it. The pinned Worker needs only pending additive migration **0050**
+before deployment. Migration 0051 and the new onboarding feature are outside this
+pinned candidate. A private recovery bookmark and the signed archive/manifest
+are retained under the release host's `release-attribution` artifact directory.
+
+The 2026-09-12 provider readback confirmed version 1.0 in `READY_FOR_REVIEW`,
+build 38 selected, `MANUAL` release and Apple-only notes with
+`demoAccountRequired: false`. The original credential error was form validation;
+it did not establish that Apple reviewers cannot use Sign in with Apple. Build
+39's password workaround was uploaded but is not the selected draft. The new
+candidate removes that login and revokes old sample API/renewal access, retaining
+only legacy identity/data-isolation safeguards. The current changes need final
+verification; no replacement upload or actual review submission is claimed yet.
+
+The owner is completing App Store Connect on another Mac. Do not repeatedly ask
+for sign-in on the agent browser. Listing copy, running-aware Claude description,
+five iPhone screenshots, subtitle/category, review contact, free US availability
+and manual release were saved during the walkthrough. Privacy answers were
+entered; final privacy publication and applicable agreements still need readback.
+Keep review-contact values and all credentials out of repository documentation.
 
 The owner explicitly deferred the live workout canary and observation and asked
 to ship ASAP. The retained signed **1.0 (35)** IPA was uploaded successfully at
@@ -109,7 +120,7 @@ membership in the internal **Testers** group. Do not upload it again or restore
 the waived canary as an upload gate. Other physical-device coverage remains
 unverified; neither the exception nor public reads establish production writes.
 
-Latest internal distribution: the owner requested deployment of the merged UI
+Earlier internal distribution: the owner requested deployment of the merged UI
 fixes. [Version 1.0 (38)](release-38.md) ships workout browsing, compact Profile
 account controls, a pinned set action, simpler editing modes, and corrected
 deletion/completion behavior from source `0ac5d46b5a245c674fbc10727117b264a38db580`.

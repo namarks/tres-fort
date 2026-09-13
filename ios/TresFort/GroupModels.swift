@@ -266,6 +266,7 @@ struct FeedRideItem: Codable, Identifiable, Equatable {
     let ride: Inner
 
     struct Inner: Codable, Equatable {
+        var source_attribution: String? = nil
         let kind: String
         let name: String?
         let distance_m: Double?
@@ -319,6 +320,8 @@ struct GroupStatsResponse: Decodable {
 
 /// One member's roll-up. `is_me` is server-stamped — trust it.
 struct MemberStat: Codable, Identifiable, Equatable {
+    var source_attribution: String? = nil
+    var streak_source_attribution: String? = nil
     var id: String { user_id }
     let user_id: String
     let display_name: String
@@ -352,6 +355,7 @@ struct MemberActivitySeries: Decodable, Equatable {
 /// Per-day counts kept by SOURCE; the client maps these to WorkoutCategory
 /// (so the type→category rule lives in exactly one place — iOS).
 struct DayActivity: Decodable, Equatable {
+    var source_attribution: String? = nil
     let date: String                // YYYY-MM-DD civil
     let sessions: Int               // strength → lift
     let rides: Int                  // intervals endurance → endurance

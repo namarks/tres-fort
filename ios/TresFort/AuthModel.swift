@@ -397,39 +397,7 @@ final class AuthModel: ObservableObject {
         }
     }
 
-    func signInForReview(username: String, password: String) async {
-        let requestID = UUID()
-        signInRequestID = requestID
-        let epoch = featureSessionEpoch
-        guard !accountDeletionPending else { return }
-        phase = .working("Signing in…")
-        do {
-            let res = try await api.authReview(username: username, password: password)
-            guard signInRequestID == requestID, featureSessionEpoch == epoch else { return }
-            guard Self.subject(of: res.jwt) == res.user.id,
-                  Self.claims(of: res.jwt)?["app_review"] as? Bool == true else {
-                phase = .error("session identity mismatch")
-                return
-            }
-            // Never carry a personal invitation, coach intent, or unscoped
-            // legacy training into the shared sample account.
-            guard persistEntryIntents([]) else {
-                phase = .error("Saved navigation needs recovery before changing accounts.")
-                return
-            }
-            pendingEntryIntents = []
-            finishSignIn(res, appleUserID: nil, review: true)
-        } catch let APIError.http(code, _) {
-            guard signInRequestID == requestID, featureSessionEpoch == epoch else { return }
-            phase = .error(code == 401 ? "The reviewer username or password is incorrect."
-                : "Reviewer sign-in is unavailable. Please try again later or contact support.")
-        } catch {
-            guard signInRequestID == requestID, featureSessionEpoch == epoch else { return }
-            phase = .error("Could not connect. Check your connection and try again.")
-        }
-    }
-
-    private func finishSignIn(_ res: AuthResponse, appleUserID: String?, review: Bool = false) {
+    private func finishSignIn(_ res: AuthResponse, appleUserID: String?) {
         // A failed bind may leave previously unbound links on disk. Do
         // not let a different account claim them after reauthentication.
         if let previousAccount = userID, previousAccount != res.user.id {
@@ -442,15 +410,7 @@ final class AuthModel: ObservableObject {
         if featureJWT != nil {
             notifyFeatureSessionBoundary()
         }
-        if review {
-            guard defaults.set(true, forKey: AccountLocalState.reviewAccountKey(userID: res.user.id)) else {
-                phase = .error("Saved data needs recovery before reviewer sign-in.")
-                return
-            }
-        }
-        if !review {
-            AccountLocalState.bindLegacyState(userID: res.user.id, defaults: defaults)
-        }
+        AccountLocalState.bindLegacyState(userID: res.user.id, defaults: defaults)
         featureSessionEpoch &+= 1
         tokenStore.save(res.jwt)
         jwt = res.jwt
@@ -468,8 +428,8 @@ final class AuthModel: ObservableObject {
         }
         reauthenticationReason = nil
         let onboardingKey = AccountLocalState.onboardedKey(userID: res.user.id)
-        if review || defaults.object(forKey: onboardingKey) == nil {
-            defaults.set(review, forKey: onboardingKey)
+        if defaults.object(forKey: onboardingKey) == nil {
+            defaults.set(false, forKey: onboardingKey)
         }
         onboardingComplete = defaults.bool(forKey: onboardingKey)
         bindEntryIntents(to: res.user.id)

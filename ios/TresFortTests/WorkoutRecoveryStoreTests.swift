@@ -127,6 +127,7 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
         syncedAt: Int? = 1_000
     ) -> ExternalActivity {
         ExternalActivity(
+            attribution_version: 1,
             id: id,
             source: "intervals",
             external_id: id,

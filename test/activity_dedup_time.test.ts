@@ -58,7 +58,7 @@ describe('Intervals and HealthKit match source instants', () => {
       if (healthFirst) {
         expect(retired.synced_at).toBeGreaterThan(pushed.synced_at);
         expect((await getState(env.DB,userId,0,0,0,pushed.synced_at)).external_activities)
-          .toContainEqual(retired);
+          .toContainEqual({ ...retired, source_attribution: null, attribution_version: 1 });
       }
       expect((await upsertHealthKitActivity(env.DB,userId,input)).synced_at).toBe(retired.synced_at);
       expect(await dedupeHealthKitAgainstIntervals(env.DB,userId)).toBe(0);

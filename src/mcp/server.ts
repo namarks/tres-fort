@@ -1,3 +1,4 @@
+import { ATTRIBUTION_INSTRUCTIONS } from '../dataAttribution';
 import { coachingSession, coachingPlanMeta } from '../coachingContext';
 import { TRAINING_PROFILE_COACH_GUIDANCE } from '../trainingProfile';
 import { workoutInput, workoutWire } from '../workoutWire';
@@ -1657,7 +1658,9 @@ const TOOLS: Record<string, Tool> = {
       return {
         to: today,
         range,
+        attribution_instructions: ATTRIBUTION_INSTRUCTIONS,
         activities: acts.map((x) => ({
+          source_attribution: x.source_attribution,
           id: x.id,
           date: x.date,
           kind: x.kind,
@@ -1807,7 +1810,9 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
     })),
     ride_conflicts: conflicts,
     // Recently COMPLETED endurance work (actuals from intervals.icu).
+    attribution_instructions: ATTRIBUTION_INSTRUCTIONS,
     recent_activities: recentActivities.map((a) => ({
+      source_attribution: a.source_attribution,
       id: a.id,
       source: a.source,
       date: a.date,
@@ -1844,7 +1849,7 @@ async function dispatch(
         protocolVersion: SUPPORTED_PROTOCOLS.has(requested) ? requested : DEFAULT_PROTOCOL,
         capabilities: { tools: {}, resources: {}, prompts: {} },
         serverInfo: SERVER_INFO,
-        instructions: SERVER_INSTRUCTIONS,
+        instructions: SERVER_INSTRUCTIONS + "\n" + ATTRIBUTION_INSTRUCTIONS,
       });
     }
     case 'ping':

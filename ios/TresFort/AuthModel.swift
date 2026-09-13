@@ -95,6 +95,8 @@ final class AuthModel: ObservableObject {
         accountID != nil && userID == accountID && featureJWT != nil && featureSessionEpoch == epoch
     }
 
+    var trainingSetupPersistence: LocalPersistence { defaults }
+
     @discardableResult
     func requestEntry(_ destination: MemberEntryIntent.Destination) -> Bool {
         guard let current = readEntryIntents() else { return entrySaveFailed() }

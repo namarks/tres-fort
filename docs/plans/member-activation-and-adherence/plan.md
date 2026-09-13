@@ -1,6 +1,6 @@
 # Member Activation and Adherence
 
-Slug: member-activation-and-adherence · Status: paused · Updated: 2026-09-09 · Theme: gym-floor
+Slug: member-activation-and-adherence · Status: paused · Updated: 2026-09-12 · Theme: gym-floor
 
 ## Goal
 
@@ -38,34 +38,79 @@ correct workout.
     schedule, skip, completion, or sign-out changes.
   - Keep notification timing and copy editable in app settings; do not require
     a new server notification system for the initial adherence loop.
-- [ ] **P2 — Recommend the starter path from evidence**
-  - Use direct member feedback and observed walkthroughs of the manual and
-    coach-connected paths to recommend whether a built-in starter plan would
-    materially improve activation; gathering this evidence requires no starter
-    policy decision.
-  - Tune reminders and onboarding copy from concrete member feedback rather
-    than add a generalized analytics, growth, or messaging platform.
-  - [ ] **(a) Implement the decided starter path**
-    - After the product decision, either seed an approved starter through the
-      completed manual builder and the same versioned plan tree, or record the
-      decision not to offer one and retain the manual and coach choices.
-
-## Dependencies
-
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P2(a) | gated_by | external:starter-plan-policy | Implementing or explicitly declining the starter path requires the product decision; evidence and recommendation do not. |
-
-P0 integrated the [completed coaching feedback/history contracts](../completed/coaching-feedback-loop/plan.md)
-and retains their shared SyncModel, Today and fixture behavior.
+- [x] **P2 — Deliver a useful starting point**
+  - [x] **(a) Training profile and starter workout**
+    - Brief, optional setup captures overall goals; all intended activities
+      (weightlifting, running, swimming, cycling, walking, yoga and other);
+      optional weekly activity context; lifting experience; realistic strength
+      time/frequency; equipment; and movements to avoid.
+    - Optional recent working sets retain exercise, weight/unit, reps, effort,
+      and date. These are user reports, not verified strength or prescriptions.
+      Beginners never need a maximum test or a weight estimate.
+    - Preview a small curated starter collection filtered by equipment and
+      excluded movements. Acceptance creates an editable library workout through
+      the shared versioned plan path, never replaces an existing library, and
+      is safe to retry after an uncertain response.
+    - Keep the account-owned profile independent of plan replacement. Expose it
+      in the coach brief/current-plan response and portable export, exclude it
+      from group views, and remove it with permanent account deletion.
+    - Offer the questionnaire before generic group/integration setup and from
+      verified-empty Today. Profile remains editable; interrupted drafts stay
+      in the existing protected account-scoped local store.
+    - Verify mixed-sport and skip paths, first-workout completion, account
+      boundaries, stale saves, transactional rollback, retries and readable
+      layouts. Consistency is the guiding message; starters do not prescribe or
+      schedule endurance sessions from activity selections alone.
 
 ## Next step
 
-**Now (@owner):** P0 is complete for repository delivery. Leave P1 and P2
-inactive until explicitly activated. Production and distribution retain their
-separate authority boundaries.
+**Now (@owner):** P2(a) is implemented and locally verified; its implementation
+PR carries exact-head review and CI evidence for repository delivery. Choose
+whether to activate P1 reminders/widgets. Migration, production deployment and
+iOS distribution remain separately authorized.
 
 ## Notes / open questions
+
+- On 2026-09-12 Nick approved the questionnaire plus editable starter approach
+  and explicitly requested an overall-fitness activity question. This resolves
+  `external:starter-plan-policy` for P2(a). The initial scope emphasizes new and
+  returning lifters, includes optional experienced-lifter inputs, and uses
+  curated deterministic starters with future connected-coach personalization.
+- P2(a) verification covers tenant isolation, profile version conflicts and
+  retries, MCP context without a plan, export/deletion, transactional starter
+  creation, historical receipt replay, both workout database layouts, and
+  already accepted starters after library deletion. The iOS suite passed 548
+  unit tests (one existing skip) before recovery refinements; subsequent focused
+  runs passed eleven profile-model checks, three empty/session-state checks, and
+  journeys covering mixed-sport entry
+  through first completion, optional working sets, and skip from absent/empty
+  plans. Synthetic screenshots were inspected for readable labels and reachable
+  actions. Account refresh fires on acknowledgement even after sheet dismissal;
+  a definite conflict retires pending intent so profile editing remains usable.
+  Reopening identical server answers after a lost save reply adopts the server
+  version before another edit, including normalized selection order/whitespace.
+  Questionnaire pages reset their scroll position when advancing/backtracking,
+  and primary actions including acknowledgement Continue stay visible at larger
+  accessibility text sizes. The mixed-sport, working-set and empty-entry journeys
+  passed with accessibility-large text after the navigation correction. Empty-library starter entry preserves
+  recovery for a real planned/in-progress session, including a plan emptied by
+  another client; recorded sets and the workout record remain accessible.
+  Skip/Close remain available during unanswered reads, profile saves, preview
+  reads and starter acceptance. Dismissal invalidates late UI updates while
+  retaining protected drafts and recoverable starter intent. An unreadable
+  protected draft exposes an explicit restore-from-server action. Today checks
+  the server's durable starter capability so deleting a previously accepted
+  starter does not advertise another acceptance. The final focused recovery run
+  passed twelve model tests and four journeys covering these boundaries. A
+  subsequent dismissal run passed all eleven profile-model tests and both UI
+  tests spanning the four deliberately stalled network stages.
+  Full CI and fresh independent review remain mandatory merge checks.
+- Source base: verified remote main `90f968383629107bd7a95b37bd44da177f87305f`.
+  Starter/profile delivery requires additive migration `0051_training_profile`
+  before the compatible Worker and then the app. Existing staged migration
+  instructions still apply to earlier migrations; this change does not approve
+  a production release or change the workout-rename rollout order.
+
 
 - P0 was activated from verified main `4ec8a9e`; reconciliation preserved the
   shipped manual builder and returned-error recovery. This change closes the

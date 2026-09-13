@@ -12766,10 +12766,29 @@ extension SetOutboxTests {
             await model.load()
             XCTAssertTrue(model.hasVerifiedPlanState)
             XCTAssertTrue(model.canCreateRoutine)
+            XCTAssertTrue(model.canChooseStarterWorkout)
             // A later failed refresh must not keep offering empty-account setup.
             api.stateHandler = { _ in throw error }
             await model.load()
             XCTAssertFalse(model.canCreateRoutine)
+        }
+    }
+
+    func testStarterSetupCannotHideARealSessionAfterTheLibraryBecomesEmpty() async {
+        for status in ["planned", "in_progress"] {
+            for hasPlan in [false, true] {
+                let defaults = defaults(), api = SetWriteAPIStub()
+                let row = SessionRow(id: "unresolved", date: fixedCivilDate, status: status, workout_id: nil, attempt: 1)
+                let emptyPlan = state(session: row, sets: [], workouts: [])
+                let response = StateResponse(plan: hasPlan ? emptyPlan.plan : nil, plan_version: hasPlan ? emptyPlan.plan_version : 0,
+                    sessions: [row], sets: [], external_events: [], external_activities: [], activities: [], server_time: 10)
+                api.stateHandler = { _ in response }
+                let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+                await model.load()
+                XCTAssertTrue(model.hasVerifiedPlanState)
+                XCTAssertEqual(model.todaySession?.id, row.id)
+                XCTAssertFalse(model.canChooseStarterWorkout)
+            }
         }
     }
 
@@ -12787,12 +12806,14 @@ extension SetOutboxTests {
         await model.load()
         XCTAssertFalse(model.hasVerifiedPlanState)
         XCTAssertFalse(model.canCreateRoutine)
+        XCTAssertFalse(model.canChooseStarterWorkout)
         // Recovery finds a plan created on another client, preserving its identity.
         let existing = state(session: session(), sets: [], exercise: exercise())
         api.stateHandler = { _ in existing }
         await model.load()
         XCTAssertEqual(model.plan?.id, existing.plan?.id)
         XCTAssertFalse(model.canCreateRoutine)
+        XCTAssertFalse(model.canChooseStarterWorkout)
         auth.signOut()
         XCTAssertFalse(model.canCreateRoutine)
     }

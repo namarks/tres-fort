@@ -1,5 +1,6 @@
 import { activitySourceAttribution, withActivityAttribution, deviceNameSQL, GARMIN_ACTIVITY_SQL, GARMIN_SUMMARY_ATTRIBUTION } from './dataAttribution';
 import { applicableSessionSwap, parseSessionExerciseSwaps } from './sessionExerciseSwaps';
+import { parseTrainingProfile, starterWorkouts, type TrainingProfile } from './trainingProfile';
 import { sharedText, type GroupReportReason } from './groupSafety';
 import { APP_REVIEW_SUB } from './appReview';
 import { shareWorkoutSchemaCache, workoutDB } from './workoutSchema';
@@ -1280,6 +1281,8 @@ export async function deleteUserAccount(
       .bind(userId),
     workoutDB(db).prepare('DELETE FROM plans WHERE user_id = ?1').bind(userId),
 
+    workoutDB(db).prepare('DELETE FROM training_profiles WHERE user_id = ?1').bind(userId),
+    workoutDB(db).prepare('DELETE FROM starter_workout_receipts WHERE user_id = ?1').bind(userId),
     workoutDB(db).prepare('DELETE FROM activities WHERE user_id = ?1').bind(userId),
     workoutDB(db).prepare('DELETE FROM external_events WHERE user_id = ?1').bind(userId),
     workoutDB(db).prepare('DELETE FROM external_activities WHERE user_id = ?1').bind(userId),
@@ -2119,6 +2122,120 @@ export async function getIntervalsConnectionStatus(db: D1Database, userId: strin
     FROM users WHERE id = ?1`).bind(userId).first<IntervalsStatusRow>());
 }
 
+export interface TrainingProfileState {
+  profile: TrainingProfile | null;
+  version: number;
+  updated_at: number | null;
+}
+
+export async function getTrainingProfile(db: D1Database, userId: string): Promise<TrainingProfileState> {
+  const row = await workoutDB(db).prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1')
+    .bind(userId).first<{ document: string; version: number; updated_at: number }>();
+  return row ? { profile: JSON.parse(row.document) as TrainingProfile, version: row.version, updated_at: row.updated_at }
+    : { profile: null, version: 0, updated_at: null };
+}
+
+/** Compare-and-swap plus identical desired-state retry, independent of plan versions. */
+export async function saveTrainingProfile(db: D1Database, userId: string, input: unknown, expectedVersion: number) {
+  const profile = parseTrainingProfile(input);
+  if (!profile || !Number.isSafeInteger(expectedVersion) || expectedVersion < 0) return { error: 'invalid_fields' } as const;
+  const document = JSON.stringify(profile);
+  const ts = now();
+  const results = await workoutDB(db).batch<{ document: string; version: number; updated_at: number }>([
+    workoutDB(db).prepare(`INSERT INTO training_profiles (user_id,document,version,updated_at)
+      SELECT ?1,?2,1,?3 WHERE ?4=0
+        AND EXISTS (SELECT 1 FROM users WHERE id=?1)
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id=?1)
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id=?1)
+      ON CONFLICT(user_id) DO NOTHING`).bind(userId, document, ts, expectedVersion),
+    workoutDB(db).prepare(`UPDATE training_profiles SET document=?2,version=version+1,updated_at=MAX(updated_at+1,?3)
+      WHERE user_id=?1 AND version=?4 AND document<>?2
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id=?1)
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id=?1)`).bind(userId, document, ts, expectedVersion),
+    workoutDB(db).prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1').bind(userId),
+  ]);
+  const saved = results[2]?.results[0];
+  if (!saved || saved.document !== document) return { conflict: true } as const;
+  return { profile, version: saved.version, updated_at: saved.updated_at };
+}
+
+export async function getStarterWorkouts(db: D1Database, userId: string) {
+  const state = await getTrainingProfile(db, userId);
+  const catalog = await getExercises(db);
+  const workouts = state.profile ? starterWorkouts(state.profile).map(starter => ({
+    ...starter, exercises: starter.exercises.map(slot => {
+      const exercise = catalog.find(e => e.id === slot.exercise_id);
+      if (!exercise) throw new Error('starter_catalog_missing');
+      return { ...slot, name: exercise.name, unit: exercise.unit, load_mode: exercise.load_mode };
+    }),
+  })) : [];
+  const tree = await getPlanTree(db, userId);
+  const accepted = await workoutDB(db).prepare('SELECT 1 AS accepted FROM starter_workout_receipts WHERE user_id=?1')
+    .bind(userId).first();
+  return { profile_version: state.version, can_accept: !accepted && (!tree || tree.workouts.length === 0), workouts };
+}
+
+interface StarterReceipt {
+  starter_id: string; profile_version: number; plan_id: string; workout_id: string; version: number;
+}
+
+/** First-workout creation is atomic and never replaces or appends to an existing library. */
+export async function acceptStarterWorkout(db: D1Database, userId: string, starterId: string, profileVersion: number) {
+  const receipt = () => workoutDB(db).prepare(
+    'SELECT starter_id,profile_version,plan_id,starter_workout_id AS workout_id,version FROM starter_workout_receipts WHERE user_id=?1',
+  ).bind(userId).first<StarterReceipt>();
+  const replay = await receipt();
+  if (replay) return replay.starter_id === starterId && replay.profile_version === profileVersion
+    ? { ...replay, acknowledged: true as const } : { error: 'starter_already_accepted' } as const;
+  const state = await getTrainingProfile(db, userId);
+  if (!state.profile || state.version !== profileVersion) return { error: 'profile_changed' } as const;
+  const starter = starterWorkouts(state.profile).find(s => s.id === starterId);
+  if (!starter) return { error: 'starter_unavailable' } as const;
+  // Validate the whole recipe before creating even an empty plan.
+  const catalog = await getExercises(db);
+  if (starter.exercises.some(s => !catalog.some(e => e.id === s.exercise_id))) return { error: 'starter_unavailable' } as const;
+  const { plan } = await ensureActivePlan(db, userId, 'My Training', { actor: 'ios', operation: 'ensure_active_plan' });
+  const ts = now(), nonce = uuid(), workoutId = uuid();
+  const attribution: PlanWriteAttribution = { actor: 'ios', operation: 'accept_starter_workout',
+    args: { starter_id: starterId, profile_version: profileVersion }, reason: 'Member accepted a starter workout.' };
+  const guarded = `EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND version=?3 AND plan_write_nonce=?4)`;
+  const statements = [
+    workoutDB(db).prepare(`UPDATE plans SET plan_write_nonce=?4,version=-version
+      WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce IS NULL
+        AND EXISTS (SELECT 1 FROM training_profiles WHERE user_id=?2 AND version=?5)
+        AND NOT EXISTS (SELECT 1 FROM starter_workout_receipts WHERE user_id=?2)
+        AND NOT EXISTS (SELECT 1 FROM workouts WHERE plan_id=?1)
+        AND NOT EXISTS (SELECT 1 FROM sessions WHERE user_id=?2 AND status='in_progress')
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id=?2)
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id=?2)`)
+      .bind(plan.id, userId, plan.version, nonce, profileVersion),
+    preparePlanSnapshotInsert(db, { userId, planId: plan.id, version: plan.version, actor: 'system',
+      operation: 'baseline', createdAt: ts, ignoreExisting: true, writeNonce: nonce, databaseVersion: -plan.version }),
+    workoutDB(db).prepare(`INSERT INTO workouts (id,plan_id,name,order_index,notes,created_at,updated_at)
+      SELECT ?5,?1,?6,0,?7,?8,?8 WHERE ${guarded}`)
+      .bind(plan.id, userId, -plan.version, nonce, workoutId, starter.name, starter.explanation, ts),
+    ...starter.exercises.map((slot, index) => workoutDB(db).prepare(
+      `INSERT INTO template_exercises (id,workout_id,exercise_id,order_index,target_sets,target_reps,
+        target_weight,rest_seconds,cues,progression,created_at,updated_at)
+       SELECT ?5,?6,?7,?8,?9,?10,0,90,?11,?12,?13,?13 WHERE ${guarded}`,
+    ).bind(plan.id, userId, -plan.version, nonce, uuid(), workoutId, slot.exercise_id, index,
+      slot.sets, slot.reps, slot.cues, JSON.stringify({ type: 'manual', starting_load: 'choose_comfortable_load' }), ts)),
+    workoutDB(db).prepare(`INSERT INTO starter_workout_receipts
+      (user_id,starter_id,profile_version,plan_id,starter_workout_id,version,created_at)
+      SELECT ?2,?5,?6,?1,?7,?8,?9 WHERE ${guarded}`)
+      .bind(plan.id, userId, -plan.version, nonce, starterId, profileVersion, workoutId, plan.version + 1, ts),
+    ...preparePlanWriteFinish(db, plan, attribution, ts, nonce),
+  ];
+  const results = await runWorkoutWriteBatch(db, statements);
+  if ((results[0]?.meta.changes ?? 0) === 1) return {
+    acknowledged: true as const, starter_id: starterId, profile_version: profileVersion,
+    plan_id: plan.id, workout_id: workoutId, version: plan.version + 1,
+  };
+  const winner = await receipt();
+  if (winner?.starter_id === starterId && winner.profile_version === profileVersion) return { ...winner, acknowledged: true as const };
+  return { error: 'training_changed' } as const;
+}
+
 export async function getMeProfile(
   db: D1Database,
   userId: string,
@@ -2324,6 +2441,8 @@ export async function exportUserData(
     workoutDB(db)
       .prepare('SELECT active, reason, updated_at FROM group_sharing_restrictions WHERE user_id = ?1')
       .bind(userId),
+    workoutDB(db).prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1').bind(userId),
+    workoutDB(db).prepare('SELECT starter_id,profile_version,plan_id,starter_workout_id AS workout_id,version,created_at FROM starter_workout_receipts WHERE user_id=?1').bind(userId),
   ]);
   const rowsAt = (index: number): Record<string, unknown>[] =>
     projection[index]?.results ?? [];
@@ -2384,6 +2503,8 @@ export async function exportUserData(
       external_activities: externalActivities.map(withActivityAttribution),
       activities,
       plan_snapshots: planSnapshots,
+      training_profile: rowsAt(18)[0] ?? null,
+      starter_workout_receipts: rowsAt(19),
     },
     group_memberships: memberships,
     group_safety: {

@@ -35,7 +35,7 @@ describe('Garmin attribution', () => {
       expect(state.external_activities[0]).toMatchObject({id:'garmin-a',source_attribution:'Garmin Forerunner 965',attribution_version:1});
     }
     const exported = await exportUserData(env.DB, owner.id);
-    expect(exported.training.external_activities).toEqual(full.external_activities);
+    expect(exported).toMatchObject({ training: { external_activities: full.external_activities } });
     const recent = await getRecentActivities(env.DB,owner.id);
     expect(recent[0]?.source_attribution).toBe('Garmin Forerunner 965');
     for (const [method,params] of [

@@ -71,7 +71,7 @@ struct MainTabView: View {
                     Label("Today", systemImage: "figure.strengthtraining.traditional")
                 }
                 .tag(Tab.today)
-            HistoryView(sync: sync)
+            HistoryView(sync: sync, weight: health.weight)
                 .tabItem { Label("Calendar", systemImage: "calendar") }
                 .tag(Tab.history)
             Group {

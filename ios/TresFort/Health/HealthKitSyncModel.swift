@@ -30,6 +30,7 @@ import HealthKit
 ///     updates in place instead of duplicating.
 @MainActor
 final class HealthKitSyncModel: ObservableObject {
+    let weight: BodyWeightModel
     /// False on iPad / unsupported hardware. Gate every HealthKit call on this.
     let isAvailable: Bool = HKHealthStore.isHealthDataAvailable()
 
@@ -72,6 +73,7 @@ final class HealthKitSyncModel: ObservableObject {
     private var observerQuery: HKObserverQuery?
 
     init(auth: AuthModel, defaults: LocalPersistence = .standard) {
+        self.weight = BodyWeightModel(auth: auth, defaults: defaults)
         self.auth = auth
         self.accountID = auth.userID
         self.defaults = defaults

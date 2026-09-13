@@ -48,6 +48,10 @@ enum AccountLocalState {
         "com.nmarkspdx.liftcoach.healthkit-enabled.v2.\(userID)"
     }
 
+    static func bodyWeightEnabledKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.body-weight-enabled.v1.\(userID)"
+    }
+
     static func healthAnchorKey(userID: String) -> String {
         "com.nmarkspdx.liftcoach.healthkit-anchor.v2.\(userID)"
     }
@@ -127,6 +131,7 @@ enum AccountLocalState {
             WorkoutWriteRetryDeadlineStore.scopedKey(userID: userID),
             intervalsConnectionKey(userID: userID),
             healthEnabledKey(userID: userID),
+            bodyWeightEnabledKey(userID: userID),
             healthAnchorKey(userID: userID),
             healthResetPendingKey(userID: userID),
         ]

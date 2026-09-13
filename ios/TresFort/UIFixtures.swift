@@ -8,6 +8,7 @@ enum UIFixtureScenario: String, CaseIterable {
     case signIn = "sign-in", empty, emptyPlan = "empty-plan", loadFailure = "load-failure"
     case ordinary, bodyweight, timed, pending, onboarding, groups, library
     case workoutSummary = "workout-summary"
+    case weight = "weight"
     case workoutSwap = "workout-swap"
     case appStore = "app-store"
     case groupSafety = "group-safety"
@@ -103,7 +104,9 @@ struct UIFixtureView: View {
 
     var body: some View {
         Group {
-            if scenario == .appStore {
+            if scenario == .weight {
+                BodyWeightFixtureView(auth: auth)
+            } else if scenario == .appStore {
                 // Capture the production view hierarchy with fictional data.
                 // QA fixtures retain their banner; this dedicated asset mode
                 // is excluded from release and physical-device builds.

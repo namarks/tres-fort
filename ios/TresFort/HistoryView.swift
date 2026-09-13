@@ -9,6 +9,7 @@ private func fmtW(_ w: Double) -> String {
 /// progress and the recurring weekly schedule have explicit, separate routes.
 struct HistoryView: View {
     @ObservedObject var sync: SyncModel
+    var weight: BodyWeightModel? = nil
 
     enum Segment { case calendar, exercises }
 
@@ -36,6 +37,14 @@ struct HistoryView: View {
             .navigationTitle(segment == .calendar ? "Calendar" : "Exercise progress")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if let weight {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        NavigationLink(destination: BodyWeightView(model: weight)) {
+                            Label("Weight", systemImage: "scalemass")
+                        }
+                        .accessibilityIdentifier("history.weight")
+                    }
+                }
                 if segment == .exercises {
                     ToolbarItem(placement: .topBarLeading) {
                         Button("Calendar", systemImage: "chevron.left") { segment = .calendar }

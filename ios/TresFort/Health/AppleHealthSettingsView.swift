@@ -26,6 +26,12 @@ struct AppleHealthSettingsView: View {
                 PrivacyPolicyLink()
             }
             if health.isAvailable {
+                Section {
+                    NavigationLink("Weight", destination: BodyWeightView(model: health.weight))
+                        .accessibilityIdentifier("health.weight")
+                } footer: {
+                    Text("Connect weight separately to view your measurements and trend on this iPhone.")
+                }
                 actionSection
                 // Sharing stays reachable while connected OR while the server
                 // still has it ON — so a user who disconnects Apple Health with
@@ -87,7 +93,7 @@ struct AppleHealthSettingsView: View {
                 Text(err).font(.footnote).foregroundStyle(.orange)
             }
         } header: {
-            Text("Apple Health")
+            Text("Workouts")
         } footer: {
             Text("Your iPhone and Apple Watch workouts — runs, rides, swims and more — read on-device and shared with your coach so it can balance your cardio against your lifting. Reads only; Très Fort never writes to Apple Health.")
         }
@@ -113,7 +119,7 @@ struct AppleHealthSettingsView: View {
                         ProgressView()
                         Text("Syncing…")
                     } else {
-                        Text(health.enabled ? "Sync now" : "Connect Apple Health").bold()
+                        Text(health.enabled ? "Sync workouts now" : "Connect workouts").bold()
                     }
                     Spacer()
                 }
@@ -150,7 +156,7 @@ struct AppleHealthSettingsView: View {
             Button(role: .destructive) {
                 health.disconnect()
             } label: {
-                Text(health.anchorResetPending ? "Retry Apple Health reset" : "Disconnect Apple Health")
+                Text(health.anchorResetPending ? "Retry workout sync reset" : "Disconnect workouts")
             }
         } footer: {
             Text("Stops syncing new workouts. Already-synced activities stay in your history.")

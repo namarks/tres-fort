@@ -121,7 +121,7 @@ struct ConnectionsView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Apple Health")
                         if health.enabled {
-                            Label("Connected", systemImage: "checkmark.circle.fill")
+                            Label("Workouts connected", systemImage: "checkmark.circle.fill")
                                 .font(.footnote).foregroundStyle(.green)
                         } else {
                             Text("Your iPhone & Apple Watch, no extra account")

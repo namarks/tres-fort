@@ -12,6 +12,16 @@ struct TrainingProfile: Codable, Equatable {
     var avoid: [String] = []
     var baselines: [Baseline] = []
 
+    /// Selection order and surrounding whitespace are not changes to answers.
+    /// Match the server normalization when reconciling an uncertain save.
+    var normalized: TrainingProfile {
+        var result = self
+        result.activities.sort(); result.avoid.sort()
+        result.baselines.sort { $0.exercise_id < $1.exercise_id }
+        result.activity_context = activity_context.trimmingCharacters(in: .whitespacesAndNewlines)
+        return result
+    }
+
     struct Baseline: Codable, Equatable, Identifiable {
         var id: String { exercise_id }
         var exercise_id: String
@@ -155,11 +165,18 @@ final class TrainingSetupModel: ObservableObject {
             restoring = true
             profile = draft?.profile ?? saved.profile ?? TrainingProfile()
             version = draft?.version ?? saved.version
+            if let remote = saved.profile, profile.normalized == remote.normalized {
+                // The server may have committed a save whose reply was lost.
+                // Matching answers confirm it; future edits must use its version.
+                profile = remote
+                version = saved.version
+            }
             acceptance = draft?.acceptance
             restoring = false; ready = true
             hasConflict = draft != nil && version != saved.version && profile != saved.profile
             if hasConflict { error = "Your saved profile changed elsewhere. Reload the saved profile before making new changes." }
-            if discardDraft { acceptance = nil; persistDraft() }
+            if discardDraft { acceptance = nil }
+            persistDraft()
             if let acceptance {
                 // Resolve the same acceptance after relaunch; never choose a
                 // different recipe while an earlier response is uncertain.

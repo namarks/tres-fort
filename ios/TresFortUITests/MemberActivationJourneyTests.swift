@@ -88,6 +88,7 @@ final class MemberActivationJourneyTests: XCTestCase {
         tap(app.buttons["Get started"], in: app)
         for activity in ["weightlifting", "running", "swimming"] {
             let toggle = app.switches["trainingSetup.\(activity)"]
+            for _ in 0..<8 where !toggle.exists || !toggle.isHittable { app.swipeUp() }
             XCTAssertTrue(toggle.waitForExistence(timeout: 10))
             toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
             XCTAssertEqual(toggle.value as? String, "1")
@@ -104,8 +105,10 @@ final class MemberActivationJourneyTests: XCTestCase {
         completeFirstWorkout(app)
         tap(app.tabBars.buttons["Profile"], in: app)
         tap(app.buttons["profile.trainingProfile"], in: app)
-        XCTAssertTrue(app.switches["trainingSetup.running"].waitForExistence(timeout: 10))
-        XCTAssertEqual(app.switches["trainingSetup.running"].value as? String, "1")
+        let savedRunning = app.switches["trainingSetup.running"]
+        for _ in 0..<8 where !savedRunning.exists || !savedRunning.isHittable { app.swipeUp() }
+        XCTAssertTrue(savedRunning.waitForExistence(timeout: 10))
+        XCTAssertEqual(savedRunning.value as? String, "1")
         XCTAssertEqual(app.switches["trainingSetup.swimming"].value as? String, "1")
         let image = XCTAttachment(screenshot: app.screenshot())
         image.name = "multisport-training-profile"; image.lifetime = .keepAlways; add(image)
@@ -115,7 +118,9 @@ final class MemberActivationJourneyTests: XCTestCase {
         for fixture in ["empty", "empty-plan"] {
             let app = launch(fixture)
             tap(app.buttons["today.starterWorkout"], in: app)
-            XCTAssertTrue(app.switches["trainingSetup.running"].waitForExistence(timeout: 10))
+            let running = app.switches["trainingSetup.running"]
+            for _ in 0..<8 where !running.exists || !running.isHittable { app.swipeUp() }
+            XCTAssertTrue(running.waitForExistence(timeout: 10))
             tap(app.buttons["trainingSetup.skip"], in: app)
             XCTAssertTrue(app.buttons["today.starterWorkout"].waitForExistence(timeout: 10))
             app.terminate()

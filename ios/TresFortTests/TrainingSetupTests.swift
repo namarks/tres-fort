@@ -14,12 +14,13 @@ final class TrainingSetupTests: XCTestCase {
         var saveOverride: (() async throws -> TrainingProfileState)?
         var acceptOverride: (() async throws -> StarterWorkoutReceipt)?
         var saves = 0
+        var saveVersions: [Int] = []
         var acceptances: [(String, Int)] = []
         func trainingProfile(jwt: String) async throws -> TrainingProfileState {
             if let loadOverride { return try await loadOverride() }; return state
         }
         func saveTrainingProfile(_ profile: TrainingProfile, version: Int, jwt: String) async throws -> TrainingProfileState {
-            saves += 1
+            saves += 1; saveVersions.append(version)
             if let saveOverride { return try await saveOverride() }
             state = .init(profile: profile, version: version + 1, updated_at: 10)
             return state
@@ -63,6 +64,32 @@ final class TrainingSetupTests: XCTestCase {
         XCTAssertTrue(saved)
         XCTAssertEqual(api.state.profile?.activity_context, "Two runs and a weekend swim")
         XCTAssertEqual(restored.options?.profile_version, 1)
+    }
+
+    func testLostProfileSaveReplyAdoptsConfirmedVersionBeforeAnotherEdit() async throws {
+        let local = try persistence(), auth = try auth(local), api = API()
+        let model = TrainingSetupModel(auth: auth, api: api, defaults: local)
+        await model.load()
+        model.profile.activities = ["weightlifting", "running"]
+        model.profile.activity_context = "  Two runs each week  "
+        let accepted = model.profile.normalized
+        api.saveOverride = {
+            api.state = .init(profile: accepted, version: 1, updated_at: 10)
+            throw URLError(.networkConnectionLost)
+        }
+        let uncertain = await model.save(showStarters: false)
+        XCTAssertFalse(uncertain)
+        let reopened = TrainingSetupModel(auth: auth, api: api, defaults: local)
+        await reopened.load()
+        XCTAssertFalse(reopened.hasConflict)
+        XCTAssertEqual(reopened.version, 1)
+        XCTAssertEqual(reopened.profile, accepted)
+        api.saveOverride = nil
+        reopened.profile.activity_context = "Three runs each week"
+        let saved = await reopened.save(showStarters: false)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(api.saveVersions, [0, 1])
+        XCTAssertEqual(api.state.profile?.activity_context, "Three runs each week")
     }
 
     func testColdReadFailureCannotBecomeAnEmptyAccountOrOverwriteSavedProfile() async throws {

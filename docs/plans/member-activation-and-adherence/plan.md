@@ -86,6 +86,8 @@ iOS distribution remain separately authorized.
   plans. Synthetic screenshots were inspected for readable labels and reachable
   actions. Account refresh fires on acknowledgement even after sheet dismissal;
   a definite conflict retires pending intent so profile editing remains usable.
+  Reopening identical server answers after a lost save reply adopts the server
+  version before another edit, including normalized selection order/whitespace.
   Full CI and fresh independent review remain mandatory merge checks.
 - Source base: verified remote main `90f968383629107bd7a95b37bd44da177f87305f`.
   Starter/profile delivery requires additive migration `0051_training_profile`

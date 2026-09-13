@@ -66,19 +66,20 @@ preparation and TestFlight availability do not mean public release.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P3 | gated_by | external:release-40-migration-approval | Automatic approval review requires explicit owner approval for additive production migration 0050 before deploying the pinned Worker. |
+| P3 | gated_by | external:release-40-deployment-approval | Automatic approval review requires explicit owner approval to deploy the pinned build 40 Worker; migration 0050 is applied and verified. |
 | P3 | gated_by | external:release-40-signing-approval | Automatic approval review requires explicit owner approval for Xcode to manage Apple certificates, app IDs and provisioning profiles for build 40. |
 | P4 | gated_by | external:app-store-owner-fields | Confirm any account agreements or privacy publication fields inaccessible to existing tools before final review submission. |
 
 ## Next step
 
-**Now (@owner):** Answer the pending explicit approvals for production migration
-0050 and Xcode automatic distribution signing. The owner approved the fixes,
-compatible Worker deployment, replacement upload and Apple review submission on
-2026-09-12, but automatic approval review rejected these two specific operations.
+**Now (@owner):** Answer the pending explicit approvals for the production Worker
+deployment and Xcode automatic distribution signing. The owner approved the
+fixes, replacement upload and Apple review submission on 2026-09-12. Migration
+0050 was subsequently explicitly approved, applied and verified, but automatic
+approval review requires separate authority for these two remaining operations.
 Do not retry either rejected operation, or use an indirect substitute, until its
-missing approval arrives. After approval, the agent should apply the verified
-migration, deploy the pinned Worker, validate/upload build 40 and replace the
+missing approval arrives. After approval, the agent should deploy the pinned
+Worker, validate/upload build 40 and replace the
 existing draft for review. Keep manual public release.
 
 The [Garmin attribution fix](attribution.md) and [retired reviewer login](reviewer-access.md)
@@ -108,13 +109,16 @@ step without the missing approval or substitute shell signing as a bypass.
 PR #192's onboarding work and PR #188's catalog additions advanced main during
 preparation. PR #193's tested integration includes that work, but the release
 remains pinned to the source above; a later integration commit must not silently
-replace it. The pinned Worker needs only pending additive migration **0050**
-before deployment. It adds the nullable `sessions.exercise_swaps` column from the
-earlier workout-swap feature. Automatic approval review rejected the migration
-before execution because it requires explicit authority for that production
-schema change. No schema change or Worker deployment occurred. Migration 0051,
+replace it. The owner explicitly approved additive migration **0050** after the
+initial automatic approval rejection. It was applied once; readback confirms its
+ledger entry and the nullable `sessions.exercise_swaps` TEXT column. The separate
+Worker deployment was then rejected before execution because the migration
+approval does not authorize that production code deployment. The production
+Worker remains on version `d3e77da0-7204-40bb-9494-56791febb406`, deployment
+`bd3364e1-24a2-4cba-a88f-5039ef58fbb8`, pending explicit deployment approval.
+Migration 0051,
 the new onboarding feature and PR #188's catalog migration are outside this
-pinned candidate. A fresh private recovery bookmark and the signed archive/manifest
+pinned candidate. The pre-migration private recovery bookmark, migration receipts and signed archive/manifest
 are retained under the release host's `release-attribution` artifact directory.
 
 The 2026-09-12 provider readback confirmed version 1.0 in `READY_FOR_REVIEW`,

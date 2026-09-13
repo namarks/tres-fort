@@ -42,6 +42,9 @@ preparation and TestFlight availability do not mean public release.
   - Independently review the final head and pass all required checks.
   - Read deployed source/configuration and migration ledger; prepare an exact
     migration/deployment proposal if the candidate needs a newer backend.
+  - After deployment, verify the authenticated session-swap route and retain
+    the existing workout-name compatibility checks before exporting/uploading
+    build 40. A public health response does not establish those API behaviors.
   - After separate release authorization, archive/upload the chosen build,
     verify Apple processing and version, and retain source identity.
   - Retain physical-iPhone verification results and any explicit owner deferral
@@ -81,9 +84,12 @@ Do not retry either rejected operation, or use an indirect substitute, until its
 missing approval arrives. These approvals clear only their named external gates;
 they do not complete the open P1/P2 phases. The agent should finish and record
 P1 verification before the remaining P3 deployment/upload work, and finish P2
-and P3 before P4 submission. Once those phase prerequisites and the applicable
-approvals are satisfied, deploy the pinned Worker, validate/upload build 40 and
-replace the existing draft for review. Keep manual public release.
+and P3 before P4 submission. Once P1 and deployment approval are satisfied,
+deploy the pinned Worker and verify its authenticated session-swap route,
+preserving the existing workout-name compatibility checks. Only after those
+checks pass (or the owner explicitly waives them for this candidate) and signing
+approval arrives, validate/export/upload build 40. Complete P2/P3 before replacing
+and submitting the existing draft for review. Keep manual public release.
 
 The [Garmin attribution fix](attribution.md) and [retired reviewer login](reviewer-access.md)
 merged in [PR #193](https://github.com/namarks/tres-fort/pull/193) at

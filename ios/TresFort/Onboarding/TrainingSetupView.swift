@@ -44,7 +44,9 @@ struct TrainingSetupView: View {
                 if let error = model.error {
                     Section {
                         Text(error).foregroundStyle(Theme.danger).accessibilityIdentifier("trainingSetup.error")
-                        if model.hasConflict && !model.hasUncertainAcceptance {
+                        if model.hasUnreadableDraft {
+                            Button("Use saved profile") { Task { await model.load(discardDraft: true); page = 0 } }
+                        } else if model.hasConflict && !model.hasUncertainAcceptance {
                             Button("Reload saved profile") { Task { await model.load(discardDraft: true); page = 0 } }
                         } else if model.hasUncertainAcceptance && page != 3 {
                             Button("Check saved workout") { Task { await model.load() } }
@@ -98,8 +100,8 @@ struct TrainingSetupView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(showStarters ? "Skip setup" : "Close", action: onDone)
-                        .disabled(model.busy).accessibilityIdentifier("trainingSetup.skip")
+                    Button(showStarters ? "Skip setup" : "Close") { model.cancel(); onDone() }
+                        .disabled(model.busy && model.ready).accessibilityIdentifier("trainingSetup.skip")
                 }
                 if page > 0 && model.receipt == nil {
                     ToolbarItem(placement: .primaryAction) {

@@ -110,6 +110,7 @@ final class TrainingSetupModel: ObservableObject {
     @Published private(set) var options: StarterWorkoutOptions?
     @Published private(set) var receipt: StarterWorkoutReceipt?
     @Published private(set) var hasConflict = false
+    @Published private(set) var hasUnreadableDraft = false
     private(set) var version = 0
     private var restoring = false
     private var generation = 0
@@ -152,14 +153,19 @@ final class TrainingSetupModel: ObservableObject {
     func load(discardDraft: Bool = false) async {
         guard current, !busy, let jwt = auth.featureJWT else { return }
         let ticket = generation
-        busy = true; error = nil
+        busy = true; error = nil; hasUnreadableDraft = false
         defer { if ticket == generation { busy = false } }
         do {
             let saved = try await api.trainingProfile(jwt: jwt)
             guard current, ticket == generation else { return }
             var draft: Draft?
             if let draftKey, !discardDraft, let bytes = defaults.data(forKey: draftKey) {
-                draft = try JSONDecoder().decode(Draft.self, from: bytes)
+                do { draft = try JSONDecoder().decode(Draft.self, from: bytes) }
+                catch {
+                    ready = false; hasUnreadableDraft = true
+                    self.error = "The unfinished answers on this device couldn’t be read. Use your saved profile to continue, or skip setup."
+                    return
+                }
             }
             if let draftKey, defaults.hasFailure(forKey: draftKey) { throw APIError.decoding("Protected draft unavailable") }
             restoring = true

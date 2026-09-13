@@ -200,6 +200,9 @@ final class UIFixtureProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        // An unanswered read proves Skip does not depend on transport timeout.
+        if request.url?.path == "/api/me/training-profile",
+           ProcessInfo.processInfo.environment["TRESFORT_UI_PENDING_TRAINING_PROFILE"] == "1" { return }
         Self.lock.lock()
         let result = Result { try Self.server.respond(request) }
         Self.lock.unlock()
@@ -289,6 +292,7 @@ private struct UIFixtureServer {
             }
         }
         if scenario == .emptyPlan { plan?["days"] = []; sessions = [] }
+        if ProcessInfo.processInfo.environment["TRESFORT_UI_STARTER_ALREADY_USED"] == "1" { starterAccepted = true }
         if scenario.isIntervals { sessions = [] }
         if scenario == .appStore {
             sessions = AppStoreScreenshotData.sessions
@@ -297,6 +301,9 @@ private struct UIFixtureServer {
                 sessions.append(["id": "unassigned-date", "date": "2026-09-09",
                     "status": "planned", "workout_id": NSNull(), "attempt": 1,
                     "updated_at": revision, "write_protocol": "attempt-v1"])
+            }
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_EMPTY_WORKOUT_LIBRARY"] == "1" {
+                plan?["days"] = []; plan?["meta"] = "{}"
             }
             if let status = ProcessInfo.processInfo.environment["TRESFORT_UI_UNRESOLVED_TODAY"] {
                 var unresolved = makeSession(status: status)
@@ -443,7 +450,7 @@ private struct UIFixtureServer {
             trainingProfileVersion += 1
             response = ["profile": trainingProfile as Any? ?? NSNull(), "version": trainingProfileVersion, "updated_at": revision]
         case ("GET", "/api/starter-workouts"):
-            response = ["profile_version": trainingProfileVersion, "can_accept": plan == nil || (plan?["days"] as? [[String: Any]])?.isEmpty == true, "workouts": [[
+            response = ["profile_version": trainingProfileVersion, "can_accept": !starterAccepted && (plan == nil || (plan?["days"] as? [[String: Any]])?.isEmpty == true), "workouts": [[
                 "id": "bodyweight-v1", "name": "Start moving", "explanation": "Consistency matters more than a perfect workout. Fit strength around your other activities.",
                 "exercises": [["exercise_id": "synthetic-exercise", "name": "Bodyweight Squat", "sets": 1, "reps": 8, "cues": "Choose a comfortable range of motion."]]
             ]]]

@@ -205,6 +205,8 @@ struct TodayView: View {
     /// Direct creation of a named saved workout.
     @State private var showRoutine = false
     @State private var showTrainingSetup = false
+    @State private var starterAvailable: Bool?
+    @State private var starterAvailabilityFailed = false
     @State private var previewTarget: EditDayTarget?
     @State private var unresolvedDate: AgendaDate?
     /// Keeps a double tap from starting twice while iOS is presenting the
@@ -333,6 +335,25 @@ struct TodayView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .task(id: sync.canChooseStarterWorkout) { await loadStarterAvailability() }
+    }
+
+    /// A verified empty library alone cannot prove this account has an unused
+    /// starter. Check the server's durable receipt before advertising one.
+    @MainActor private func loadStarterAvailability() async {
+        starterAvailable = nil; starterAvailabilityFailed = false
+        guard sync.canChooseStarterWorkout, !auth.isReviewAccount, let jwt = auth.featureJWT else { return }
+        let accountID = auth.userID, epoch = auth.featureSessionEpoch
+        do {
+            let options = try await APIClient().starterWorkouts(jwt: jwt)
+            guard !Task.isCancelled, auth.isCurrentFeatureSession(accountID: accountID, epoch: epoch),
+                  sync.canChooseStarterWorkout else { return }
+            starterAvailable = options.can_accept
+        } catch {
+            guard !Task.isCancelled, auth.isCurrentFeatureSession(accountID: accountID, epoch: epoch),
+                  sync.canChooseStarterWorkout else { return }
+            starterAvailabilityFailed = true
+        }
     }
 
     @ViewBuilder private var content: some View {
@@ -342,13 +363,17 @@ struct TodayView: View {
             RunnerView(sync: sync, auth: auth)
         } else if sync.plan == nil && !sync.canCreateRoutine {
             PlanLoadRecoveryView(sync: sync)
-        } else if sync.plan == nil || (sync.canChooseStarterWorkout && !sync.todayIsCompleted) {
+        } else if sync.canChooseStarterWorkout && !sync.todayIsCompleted {
             VStack(spacing: 14) {
-                Text("YOUR FIRST WORKOUT").font(Theme.display(28)).foregroundStyle(Theme.text)
-                if !auth.isReviewAccount {
+                Text(starterAvailable == false ? "YOUR NEXT WORKOUT" : "YOUR FIRST WORKOUT")
+                    .font(Theme.display(28)).foregroundStyle(Theme.text)
+                if starterAvailable == true {
                     Button("Find a starting workout") { showTrainingSetup = true }
                         .buttonStyle(WorkoutPrimaryButtonStyle())
                         .accessibilityIdentifier("today.starterWorkout")
+                } else if starterAvailabilityFailed {
+                    Button("Try loading starting workouts again") { Task { await loadStarterAvailability() } }
+                        .frame(minHeight: 44)
                 }
                 Text("Build and schedule your first workout here, or connect your own Claude to help with your plan. You can use both paths anytime.")
                     .font(.callout).foregroundStyle(Theme.text)

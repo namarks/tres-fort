@@ -81,7 +81,7 @@ iOS distribution remain separately authorized.
   creation, historical receipt replay, both workout database layouts, and
   already accepted starters after library deletion. The iOS suite passed 548
   unit tests (one existing skip) before recovery refinements; subsequent focused
-  runs passed nine profile-model checks, two empty-state checks, and three
+  runs passed eleven profile-model checks, three empty/session-state checks, and
   journeys covering mixed-sport entry
   through first completion, optional working sets, and skip from absent/empty
   plans. Synthetic screenshots were inspected for readable labels and reachable
@@ -91,8 +91,15 @@ iOS distribution remain separately authorized.
   version before another edit, including normalized selection order/whitespace.
   Questionnaire pages reset their scroll position when advancing/backtracking,
   and primary actions including acknowledgement Continue stay visible at larger
-  accessibility text sizes. All three new journeys passed with accessibility-large
-  text after the navigation correction.
+  accessibility text sizes. The mixed-sport, working-set and empty-entry journeys
+  passed with accessibility-large text after the navigation correction. Empty-library starter entry preserves
+  recovery for a real planned/in-progress session, including a plan emptied by
+  another client; recorded sets and the workout record remain accessible.
+  Skip remains available during an unanswered initial profile read. An unreadable
+  protected draft exposes an explicit restore-from-server action. Today checks
+  the server's durable starter capability so deleting a previously accepted
+  starter does not advertise another acceptance. The final focused recovery run
+  passed twelve model tests and four journeys covering these boundaries.
   Full CI and fresh independent review remain mandatory merge checks.
 - Source base: verified remote main `90f968383629107bd7a95b37bd44da177f87305f`.
   Starter/profile delivery requires additive migration `0051_training_profile`

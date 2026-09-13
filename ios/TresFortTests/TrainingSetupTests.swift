@@ -92,6 +92,38 @@ final class TrainingSetupTests: XCTestCase {
         XCTAssertEqual(api.state.profile?.activity_context, "Three runs each week")
     }
 
+    func testUnreadableDraftOffersExplicitRecoveryToTheSavedProfile() async throws {
+        let local = try persistence(), auth = try auth(local), api = API()
+        var remote = TrainingProfile(); remote.activities = ["swimming"]
+        api.state = .init(profile: remote, version: 4, updated_at: 10)
+        XCTAssertTrue(local.set(Data("unreadable draft".utf8), forKey: AccountLocalState.trainingProfileDraftKey(userID: "member-a")))
+        let model = TrainingSetupModel(auth: auth, api: api, defaults: local)
+        await model.load()
+        XCTAssertFalse(model.ready); XCTAssertTrue(model.hasUnreadableDraft)
+        XCTAssertEqual(api.saves, 0)
+        await model.load(discardDraft: true)
+        XCTAssertTrue(model.ready); XCTAssertFalse(model.hasUnreadableDraft)
+        XCTAssertEqual(model.profile, remote); XCTAssertEqual(model.version, 4)
+        let reopened = TrainingSetupModel(auth: auth, api: api, defaults: local)
+        await reopened.load()
+        XCTAssertTrue(reopened.ready); XCTAssertEqual(reopened.profile, remote)
+    }
+
+    func testCancelledInitialReadCannotPublishLateAnswers() async throws {
+        let local = try persistence(), auth = try auth(local), api = API()
+        var reply: CheckedContinuation<TrainingProfileState, Error>?
+        api.loadOverride = { try await withCheckedThrowingContinuation { reply = $0 } }
+        let model = TrainingSetupModel(auth: auth, api: api, defaults: local)
+        let task = Task { await model.load() }
+        for _ in 0..<100 where reply == nil { await Task.yield() }
+        let continuation = try XCTUnwrap(reply)
+        model.cancel()
+        var remote = TrainingProfile(); remote.activities = ["swimming"]
+        continuation.resume(returning: .init(profile: remote, version: 1, updated_at: 10))
+        await task.value
+        XCTAssertFalse(model.ready); XCTAssertEqual(model.profile.activities, [])
+    }
+
     func testColdReadFailureCannotBecomeAnEmptyAccountOrOverwriteSavedProfile() async throws {
         let local = try persistence(), auth = try auth(local), api = API()
         api.loadOverride = { throw URLError(.notConnectedToInternet) }

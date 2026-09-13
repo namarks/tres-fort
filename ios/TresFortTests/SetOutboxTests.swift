@@ -12774,6 +12774,24 @@ extension SetOutboxTests {
         }
     }
 
+    func testStarterSetupCannotHideARealSessionAfterTheLibraryBecomesEmpty() async {
+        for status in ["planned", "in_progress"] {
+            for hasPlan in [false, true] {
+                let defaults = defaults(), api = SetWriteAPIStub()
+                let row = SessionRow(id: "unresolved", date: fixedCivilDate, status: status, workout_id: nil, attempt: 1)
+                let emptyPlan = state(session: row, sets: [], workouts: [])
+                let response = StateResponse(plan: hasPlan ? emptyPlan.plan : nil, plan_version: hasPlan ? emptyPlan.plan_version : 0,
+                    sessions: [row], sets: [], external_events: [], external_activities: [], activities: [], server_time: 10)
+                api.stateHandler = { _ in response }
+                let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+                await model.load()
+                XCTAssertTrue(model.hasVerifiedPlanState)
+                XCTAssertEqual(model.todaySession?.id, row.id)
+                XCTAssertFalse(model.canChooseStarterWorkout)
+            }
+        }
+    }
+
     func testMemberActivationCachedEmptyIsNotProofOfAnEmptyAccount() async {
         let defaults = defaults()
         let empty = StateResponse(plan: nil, plan_version: 0, sessions: [], sets: [],

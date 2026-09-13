@@ -11,9 +11,11 @@ final class MemberActivationJourneyTests: XCTestCase {
         }
     }
 
-    private func launch(_ fixture: String, retry: Bool = false) -> XCUIApplication {
+    private func launch(_ fixture: String, retry: Bool = false, pendingSetup: Bool = false, starterUsed: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = fixture
+        if pendingSetup { app.launchEnvironment["TRESFORT_UI_PENDING_TRAINING_PROFILE"] = "1" }
+        if starterUsed { app.launchEnvironment["TRESFORT_UI_STARTER_ALREADY_USED"] = "1" }
         if retry {
             app.launchEnvironment["TRESFORT_UI_AUTH_RETRY"] = "1"
             app.launchEnvironment["TRESFORT_UI_INVITE_RETRY"] = "1"
@@ -129,6 +131,24 @@ final class MemberActivationJourneyTests: XCTestCase {
             XCTAssertTrue(app.buttons["today.starterWorkout"].waitForExistence(timeout: 10))
             app.terminate()
         }
+    }
+
+    func testSetupCanBeSkippedWhileItsInitialReadIsPending() {
+        let app = launch("activation-manual", pendingSetup: true)
+        tap(app.buttons["Sign in with Apple"], in: app)
+        tap(app.buttons["Get started"], in: app)
+        let skip = app.buttons["trainingSetup.skip"]
+        XCTAssertTrue(skip.waitForExistence(timeout: 5))
+        XCTAssertTrue(skip.isEnabled)
+        tap(skip, in: app)
+        XCTAssertTrue(app.buttons["I don't have a code"].waitForExistence(timeout: 5))
+    }
+
+    func testConsumedStarterDoesNotAdvertiseAnotherOneAfterLibraryDeletion() {
+        let app = launch("empty-plan", starterUsed: true)
+        XCTAssertTrue(app.staticTexts["YOUR NEXT WORKOUT"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["today.starterWorkout"].exists)
+        XCTAssertTrue(app.buttons["today.createWorkout"].isHittable)
     }
 
     func testOptionalWorkingSetCanBeSavedAndProfileRemainsEditable() {

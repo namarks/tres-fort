@@ -114,22 +114,9 @@ struct ConnectionsView: View {
             NavigationLink {
                 AppleHealthSettingsView(health: health, groupModel: groupModel)
             } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: "heart")
-                        .foregroundStyle(health.enabled ? Theme.accent : Theme.muted)
-                        .frame(width: 30)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Apple Health")
-                        if health.enabled {
-                            Label("Workouts connected", systemImage: "checkmark.circle.fill")
-                                .font(.footnote).foregroundStyle(.green)
-                        } else {
-                            Text("Your iPhone & Apple Watch, no extra account")
-                                .font(.footnote).foregroundStyle(.secondary)
-                        }
-                    }
-                }
+                AppleHealthConnectionLabel(health: health, weight: health.weight)
             }
+            .accessibilityIdentifier("connections.appleHealth")
         } else {
             HStack(spacing: 12) {
                 Image(systemName: "heart").foregroundStyle(Theme.muted).frame(width: 30)
@@ -160,5 +147,31 @@ struct ConnectionsView: View {
                 .foregroundStyle(.secondary)
         }
         .opacity(0.6)
+    }
+}
+
+/// Observe both permissions so changing weight updates the single source row.
+private struct AppleHealthConnectionLabel: View {
+    @ObservedObject var health: HealthKitSyncModel
+    @ObservedObject var weight: BodyWeightModel
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "heart")
+                .foregroundStyle(health.enabled || weight.enabled ? Theme.accent : Theme.muted)
+                .frame(width: 30)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Apple Health")
+                if health.enabled || weight.enabled {
+                    Label(health.enabled && weight.enabled ? "Workouts and weight enabled"
+                          : weight.enabled ? "Weight enabled" : "Workouts connected",
+                          systemImage: "checkmark.circle.fill")
+                        .font(.footnote).foregroundStyle(.green)
+                } else {
+                    Text("Your iPhone & Apple Watch, no extra account")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
+        }
     }
 }

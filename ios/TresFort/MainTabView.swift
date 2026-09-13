@@ -11,12 +11,13 @@ private final class MainTabModels: ObservableObject {
     let health: HealthKitSyncModel
     let connectivity: SetConnectivityMonitor
 
-    init(auth: AuthModel, defaults: LocalPersistence, now: @escaping () -> Date) {
+    init(auth: AuthModel, defaults: LocalPersistence, now: @escaping () -> Date,
+         weightReader: (any BodyWeightReading)?) {
         let sync = SyncModel(
             auth: auth, defaults: defaults, now: now,
             automaticWorkoutWriteRetryEnabled: true)
         let groupModel = GroupModel(auth: auth, defaults: defaults)
-        let health = HealthKitSyncModel(auth: auth, defaults: defaults)
+        let health = HealthKitSyncModel(auth: auth, defaults: defaults, weightReader: weightReader, now: now)
         let setConnectivity = SetConnectivityMonitor()
         // Bridge activity writes through AuthModel's account-scoped generation,
         // rather than directly to this SyncModel. An older GroupModel can finish
@@ -48,6 +49,7 @@ struct MainTabView: View {
     @StateObject private var models: MainTabModels
     @Environment(\.scenePhase) private var scenePhase
 
+    @State private var showHealthSettings = false
     @State private var showActivitySheet = false
     @State private var selectedTab: Tab = .today
 
@@ -55,11 +57,12 @@ struct MainTabView: View {
     private var groupModel: GroupModel { models.group }
     private var health: HealthKitSyncModel { models.health }
 
-    enum Tab { case today, history, group, profile }
+    enum Tab { case today, history, progress, group, profile }
 
-    init(auth: AuthModel, defaults: LocalPersistence = .standard, now: @escaping () -> Date = Date.init) {
+    init(auth: AuthModel, defaults: LocalPersistence = .standard, now: @escaping () -> Date = Date.init,
+         weightReader: (any BodyWeightReading)? = nil) {
         self.auth = auth
-        _models = StateObject(wrappedValue: MainTabModels(auth: auth, defaults: defaults, now: now))
+        _models = StateObject(wrappedValue: MainTabModels(auth: auth, defaults: defaults, now: now, weightReader: weightReader))
     }
 
     var body: some View {
@@ -71,9 +74,13 @@ struct MainTabView: View {
                     Label("Today", systemImage: "figure.strengthtraining.traditional")
                 }
                 .tag(Tab.today)
-            HistoryView(sync: sync, weight: health.weight)
+            HistoryView(sync: sync)
                 .tabItem { Label("Calendar", systemImage: "calendar") }
                 .tag(Tab.history)
+            TrainingProgressView(sync: sync, weight: health.weight,
+                                 onHealthSettings: { showHealthSettings = true })
+                .tabItem { Label("Progress", systemImage: "chart.xyaxis.line") }
+                .tag(Tab.progress)
             Group {
                 if auth.isReviewAccount {
                     ContentUnavailableView("Personal sign-in required", systemImage: "person.2.fill",
@@ -128,6 +135,17 @@ struct MainTabView: View {
                     await health.sync()
                 }
             }
+        }
+        .sheet(isPresented: $showHealthSettings) {
+            NavigationStack {
+                AppleHealthSettingsView(health: health, groupModel: groupModel)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showHealthSettings = false }
+                        }
+                    }
+            }
+            .preferredColorScheme(.dark)
         }
         .sheet(isPresented: $showActivitySheet) {
             // Shared sheet — the Today tab toolbar dispatches the same

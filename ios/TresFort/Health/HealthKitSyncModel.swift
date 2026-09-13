@@ -72,8 +72,9 @@ final class HealthKitSyncModel: ObservableObject {
     /// Held so we can stop it on disconnect / sign-out.
     private var observerQuery: HKObserverQuery?
 
-    init(auth: AuthModel, defaults: LocalPersistence = .standard) {
-        self.weight = BodyWeightModel(auth: auth, defaults: defaults)
+    init(auth: AuthModel, defaults: LocalPersistence = .standard,
+         weightReader: (any BodyWeightReading)? = nil, now: @escaping () -> Date = Date.init) {
+        self.weight = BodyWeightModel(auth: auth, defaults: defaults, reader: weightReader, now: now)
         self.auth = auth
         self.accountID = auth.userID
         self.defaults = defaults

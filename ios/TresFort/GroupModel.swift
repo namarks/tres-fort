@@ -1006,6 +1006,23 @@ final class GroupModel: ObservableObject {
     /// migration 0028) and refresh `me` so the toggle reflects server truth.
     /// HealthKit reading/pushing itself lives in HealthKitSyncModel — this only
     /// controls cross-user VISIBILITY of those activities in the group feed.
+    /// A settings entry must establish fresh sharing truth even when Profile
+    /// has never appeared. A missing/failed profile is unknown, never off.
+    func readHealthSharing() async throws -> Bool {
+        guard let jwt = currentJWT else { throw APIError.http(401, "not_signed_in") }
+        let epoch = auth.featureSessionEpoch
+        do {
+            let profile = try await loadProfile(jwt: jwt)
+            guard auth.isCurrentFeatureSession(accountID: accountID, epoch: epoch),
+                  !Task.isCancelled else { throw CancellationError() }
+            guard let health = profile.health else { throw URLError(.cannotParseResponse) }
+            return health.sharing_in_group
+        } catch {
+            if isCurrentAccount { handle(error, jwt: jwt) }
+            throw error
+        }
+    }
+
     func setHealthSharing(_ enabled: Bool) async throws {
         guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")

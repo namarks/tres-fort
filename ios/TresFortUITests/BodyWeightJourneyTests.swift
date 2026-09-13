@@ -3,14 +3,21 @@ import XCTest
 final class BodyWeightJourneyTests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
+    private func enableWeight(_ app: XCUIApplication) {
+        XCTAssertTrue(app.buttons["weight.manageAccess"].waitForExistence(timeout: 10))
+        app.buttons["weight.manageAccess"].tap()
+        app.switches["health.readWeight"].coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        XCTAssertTrue(app.staticTexts["View measurements in Progress → Weight."].waitForExistence(timeout: 5))
+        app.buttons["Done"].tap()
+    }
+
     func testWeightConnectTrendUnitsRefreshAndDisconnect() throws {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "weight"
+        app.launchEnvironment["TRESFORT_UI_WEIGHT_CLEAR_ON_REFRESH"] = "1"
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
-        let connect = app.buttons["weight.connectOrRefresh"]
-        XCTAssertTrue(connect.waitForExistence(timeout: 10))
-        connect.tap()
+        enableWeight(app)
         XCTAssertTrue(app.otherElements["weight.chart"].waitForExistence(timeout: 5))
         let latest = app.descendants(matching: .any)["weight.latest"].firstMatch
         XCTAssertEqual(latest.value as? String, "176.4 lb")
@@ -22,12 +29,13 @@ final class BodyWeightJourneyTests: XCTestCase {
         screenshot.lifetime = .keepAlways
         add(screenshot)
         app.swipeUp()
-        XCTAssertTrue(connect.isHittable)
-        connect.tap() // fixture models source deletion / revoked read access
+        app.buttons["weight.connectOrRefresh"].tap()
         XCTAssertTrue(app.staticTexts["weight.empty"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.otherElements["weight.chart"].exists)
-        app.buttons["weight.disconnect"].tap()
-        XCTAssertTrue(app.buttons["Connect weight"].exists)
+        app.buttons["weight.settings"].tap()
+        app.switches["health.readWeight"].coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+        app.buttons["Done"].tap()
+        XCTAssertTrue(app.buttons["weight.manageAccess"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["weight.empty"].exists)
     }
 
@@ -37,8 +45,7 @@ final class BodyWeightJourneyTests: XCTestCase {
         app.launchEnvironment["TRESFORT_UI_WEIGHT_EMPTY"] = "1"
         app.launchEnvironment["TRESFORT_UI_LARGE_TEXT"] = "1"
         app.launch()
-        XCTAssertTrue(app.buttons["weight.connectOrRefresh"].waitForExistence(timeout: 10))
-        app.buttons["weight.connectOrRefresh"].tap()
+        enableWeight(app)
         XCTAssertTrue(app.staticTexts["weight.empty"].waitForExistence(timeout: 5))
         let screenshot = XCTAttachment(screenshot: app.screenshot())
         screenshot.name = "Weight empty state — accessibility text"

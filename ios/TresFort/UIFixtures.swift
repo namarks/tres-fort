@@ -8,7 +8,7 @@ enum UIFixtureScenario: String, CaseIterable {
     case signIn = "sign-in", empty, emptyPlan = "empty-plan", loadFailure = "load-failure"
     case ordinary, bodyweight, timed, pending, onboarding, groups, library
     case workoutSummary = "workout-summary"
-    case weight = "weight"
+    case weight = "weight", progress = "progress"
     case workoutSwap = "workout-swap"
     case appStore = "app-store"
     case groupSafety = "group-safety"
@@ -62,7 +62,7 @@ enum UIFixtureModel {
         let auth = AuthModel(tokenStore: FixtureTokenStore(), defaults: defaults)
         if UIFixtureScenario.selected != .signIn && UIFixtureScenario.selected?.isActivation != true {
             auth.userID = "synthetic-ui-user"
-            auth.jwt = UIFixtureScenario.selected?.isIntervals == true || [.appStore, .groupSafety].contains(UIFixtureScenario.selected)
+            auth.jwt = UIFixtureScenario.selected?.isIntervals == true || [.appStore, .progress, .groupSafety].contains(UIFixtureScenario.selected)
                 ? UIFixtureServer(scenario: UIFixtureScenario.selected!).syntheticJWT : "synthetic-ui-bearer"
             auth.onboardingComplete = UIFixtureScenario.selected != .onboarding
             auth.phase = .signedIn
@@ -104,7 +104,11 @@ struct UIFixtureView: View {
 
     var body: some View {
         Group {
-            if scenario == .weight {
+            if scenario == .progress {
+                RootView(defaults: UIFixtureModel.defaults,
+                         now: { CalendarProjection.date(from: "2026-09-08")! },
+                         weightReader: FixtureWeightReader()).environmentObject(auth)
+            } else if scenario == .weight {
                 BodyWeightFixtureView(auth: auth)
             } else if scenario == .appStore {
                 // Capture the production view hierarchy with fictional data.
@@ -164,7 +168,10 @@ private struct UIFixtureTrainingView: View {
                         .navigationTitle("Workout date").navigationBarTitleDisplayMode(.inline)
                 }
             } else if scenario.isHistory {
-                HistoryView(sync: sync)
+                TabView {
+                    HistoryView(sync: sync).tabItem { Label("Calendar", systemImage: "calendar") }
+                    TrainingProgressView(sync: sync).tabItem { Label("Progress", systemImage: "chart.xyaxis.line") }
+                }
             } else {
                 TodayView(sync: sync, auth: auth)
             }
@@ -279,6 +286,7 @@ private struct UIFixtureServer {
         return "header." + data.base64EncodedString().replacingOccurrences(of: "=", with: "") + ".synthetic"
     }
     let safetyPeerID = "c3223561-0e27-4727-b369-681078533ca6"
+    var healthSharing = ProcessInfo.processInfo.environment["TRESFORT_UI_HEALTH_SHARED"] == "1"
     var safetyBlocked = false
     var safetyRestricted = false
     var syntheticGroup: [String: Any] {
@@ -317,9 +325,12 @@ private struct UIFixtureServer {
         if scenario == .emptyPlan { plan?["days"] = []; sessions = [] }
         if ProcessInfo.processInfo.environment["TRESFORT_UI_STARTER_ALREADY_USED"] == "1" { starterAccepted = true }
         if scenario.isIntervals { sessions = [] }
-        if scenario == .appStore {
+        if scenario == .appStore || scenario == .progress {
             sessions = AppStoreScreenshotData.sessions
             sets = AppStoreScreenshotData.sets
+            if scenario == .progress && ProcessInfo.processInfo.environment["TRESFORT_UI_PROGRESS_EMPTY"] == "1" {
+                sessions = []; sets = []
+            }
             if ProcessInfo.processInfo.environment["TRESFORT_UI_UNASSIGNED_DATE"] == "1" {
                 sessions.append(["id": "unassigned-date", "date": "2026-09-09",
                     "status": "planned", "workout_id": NSNull(), "attempt": 1,
@@ -382,7 +393,7 @@ private struct UIFixtureServer {
          "attempt": attempt, "write_protocol": "attempt-v1"]
     }
     func makePlan(name: String = "Synthetic Training", workouts: Bool = true) -> [String: Any] {
-        if scenario == .appStore { return AppStoreScreenshotData.plan }
+        if scenario == .appStore || scenario == .progress { return AppStoreScreenshotData.plan }
         if scenario.isTimerNavigation {
             let slots: [[String: Any]] = [
                 ["id": "synthetic-squat", "exercise_id": "synthetic-squat-exercise",
@@ -499,10 +510,16 @@ private struct UIFixtureServer {
             }
             response = ["acknowledged": true, "plan_id": "synthetic-plan", "workout_id": dayID, "version": 1]
         case ("GET", "/api/me"):
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_HEALTH_PROFILE_FAIL"] == "1" {
+                throw URLError(.notConnectedToInternet)
+            }
             response = ["display_name": "Synthetic member", "email": NSNull(),
                 "intervals": intervalsStatus,
                 "claude": ["is_owner": scenario == .activationOwner, "connected": coachConnected],
-                "health": ["sharing_in_group": false]]
+                "health": ["sharing_in_group": healthSharing]]
+        case ("PATCH", "/api/me/health-sharing"):
+            healthSharing = body["enabled"] as? Bool ?? false
+            response = ["sharing_in_group": healthSharing]
         case ("PATCH", "/api/me/integrations/intervals") where scenario.isIntervals:
             intervalsGeneration += 1
             intervalsConnected = body["api_key"] is String
@@ -611,7 +628,7 @@ private struct UIFixtureServer {
         case ("GET", "/api/exercises"):
             if let fixture = workoutSummaryFixture { response = fixture["catalog"]!; break }
             if let fixture = coachingFixture { response = fixture["catalog"]!; break }
-            if scenario == .appStore { response = AppStoreScreenshotData.catalog; break }
+            if scenario == .appStore || scenario == .progress { response = AppStoreScreenshotData.catalog; break }
             response = [["id": "synthetic-exercise",
                 "name": scenario == .bodyweight ? "Pull-Up" : scenario == .timed ? "Plank" : "Barbell Squat",
                 "modality": scenario == .bodyweight ? "bw" : scenario == .timed ? "timed" : "barbell",

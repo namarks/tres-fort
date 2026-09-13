@@ -50,6 +50,10 @@ final class CoachApprovalModel: ObservableObject {
     private var isCurrent: Bool { auth.isCurrentFeatureSession(accountID: accountID, epoch: epoch) }
 
     func load() async {
+        await load(retryAfterRenewal: true)
+    }
+
+    private func load(retryAfterRenewal: Bool) async {
         guard isCurrent, let jwt = auth.featureJWT, state == .loading else { return }
         do {
             let preview = try await api.coachApproval(id: requestID, jwt: jwt)
@@ -62,6 +66,18 @@ final class CoachApprovalModel: ObservableObject {
             state = .review(preview)
         } catch {
             guard isCurrent else { return }
+            if case APIError.http(401, _) = error {
+                if auth.featureJWT == jwt {
+                    auth.requireReauthentication(reason: "Sign in again to finish connecting your AI app.")
+                    return
+                }
+                // A normal renewal can overtake this read. Retry once with
+                // the new bearer without invalidating that healthy session.
+                if retryAfterRenewal {
+                    await load(retryAfterRenewal: false)
+                    return
+                }
+            }
             state = .failed("Could not load this connection request. Start connecting again in your AI app.")
         }
     }
@@ -84,6 +100,18 @@ final class CoachApprovalModel: ObservableObject {
             state = .finished(decision)
         } catch {
             guard isCurrent else { return }
+            if case APIError.http(401, _) = error {
+                // Auth middleware rejected this request before any write.
+                // Retain the account-bound intent through reauthentication.
+                // An old-bearer rejection reloads consent, never the decision.
+                if auth.featureJWT == jwt {
+                    auth.requireReauthentication(reason: "Sign in again to finish connecting your AI app.")
+                } else {
+                    state = .loading
+                    await load()
+                }
+                return
+            }
             // An uncertain response may already have committed. Never repeat
             // an approval or claim denial from a transport failure.
             state = .failed("Could not confirm your decision. Start a new connection in your AI app. You can disconnect AI apps in Profile to stop access.")

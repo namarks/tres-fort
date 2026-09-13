@@ -11,8 +11,14 @@ private final class CoachApprovalStub: CoachApprovalAPI {
     var preview = CoachApprovalPreview(client_name: "Synthetic AI app",
         redirect_uri: "https://client.example/callback", expires_at: Date.distantFuture.timeIntervalSince1970 * 1000)
     var calls = 0
+    var previewCalls = 0
+    var previewHandler: (() async throws -> CoachApprovalPreview)?
     var handler: (() async throws -> CoachApprovalDecision)?
-    func coachApproval(id: String, jwt: String) async throws -> CoachApprovalPreview { preview }
+    func coachApproval(id: String, jwt: String) async throws -> CoachApprovalPreview {
+        previewCalls += 1
+        if let previewHandler { return try await previewHandler() }
+        return preview
+    }
     func decideCoachApproval(id: String, allow: Bool, jwt: String) async throws -> CoachApprovalDecision {
         calls += 1
         if let handler { return try await handler() }
@@ -109,5 +115,99 @@ final class CoachApprovalTests: XCTestCase {
         await model.decide(allow: true)
         XCTAssertEqual(model.state, .sending)
         XCTAssertEqual(auth.activityPersistenceGeneration, 0)
+    }
+
+    func testOldBearer401ReloadsConsentWithoutRepeatingTheDecision() async {
+        for failDuringLoad in [true, false] {
+            let auth = auth(), api = CoachApprovalStub()
+            if failDuringLoad {
+                api.previewHandler = { [unowned api] in
+                    if api.previewCalls == 1 {
+                        auth.jwt = "renewed-bearer"
+                        throw APIError.http(401, "invalid_token")
+                    }
+                    return api.preview
+                }
+            } else {
+                api.handler = {
+                    auth.jwt = "renewed-bearer"
+                    throw APIError.http(401, "invalid_token")
+                }
+            }
+            let model = CoachApprovalModel(auth: auth, requestID: "request", api: api)
+            await model.load()
+            if !failDuringLoad { await model.decide(allow: true) }
+            XCTAssertEqual(auth.featureJWT, "renewed-bearer")
+            XCTAssertEqual(auth.phase, .signedIn)
+            XCTAssertEqual(model.state, .review(api.preview))
+            XCTAssertEqual(api.previewCalls, 2)
+            XCTAssertEqual(api.calls, failDuringLoad ? 0 : 1)
+            api.handler = nil
+            await model.decide(allow: false)
+            XCTAssertEqual(api.calls, failDuringLoad ? 1 : 2)
+        }
+    }
+
+    func testLate401CannotInvalidateAReplacementFeatureSession() async {
+        for failDuringLoad in [true, false] {
+            for nextAccount in ["member-a", "member-b"] {
+                let auth = auth(), api = CoachApprovalStub()
+                let replaceSession = {
+                    auth.signOut()
+                    auth.userID = nextAccount
+                    auth.jwt = "synthetic-bearer"
+                    auth.phase = .signedIn
+                }
+                if failDuringLoad {
+                    api.previewHandler = { replaceSession(); throw APIError.http(401, "invalid_token") }
+                } else {
+                    api.handler = { replaceSession(); throw APIError.http(401, "invalid_token") }
+                }
+                let model = CoachApprovalModel(auth: auth, requestID: "request", api: api)
+                await model.load()
+                if !failDuringLoad { await model.decide(allow: true) }
+                XCTAssertEqual(auth.featureJWT, "synthetic-bearer")
+                XCTAssertEqual(auth.userID, nextAccount)
+                XCTAssertEqual(auth.phase, .signedIn)
+            }
+        }
+    }
+
+    func testCurrentBearer401RetainsApprovalThroughSameAccountSignIn() async {
+        for failDuringLoad in [true, false] {
+            let auth = auth(), api = CoachApprovalStub()
+            auth.onboardingComplete = true
+            let request = String(repeating: "a", count: 64)
+            auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=\(request)")!)
+            let intent = auth.pendingEntryIntents[0], epoch = auth.featureSessionEpoch
+            if failDuringLoad {
+                api.previewHandler = { throw APIError.http(401, "invalid_token") }
+            } else {
+                api.handler = { throw APIError.http(401, "invalid_token") }
+            }
+            let model = CoachApprovalModel(auth: auth, requestID: request, api: api)
+            await model.load()
+            if !failDuringLoad { await model.decide(allow: true) }
+            XCTAssertNil(auth.featureJWT)
+            XCTAssertEqual(auth.phase, .signedOut)
+            XCTAssertEqual(auth.userID, "member-a")
+            XCTAssertEqual(auth.pendingEntryIntents, [intent])
+            XCTAssertFalse(auth.finishEntry(intent, epoch: epoch))
+            XCTAssertEqual(api.calls, failDuringLoad ? 0 : 1)
+
+            // The old sheet's dismissal cannot consume the retained intent.
+            auth.jwt = "new-bearer"
+            auth.phase = .signedIn
+            XCTAssertEqual(auth.nextEntryIntent, intent)
+            api.previewHandler = nil
+            api.handler = nil
+            let resumed = CoachApprovalModel(auth: auth, requestID: request, api: api)
+            await resumed.load()
+            XCTAssertEqual(resumed.state, .review(api.preview))
+            XCTAssertEqual(api.calls, failDuringLoad ? 0 : 1)
+            await resumed.decide(allow: true)
+            guard case .finished = resumed.state else { return XCTFail("Expected explicit approval after sign-in") }
+            XCTAssertTrue(auth.finishEntry(intent, epoch: auth.featureSessionEpoch))
+        }
     }
 }

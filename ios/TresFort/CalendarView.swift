@@ -125,6 +125,13 @@ struct CalendarMonthView: View {
             header
             // Full width — aligns with the grid in BOTH states (the condensed
             // grid is full-width too), so it stays put through the merge.
+            if gridDays.compactMap({ $0 }).contains(where: { day in
+                let ymd = CalendarProjection.dateString(day)
+                return !sync.projection(for: ymd).suppressesScheduleAndEndurance
+                    && sync.activities(on: ymd).contains { $0.source_attribution != nil }
+            }) {
+                SourceAttributionLabel(text: SourceAttributionLabel.summary).padding(.bottom, 8)
+            }
             weekdayHeader
             grid
                 .padding(.bottom, collapsed ? 10 : 12)
@@ -601,7 +608,7 @@ private struct ActivityFeedRow: View {
     @ObservedObject var sync: SyncModel
     let ymd: String
 
-    private struct Item { let glyph: String; let text: String; let color: Color }
+    private struct Item { let glyph: String; let text: String; let color: Color; var attribution: String? = nil }
 
     var body: some View {
         HStack(spacing: 14) {
@@ -618,6 +625,7 @@ private struct ActivityFeedRow: View {
                             .foregroundStyle(Theme.text)
                             .lineLimit(1)
                     }
+                    SourceAttributionLabel(text: it.attribution)
                 }
             }
             Spacer(minLength: 4)
@@ -671,7 +679,7 @@ private struct ActivityFeedRow: View {
                 out.append(Item(
                     glyph: a.glyph,
                     text: t,
-                    color: WorkoutCategory.endurance.color))
+                    color: WorkoutCategory.endurance.color, attribution: a.source_attribution))
             }
             for m in sync.manualActivities(on: ymd) {
                 let label = (m.title?.isEmpty == false)

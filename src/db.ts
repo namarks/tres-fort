@@ -1,3 +1,4 @@
+import { activitySourceAttribution, withActivityAttribution, deviceNameSQL, GARMIN_ACTIVITY_SQL, GARMIN_SUMMARY_ATTRIBUTION } from './dataAttribution';
 import { applicableSessionSwap, parseSessionExerciseSwaps } from './sessionExerciseSwaps';
 import { parseTrainingProfile, starterWorkouts, type TrainingProfile } from './trainingProfile';
 import { sharedText, type GroupReportReason } from './groupSafety';
@@ -888,42 +889,6 @@ export async function findOwnerRow(
     )
     .bind(APP_REVIEW_SUB)
     .first<User>();
-}
-
-/** Create the shared sample principal and its initial plan in one transaction.
- * Repeat/concurrent sign-in never resets edits. After deletion a fresh UUID
- * prevents old bearers regaining access. No owner/provider data is copied. */
-export async function ensureAppReviewUser(db: D1Database): Promise<User | null> {
-  const userId = uuid(), planId = uuid(), workoutId = uuid(), ts = now();
-  const sql = workoutDB(db);
-  const statements = [
-    sql.prepare(`INSERT INTO users (id,apple_sub,display_name,created_at)
-      VALUES (?1,?2,'App Review',?3) ON CONFLICT(apple_sub) DO NOTHING`)
-      .bind(userId, APP_REVIEW_SUB, ts),
-    sql.prepare(`INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at)
-      SELECT ?1,id,'Sample training','active',1,?3,?4,?4 FROM users WHERE id=?2`)
-      .bind(planId, userId, JSON.stringify({ schedule: { version: 1, week: {
-        mon: workoutId, tue: null, wed: workoutId, thu: null, fri: workoutId, sat: null, sun: null,
-      } } }), ts),
-    sql.prepare(`INSERT INTO workouts (id,plan_id,name,day_label,order_index,created_at,updated_at)
-      SELECT ?1,id,'Sample strength','Strength A',0,?3,?3 FROM plans WHERE id=?2`)
-      .bind(workoutId, planId, ts),
-  ];
-  for (const [index, exercise] of ['ex_back_squat', 'ex_bench', 'ex_barbell_row'].entries()) {
-    statements.push(sql.prepare(`INSERT INTO template_exercises
-      (id,workout_id,exercise_id,order_index,target_sets,target_reps,rest_seconds,created_at,updated_at)
-      SELECT ?1,id,?3,?4,3,5,90,?5,?5 FROM workouts WHERE id=?2`)
-      .bind(uuid(), workoutId, exercise, index, ts));
-  }
-  statements.push(preparePlanSnapshotInsert(db, {
-    userId, planId, actor: 'system', operation: 'app_review_sample', createdAt: ts,
-  }));
-  statements.push(sql.prepare(`INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
-    SELECT ?1,id,'system','app_review_sample','{}','created',?3 FROM users WHERE id=?2`)
-    .bind(uuid(), userId, ts));
-  await sql.batch(statements);
-  const user = await sql.prepare('SELECT * FROM users WHERE apple_sub=?1').bind(APP_REVIEW_SUB).first<User>();
-  return user && !(await isAccountDeletionInProgress(db, user.id)) ? user : null;
 }
 
 /**
@@ -2535,7 +2500,7 @@ export async function exportUserData(
       notes,
       audit_log: auditRows,
       external_events: events,
-      external_activities: externalActivities,
+      external_activities: externalActivities.map(withActivityAttribution),
       activities,
       plan_snapshots: planSnapshots,
       training_profile: rowsAt(18)[0] ?? null,
@@ -5945,7 +5910,7 @@ export async function getState(
     sessions: sessions.results,
     sets: sets.results,
     external_events: events.results,
-    external_activities: activities.results,
+    external_activities: activities.results.map(withActivityAttribution),
     activities: userActivities,
     server_time: serverTime,
   };
@@ -10409,7 +10374,8 @@ export async function syncExternalActivities(
                external_activities.training_load IS NOT excluded.training_load OR
                external_activities.intensity IS NOT excluded.intensity OR
                external_activities.calories IS NOT excluded.calories OR
-               external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m
+               external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m OR
+               ${deviceNameSQL('external_activities.raw')} IS NOT ${deviceNameSQL('excluded.raw')}
              THEN excluded.raw ELSE external_activities.raw END,
              synced_at=CASE
                WHEN excluded.synced_at > external_activities.synced_at THEN excluded.synced_at
@@ -10438,7 +10404,8 @@ export async function syncExternalActivities(
                external_activities.training_load IS NOT excluded.training_load OR
                external_activities.intensity IS NOT excluded.intensity OR
                external_activities.calories IS NOT excluded.calories OR
-               external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m
+               external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m OR
+               ${deviceNameSQL('external_activities.raw')} IS NOT ${deviceNameSQL('excluded.raw')}
              )`,
         )
         .bind(
@@ -10578,7 +10545,7 @@ export async function getRecentActivities(
   db: D1Database,
   userId: string,
   opts: { to?: string; range?: number; limit?: number } = {},
-): Promise<ExternalActivityRow[]> {
+): Promise<Array<ExternalActivityRow & { source_attribution: string | null; attribution_version: number }>> {
   const to = opts.to ?? new Date().toISOString().slice(0, 10);
   const from = addDays(to, -(opts.range ?? 90));
   const limit = Math.max(1, Math.min(500, opts.limit ?? 50));
@@ -10592,7 +10559,7 @@ export async function getRecentActivities(
     )
     .bind(userId, from, to, limit)
     .all<ExternalActivityRow>();
-  return r.results;
+  return r.results.map(withActivityAttribution);
 }
 
 /** A completed activity pushed from the iOS app's HealthKit reader. Mirrors
@@ -11235,6 +11202,7 @@ export interface FeedRideItem {
   date: string;
   occurred_at: number;
   ride: {
+    source_attribution?: string;
     kind: string;
     name: string | null;
     distance_m: number | null;
@@ -11301,6 +11269,8 @@ function resolveDisplayName(
 }
 
 export interface MemberStat {
+  source_attribution?: string;
+  streak_source_attribution?: string;
   user_id: string;
   display_name: string;
   avatar_initials: string;
@@ -11550,7 +11520,7 @@ export async function getGroupFeed(
   //     happen on a freshly-migrated DB).
   const rideRows = await workoutDB(db)
     .prepare(
-      `SELECT id, user_id, date, kind, name, moving_time_sec, distance_m,
+      `SELECT id, user_id, source, raw, date, kind, name, moving_time_sec, distance_m,
               average_watts, training_load, elevation_gain_m,
               COALESCE(start_date_local_ms, synced_at) AS occurred_at
          FROM external_activities
@@ -11574,6 +11544,8 @@ export async function getGroupFeed(
     )
     .bind(...memberIds, upper, upperId, sourceLimit)
     .all<{
+      source: string;
+      raw: string | null;
       id: string;
       user_id: string;
       date: string;
@@ -11596,6 +11568,7 @@ export async function getGroupFeed(
     date: r.date,
     occurred_at: r.occurred_at,
     ride: {
+      ...(activitySourceAttribution(r) ? { source_attribution: sharedText(activitySourceAttribution(r), 'Garmin')! } : {}),
       kind: sharedText(r.kind)!,
       name: sharedText(r.name),
       distance_m: r.distance_m,
@@ -11729,16 +11702,16 @@ export async function getGroupStats(
         // HealthKit rows are gated behind the per-user opt-in (0028) so an
         // un-shared member's private health activity never inflates the
         // group streak/count surfaced to others.
-        `SELECT DISTINCT date FROM external_activities
+        `SELECT date, MAX(CASE WHEN ${GARMIN_ACTIVITY_SQL} THEN 1 ELSE 0 END) AS garmin FROM external_activities
           WHERE user_id = ?1
             AND deleted_at IS NULL
             AND (source <> 'healthkit'
                  OR (SELECT share_health_activities FROM users
                        WHERE id = external_activities.user_id) = 1)
-            AND date >= ?2 AND date <= ?3`,
+            AND date >= ?2 AND date <= ?3 GROUP BY date`,
       )
       .bind(m.user_id, streakStart, today)
-      .all<{ date: string }>();
+      .all<{ date: string; garmin: number }>();
     const actRows = await workoutDB(db)
       .prepare(
         `SELECT DISTINCT date FROM activities
@@ -11787,7 +11760,13 @@ export async function getGroupStats(
       lastActiveMs = Date.parse(`${latest}T00:00:00Z`);
     }
 
+    const garminContributed = ridesRows.results.some(r => r.garmin === 1 && (
+      r.date >= windowStart || (streak > 0 && r.date > cursor) ||
+      Date.parse(`${r.date}T00:00:00Z`) === lastActiveMs));
     out.push({
+      ...(garminContributed ? { source_attribution: GARMIN_SUMMARY_ATTRIBUTION } : {}),
+      ...(streak > 0 && ridesRows.results.some(r => r.garmin === 1 && r.date > cursor)
+        ? { streak_source_attribution: GARMIN_SUMMARY_ATTRIBUTION } : {}),
       user_id: m.user_id,
       display_name: displayName,
       avatar_initials: avatarInitials(displayName),
@@ -11822,6 +11801,7 @@ export async function getGroupStats(
  * authorization pattern as getGroupFeed / getGroupStats.
  */
 export interface DayActivityCount {
+  source_attribution?: string;
   date: string; // YYYY-MM-DD civil (device-local; no UTC math)
   sessions: number; // started/completed strength sessions that day
   rides: number; // intervals.icu endurance activities that day
@@ -11881,7 +11861,7 @@ export async function getGroupActivitySeries(
     const rideRows = await workoutDB(db)
       .prepare(
         // HealthKit rows gated behind the opt-in (0028), same as the feed/stats.
-        `SELECT date, COUNT(*) AS n FROM external_activities
+        `SELECT date, COUNT(*) AS n, MAX(CASE WHEN ${GARMIN_ACTIVITY_SQL} THEN 1 ELSE 0 END) AS garmin FROM external_activities
           WHERE user_id = ?1
             AND deleted_at IS NULL
             AND (source <> 'healthkit'
@@ -11891,8 +11871,11 @@ export async function getGroupActivitySeries(
           GROUP BY date`,
       )
       .bind(m.user_id, start, today)
-      .all<{ date: string; n: number }>();
-    for (const r of rideRows.results) ensure(r.date).rides = r.n;
+      .all<{ date: string; n: number; garmin: number }>();
+    for (const r of rideRows.results) {
+      ensure(r.date).rides = r.n;
+      if (r.garmin === 1) ensure(r.date).source_attribution = GARMIN_SUMMARY_ATTRIBUTION;
+    }
 
     const actRows = await workoutDB(db)
       .prepare(

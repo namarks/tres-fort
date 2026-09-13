@@ -560,6 +560,8 @@ struct ExternalEvent: Codable, Identifiable, Equatable {
 /// `deleted_at` non-null ⇒ tombstoned and must be hidden. All actuals are
 /// optional: a thin/older payload still decodes.
 struct ExternalActivity: Codable, Identifiable, Equatable {
+    var source_attribution: String? = nil
+    var attribution_version: Int? = nil
     let id: String
     let source: String
     let external_id: String

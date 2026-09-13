@@ -106,6 +106,7 @@ struct FeedItemDetailSheet: View {
                 Text((item.ride.name ?? item.ride.kind).uppercased())
                     .font(Theme.display(34))
                     .foregroundStyle(Theme.text)
+                SourceAttributionLabel(text: item.ride.source_attribution)
                 HStack(spacing: 18) {
                     if let dist = FeedFormat.distance(meters: item.ride.distance_m) {
                         StatTile(label: "DIST", value: dist)

@@ -121,10 +121,6 @@ struct RootView: View {
 /// the signed-in host presents their confirmation or setup destination.
 private struct SignedOutView: View {
     @ObservedObject var model: AuthModel
-    @State private var showReviewLogin = false
-    @State private var reviewUsername = ""
-    @State private var reviewPassword = ""
-
     var body: some View {
         VStack(spacing: 16) {
             Text("Build your workouts or connect your own Claude coach.\nSign in to keep your training in sync.")
@@ -153,27 +149,6 @@ private struct SignedOutView: View {
             signInControl
                 .frame(height: 50)
                 .cornerRadius(10)
-
-            DisclosureGroup("Reviewer sign-in", isExpanded: $showReviewLogin) {
-                VStack(spacing: 12) {
-                    Text("Use the credentials supplied in App Review Information. This is a shared sample account. Use sample data only; personal connections and groups require your own Sign in with Apple account.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                    TextField("User name", text: $reviewUsername)
-                        .textContentType(.username).textInputAutocapitalization(.never)
-                        .autocorrectionDisabled().accessibilityIdentifier("review.username")
-                    SecureField("Password", text: $reviewPassword)
-                        .textContentType(.password).accessibilityIdentifier("review.password")
-                    Button("Sign in for review") {
-                        let username = reviewUsername.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let password = reviewPassword
-                        reviewPassword = ""
-                        Task { await model.signInForReview(username: username, password: password) }
-                    }
-                    .disabled(reviewUsername.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || reviewPassword.isEmpty)
-                    .accessibilityIdentifier("review.submit")
-                }
-                .padding(.top, 12)
-            }
 
             HStack(spacing: 24) {
                 PrivacyPolicyLink()

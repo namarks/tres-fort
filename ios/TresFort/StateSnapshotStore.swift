@@ -126,8 +126,16 @@ enum StateSnapshotStore {
         let storedWatermarks: StateSyncWatermarks = current.invalidated == true || current.state == nil
             ? .fullReload
             : current.watermarks ?? .fullReload
-        let watermarks = groupAwareWatermarks(
+        var watermarks = groupAwareWatermarks(
             storedWatermarks, certifiedVersion: current.planGroupsVersion)
+        // Older snapshots predate source attribution. Re-fetch this collection
+        // once even when unchanged provider rows sit behind the delta cursor.
+        if current.state?.external_activities.contains(where: { ($0.attribution_version ?? 0) < 1 }) == true {
+            watermarks = StateSyncWatermarks(
+                planVersion: watermarks.planVersion, setsSince: watermarks.setsSince,
+                eventsSince: watermarks.eventsSince, activitiesSince: 0,
+                logSince: watermarks.logSince)
+        }
         return reserveStateRequest(
             userID: userID,
             current: current,

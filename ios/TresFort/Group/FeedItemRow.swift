@@ -32,6 +32,9 @@ struct FeedItemRow: View {
                         .foregroundStyle(Theme.text)
                         .lineLimit(1)
                 }
+                if case .ride(let ride) = item {
+                    SourceAttributionLabel(text: ride.ride.source_attribution)
+                }
             }
             Image(systemName: "chevron.right")
                 .font(.system(size: 11))

@@ -256,7 +256,8 @@ private struct UIFixtureServer {
     mutating func importIntervalsActivity() {
         importedActivities = [["id": "synthetic-imported-ride", "source": "intervals", "external_id": "ride-1",
             "date": "2026-09-08", "kind": "ride", "name": "Morning ride", "start_date_local_ms": revision,
-            "duration_s": 1800, "load": 25, "synced_at": revision]]
+            "moving_time_sec": 1800, "training_load": 25, "synced_at": revision,
+            "source_attribution": "Garmin Edge 840", "attribution_version": 1]]
     }
     var syntheticUserID: String { scenario == .activationOwner ? "synthetic-owner" : "synthetic-ui-user" }
     var syntheticJWT: String {
@@ -433,14 +434,6 @@ private struct UIFixtureServer {
         var response: Any
         var status = 200
         switch (method, path) {
-        case ("POST", "/auth/review") where scenario == .signIn:
-            guard body["username"] as? String == "app-review",
-                  body["password"] as? String == "synthetic-review-password-only-for-tests" else {
-                return (401, try JSONSerialization.data(withJSONObject: ["error": "invalid_review_credentials"]))
-            }
-            let payload = try JSONSerialization.data(withJSONObject: ["sub": syntheticUserID, "exp": 4_000_000_000, "app_review": true])
-                .base64EncodedString().replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
-            response = ["jwt": "e30.\(payload).synthetic", "user": ["id": syntheticUserID, "display_name": "App Review"]]
         case ("POST", "/auth/apple"):
             signInAttempts += 1
             if ProcessInfo.processInfo.environment["TRESFORT_UI_AUTH_RETRY"] == "1", signInAttempts == 1 {

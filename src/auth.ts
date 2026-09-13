@@ -4,7 +4,7 @@
 import { sign, verify } from 'hono/jwt';
 import { createMiddleware } from 'hono/factory';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
-import { APP_REVIEW_SUB, appReviewAllows, appReviewEnabled } from './appReview';
+import { APP_REVIEW_SUB } from './appReview';
 import type { HonoEnv } from './types';
 import {
   accountDeletionContinuationMatches,
@@ -157,16 +157,10 @@ export const requireAppJwt = createMiddleware<HonoEnv>(async (c, next) => {
     await next();
     return;
   }
-  const appReview = livePrincipal.apple_sub === APP_REVIEW_SUB;
-  c.set('appReview', appReview);
-  if (appReview) {
-    if (payload.app_review !== true || !appReviewEnabled(c.env)) {
-      return c.json({ error: 'invalid_token' }, 401);
-    }
-    if (!appReviewAllows(c.req.method, c.req.path)) {
-      return c.json({ error: 'review_account_requires_personal_sign_in' }, 403);
-    }
-  } else if (payload.app_review === true) {
+  // The retired sample login must not remain usable through old beta tokens
+  // or rolling renewal. Keep its reserved identity excluded from the owner.
+  c.set('appReview', false);
+  if (livePrincipal.apple_sub === APP_REVIEW_SUB || payload.app_review === true) {
     return c.json({ error: 'invalid_token' }, 401);
   }
   // The device sends its IANA timezone on EVERY authenticated request, so

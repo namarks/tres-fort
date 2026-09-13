@@ -517,6 +517,7 @@ struct DayAgendaView: View {
                     .foregroundStyle(Theme.text)
             }
 
+            SourceAttributionLabel(text: a.source_attribution)
             let stats = activityStats(a)
             if !stats.isEmpty {
                 LazyVGrid(

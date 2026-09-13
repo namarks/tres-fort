@@ -92,10 +92,6 @@ struct APIClient {
         return try await post("auth/apple", body: body, jwt: nil)
     }
 
-    func authReview(username: String, password: String) async throws -> AuthResponse {
-        try await post("auth/review", body: ["username": username, "password": password], jwt: nil)
-    }
-
     /// Roll a still-valid app JWT forward before its fixed expiry. Sign in
     /// with Apple remains the recovery path after the bearer has expired.
     func renewAppSession(jwt: String) async throws -> SessionRenewalResponse {
@@ -749,7 +745,6 @@ struct APIClient {
 /// Narrow auth surface injected into AuthModel so expiry, offline renewal,
 /// and same-user recovery are covered without real Apple/network calls.
 protocol AuthAPI {
-    func authReview(username: String, password: String) async throws -> AuthResponse
     func authApple(
         identityToken: String,
         authorizationCode: String?,
@@ -764,12 +759,6 @@ protocol AuthAPI {
 }
 
 extension APIClient: AuthAPI {}
-
-extension AuthAPI {
-    func authReview(username: String, password: String) async throws -> AuthResponse {
-        throw APIError.http(404, "review_login_unavailable")
-    }
-}
 
 /// Only the calls required to settle a set intent and the shared state-sync
 /// pull are injectable. The rest of SyncModel continues using APIClient

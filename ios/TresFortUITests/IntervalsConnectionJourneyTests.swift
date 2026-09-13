@@ -46,6 +46,11 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
         connect(app)
         XCTAssertTrue(app.staticTexts["Last synced"].waitForExistence(timeout: 10))
         assertImportedActivity(app)
+        XCTAssertTrue(app.staticTexts["Garmin Edge 840"].waitForExistence(timeout: 10))
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = "Imported activity with Garmin attribution"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 
     func testSavedConnectionRetriesImportWithoutAnotherCredentialSubmission() {

@@ -69,7 +69,7 @@ describe('native strength and HealthKit identity', () => {
     expect(after.synced_at).toBeGreaterThan(before.synced_at);
     const jwt = await issueAppJwt(userId,'test-secret');
     const delta = await SELF.fetch(`https://test/api/state?activities_since=${before.synced_at}`, { headers:{Authorization:`Bearer ${jwt}`} });
-    expect((await delta.json<any>()).external_activities).toEqual([after]);
+    expect((await delta.json<any>()).external_activities).toEqual([{ ...after, source_attribution: null, attribution_version: 1 }]);
   });
 
   it('restores the observed workout after a native discard, without hiding or duplicating its source row', async () => {

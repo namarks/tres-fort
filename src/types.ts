@@ -13,8 +13,6 @@ export interface Env {
   OWNER_APPLE_SUB?: string;
   /** If set, enables POST /auth/dev for local + integration tests. */
   DEV_AUTH_SECRET?: string;
-  /** Random reviewer password digest; absent disables reviewer access. */
-  APP_REVIEW_PASSWORD_SHA256?: string;
   /** Consent gate for the OAuth /authorize step (claude.ai/desktop). */
   OWNER_AUTH_PASSPHRASE?: string;
   /**

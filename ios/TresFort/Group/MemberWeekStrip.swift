@@ -83,6 +83,7 @@ enum ActivityRange: String, CaseIterable, Identifiable {
 
 /// One cell of a lane — a day (week/month/year) bucket.
 struct LaneCell: Identifiable {
+    var sourceAttribution: String? = nil
     let index: Int
     let category: WorkoutCategory?   // dominant in the bucket; nil = empty
     let intensity: Int               // total items in the bucket (heat ramp)
@@ -105,6 +106,15 @@ struct YearGrid {
 enum LaneData {
     case row([LaneCell])
     case grid(YearGrid)
+
+    var sourceAttribution: String? {
+        let cells: [LaneCell]
+        switch self {
+        case .row(let row): cells = row
+        case .grid(let grid): cells = grid.columns.flatMap { $0 }
+        }
+        return cells.contains { $0.sourceAttribution != nil } ? SourceAttributionLabel.summary : nil
+    }
 
     var totalIntensity: Int {
         switch self {
@@ -155,10 +165,13 @@ enum ActivityLanes {
                      series: MemberActivitySeries?,
                      today: Date = Date()) -> LaneData {
         let daily = dailyCounts(series)
+        let attributions = Dictionary((series?.days ?? []).compactMap { day in
+            day.source_attribution.map { (day.date, $0) }
+        }, uniquingKeysWith: { first, _ in first })
         switch range {
-        case .week:  return .row(weekCells(daily: daily, today: today))
-        case .month: return .row(dayWindowCells(daily: daily, today: today, count: 30))
-        case .year:  return .grid(yearGrid(daily: daily, today: today, weeks: 53))
+        case .week:  return .row(weekCells(daily: daily, attributions: attributions, today: today))
+        case .month: return .row(dayWindowCells(daily: daily, attributions: attributions, today: today, count: 30))
+        case .year:  return .grid(yearGrid(daily: daily, attributions: attributions, today: today, weeks: 53))
         }
     }
 
@@ -182,11 +195,11 @@ enum ActivityLanes {
     }
 
     private static func weekCells(
-        daily: [String: [WorkoutCategory: Int]], today: Date
+        daily: [String: [WorkoutCategory: Int]], attributions: [String: String], today: Date
     ) -> [LaneCell] {
         GroupWeek.days(today: today).map { day in
             let counts = daily[day.ymd] ?? [:]
-            return LaneCell(index: day.index,
+            return LaneCell(sourceAttribution: attributions[day.ymd], index: day.index,
                             category: dominant(counts),
                             intensity: counts.values.reduce(0, +),
                             isToday: day.isToday,
@@ -195,7 +208,7 @@ enum ActivityLanes {
     }
 
     private static func dayWindowCells(
-        daily: [String: [WorkoutCategory: Int]], today: Date, count: Int
+        daily: [String: [WorkoutCategory: Int]], attributions: [String: String], today: Date, count: Int
     ) -> [LaneCell] {
         let cal = CalendarProjection.calendar
         let start = cal.startOfDay(for: today)
@@ -206,7 +219,7 @@ enum ActivityLanes {
             guard let d = cal.date(byAdding: .day, value: offset, to: start) else { return nil }
             let ymd = CalendarProjection.dateString(d)
             let counts = daily[ymd] ?? [:]
-            return LaneCell(index: i,
+            return LaneCell(sourceAttribution: attributions[ymd], index: i,
                             category: dominant(counts),
                             intensity: counts.values.reduce(0, +),
                             isToday: ymd == todayYmd,
@@ -224,7 +237,7 @@ enum ActivityLanes {
     /// stops at today (the frontier reads clearly). `monthLabels` marks
     /// the column where each month begins, for the top axis.
     private static func yearGrid(
-        daily: [String: [WorkoutCategory: Int]], today: Date, weeks: Int
+        daily: [String: [WorkoutCategory: Int]], attributions: [String: String], today: Date, weeks: Int
     ) -> YearGrid {
         let cal = CalendarProjection.calendar
         let start = cal.startOfDay(for: today)
@@ -251,7 +264,7 @@ enum ActivityLanes {
                 let ymd = CalendarProjection.dateString(d)
                 if ymd > todayYmd { continue }   // current week's tail — omit
                 let counts = daily[ymd] ?? [:]
-                col.append(LaneCell(index: c * 7 + r,
+                col.append(LaneCell(sourceAttribution: attributions[ymd], index: c * 7 + r,
                                     category: dominant(counts),
                                     intensity: counts.values.reduce(0, +),
                                     isToday: ymd == todayYmd,
@@ -286,6 +299,7 @@ struct MemberActivityRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            SourceAttributionLabel(text: lane.sourceAttribution ?? stat.streak_source_attribution)
             strip
         }
         .frame(maxWidth: .infinity)

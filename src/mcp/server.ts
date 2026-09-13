@@ -168,8 +168,8 @@ interface Tool {
   ) => Promise<unknown>;
   /** Write tools are audited; `note` (if it returns text) is persisted. */
   write?: boolean;
-  /** Explicitly verified read-only tool; omitted for legacy tools. */
-  readOnly?: boolean;
+  /** Appends records without replacing or deleting existing user data. */
+  appendOnly?: boolean;
   /** Plan writer persisted its audit/note in the same D1 transaction. */
   atomicWrite?: boolean;
   /** The service writes its own audit trail; do not duplicate it in dispatch. */
@@ -217,6 +217,7 @@ function addWorkoutTool(operation: 'add_day' | 'add_workout'): Tool {
       ['name'],
     ),
     write: true,
+    appendOnly: true,
     atomicWrite: true,
     handler: async (a, env, userId) => {
       let plan = await getActivePlan(env.DB, userId);
@@ -300,7 +301,6 @@ function updateWorkoutTool(operation: 'update_day' | 'update_workout'): Tool {
 
 const TOOLS: Record<string, Tool> = {
   get_coach_brief: {
-    readOnly: true,
     description: 'Start a coaching conversation here. Read the current training plan, recent sessions, feedback, activity context and coaching rules. Available to clients that do not load MCP resources or prompts.',
     inputSchema: obj({}),
     handler: async (_args, env, userId) => ({
@@ -627,6 +627,8 @@ const TOOLS: Record<string, Tool> = {
       ['exercise', 'weight', 'reps'],
     ),
     write: true,
+    // Reviving a discarded legacy session can clear its old feedback and
+    // assignment, so the tool must retain the destructive-action hint.
     handler: async (a, env, userId) => {
       const plan = await getActivePlan(env.DB, userId);
       if (!plan) return { error: 'no_active_plan' };
@@ -900,6 +902,7 @@ const TOOLS: Record<string, Tool> = {
       ['type'],
     ),
     write: true,
+    appendOnly: true,
     handler: async (a, env, userId) => {
       const today = await ownerToday(env, userId);
       const date = typeof a.date === 'string' && a.date.length > 0 ? a.date : today;
@@ -971,6 +974,7 @@ const TOOLS: Record<string, Tool> = {
       ['scope', 'body'],
     ),
     write: true,
+    appendOnly: true,
     handler: async (a, env, userId) => {
       await writeNote(
         env.DB,
@@ -1182,6 +1186,7 @@ const TOOLS: Record<string, Tool> = {
       ['day', 'exercise', 'target_sets', 'target_reps'],
     ),
     write: true,
+    appendOnly: true,
     atomicWrite: true,
     handler: async (a, env, userId) => {
       const groupFields = Object.keys(a).filter((key) => ['group_id', 'group_rest_seconds', 'group_transition_seconds'].includes(key));
@@ -1845,7 +1850,15 @@ async function dispatch(
           name,
           description: t.description,
           inputSchema: t.inputSchema,
-          ...(t.readOnly ? { annotations: { readOnlyHint: true } } : {}),
+          // All tools operate on the authenticated account and its bounded
+          // catalog/groups/linked Intervals account. None publish publicly or
+          // accept arbitrary external destinations. Writes default to a
+          // destructive hint unless explicitly verified append-only below.
+          annotations: {
+            readOnlyHint: !t.write,
+            destructiveHint: !!t.write && !t.appendOnly,
+            openWorldHint: false,
+          },
         })),
       });
     case 'tools/call': {

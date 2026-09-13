@@ -304,6 +304,18 @@ struct ProfileView: View {
                         }
                     }
                 }
+                // An approved code may not have reached its AI app yet, or
+                // the profile refresh may be stale after an uncertain write.
+                // Revocation must remain reachable without an active grant.
+                DisclosureGroup("Manage AI access") {
+                    Text("Cancel unfinished approvals or disconnect AI apps. Your training data stays in Très Fort.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Button("Disconnect all AI apps", role: .destructive) {
+                        showCoachDisconnectConfirmation = true
+                    }
+                    .disabled(isDisconnectingCoach)
+                }
+                .accessibilityIdentifier("coach.manageAccess")
             }
         } header: {
             Text("Coach")

@@ -135,3 +135,42 @@ member onboarding. Canonical release/verification state lives in the
 The free offering uses users' own supported AI subscriptions. A future paid
 package may bundle in-app coaching and API calls when cost and product economics
 justify it; its pricing, usage limits, billing and provider decisions remain future work.
+
+
+## Mobile approval and public plugin release
+
+The iPhone implementation uses an explicit account approval screen. The OAuth
+page links from the Worker to the website's narrowly associated
+`/coach/authorize?request=<opaque-id>` path. Opening the link alone grants no
+access. Signed-out users finish sign-in/onboarding before reviewing it. The
+request expires in ten minutes. Allow/Deny are exclusive; expired or used
+requests cannot issue another code. The app returns the one-time PKCE-bound
+code to the registered HTTPS callback. No model key or subscription credential
+is requested by Très Fort.
+
+The public distribution package, listing draft and review cases are in
+[`plugins/tres-fort`](../plugins/tres-fort/README.md). They have not been
+submitted or published. A valid local manifest is not a mobile installation,
+and the app does not invent a Connect URL while awaiting a provider-issued one.
+
+Release order under explicit owner authority:
+
+1. Apply migration `0051` before any Worker code that accesses its new table.
+2. Deploy the website AASA, fallback page and no-referrer/no-store headers;
+   verify the exact public assets, including JSON Content-Type on the AASA.
+3. Distribute an iOS build with `applinks:tresfort.app` and the approval screen.
+4. Release the matching Worker. Verify discovery, consent and data isolation;
+   verify no-store on authenticated previews/decisions. Older apps retain the
+   connect-code fallback.
+5. Test from the real provider on a physical iPhone: verified link opens Très
+   Fort, Allow returns to the initiating AI connection, a coaching read and
+   reversible edit sync correctly, and disconnect invalidates access. Simulator
+   navigation injection does not prove the Apple association cache or provider
+   callback; do not claim an end-to-end mobile connection until this passes.
+6. Complete provider scan/review/publication, then use its actual install URL
+   for the consumer Connect button and repeat the full installation journey.
+
+A failed mobile callback requires a new connection; the app never automatically
+repeats an uncertain approval. Domain verification, approved terms, availability,
+review-account access and publication are owner/provider inputs recorded in the
+[submission worksheet](../plugins/tres-fort/submission.md).

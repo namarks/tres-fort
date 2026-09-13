@@ -741,6 +741,10 @@ final class AuthModel: ObservableObject {
     /// Preserve validated invite navigation across interrupted sign-in and
     /// onboarding. Signed-in intents remain bound to that account.
     func handleDeepLink(_ url: URL) {
+        if let request = Self.coachApprovalID(from: url) {
+            requestEntry(.coachApproval(request))
+            return
+        }
         guard let code = Self.inviteCode(from: url) else { return }
         requestEntry(.invite(code))
     }
@@ -749,6 +753,17 @@ final class AuthModel: ObservableObject {
     /// the host must match the API host and the path must be exactly
     /// `/join/<code>`, where <code> normalizes to 6 chars of the invite
     /// alphabet. Returns nil otherwise.
+    static func coachApprovalID(from url: URL) -> String? {
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              parts.scheme == "https", parts.host == "tresfort.app", parts.port == nil,
+              parts.user == nil, parts.password == nil, parts.fragment == nil,
+              parts.percentEncodedPath == "/coach/authorize",
+              let items = parts.queryItems, items.count == 1,
+              items[0].name == "request", let id = items[0].value,
+              id.count == 64, id.allSatisfy({ "0123456789abcdef".contains($0) }) else { return nil }
+        return id
+    }
+
     static func inviteCode(from url: URL) -> String? {
         guard let host = url.host, host == Config.apiBaseURL.host else { return nil }
         let parts = url.pathComponents.filter { $0 != "/" } // ["join", "ABC123"]

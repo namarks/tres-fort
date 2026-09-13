@@ -4,8 +4,13 @@
 // authorization-code + PKCE (S256) + refresh, per-account consent.
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { bodyLimit } from 'hono/body-limit';
+import { requireAppJwt } from './auth';
 import type { Env, HonoEnv } from './types';
 import {
+  createMobileCoachRequest,
+  getMobileCoachRequest,
+  decideMobileCoachRequest,
   ensureOwnerUser,
   findUserByMcpPassphrase,
   isAccountDeletionInProgress,
@@ -145,7 +150,8 @@ oauthRoutes.post('/oauth/register', async (c) => {
     .json<{ redirect_uris?: string[]; client_name?: string }>()
     .catch(() => ({}) as { redirect_uris?: string[]; client_name?: string });
   const redirects = Array.isArray(b.redirect_uris) ? b.redirect_uris : [];
-  if (redirects.length === 0) return c.json({ error: 'invalid_redirect_uri' }, 400);
+  if (b.client_name !== undefined && (typeof b.client_name !== 'string' || b.client_name.length > 200)) return c.json({ error: 'invalid_client_metadata' }, 400);
+  if (redirects.length === 0 || redirects.length > 10 || !redirects.every(uri => typeof uri === 'string' && uri.length <= 2048)) return c.json({ error: 'invalid_redirect_uri' }, 400);
   const clientId = rand();
   await c.env.DB.prepare(
     'INSERT INTO oauth_clients (client_id, client_secret, redirect_uris, client_name, created_at) VALUES (?1, NULL, ?2, ?3, ?4)',
@@ -192,7 +198,7 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
-function consentPage(params: Record<string, string>, clientName: string | null, error?: string): string {
+function consentPage(params: Record<string, string>, clientName: string | null, error?: string, mobileRequest?: string): string {
   const hidden = Object.entries(params)
     .map(
       ([k, v]) =>
@@ -210,13 +216,15 @@ button{width:100%;margin-top:14px;padding:12px;background:#fff;color:#000;border
 border-radius:8px;font-weight:600;font-size:15px;cursor:pointer}
 .err{color:#ff6b6b;font-size:13px;margin-top:10px}</style></head>
 <body><form method="POST" action="/oauth/authorize">${hidden}
-<h1>Connect Très Fort</h1><p>Paste your connect code to link your AI app to your training. Get it in the Très Fort app under Profile → Coach.</p>
+<h1>Connect Très Fort</h1>
+${mobileRequest ? `<p><a href="https://tresfort.app/coach/authorize?request=${mobileRequest}">Open Très Fort to review access</a></p><p>On iPhone, approve in the signed-in Très Fort app. The request expires in 10 minutes. If the app does not open, use the connect-code option below.</p>` : ''}
+<details${mobileRequest ? '' : ' open'}><summary>Use a connect code</summary><p>Paste your connect code to link your AI app to your training. Get it in the Très Fort app under Profile → Coach.</p>
 <p>App name supplied by the connecting client: <strong>${escapeHtml(clientName || 'AI app')}</strong>. Only continue if you started this connection in an app you trust.</p>
 <p>Allowing access lets this app and its configured AI provider read your training plan, workout history, saved feedback and available group information, including imported Apple Health and Intervals.icu workouts. It also lets the app change your plan and record training updates.</p>
 <p>You can disconnect all AI apps in Profile to stop future access through these connections. This does not delete information already retrieved into AI conversations. The Apple Health group-sharing switch does not limit your own coach’s access. Review the <a href="https://tresfort.app/privacy">Très Fort privacy policy</a> and your chosen app and model provider’s privacy policies before approving.</p>
 <input type="password" name="passphrase" placeholder="Connect code" autofocus>
 ${error ? `<div class="err">${escapeHtml(error)}</div>` : ''}
-<button type="submit">Allow access</button></form></body></html>`;
+<button type="submit">Allow access</button></details></form></body></html>`;
 }
 
 async function loadClient(env: Env, clientId: string) {
@@ -227,6 +235,8 @@ async function loadClient(env: Env, clientId: string) {
 
 oauthRoutes.get('/oauth/authorize', async (c) => {
   const q = c.req.query();
+  if (q.resource && q.resource !== `${origin(c.req.url)}/mcp`) return c.json({ error: 'invalid_target' }, 400);
+  if (q.scope && q.scope !== 'mcp') return c.json({ error: 'invalid_scope' }, 400);
   const client = q.client_id ? await loadClient(c.env, q.client_id) : null;
   if (!client) return c.text('invalid client_id', 400);
   const allowed: string[] = JSON.parse(client.redirect_uris);
@@ -237,6 +247,30 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
   if (q.code_challenge_method !== 'S256' || !q.code_challenge) {
     return c.text('PKCE S256 required', 400);
   }
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  // Chromium applies form-action to the POST's redirect as well. Permit
+  // only this already-validated callback origin (including native loopback
+  // port); URL.origin serialization cannot inject a policy directive.
+  let callback: URL;
+  try { callback = new URL(q.redirect_uri); } catch { return c.text('invalid redirect_uri', 400); }
+  const formCallback = callback.origin === 'null' ? `${callback.protocol}` : callback.origin;
+  c.header('Content-Security-Policy', `default-src 'none'; style-src 'unsafe-inline'; form-action 'self' ${formCallback}; frame-ancestors 'none'; base-uri 'none'`);
+  // Only HTTPS callbacks can complete on the phone. Desktop loopback clients
+  // retain the existing consent form. A request ID never grants access.
+  let mobileRequest: string | undefined;
+  if (callback?.protocol === 'https:' && !callback.username && !callback.password && !callback.hash
+      && /^[A-Za-z0-9_-]{43}$/.test(q.code_challenge)
+      && (!q.scope || q.scope === 'mcp')
+      && (!q.resource || q.resource === `${origin(c.req.url)}/mcp`)
+      && q.redirect_uri.length <= 2048 && (q.state?.length ?? 0) <= 2048) {
+    mobileRequest = rand();
+    await createMobileCoachRequest(c.env.DB, {
+      id: mobileRequest, client_id: client.client_id, redirect_uri: q.redirect_uri,
+      code_challenge: q.code_challenge, state: q.state ?? '',
+      resource: `${origin(c.req.url)}/mcp`, expires_at: Date.now() + CODE_TTL_MS,
+    });
+  }
   return c.html(
     consentPage({
       client_id: q.client_id ?? '',
@@ -246,13 +280,16 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
       state: q.state ?? '',
       scope: q.scope ?? 'mcp',
       resource: q.resource ?? '',
-    }, client.client_name),
+    }, client.client_name, undefined, mobileRequest),
   );
 });
 
 oauthRoutes.post('/oauth/authorize', async (c) => {
   const form = await c.req.formData();
   const f = (k: string) => String(form.get(k) ?? '');
+  if (f('resource') && f('resource') !== `${origin(c.req.url)}/mcp`) return c.json({ error: 'invalid_target' }, 400);
+  if (f('scope') && f('scope') !== 'mcp') return c.json({ error: 'invalid_scope' }, 400);
+  if ((f('code_challenge_method') && f('code_challenge_method') !== 'S256') || !f('code_challenge')) return c.text('PKCE S256 required', 400);
   const client = await loadClient(c.env, f('client_id'));
   if (!client) return c.text('invalid client_id', 400);
   const allowed: string[] = JSON.parse(client.redirect_uris);
@@ -337,6 +374,8 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
 oauthRoutes.post('/oauth/token', async (c) => {
   const form = await c.req.formData();
   const f = (k: string) => String(form.get(k) ?? '');
+  if (f('resource') && f('resource') !== `${origin(c.req.url)}/mcp`) return c.json({ error: 'invalid_target' }, 400);
+  if (f('scope') && f('scope') !== 'mcp') return c.json({ error: 'invalid_scope' }, 400);
   const grant = f('grant_type');
 
   if (grant === 'authorization_code') {
@@ -413,4 +452,43 @@ oauthRoutes.post('/oauth/token', async (c) => {
   }
 
   return c.json({ error: 'unsupported_grant_type' }, 400);
+});
+
+
+// Phone approval: bearer-app-JWT only, no CORS or browser cookies. The link
+// supplies a request ID, never a user ID, bearer, callback override or PKCE key.
+oauthRoutes.use('/api/coach-requests/*', requireAppJwt);
+oauthRoutes.use('/api/coach-requests/*', async (c, next) => {
+  c.header('Cache-Control', 'no-store');
+  if (!/^\/api\/coach-requests\/[a-f0-9]{64}$/.test(c.req.path)) {
+    return c.json({ error: 'invalid_request' }, 400);
+  }
+  await next();
+});
+oauthRoutes.get('/api/coach-requests/:id', async (c) => {
+  const request = await getMobileCoachRequest(c.env.DB, c.req.param('id'));
+  if (!request) return c.json({ error: 'request_expired_or_used' }, 410);
+  return c.json({
+    client_name: request.client_name,
+    redirect_uri: request.redirect_uri,
+    expires_at: request.expires_at,
+  });
+});
+oauthRoutes.post('/api/coach-requests/:id', bodyLimit({ maxSize: 1024 }), async (c) => {
+  const body: unknown = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || !('decision' in body)
+      || (body.decision !== 'allow' && body.decision !== 'deny')
+      || Object.keys(body).length !== 1) {
+    return c.json({ error: 'invalid_decision' }, 400);
+  }
+  const result = await decideMobileCoachRequest(
+    c.env.DB, c.req.param('id'), c.get('userId'), body.decision === 'allow');
+  if (!result) return c.json({ error: 'request_expired_or_used' }, 410);
+  const callback = new URL(result.redirect_uri);
+  if (result.code) callback.searchParams.set('code', result.code);
+  else callback.searchParams.set('error', 'access_denied');
+  if (result.state) callback.searchParams.set('state', result.state);
+  // Send only the one-time PKCE-bound code to the registered HTTPS callback.
+  // This never exposes an app JWT or OAuth access/refresh token to a link.
+  return c.json({ redirect_uri: callback.toString(), allowed: !!result.code });
 });

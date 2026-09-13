@@ -12392,6 +12392,10 @@ export async function revokeAllOAuthGrants(
              AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))
         )`,
     ).bind(userId, isOwner ? 1 : 0),
+    // Stop approved-but-not-yet-exchanged connections as well as tokens.
+    workoutDB(db).prepare(`DELETE FROM oauth_codes
+      WHERE user_id = ?1 OR (?2 = 1 AND user_id IS NULL)`)
+      .bind(userId, isOwner ? 1 : 0),
   ]);
   return revoked?.meta.changes ?? 0;
 }
@@ -12627,4 +12631,80 @@ export async function clearGroup(
     transition_rest: null, target_sets: null, cleared: true };
   if (!changed.length) return { ...result, unchanged: true };
   return commitExerciseGroup(db, plan, changed, result, key, attribution);
+}
+
+
+// Mobile OAuth requests are navigation, never credentials. All authorization
+// parameters are fixed before the app opens; iOS can submit only a decision.
+export interface MobileCoachRequest {
+  id: string;
+  client_id: string;
+  client_name: string;
+  redirect_uri: string;
+  code_challenge: string;
+  state: string;
+  resource: string;
+  expires_at: number;
+}
+
+export async function createMobileCoachRequest(
+  db: D1Database, request: Omit<MobileCoachRequest, 'client_name'>,
+): Promise<void> {
+  await db.batch([
+    db.prepare('DELETE FROM oauth_mobile_requests WHERE expires_at <= ?1').bind(Date.now()),
+    db.prepare(`INSERT INTO oauth_mobile_requests
+      (id, client_id, redirect_uri, code_challenge, state, resource, expires_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`)
+      .bind(request.id, request.client_id, request.redirect_uri, request.code_challenge,
+        request.state, request.resource, request.expires_at),
+  ]);
+}
+
+export async function getMobileCoachRequest(db: D1Database, id: string): Promise<MobileCoachRequest | null> {
+  return db.prepare(`SELECT r.*, COALESCE(c.client_name, 'AI app') AS client_name
+    FROM oauth_mobile_requests r JOIN oauth_clients c ON c.client_id = r.client_id
+    WHERE r.id = ?1 AND r.expires_at > ?2`).bind(id, Date.now()).first<MobileCoachRequest>();
+}
+
+/** Decide once. A concurrent allow/deny can have only one winner. Approval,
+ * code issuance, audit and request consumption commit in one D1 transaction.
+ * A lost success response requires a new connection; do not retry approval.
+ */
+export async function decideMobileCoachRequest(
+  db: D1Database, id: string, userId: string, allow: boolean,
+): Promise<{ redirect_uri: string; state: string; code?: string } | null> {
+  const request = await getMobileCoachRequest(db, id);
+  if (!request) return null;
+  const timestamp = Date.now();
+  const liveUser = `EXISTS (SELECT 1 FROM users WHERE id = ?3)
+    AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?3)
+    AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?3)`;
+  if (!allow) {
+    const deleted = await db.prepare(`DELETE FROM oauth_mobile_requests
+      WHERE id = ?1 AND expires_at > ?2 AND ${liveUser} RETURNING id`)
+      .bind(id, timestamp, userId).first();
+    return deleted ? { redirect_uri: request.redirect_uri, state: request.state } : null;
+  }
+  const code = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+  const [inserted] = await db.batch([
+    db.prepare(`INSERT INTO oauth_codes
+      (code, client_id, redirect_uri, code_challenge, code_challenge_method,
+       scope, resource, expires_at, created_at, user_id)
+      SELECT ?4, client_id, redirect_uri, code_challenge, 'S256', 'mcp', resource,
+             MIN(expires_at, ?2 + 600000), ?2, ?3
+      FROM oauth_mobile_requests WHERE id = ?1 AND expires_at > ?2 AND ${liveUser}`)
+      .bind(id, timestamp, userId, code),
+    db.prepare(`INSERT INTO audit_log (id, user_id, actor, tool, args, result, created_at)
+      SELECT ?1, user_id, 'ios', 'approve_coach_connection', NULL, 'approved', ?2
+      FROM oauth_codes WHERE code = ?3`).bind(crypto.randomUUID(), timestamp, code),
+    db.prepare(`DELETE FROM oauth_mobile_requests WHERE id = ?1
+      AND EXISTS (SELECT 1 FROM oauth_codes WHERE code = ?2)`).bind(id, code),
+  ]);
+  return inserted?.meta.changes === 1
+    ? { redirect_uri: request.redirect_uri, state: request.state, code } : null;
+}
+
+
+export async function purgeExpiredMobileCoachRequests(db: D1Database): Promise<void> {
+  await db.prepare('DELETE FROM oauth_mobile_requests WHERE expires_at <= ?1').bind(Date.now()).run();
 }

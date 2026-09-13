@@ -422,6 +422,23 @@ models, lifecycles, and revocation paths → decoupled on purpose.
   the grant deadlines. Static bearers and Apple/app sessions remain separate.
   A lost successful exchange response requires
   reauthorization. See the [coach contract](plans/completed/coach-access-integrity/decisions.md).
+- **Mobile account approval (migration `0051`).** A validated HTTPS OAuth
+  request can open `https://tresfort.app/coach/authorize?request=<opaque-id>`.
+  The website association and iOS entitlement claim only that approval path;
+  the different domain lets Safari hand off from the Worker consent page.
+  The ID contains no account credentials and alone grants nothing. iOS retains
+  it as account-bound navigation through sign-in/onboarding, then requires an
+  explicit decision after showing the client-supplied name, registered return
+  address and data disclosure. App-JWT-only `/api/coach-requests/:id` endpoints
+  load the preview and accept only `allow`/`deny`. One D1 transaction issues the
+  PKCE-bound code, records consent and consumes the request, guarded against
+  account deletion. Denial consumes without issuing a code. Requests expire
+  after ten minutes; creation and the existing hourly cron remove expired rows.
+  The app opens the registered HTTPS callback; no app JWT/access/refresh token
+  enters a link. An uncertain acknowledgement requires a new connection.
+  Disconnect-all also invalidates approved, unexchanged authorization codes.
+  The legacy connect-code flow remains available. The public plugin listing,
+  release and physical-device/provider round trip are separate verification gates.
 - **No per-tool scopes.** Per connected user there is one principal → scopes would add complexity with little security gain at this scale. The trust substitute is the per-user `audit_log` + Claude-written notes (visible, reversible).
 - **Rate limit:** soft cap (~600 req/min) via a Cloudflare rate-limit rule on `/mcp` or a KV counter — a runaway-loop guard, not a security boundary. Optional-but-recommended for v1.
 

@@ -48,6 +48,27 @@ final class MemberActivationJourneyTests: XCTestCase {
         XCTFail("Control is not reachable after scrolling: \(element.description)", file: file, line: line)
     }
 
+    func testMobileCoachApprovalRequiresExplicitDecision() {
+        let app = launch("coach-approval")
+        XCTAssertTrue(app.staticTexts["Review AI access"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["App name supplied by the connecting client: Synthetic AI app"].exists)
+        XCTAssertFalse(app.buttons["coach-approval.continue"].exists)
+        let image = XCTAttachment(screenshot: app.screenshot())
+        image.name = "mobile-coach-consent"; image.lifetime = .keepAlways; add(image)
+        scrollAndTap(app.buttons["coach-approval.allow"], in: app)
+        XCTAssertTrue(app.staticTexts["Access allowed"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["coach-approval.continue"].exists)
+        // Leave before the AI app exchanges its code. Cancellation must still
+        // be reachable when the profile reports no connected grant.
+        tap(app.buttons["Done"], in: app)
+        tap(app.tabBars.buttons["Profile"], in: app)
+        scrollAndTap(app.buttons["coach.manageAccess"], in: app)
+        scrollAndTap(app.buttons["Disconnect all AI apps"], in: app)
+        let confirmation = app.sheets["Disconnect all AI apps?"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        XCTAssertTrue(confirmation.buttons["Disconnect all AI apps"].isHittable)
+    }
+
     private func onboard(_ app: XCUIApplication, invited: Bool = false) {
         tap(app.buttons["Get started"], in: app)
         if !invited { tap(app.buttons["I don't have a code"], in: app) }

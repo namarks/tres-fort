@@ -35,3 +35,14 @@ test('every local navigation target, image, and font exists in the public build'
     assert.doesNotMatch(html, /<script\b|<iframe\b|<form\b/i);
   }
 });
+
+test('mobile approval uses a narrowly claimed, verified app link with a non-authorizing fallback', async () => {
+  const aasa = JSON.parse(await readFile(new URL('dist/.well-known/apple-app-site-association', root), 'utf8'));
+  assert.deepEqual(aasa.applinks.details[0].appIDs, ['8BA2RY6RCA.com.nmarkspdx.tresfort']);
+  assert.deepEqual(aasa.applinks.details[0].components.map(component => component['/']), ['/coach/authorize']);
+  const fallback = await readFile(new URL('dist/coach/authorize/index.html', root), 'utf8');
+  assert.match(fallback, /No access has been granted/);
+  assert.doesNotMatch(fallback, /<script|access_token|refresh_token|passphrase/);
+  const headers = await readFile(new URL('dist/_headers', root), 'utf8');
+  assert.match(headers, /Referrer-Policy: no-referrer/);
+});

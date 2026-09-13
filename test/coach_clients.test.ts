@@ -35,6 +35,7 @@ async function connect(name: string, redirect: string, passphrase: string, regis
   });
   const page = await SELF.fetch(`${BASE}/oauth/authorize?${params}`);
   expect(page.status).toBe(200);
+  expect(page.headers.get('Content-Security-Policy')).toContain(`form-action 'self' ${new URL(redirect).origin};`);
   const html = await page.text();
   expect(html).toContain('this app and its configured AI provider');
   expect(html).toContain('App name supplied by the connecting client');
@@ -111,6 +112,17 @@ describe('external AI client compatibility', () => {
     expect(initialized.result.instructions.slice(0, 512)).toContain('Do NOT call');
     const catalog = await (await rpc(access, 'tools/list')).json<any>();
     expect(catalog.result.tools.find((t: any) => t.name === 'get_coach_brief').annotations.readOnlyHint).toBe(true);
+    for (const tool of catalog.result.tools) {
+      expect(tool.annotations).toEqual({ readOnlyHint: expect.any(Boolean),
+        destructiveHint: expect.any(Boolean), openWorldHint: false });
+      if (tool.annotations.readOnlyHint) expect(tool.annotations.destructiveHint).toBe(false);
+    }
+    expect(catalog.result.tools.find((t: any) => t.name === 'update_plan').annotations)
+      .toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    expect(catalog.result.tools.find((t: any) => t.name === 'log_set').annotations)
+      .toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    expect(catalog.result.tools.find((t: any) => t.name === 'add_note').annotations)
+      .toMatchObject({ readOnlyHint: false, destructiveHint: false });
     const before = await env.DB.prepare('SELECT COUNT(*) AS n FROM audit_log WHERE user_id = ?1').bind(MEMBER).first('n');
     const brief = await tool(access, 'get_coach_brief');
     expect(brief.brief).toContain('Member plan');
@@ -124,6 +136,24 @@ describe('external AI client compatibility', () => {
     const me = await profile();
     expect(me.coach).toEqual(me.claude);
     expect(me.coach.connected).toBe(true);
+  });
+
+  it('warns that log_set can clear old feedback when reopening a discarded legacy session', async () => {
+    const access = connections.get('Codex')!.access_token;
+    const catalog = await (await rpc(access, 'tools/list')).json<any>();
+    expect(catalog.result.tools.find((t: any) => t.name === 'log_set').annotations.destructiveHint).toBe(true);
+    const plan = await tool(access, 'get_current_plan');
+    const session = crypto.randomUUID();
+    await env.DB.prepare(`INSERT INTO sessions
+      (id, user_id, plan_id, date, status, notes, perceived_fatigue, attempt, write_protocol, created_at, updated_at)
+      VALUES (?1, ?2, ?3, '2020-01-01', 'discarded', 'old feedback', 7, 0, 'legacy', ?4, ?4)`)
+      .bind(session, MEMBER, plan.id, Date.now()).run();
+    const result = await tool(access, 'log_set', {
+      exercise: 'back squat', weight: 100, reps: 5, session_date: '2020-01-01',
+    });
+    expect(result.session_id).toBe(session);
+    expect(await env.DB.prepare('SELECT status, notes, perceived_fatigue FROM sessions WHERE id = ?1')
+      .bind(session).first()).toEqual({ status: 'in_progress', notes: null, perceived_fatigue: null });
   });
 
   it.each(clients)('$name updates the shared plan with neutral notes and rejects a stale version', async ({ name }) => {

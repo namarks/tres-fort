@@ -1,0 +1,24 @@
+{
+  "name": "tres-fort",
+  "version": "0.1.0",
+  "description": "Use your Très Fort training plan and workout history in your AI app.",
+  "author": { "name": "Nicholas Marks", "email": "nick@tresfort.app", "url": "https://tresfort.app" },
+  "homepage": "https://tresfort.app",
+  "repository": "https://github.com/namarks/tres-fort",
+  "keywords": ["fitness", "training", "workouts"],
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Très Fort",
+    "shortDescription": "Plan training with your workout history.",
+    "longDescription": "Connect your Très Fort account to review training, adapt workouts and save plan changes. Conversations stay in your AI app. Uses your existing supported AI account or subscription; Très Fort does not supply model usage.",
+    "developerName": "Nicholas Marks",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://tresfort.app",
+    "privacyPolicyURL": "https://tresfort.app/privacy",
+    "defaultPrompt": ["Review my recent training and suggest next week’s workouts.", "What is planned for today, and how did my last workout go?", "Help me adapt my training around an upcoming trip."],
+    "brandColor": "#0A0A0A",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png"
+  }
+}

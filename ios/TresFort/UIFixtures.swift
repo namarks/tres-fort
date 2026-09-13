@@ -10,6 +10,7 @@ enum UIFixtureScenario: String, CaseIterable {
     case workoutSwap = "workout-swap"
     case appStore = "app-store"
     case groupSafety = "group-safety"
+    case coachApproval = "coach-approval"
     case timedNavigation = "timed-navigation", timedPreviewCompletion = "timed-preview-completion"
     var isTimerNavigation: Bool { self == .timedNavigation || self == .timedPreviewCompletion }
     case planChanges = "plan-changes"
@@ -64,6 +65,9 @@ enum UIFixtureModel {
             auth.onboardingComplete = UIFixtureScenario.selected != .onboarding
             auth.phase = .signedIn
         }
+        if UIFixtureScenario.selected == .coachApproval {
+            auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
+        }
         if UIFixtureScenario.selected == .activationInvite {
             auth.handleDeepLink(Config.apiBaseURL.appendingPathComponent("join/ABC234"))
         }
@@ -104,7 +108,7 @@ struct UIFixtureView: View {
                 // is excluded from release and physical-device builds.
                 RootView(defaults: UIFixtureModel.defaults,
                          now: { CalendarProjection.date(from: "2026-09-08")! }).environmentObject(auth)
-            } else if scenario == .signIn || scenario.isActivation || scenario.isIntervals || scenario == .groupSafety {
+            } else if scenario == .signIn || scenario.isActivation || scenario.isIntervals || scenario == .groupSafety || scenario == .coachApproval {
                 VStack(spacing: 0) {
                     Text("SYNTHETIC · \(scenario.rawValue)")
                         .font(.caption).dynamicTypeSize(.large)
@@ -393,6 +397,16 @@ private struct UIFixtureServer {
     mutating func respond(_ request: URLRequest) throws -> (Int, Data) {
         guard request.url?.host == "ui-fixture.invalid" else { throw URLError(.unsupportedURL) }
         guard !scenario.isHistory else { throw URLError(.notConnectedToInternet) }
+        if scenario == .coachApproval, request.url?.path.hasPrefix("/api/coach-requests/") == true {
+            let value: [String: Any]
+            if request.httpMethod == "POST" {
+                value = ["allowed": true, "redirect_uri": "https://client.example/callback?code=synthetic"]
+            } else {
+                value = ["client_name": "Synthetic AI app", "redirect_uri": "https://client.example/callback",
+                         "expires_at": Date.distantFuture.timeIntervalSince1970 * 1000]
+            }
+            return (200, try JSONSerialization.data(withJSONObject: value))
+        }
         let path = request.url!.path
         let method = request.httpMethod ?? "GET"
         if scenario.isActivation && path != "/auth/apple" {

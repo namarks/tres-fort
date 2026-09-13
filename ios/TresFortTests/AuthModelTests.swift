@@ -1778,6 +1778,84 @@ final class AuthModelTests: XCTestCase {
         XCTAssertEqual(auth.phase, .signedIn)
     }
 
+    func testCoachConnectCodeSurvivesRenewalDuringSaveOrProfileRefresh() async throws {
+        for pauseDuringSave in [true, false] {
+            let now = Date(timeIntervalSince1970: 2_000_000_000)
+            let defaults = defaults(), api = AuthAPIStub()
+            let oldToken = jwt(expiration: now.addingTimeInterval(60))
+            let renewedToken = jwt(expiration: now.addingTimeInterval(60 * 24 * 60 * 60))
+            api.renewalResult = .success(SessionRenewalResponse(jwt: renewedToken))
+            let auth = AuthModel(api: api, tokenStore: MemoryTokenStore(oldToken),
+                defaults: defaults, now: { now })
+            let started = AsyncLatch(), release = AsyncLatch()
+            let profile = intervalsProfile(connected: false)
+            var savedCode: String?, saveCalls = 0
+            let group = GroupModel(auth: auth, defaults: defaults, profileLoader: { token in
+                XCTAssertEqual(token, pauseDuringSave ? renewedToken : oldToken)
+                if !pauseDuringSave { await started.open(); await release.wait() }
+                return profile
+            }, coachCodeWriter: { code, token in
+                XCTAssertEqual(token, oldToken)
+                saveCalls += 1
+                savedCode = code
+                if pauseDuringSave { await started.open(); await release.wait() }
+            })
+            let generating = Task { try await group.generateCoachConnectCode() }
+            await started.wait()
+            await auth.renewSessionIfNeeded(force: true)
+            await release.open()
+
+            let displayedCode = try await generating.value
+            XCTAssertEqual(displayedCode, savedCode)
+            XCTAssertEqual(saveCalls, 1)
+            XCTAssertEqual(auth.featureJWT, renewedToken)
+        }
+    }
+
+    func testCoachConnectCodeCannotEscapeItsFeatureSession() async {
+        for pauseDuringSave in [true, false] {
+            for transition in ["sign-out", "reauthentication", "other-account", "same-account-return"] {
+                let defaults = defaults(), api = AuthAPIStub()
+                let oldToken = sessionToken(for: "user-a")
+                let auth = AuthModel(api: api, tokenStore: MemoryTokenStore(oldToken), defaults: defaults)
+                let started = AsyncLatch(), release = AsyncLatch()
+                let profile = intervalsProfile(connected: false)
+                var saveCalls = 0
+                let group = GroupModel(auth: auth, defaults: defaults, profileLoader: { _ in
+                    if !pauseDuringSave { await started.open(); await release.wait() }
+                    return profile
+                }, coachCodeWriter: { _, _ in
+                    saveCalls += 1
+                    if pauseDuringSave { await started.open(); await release.wait() }
+                })
+                let generating = Task { try await group.generateCoachConnectCode() }
+                await started.wait()
+                if transition == "reauthentication" {
+                    auth.requireReauthentication()
+                } else {
+                    auth.signOut()
+                    if transition == "other-account" || transition == "same-account-return" {
+                        let nextUser = transition == "other-account" ? "user-b" : "user-a"
+                        // Reusing the original token proves that account/bearer
+                        // equality cannot substitute for the session boundary.
+                        api.authResult = .success(response(jwt: sessionToken(for: nextUser), userID: nextUser))
+                        await auth.exchange(identityToken: "synthetic", fullName: nil)
+                    }
+                }
+                await release.open()
+                do {
+                    _ = try await generating.value
+                    XCTFail("Code escaped after \(transition), during save: \(pauseDuringSave)")
+                } catch is CancellationError {
+                    // The acknowledged code must not reach the replacement session.
+                } catch {
+                    XCTFail("Unexpected error: \(error)")
+                }
+                XCTAssertEqual(saveCalls, 1)
+            }
+        }
+    }
+
     func testGroupLoadAcceptsResponseAfterSameAccountSessionRenewal() async {
         let now = Date(timeIntervalSince1970: 2_000_000_000)
         let defaults = defaults()

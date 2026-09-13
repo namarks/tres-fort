@@ -94,6 +94,7 @@ final class GroupModel: ObservableObject {
     private let groupBlockWriter: ((String, Bool, String) async throws -> Void)?
     private let groupRestrictionWriter: ((String, Bool, GroupReportReason, String) async throws -> Void)?
     private let profileLoader: ((String) async throws -> MeProfile)?
+    private let coachCodeWriter: ((String, String) async throws -> Void)?
     private let intervalsConnector: ((String?, String?, String) async throws -> APIClient.IntervalsConnectResult)?
     private let intervalsImporter: ((Int, String) async throws -> IntervalsImportResult)?
     private let intervalsAuthorizer: ((String) async throws -> IntervalsOAuthResult)?
@@ -119,6 +120,7 @@ final class GroupModel: ObservableObject {
         groupLister: ((String) async throws -> [GroupSummary])? = nil,
         groupLoader: ((String, String) async throws -> GroupSummary)? = nil,
         profileLoader: ((String) async throws -> MeProfile)? = nil,
+        coachCodeWriter: ((String, String) async throws -> Void)? = nil,
         groupBlockWriter: ((String, Bool, String) async throws -> Void)? = nil,
         groupRestrictionWriter: ((String, Bool, GroupReportReason, String) async throws -> Void)? = nil,
         groupSafetyLoader: ((String) async throws -> GroupSafetyState)? = nil,
@@ -135,6 +137,7 @@ final class GroupModel: ObservableObject {
         self.groupLister = groupLister
         self.groupLoader = groupLoader
         self.profileLoader = profileLoader
+        self.coachCodeWriter = coachCodeWriter
         self.groupBlockWriter = groupBlockWriter
         self.groupRestrictionWriter = groupRestrictionWriter
         self.groupSafetyLoader = groupSafetyLoader
@@ -1024,11 +1027,23 @@ final class GroupModel: ObservableObject {
         guard let jwt = currentJWT else {
             throw APIError.http(401, "not_signed_in")
         }
+        let epoch = auth.featureSessionEpoch
         let code = Self.makeConnectCode()
-        try await api.setMcpConnectCode(code, jwt: jwt)
-        guard isCurrentBearer(jwt) else { throw CancellationError() }
+        if let coachCodeWriter {
+            try await coachCodeWriter(code, jwt)
+        } else {
+            try await api.setMcpConnectCode(code, jwt: jwt)
+        }
+        // Renewal can replace the bearer while this one-time code is being
+        // saved. Retain it for the same feature session, but never after a
+        // sign-out or reauthentication, even when the same account returns.
+        guard auth.isCurrentFeatureSession(accountID: accountID, epoch: epoch) else {
+            throw CancellationError()
+        }
         await refreshMe()
-        guard isCurrentBearer(jwt) else { throw CancellationError() }
+        guard auth.isCurrentFeatureSession(accountID: accountID, epoch: epoch) else {
+            throw CancellationError()
+        }
         return code
     }
 

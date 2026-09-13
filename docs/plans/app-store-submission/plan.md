@@ -78,9 +78,12 @@ fixes, replacement upload and Apple review submission on 2026-09-12. Migration
 0050 was subsequently explicitly approved, applied and verified, but automatic
 approval review requires separate authority for these two remaining operations.
 Do not retry either rejected operation, or use an indirect substitute, until its
-missing approval arrives. After approval, the agent should deploy the pinned
-Worker, validate/upload build 40 and replace the
-existing draft for review. Keep manual public release.
+missing approval arrives. These approvals clear only their named external gates;
+they do not complete the open P1/P2 phases. The agent should finish and record
+P1 verification before the remaining P3 deployment/upload work, and finish P2
+and P3 before P4 submission. Once those phase prerequisites and the applicable
+approvals are satisfied, deploy the pinned Worker, validate/upload build 40 and
+replace the existing draft for review. Keep manual public release.
 
 The [Garmin attribution fix](attribution.md) and [retired reviewer login](reviewer-access.md)
 merged in [PR #193](https://github.com/namarks/tres-fort/pull/193) at

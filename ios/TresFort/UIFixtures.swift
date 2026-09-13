@@ -5,7 +5,7 @@ import SwiftUI
 /// Explicit, simulator-only launch fixtures. Release/device builds contain none
 /// of this code. An unknown fixture fails closed before constructing real auth.
 enum UIFixtureScenario: String, CaseIterable {
-    case signIn = "sign-in", empty, loadFailure = "load-failure"
+    case signIn = "sign-in", empty, emptyPlan = "empty-plan", loadFailure = "load-failure"
     case ordinary, bodyweight, timed, pending, onboarding, groups, library
     case workoutSwap = "workout-swap"
     case appStore = "app-store"
@@ -160,7 +160,7 @@ private struct UIFixtureTrainingView: View {
             guard !scenario.isHistory else { return }
             await sync.load()
             if ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_FEEDBACK"] == "1" { return }
-            if ![.empty, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .groups, .library, .planChanges].contains(scenario) {
+            if ![.empty, .emptyPlan, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .groups, .library, .planChanges].contains(scenario) {
                 sync.startWorkout()
                 if scenario.isTimerNavigation {
                     sync.jump(to: 1)
@@ -220,6 +220,9 @@ final class UIFixtureProtocol: URLProtocol {
 private struct UIFixtureServer {
     let scenario: UIFixtureScenario
     var plan: [String: Any]?
+    var trainingProfile: [String: Any]?
+    var trainingProfileVersion = 0
+    var starterAccepted = false
     var sessions: [[String: Any]] = []
     var sets: [[String: Any]] = []
     var groupReceipts: [String: [String: Any]] = [:]
@@ -285,6 +288,7 @@ private struct UIFixtureServer {
                     "logged_at": revision, "updated_at": revision, "is_timed": 0]]
             }
         }
+        if scenario == .emptyPlan { plan?["days"] = []; sessions = [] }
         if scenario.isIntervals { sessions = [] }
         if scenario == .appStore {
             sessions = AppStoreScreenshotData.sessions
@@ -432,6 +436,29 @@ private struct UIFixtureServer {
                 throw URLError(.notConnectedToInternet)
             }
             response = ["jwt": syntheticJWT, "user": ["id": syntheticUserID, "display_name": "Synthetic member"]]
+        case ("GET", "/api/me/training-profile"):
+            response = ["profile": trainingProfile as Any? ?? NSNull(), "version": trainingProfileVersion, "updated_at": revision]
+        case ("PUT", "/api/me/training-profile"):
+            trainingProfile = body["profile"] as? [String: Any]
+            trainingProfileVersion += 1
+            response = ["profile": trainingProfile as Any? ?? NSNull(), "version": trainingProfileVersion, "updated_at": revision]
+        case ("GET", "/api/starter-workouts"):
+            response = ["profile_version": trainingProfileVersion, "can_accept": plan == nil || (plan?["days"] as? [[String: Any]])?.isEmpty == true, "workouts": [[
+                "id": "bodyweight-v1", "name": "Start moving", "explanation": "Consistency matters more than a perfect workout. Fit strength around your other activities.",
+                "exercises": [["exercise_id": "synthetic-exercise", "name": "Bodyweight Squat", "sets": 1, "reps": 8, "cues": "Choose a comfortable range of motion."]]
+            ]]]
+        case ("POST", "/api/starter-workouts/bodyweight-v1"):
+            if !starterAccepted {
+                plan = makePlan(name: "My Training")
+                var days = plan?["days"] as? [[String: Any]] ?? []
+                days[0]["name"] = "Start moving"
+                var slots = days[0]["exercises"] as? [[String: Any]] ?? []
+                slots[0]["target_sets"] = 1; slots[0]["target_reps"] = 8; slots[0]["target_weight"] = 0
+                slots[0]["exercise_name"] = "Bodyweight Squat"; slots[0]["exercise_modality"] = "bw"
+                days[0]["exercises"] = slots; plan?["days"] = days
+                starterAccepted = true
+            }
+            response = ["acknowledged": true, "plan_id": "synthetic-plan", "workout_id": dayID, "version": 1]
         case ("GET", "/api/me"):
             response = ["display_name": "Synthetic member", "email": NSNull(),
                 "intervals": intervalsStatus,

@@ -152,6 +152,10 @@ final class SyncModel: ObservableObject {
         canInitiateBoundFeatureAction && plan == nil && hasVerifiedPlanState
             && !isUsingCachedState && !isLoading && loadError == nil
     }
+    var canChooseStarterWorkout: Bool {
+        canInitiateBoundFeatureAction && (plan?.workouts.isEmpty ?? true) && hasVerifiedPlanState
+            && !isUsingCachedState && !isLoading && loadError == nil
+    }
     /// True after a target PATCH is acknowledged until a bound live-state
     /// response reconciles the workout editor's cached prescription values.
     @Published private(set) var workoutEditorRefreshNeeded = false

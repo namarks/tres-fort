@@ -36,6 +36,7 @@ final class MemberActivationJourneyTests: XCTestCase {
 
     private func onboard(_ app: XCUIApplication, invited: Bool = false) {
         tap(app.buttons["Get started"], in: app)
+        tap(app.buttons["trainingSetup.skip"], in: app)
         if !invited { tap(app.buttons["I don't have a code"], in: app) }
         tap(app.buttons["Skip for now"], in: app)
         XCTAssertTrue(app.staticTexts["Choose your first step"].waitForExistence(timeout: 5))
@@ -79,6 +80,69 @@ final class MemberActivationJourneyTests: XCTestCase {
         onboard(app)
         tap(app.buttons["Enter Très Fort"], in: app)
         completeFirstWorkout(app)
+    }
+
+    func testMixedSportSetupCreatesFirstWorkoutAndKeepsProfile() {
+        let app = launch("activation-manual")
+        tap(app.buttons["Sign in with Apple"], in: app)
+        tap(app.buttons["Get started"], in: app)
+        for activity in ["weightlifting", "running", "swimming"] {
+            let toggle = app.switches["trainingSetup.\(activity)"]
+            XCTAssertTrue(toggle.waitForExistence(timeout: 10))
+            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
+            XCTAssertEqual(toggle.value as? String, "1")
+        }
+        tap(app.buttons["trainingSetup.next"], in: app)
+        tap(app.buttons["trainingSetup.next"], in: app)
+        tap(app.buttons["trainingSetup.next"], in: app)
+        XCTAssertTrue(app.staticTexts["Start moving"].waitForExistence(timeout: 10))
+        tap(app.buttons["trainingSetup.accept"], in: app)
+        tap(app.buttons["trainingSetup.done"], in: app)
+        tap(app.buttons["I don't have a code"], in: app)
+        tap(app.buttons["Skip for now"], in: app)
+        tap(app.buttons["Enter Très Fort"], in: app)
+        completeFirstWorkout(app)
+        tap(app.tabBars.buttons["Profile"], in: app)
+        tap(app.buttons["profile.trainingProfile"], in: app)
+        XCTAssertTrue(app.switches["trainingSetup.running"].waitForExistence(timeout: 10))
+        XCTAssertEqual(app.switches["trainingSetup.running"].value as? String, "1")
+        XCTAssertEqual(app.switches["trainingSetup.swimming"].value as? String, "1")
+        let image = XCTAttachment(screenshot: app.screenshot())
+        image.name = "multisport-training-profile"; image.lifetime = .keepAlways; add(image)
+    }
+
+    func testExistingMemberCanFindStarterFromEmptyTodayAndSkipWithoutCreating() {
+        for fixture in ["empty", "empty-plan"] {
+            let app = launch(fixture)
+            tap(app.buttons["today.starterWorkout"], in: app)
+            XCTAssertTrue(app.switches["trainingSetup.running"].waitForExistence(timeout: 10))
+            tap(app.buttons["trainingSetup.skip"], in: app)
+            XCTAssertTrue(app.buttons["today.starterWorkout"].waitForExistence(timeout: 10))
+            app.terminate()
+        }
+    }
+
+    func testOptionalWorkingSetCanBeSavedAndProfileRemainsEditable() {
+        let app = launch("activation-manual")
+        tap(app.buttons["Sign in with Apple"], in: app)
+        onboard(app)
+        tap(app.buttons["Enter Très Fort"], in: app)
+        tap(app.tabBars.buttons["Profile"], in: app)
+        tap(app.buttons["profile.trainingProfile"], in: app)
+        tap(app.buttons["trainingSetup.next"], in: app)
+        tap(app.buttons["trainingSetup.next"], in: app)
+        tap(app.buttons["trainingSetup.addBaseline"], in: app)
+        tap(app.textFields["trainingSetup.baselineWeight"], in: app)
+        app.textFields["trainingSetup.baselineWeight"].typeText("20")
+        tap(app.buttons["trainingSetup.saveBaseline"], in: app)
+        XCTAssertTrue(app.staticTexts["Goblet Squat"].waitForExistence(timeout: 5))
+        tap(app.buttons["trainingSetup.next"], in: app)
+        tap(app.buttons["profile.trainingProfile"], in: app)
+        tap(app.buttons["trainingSetup.next"], in: app)
+        tap(app.buttons["trainingSetup.next"], in: app)
+        XCTAssertTrue(app.staticTexts["Goblet Squat"].waitForExistence(timeout: 5))
+        let image = XCTAttachment(screenshot: app.screenshot())
+        image.name = "optional-working-set"; image.lifetime = .keepAlways; add(image)
     }
 
     func testInvitedEntrySurvivesSignInAndPreviewRetryThenCompletesWorkout() {
@@ -168,7 +232,7 @@ final class MemberActivationJourneyTests: XCTestCase {
         for fixture in ["load-failure", "cached-empty"] {
             let app = launch(fixture)
             XCTAssertTrue(app.buttons["Try again"].waitForExistence(timeout: 10))
-            XCTAssertFalse(app.staticTexts["NO PLAN YET"].exists)
+            XCTAssertFalse(app.staticTexts["YOUR FIRST WORKOUT"].exists)
             XCTAssertFalse(app.buttons["Create a workout"].exists)
             tap(app.buttons["Try again"], in: app)
             XCTAssertTrue(app.buttons["Try again"].waitForExistence(timeout: 10))

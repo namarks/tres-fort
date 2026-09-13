@@ -12766,6 +12766,7 @@ extension SetOutboxTests {
             await model.load()
             XCTAssertTrue(model.hasVerifiedPlanState)
             XCTAssertTrue(model.canCreateRoutine)
+            XCTAssertTrue(model.canChooseStarterWorkout)
             // A later failed refresh must not keep offering empty-account setup.
             api.stateHandler = { _ in throw error }
             await model.load()
@@ -12787,12 +12788,14 @@ extension SetOutboxTests {
         await model.load()
         XCTAssertFalse(model.hasVerifiedPlanState)
         XCTAssertFalse(model.canCreateRoutine)
+        XCTAssertFalse(model.canChooseStarterWorkout)
         // Recovery finds a plan created on another client, preserving its identity.
         let existing = state(session: session(), sets: [], exercise: exercise())
         api.stateHandler = { _ in existing }
         await model.load()
         XCTAssertEqual(model.plan?.id, existing.plan?.id)
         XCTAssertFalse(model.canCreateRoutine)
+        XCTAssertFalse(model.canChooseStarterWorkout)
         auth.signOut()
         XCTAssertFalse(model.canCreateRoutine)
     }

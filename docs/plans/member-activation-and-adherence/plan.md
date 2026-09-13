@@ -80,14 +80,19 @@ iOS distribution remain separately authorized.
   retries, MCP context without a plan, export/deletion, transactional starter
   creation, historical receipt replay, both workout database layouts, and
   already accepted starters after library deletion. The iOS suite passed 548
-  unit tests (one existing skip) before recovery refinements; the final focused
-  run passed ten model checks and three journeys covering mixed-sport entry
+  unit tests (one existing skip) before recovery refinements; subsequent focused
+  runs passed nine profile-model checks, two empty-state checks, and three
+  journeys covering mixed-sport entry
   through first completion, optional working sets, and skip from absent/empty
   plans. Synthetic screenshots were inspected for readable labels and reachable
   actions. Account refresh fires on acknowledgement even after sheet dismissal;
   a definite conflict retires pending intent so profile editing remains usable.
   Reopening identical server answers after a lost save reply adopts the server
   version before another edit, including normalized selection order/whitespace.
+  Questionnaire pages reset their scroll position when advancing/backtracking,
+  and primary actions including acknowledgement Continue stay visible at larger
+  accessibility text sizes. All three new journeys passed with accessibility-large
+  text after the navigation correction.
   Full CI and fresh independent review remain mandatory merge checks.
 - Source base: verified remote main `90f968383629107bd7a95b37bd44da177f87305f`.
   Starter/profile delivery requires additive migration `0051_training_profile`

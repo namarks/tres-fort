@@ -96,7 +96,9 @@ final class MemberActivationJourneyTests: XCTestCase {
         tap(app.buttons["trainingSetup.next"], in: app)
         tap(app.buttons["trainingSetup.next"], in: app)
         tap(app.buttons["trainingSetup.next"], in: app)
-        XCTAssertTrue(app.staticTexts["Start moving"].waitForExistence(timeout: 10))
+        let starterName = app.staticTexts["Start moving"]
+        for _ in 0..<8 where !starterName.exists || !starterName.isHittable { app.swipeUp() }
+        XCTAssertTrue(starterName.waitForExistence(timeout: 10))
         tap(app.buttons["trainingSetup.accept"], in: app)
         tap(app.buttons["trainingSetup.done"], in: app)
         tap(app.buttons["I don't have a code"], in: app)
@@ -109,7 +111,9 @@ final class MemberActivationJourneyTests: XCTestCase {
         for _ in 0..<8 where !savedRunning.exists || !savedRunning.isHittable { app.swipeUp() }
         XCTAssertTrue(savedRunning.waitForExistence(timeout: 10))
         XCTAssertEqual(savedRunning.value as? String, "1")
-        XCTAssertEqual(app.switches["trainingSetup.swimming"].value as? String, "1")
+        let savedSwimming = app.switches["trainingSetup.swimming"]
+        for _ in 0..<8 where !savedSwimming.exists || !savedSwimming.isHittable { app.swipeUp() }
+        XCTAssertEqual(savedSwimming.value as? String, "1")
         let image = XCTAttachment(screenshot: app.screenshot())
         image.name = "multisport-training-profile"; image.lifetime = .keepAlways; add(image)
     }

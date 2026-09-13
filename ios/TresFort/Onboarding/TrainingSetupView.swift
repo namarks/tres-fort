@@ -22,7 +22,6 @@ struct TrainingSetupView: View {
                             .font(.title2.bold()).foregroundStyle(Theme.accent)
                         Text("Continue to Today to see your current workout library. You can edit exercises, choose a date, or start a workout.")
                         Text("Keep showing up. A routine you can repeat matters more than getting every detail perfect.")
-                        Button("Continue", action: onDone).accessibilityIdentifier("trainingSetup.done")
                     }
                 } else if !model.ready {
                     Section {
@@ -56,9 +55,17 @@ struct TrainingSetupView: View {
                     Section { Button("Finish setup later", action: onDone) }
                 }
             }
+            // Each step starts with its own heading, even after scrolling a
+            // long activity list at an accessibility text size.
+            .id(model.receipt == nil ? page : 4)
             .disabled(model.busy)
             .safeAreaInset(edge: .bottom) {
-                if model.ready && model.receipt == nil {
+                if model.receipt != nil {
+                    Button("Continue", action: onDone)
+                        .buttonStyle(WorkoutPrimaryButtonStyle())
+                        .accessibilityIdentifier("trainingSetup.done")
+                        .padding().background(Theme.background)
+                } else if model.ready {
                     if page < 3 {
                         Button(model.busy ? "Saving…" : page < 2 ? "Next" : showStarters ? "Save & see workouts" : "Save profile") {
                             if page < 2 { page += 1 }

@@ -34,6 +34,20 @@ final class MemberActivationJourneyTests: XCTestCase {
         XCTFail("Control is not reachable: \(element.description)", file: file, line: line)
     }
 
+    // Form rows below the viewport are not materialized in the accessibility
+    // tree yet. Scroll before requiring existence for the longer coach setup.
+    private func scrollAndTap(_ element: XCUIElement, in app: XCUIApplication,
+                              file: StaticString = #filePath, line: UInt = #line) {
+        for _ in 0..<8 {
+            if element.exists && element.isHittable {
+                element.tap()
+                return
+            }
+            app.swipeUp()
+        }
+        XCTFail("Control is not reachable after scrolling: \(element.description)", file: file, line: line)
+    }
+
     private func onboard(_ app: XCUIApplication, invited: Bool = false) {
         tap(app.buttons["Get started"], in: app)
         if !invited { tap(app.buttons["I don't have a code"], in: app) }
@@ -167,10 +181,10 @@ final class MemberActivationJourneyTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["coach.data-sharing"].label.contains("configured model provider"))
         tap(picker, in: app)
         tap(app.buttons["Codex"], in: app)
-        tap(app.buttons["Generate connect code"], in: app)
-        tap(app.buttons.containing(.staticText, identifier: "Add server").firstMatch, in: app)
+        scrollAndTap(app.buttons["coach.generate-code"], in: app)
+        scrollAndTap(app.buttons.containing(.staticText, identifier: "Add server").firstMatch, in: app)
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "codex mcp add tres-fort --url")).firstMatch.exists)
-        tap(app.buttons.containing(.staticText, identifier: "Sign in").firstMatch, in: app)
+        scrollAndTap(app.buttons.containing(.staticText, identifier: "Sign in").firstMatch, in: app)
         XCTAssertTrue(app.staticTexts["codex mcp login tres-fort"].exists)
         let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         image.name = "codex-coach-setup"; image.lifetime = .keepAlways; add(image)
@@ -184,7 +198,7 @@ final class MemberActivationJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["Create a workout"].waitForExistence(timeout: 10))
         tap(app.buttons["Set up my coach"], in: app)
         XCTAssertTrue(app.navigationBars["Connect your coach"].waitForExistence(timeout: 10))
-        tap(app.buttons["Generate connect code"], in: app)
+        scrollAndTap(app.buttons["coach.generate-code"], in: app)
         XCTAssertTrue(app.buttons["Generate a new code"].waitForExistence(timeout: 10))
     }
 

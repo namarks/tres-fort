@@ -34,8 +34,8 @@ Repository delivery and actual provider connection/release evidence remain disti
 
 ## Next step
 
-**Now (@agent):** Complete the full backend and iOS verification, then obtain
-exact-head GitHub review and CI before merging P1.
+**Now (@agent):** Finish the two coach-setup UI reruns after correcting lazy-row
+scrolling in the tests, then obtain exact-head GitHub review and CI before merging P1.
 
 ## Notes / open questions
 
@@ -43,10 +43,13 @@ exact-head GitHub review and CI before merging P1.
   paid package may bundle in-app coaching and API usage if costs justify it.
   No provider key storage, model execution, billing, paid entitlement, pricing,
   or automatic provider connection is authorized or implemented here.
-- Focused verification: 129 backend tests passed, including eight external-client
-  compatibility cases. TypeScript, shared website tests and plan validation passed.
-  Local Codex review found no actionable regressions; full backend/iOS checks
-  and exact-head GitHub review remain pending.
+- Verification: all 1,028 backend tests across 74 files, TypeScript, website tests
+  and plan validation passed. iOS unit coverage: 545 passed and one existing test
+  skipped. Eight of ten activation journeys passed; two coach-setup journeys
+  needed the test helper to scroll before asserting lazy Form-row existence and
+  are rerunning. Local Codex review found no actionable regressions.
+- [PR #191](https://github.com/namarks/tres-fort/pull/191) carries this implementation;
+  exact-head independent review and all CI remain required before merge.
 - Start: verified remote main `90f968383629107bd7a95b37bd44da177f87305f`.
   Concurrent onboarding and App Store sessions require isolated work; keep shared
   entry-copy changes narrow and reconcile current main before merge.

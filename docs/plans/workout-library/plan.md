@@ -140,8 +140,10 @@ No second editor, no per-session template copies, no weeks table.
       review and CI evidence. Production migration, deployment and app release
       remain outside this repository delivery.
   - [ ] **(b) Authorized Worker and client release**
-    - With separate owner authority, apply migration 0050, deploy the reviewed
-      Worker and verify the new session route before distributing the iOS build.
+    - Migration 0050 was applied once with explicit owner approval on 2026-09-12;
+      ledger and nullable `sessions.exercise_swaps` TEXT-column readback passed.
+      After the remaining deployment approval, deploy the reviewed Worker and
+      verify the authenticated session-swap route before distributing build 40.
       Retain the workout-rename compatibility gates and record device evidence.
 
 - [ ] **P1 — Library metadata: tags and archive**
@@ -261,7 +263,8 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 | P0 | blocked_by | plan:workouts-and-multi-session#P0(a) | The selected goal establishes canonical workout terminology and compatible clients before the library UI. Production rollout and compatibility cleanup do not block this repository slice. |
 | P0 | coordinates_with | plan:member-activation-and-adherence#P0 | Both edit the no-plan and Today entry surfaces; do not run concurrently on the same iOS files. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
-| P0.2(b) | gated_by | external:owner-workout-swap-release | Migration, Worker deployment and iOS distribution need separate owner authority. |
+| P0.2(b) | gated_by | external:release-40-deployment-approval | Migration 0050 is applied and verified; automatic approval review requires explicit approval for the pinned production Worker deployment. |
+| P0.2(b) | gated_by | external:release-40-signing-approval | The replacement upload and review submission are owner-authorized; Xcode automatic distribution signing requires explicit approval. |
 
 
 Freestyle sessions and save-as-workout will supply more logged evidence to the
@@ -269,15 +272,20 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@owner):** P0.2(b) requires separate release authority after the P0.2(a)
-pull request passes independent review and CI and merges. Apply migration 0050,
-deploy and verify the Worker, then distribute the client. P1 library metadata
+**Now (@owner):** Answer the pending Worker deployment and Xcode automatic
+signing approvals for P0.2(b). Migration 0050 is already applied and verified;
+do not apply it again. The reviewed replacement is pinned to
+`9373d6f0acad9a9ef444e54fe9c9d8a8b7ad24c8` and archived as 1.0 (40), but the
+Worker has not been redeployed and build 40 has not been uploaded. Follow the
+[App Store release record](../app-store-submission/plan.md#next-step) for the
+remaining P1/P2 prerequisites, authenticated post-deployment route verification,
+exact-source upload and manual-public-release boundary. P1 library metadata
 remains planned and outside the completed P0.1 navigation update. P2 freestyle creation and optional saving remain separate;
 the implemented Create a workout action explicitly saves to the shared library.
 The navigation design was approved in task
 `01a08dee-930f-7763-9202-29872c440f26`. [PR #178](https://github.com/namarks/tres-fort/pull/178)
-passed final independent review and all required CI. The current internal client
-is [TestFlight 1.0 (38)](../app-store-submission/release-38.md), released from
+passed final independent review and all required CI. The last documented internal
+navigation release is [TestFlight 1.0 (38)](../app-store-submission/release-38.md), released from
 `0ac5d46b5a245c674fbc10727117b264a38db580` after the browsing and action fixes in
 PRs #182 and #183. Apple confirmed VALID processing and internal Testers
 membership. The compatible calendar-move Worker was deployed for the preceding

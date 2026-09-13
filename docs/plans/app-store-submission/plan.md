@@ -75,7 +75,14 @@ preparation and TestFlight availability do not mean public release.
 
 ## Next step
 
-**Now (@owner):** Answer the pending explicit approvals for the production Worker
+**Now (@agent):** Finish the runnable P1/P2 audit against pinned source
+`9373d6f0acad9a9ef444e54fe9c9d8a8b7ad24c8`: reconcile privacy/account and group
+controls, public policy/support availability, listing and reviewer instructions,
+and the documented verification exceptions. Record evidence and identify any
+owner-only App Store fields before completing those phases. P3 production and
+signing approvals do not block this read-only preparation.
+
+**Owner approvals:** Answer the pending explicit approvals for the production Worker
 deployment and Xcode automatic distribution signing. The owner approved the
 fixes, replacement upload and Apple review submission on 2026-09-12. Migration
 0050 was subsequently explicitly approved, applied and verified, but automatic

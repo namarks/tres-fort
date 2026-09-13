@@ -71,8 +71,8 @@ explicit account consent, host write approval, tenant checks or version checks.
    change residency settings without owner approval.
 2. Prepare a dedicated Très Fort member containing only the synthetic plan
    described in [review cases](review-cases.md). Keep it outside real groups and
-   disconnected from Apple Health and Intervals.icu. The constrained Apple App
-   Review account intentionally cannot connect AI apps and is not suitable.
+   disconnected from Apple Health and Intervals.icu. Use an ordinary member
+   account, not the retired shared Apple App Review sample identity.
 3. The owner sets the review account's personal connect code in the app and
    supplies it directly to the portal's protected review-credentials field.
    Never commit, print or transfer that code through agent tools. Reviewers can

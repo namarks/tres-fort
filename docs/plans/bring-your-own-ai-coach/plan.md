@@ -43,6 +43,17 @@ Repository delivery and actual provider connection/release evidence remain disti
     both are fixed with behavioral regression coverage. Unfinished approvals
     remain cancellable from Profile even before a token exists.
     Final local review and exact-head GitHub review/CI remain merge gates.
+  - CI scope correction: the former smoke list had expanded to 56 of 77 UI
+    methods; one shard spent 18 minutes on UI tests and another hit the job
+    timeout. Following the owner's cost/latency concern, PRs keep all unit tests
+    plus twelve explicit core journeys on two runners. Nightly/manual runs
+    retain the full suite on three runners. Active logs survive forced
+    cancellation; assertions and the 30-minute limit remain unchanged.
+    [Verification policy](../../IOS-VERIFICATION.md) records the selection.
+  - Integrated current App Store attribution/reviewer changes: dedicated plugin
+    review uses an ordinary synthetic member, not the retired shared sample
+    identity. Focused verification passed 111 backend tests, 14 iOS unit tests
+    and two approval/sign-in UI journeys, plus the verifier/scope and plan checks.
 - [ ] **P4 — Publish and verify the consumer Connect button**
   - Obtain owner release/submission authority, verified publisher identity,
     dedicated synthetic reviewer access and approved terms. Worldwide availability

@@ -31,10 +31,15 @@ not substitute for the required CI unit and smoke coverage before merging an
 iOS change.
 
 CI uses `--ui-suite smoke` for iOS changes on pull requests and pushes to main.
-The smoke suite includes every `TresFortTests` unit test and five UI journeys:
-routine creation, logging/finishing a workout, correction recovery, exact weight
-entry with the keyboard, and authoring/running a superset. New critical journeys
-should join this smoke list; a regression verifies its selectors still exist.
+The smoke suite includes every `TresFortTests` unit test and twelve UI journeys:
+sign-in through starter setup and first workout, provider setup, mobile AI
+approval/disconnect access, Today navigation, manual workout creation,
+logging/finishing, exact keyboard load entry, exercise swap, plan history/restore,
+saved feedback, Intervals connection, and group report/block controls.
+Each selector names one method. Keep this a small representative gate: new
+regressions normally join the full suite, with focused verification on the PR
+that changes their behavior. Replacing a smoke journey is an explicit coverage
+decision. Script checks enforce twelve valid, unique methods and all unit tests.
 
 Full UI runs are periodic, rather than required on every merge. The nightly
 GitHub Actions schedule runs at 11:17 UTC on main (early morning Pacific time).
@@ -43,11 +48,12 @@ select `--ui-suite full`, including history measurements, accessibility audits,
 and the broader UI journeys. Schedules run only after the workflow lands on
 main and may be delayed by GitHub; inspect the Actions result for actual evidence.
 
-Both modes use `--ci-shard 1` and `--ci-shard 2` on separate standard runners.
-For full runs, shard 2 runs `HistoryJourneyTests` and `ExerciseGroupJourneyTests`;
-shard 1 runs everything else. Those selectors are complements, so newly added
-tests remain covered by the full suite automatically. In smoke mode, shard 1
-runs unit tests and the four training journeys; shard 2 runs the superset journey.
+Smoke uses two standard runners with six UI journeys each; shard 1 also runs
+all unit tests. Full runs use three runners: shard 2 runs training and feedback;
+shard 3 runs Today navigation, UI actions, Intervals, history and exercise groups;
+shard 1 runs everything else, including unit tests. These are disjoint and cover
+the full suite, so newly added tests remain included automatically. Both modes
+retain the 30-minute job limit; no assertions or element-wait timeouts are relaxed.
 Sharding or smoke mode cannot be combined with `--only-testing`. Without these
 arguments the command still runs the full suite locally.
 
@@ -64,7 +70,11 @@ failure, and interrupt. Failure retains `build.log`, `boot.log`, `xcodebuild.log
 environment/toolchain identity, copied-source SHA-256 manifest, runtime inventories, cleanup diagnostics,
 and any available `Build.xcresult` / `Tests.xcresult` under
 `.artifacts/ios/<unique-run>/`. Set `IOS_KEEP_RESULTS=1` to retain successful results
-and their synthetic screenshot attachments too. `IOS_EVIDENCE_DIR` may select a
+and their synthetic screenshot attachments too. With that setting, logs and
+results are written directly into the evidence directory while the run is active,
+so a forced cancellation need not finish the cleanup trap to retain diagnostics.
+An uncatchable process kill cannot guarantee local simulator/scratch cleanup;
+CI's disposable runner owns that final cleanup. `IOS_EVIDENCE_DIR` may select a
 different durable output directory. These artifacts are ignored by Git. The
 log records the Git revision and local overlay; tests run on the copied working
 files, including any uncommitted changes.
@@ -153,7 +163,7 @@ failed scope job fails the aggregate; only an explicit `skip` decision permits
 skipped iOS jobs. Nightly and manual runs always request full coverage regardless
 of changed paths. Full runs have separate concurrency groups from push/PR runs.
 
-CI uploads `ios-smoke-1` / `ios-smoke-2` or `ios-full-1` / `ios-full-2` results with a
+CI uploads `ios-smoke-1` / `ios-smoke-2` or `ios-full-1` through `ios-full-3` results with a
 seven-day artifact retention. No production credentials or account data are
 supplied to these jobs. Dependency installation
 and GitHub action permissions follow the existing repository workflow.

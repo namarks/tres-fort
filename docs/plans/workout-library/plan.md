@@ -104,7 +104,8 @@ No second editor, no per-session template copies, no weeks table.
     a 44-point target. Swipe left reveals Delete with full-swipe execution
     disabled, then a named Delete/Cancel alert confirms removal. The shared
     mutation and active-workout guards remain in place. Library UI journeys
-    run in PR smoke coverage, including row hit areas and cancellation. This
+    originally ran in PR smoke coverage; detailed row/cancellation variants now
+    run in the periodic full suite under the [verification policy](../../IOS-VERIFICATION.md). This
     follow-up shipped in the owner-authorized TestFlight 1.0 (38) distribution.
   - Owner-approved action cleanup (2026-09-11): Profile keeps name editing and
     one Account route; export, sign-out and account deletion live inside Account.

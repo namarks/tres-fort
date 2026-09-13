@@ -135,7 +135,8 @@ iOS distribution remain separately authorized.
   cached empty/existing state, and sequential invite/coach handoff. Model tests
   cover interrupted onboarding relaunch and late completions after Skip/account
   boundaries. All 17 verification-command/scope tests and the plan graph passed.
-  The activation journeys are included in standard CI smoke coverage; exact-head
+  Representative activation journeys run in PR smoke coverage; all variants
+  remain in the periodic full suite under the [verification policy](../../IOS-VERIFICATION.md). Exact-head
   independent review and terminal-green CI are required before this change merges.
 - Repository delivery is the P0 boundary. Production deployment/migrations,
   TestFlight distribution and actual member messages remain separately

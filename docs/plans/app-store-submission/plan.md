@@ -70,12 +70,32 @@ preparation and TestFlight availability do not mean public release.
 
 ## Next step
 
-**Now (@agent):** Complete independent review and required checks for the
+**Now (@agent):** Finish exact-head integration checks for the
 [Garmin attribution fix](attribution.md) and [retired reviewer login](reviewer-access.md),
-then merge, deploy the compatible existing Worker, and upload an exact replacement
-iOS candidate. The owner approved these changes, replacement upload and Apple
-review submission on 2026-09-12. Keep manual public release; no public-release
-authorization is implied. Choose the build number only after fresh provider readback.
+then merge and deploy the pinned release source. The owner approved the fixes,
+compatible Worker deployment, replacement upload and Apple review submission on
+2026-09-12. Keep manual public release; no public-release authorization is implied.
+
+The replacement **1.0 (40)** archive is pinned to reviewed source
+`9373d6f0acad9a9ef444e54fe9c9d8a8b7ad24c8`, tree
+`f2a29e8e21e94bfc6f25b85b1406849a9ea3433d`. Xcode's desktop Release archive
+succeeded, code signing verifies, both app and widget report 1.0 (40), and all
+293 tracked snapshot inputs still match. Build 40 was unused at preparation.
+It has **not** been exported for App Store distribution, uploaded or submitted.
+The automatic approval review blocked Xcode's distribution-signing step because
+automatic signing may create or update Apple certificates, app IDs and profiles;
+specific owner approval of that signing approach is required before continuing.
+Existing matching profiles and a distribution identity were verified, but the
+manual profile picker did not accept them. Do not retry the blocked automatic
+step without the missing approval or substitute shell signing as a bypass.
+
+PR #192's onboarding work advanced main during archive preparation. PR #193's
+repository integration includes that upstream work, but the prepared release
+remains pinned to the source above; a later integration commit must not silently
+replace it. The pinned Worker needs only pending additive migration **0050**
+before deployment. Migration 0051 and the new onboarding feature are outside this
+pinned candidate. A private recovery bookmark and the signed archive/manifest
+are retained under the release host's `release-attribution` artifact directory.
 
 The 2026-09-12 provider readback confirmed version 1.0 in `READY_FOR_REVIEW`,
 build 38 selected, `MANUAL` release and Apple-only notes with

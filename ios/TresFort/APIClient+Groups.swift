@@ -57,11 +57,11 @@ extension APIClient {
             body: ["expected_generation": expectedGeneration], jwt: jwt)
     }
 
-    // MARK: - M3: Claude MCP connect code
+    // MARK: - M3: Coach MCP connect code
 
     /// POST /api/me/mcp-passphrase — store THIS user's personal MCP connect
     /// code. The server PBKDF2-hashes it and never returns it; it's matched at
-    /// `/oauth/authorize` to bind a Claude session to this account. We send an
+    /// `/oauth/authorize` to bind an AI app session to this account. We send an
     /// app-generated random code (not a user-chosen passphrase). 409 = the
     /// code is already in use by another account (caller regenerates).
     func setMcpConnectCode(_ code: String, jwt: String) async throws {
@@ -74,8 +74,8 @@ extension APIClient {
         let revoked: Int
     }
 
-    /// Revoke every active Claude grant owned by this signed-in account.
-    func disconnectClaude(jwt: String) async throws -> CoachDisconnectResult {
+    /// Revoke every active coach grant owned by this signed-in account.
+    func disconnectCoach(jwt: String) async throws -> CoachDisconnectResult {
         try await delete("api/me/coach-grants", jwt: jwt)
     }
 
@@ -220,7 +220,7 @@ extension APIClient {
         try await get("api/groups/\(groupID)/activity?days=\(days)", jwt: jwt)
     }
 
-    /// GET /api/me — account + setup snapshot (intervals / Claude status)
+    /// GET /api/me — account + setup snapshot (intervals / coach status)
     /// for the Profile tab. Server-derived so it reflects creds the app
     /// itself never set.
     func getMe(jwt: String) async throws -> MeProfile {

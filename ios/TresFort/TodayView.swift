@@ -375,7 +375,7 @@ struct TodayView: View {
                     Button("Try loading starting workouts again") { Task { await loadStarterAvailability() } }
                         .frame(minHeight: 44)
                 }
-                Text("Build and schedule your first workout here, or connect your own Claude to help with your plan. You can use both paths anytime.")
+                Text("Build and schedule your first workout here, or connect your own AI coach to help with your plan. You can use both paths anytime.")
                     .font(.callout).foregroundStyle(Theme.text)
                     .accessibilityIdentifier("today.empty-guidance")
                     .multilineTextAlignment(.center)

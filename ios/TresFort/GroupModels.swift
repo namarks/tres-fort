@@ -450,7 +450,7 @@ struct MeProfile: Decodable, Equatable {
     let display_name: String?
     let email: String?
     let intervals: IntervalsStatus
-    let claude: ClaudeStatus
+    let coach: CoachStatus
     /// Apple Health group-feed opt-in (migration 0028). Optional so an app
     /// built before the server field shipped still decodes; nil == not sharing.
     let health: HealthStatus?
@@ -481,7 +481,7 @@ struct MeProfile: Decodable, Equatable {
     /// `is_owner` identifies the bootstrap owner; all members can connect their
     /// own coach. `connected` and `last_active` describe this account's access,
     /// never a different group member's coach or plan (epoch ms).
-    struct ClaudeStatus: Decodable, Equatable {
+    struct CoachStatus: Decodable, Equatable {
         let is_owner: Bool
         let connected: Bool
         let last_active: Int?
@@ -492,6 +492,24 @@ struct MeProfile: Decodable, Equatable {
     /// via PATCH /api/me/health-sharing; the gate itself lives server-side.
     struct HealthStatus: Decodable, Equatable {
         let sharing_in_group: Bool
+    }
+}
+
+// Decode both deployment orders: new API field first, legacy server fallback.
+// Defining this in an extension preserves the memberwise initializer.
+extension MeProfile {
+    private enum CodingKeys: String, CodingKey {
+        case display_name, email, intervals, coach, claude, health
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        display_name = try values.decodeIfPresent(String.self, forKey: .display_name)
+        email = try values.decodeIfPresent(String.self, forKey: .email)
+        intervals = try values.decode(IntervalsStatus.self, forKey: .intervals)
+        coach = try values.decodeIfPresent(CoachStatus.self, forKey: .coach)
+            ?? values.decode(CoachStatus.self, forKey: .claude)
+        health = try values.decodeIfPresent(HealthStatus.self, forKey: .health)
     }
 }
 

@@ -1,15 +1,17 @@
 # tres-fort — Design Doc
 
-> Claude is the coach. It adapts the shared plan through conversation; members
-> can also author reusable workouts and workout dates directly in iOS.
+> The user chooses their AI coach (Codex, Claude, or another compatible app).
+> It adapts the shared plan through conversation; members can also author
+> reusable workouts and workout dates directly in iOS.
 > You execute and log in a native iOS app. A Cloudflare backend is the
-> single source of truth that both Claude (via MCP) and the app read/write.
+> single source of truth that both the coach (via MCP) and the app read/write.
 
 Status: **IMPLEMENTED** — all milestones (a–i) shipped; intervals.icu
 integration, groups/invites (M1/M2), and multisport (endurance) coaching
 added post-milestone.
 Date: 2026-07-30 · Owner: Nick · Apple Developer Program: **Active** ·
-Claude surface: all (auth designed OAuth-capable with static-bearer fallback).
+Coaching surface: external AI apps over MCP and per-user OAuth; static bearer remains operator-only.
+See [Coach connections](COACH-CONNECTIONS.md) for supported setup and rollout compatibility.
 
 Project name `tres-fort` (originally scaffolded as `lift-coach`).
 
@@ -174,12 +176,12 @@ CREATE TABLE set_logs (
   deleted_at           INTEGER                  -- soft delete (never hard-delete logged data)
 );
 
-CREATE TABLE notes (                            -- Claude's coaching reasoning, durable
+CREATE TABLE notes (                            -- coaching reasoning, durable
   id         TEXT PRIMARY KEY,
   user_id    TEXT NOT NULL REFERENCES users(id),
   scope      TEXT NOT NULL,                     -- plan|session|exercise|general
   ref_id     TEXT,
-  author     TEXT NOT NULL,                     -- claude|nick
+  author     TEXT NOT NULL,                     -- coach|nick; historical claude values retained
   body       TEXT NOT NULL,
   created_at INTEGER NOT NULL
 );
@@ -420,6 +422,23 @@ models, lifecycles, and revocation paths → decoupled on purpose.
   the grant deadlines. Static bearers and Apple/app sessions remain separate.
   A lost successful exchange response requires
   reauthorization. See the [coach contract](plans/completed/coach-access-integrity/decisions.md).
+- **Mobile account approval (migration `0052`).** A validated HTTPS OAuth
+  request can open `https://tresfort.app/coach/authorize?request=<opaque-id>`.
+  The website association and iOS entitlement claim only that approval path;
+  the different domain lets Safari hand off from the Worker consent page.
+  The ID contains no account credentials and alone grants nothing. iOS retains
+  it as account-bound navigation through sign-in/onboarding, then requires an
+  explicit decision after showing the client-supplied name, registered return
+  address and data disclosure. App-JWT-only `/api/coach-requests/:id` endpoints
+  load the preview and accept only `allow`/`deny`. One D1 transaction issues the
+  PKCE-bound code, records consent and consumes the request, guarded against
+  account deletion. Denial consumes without issuing a code. Requests expire
+  after ten minutes; creation and the existing hourly cron remove expired rows.
+  The app opens the registered HTTPS callback; no app JWT/access/refresh token
+  enters a link. An uncertain acknowledgement requires a new connection.
+  Disconnect-all also invalidates approved, unexchanged authorization codes.
+  The legacy connect-code flow remains available. The public plugin listing,
+  release and physical-device/provider round trip are separate verification gates.
 - **No per-tool scopes.** Per connected user there is one principal → scopes would add complexity with little security gain at this scale. The trust substitute is the per-user `audit_log` + Claude-written notes (visible, reversible).
 - **Rate limit:** soft cap (~600 req/min) via a Cloudflare rate-limit rule on `/mcp` or a KV counter — a runaway-loop guard, not a security boundary. Optional-but-recommended for v1.
 

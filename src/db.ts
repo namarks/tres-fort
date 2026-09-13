@@ -2060,28 +2060,24 @@ function newInviteCode(): string {
 }
 
 /**
- * Account/setup snapshot for the iOS Profile tab. Read-only; never returns
- * the (write-only) intervals api_key. Connection state is derived from the
- * SERVER, not a client mirror — so env/MCP-seeded intervals creds and the
- * claude.ai connector both show up:
- *   - intervals.connected = the user row has an athlete_id.
- *   - claude: Claude coaching is SINGLE-OWNER — the MCP connector always
- *     resolves to the owner account (ensureOwnerUser/findOwnerRow), so it
- *     is only ever reported for the owner. The `oauth_tokens` table isn't
- *     user-scoped, so a global "a grant exists" check would tell every
- *     invited (non-owner) user the coach is connected the moment the owner
- *     authorizes — while Claude never touches their data (Codex PR #50 P2).
- *     Hence: `connected` = caller IS the owner AND a durable OAuth grant
- *     (refresh_token) exists; `is_owner` lets the client phrase the
- *     non-owner case ("managed by the owner") instead of a dead "connect"
- *     CTA; `last_active` = the owner's most recent MCP write (audit_log
- *     actor='mcp'; REST writes are actor='ios' and excluded).
+ * Account/setup snapshot. Coach access is derived from this member's OAuth
+ * grants; legacy grants without a user id belong only to the bootstrap owner.
+ * last_active is the most recent MCP write, not a provider or model identity.
+ * The claude alias keeps installed clients compatible during rollout.
  */
+export interface CoachConnectionStatus {
+  is_owner: boolean;
+  connected: boolean;
+  last_active: number | null;
+}
+
 export interface MeProfile {
   display_name: string | null;
   email: string | null;
   intervals: IntervalsConnectionStatus;
-  claude: { is_owner: boolean; connected: boolean; last_active: number | null };
+  coach: CoachConnectionStatus;
+  /** Legacy wire alias; describes all coach grants, regardless of client. */
+  claude: CoachConnectionStatus;
   // Apple Health group-feed opt-in (migration 0028). Off by default; the iOS
   // Apple Health detail toggle flips it via PATCH /api/me/health-sharing.
   health: { sharing_in_group: boolean };
@@ -2260,11 +2256,8 @@ export async function getMeProfile(
       share_health_activities: number | null;
     }>();
 
-  // Claude connection is PER-USER (M3): a token bound to THIS user means their
-  // connector is linked (a refresh_token is the durable grant claude.ai keeps,
-  // so it survives access-token expiry). The owner additionally matches legacy
-  // tokens with a NULL user_id — issued before M3, when /mcp always resolved to
-  // the owner. (Codex #64 P2: non-owner grants must surface in their Profile.)
+  // A durable refresh grant links this account to an AI app. The owner also
+  // matches grants issued before per-user OAuth was introduced.
   const owner = await findOwnerRow(db, ownerAppleSub);
   const isOwner = !!owner && owner.id === userId;
 
@@ -2276,22 +2269,24 @@ export async function getMeProfile(
     )
     .bind(userId)
     .first<{ x: number }>();
-  const claudeConnected = !!grant;
+  const coachConnected = !!grant;
   const lastMcp = await workoutDB(db)
     .prepare("SELECT MAX(created_at) AS t FROM audit_log WHERE user_id = ?1 AND actor = 'mcp'")
     .bind(userId)
     .first<{ t: number | null }>();
   const lastActive = lastMcp?.t ?? null;
+  const coach: CoachConnectionStatus = {
+    is_owner: isOwner,
+    connected: coachConnected,
+    last_active: lastActive,
+  };
 
   return {
     display_name: u?.display_name ?? null,
     email: u?.email ?? null,
     intervals: intervalsStatus(u),
-    claude: {
-      is_owner: isOwner,
-      connected: claudeConnected,
-      last_active: lastActive,
-    },
+    coach,
+    claude: coach,
     health: {
       // Whether THIS user's Apple Health activities are shared into the group
       // feed (opt-in, default off — migration 0028). Drives the iOS detail
@@ -3098,7 +3093,7 @@ export interface PlanWriteAttribution {
   args?: unknown;
   reason?: string | null;
   note?: string | null;
-  noteAuthor?: 'claude' | 'nick';
+  noteAuthor?: 'coach' | 'nick';
   result?: unknown;
 }
 
@@ -3227,7 +3222,7 @@ export function preparePlanWriteFinish(
        SELECT ?5,p.user_id,'plan',p.id,?6,?7,?8 FROM plans p
         WHERE p.id=?1 AND p.user_id=?2 AND p.version=?3 AND p.plan_write_nonce=?4`,
     ).bind(plan.id, plan.user_id, nextVersion, nonce, uuid(),
-      attribution.noteAuthor ?? (attribution.actor === 'mcp' ? 'claude' : 'nick'),
+      attribution.noteAuthor ?? (attribution.actor === 'mcp' ? 'coach' : 'nick'),
       attribution.note, ts));
   }
   statements.push(
@@ -6026,7 +6021,7 @@ export async function writeNote(
   userId: string,
   scope: string,
   refId: string | null,
-  author: 'claude' | 'nick',
+  author: 'coach' | 'nick',
   body: string,
 ): Promise<void> {
   await workoutDB(db)
@@ -12501,6 +12496,10 @@ export async function revokeAllOAuthGrants(
              AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))
         )`,
     ).bind(userId, isOwner ? 1 : 0),
+    // Stop approved-but-not-yet-exchanged connections as well as tokens.
+    workoutDB(db).prepare(`DELETE FROM oauth_codes
+      WHERE user_id = ?1 OR (?2 = 1 AND user_id IS NULL)`)
+      .bind(userId, isOwner ? 1 : 0),
   ]);
   return revoked?.meta.changes ?? 0;
 }
@@ -12736,4 +12735,80 @@ export async function clearGroup(
     transition_rest: null, target_sets: null, cleared: true };
   if (!changed.length) return { ...result, unchanged: true };
   return commitExerciseGroup(db, plan, changed, result, key, attribution);
+}
+
+
+// Mobile OAuth requests are navigation, never credentials. All authorization
+// parameters are fixed before the app opens; iOS can submit only a decision.
+export interface MobileCoachRequest {
+  id: string;
+  client_id: string;
+  client_name: string;
+  redirect_uri: string;
+  code_challenge: string;
+  state: string;
+  resource: string;
+  expires_at: number;
+}
+
+export async function createMobileCoachRequest(
+  db: D1Database, request: Omit<MobileCoachRequest, 'client_name'>,
+): Promise<void> {
+  await db.batch([
+    db.prepare('DELETE FROM oauth_mobile_requests WHERE expires_at <= ?1').bind(Date.now()),
+    db.prepare(`INSERT INTO oauth_mobile_requests
+      (id, client_id, redirect_uri, code_challenge, state, resource, expires_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)`)
+      .bind(request.id, request.client_id, request.redirect_uri, request.code_challenge,
+        request.state, request.resource, request.expires_at),
+  ]);
+}
+
+export async function getMobileCoachRequest(db: D1Database, id: string): Promise<MobileCoachRequest | null> {
+  return db.prepare(`SELECT r.*, COALESCE(c.client_name, 'AI app') AS client_name
+    FROM oauth_mobile_requests r JOIN oauth_clients c ON c.client_id = r.client_id
+    WHERE r.id = ?1 AND r.expires_at > ?2`).bind(id, Date.now()).first<MobileCoachRequest>();
+}
+
+/** Decide once. A concurrent allow/deny can have only one winner. Approval,
+ * code issuance, audit and request consumption commit in one D1 transaction.
+ * A lost success response requires a new connection; do not retry approval.
+ */
+export async function decideMobileCoachRequest(
+  db: D1Database, id: string, userId: string, allow: boolean,
+): Promise<{ redirect_uri: string; state: string; code?: string } | null> {
+  const request = await getMobileCoachRequest(db, id);
+  if (!request) return null;
+  const timestamp = Date.now();
+  const liveUser = `EXISTS (SELECT 1 FROM users WHERE id = ?3)
+    AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?3)
+    AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?3)`;
+  if (!allow) {
+    const deleted = await db.prepare(`DELETE FROM oauth_mobile_requests
+      WHERE id = ?1 AND expires_at > ?2 AND ${liveUser} RETURNING id`)
+      .bind(id, timestamp, userId).first();
+    return deleted ? { redirect_uri: request.redirect_uri, state: request.state } : null;
+  }
+  const code = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
+  const [inserted] = await db.batch([
+    db.prepare(`INSERT INTO oauth_codes
+      (code, client_id, redirect_uri, code_challenge, code_challenge_method,
+       scope, resource, expires_at, created_at, user_id)
+      SELECT ?4, client_id, redirect_uri, code_challenge, 'S256', 'mcp', resource,
+             ?2 + 600000, ?2, ?3
+      FROM oauth_mobile_requests WHERE id = ?1 AND expires_at > ?2 AND ${liveUser}`)
+      .bind(id, timestamp, userId, code),
+    db.prepare(`INSERT INTO audit_log (id, user_id, actor, tool, args, result, created_at)
+      SELECT ?1, user_id, 'ios', 'approve_coach_connection', NULL, 'approved', ?2
+      FROM oauth_codes WHERE code = ?3`).bind(crypto.randomUUID(), timestamp, code),
+    db.prepare(`DELETE FROM oauth_mobile_requests WHERE id = ?1
+      AND EXISTS (SELECT 1 FROM oauth_codes WHERE code = ?2)`).bind(id, code),
+  ]);
+  return inserted?.meta.changes === 1
+    ? { redirect_uri: request.redirect_uri, state: request.state, code } : null;
+}
+
+
+export async function purgeExpiredMobileCoachRequests(db: D1Database): Promise<void> {
+  await db.prepare('DELETE FROM oauth_mobile_requests WHERE expires_at <= ?1').bind(Date.now()).run();
 }

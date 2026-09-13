@@ -8,6 +8,7 @@ struct MemberEntryIntent: Codable, Equatable, Identifiable {
     enum Destination: Codable, Equatable {
         case invite(String)
         case coach
+        case coachApproval(String)
         case workouts
     }
     let id: UUID

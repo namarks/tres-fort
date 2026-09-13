@@ -1,6 +1,7 @@
 import { applyD1Migrations, env, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { workoutInput, workoutWire } from '../src/workoutWire';
+import { acceptStarterWorkout, getPlanTree, saveTrainingProfile, upsertUser } from '../src/db';
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS.filter(m => m.name !== '0045_workouts.sql')));
 const base = 'https://tres-fort.test';
@@ -51,6 +52,19 @@ describe.each([false, true])('wire contracts with migrated=%s', (migrated) => {
     const weekday = ['sun','mon','tue','wed','thu','fri','sat'][new Date(`${today}T12:00:00Z`).getUTCDay()]!;
     expect((await api('plan/schedule', 'PUT', { week: { [weekday]: gym.id }, expected_plan_id: tree.id, expected_version: tree.version })).status).toBe(200);
     tree = (await api('plan/active')).body;
+  });
+
+  it('creates and replays a starter before and after the physical workout rename', async () => {
+    const member = await upsertUser(env.DB, crypto.randomUUID(), null, 'Synthetic starter member');
+    await saveTrainingProfile(env.DB, member.id, { goal: 'general_fitness', activities: ['running'],
+      activity_context: '', experience: 'new', strength_days: 2, session_minutes: 30,
+      equipment: 'bodyweight', avoid: [], baselines: [] }, 0);
+    const first = await acceptStarterWorkout(env.DB, member.id, 'bodyweight-v1', 1);
+    expect(first).toMatchObject({ acknowledged: true, version: 2 });
+    expect(await acceptStarterWorkout(env.DB, member.id, 'bodyweight-v1', 1)).toEqual(first);
+    const tree = await getPlanTree(env.DB, member.id);
+    expect(tree?.workouts).toHaveLength(1);
+    expect(tree?.workouts[0]?.exercises).toHaveLength(3);
   });
 
   it('accepts the released REST authoring route', async () => {

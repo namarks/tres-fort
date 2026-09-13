@@ -7,6 +7,9 @@ import Foundation
 /// Keeping the namespace in one pure type makes account switching and
 /// permanent deletion auditable.
 enum AccountLocalState {
+    static func trainingProfileDraftKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.training-profile-draft.v1.\(userID)"
+    }
     private static let legacyOwnerKey = "com.nmarkspdx.liftcoach.legacy-state-owner.v1"
 
     /// A failed migration must never let a later Apple account claim the
@@ -113,6 +116,7 @@ enum AccountLocalState {
     @discardableResult
     static func clear(userID: String, defaults: LocalPersistence = .standard) -> Bool {
         let protectedKeys = [
+            trainingProfileDraftKey(userID: userID),
             PlanChangeDismissalStore.key(userID: userID),
             ActivityOutboxStore.scopedKey(userID: userID),
             SetOutboxStore.scopedKey(userID: userID),

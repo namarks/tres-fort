@@ -187,14 +187,16 @@ final class TodayNavigationJourneyTests: XCTestCase {
     }
 
     func testUnresolvedRealWorkoutRemainsVisibleWithItsRecord() {
-        for status in ["planned", "in_progress"] {
+        for (status, emptyLibrary) in [("planned", false), ("in_progress", false), ("planned", true), ("in_progress", true)] {
             let app = XCUIApplication()
             app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "app-store"
             app.launchEnvironment["TRESFORT_UI_UNRESOLVED_TODAY"] = status
+            if emptyLibrary { app.launchEnvironment["TRESFORT_UI_EMPTY_WORKOUT_LIBRARY"] = "1" }
             app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
             app.launch()
             XCTAssertTrue(app.staticTexts["Workout needs review"].waitForExistence(timeout: 10))
             XCTAssertFalse(app.staticTexts["Nothing scheduled"].exists)
+            XCTAssertFalse(app.buttons["today.starterWorkout"].exists)
             XCTAssertFalse(app.buttons["today.startWorkout"].exists)
             tap(app.buttons["today.viewUnresolvedWorkout"], in: app)
             XCTAssertTrue(app.navigationBars["Workout record"].waitForExistence(timeout: 5))

@@ -10,6 +10,10 @@ import { isGroupId } from '../exerciseGroups';
 import { appleProviderConfig } from '../apple';
 import { validActivitySourceTime } from '../activityTime';
 import {
+  getTrainingProfile,
+  saveTrainingProfile,
+  getStarterWorkouts,
+  acceptStarterWorkout,
   reconcileIntervalsConnection,
   accountDeletionContinuationMatches,
   addWorkoutAtVersion,
@@ -1330,6 +1334,40 @@ apiRoutes.patch('/me/health-sharing', async (c) => {
 // derives intervals + Claude-connector status from the server so the app
 // reflects env/MCP-seeded creds and the claude.ai connector (which the
 // client otherwise has no way to see). Never returns the intervals api_key.
+apiRoutes.get('/me/training-profile', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  return c.json(await getTrainingProfile(c.env.DB, c.get('userId')));
+});
+
+apiRoutes.put('/me/training-profile', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  if (invalidMutationFields(b, { profile: v => v !== undefined, expected_version: isNonNegativeInteger }).length) {
+    return c.json({ error: 'invalid_fields' }, 400);
+  }
+  const result = await saveTrainingProfile(c.env.DB, c.get('userId'), b.profile, Number(b.expected_version));
+  if ('error' in result) return c.json(result, 400);
+  if ('conflict' in result) return c.json(result, 409);
+  return c.json(result);
+});
+
+apiRoutes.get('/starter-workouts', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  return c.json(await getStarterWorkouts(c.env.DB, c.get('userId')));
+});
+
+apiRoutes.post('/starter-workouts/:id', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  if (invalidMutationFields(parsed.body, { profile_version: isPositiveInteger }).length) return c.json({ error: 'invalid_fields' }, 400);
+  const result = await acceptStarterWorkout(c.env.DB, c.get('userId'), c.req.param('id'), Number(parsed.body.profile_version));
+  if ('error' in result) return c.json(result, result.error === 'starter_unavailable' ? 400 : 409);
+  return c.json(workoutWire(result));
+});
+
 apiRoutes.get('/me', async (c) => {
   const userId = c.get('userId');
   return c.json(workoutWire(await getMeProfile(c.env.DB, userId, c.env.OWNER_APPLE_SUB)));

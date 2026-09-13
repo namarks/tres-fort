@@ -7,6 +7,7 @@ import SwiftUI
 enum UIFixtureScenario: String, CaseIterable {
     case signIn = "sign-in", empty, emptyPlan = "empty-plan", loadFailure = "load-failure"
     case ordinary, bodyweight, timed, pending, onboarding, groups, library
+    case workoutSummary = "workout-summary"
     case workoutSwap = "workout-swap"
     case appStore = "app-store"
     case groupSafety = "group-safety"
@@ -154,6 +155,11 @@ private struct UIFixtureTrainingView: View {
                 .accessibilityValue(Text(verbatim: fixtureEvidence))
             if scenario == .onboarding && !auth.onboardingComplete {
                 OnboardingView(auth: auth)
+            } else if scenario == .workoutSummary {
+                NavigationStack {
+                    DayAgendaView(sync: sync, dateString: "2026-09-08")
+                        .navigationTitle("Workout date").navigationBarTitleDisplayMode(.inline)
+                }
             } else if scenario.isHistory {
                 HistoryView(sync: sync)
             } else {
@@ -163,6 +169,7 @@ private struct UIFixtureTrainingView: View {
         .task {
             guard !scenario.isHistory else { return }
             await sync.load()
+            if scenario == .workoutSummary { return }
             if ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_FEEDBACK"] == "1" { return }
             if ![.empty, .emptyPlan, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .groups, .library, .planChanges].contains(scenario) {
                 sync.startWorkout()
@@ -300,6 +307,10 @@ private struct UIFixtureServer {
                     "logged_at": revision, "updated_at": revision, "is_timed": 0]]
             }
         }
+        if let fixture = workoutSummaryFixture {
+            sessions = [fixture["session"] as! [String: Any]]
+            sets = fixture["sets"] as! [[String: Any]]
+        }
         if scenario == .emptyPlan { plan?["days"] = []; sessions = [] }
         if ProcessInfo.processInfo.environment["TRESFORT_UI_STARTER_ALREADY_USED"] == "1" { starterAccepted = true }
         if scenario.isIntervals { sessions = [] }
@@ -336,6 +347,13 @@ private struct UIFixtureServer {
             plan?["meta"] = String(decoding: meta, as: UTF8.self)
         }
 
+    }
+
+    var workoutSummaryFixture: [String: Any]? {
+        guard scenario == .workoutSummary,
+              let raw = ProcessInfo.processInfo.environment["TRESFORT_UI_SUMMARY_CONTRACT"],
+              let data = raw.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
     var coachingFixture: [String: Any]? {
@@ -588,6 +606,7 @@ private struct UIFixtureServer {
             response = [["id": "synthetic-exercise", "name": "Barbell Squat", "modality": "barbell", "unit": "lb", "primary_muscle": "legs"],
                         ["id": "synthetic-replacement", "name": "Dumbbell Goblet Squat", "modality": "dumbbell", "unit": "lb", "primary_muscle": "legs"]]
         case ("GET", "/api/exercises"):
+            if let fixture = workoutSummaryFixture { response = fixture["catalog"]!; break }
             if let fixture = coachingFixture { response = fixture["catalog"]!; break }
             if scenario == .appStore { response = AppStoreScreenshotData.catalog; break }
             response = [["id": "synthetic-exercise",
@@ -833,6 +852,7 @@ private struct UIFixtureServer {
             sessions.append(completed)
             response = completed
         case ("GET", "/api/sessions/\(sessionID)/summary"):
+            if let fixture = workoutSummaryFixture { response = fixture["summary"]!; break }
             let workingSets = sets.filter { $0["is_warmup"] as? Int == 0 && $0["session_id"] as? String == sessionID && $0["deleted_at"] == nil }
             let totalReps = workingSets.reduce(0) { $0 + ($1["reps"] as? Int ?? 0) }
             let externalVolume = workingSets.reduce(0.0) {

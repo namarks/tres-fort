@@ -65,6 +65,8 @@ targets:
       - TresFortUITests
       - path: TresFortTests/Fixtures/ExerciseGroups.json
         buildPhase: resources
+      - path: TresFortTests/Fixtures/WorkoutSummaryPresentation.json
+        buildPhase: resources
       - path: TresFortTests/Fixtures/WorkoutFeedback.json
         buildPhase: resources
       - path: TresFortTests/Fixtures/CoachingContext.json

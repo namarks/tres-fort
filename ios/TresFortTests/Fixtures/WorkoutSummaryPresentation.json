@@ -1,0 +1,214 @@
+{
+  "catalog": [
+    {
+      "id": "squat",
+      "name": "Goblet Squat",
+      "modality": "dumbbell",
+      "unit": "lb",
+      "primary_muscle": "legs",
+      "laterality": "bilateral",
+      "load_mode": "total"
+    },
+    {
+      "id": "pushup",
+      "name": "Push-Up",
+      "modality": "bw",
+      "unit": "lb",
+      "primary_muscle": "chest",
+      "laterality": "bilateral",
+      "load_mode": "total"
+    },
+    {
+      "id": "plank",
+      "name": "Plank",
+      "modality": "timed",
+      "unit": "sec",
+      "primary_muscle": "core",
+      "laterality": "bilateral",
+      "load_mode": "total"
+    }
+  ],
+  "sets": [
+    {
+      "id": "squat-1",
+      "session_id": "synthetic-session",
+      "exercise_id": "squat",
+      "template_exercise_id": null,
+      "set_index": 1,
+      "weight": 45,
+      "reps": 10,
+      "is_warmup": 0,
+      "is_timed": 0,
+      "duration_s": null,
+      "logged_at": 1788912000000,
+      "updated_at": 1788912000000,
+      "rpe": null,
+      "deleted_at": null
+    },
+    {
+      "id": "squat-2",
+      "session_id": "synthetic-session",
+      "exercise_id": "squat",
+      "template_exercise_id": null,
+      "set_index": 2,
+      "weight": 45,
+      "reps": 12,
+      "is_warmup": 0,
+      "is_timed": 0,
+      "duration_s": null,
+      "logged_at": 1788912060000,
+      "updated_at": 1788912060000,
+      "rpe": null,
+      "deleted_at": null
+    },
+    {
+      "id": "pushup-1",
+      "session_id": "synthetic-session",
+      "exercise_id": "pushup",
+      "template_exercise_id": null,
+      "set_index": 1,
+      "weight": 0,
+      "reps": 10,
+      "is_warmup": 0,
+      "is_timed": 0,
+      "duration_s": null,
+      "logged_at": 1788912120000,
+      "updated_at": 1788912120000,
+      "rpe": null,
+      "deleted_at": null
+    },
+    {
+      "id": "pushup-2",
+      "session_id": "synthetic-session",
+      "exercise_id": "pushup",
+      "template_exercise_id": null,
+      "set_index": 2,
+      "weight": 0,
+      "reps": 10,
+      "is_warmup": 0,
+      "is_timed": 0,
+      "duration_s": null,
+      "logged_at": 1788912180000,
+      "updated_at": 1788912180000,
+      "rpe": null,
+      "deleted_at": null
+    },
+    {
+      "id": "plank-1",
+      "session_id": "synthetic-session",
+      "exercise_id": "plank",
+      "template_exercise_id": null,
+      "set_index": 1,
+      "weight": 0,
+      "reps": 30,
+      "is_warmup": 0,
+      "is_timed": 1,
+      "duration_s": 30,
+      "logged_at": 1788912240000,
+      "updated_at": 1788912240000,
+      "rpe": null,
+      "deleted_at": null
+    },
+    {
+      "id": "plank-2",
+      "session_id": "synthetic-session",
+      "exercise_id": "plank",
+      "template_exercise_id": null,
+      "set_index": 2,
+      "weight": 0,
+      "reps": 45,
+      "is_warmup": 0,
+      "is_timed": 1,
+      "duration_s": 45,
+      "logged_at": 1788912300000,
+      "updated_at": 1788912300000,
+      "rpe": null,
+      "deleted_at": null
+    }
+  ],
+  "session": {
+    "id": "synthetic-session",
+    "date": "2026-09-08",
+    "status": "completed",
+    "workout_id": null,
+    "updated_at": 1788914700000,
+    "attempt": 1,
+    "started_at": 1788912000000,
+    "completed_at": 1788914700000
+  },
+  "summary": {
+    "version": 1,
+    "session_id": "synthetic-session",
+    "date": "2026-09-08",
+    "attempt": 1,
+    "final": true,
+    "working_sets": 6,
+    "total_reps": 42,
+    "external_load_volume": 990,
+    "cohorts": [
+      {
+        "name": "Goblet Squat",
+        "modality": "dumbbell",
+        "unit": "lb",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "exercise_id": "squat",
+        "weight": 45,
+        "metric": "reps",
+        "value": 12,
+        "set_count": 2
+      },
+      {
+        "name": "Push-Up",
+        "modality": "bw",
+        "unit": "lb",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "exercise_id": "pushup",
+        "weight": 0,
+        "metric": "reps",
+        "value": 10,
+        "set_count": 2
+      },
+      {
+        "name": "Plank",
+        "modality": "timed",
+        "unit": "sec",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "exercise_id": "plank",
+        "weight": 0,
+        "metric": "duration",
+        "value": 45,
+        "set_count": 2
+      }
+    ],
+    "records": [
+      {
+        "name": "Goblet Squat",
+        "modality": "dumbbell",
+        "unit": "lb",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "exercise_id": "squat",
+        "weight": 45,
+        "metric": "reps",
+        "value": 12,
+        "previous": 10
+      }
+    ],
+    "targets_available": true,
+    "targets": [
+      {
+        "slot_id": "squat-slot",
+        "name": "Goblet Squat",
+        "sets": 3,
+        "actual_sets": 2,
+        "missed_sets": 1,
+        "changed_sets": 1,
+        "below_target_sets": 0,
+        "comparison_available": true
+      }
+    ]
+  }
+}

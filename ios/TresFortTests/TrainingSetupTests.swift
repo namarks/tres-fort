@@ -118,6 +118,7 @@ final class TrainingSetupTests: XCTestCase {
         for _ in 0..<100 where reply == nil { await Task.yield() }
         let continuation = try XCTUnwrap(reply)
         model.cancel()
+        XCTAssertFalse(model.busy)
         var remote = TrainingProfile(); remote.activities = ["swimming"]
         continuation.resume(returning: .init(profile: remote, version: 1, updated_at: 10))
         await task.value
@@ -201,6 +202,7 @@ final class TrainingSetupTests: XCTestCase {
         for _ in 0..<100 where reply == nil { await Task.yield() }
         let continuation = try XCTUnwrap(reply)
         model.cancel()
+        XCTAssertFalse(model.busy)
         continuation.resume(returning: .init(acknowledged: true, plan_id: "plan", workout_id: "workout", version: 2))
         await task.value
         XCTAssertEqual(auth.activityPersistenceGeneration, 1)

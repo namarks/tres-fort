@@ -203,6 +203,10 @@ final class UIFixtureProtocol: URLProtocol {
         // An unanswered read proves Skip does not depend on transport timeout.
         if request.url?.path == "/api/me/training-profile",
            ProcessInfo.processInfo.environment["TRESFORT_UI_PENDING_TRAINING_PROFILE"] == "1" { return }
+        let pendingStage = ProcessInfo.processInfo.environment["TRESFORT_UI_PENDING_TRAINING_STAGE"]
+        if (pendingStage == "save" && request.httpMethod == "PUT" && request.url?.path == "/api/me/training-profile")
+            || (pendingStage == "preview" && request.httpMethod == "GET" && request.url?.path == "/api/starter-workouts")
+            || (pendingStage == "accept" && request.httpMethod == "POST" && request.url?.path == "/api/starter-workouts/bodyweight-v1") { return }
         Self.lock.lock()
         let result = Result { try Self.server.respond(request) }
         Self.lock.unlock()

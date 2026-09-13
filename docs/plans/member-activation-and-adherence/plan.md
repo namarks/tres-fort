@@ -95,11 +95,15 @@ iOS distribution remain separately authorized.
   passed with accessibility-large text after the navigation correction. Empty-library starter entry preserves
   recovery for a real planned/in-progress session, including a plan emptied by
   another client; recorded sets and the workout record remain accessible.
-  Skip remains available during an unanswered initial profile read. An unreadable
+  Skip/Close remain available during unanswered reads, profile saves, preview
+  reads and starter acceptance. Dismissal invalidates late UI updates while
+  retaining protected drafts and recoverable starter intent. An unreadable
   protected draft exposes an explicit restore-from-server action. Today checks
   the server's durable starter capability so deleting a previously accepted
   starter does not advertise another acceptance. The final focused recovery run
-  passed twelve model tests and four journeys covering these boundaries.
+  passed twelve model tests and four journeys covering these boundaries. A
+  subsequent dismissal run passed all eleven profile-model tests and both UI
+  tests spanning the four deliberately stalled network stages.
   Full CI and fresh independent review remain mandatory merge checks.
 - Source base: verified remote main `90f968383629107bd7a95b37bd44da177f87305f`.
   Starter/profile delivery requires additive migration `0051_training_profile`

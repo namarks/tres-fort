@@ -139,7 +139,7 @@ final class TrainingSetupModel: ObservableObject {
     private var draftKey: String? { accountID.map { AccountLocalState.trainingProfileDraftKey(userID: $0) } }
     var hasUncertainAcceptance: Bool { acceptance != nil && receipt == nil }
 
-    func cancel() { generation += 1; ready = false }
+    func cancel() { generation += 1; ready = false; busy = false }
 
     private func persistDraft() {
         guard !restoring, ready, current, let draftKey else { return }

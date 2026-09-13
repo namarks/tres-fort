@@ -101,7 +101,7 @@ struct TrainingSetupView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button(showStarters ? "Skip setup" : "Close") { model.cancel(); onDone() }
-                        .disabled(model.busy && model.ready).accessibilityIdentifier("trainingSetup.skip")
+                        .accessibilityIdentifier("trainingSetup.skip")
                 }
                 if page > 0 && model.receipt == nil {
                     ToolbarItem(placement: .primaryAction) {

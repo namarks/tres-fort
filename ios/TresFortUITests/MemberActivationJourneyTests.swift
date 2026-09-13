@@ -11,9 +11,10 @@ final class MemberActivationJourneyTests: XCTestCase {
         }
     }
 
-    private func launch(_ fixture: String, retry: Bool = false, pendingSetup: Bool = false, starterUsed: Bool = false) -> XCUIApplication {
+    private func launch(_ fixture: String, retry: Bool = false, pendingSetup: Bool = false, starterUsed: Bool = false, pendingStage: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = fixture
+        if let pendingStage { app.launchEnvironment["TRESFORT_UI_PENDING_TRAINING_STAGE"] = pendingStage }
         if pendingSetup { app.launchEnvironment["TRESFORT_UI_PENDING_TRAINING_PROFILE"] = "1" }
         if starterUsed { app.launchEnvironment["TRESFORT_UI_STARTER_ALREADY_USED"] = "1" }
         if retry {
@@ -142,6 +143,23 @@ final class MemberActivationJourneyTests: XCTestCase {
         XCTAssertTrue(skip.isEnabled)
         tap(skip, in: app)
         XCTAssertTrue(app.buttons["I don't have a code"].waitForExistence(timeout: 5))
+    }
+
+    func testSetupCanBeSkippedDuringPendingSavePreviewAndAcceptance() {
+        for stage in ["save", "preview", "accept"] {
+            let app = launch("activation-manual", pendingStage: stage)
+            tap(app.buttons["Sign in with Apple"], in: app)
+            tap(app.buttons["Get started"], in: app)
+            tap(app.buttons["trainingSetup.next"], in: app)
+            tap(app.buttons["trainingSetup.next"], in: app)
+            tap(app.buttons["trainingSetup.next"], in: app)
+            if stage == "accept" { tap(app.buttons["trainingSetup.accept"], in: app) }
+            let skip = app.buttons["trainingSetup.skip"]
+            XCTAssertTrue(skip.isEnabled)
+            tap(skip, in: app)
+            XCTAssertTrue(app.buttons["I don't have a code"].waitForExistence(timeout: 5))
+            app.terminate()
+        }
     }
 
     func testConsumedStarterDoesNotAdvertiseAnotherOneAfterLibraryDeletion() {

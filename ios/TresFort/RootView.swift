@@ -123,7 +123,7 @@ private struct SignedOutView: View {
     @ObservedObject var model: AuthModel
     var body: some View {
         VStack(spacing: 16) {
-            Text("Build your workouts or connect your own Claude coach.\nSign in to keep your training in sync.")
+            Text("Build your workouts or connect your own AI coach.\nSign in to keep your training in sync.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 

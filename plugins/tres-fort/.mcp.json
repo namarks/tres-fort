@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "tres-fort": {
+      "type": "http",
+      "url": "https://tres-fort.nmarkspdx.workers.dev/mcp"
+    }
+  }
+}

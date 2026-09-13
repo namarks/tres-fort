@@ -22,7 +22,7 @@ private struct AccountExportDocument: FileDocument {
     }
 }
 
-/// The "Profile" tab — one place to manage your setup: account, the Claude
+/// The "Profile" tab — one place to manage your setup: account, the AI
 /// coach connection, integrations (intervals.icu), and your groups. All
 /// connection state is server-derived (GET /api/me), so it reflects creds
 /// the app itself never set (env/MCP-seeded intervals, the claude.ai
@@ -65,7 +65,7 @@ struct ProfileView: View {
                 }
                 if auth.isReviewAccount {
                     Section("Shared sample account") {
-                        Text("Use sample data only. Workouts, history, export, and deletion work in this account. Sign out and use Sign in with Apple for personal connections, Claude, and groups.")
+                        Text("Use sample data only. Workouts, history, export, and deletion work in this account. Sign out and use Sign in with Apple for personal connections, AI coaching, and groups.")
                     }
                 } else {
                 coachSection
@@ -107,7 +107,7 @@ struct ProfileView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This permanently deletes your training plan, workout history, connected-service credentials, Claude tokens, and group memberships. Groups with other members will continue under another member. This cannot be undone.")
+            Text("This permanently deletes your training plan, workout history, connected-service credentials, AI connection tokens, and group memberships. Groups with other members will continue under another member. This cannot be undone.")
         }
         .alert("Account wasn’t deleted", isPresented: $showDeletionError) {
             Button("OK", role: .cancel) {}
@@ -120,16 +120,16 @@ struct ProfileView: View {
             Text(exportErrorMessage)
         }
         .confirmationDialog(
-            "Disconnect Claude?",
+            "Disconnect all AI apps?",
             isPresented: $showCoachDisconnectConfirmation,
             titleVisibility: .visible
         ) {
-            Button("Disconnect Claude", role: .destructive) {
+            Button("Disconnect all AI apps", role: .destructive) {
                 Task { await disconnectCoach() }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This revokes Claude’s access to your training. Your workouts and plan stay in Très Fort.")
+            Text("This revokes access for all AI apps connected to your account. Your workouts and plan stay in Très Fort.")
         }
         .alert(
             "Coach connection",
@@ -264,7 +264,7 @@ struct ProfileView: View {
         }
     }
 
-    // MARK: - Coach (Claude)
+    // MARK: - Coach
 
     @ViewBuilder
     private var coachSection: some View {
@@ -281,23 +281,26 @@ struct ProfileView: View {
                 }
                 .accessibilityIdentifier("profile.trainingOverview")
             }
-            if groupModel.me?.claude.connected == true {
+            if groupModel.me?.coach.connected == true {
                 HStack(spacing: 10) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Connected").font(.headline)
-                        if let t = groupModel.me?.claude.last_active {
+                        if let t = groupModel.me?.coach.last_active {
                             Text("Last active \(relative(epochMs: t))")
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                     }
                 }
-                Text("Ask Claude to review your training, explain your numbers, or adjust your plan — in the Claude app with the Très Fort connector.")
+                Text("Ask your connected AI app to review your training, explain your numbers, or adjust your plan. Your plan and workout history stay in Très Fort.")
                     .font(.footnote).foregroundStyle(.secondary)
-                Button("Disconnect Claude", role: .destructive) {
+                Button("Disconnect all AI apps", role: .destructive) {
                     showCoachDisconnectConfirmation = true
                 }
                 .disabled(isDisconnectingCoach)
+                NavigationLink("Connect another AI app") {
+                    CoachConnectView(groupModel: groupModel)
+                }
             } else {
                 NavigationLink {
                     CoachConnectView(groupModel: groupModel)
@@ -305,15 +308,27 @@ struct ProfileView: View {
                     HStack(spacing: 10) {
                         Image(systemName: "brain.head.profile").foregroundStyle(Theme.accent)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("Set up your Claude coach").font(.headline)
+                            Text("Set up your AI coach").font(.headline)
                             Text("Your coach works with your own training plan, whether you train independently or in a group.")
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                     }
                 }
+                // An approved code may not have reached its AI app yet, or
+                // the profile refresh may be stale after an uncertain write.
+                // Revocation must remain reachable without an active grant.
+                DisclosureGroup("Manage AI access") {
+                    Text("Cancel unfinished approvals or disconnect AI apps. Your training data stays in Très Fort.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                    Button("Disconnect all AI apps", role: .destructive) {
+                        showCoachDisconnectConfirmation = true
+                    }
+                    .disabled(isDisconnectingCoach)
+                }
+                .accessibilityIdentifier("coach.manageAccess")
             }
         } header: {
-            Text("Coach (Claude)")
+            Text("Coach")
         }
     }
 
@@ -322,12 +337,12 @@ struct ProfileView: View {
         isDisconnectingCoach = true
         defer { isDisconnectingCoach = false }
         do {
-            let refreshed = try await groupModel.disconnectClaude()
+            let refreshed = try await groupModel.disconnectCoach()
             if !refreshed {
-                coachDisconnectMessage = "Claude was disconnected. The latest profile status couldn’t be refreshed; pull to refresh when you’re online."
+                coachDisconnectMessage = "All AI apps were disconnected. The latest profile status couldn’t be refreshed; pull to refresh when you’re online."
             }
         } catch {
-            coachDisconnectMessage = "Claude wasn’t disconnected: \(error.localizedDescription)"
+            coachDisconnectMessage = "AI apps weren’t disconnected: \(error.localizedDescription)"
         }
     }
 

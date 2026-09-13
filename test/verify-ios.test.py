@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -25,7 +26,7 @@ class VerifyIOSTests(unittest.TestCase):
         shutil.copy(SCRIPT, self.root / 'scripts' / SCRIPT.name)
         shutil.copy(SCRIPT.parent / 'ios_sources.py', self.root / 'scripts' / 'ios_sources.py')
         mock = '''#!/usr/bin/env python3
-import json, os, pathlib, sys
+import json, os, pathlib, signal, sys
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 with open(os.environ['MOCK_CALLS'], 'a') as f: f.write(json.dumps([name, args]) + '\\n')
@@ -44,6 +45,10 @@ elif name == 'xcodebuild' and args[0] in ['build-for-testing', 'test-without-bui
     result.mkdir()
     (result / 'result.txt').write_text('synthetic evidence')
     print('build/test diagnostic')
+    if args[0] == 'test-without-building' and os.environ.get('MOCK_CANCEL_DURING_TEST'):
+        # Kill only the disposable verifier shell, emulating a runner that
+        # cannot wait for cleanup. The test owns and removes its whole temp tree.
+        os.kill(os.getppid(), signal.SIGKILL)
     failure = 'MOCK_BUILD_EXIT' if args[0] == 'build-for-testing' else 'MOCK_TEST_EXIT'
     sys.exit(int(os.environ.get(failure, '0')))
 else: print('synthetic-tool-version')
@@ -97,6 +102,21 @@ else: print('synthetic-tool-version')
         self.assertFalse(any(name=='xcodebuild' and args[0]=='test-without-building' for name,args in self.calls()))
         self.assertEqual(len(list((self.root/'.artifacts').rglob('build.log'))),1)
 
+    def test_forced_cancellation_retains_in_progress_evidence_without_cleanup(self):
+        self.env['IOS_KEEP_RESULTS']='1'
+        self.env['MOCK_CANCEL_DURING_TEST']='1'
+        result=subprocess.run(['bash',str(self.root/'scripts'/SCRIPT.name),
+                               '--runtime','runtime','--device','device'],
+                              env=self.env,capture_output=True,text=True)
+        self.assertEqual(result.returncode,-signal.SIGKILL)
+        # Evidence must already exist before an EXIT trap or simulator cleanup.
+        evidence=self.root/'.artifacts'/'ios'
+        self.assertEqual(len(list(evidence.rglob('build.log'))),1)
+        self.assertEqual(len(list(evidence.rglob('xcodebuild.log'))),1)
+        self.assertEqual(len(list(evidence.rglob('sources.json'))),1)
+        self.assertEqual(len(list(evidence.rglob('result.txt'))),2)
+        self.assertFalse(any(p.name in ['DerivedData','ios'] for p in evidence.glob('*/*')))
+
     def test_boot_failures_remain_failures_and_clean_owned_device(self):
         for failure in ['MOCK_BOOT_EXIT', 'MOCK_BOOTSTATUS_EXIT']:
             with self.subTest(failure=failure):
@@ -119,49 +139,61 @@ else: print('synthetic-tool-version')
         self.assertEqual(test[test.index('-parallel-testing-enabled')+1],'NO')
 
     def test_ci_shards_are_complementary_and_reject_extra_filters(self):
-        for shard, prefix in [('1','-skip-testing:'),('2','-only-testing:')]:
+        universe={'TresFortTests'} | {
+            'TresFortUITests/'+path.stem
+            for path in (SCRIPT.parents[1]/'ios'/'TresFortUITests').glob('*Tests.swift')
+        }
+        covered=set()
+        for shard in ['1','2','3']:
             with self.subTest(shard=shard):
                 result=self.run_script(['--runtime','runtime','--device','device','--ci-shard',shard])
                 self.assertEqual(result.returncode,0,result.stderr)
                 args=[args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building'][-1]
                 selection=[arg for arg in args if arg.startswith(('-only-testing:', '-skip-testing:'))]
-                self.assertEqual(selection,[prefix+'TresFortUITests/HistoryJourneyTests',prefix+'TresFortUITests/ExerciseGroupJourneyTests'])
-        for extra in [['--ci-shard','3'],['--ci-shard','1','--only-testing','TresFortTests']]:
+                if shard=='1':
+                    self.assertTrue(all(arg.startswith('-skip-testing:') for arg in selection))
+                    selected=universe-{arg.removeprefix('-skip-testing:') for arg in selection}
+                else:
+                    self.assertTrue(all(arg.startswith('-only-testing:') for arg in selection))
+                    selected={arg.removeprefix('-only-testing:') for arg in selection}
+                self.assertTrue(selected)
+                self.assertFalse(covered & selected)
+                covered |= selected
+        self.assertEqual(covered,universe)
+        for extra in [['--ci-shard','4'],['--ci-shard','1','--only-testing','TresFortTests']]:
             calls_before=self.calls()
             self.assertEqual(self.run_script(['--runtime','runtime','--device','device',*extra]).returncode,2)
             self.assertEqual(self.calls(),calls_before)
 
-    def test_smoke_shards_keep_all_unit_tests_and_existing_critical_ui_flows(self):
+    def test_smoke_is_bounded_to_twelve_real_journeys_and_all_unit_tests(self):
         selections=[]
         for shard in ['1','2']:
             result=self.run_script(['--runtime','runtime','--device','device',
                                     '--ui-suite','smoke','--ci-shard',shard])
             self.assertEqual(result.returncode,0,result.stderr)
             args=[args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building'][-1]
-            selections.extend(arg.removeprefix('-only-testing:') for arg in args if arg.startswith('-only-testing:'))
-        self.assertEqual(len(selections),17)
-        self.assertIn("TresFortUITests/TrainingJourneyTests/testSwapExerciseMidWorkoutPreservesCompletedSetAndRoutine", selections)
-        self.assertIn("TresFortUITests/TodayNavigationJourneyTests", selections)
-        self.assertIn("TresFortUITests/UIActionJourneyTests", selections)
-        self.assertIn("TresFortUITests/WorkoutLibraryJourneyTests", selections)
-        self.assertIn("TresFortUITests/PlanChangeJourneyTests", selections)
-        self.assertIn("TresFortUITests/CoachingContextJourneyTests", selections)
-        self.assertIn("TresFortUITests/WorkoutSummaryJourneyTests", selections)
-        self.assertIn("TresFortUITests/MemberActivationJourneyTests", selections)
-        self.assertIn("TresFortUITests/IntervalsConnectionJourneyTests", selections)
-        self.assertIn("TresFortUITests/GroupSafetyJourneyTests", selections)
-        self.assertEqual(len(set(selections)),17)
-        self.assertIn('TresFortTests',selections)
+            selected=[arg.removeprefix('-only-testing:') for arg in args if arg.startswith('-only-testing:')]
+            self.assertEqual(len([s for s in selected if s!='TresFortTests']),6)
+            selections.extend(selected)
+        self.assertEqual(len(selections),13)
+        self.assertEqual(len(set(selections)),13)
+        self.assertEqual(selections.count('TresFortTests'),1)
+        self.assertIn('TresFortUITests/MemberActivationJourneyTests/testMobileCoachApprovalRequiresExplicitDecision',selections)
+        self.assertIn('TresFortUITests/TrainingJourneyTests/testOrdinarySetLogsAndCompletesThroughAcknowledgement',selections)
         root=SCRIPT.parents[1]/'ios'
         for selection in selections:
             if selection=='TresFortTests': continue
-            target,suite,*methods=selection.split('/')
+            # A class selector could silently expand into dozens of tests.
+            self.assertEqual(len(selection.split('/')),3)
+            target,suite,method=selection.split('/')
             source=(root/target/(suite+'.swift')).read_text()
-            if methods:
-                self.assertRegex(source,rf'func\s+{re.escape(methods[0])}\s*\(')
-            else:
-                self.assertRegex(source,rf'class\s+{re.escape(suite)}\s*:\s*XCTestCase')
+            self.assertRegex(source,rf'func\s+{re.escape(method)}\s*\(')
+        result=self.run_script(['--runtime','runtime','--device','device','--ui-suite','smoke'])
+        self.assertEqual(result.returncode,0,result.stderr)
+        args=[args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building'][-1]
+        self.assertEqual([arg.removeprefix('-only-testing:') for arg in args if arg.startswith('-only-testing:')],selections)
         for extra in [['--ui-suite','invalid'],
+                      ['--ui-suite','smoke','--ci-shard','3'],
                       ['--ui-suite','smoke','--only-testing','TresFortTests']]:
             calls_before=self.calls()
             self.assertEqual(self.run_script(['--runtime','runtime','--device','device',*extra]).returncode,2)

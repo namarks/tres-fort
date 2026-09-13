@@ -103,7 +103,7 @@ private struct WelcomeStep: View {
                 OnboardingBullet(icon: "dumbbell.fill", title: "Lift, logged",
                                  text: "Run your workout in the app — it tracks every set, rep, and rest.")
                 OnboardingBullet(icon: "brain.head.profile", title: "A coach that adapts",
-                                 text: "Build workouts yourself, or connect your own Claude to review and adjust your plan.")
+                                 text: "Build workouts yourself, or connect your own AI coach to review and adjust your plan.")
                 OnboardingBullet(icon: "person.2.fill", title: "Your crew",
                                  text: "Share progress with family and friends in a private group.")
             }
@@ -309,7 +309,7 @@ private struct CoachIntroStep: View {
         VStack(spacing: 22) {
             StepHeader(icon: "dumbbell.fill",
                        title: "Choose your first step",
-                       subtitle: "Build and schedule your workouts here, or connect your own Claude to help with your plan. Every member has their own Coach Connect, whether joining a group or training independently.")
+                       subtitle: "Build and schedule your workouts here, or connect your own AI coach to help with your plan. Every member has their own Coach Connect, whether joining a group or training independently.")
             Text("Both paths use your same plan. Find Workouts in Today’s menu and Coach Connect in Profile whenever you're ready.")
                 .font(.footnote).foregroundStyle(Theme.muted)
                 .multilineTextAlignment(.center)

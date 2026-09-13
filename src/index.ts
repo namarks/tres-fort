@@ -11,6 +11,7 @@ import { oauthRoutes } from './oauth';
 import type { Fetcher } from './intervals';
 import { diagnosticErrorType, internalErrorResponse, logUnexpectedError } from './errors';
 import {
+  purgeExpiredMobileCoachRequests,
   ensureOwnerUser,
   observeD1Usage,
   seedOwnerIntervalsCredsFromEnv,
@@ -216,7 +217,10 @@ async function scheduled(
     observeD1Usage(
       env.DB,
       'cron tick',
-      (db) => runIntervalsCron(db, env, event.scheduledTime),
+      async (db) => {
+        await purgeExpiredMobileCoachRequests(db);
+        return runIntervalsCron(db, env, event.scheduledTime);
+      },
       (result) => (result.failed ? 'error' : 'ok'),
     ).catch((error: unknown) => {
       logUnexpectedError('scheduled', error);

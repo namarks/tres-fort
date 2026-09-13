@@ -37,6 +37,41 @@ final class MemberActivationJourneyTests: XCTestCase {
         XCTFail("Control is not reachable: \(element.description)", file: file, line: line)
     }
 
+    // Form rows below the viewport are not materialized in the accessibility
+    // tree yet. Scroll before requiring existence for the longer coach setup.
+    private func scrollAndTap(_ element: XCUIElement, in app: XCUIApplication,
+                              file: StaticString = #filePath, line: UInt = #line) {
+        for _ in 0..<8 {
+            if element.exists && element.isHittable {
+                element.tap()
+                return
+            }
+            app.swipeUp()
+        }
+        XCTFail("Control is not reachable after scrolling: \(element.description)", file: file, line: line)
+    }
+
+    func testMobileCoachApprovalRequiresExplicitDecision() {
+        let app = launch("coach-approval")
+        XCTAssertTrue(app.staticTexts["Review AI access"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["App name supplied by the connecting client: Synthetic AI app"].exists)
+        XCTAssertFalse(app.buttons["coach-approval.continue"].exists)
+        let image = XCTAttachment(screenshot: app.screenshot())
+        image.name = "mobile-coach-consent"; image.lifetime = .keepAlways; add(image)
+        scrollAndTap(app.buttons["coach-approval.allow"], in: app)
+        XCTAssertTrue(app.staticTexts["Access allowed"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["coach-approval.continue"].exists)
+        // Leave before the AI app exchanges its code. Cancellation must still
+        // be reachable when the profile reports no connected grant.
+        tap(app.buttons["Done"], in: app)
+        tap(app.tabBars.buttons["Profile"], in: app)
+        scrollAndTap(app.buttons["coach.manageAccess"], in: app)
+        scrollAndTap(app.buttons["Disconnect all AI apps"], in: app)
+        let confirmation = app.sheets["Disconnect all AI apps?"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        XCTAssertTrue(confirmation.buttons["Disconnect all AI apps"].isHittable)
+    }
+
     private func onboard(_ app: XCUIApplication, invited: Bool = false) {
         tap(app.buttons["Get started"], in: app)
         tap(app.buttons["trainingSetup.skip"], in: app)
@@ -259,8 +294,34 @@ final class MemberActivationJourneyTests: XCTestCase {
         tap(app.navigationBars["Workouts"].buttons["Done"], in: app)
         completeFirstWorkout(app)
         tap(app.tabBars.buttons["Profile"], in: app)
-        tap(app.buttons.containing(.staticText, identifier: "Set up your Claude coach").firstMatch, in: app)
+        tap(app.buttons.containing(.staticText, identifier: "Set up your AI coach").firstMatch, in: app)
         XCTAssertTrue(app.navigationBars["Connect your coach"].waitForExistence(timeout: 5))
+    }
+
+    func testCoachSetupOffersCodexClaudeAndOtherApps() {
+        let app = launch("activation-manual")
+        tap(app.buttons["Sign in with Apple"], in: app)
+        onboard(app)
+        tap(app.buttons["Enter Très Fort"], in: app)
+        tap(app.buttons["Set up my coach"], in: app)
+        let picker = app.buttons["coach.app-picker"]
+        tap(picker, in: app)
+        tap(app.buttons["Claude"], in: app)
+        XCTAssertTrue(app.staticTexts["coach.data-sharing"].label.contains("Anthropic"))
+        tap(picker, in: app)
+        tap(app.buttons["Other compatible app"], in: app)
+        XCTAssertTrue(app.staticTexts["coach.data-sharing"].label.contains("configured model provider"))
+        tap(picker, in: app)
+        tap(app.buttons["Codex"], in: app)
+        scrollAndTap(app.buttons["coach.generate-code"], in: app)
+        scrollAndTap(app.buttons.containing(.staticText, identifier: "URL").firstMatch, in: app)
+        XCTAssertTrue(app.staticTexts["https://ui-fixture.invalid/mcp"].exists)
+        XCTAssertFalse(app.staticTexts["codex mcp login tres-fort"].exists)
+        let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        image.name = "codex-coach-setup-without-terminal"; image.lifetime = .keepAlways; add(image)
+        scrollAndTap(app.buttons["coach.advanced-setup"], in: app)
+        scrollAndTap(app.buttons.containing(.staticText, identifier: "Sign in").firstMatch, in: app)
+        XCTAssertTrue(app.staticTexts["codex mcp login tres-fort"].exists)
     }
 
     func testEmptyTodayOffersCoachSetupDirectly() {
@@ -271,7 +332,7 @@ final class MemberActivationJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["Create a workout"].waitForExistence(timeout: 10))
         tap(app.buttons["Set up my coach"], in: app)
         XCTAssertTrue(app.navigationBars["Connect your coach"].waitForExistence(timeout: 10))
-        tap(app.buttons["Generate connect code"], in: app)
+        scrollAndTap(app.buttons["coach.generate-code"], in: app)
         XCTAssertTrue(app.buttons["Generate a new code"].waitForExistence(timeout: 10))
     }
 

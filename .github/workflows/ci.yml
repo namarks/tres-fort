@@ -44,7 +44,7 @@ jobs:
           echo "iOS coverage: $suite"
 
   ios-tests:
-    name: iOS ${{ needs.plans.outputs.ios-suite }} (${{ matrix.shard }}/2)
+    name: iOS ${{ needs.plans.outputs.ios-suite }} (${{ matrix.shard }}/${{ needs.plans.outputs.ios-suite == 'full' && 3 || 2 }})
     needs: plans
     # Standard public-repository capacity only; never opt into a paid runner.
     if: github.event.repository.private == false && needs.plans.outputs.ios-suite != 'skip'
@@ -53,7 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: ${{ fromJSON(needs.plans.outputs.ios-suite == 'full' && '[1, 2, 3]' || '[1, 2]') }}
     env:
       IOS_UI_SUITE: ${{ needs.plans.outputs.ios-suite }}
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer

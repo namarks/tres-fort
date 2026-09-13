@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run test:website && npm run test:upload-testflight && npm run test:query-plans && vitest run",
     "test:website": "npm --prefix website test",
+    "test:oauth-browser": "node scripts/check-oauth-browser.mjs",
     "build:website": "npm --prefix website run build",
     "test:query-plans": "node scripts/check-data-storage-query-plans.mjs",
     "test:upload-testflight": "bash test/upload-testflight.test.sh",
@@ -35,6 +36,7 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.5.40",
     "@cloudflare/workers-types": "^4.20241218.0",
+    "playwright-core": "1.63.0",
     "typescript": "^5.7.2",
     "vitest": "2.1.9",
     "wrangler": "^4.0.0"

@@ -87,14 +87,14 @@ describe('mcp write tools', () => {
       expect(fresh.conflict).toBe(false);
       expect(fresh.plan.version).toBeGreaterThan(v);
 
-      // Successful rebuilds commit their audit and Claude note atomically;
+      // Successful rebuilds commit their audit and coach note atomically;
       // a stale version leaves neither behind.
       const audits = await env.DB.prepare(
         "SELECT COUNT(*) AS c FROM audit_log WHERE actor='mcp' AND tool='update_plan'",
       ).first<{ c: number }>();
       expect(audits!.c).toBe(2); // seed build + fresh
       const notes = await env.DB.prepare(
-        "SELECT COUNT(*) AS c FROM notes WHERE author='claude' AND body = 'Rebuilt training plan.'",
+        "SELECT COUNT(*) AS c FROM notes WHERE author='coach' AND body = 'Rebuilt training plan.'",
       ).first<{ c: number }>();
       expect(notes!.c).toBe(2); // seed build + fresh
     });
@@ -128,13 +128,13 @@ describe('mcp write tools', () => {
       expect(patched.target_sets).toBe(5);
       expect(patched.target_weight).toBe(315);
 
-      // audit trail + Claude notes were written, one of each per mutation
+      // audit trail + coach notes were written, one of each per mutation
       const audits = await env.DB.prepare(
         "SELECT COUNT(*) AS c FROM audit_log WHERE actor='mcp' AND tool IN ('swap_exercise','add_day','add_exercise','update_exercise')",
       ).first<{ c: number }>();
       expect(audits!.c).toBe(4);
       const notes = await env.DB.prepare(
-        "SELECT COUNT(*) AS c FROM notes WHERE author='claude'",
+        "SELECT COUNT(*) AS c FROM notes WHERE author='coach'",
       ).first<{ c: number }>();
       expect(notes!.c).toBe(5); // seed rebuild + one per mutation above
     });
@@ -176,13 +176,13 @@ describe('mcp write tools', () => {
         ok: true,
       });
 
-      // audit trail + Claude notes were written
+      // audit trail + coach notes were written
       const audits = await env.DB.prepare(
         "SELECT COUNT(*) AS c FROM audit_log WHERE actor='mcp' AND tool IN ('adjust_today','add_note')",
       ).first<{ c: number }>();
       expect(audits!.c).toBe(2);
       const notes = await env.DB.prepare(
-        "SELECT COUNT(*) AS c FROM notes WHERE author='claude'",
+        "SELECT COUNT(*) AS c FROM notes WHERE author='coach'",
       ).first<{ c: number }>();
       expect(notes!.c).toBe(3); // seed rebuild + adjust_today reason + add_note
       const reason = await env.DB.prepare(
@@ -257,7 +257,7 @@ describe('mcp write tools', () => {
       }>()
     )!.c;
     const notesBefore = (
-      await env.DB.prepare("SELECT COUNT(*) AS c FROM notes WHERE author='claude'").first<{
+      await env.DB.prepare("SELECT COUNT(*) AS c FROM notes WHERE author='coach'").first<{
         c: number;
       }>()
     )!.c;
@@ -292,7 +292,7 @@ describe('mcp write tools', () => {
     )!.c;
     expect(auditAfter).toBe(auditBefore + 1);
     const notesAfter = (
-      await env.DB.prepare("SELECT COUNT(*) AS c FROM notes WHERE author='claude'").first<{
+      await env.DB.prepare("SELECT COUNT(*) AS c FROM notes WHERE author='coach'").first<{
         c: number;
       }>()
     )!.c;
@@ -358,13 +358,13 @@ describe('mcp write tools', () => {
       // the first successful set_schedule for this plan.
       expect(set1.schedule.version).toBe(2);
 
-      // audit row + Claude note recorded for the schedule write
+      // audit row + coach note recorded for the schedule write
       const audit = await env.DB.prepare(
         "SELECT COUNT(*) AS c FROM audit_log WHERE tool='set_schedule'",
       ).first<{ c: number }>();
       expect(audit!.c).toBe(1);
       const note = await env.DB.prepare(
-        "SELECT COUNT(*) AS c FROM notes WHERE author='claude' AND body LIKE 'Set recurring weekly schedule%'",
+        "SELECT COUNT(*) AS c FROM notes WHERE author='coach' AND body LIKE 'Set recurring weekly schedule%'",
       ).first<{ c: number }>();
       expect(note!.c).toBe(1);
     });
@@ -399,7 +399,7 @@ describe('mcp write tools', () => {
       ).first<{ c: number }>();
       expect(audit!.c).toBe(2); // set1 + set2
       const note = await env.DB.prepare(
-        "SELECT COUNT(*) AS c FROM notes WHERE author='claude' AND body LIKE 'Set recurring weekly schedule%'",
+        "SELECT COUNT(*) AS c FROM notes WHERE author='coach' AND body LIKE 'Set recurring weekly schedule%'",
       ).first<{ c: number }>();
       expect(note!.c).toBe(2);
     });
@@ -427,7 +427,7 @@ describe('mcp write tools', () => {
       ).first<{ c: number }>();
       expect(audit!.c).toBe(1); // set1 only
       const note = await env.DB.prepare(
-        "SELECT COUNT(*) AS c FROM notes WHERE author='claude' AND body LIKE 'Set recurring weekly schedule%'",
+        "SELECT COUNT(*) AS c FROM notes WHERE author='coach' AND body LIKE 'Set recurring weekly schedule%'",
       ).first<{ c: number }>();
       expect(note!.c).toBe(1);
     });
@@ -458,7 +458,7 @@ describe('mcp write tools', () => {
       ).first<{ c: number }>();
       expect(oneOffAudit!.c).toBe(2);
       const oneOffNotes = await env.DB.prepare(
-        "SELECT COUNT(*) AS c FROM notes WHERE author='claude' AND (body LIKE 'Planned 2026-06-06%' OR body LIKE 'Skipped 2026-06-07%')",
+        "SELECT COUNT(*) AS c FROM notes WHERE author='coach' AND (body LIKE 'Planned 2026-06-06%' OR body LIKE 'Skipped 2026-06-07%')",
       ).first<{ c: number }>();
       expect(oneOffNotes!.c).toBe(2);
     });

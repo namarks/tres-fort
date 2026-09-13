@@ -36,6 +36,12 @@ Both clients hit the same service layer over the same D1 database. The plan
 is a versioned document; sets/notes/sessions are an append-only event log.
 That split is what makes two-writer sync simple (§7).
 
+The optional iOS weight view is a local projection of Apple Health body-mass
+samples. Health remains its store: weight is not uploaded to D1, exposed to
+MCP or groups, or included in the server account export. Its separate read
+opt-in and dated trend are defined in
+[Apple Health weight](plans/apple-health-weight/plan.md).
+
 ---
 
 ## 2. Stack evaluation — what's right, what I'm pushing back on

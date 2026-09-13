@@ -122,12 +122,13 @@ Claude, or Other compatible app, review the data-sharing disclosure, and generat
 a personal connect code. Enter that code only on the Très Fort consent page.
 Every member uses their own account; no operator secret or group membership is needed.
 
-For Codex, use the server URL shown in setup:
-
-```bash
-codex mcp add tres-fort --url "https://<your-worker>.workers.dev/mcp"
-codex mcp login tres-fort
-```
+For Codex, add the server through the desktop app's **Settings → Plugins → Add →
+Add MCP server** form (older versions use **Settings → MCP servers**). Choose
+**Streamable HTTP**, enter the URL shown in setup, save and authenticate.
+Terminal commands are optional under **Advanced**. This desktop connection does
+not install a hosted plugin for ChatGPT on iPhone or the web; a full mobile
+install-and-authorize button requires publishing the integration in the provider's
+directory. See the connection guide for that delivery path.
 
 Claude setup uses its custom-connector settings. Other apps must support remote
 Streamable HTTP MCP, OAuth discovery, Dynamic Client Registration, PKCE S256,

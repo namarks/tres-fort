@@ -15,7 +15,19 @@ a shell command, an API-key field, or a bearer-token field.
 
 ### Codex
 
-On a computer with Codex CLI installed, add the URL shown by Très Fort:
+Use the desktop app's form; terminal commands are optional:
+
+1. Open **Settings → Plugins → Add → Add MCP server**. Older versions use
+   **Settings → MCP servers → Add server**.
+2. Choose **Streamable HTTP**, name the server `tres-fort`, and enter the URL
+   shown by Très Fort.
+3. Save, then choose **Authenticate**. Restart the server if prompted, and
+   complete the browser consent using the personal connect code.
+
+Desktop configuration does not install a hosted plugin into ChatGPT web or
+iPhone. This path still requires entering a server URL once.
+
+For users who prefer the CLI, **Advanced: command-line setup** contains:
 
 ```sh
 codex mcp add tres-fort --url "https://<your-worker>.workers.dev/mcp"
@@ -83,6 +95,27 @@ No provider API credentials are stored or forwarded by Très Fort.
   separate from the member's own authorized coach access.
 
 ## Verification and release
+
+### A full button-based connection
+
+The intended consumer flow is **Connect → install/authorize → return to Très
+Fort**. A button cannot register an arbitrary server in another app unless that
+app supports an install link or already lists the integration.
+
+For ChatGPT/Codex, the supported distribution route is a published remote
+MCP-backed plugin in their [shared directory](https://learn.chatgpt.com/docs/plugins).
+Supported hosted plugins can be used on mobile; a local desktop MCP connection
+is a separate surface. Prepare a [plugin submission](https://developers.openai.com/plugins/deploy/submission)
+using the existing server, complete provider review, then use the issued listing
+or install URL. Do not invent a plugin ID or claim that a settings/help link
+completes a connection. Account authorization must still be explicit.
+
+This remains external coaching under the user's account and does not require
+Très Fort to execute or bundle model API calls. A fully mobile flow also needs
+the account-authorization journey verified on iPhone; removing the connect-code
+copy step is separate from removing terminal commands.
+
+### Current verification
 
 `test/coach_clients.test.ts` exercises synthetic Codex-shaped loopback, Claude
 HTTPS, and generic loopback clients through DCR, consent, PKCE, initialization,

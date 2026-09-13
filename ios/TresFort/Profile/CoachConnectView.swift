@@ -120,11 +120,18 @@ struct CoachConnectView: View {
         Section("Step 2 · Connect your AI app") {
             switch selectedApp {
             case .codex:
-                instruction(1, "On your computer, use a terminal with the Codex CLI installed. Add Très Fort with this command:")
-                CopyRow(label: "Add server", value: "codex mcp add tres-fort --url \(connectorURL)", mono: true)
-                instruction(2, "Start sign-in with the next command. Codex opens the Très Fort consent page in your browser.")
-                CopyRow(label: "Sign in", value: "codex mcp login tres-fort", mono: true)
+                instruction(1, "On your computer, open the desktop app you use for Codex. In Settings → Plugins, choose Add → Add MCP server. Some versions call this Settings → MCP servers → Add server.")
+                instruction(2, "Choose Streamable HTTP and enter these connection details. No terminal commands are needed.")
+                connectionDetails
+                instruction(3, "Save the server, then choose Authenticate to sign in. If prompted, restart the server. Your browser opens the Très Fort consent page.")
+                Text("This setup currently needs the desktop app. Adding this connection does not automatically add it to ChatGPT on the web or iPhone.")
+                    .font(.footnote).foregroundStyle(.secondary)
                 Link("Codex connection guide", destination: AppInformation.codexMCPGuideURL)
+                DisclosureGroup("Advanced: command-line setup") {
+                    CopyRow(label: "Add server", value: "codex mcp add tres-fort --url \(connectorURL)", mono: true)
+                    CopyRow(label: "Sign in", value: "codex mcp login tres-fort", mono: true)
+                }
+                .accessibilityIdentifier("coach.advanced-setup")
             case .claude:
                 instruction(1, "Open claude.ai and sign in to an account that supports custom connectors.")
                 Link("Open claude.ai", destination: URL(string: "https://claude.ai")!)
@@ -140,7 +147,7 @@ struct CoachConnectView: View {
 
     @ViewBuilder
     private var connectionDetails: some View {
-        CopyRow(label: "Name", value: "Très Fort", mono: false)
+        CopyRow(label: "Name", value: selectedApp == .codex ? "tres-fort" : "Très Fort", mono: false)
         CopyRow(label: "URL", value: connectorURL, mono: true)
     }
 

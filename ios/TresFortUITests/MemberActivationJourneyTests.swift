@@ -182,12 +182,14 @@ final class MemberActivationJourneyTests: XCTestCase {
         tap(picker, in: app)
         tap(app.buttons["Codex"], in: app)
         scrollAndTap(app.buttons["coach.generate-code"], in: app)
-        scrollAndTap(app.buttons.containing(.staticText, identifier: "Add server").firstMatch, in: app)
-        XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "codex mcp add tres-fort --url")).firstMatch.exists)
+        scrollAndTap(app.buttons.containing(.staticText, identifier: "URL").firstMatch, in: app)
+        XCTAssertTrue(app.staticTexts["https://ui-fixture.invalid/mcp"].exists)
+        XCTAssertFalse(app.staticTexts["codex mcp login tres-fort"].exists)
+        let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        image.name = "codex-coach-setup-without-terminal"; image.lifetime = .keepAlways; add(image)
+        scrollAndTap(app.buttons["coach.advanced-setup"], in: app)
         scrollAndTap(app.buttons.containing(.staticText, identifier: "Sign in").firstMatch, in: app)
         XCTAssertTrue(app.staticTexts["codex mcp login tres-fort"].exists)
-        let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
-        image.name = "codex-coach-setup"; image.lifetime = .keepAlways; add(image)
     }
 
     func testEmptyTodayOffersCoachSetupDirectly() {

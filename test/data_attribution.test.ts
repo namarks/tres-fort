@@ -72,6 +72,16 @@ describe('Garmin attribution', () => {
     expect((await getGroupActivitySeries(env.DB,group.id,7,owner.id))[0]?.days[0]?.source_attribution).toBeUndefined();
   });
 
+  it('filters shared device labels while preserving private attribution and the Garmin source', async () => {
+    const owner = await upsertUser(env.DB,'filtered-attribution',null,'Rider');
+    const group = await createGroup(env.DB,owner.id,'Private group');
+    await seed(owner.id,'filtered-device',JSON.stringify({device_name:'Garmin kill yourself'}));
+    const feed = await getGroupFeed(env.DB,group.id,null,null,20,owner.id);
+    expect(feed.find(item => item.id === 'filtered-device')).toMatchObject({ride:{source_attribution:'Garmin'}});
+    expect(JSON.stringify(feed)).not.toContain('kill yourself');
+    expect((await getRecentActivities(env.DB,owner.id))[0]?.source_attribution).toBe('Garmin kill yourself');
+  });
+
   it('advances the delta cursor on a device-only correction and leaves identical resyncs unchanged', async () => {
     const owner = await upsertUser(env.DB,'sync-attribution',null,'Rider');
     await setUserIntervalsCreds(env.DB,owner.id,'synthetic-api-key','athlete');

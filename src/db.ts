@@ -11447,7 +11447,7 @@ export async function getGroupFeed(
     date: r.date,
     occurred_at: r.occurred_at,
     ride: {
-      ...(activitySourceAttribution(r) ? { source_attribution: activitySourceAttribution(r)! } : {}),
+      ...(activitySourceAttribution(r) ? { source_attribution: sharedText(activitySourceAttribution(r), 'Garmin')! } : {}),
       kind: sharedText(r.kind)!,
       name: sharedText(r.name),
       distance_m: r.distance_m,

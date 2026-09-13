@@ -54,6 +54,6 @@ enum WorkoutSummaryStats {
     }
 
     private static func number(_ value: Double) -> String {
-        value.formatted(.number.precision(.fractionLength(0)))
+        value.formatted(.number.precision(.fractionLength(0...1)))
     }
 }

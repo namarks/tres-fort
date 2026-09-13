@@ -67,6 +67,18 @@ extension WorkoutSummaryTests {
         XCTAssertNil(legacy.completed_at)
     }
 
+    func testFractionalVolumeKeepsItsMeaningfulPrecision() throws {
+        let fixture = try presentationFixture()
+        let summary = try modifiedSummary { object in
+            object["external_load_volume"] = 12.5
+            var cohorts = object["cohorts"] as! [[String: Any]]
+            cohorts[0]["unit"] = "kg"
+            object["cohorts"] = cohorts
+        }
+        let stats = WorkoutSummaryStats.make(summary: summary, session: fixture.session, timedWorkSeconds: 0)
+        XCTAssertEqual(stats.first(where: { $0.id == "volume" })?.value, "12.5 kg")
+    }
+
     func testVolumeRequiresOneKnownUnit() throws {
         let fixture = try presentationFixture()
         let mixed = try modifiedSummary { object in

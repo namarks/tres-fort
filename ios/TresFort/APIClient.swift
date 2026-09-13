@@ -484,19 +484,20 @@ struct APIClient {
     @discardableResult
     func addWorkout(
         name: String,
+        exerciseIDs: [String],
         expectedPlanID: String,
         expectedVersion: Int,
         jwt: String
     ) async throws
         -> WorkoutIDRow
     {
-        try await post(
+        var body: [String: Any] = [
+            "name": name, "expected_plan_id": expectedPlanID, "expected_version": expectedVersion,
+        ]
+        if !exerciseIDs.isEmpty { body["exercise_ids"] = exerciseIDs }
+        return try await post(
             "\(workoutWireFormat.collectionPath)",
-            body: [
-                "name": name,
-                "expected_plan_id": expectedPlanID,
-                "expected_version": expectedVersion,
-            ],
+            body: body,
             jwt: jwt)
     }
 
@@ -924,6 +925,7 @@ protocol RoutineEditingAPI {
         -> APIClient.EnsureActivePlanResult
     func addWorkout(
         name: String,
+        exerciseIDs: [String],
         expectedPlanID: String,
         expectedVersion: Int,
         jwt: String

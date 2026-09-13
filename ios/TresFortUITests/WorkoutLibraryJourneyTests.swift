@@ -100,4 +100,62 @@ final class WorkoutLibraryJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["library.workout.synthetic-day"].exists)
         XCTAssertEqual(app.staticTexts["workoutSchedule-synthetic-day"].label, "Tue")
     }
+
+    func testCreateStartsWithFilteredExercisesAndSavesWithoutNaming() {
+        let app = launch()
+        app.buttons["Add workout"].tap()
+        XCTAssertTrue(app.navigationBars["Add exercises"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.textFields["createWorkout.name"].exists)
+        XCTAssertFalse(app.buttons["createWorkout.review"].isEnabled)
+        app.buttons["Lower body"].tap()
+        app.buttons["exercisePicker.exercise.synthetic-exercise"].tap()
+        app.buttons["Upper body"].tap()
+        XCTAssertFalse(app.buttons["exercisePicker.exercise.synthetic-exercise"].exists)
+        let search = app.textFields["exercisePicker.search"]
+        search.tap(); search.typeText("bp")
+        app.buttons["exercisePicker.exercise.synthetic-upper"].tap()
+        search.tap(); search.typeText("zzzzz")
+        XCTAssertTrue(app.staticTexts["No matching exercises"].waitForExistence(timeout: 5))
+        app.buttons["Clear search and filters"].tap()
+        app.buttons["Core"].tap()
+        app.buttons["exercisePicker.exercise.synthetic-core"].tap()
+        XCTAssertEqual(app.buttons["createWorkout.review"].label, "Review workout (3)")
+        let picker = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        picker.name = "exercise-first-filtered-picker"; picker.lifetime = .keepAlways; add(picker)
+        app.buttons["createWorkout.review"].tap()
+        XCTAssertTrue(app.textFields["createWorkout.name"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Barbell Squat"].exists)
+        XCTAssertTrue(app.staticTexts["Bench Press"].exists)
+        XCTAssertTrue(app.staticTexts["Plank"].exists)
+        let review = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        review.name = "exercise-first-review"; review.lifetime = .keepAlways; add(review)
+        let create = app.buttons["createWorkout.create"]
+        for _ in 0..<4 where !create.isHittable { app.swipeUp() }
+        create.tap()
+        XCTAssertTrue(app.navigationBars["Edit Workout 1"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Barbell Squat"].exists)
+        XCTAssertTrue(app.staticTexts["Bench Press"].exists)
+        XCTAssertTrue(app.staticTexts["Plank"].exists)
+    }
+
+    func testCancelSelectionLeavesLibraryUnchangedAndExistingEditorUsesFilters() {
+        let app = launch()
+        app.buttons["Add workout"].tap()
+        let squat = app.buttons["exercisePicker.exercise.synthetic-exercise"]
+        XCTAssertTrue(squat.waitForExistence(timeout: 5)); squat.tap()
+        app.navigationBars["Add exercises"].buttons["Cancel"].tap()
+        XCTAssertTrue(app.navigationBars["Choose a workout"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "library.workout.")).count, 2)
+        app.buttons["Actions for Gym"].tap()
+        app.buttons["Edit exercises"].tap()
+        app.buttons["editor.actions"].tap()
+        app.buttons["Add exercise"].tap()
+        XCTAssertTrue(app.navigationBars["Add exercise"].waitForExistence(timeout: 5))
+        app.buttons["Core"].tap()
+        XCTAssertFalse(app.staticTexts["Barbell Squat"].exists)
+        app.staticTexts["Plank"].tap()
+        XCTAssertTrue(app.navigationBars["Plank"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Add to workout"].exists)
+    }
+
 }

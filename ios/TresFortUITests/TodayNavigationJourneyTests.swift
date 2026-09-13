@@ -42,6 +42,10 @@ final class TodayNavigationJourneyTests: XCTestCase {
         tap(app.navigationBars["Strength B"].buttons["Done"], in: app)
         tap(app.navigationBars["Choose a workout"].buttons["Done"], in: app)
         tap(app.buttons["today.createWorkout"], in: app)
+        XCTAssertFalse(app.textFields["createWorkout.name"].exists)
+        let selection = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "exercisePicker.exercise.")).firstMatch
+        XCTAssertTrue(selection.waitForExistence(timeout: 5)); selection.tap()
+        app.buttons["createWorkout.review"].tap()
         let name = app.textFields["createWorkout.name"]
         tap(name, in: app); name.typeText("Hotel session")
         tap(app.buttons["createWorkout.create"], in: app)
@@ -110,6 +114,10 @@ final class TodayNavigationJourneyTests: XCTestCase {
     func testAcknowledgedCreationRecoversThroughRefreshWithoutCreatingAgain() {
         let app = launch(createRefreshFailure: true)
         tap(app.buttons["today.createWorkout"], in: app)
+        XCTAssertFalse(app.textFields["createWorkout.name"].exists)
+        let selection = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "exercisePicker.exercise.")).firstMatch
+        XCTAssertTrue(selection.waitForExistence(timeout: 5)); selection.tap()
+        app.buttons["createWorkout.review"].tap()
         let name = app.textFields["createWorkout.name"]
         tap(name, in: app); name.typeText("Hotel session")
         tap(app.buttons["createWorkout.create"], in: app)
@@ -127,6 +135,10 @@ final class TodayNavigationJourneyTests: XCTestCase {
         for failure in ["conflict", "lost-response"] {
             let app = launch(creationFailure: failure)
             tap(app.buttons["today.createWorkout"], in: app)
+            XCTAssertFalse(app.textFields["createWorkout.name"].exists)
+            let selection = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "exercisePicker.exercise.")).firstMatch
+            XCTAssertTrue(selection.waitForExistence(timeout: 5)); selection.tap()
+            app.buttons["createWorkout.review"].tap()
             let name = app.textFields["createWorkout.name"]
             tap(name, in: app); name.typeText("Hotel session")
             let create = app.buttons["createWorkout.create"]
@@ -175,6 +187,10 @@ final class TodayNavigationJourneyTests: XCTestCase {
             app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
             app.launch()
             tap(app.buttons["today.createWorkout"], in: app)
+            XCTAssertFalse(app.textFields["createWorkout.name"].exists)
+            let selection = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "exercisePicker.exercise.")).firstMatch
+            XCTAssertTrue(selection.waitForExistence(timeout: 5)); selection.tap()
+            app.buttons["createWorkout.review"].tap()
             let name = app.textFields["createWorkout.name"]
             tap(name, in: app); name.typeText("First workout")
             tap(app.buttons["createWorkout.create"], in: app)

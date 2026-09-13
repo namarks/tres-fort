@@ -5763,6 +5763,7 @@ final class SyncModel: ObservableObject {
 
     func createLibraryWorkout(
         name: String,
+        exerciseIDs: [String] = [],
         expectedPlanID: String? = nil,
         expectedVersion: Int? = nil
     ) async -> WorkoutCreationOutcome {
@@ -5771,18 +5772,20 @@ final class SyncModel: ObservableObject {
         let version = expectedVersion ?? currentPlan.version
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return .needsReview }
-        var definitiveConflict = false
+        var definitiveRejection = false
         let result = await performRoutineMutation { api, jwt in
             do {
-                return try await api.addWorkout(name: clean, expectedPlanID: planID,
+                return try await api.addWorkout(name: clean, exerciseIDs: exerciseIDs, expectedPlanID: planID,
                     expectedVersion: version, jwt: jwt)
             } catch {
-                if (error as? APIError)?.httpStatus == 409 { definitiveConflict = true }
+                if let status = (error as? APIError)?.httpStatus, status == 400 || status == 409 {
+                    definitiveRejection = true
+                }
                 throw error
             }
         }
         if let result { return .created(result.id) }
-        return definitiveConflict ? .needsReview : .retrySameRequest
+        return definitiveRejection ? .needsReview : .retrySameRequest
     }
 
     func renameWorkoutDay(dayID: String, name: String) async {

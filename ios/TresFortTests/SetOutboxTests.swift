@@ -372,14 +372,18 @@ private final class SetRoutineEditingAPIStub: RoutineEditingAPI {
         return try await ensureHandler(name, jwt)
     }
 
+    var addedExerciseIDs: [String] = []
+
     func addWorkout(
         name: String,
+        exerciseIDs: [String],
         expectedPlanID: String,
         expectedVersion: Int,
         jwt: String
     ) async throws
         -> APIClient.WorkoutIDRow
     {
+        addedExerciseIDs = exerciseIDs
         guard let addDayHandler else { throw URLError(.badServerResponse) }
         return try await addDayHandler(name, expectedPlanID, expectedVersion, jwt)
     }
@@ -12949,7 +12953,7 @@ extension SetOutboxTests {
     }
 
     func testWorkoutCreationDistinguishesConflictEvenWhenConflictRefreshFails() async {
-        for status in [409, 503] {
+        for status in [400, 409, 503] {
             let defaults = defaults(), api = SetRoutineEditingAPIStub(), stateAPI = SetWriteAPIStub()
             api.addDayHandler = { name, planID, version, _ in
                 XCTAssertEqual(name, "Hotel session")
@@ -12962,8 +12966,9 @@ extension SetOutboxTests {
                 catalogAPI: SetCatalogAPIStub(), routineEditingAPI: api,
                 defaults: defaults, now: { self.fixedDate })
             model.replaceState(with: state(session: session(), sets: [], exercise: exercise()))
-            let result = await model.createLibraryWorkout(name: "Hotel session", expectedPlanID: "plan-a", expectedVersion: 1)
-            XCTAssertEqual(result, status == 409 ? .needsReview : .retrySameRequest)
+            let result = await model.createLibraryWorkout(name: "Hotel session", exerciseIDs: ["exercise-b", "exercise-a"], expectedPlanID: "plan-a", expectedVersion: 1)
+            XCTAssertEqual(api.addedExerciseIDs, ["exercise-b", "exercise-a"])
+            XCTAssertEqual(result, status == 503 ? .retrySameRequest : .needsReview)
             XCTAssertNotNil(model.loadError)
         }
     }

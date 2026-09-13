@@ -495,6 +495,8 @@ struct ExerciseCatalog: Codable, Identifiable {
     /// Demo slug — see TemplateExercise.exercise_demo_slug. Optional
     /// (pre-0020 payloads).
     let demo_slug: String?
+    var aliases: String? = nil
+
 }
 
 /// An externally-sourced training event (e.g. an intervals.icu planned

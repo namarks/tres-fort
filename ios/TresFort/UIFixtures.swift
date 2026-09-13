@@ -633,6 +633,11 @@ private struct UIFixtureServer {
                 "name": scenario == .bodyweight ? "Pull-Up" : scenario == .timed ? "Plank" : "Barbell Squat",
                 "modality": scenario == .bodyweight ? "bw" : scenario == .timed ? "timed" : "barbell",
                 "unit": "lb", "primary_muscle": "legs"]]
+            if scenario == .empty || scenario == .library {
+                response = (response as! [[String: Any]]) + [
+                    ["id": "synthetic-upper", "name": "Bench Press", "modality": "barbell", "unit": "lb", "primary_muscle": "chest", "aliases": "[\"bench\",\"bp\"]"],
+                    ["id": "synthetic-core", "name": "Plank", "modality": "timed", "unit": "lb", "primary_muscle": "core"]]
+            }
         case ("PUT", "/api/plan/active"):
             let ensureFailure = ProcessInfo.processInfo.environment["TRESFORT_UI_ENSURE_FAILURE"]
             if ensureFailure == "request", !failedEnsureRequest {
@@ -683,6 +688,17 @@ private struct UIFixtureServer {
             plan?["days"] = remaining
             plan?["version"] = version
             response = ["ok": true, "version": plan?["version"] ?? 1]
+        case ("PATCH", "/api/days/\(dayID)/exercises/created-slot-0") where scenario == .activationManual:
+            var days = plan!["days"] as! [[String: Any]]
+            var slots = days[0]["exercises"] as! [[String: Any]]
+            guard slots[0]["id"] as? String == "created-slot-0" else { throw URLError(.badServerResponse) }
+            for key in ["target_sets", "target_reps", "target_weight", "rest_seconds"] {
+                if let value = body[key] { slots[0][key] = value }
+            }
+            let version = (plan?["version"] as? Int ?? 1) + 1
+            days[0]["exercises"] = slots; plan?["days"] = days
+            plan?["version"] = version
+            response = ["id": "created-slot-0"]
         case ("POST", "/api/days/\(dayID)/exercises") where scenario == .activationManual:
             guard body["exercise"] as? String == "synthetic-exercise" else { throw URLError(.badServerResponse) }
             var days = plan!["days"] as! [[String: Any]]
@@ -706,8 +722,24 @@ private struct UIFixtureServer {
             }
             var days = plan?["days"] as? [[String: Any]] ?? []
             let id = days.isEmpty ? dayID : "created-workout"
+            let creationCatalog: [[String: Any]] = AppStoreScreenshotData.catalog + [
+                ["id": "synthetic-exercise", "name": "Barbell Squat", "modality": "barbell"],
+                ["id": "synthetic-upper", "name": "Bench Press", "modality": "barbell"],
+                ["id": "synthetic-core", "name": "Plank", "modality": "timed"]]
+            let selected = body["exercise_ids"] as? [String] ?? []
+            let slots: [[String: Any]] = try selected.enumerated().map { index, exerciseID in
+                guard let exercise = creationCatalog.first(where: { $0["id"] as? String == exerciseID }) else {
+                    throw URLError(.badServerResponse)
+                }
+                let timed = exercise["modality"] as? String == "timed"
+                return ["id": "created-slot-\(index)", "exercise_id": exerciseID,
+                        "exercise_name": exercise["name"]!, "exercise_modality": exercise["modality"]!,
+                        "exercise_unit": "lb", "order_index": index, "target_sets": 3,
+                        "target_reps": timed ? 45 : 8, "target_duration_s": timed ? 45 : NSNull(),
+                        "target_weight": 0, "rest_seconds": 120]
+            }
             let day: [String: Any] = ["id": id, "name": body["name"] ?? "Workout A",
-                                      "order_index": days.count, "exercises": []]
+                                      "order_index": days.count, "exercises": slots]
             days.append(day)
             let version = (plan?["version"] as? Int ?? 0) + 1
             plan?["days"] = days; plan?["version"] = version

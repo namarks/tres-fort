@@ -66,15 +66,31 @@ preparation and TestFlight availability do not mean public release.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
+| P3 | gated_by | external:release-40-migration-approval | Automatic approval review requires explicit owner approval for additive production migration 0050 before deploying the pinned Worker. |
+| P3 | gated_by | external:release-40-signing-approval | Automatic approval review requires explicit owner approval for Xcode to manage Apple certificates, app IDs and provisioning profiles for build 40. |
 | P4 | gated_by | external:app-store-owner-fields | Confirm any account agreements or privacy publication fields inaccessible to existing tools before final review submission. |
 
 ## Next step
 
-**Now (@agent):** Finish exact-head integration checks for the
-[Garmin attribution fix](attribution.md) and [retired reviewer login](reviewer-access.md),
-then merge and deploy the pinned release source. The owner approved the fixes,
+**Now (@owner):** Answer the pending explicit approvals for production migration
+0050 and Xcode automatic distribution signing. The owner approved the fixes,
 compatible Worker deployment, replacement upload and Apple review submission on
-2026-09-12. Keep manual public release; no public-release authorization is implied.
+2026-09-12, but automatic approval review rejected these two specific operations.
+Do not retry either rejected operation, or use an indirect substitute, until its
+missing approval arrives. After approval, the agent should apply the verified
+migration, deploy the pinned Worker, validate/upload build 40 and replace the
+existing draft for review. Keep manual public release.
+
+The [Garmin attribution fix](attribution.md) and [retired reviewer login](reviewer-access.md)
+merged in [PR #193](https://github.com/namarks/tres-fort/pull/193) at
+`fd061849aeb5d7701f8db02f4a9d497d79600ee8`. Its tree
+`55d39b3f89bc41d245b0cd2f99e586f3eab9e113` matches the tested integration.
+Both configured independent reviews passed on head
+`5cb222173f20dc25f1bd42b655d96cf2dcf39ac7`; all eight checks in
+[CI run 34735238755](https://github.com/namarks/tres-fort/actions/runs/34735238755)
+were terminal-green and no review threads remained. An earlier UI run failed to
+navigate from Today to Profile; the same journey passed locally and the final
+required CI passed without a speculative app change or added test retry.
 
 The replacement **1.0 (40)** archive is pinned to reviewed source
 `9373d6f0acad9a9ef444e54fe9c9d8a8b7ad24c8`, tree
@@ -89,12 +105,16 @@ Existing matching profiles and a distribution identity were verified, but the
 manual profile picker did not accept them. Do not retry the blocked automatic
 step without the missing approval or substitute shell signing as a bypass.
 
-PR #192's onboarding work advanced main during archive preparation. PR #193's
-repository integration includes that upstream work, but the prepared release
+PR #192's onboarding work and PR #188's catalog additions advanced main during
+preparation. PR #193's tested integration includes that work, but the release
 remains pinned to the source above; a later integration commit must not silently
 replace it. The pinned Worker needs only pending additive migration **0050**
-before deployment. Migration 0051 and the new onboarding feature are outside this
-pinned candidate. A private recovery bookmark and the signed archive/manifest
+before deployment. It adds the nullable `sessions.exercise_swaps` column from the
+earlier workout-swap feature. Automatic approval review rejected the migration
+before execution because it requires explicit authority for that production
+schema change. No schema change or Worker deployment occurred. Migration 0051,
+the new onboarding feature and PR #188's catalog migration are outside this
+pinned candidate. A fresh private recovery bookmark and the signed archive/manifest
 are retained under the release host's `release-attribution` artifact directory.
 
 The 2026-09-12 provider readback confirmed version 1.0 in `READY_FOR_REVIEW`,
@@ -103,14 +123,18 @@ build 38 selected, `MANUAL` release and Apple-only notes with
 it did not establish that Apple reviewers cannot use Sign in with Apple. Build
 39's password workaround was uploaded but is not the selected draft. The new
 candidate removes that login and revokes old sample API/renewal access, retaining
-only legacy identity/data-isolation safeguards. The current changes need final
-verification; no replacement upload or actual review submission is claimed yet.
+only legacy identity/data-isolation safeguards. The replacement still needs
+distribution validation, upload and actual review submission.
 
 The owner is completing App Store Connect on another Mac. Do not repeatedly ask
 for sign-in on the agent browser. Listing copy, running-aware Claude description,
 five iPhone screenshots, subtitle/category, review contact, free US availability
 and manual release were saved during the walkthrough. Privacy answers were
 entered; final privacy publication and applicable agreements still need readback.
+The saved privacy URL is `https://tresfort.app/privacy`; that page, the homepage,
+Worker privacy page, health and OAuth discovery returned HTTP 200. The existing
+API key cannot read pricing or territory availability (403), so those choices
+remain owner-reported. The agent browser remains on Apple's failed sign-in page.
 Keep review-contact values and all credentials out of repository documentation.
 
 The owner explicitly deferred the live workout canary and observation and asked

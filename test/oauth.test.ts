@@ -108,6 +108,56 @@ describe('oauth discovery', () => {
   });
 });
 
+describe('native loopback OAuth callbacks', () => {
+  const registered = 'http://127.0.0.1/callback/tres-fort';
+  it.each([
+    [registered, 'http://127.0.0.1:45213/callback/tres-fort', true],
+    ['http://127.0.0.1:4000/callback?client=one', 'http://127.0.0.1:45213/callback?client=one', true],
+    ['http://[::1]/callback', 'http://[::1]:45213/callback', true],
+    [registered, 'http://127.0.0.1:45213/callback/other', false],
+    [registered, 'http://127.0.0.1:45213/callback/tres-fort?extra=1', false],
+    [registered, 'http://127.0.0.1:45213/callback/tres-fort#fragment', false],
+    [registered, 'http://127.0.0.1:45213/other/../callback/tres-fort', false],
+    [registered, 'http://127.0.0.1:45213/callback/%74res-fort', false],
+    [registered, 'http://user@127.0.0.1:45213/callback/tres-fort', false],
+    [registered, 'http://127.0.0.1.example.com:45213/callback/tres-fort', false],
+    [registered, 'http://127.1:45213/callback/tres-fort', false],
+    [registered, 'http://localhost:45213/callback/tres-fort', false],
+    [registered, 'http://[::1]:45213/callback/tres-fort', false],
+    [registered, 'https://127.0.0.1:45213/callback/tres-fort', false],
+    [registered, 'http://127.0.0.1:99999/callback/tres-fort', false],
+    ['https://127.0.0.1/callback', 'https://127.0.0.1:45213/callback', false],
+    ['http://localhost/callback', 'http://localhost:45213/callback', false],
+    ['https://example.com/callback', 'https://example.com:45213/callback', false],
+  ] as const)('matches %s against %s only when the loopback port varies', async (registration, redirect, valid) => {
+    const reg = await (await SELF.fetch(`${BASE}/oauth/register`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ redirect_uris: [registration], client_name: 'Native test client' }),
+    })).json<{ client_id: string }>();
+    const { challenge } = await pkce();
+    const params = new URLSearchParams({
+      client_id: reg.client_id, redirect_uri: redirect, response_type: 'code',
+      code_challenge: challenge, code_challenge_method: 'S256',
+    });
+    const page = await SELF.fetch(`${BASE}/oauth/authorize?${params}`);
+    expect(page.status).toBe(valid ? 200 : 400);
+    params.set('passphrase', env.OWNER_AUTH_PASSPHRASE!);
+    const submitted = await SELF.fetch(`${BASE}/oauth/authorize`, {
+      method: 'POST', body: params, redirect: 'manual',
+    });
+    expect(submitted.status).toBe(valid ? 302 : 400);
+    if (valid) {
+      const callback = new URL(submitted.headers.get('location')!);
+      expect(callback.port).toBe('45213');
+      expect(callback.pathname).toBe(new URL(redirect).pathname);
+      expect(callback.searchParams.has('code')).toBe(true);
+    } else {
+      expect(await submitted.text()).toBe('invalid redirect_uri');
+      expect(submitted.headers.has('location')).toBe(false);
+    }
+  });
+});
+
 describe('oauth full PKCE flow', () => {
   it('register -> authorize (passphrase) -> token -> call /mcp -> refresh', async () => {
     const redirect = 'https://claude.ai/api/mcp/auth_callback';

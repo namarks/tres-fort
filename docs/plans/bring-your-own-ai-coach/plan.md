@@ -17,10 +17,11 @@ Repository delivery and actual provider connection/release evidence remain disti
   - Expose the coaching brief as a tool alongside its resource and prompt.
   - Guide Codex, Claude and generic compatible apps without promising universal
     model/client support or accepting provider API keys.
-- [ ] **P1 — Verify and deliver the repository change**
+- [x] **P1 — Verify the coaching and compatibility behavior**
   - Exercise synthetic OAuth client flows, coaching reads/writes, stale-version
     conflicts, refresh/disconnect, API rollout compatibility, and iOS setup.
-  - Pass local review, exact-head independent GitHub review and all relevant CI.
+  - Local Codex review completed after the callback and disclosure fixes.
+    Repository merge still requires the delivery gate below.
 - [ ] **P2 — Release and verify a real Codex connection**
   - Release the Worker and updated iOS build under explicit release authority.
   - Owner completes Codex sign-in using their own code, verifies a read and one
@@ -34,8 +35,13 @@ Repository delivery and actual provider connection/release evidence remain disti
 
 ## Next step
 
-**Now (@agent):** Finish the two coach-setup UI reruns after correcting lazy-row
-scrolling in the tests, then obtain exact-head GitHub review and CI before merging P1.
+**Now (@owner):** P2 is the next implementation phase and remains gated on release
+authority. After PR #191 merges, authorize the Worker/iOS release and complete a
+real Codex connection using owner-managed credentials.
+
+**Repository delivery gate (@agent):** Before merging PR #191, require fresh
+independent review of its exact head, all relevant CI terminal-green, and no
+blocking findings or unresolved threads. PR merge is not a production release.
 
 ## Notes / open questions
 
@@ -43,11 +49,13 @@ scrolling in the tests, then obtain exact-head GitHub review and CI before mergi
   paid package may bundle in-app coaching and API usage if costs justify it.
   No provider key storage, model execution, billing, paid entitlement, pricing,
   or automatic provider connection is authorized or implemented here.
-- Verification: all 1,028 backend tests across 74 files, TypeScript, website tests
-  and plan validation passed. iOS unit coverage: 545 passed and one existing test
-  skipped. Eight of ten activation journeys passed; two coach-setup journeys
-  needed the test helper to scroll before asserting lazy Form-row existence and
-  are rerunning. Local Codex review found no actionable regressions.
+- Verification: the initial full backend suite passed all 1,028 tests across
+  74 files. After adding native loopback-port compatibility, all 60 focused OAuth
+  and client tests, TypeScript and website tests passed. iOS unit coverage:
+  545 passed and one existing test skipped. All ten activation journeys passed
+  across the full run and the two corrected lazy-row navigation reruns; the
+  Codex setup screenshot was inspected. Both local Codex reviews found no
+  actionable regressions. PR checks carry final full-suite evidence.
 - [PR #191](https://github.com/namarks/tres-fort/pull/191) carries this implementation;
   exact-head independent review and all CI remain required before merge.
 - Start: verified remote main `90f968383629107bd7a95b37bd44da177f87305f`.

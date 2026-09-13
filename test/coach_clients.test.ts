@@ -7,7 +7,7 @@ const BASE = 'https://tres-fort.test';
 const MEMBER = '74794029-c461-43b4-9021-5f29d544dc60';
 const OTHER = '7a56e10e-4120-41d0-a1d1-f508f0c736aa';
 const clients = [
-  { name: 'Codex', redirect: 'http://127.0.0.1:45213/callback/tres-fort-test' },
+  { name: 'Codex', redirect: 'http://127.0.0.1:45213/callback/tres-fort-test', registeredRedirect: 'http://127.0.0.1/callback/tres-fort-test' },
   { name: 'Claude', redirect: 'https://claude.ai/api/mcp/auth_callback' },
   { name: 'Other AI app', redirect: 'http://127.0.0.1:39117/oauth/callback' },
 ];
@@ -17,10 +17,10 @@ let otherConnection: Connection;
 let jwt: string;
 let otherJwt: string;
 
-async function connect(name: string, redirect: string, passphrase: string): Promise<Connection> {
+async function connect(name: string, redirect: string, passphrase: string, registeredRedirect = redirect): Promise<Connection> {
   const registration = await SELF.fetch(`${BASE}/oauth/register`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ client_name: name, redirect_uris: [redirect] }),
+    body: JSON.stringify({ client_name: name, redirect_uris: [registeredRedirect] }),
   });
   expect(registration.status).toBe(201);
   const { client_id } = await registration.json<{ client_id: string }>();
@@ -48,6 +48,17 @@ async function connect(name: string, redirect: string, passphrase: string): Prom
   const callback = new URL(authorized.headers.get('location')!);
   expect(callback.origin + callback.pathname).toBe(redirect);
   expect(callback.searchParams.get('state')).toBe('state&<literal>');
+  if (registeredRedirect !== redirect) {
+    // Port flexibility ends at consent: redemption stays bound to the exact
+    // redirect URI the user authorized, including the chosen listener port.
+    const wrongRedirect = await SELF.fetch(`${BASE}/oauth/token`, {
+      method: 'POST', body: new URLSearchParams({
+        grant_type: 'authorization_code', code: callback.searchParams.get('code')!,
+        client_id, redirect_uri: registeredRedirect, code_verifier: verifier,
+      }),
+    });
+    expect(wrongRedirect.status).toBe(400);
+  }
   const exchanged = await SELF.fetch(`${BASE}/oauth/token`, {
     method: 'POST', body: new URLSearchParams({
       grant_type: 'authorization_code', code: callback.searchParams.get('code')!,
@@ -87,7 +98,7 @@ beforeAll(async () => {
   jwt = await issueAppJwt(MEMBER, env.APP_JWT_SECRET);
   otherJwt = await issueAppJwt(OTHER, env.APP_JWT_SECRET);
   for (const client of clients) {
-    connections.set(client.name, await connect(client.name, client.redirect, `synthetic-code-${MEMBER}`));
+    connections.set(client.name, await connect(client.name, client.redirect, `synthetic-code-${MEMBER}`, client.registeredRedirect));
   }
   otherConnection = await connect('Another member’s app', 'http://127.0.0.1:41234/callback', `synthetic-code-${OTHER}`);
 });

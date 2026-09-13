@@ -30,7 +30,12 @@ setup. Provider account access and limits are controlled by that provider.
 
 [Official Codex MCP documentation](https://developers.openai.com/codex/mcp)
 documents Streamable HTTP, OAuth, Dynamic Client Registration, server instructions,
-and the login command. These are the capabilities this setup uses; advertising
+and the login command. Native HTTP loopback callbacks may vary their listener
+port at authorization time under [RFC 8252 section 7.3](https://www.rfc-editor.org/rfc/rfc8252#section-7.3).
+Très Fort allows this for literal `127.0.0.1` and `[::1]` callbacks while keeping
+the registered host, path and query fixed. Token exchange remains bound to the
+exact authorized callback, including its chosen port.
+These are the capabilities this setup uses; advertising
 support is not evidence of a successful connection to a deployed Très Fort release.
 
 ### Claude
@@ -83,7 +88,8 @@ No provider API credentials are stored or forwarded by Très Fort.
 HTTPS, and generic loopback clients through DCR, consent, PKCE, initialization,
 brief reads, shared plan updates, stale-version conflict, refresh and account
 revocation. It also checks isolation, neutral attribution, compatibility aliases,
-and escaped consent text. Existing OAuth integrity tests cover replay and expiry.
+and escaped consent text. OAuth tests also cover variable native loopback ports,
+rejection of other callback changes, replay and expiry.
 These protocol tests do not invoke a model or connect a real provider account.
 
 For a released Worker and iOS build, the owner should complete Codex browser

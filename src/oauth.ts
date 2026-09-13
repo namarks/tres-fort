@@ -165,7 +165,27 @@ oauthRoutes.post('/oauth/register', async (c) => {
   );
 });
 
-// ---- authorize (single-user consent gate) --------------------------------
+// ---- authorize (per-user consent gate) -----------------------------------
+
+function loopbackRedirectWithoutPort(uri: string): string | null {
+  // RFC 8252 section 7.3: native clients choose an available loopback port at
+  // authorization time. Compare raw URI text except that port, so URL parser
+  // normalization cannot also relax the host, path, query or credentials.
+  const match = /^(http:\/\/(?:127\.0\.0\.1|\[::1\]))(?::[0-9]+)?(\/[^#\s\\]*)$/.exec(uri);
+  if (!match?.[1] || !match[2]) return null;
+  try {
+    new URL(uri); // Reject invalid/out-of-range ports.
+    return match[1] + match[2];
+  } catch {
+    return null;
+  }
+}
+
+function redirectAllowed(allowed: string[], requested: string): boolean {
+  if (allowed.includes(requested)) return true;
+  const loopback = loopbackRedirectWithoutPort(requested);
+  return loopback !== null && allowed.some(uri => loopbackRedirectWithoutPort(uri) === loopback);
+}
 
 function escapeHtml(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -210,7 +230,7 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
   const client = q.client_id ? await loadClient(c.env, q.client_id) : null;
   if (!client) return c.text('invalid client_id', 400);
   const allowed: string[] = JSON.parse(client.redirect_uris);
-  if (!q.redirect_uri || !allowed.includes(q.redirect_uri)) {
+  if (!q.redirect_uri || !redirectAllowed(allowed, q.redirect_uri)) {
     return c.text('invalid redirect_uri', 400);
   }
   if (q.response_type !== 'code') return c.text('unsupported_response_type', 400);
@@ -236,7 +256,7 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
   const client = await loadClient(c.env, f('client_id'));
   if (!client) return c.text('invalid client_id', 400);
   const allowed: string[] = JSON.parse(client.redirect_uris);
-  if (!allowed.includes(f('redirect_uri'))) return c.text('invalid redirect_uri', 400);
+  if (!redirectAllowed(allowed, f('redirect_uri'))) return c.text('invalid redirect_uri', 400);
 
   const params = {
     client_id: f('client_id'),

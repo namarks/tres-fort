@@ -69,6 +69,23 @@ terminal CI for the exact reviewed head. The checked phases and archive land
 atomically with that implementation; production and app distribution are
 separate.
 
+## Completed-workout presentation refinement (September 2026)
+
+Completed history opens with at most four readable stats: recorded session
+elapsed time when available, server-owned external-load volume for a single
+known unit, working sets, and reps or logged timed work. Pure bodyweight and
+assisted work do not gain an invented body-mass or system-load estimate.
+Session timestamps survive decoding, cache encoding and session alias handling;
+missing timestamps omit duration rather than infer it from logging gaps.
+
+The redundant exercise/cohort recap is removed. Personal records expand from a
+compact count, one set-by-set log sits under Workout details, and the optional
+starting-target comparison follows that log. Accessibility text uses one stat
+per row. Synthetic fixtures cover the summary and disclosures, with metric and
+session-cache regression checks. Exact-source verification and review are
+recorded in the implementation PR. This refinement changes iOS only and still
+requires distribution in a separately authorized app release.
+
 ## Delivered relationships
 
 P0 carries the completed [prescription and recurring-adjustment contract](../prescription-integrity/decisions.md)

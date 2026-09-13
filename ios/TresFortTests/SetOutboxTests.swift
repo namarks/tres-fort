@@ -8938,8 +8938,11 @@ final class SetOutboxTests: XCTestCase {
             duration_s: nil, is_timed: false)
         let terminalAPI = SetTerminalAPIStub()
         terminalAPI.completeHandler = { [self] _, _ in
-            session(
+            var completed = session(
                 id: "canonical-session", status: "completed", updatedAt: 200)
+            completed.started_at = 2_000_000_000_000
+            completed.completed_at = 2_000_002_700_000
+            return completed
         }
         let model = SyncModel(
             auth: retainedAuth(defaults: defaults), terminalAPI: terminalAPI,
@@ -8952,6 +8955,10 @@ final class SetOutboxTests: XCTestCase {
         await model.finishWorkout()
 
         XCTAssertEqual(model.todaySession?.id, "canonical-session")
+        XCTAssertEqual(model.todaySession?.started_at, 2_000_000_000_000)
+        XCTAssertEqual(model.todaySession?.completed_at, 2_000_002_700_000)
+        XCTAssertEqual(StateSnapshotStore.load(userID: "user-a", defaults: defaults)?
+            .state.sessions.first?.completed_at, 2_000_002_700_000)
         XCTAssertEqual(model.setsForSession("canonical-session").count, 1)
         XCTAssertTrue(model.setsForSession(stale.id).isEmpty)
         XCTAssertEqual(

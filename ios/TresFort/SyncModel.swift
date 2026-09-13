@@ -1187,6 +1187,7 @@ final class SyncModel: ObservableObject {
         return SessionRow(
             exercise_swaps: submittedSession.exercise_swaps,
             notes: submittedSession.notes, perceived_fatigue: submittedSession.perceived_fatigue,
+            started_at: submittedSession.started_at, completed_at: submittedSession.completed_at,
             id: result.set.session_id,
             date: submittedSession.date,
             status: "in_progress",
@@ -1232,6 +1233,7 @@ final class SyncModel: ObservableObject {
         let canonical = SessionRow(
             exercise_swaps: source.exercise_swaps,
             notes: source.notes, perceived_fatigue: source.perceived_fatigue,
+            started_at: source.started_at, completed_at: source.completed_at,
             id: acceptedSet.session_id,
             date: acknowledgedSession.date,
             status: source.status,
@@ -1434,6 +1436,7 @@ final class SyncModel: ObservableObject {
         let canonical = SessionRow(
             exercise_swaps: source.exercise_swaps,
             notes: source.notes, perceived_fatigue: source.perceived_fatigue,
+            started_at: source.started_at, completed_at: source.completed_at,
             id: response.id,
             date: response.date,
             status: source.status,
@@ -2254,6 +2257,7 @@ final class SyncModel: ObservableObject {
         let canonicalSession = SessionRow(
             exercise_swaps: staleSession.exercise_swaps,
             notes: staleSession.notes, perceived_fatigue: staleSession.perceived_fatigue,
+            started_at: staleSession.started_at, completed_at: staleSession.completed_at,
             id: committedSet.session_id,
             date: staleSession.date,
             status: staleSession.status,

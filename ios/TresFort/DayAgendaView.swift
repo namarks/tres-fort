@@ -330,18 +330,23 @@ struct DayAgendaView: View {
             if !$0.contains($1) { $0.append($1) }
         }
         return VStack(alignment: .leading, spacing: 12) {
+            if let session = realSession, session.status == "completed" {
+                WorkoutSummaryView(sync: sync, session: session)
+                    .padding(16).background(Theme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
             if let session = realSession {
                 let feedback = WorkoutFeedback(notes: session.notes, perceivedFatigue: session.perceived_fatigue)
                 if !feedback.isEmpty { SavedWorkoutFeedbackView(feedback: feedback) }
             }
-            if let session = realSession, session.status == "completed" {
-                WorkoutSummaryView(sync: sync, sessionID: session.id)
-                    .padding(16).background(Theme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-            }
             if logged.isEmpty {
                 note("No sets logged.")
             } else {
+                Text("WORKOUT DETAILS")
+                    .font(Theme.mono(11, .bold)).tracking(2)
+                    .foregroundStyle(Theme.muted)
+                    .padding(.top, 12)
+                    .accessibilityAddTraits(.isHeader)
                 ForEach(orderedIDs, id: \.self) { exID in
                     let rows = (groups[exID] ?? []).sorted { $0.set_index < $1.set_index }
                     VStack(alignment: .leading, spacing: 8) {
@@ -369,6 +374,12 @@ struct DayAgendaView: View {
                     .background(Theme.surface)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
+            }
+            if let session = realSession, session.status == "completed",
+               let summary = sync.completionSummary(for: session.id) {
+                WorkoutTargetComparisonView(summary: summary)
+                    .padding(16).background(Theme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
             }
         }
     }

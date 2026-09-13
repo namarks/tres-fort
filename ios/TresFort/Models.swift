@@ -339,6 +339,8 @@ struct SessionRow: Codable, Identifiable {
     var notes: String? = nil
     var perceived_fatigue: Int? = nil
     var summary: WorkoutSummary? = nil
+    var started_at: Int? = nil
+    var completed_at: Int? = nil
     let id: String
     let date: String
     let status: String
@@ -837,7 +839,7 @@ extension PlanTree {
 
 extension SessionRow {
     private enum CodingKeys: String, CodingKey {
-        case notes, perceived_fatigue, exercise_swaps
+        case notes, perceived_fatigue, exercise_swaps, started_at, completed_at
         case id, date, status, workout_id, day_template_id, summary, updated_at, attempt, write_protocol
     }
 
@@ -850,6 +852,8 @@ extension SessionRow {
         date = try c.decode(String.self, forKey: .date)
         status = try c.decode(String.self, forKey: .status)
         summary = try c.decodeIfPresent(WorkoutSummary.self, forKey: .summary)
+        started_at = try c.decodeIfPresent(Int.self, forKey: .started_at)
+        completed_at = try c.decodeIfPresent(Int.self, forKey: .completed_at)
         updated_at = try c.decodeIfPresent(Int.self, forKey: .updated_at)
         attempt = try c.decodeIfPresent(Int.self, forKey: .attempt)
         write_protocol = try c.decodeIfPresent(String.self, forKey: .write_protocol)
@@ -873,6 +877,8 @@ extension SessionRow {
         try c.encode(status, forKey: .status)
         try c.encodeIfPresent(workout_id, forKey: .day_template_id)
         try c.encodeIfPresent(summary, forKey: .summary)
+        try c.encodeIfPresent(started_at, forKey: .started_at)
+        try c.encodeIfPresent(completed_at, forKey: .completed_at)
         try c.encodeIfPresent(updated_at, forKey: .updated_at)
         try c.encodeIfPresent(attempt, forKey: .attempt)
         try c.encodeIfPresent(write_protocol, forKey: .write_protocol)

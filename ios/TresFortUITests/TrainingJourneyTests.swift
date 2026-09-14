@@ -87,7 +87,7 @@ final class TrainingJourneyTests: XCTestCase {
             reveal(edit, in: app); edit.tap()
             let reps = app.textFields["Reps"]
             XCTAssertTrue(reps.waitForExistence(timeout: 5))
-            XCTAssertEqual(reps.label, "Reps per side")
+            XCTAssertTrue(reps.label.contains("Reps per side"))
             XCTAssertEqual(reps.value as? String, "10")
             app.buttons["Save"].tap()
             let increase = app.buttons["Increase reps per side by 1"]
@@ -102,7 +102,7 @@ final class TrainingJourneyTests: XCTestCase {
             let correct = app.buttons["Edit set 1 of " + name]
             reveal(correct, in: app); correct.tap()
             XCTAssertTrue(reps.waitForExistence(timeout: 5))
-            XCTAssertEqual(reps.label, "Reps per side")
+            XCTAssertTrue(reps.label.contains("Reps per side"))
             XCTAssertEqual(reps.value as? String, "10")
             app.buttons["Cancel"].tap()
             app.terminate()

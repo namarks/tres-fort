@@ -1830,8 +1830,12 @@ async function dispatch(
           const noteBody = tool.note?.(args, result);
           if (noteBody) await writeNote(env.DB, userId, 'plan', null, 'coach', noteBody);
         }
+        // Compact JSON: the model parses this text, it never reads it as
+        // layout, and indentation roughly doubles the tokens a tool result
+        // costs (workoutWire already emits every workout key twice during the
+        // rename compatibility window).
         return ok(req.id, {
-          content: [{ type: 'text', text: JSON.stringify(workoutWire(result), null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(workoutWire(result)) }],
         });
       } catch (e) {
         const code = publicToolErrorCode(e);

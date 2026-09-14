@@ -72,7 +72,8 @@
   //                              MUST equal the "Webhook Secret" on the
   //                              intervals.icu Manage App page. Unset → the
   //                              webhook receiver 401s every request (dormant)
-  //                              and the 15-min cron is the only sync path.
+  //                              and automatic sync relies on the hourly
+  //                              stale-cache backstop (manual refresh remains).
   //   INTERVALS_WEBHOOK_AUTH_HEADER - optional second factor; when set, the
   //                              webhook request's Authorization header must
   //                              also match the page's "Webhook Authorization

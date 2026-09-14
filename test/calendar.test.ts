@@ -1,16 +1,14 @@
 import { env, applyD1Migrations } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import type { ProjectionActivity, ProjectionEvent } from '../src/db';
+import type { ProjectionActivity, ProjectionEvent } from '../src/calendarProjection';
+import { detectConflicts, projectCalendar, weekdayOf } from '../src/calendarProjection';
 import {
   deleteWorkout,
-  detectConflicts,
   getProjectedCalendar,
   getRideConflicts,
-  projectCalendar,
   setPlanSchedule,
   setPlannedSession,
   skipPlannedSession,
-  weekdayOf,
 } from '../src/db';
 import type { ExternalEventRow, SessionRow, Trip, WeeklySchedule } from '../src/types';
 import { parsePlanMeta } from '../src/types';

@@ -21,9 +21,12 @@ than against existing documentation.
 
 Baseline before any change: `tsc --noEmit` clean; 78 test files, 1102 tests.
 
-This sweep changes no behaviour. It removes dead code, collapses duplication,
-and cuts redundant round trips. Defects found along the way are recorded at the
-end and are not fixed here.
+The final PR combines dead-code removal and consolidation with deliberate
+performance improvements. Compact MCP result text and corrected cron copy are
+intentional output changes; the feedback-mirror deduplication is a separate
+bug fix. Parsed training values, write transactions and sync-watermark rules
+remain the compatibility contract. Defects recorded at the end remain separate.
+The follow-up measurements and scope are in [performance.md](performance.md).
 
 ## What the sweep did
 
@@ -33,8 +36,11 @@ Extracted `loadPlanTree` so callers holding a plan row stop re-reading it.
 values that were being spliced into SQL text. Extracted `fetchIntervalsArray`
 from the two intervals readers. Routed group and Apple-identity reads through
 `db.ts` helpers. Memoised the legacy SQL rewrite per query and mode. Read the
-calendar projection inputs once for both ride-conflict windows, taking that call
-from eleven queries to six.
+calendar projection inputs once for both ride-conflict windows, initially
+taking that call from eleven queries to six. The final conflict reader loads
+only strength context and planned-event load: four queries. Pure civil-date,
+calendar and conflict rules now live in `src/calendarProjection.ts`; D1
+selection stays in `db.ts` and existing imports remain compatible.
 
 **Backend, MCP and shared modules.** Dropped the unreachable `note` hooks from
 fourteen atomic-write tools and made the type enforce it. Deleted unreferenced
@@ -44,7 +50,8 @@ brief's per-session set reads. Shared one field-validation module between REST
 and MCP. Reused the canonical tonnage metric, trip-type set and weekday list.
 Resolved the member's today through one helper. Moved MCP day-reference lookups
 into `db.ts`, as the architecture rule requires. Sent tool results as compact
-JSON.
+JSON. Coaching summaries index the current invocation's catalog and sets once,
+preserving catalog/cohort and logged-at/id ordering without persistent caches.
 
 **iOS.** Deleted verified-unused accessors and two dead members. Routed three
 private weight formatters through the canonical one. Replaced four identical
@@ -105,10 +112,11 @@ load-bearing for.
 
 ## Deliberately skipped during implementation
 
-- **Duplicate date helpers in `intervals.ts`.** `db.ts` imports from
-  `intervals.ts`, so importing back would create a cycle. Removing the
-  duplication needs the helpers moved to a third leaf module, which is a
-  different change.
+- **Similar date helpers in `intervals.ts`.** The initial sweep avoided a
+  circular import from `db.ts`. A pure calendar module now exists, but the
+  provider helper uses `Date.parse` rather than civil integer arithmetic;
+  consolidating them still needs an explicit decision about invalid and
+  out-of-range dates. It is not a mechanical deduplication.
 - **Race normalisation.** The MCP tool and the shared normaliser disagree on
   empty strings, so sharing one would change which payloads are accepted.
 - **Two iOS deletions from the brief were wrong.** A helper the brief called
@@ -118,10 +126,12 @@ load-bearing for.
 ## Verification
 
 ```bash
-npm run typecheck                  # fast
-npx vitest run                     # 78 test files
-npx vitest run test/calendar.test.ts    # calendar parity contract
-npm run plans:check                # planning conventions
+npm run typecheck
+npm run test:query-plans           # requires sqlite3 CLI
+npx vitest run --shard=1/3
+npx vitest run --shard=2/3
+npx vitest run --shard=3/3
+npm run plans:check
 ```
 
 ### A full local run aborts before it finishes, on `main` too
@@ -174,8 +184,9 @@ These are defects, not code health, and each deserves its own change.
 
 ## Future work
 
-`db.ts` is roughly 12.6k lines and `SyncModel.swift` roughly 6.9k, carrying at
-least seven concerns. The plan fence predicate appears about twenty-five times in
-`db.ts` and is the natural seam for a split along the two consistency classes.
-That is a structural change and should not ride along with a sweep whose whole
-claim is that nothing behaves differently.
+The pure calendar boundary is extracted, but `db.ts` and `SyncModel.swift`
+still own several other concerns. Further splits of versioned-plan writers,
+account lifecycle or iOS recovery should each preserve their transaction and
+ordering boundaries in a separately scoped change. Do not reintroduce the
+rejected changes above or remove release-compatibility adapters merely to
+reduce line count.

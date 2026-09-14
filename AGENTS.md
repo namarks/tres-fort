@@ -145,12 +145,14 @@ optimistic concurrency, and writes audit+note like any plan mutation; it
 rides `/api/state` inside the plan payload. One-off changes ("skip Thursday
 this week") are concrete `sessions` rows via `set_planned_session` /
 `skip_planned_session` — append-only, **no** version bump. The future
-calendar is *computed, not stored*: `projectCalendar` in `db.ts` is the
+calendar is *computed, not stored*: `projectCalendar` in `calendarProjection.ts` is the
 authoritative projection (past = real sessions only; today+ = real session
 wins, else schedule lookup, else rest). **iOS re-implements the identical
 algorithm in `CalendarProjection.swift`** — the weekday rule (tz-free civil
 date) and the truth table must stay byte-for-byte in parity across both;
-`test/calendar.test.ts` is the contract. `update_plan` rebuilds day UUIDs
+`test/calendar.test.ts` is the contract. Database selection stays in `db.ts`;
+calendar rules and conflict detection are pure functions in
+`calendarProjection.ts`. `update_plan` rebuilds day UUIDs
 and remaps the schedule by day name/label; days removed in the rebuild have
 their schedule entry cleared. For a date assignment, `expected_attempt=0`
 means no row was observed; the first assignment and every changed workout/rest

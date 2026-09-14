@@ -8,7 +8,7 @@ import { workoutDB } from '../workoutSchema';
 // for read tools). Stateless: no Mcp-Session-Id required. All data access
 // goes through src/db.ts, identical to REST.
 import type { Env } from '../types';
-import { coachGroupSlots, coachGroupSummary } from '../exerciseGroupViews';
+import { coachGroupSummary, coachWorkouts } from '../exerciseGroupViews';
 import { resolvedScheduleNames } from '../planViews';
 import { positiveSetTonnage } from '../metrics';
 import type { MetricExercise } from '../metrics';
@@ -325,7 +325,7 @@ const TOOLS: Record<string, Tool> = {
       return {
         ...tree,
         training_profile,
-        workouts: tree.workouts.map((day) => ({ ...day, exercises: coachGroupSlots(day.exercises) })),
+        workouts: coachWorkouts(tree),
         schedule,
         ride_conflicts,
         race: meta.race ?? null,
@@ -422,7 +422,7 @@ const TOOLS: Record<string, Tool> = {
         date,
         session,
         sets: session ? await getSetsForSession(env.DB, session.id) : [],
-        plan_workouts: tree?.workouts.map((day) => ({ ...day, exercises: coachGroupSlots(day.exercises) })) ?? [],
+        plan_workouts: tree ? coachWorkouts(tree) : [],
         schedule,
         last_session: last,
         last_session_sets: last ? await getSetsForSession(env.DB, last.id) : [],

@@ -124,9 +124,29 @@ npx vitest run test/calendar.test.ts    # calendar parity contract
 npm run plans:check                # planning conventions
 ```
 
-Run the suite without other test runs competing on the machine. Concurrent runs
-collide in the Workers pool's isolated storage and produce misleading timeouts in
-unrelated suites.
+### A full local run aborts before it finishes, on `main` too
+
+`npx vitest run` over the whole suite in one process stops around the 39th file
+with `Isolated storage failed: Expected .sqlite, got <hash>.sqlite-shm`, and
+whichever test is mid-flight when the worker dies reports a five-second timeout.
+
+This is not caused by any change in this sweep. Unmodified `main` at `3f4c927`
+produces a byte-identical result in the same environment: 38 files passed of 39,
+one failed test, one error, and the same victim
+(`test/mobile_coach.test.ts > mobile coach approval`). Verified by running the
+suite in a detached worktree at that commit.
+
+The assertion lives in the Workers pool's isolated-storage teardown, which
+enumerates the D1 directory expecting only `.sqlite` files and trips over the
+write-ahead-log `-shm` sidecar. Running other suites concurrently changes which
+test dies but not the underlying failure.
+
+CI does not hit it because it shards the backend tests across three jobs, so no
+single process accumulates enough files. Until it is fixed, verify locally by
+running suites in groups rather than all at once, and treat a green CI run as
+the authoritative full-suite signal.
+
+This was observed on Linux; a macOS developer machine may not reproduce it.
 
 iOS builds and tests need macOS with Xcode, and CI is the only place they run:
 

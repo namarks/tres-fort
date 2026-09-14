@@ -90,6 +90,14 @@ import {
   ensureActivePlan,
 } from '../db';
 import { isWorkoutWriteFenceEnabled } from '../workout-write-fence';
+import {
+  hasField as hasOwn,
+  invalidFields as invalidMutationFields,
+  isNonEmptyString,
+  isNonNegativeInteger,
+  isPositiveInteger,
+  type FieldRule,
+} from '../validation';
 import type { Weekday } from '../types';
 
 export const apiRoutes = new Hono<HonoEnv>();
@@ -110,18 +118,9 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const ACCOUNT_DELETION_RECENT_AUTH_SECONDS = 5 * 60;
 
 type JsonObject = Record<string, unknown>;
-type FieldRule = (value: unknown) => boolean;
 
-const hasOwn = (body: JsonObject, field: string) =>
-  Object.prototype.hasOwnProperty.call(body, field);
-const isNonEmptyString: FieldRule = (value) =>
-  typeof value === 'string' && value.trim().length > 0;
 const isFiniteNumber: FieldRule = (value) =>
   typeof value === 'number' && Number.isFinite(value);
-const isNonNegativeInteger: FieldRule = (value) =>
-  Number.isSafeInteger(value) && (value as number) >= 0;
-const isPositiveInteger: FieldRule = (value) =>
-  Number.isSafeInteger(value) && (value as number) > 0;
 const parsePositiveIntegerText = (value: string | undefined): number | undefined => {
   if (value === undefined || !/^[1-9]\d*$/.test(value)) return undefined;
   const parsed = Number(value);
@@ -156,22 +155,6 @@ async function readMutationBody(
   }
   try { return { ok: true, body: workoutInput(value as JsonObject) }; }
   catch { return { ok: false, error: 'conflicting_workout_fields' }; }
-}
-
-/** Return required or present optional fields whose runtime value is invalid. */
-function invalidMutationFields(
-  body: JsonObject,
-  required: Record<string, FieldRule>,
-  optional: Record<string, FieldRule> = {},
-): string[] {
-  const invalid: string[] = [];
-  for (const [field, rule] of Object.entries(required)) {
-    if (!hasOwn(body, field) || !rule(body[field])) invalid.push(field);
-  }
-  for (const [field, rule] of Object.entries(optional)) {
-    if (hasOwn(body, field) && !rule(body[field])) invalid.push(field);
-  }
-  return invalid;
 }
 
 function readExpectedAttemptQuery(

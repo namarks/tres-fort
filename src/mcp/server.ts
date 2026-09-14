@@ -10,6 +10,13 @@ import { workoutDB } from '../workoutSchema';
 import type { Env } from '../types';
 import { coachGroupSlots, coachGroupSummary } from '../exerciseGroupViews';
 import { resolvedScheduleNames } from '../planViews';
+import {
+  hasField,
+  invalidFields,
+  isNonEmptyString,
+  isNonNegativeInteger,
+  isPositiveInteger,
+} from '../validation';
 import { isGroupId } from '../exerciseGroups';
 import {
   getTrainingProfile,
@@ -202,27 +209,6 @@ const obj = (props: Json, required: string[] = []): Json => ({
   additionalProperties: false,
 });
 
-type ToolFieldRule = (value: unknown) => boolean;
-const hasToolField = (args: Json, field: string) => Object.prototype.hasOwnProperty.call(args, field);
-const positiveSafeInteger: ToolFieldRule = (value) => Number.isSafeInteger(value) && (value as number) > 0;
-const nonNegativeSafeInteger: ToolFieldRule = (value) =>
-  Number.isSafeInteger(value) && (value as number) >= 0;
-const nonEmptyToolString: ToolFieldRule = (value) =>
-  typeof value === 'string' && value.trim().length > 0;
-function invalidToolFields(
-  args: Json,
-  required: Record<string, ToolFieldRule>,
-  optional: Record<string, ToolFieldRule> = {},
-): string[] {
-  const fields = Object.entries(required)
-    .filter(([field, rule]) => !hasToolField(args, field) || !rule(args[field]))
-    .map(([field]) => field);
-  for (const [field, rule] of Object.entries(optional)) {
-    if (hasToolField(args, field) && !rule(args[field])) fields.push(field);
-  }
-  return fields;
-}
-
 function addWorkoutTool(operation: 'add_day' | 'add_workout'): Tool {
   const tool: Tool = {
     description: 'Create a reusable workout in the active plan. Scheduling is optional; the workout can stay on demand. Creates a plan if none exists.',
@@ -365,9 +351,9 @@ const TOOLS: Record<string, Tool> = {
       before_version: { type: 'integer', minimum: 1 },
     }),
     handler: async (a, env, userId) => {
-      const fields = invalidToolFields(a, {}, {
-        limit: (value) => positiveSafeInteger(value) && (value as number) <= 100,
-        before_version: positiveSafeInteger,
+      const fields = invalidFields(a, {}, {
+        limit: (value) => isPositiveInteger(value) && (value as number) <= 100,
+        before_version: isPositiveInteger,
       });
       if (fields.length > 0) return { error: 'invalid_fields', fields };
       return listPlanHistory(
@@ -385,8 +371,8 @@ const TOOLS: Record<string, Tool> = {
       to_version: { type: 'integer', minimum: 1 },
     }, ['from_version']),
     handler: async (a, env, userId) => {
-      const fields = invalidToolFields(a, { from_version: positiveSafeInteger }, {
-        to_version: positiveSafeInteger,
+      const fields = invalidFields(a, { from_version: isPositiveInteger }, {
+        to_version: isPositiveInteger,
       });
       if (fields.length > 0) return { error: 'invalid_fields', fields };
       return comparePlanVersions(
@@ -405,10 +391,10 @@ const TOOLS: Record<string, Tool> = {
       reason: { type: 'string' },
     }, ['snapshot_version', 'plan_id', 'expected_version']),
     handler: async (a, env, userId) => {
-      const fields = invalidToolFields(a, {
-        snapshot_version: positiveSafeInteger,
-        plan_id: nonEmptyToolString,
-        expected_version: positiveSafeInteger,
+      const fields = invalidFields(a, {
+        snapshot_version: isPositiveInteger,
+        plan_id: isNonEmptyString,
+        expected_version: isPositiveInteger,
       }, { reason: (value) => typeof value === 'string' });
       if (fields.length > 0) return { error: 'invalid_fields', fields };
       return restorePlanSnapshot(env.DB, userId, {
@@ -879,9 +865,9 @@ const TOOLS: Record<string, Tool> = {
     write: true,
     handlerAudited: true,
     handler: async (a, env, userId) => {
-      const invalid = invalidToolFields(a, {
-        session_id: nonEmptyToolString,
-        expected_attempt: nonNegativeSafeInteger,
+      const invalid = invalidFields(a, {
+        session_id: isNonEmptyString,
+        expected_attempt: isNonNegativeInteger,
       });
       if (invalid.length > 0) return { error: 'invalid_fields', fields: invalid };
       const session = await discardSession(
@@ -1056,11 +1042,11 @@ const TOOLS: Record<string, Tool> = {
       const unknown = Object.keys(a).filter((key) => !['day', 'group_id', 'expected_version', 'exercises',
         'round_rest', 'transition_rest', 'target_sets', 'order_index'].includes(key));
       if (unknown.length) return { error: 'unknown_fields', fields: unknown };
-      const fields = invalidToolFields(a, {
-        day: nonEmptyToolString, group_id: isGroupId, expected_version: positiveSafeInteger,
-        exercises: (value) => Array.isArray(value) && value.length >= 2 && value.every(nonEmptyToolString),
-        round_rest: nonNegativeSafeInteger,
-      }, { transition_rest: nonNegativeSafeInteger, target_sets: positiveSafeInteger, order_index: nonNegativeSafeInteger });
+      const fields = invalidFields(a, {
+        day: isNonEmptyString, group_id: isGroupId, expected_version: isPositiveInteger,
+        exercises: (value) => Array.isArray(value) && value.length >= 2 && value.every(isNonEmptyString),
+        round_rest: isNonNegativeInteger,
+      }, { transition_rest: isNonNegativeInteger, target_sets: isPositiveInteger, order_index: isNonNegativeInteger });
       if (fields.length) return { error: 'invalid_fields', fields };
       const replay = await findMcpExerciseGroupAcknowledgement(env.DB, userId, 'group_exercises', a);
       if (replay) return replay;
@@ -1093,9 +1079,9 @@ const TOOLS: Record<string, Tool> = {
       }
       return setGroup(env.DB, userId, day?.id ?? a.day as string, a.group_id as string, members, {
         expected_version: a.expected_version as number, round_rest: a.round_rest as number,
-        ...(hasToolField(a, 'transition_rest') ? { transition_rest: a.transition_rest as number } : {}),
-        ...(hasToolField(a, 'target_sets') ? { target_sets: a.target_sets as number } : {}),
-        ...(hasToolField(a, 'order_index') ? { order_index: a.order_index as number } : {}),
+        ...(hasField(a, 'transition_rest') ? { transition_rest: a.transition_rest as number } : {}),
+        ...(hasField(a, 'target_sets') ? { target_sets: a.target_sets as number } : {}),
+        ...(hasField(a, 'order_index') ? { order_index: a.order_index as number } : {}),
       }, { actor: 'mcp', operation: 'group_exercises', args: a, note: 'Grouped exercise slots.' });
     },
   },
@@ -1108,7 +1094,7 @@ const TOOLS: Record<string, Tool> = {
     handler: async (a, env, userId) => {
       const unknown = Object.keys(a).filter((key) => !['group_id', 'expected_version'].includes(key));
       if (unknown.length) return { error: 'unknown_fields', fields: unknown };
-      const fields = invalidToolFields(a, { group_id: isGroupId, expected_version: positiveSafeInteger });
+      const fields = invalidFields(a, { group_id: isGroupId, expected_version: isPositiveInteger });
       if (fields.length) return { error: 'invalid_fields', fields };
       const replay = await findMcpExerciseGroupAcknowledgement(env.DB, userId, 'ungroup_exercises', a);
       if (replay) return replay;
@@ -1247,7 +1233,7 @@ const TOOLS: Record<string, Tool> = {
     write: true,
     atomicWrite: true,
     handler: async (a, env, userId) => {
-      const invalid = invalidToolFields(a, { workout_id: nonEmptyToolString, expected_version: positiveSafeInteger });
+      const invalid = invalidFields(a, { workout_id: isNonEmptyString, expected_version: isPositiveInteger });
       if (invalid.length) return { error: 'invalid_fields', fields: invalid };
       return deleteWorkout(env.DB, userId, String(a.workout_id), Number(a.expected_version), {
         actor: 'mcp', operation: 'delete_workout', args: a, note: 'Deleted workout.',

@@ -539,10 +539,6 @@ function emptyWeek(): ScheduleWeek {
   return { mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null };
 }
 
-export function emptySchedule(): WeeklySchedule {
-  return { version: 1, week: emptyWeek() };
-}
-
 const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 

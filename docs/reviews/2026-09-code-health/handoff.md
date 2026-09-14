@@ -41,6 +41,7 @@ recorded separately and are not fixed here.
 | `aed7a7e` | `deleteWorkoutAtVersion` takes the plan row the REST route already read |
 | `314cb48` | Batch the five `getState` collection reads; drop the ownership join on the full sets reload |
 | `672a61d` | Beta-feedback mirror dedupes against both issue marker syntaxes and every label |
+| `d95d5a3` | Revert the `getState` read batching; keep the ownership join removal |
 
 The dead plan-write cluster mattered beyond tidiness. `addWorkout`,
 `patchWorkout`, `bumpPlanVersion`, `bumpPlanVersionByDay` and
@@ -50,8 +51,19 @@ future caller would have written a plan mutation with no audit row, no coaching
 note and no snapshot, violating the one-atomic-writer rule. They had no callers
 and are now gone.
 
-`314cb48` was committed without a suite run because its author stopped mid-item.
-Verifying it is the first task of the backend package below.
+`314cb48` was committed without a suite run because its author stopped mid-item,
+and CI then caught what it broke. Batching the five `getState` collection reads
+into one D1 call means the sets statement's `.all()` is never invoked, so the P1
+delta-cursor test that proxies it to commit a write mid-read never fires its
+interleave. That test guards against real delta-sync data loss, so `d95d5a3`
+restores the serial reads rather than adapting the test to the new seam.
+
+**Do not re-attempt the read batching as part of a cleanup.** It changes
+read-interleaving semantics, which is by definition not behaviour-preserving. If
+the five round trips are worth removing, that is its own change, and it owes an
+argument about what the batch's single read snapshot does to the watermark
+contract. The ownership join removal in the same commit was orthogonal and
+survives.
 
 ## Remaining work
 

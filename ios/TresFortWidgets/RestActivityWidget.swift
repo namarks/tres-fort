@@ -11,7 +11,7 @@ struct RestActivityWidget: Widget {
             // Lock Screen / banner
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(ctx.state.timerKind == "set" ? "SET" : "REST") · \(ctx.attributes.exercise.uppercased())")
+                    Text("\(ctx.state.isTimedSet ? "SET" : "REST") · \(ctx.attributes.exercise.uppercased())")
                         .font(.system(size: 11, weight: .bold)).foregroundStyle(.secondary)
                     Text(timerInterval: min(Date(), ctx.state.endDate)...ctx.state.endDate, countsDown: true)
                         .font(.system(size: 40, weight: .heavy, design: .rounded))
@@ -19,12 +19,12 @@ struct RestActivityWidget: Widget {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
-                    Text(ctx.state.timerKind == "set" ? "TIMED SET" : "UP NEXT").font(.system(size: 10, weight: .bold))
+                    Text(ctx.state.isTimedSet ? "TIMED SET" : "UP NEXT").font(.system(size: 10, weight: .bold))
                         .foregroundStyle(.secondary)
                     Text(ctx.state.upNext).font(.headline).foregroundStyle(.white)
                         .lineLimit(1)
                     if let id = ctx.state.controlID {
-                        timerButtons(id: id, timed: ctx.state.timerKind == "set")
+                        timerButtons(id: id, timed: ctx.state.isTimedSet)
                     }
                 }
             }
@@ -34,7 +34,7 @@ struct RestActivityWidget: Widget {
         } dynamicIsland: { ctx in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Label(ctx.state.timerKind == "set" ? "Set" : "Rest", systemImage: "timer").font(.caption).foregroundStyle(accent)
+                    Label(ctx.state.isTimedSet ? "Set" : "Rest", systemImage: "timer").font(.caption).foregroundStyle(accent)
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     Text(timerInterval: min(Date(), ctx.state.endDate)...ctx.state.endDate, countsDown: true)
@@ -44,10 +44,10 @@ struct RestActivityWidget: Widget {
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     VStack {
-                        Text(ctx.state.timerKind == "set" ? ctx.attributes.exercise : "Up next · \(ctx.state.upNext)")
+                        Text(ctx.state.isTimedSet ? ctx.attributes.exercise : "Up next · \(ctx.state.upNext)")
                             .font(.caption).foregroundStyle(.secondary)
                         if let id = ctx.state.controlID {
-                            timerButtons(id: id, timed: ctx.state.timerKind == "set")
+                            timerButtons(id: id, timed: ctx.state.isTimedSet)
                         }
                     }
                 }

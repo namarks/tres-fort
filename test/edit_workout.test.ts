@@ -38,7 +38,7 @@ async function freshDay(H: Record<string, string>, name: string): Promise<string
     body: JSON.stringify({ name }),
   });
   const day = await (
-    await SELF.fetch(`${BASE}/api/days`, {
+    await SELF.fetch(`${BASE}/api/workouts`, {
       method: 'POST',
       headers: H,
       body: JSON.stringify({ name: 'Day A', day_label: 'A', order_index: 0 }),
@@ -52,7 +52,7 @@ async function addExercise(
   dayId: string,
   body: Record<string, unknown>,
 ) {
-  return SELF.fetch(`${BASE}/api/days/${dayId}/exercises`, {
+  return SELF.fetch(`${BASE}/api/workouts/${dayId}/exercises`, {
     method: 'POST',
     headers: H,
     body: JSON.stringify(body),
@@ -88,7 +88,7 @@ describe('manual routine authoring over REST', () => {
       created: false,
       plan: { id: existing.id, name: 'Coach Plan', version: existing.version },
     });
-    const wrongWinner = await SELF.fetch(`${BASE}/api/days`, {
+    const wrongWinner = await SELF.fetch(`${BASE}/api/workouts`, {
       method: 'POST', headers: H,
       body: JSON.stringify({
         name: 'Stale first day',
@@ -182,7 +182,7 @@ describe('manual routine authoring over REST', () => {
     ).json<{ id: string; version: number }>();
 
     const dayA = await (
-      await SELF.fetch(`${BASE}/api/days`, {
+      await SELF.fetch(`${BASE}/api/workouts`, {
         method: 'POST', headers: H,
         body: JSON.stringify({ name: 'Upper', expected_version: plan.version }),
       })
@@ -192,7 +192,7 @@ describe('manual routine authoring over REST', () => {
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
     ).json<{ id: string; version: number }>();
     const dayB = await (
-      await SELF.fetch(`${BASE}/api/days`, {
+      await SELF.fetch(`${BASE}/api/workouts`, {
         method: 'POST', headers: H,
         body: JSON.stringify({ name: 'Lower', expected_version: afterA.version }),
       })
@@ -202,7 +202,7 @@ describe('manual routine authoring over REST', () => {
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
     ).json<{ id: string; version: number }>();
 
-    const moved = await SELF.fetch(`${BASE}/api/days/${dayB.id}`, {
+    const moved = await SELF.fetch(`${BASE}/api/workouts/${dayB.id}`, {
       method: 'PATCH', headers: H,
       body: JSON.stringify({ order_index: 0, expected_version: afterB.version }),
     });
@@ -214,7 +214,7 @@ describe('manual routine authoring over REST', () => {
       [dayB.id, 0], [dayA.id, 1],
     ]);
 
-    const stale = await SELF.fetch(`${BASE}/api/days/${dayA.id}`, {
+    const stale = await SELF.fetch(`${BASE}/api/workouts/${dayA.id}`, {
       method: 'PATCH', headers: H,
       body: JSON.stringify({ name: 'Should Not Win', expected_version: afterB.version }),
     });
@@ -240,10 +240,10 @@ describe('manual routine authoring over REST', () => {
     });
 
     const audits = await env.DB.prepare(
-      "SELECT tool FROM audit_log WHERE actor='ios' AND tool IN ('add_day','update_day','set_schedule')",
+      "SELECT tool FROM audit_log WHERE actor='ios' AND tool IN ('add_workout','update_workout','set_schedule')",
     ).all<{ tool: string }>();
     expect(new Set(audits.results.map((row) => row.tool))).toEqual(
-      new Set(['add_day', 'update_day', 'set_schedule']),
+      new Set(['add_workout', 'update_workout', 'set_schedule']),
     );
   });
 
@@ -257,7 +257,7 @@ describe('manual routine authoring over REST', () => {
       })
     ).json<{ id: string; version: number }>();
 
-    const createDay = (name: string) => SELF.fetch(`${BASE}/api/days`, {
+    const createDay = (name: string) => SELF.fetch(`${BASE}/api/workouts`, {
       method: 'POST', headers: H,
       body: JSON.stringify({
         name,
@@ -297,7 +297,7 @@ describe('manual routine authoring over REST', () => {
     expect(ensured.created).toBe(true);
 
     const barbell = await (
-      await SELF.fetch(`${BASE}/api/days`, {
+      await SELF.fetch(`${BASE}/api/workouts`, {
         method: 'POST', headers: H,
         body: JSON.stringify({
           name: 'Barbell Day', expected_version: ensured.plan.version,
@@ -312,7 +312,7 @@ describe('manual routine authoring over REST', () => {
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
     ).json<{ id: string; version: number }>();
     const bodyweight = await (
-      await SELF.fetch(`${BASE}/api/days`, {
+      await SELF.fetch(`${BASE}/api/workouts`, {
         method: 'POST', headers: H,
         body: JSON.stringify({
           name: 'Bodyweight Day', expected_version: current.version,
@@ -475,7 +475,7 @@ describe('manual routine authoring over REST', () => {
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
     ).json<{ version: number }>();
     const secondDay = await (
-      await SELF.fetch(`${BASE}/api/days`, {
+      await SELF.fetch(`${BASE}/api/workouts`, {
         method: 'POST', headers: H,
         body: JSON.stringify({ name: 'Other day', expected_version: plan.version }),
       })
@@ -566,7 +566,7 @@ describe('manual routine authoring over REST', () => {
     ).json<{ version: number }>()).version;
 
     const removed = await SELF.fetch(
-      `${BASE}/api/days/${dayId}?expected_version=${version}`,
+      `${BASE}/api/workouts/${dayId}?expected_version=${version}`,
       { method: 'DELETE', headers: H },
     );
     expect(removed.status).toBe(200);
@@ -594,7 +594,7 @@ describe('manual routine authoring over REST', () => {
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
     ).json<{ id: string; version: number }>();
     const activeDay = await (
-      await SELF.fetch(`${BASE}/api/days`, {
+      await SELF.fetch(`${BASE}/api/workouts`, {
         method: 'POST', headers: H,
         body: JSON.stringify({ name: 'Active deletion', expected_version: plan.version }),
       })
@@ -633,7 +633,7 @@ describe('manual routine authoring over REST', () => {
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
     ).json<{ id: string; version: number }>();
     expect((await SELF.fetch(
-      `${BASE}/api/days/${plannedDay}?expected_version=${plan.version}`,
+      `${BASE}/api/workouts/${plannedDay}?expected_version=${plan.version}`,
       { method: 'DELETE', headers: H },
     )).status).toBe(200);
     expect(await env.DB.prepare(
@@ -644,7 +644,7 @@ describe('manual routine authoring over REST', () => {
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
     ).json<{ id: string; version: number }>();
     const rejected = await SELF.fetch(
-      `${BASE}/api/days/${activeDay.id}?expected_version=${plan.version}`,
+      `${BASE}/api/workouts/${activeDay.id}?expected_version=${plan.version}`,
       { method: 'DELETE', headers: H },
     );
     expect(rejected.status).toBe(409);
@@ -698,7 +698,7 @@ describe('manual routine authoring over REST', () => {
       })
     ).json<{ id: string; version: number }>();
     const currentDay = await (
-      await SELF.fetch(`${BASE}/api/days`, {
+      await SELF.fetch(`${BASE}/api/workouts`, {
         method: 'POST', headers: H,
         body: JSON.stringify({
           name: 'Current Monday',
@@ -723,7 +723,7 @@ describe('manual routine authoring over REST', () => {
     ).json<{ id: string; version: number }>();
 
     const removed = await SELF.fetch(
-      `${BASE}/api/days/${currentDay.id}?expected_version=${currentPlan.version}`,
+      `${BASE}/api/workouts/${currentDay.id}?expected_version=${currentPlan.version}`,
       { method: 'DELETE', headers: H },
     );
     expect(removed.status).toBe(200);
@@ -811,7 +811,7 @@ describe('add / edit / delete a plan slot over REST', () => {
     ).json<{ id: string; is_warmup: number }>();
     expect(slot.is_warmup).toBe(0);
 
-    const patched = await SELF.fetch(`${BASE}/api/days/${dayId}/exercises/${slot.id}`, {
+    const patched = await SELF.fetch(`${BASE}/api/workouts/${dayId}/exercises/${slot.id}`, {
       method: 'PATCH',
       headers: H,
       body: JSON.stringify({ target_sets: 5, is_warmup: true }),
@@ -822,7 +822,7 @@ describe('add / edit / delete a plan slot over REST', () => {
     expect(after.is_warmup).toBe(1);
 
     // Unknown patch key → 400 unknown_fields (no silent drop).
-    const bad = await SELF.fetch(`${BASE}/api/days/${dayId}/exercises/${slot.id}`, {
+    const bad = await SELF.fetch(`${BASE}/api/workouts/${dayId}/exercises/${slot.id}`, {
       method: 'PATCH',
       headers: H,
       body: JSON.stringify({ bogus: 1 }),
@@ -831,7 +831,7 @@ describe('add / edit / delete a plan slot over REST', () => {
     expect(await bad.json<{ error: string }>()).toMatchObject({ error: 'unknown_fields' });
 
     // Unknown slot id → 404.
-    const missing = await SELF.fetch(`${BASE}/api/days/${dayId}/exercises/nope`, {
+    const missing = await SELF.fetch(`${BASE}/api/workouts/${dayId}/exercises/nope`, {
       method: 'PATCH',
       headers: H,
       body: JSON.stringify({ target_sets: 2 }),
@@ -869,7 +869,7 @@ describe('add / edit / delete a plan slot over REST', () => {
       }),
     });
 
-    const del = await SELF.fetch(`${BASE}/api/days/${dayId}/exercises/${slot.id}`, {
+    const del = await SELF.fetch(`${BASE}/api/workouts/${dayId}/exercises/${slot.id}`, {
       method: 'DELETE',
       headers: H,
     });
@@ -892,7 +892,7 @@ describe('add / edit / delete a plan slot over REST', () => {
     expect(setRow?.template_exercise_id).toBeNull();
 
     // Deleting an unknown slot → 404.
-    const missing = await SELF.fetch(`${BASE}/api/days/${dayId}/exercises/${slot.id}`, {
+    const missing = await SELF.fetch(`${BASE}/api/workouts/${dayId}/exercises/${slot.id}`, {
       method: 'DELETE',
       headers: H,
     });
@@ -911,7 +911,7 @@ describe('add / edit / delete a plan slot over REST', () => {
     ).json<{ id: string }>();
 
     // Move the second slot to the front.
-    const moved = await SELF.fetch(`${BASE}/api/days/${dayId}/exercises/${b.id}`, {
+    const moved = await SELF.fetch(`${BASE}/api/workouts/${dayId}/exercises/${b.id}`, {
       method: 'PATCH',
       headers: H,
       body: JSON.stringify({ order_index: 0 }),
@@ -1110,7 +1110,7 @@ describe('slot PATCH/DELETE are scoped to the URL day', () => {
   async function planWithTwoDays(H: Record<string, string>) {
     const dayA = await freshDay(H, 'Two day plan'); // creates plan + Day A
     const dayB = await (
-      await SELF.fetch(`${BASE}/api/days`, {
+      await SELF.fetch(`${BASE}/api/workouts`, {
         method: 'POST',
         headers: H,
         body: JSON.stringify({ name: 'Day B', day_label: 'B', order_index: 1 }),
@@ -1126,7 +1126,7 @@ describe('slot PATCH/DELETE are scoped to the URL day', () => {
     const H = auth(await devJwt());
     const { dayA, slotB } = await planWithTwoDays(H);
 
-    const r = await SELF.fetch(`${BASE}/api/days/${dayA}/exercises/${slotB.id}`, {
+    const r = await SELF.fetch(`${BASE}/api/workouts/${dayA}/exercises/${slotB.id}`, {
       method: 'PATCH',
       headers: H,
       body: JSON.stringify({ target_sets: 99 }),
@@ -1143,7 +1143,7 @@ describe('slot PATCH/DELETE are scoped to the URL day', () => {
     const H = auth(await devJwt());
     const { dayA, dayB, slotB } = await planWithTwoDays(H);
 
-    const wrong = await SELF.fetch(`${BASE}/api/days/${dayA}/exercises/${slotB.id}`, {
+    const wrong = await SELF.fetch(`${BASE}/api/workouts/${dayA}/exercises/${slotB.id}`, {
       method: 'DELETE',
       headers: H,
     });
@@ -1154,7 +1154,7 @@ describe('slot PATCH/DELETE are scoped to the URL day', () => {
     expect(stillThere?.id).toBe(slotB.id);
 
     // The correct day path deletes it.
-    const right = await SELF.fetch(`${BASE}/api/days/${dayB}/exercises/${slotB.id}`, {
+    const right = await SELF.fetch(`${BASE}/api/workouts/${dayB}/exercises/${slotB.id}`, {
       method: 'DELETE',
       headers: H,
     });

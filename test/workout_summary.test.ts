@@ -61,7 +61,7 @@ describe('persisted completion summary', () => {
       .bind(f.session.id).first<{ runner_targets: string }>();
     const version = JSON.parse(first!.runner_targets).plan_version;
     const later = await f.post('sessions', { date: '2038-09-09', workout_id: f.day.id });
-    const edit = await SELF.fetch(`${BASE}/api/days/${f.day.id}/exercises/${f.slot.id}`, {
+    const edit = await SELF.fetch(`${BASE}/api/workouts/${f.day.id}/exercises/${f.slot.id}`, {
       method: 'PATCH', headers: f.headers, body: JSON.stringify({ target_weight: 185 }),
     });
     expect(edit.status).toBe(200);

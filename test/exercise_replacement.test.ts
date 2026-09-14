@@ -43,7 +43,7 @@ async function footprint(userId: string) {
 
 function replace(f: Awaited<ReturnType<typeof fixture>>, body: unknown,
                  dayID = f.day.id, slotID = f.slot.id) {
-  return SELF.fetch(`${BASE}/api/days/${dayID}/exercises/${slotID}/swap`, {
+  return SELF.fetch(`${BASE}/api/workouts/${dayID}/exercises/${slotID}/swap`, {
     method: 'POST', headers: f.headers, body: JSON.stringify(body),
   });
 }
@@ -114,7 +114,7 @@ describe('exercise replacement', () => {
       expect((await replace(f, body)).status).toBe(400);
       expect(await footprint(f.userId)).toEqual(before);
     }
-    const malformed = await SELF.fetch(`${BASE}/api/days/${f.day.id}/exercises/${f.slot.id}/swap`, {
+    const malformed = await SELF.fetch(`${BASE}/api/workouts/${f.day.id}/exercises/${f.slot.id}/swap`, {
       method: 'POST', headers: f.headers, body: '{',
     });
     expect(malformed.status).toBe(400);
@@ -129,7 +129,7 @@ describe('exercise replacement', () => {
     const before = await footprint(f.userId);
     expect((await replace(f, body, foreign.day.id, foreign.slot.id)).status).toBe(404);
     expect((await replace(f, body, f.plan.workouts[1]!.id)).status).toBe(404);
-    expect((await SELF.fetch(`${BASE}/api/days/${f.day.id}/exercises/${f.slot.id}/swap`, {
+    expect((await SELF.fetch(`${BASE}/api/workouts/${f.day.id}/exercises/${f.slot.id}/swap`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
     })).status).toBe(401);
     expect(await footprint(f.userId)).toEqual(before);

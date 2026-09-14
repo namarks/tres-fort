@@ -1,5 +1,23 @@
 # Workout rename rollout
 
+**Current cutover decision (2026-09-14):** the owner retired the sole installed
+legacy client and explicitly authorized removing its runtime support. The prior
+minimum-build/adoption-cycle gate no longer applies. Canonical requests work
+against the already-serving adaptive Worker, so install the reviewed canonical
+iOS build before deploying the canonical-only Worker. Both release actions need
+separate release authority; repository changes do not execute either one.
+
+The canonical-only Worker requires the already-applied migration 0045. Do not
+reapply it. It has no SQL adapter, old workout routes/tools, or duplicate fields.
+Keep immutable snapshot and durable cache/outbox readers. Refresh the connected
+MCP client's tool list after cutover. Roll back application behavior to the
+recorded adaptive Worker if separately authorized; never run the schema rollback
+beneath a canonical-only Worker. See [the release record](plan.md#next-step).
+
+The remainder records the historical A/B procedure for reproducibility. Commands
+for retired bridge scripts refer to the old release source and are not part of
+the current checkout. They are not pending steps.
+
 This runbook describes P0's three-stage procedure; it is not the current
 execution frontier. **The 2026-09-09 release has already deployed A and applied
 B. Do not repeat either stage.** Read the [canonical release record and next
@@ -19,7 +37,6 @@ the supported-client compatibility cycle in `plan.md`.
 npm ci
 npm run typecheck
 npm test
-npm run test:workout-rollout
 npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPhone-17
 ```
 
@@ -114,20 +131,16 @@ Keep the adaptive Worker serving while diagnosing; any production rollback
 still requires the authority and procedure below. Do not infer a continuously
 observed production cutover from local test coverage or point-in-time reads.
 
-## C — remove compatibility only after the observed client cycle
+## C — canonical-only repository delivery
 
-Keep old routes, request/response keys and `add_day`/`update_day` for at least one
-TestFlight compatibility cycle after the canonical-writing build becomes the
-minimum supported build. Record that build, minimum-client decision, cycle
-start/end and evidence of supported-client use in `plan.md`. Elapsed time alone
-is not proof that clients have upgraded.
-
-Then prepare a reviewed cleanup change removing `workoutSchema.ts`, the temporary
-release guard, deprecated wire aliases and old MCP registrations. Restore the
-normal release commands only once the migrated schema and supported clients are
-proven. Keep immutable v1 snapshot readers and old cache/outbox decoders as long
-as their persisted data can be encountered. Never rewrite historical audit tool
-names. This repository delivery leaves P0(b) and P0(c) open.
+The owner's 2026-09-14 single-installation decision supersedes the earlier
+observed-client-cycle requirement. Remove `workoutSchema.ts`, the temporary
+release guard/rehearsal, deprecated wire aliases and old MCP registrations.
+Normal release commands are restored for future separately authorized releases.
+Tests cover canonical authoring, rejection of retired identity fields, preserved
+migration references, immutable v1 snapshot restore, and durable iOS recovery.
+Existing audit names and persisted-data decoders are retained. Deployment and
+app-distribution evidence belongs in `plan.md`, not inferred from test results.
 
 ## Rollback
 

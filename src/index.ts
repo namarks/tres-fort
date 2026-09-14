@@ -1,3 +1,4 @@
+import { measuredHttpOperation, responseBytes } from './operationMetrics';
 import { Hono } from 'hono';
 import type { Env, HonoEnv } from './types';
 import { authRoutes } from './routes/auth';
@@ -46,13 +47,7 @@ async function fetch(
   env: Env,
   ctx: ExecutionContext,
 ): Promise<Response> {
-  const { pathname } = new URL(request.url);
-  const operation =
-    request.method === 'GET' && pathname === '/api/state'
-      ? 'GET /api/state'
-      : request.method === 'GET' && pathname === '/api/me'
-        ? 'GET /api/me'
-        : null;
+  const operation = measuredHttpOperation(request);
   try {
     if (!operation) return await app.fetch(request, env, ctx);
 
@@ -62,7 +57,8 @@ async function fetch(
       env.DB,
       operation,
       async (db) => app.fetch(request, { ...env, DB: db }, ctx),
-      (response) => (response.status >= 500 ? 'error' : 'ok'),
+      (response) => (response.status >= 400 ? 'error' : 'ok'),
+      responseBytes,
     );
   } catch (error: unknown) {
     // Hono's onError handles Error instances. A non-Error rejection must not
@@ -232,5 +228,5 @@ async function scheduled(
 }
 
 // HTTP behavior remains delegated to the same Hono app; the wrapper adds D1
-// accounting only for the two P0 baseline routes. `scheduled` is additive.
+// accounting for fixed read/write operations. `scheduled` measures the full tick.
 export default { fetch, scheduled };

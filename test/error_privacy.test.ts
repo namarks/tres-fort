@@ -85,7 +85,7 @@ describe('unexpected error privacy', () => {
     await waitOnExecutionContext(context);
   });
 
-  it('tells MCP callers to correct contradictory workout aliases without recording a mutation', async () => {
+  it('rejects retired workout fields without logging member input or recording a mutation', async () => {
     await devJwt();
     const before = await env.DB.prepare('SELECT (SELECT COUNT(*) FROM plans) AS plans, (SELECT COUNT(*) FROM audit_log) AS audits, (SELECT COUNT(*) FROM notes) AS notes').first();
     const captured = logs(), context = createExecutionContext();
@@ -97,7 +97,7 @@ describe('unexpected error privacy', () => {
     }), env, context);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ jsonrpc: '2.0', id: 2, result: {
-      content: [{ type: 'text', text: 'error: conflicting_workout_fields' }], isError: true,
+      content: [{ type: 'text', text: JSON.stringify({ error: 'unsupported_workout_fields' }) }], isError: true,
     } });
     expect(captured.error).not.toHaveBeenCalled();
     captured.assertPrivate();
@@ -135,6 +135,5 @@ describe('unexpected error privacy', () => {
     expect(publicToolErrorCode({ message: 'no_active_plan' })).toBeNull();
     expect(publicToolErrorCode(new Error('no_active_plan'))).toBe('no_active_plan');
     expect(publicToolErrorCode(new Error('unknown_exercise:' + PRIVATE))).toBe('unknown_exercise');
-    expect(publicToolErrorCode(new Error('conflicting_workout_fields:' + PRIVATE))).toBe('conflicting_workout_fields');
   });
 });

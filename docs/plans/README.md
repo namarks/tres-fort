@@ -149,6 +149,12 @@ integration or social breadth.
   **planned**; deliver a correct feed, durable invites, lightweight reactions
   and notifications, and essential group controls.
 
+### Platform (`platform`)
+
+- [Reliability and service boundaries](reliability-and-service-boundaries/plan.md) —
+  **active**; complete the owner-approved performance/quality follow-up to #201,
+  including canonical-only clients, durable offline recovery and reproducible checks.
+
 ### Review-driven ordering
 
 The [September app review](../reviews/2026-09-app-review/report.md) recommends

@@ -64,7 +64,7 @@ describe('group authoring API and released-client projection', () => {
       { group_label: 'A2', group_id: groupId, is_warmup: 1, group_rest_seconds: 30, group_transition_seconds: 0 },
     ]);
     const today = await mcp('get_today_workout');
-    expect(today.plan_days[0].exercises[1].group_label).toBe('A2');
+    expect(today.plan_workouts[0].exercises[1].group_label).toBe('A2');
     const brief = await handleMcp({ jsonrpc: '2.0', id: 2, method: 'resources/read',
       params: { uri: 'coach://state/current' } }, env, userId) as any;
     expect(brief.json.result.contents[0].text).toContain('"label": "A1"');

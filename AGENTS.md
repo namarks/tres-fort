@@ -27,17 +27,16 @@ initiative, index, or adapter.
 Backend (repo root):
 
 ```bash
-npm test                       # vitest: integration tests vs real D1 in the Workers runtime
+npm test                       # prerequisites + all three real-D1 Vitest shards
 npm run test:watch
 npx vitest run test/mcp.test.ts            # single file
 npx vitest run -t "logs a set"             # single test by name
 npm run typecheck              # tsc --noEmit
 npm run dev                    # wrangler dev (local Worker + local D1)
 npm run db:migrate:local       # apply migrations/ to local D1
-npm run db:migrate:remote      # guarded during workout rename; see rollout.md
+npm run db:migrate:remote      # production migration authority required
 npm run deploy                 # deploy only, separate production authority required
-npm run release                # guarded: use the staged workout rollout below
-npm run test:workout-rollout    # local same-Worker rename and rollback rehearsal
+npm run release                # preflight, authorized migration, deploy
 npm run ios:testflight         # build, archive, export, upload to TestFlight
 npm run beta:feedback          # mirror TestFlight beta feedback into GitHub issues
 ```
@@ -52,16 +51,16 @@ open ios/TresFort.xcodeproj
 Build/run with the **TresFort** scheme, never the widget-extension scheme.
 The `.xcodeproj` is generated; treat `project.yml` as the source of truth.
 
-## Workout rename compatibility
+## Workout vocabulary and stored data
 
-The logical model uses `workouts` / `workout_id`. During P0's compatibility
-window, `workoutSchema.ts` adapts service SQL to either physical schema and
-`workoutWire.ts` emits both new and deprecated fields. Old `/api/days` routes
-and `add_day` / `update_day` MCP names remain aliases. New tools are
-`add_workout`, `update_workout`, and `delete_workout`. The first compatible app
-reads both formats and sends the old one. Use the [staged rollout](docs/plans/workouts-and-multi-session/rollout.md)
-for production; never apply migration 0045 before the adaptive Worker is live.
-Repository delivery does not prove production migration or client rollout.
+The owner retired the sole installed legacy client on 2026-09-14. Runtime SQL
+requires migration 0045 (`workouts` / `workout_id`); API/MCP requests and responses
+use canonical fields and tool names. Old routes/tools are removed, and retired
+identity fields are rejected before choosing defaults. Preserve immutable v1
+snapshot readers, historical audit names, and account-local cache/outbox decoders
+so upgrading never loses stored history or queued UUIDs. No SQL translation or
+schema probes remain. See the [release record](docs/plans/workouts-and-multi-session/plan.md)
+for the already-applied migration and remaining app/Worker distribution.
 
 ## Architecture
 
@@ -72,10 +71,13 @@ receiver, `src/routes/webhooks.ts` — public, authenticated by a body
 `secret` rather than app-JWT/MCP bearer), `/privacy` (App Store Connect
 compliance page), and `/join/:code` + AASA (`src/routes/invites.ts` —
 Universal Link group invites) under one Hono app. **All D1 access goes
-through `src/db.ts`** — REST routes (`src/routes/`) and MCP tools
+through the public `src/db.ts` service facade** — REST routes (`src/routes/`) and MCP tools
 (`src/mcp/server.ts`) are thin wrappers over the same functions, so behavior
-stays identical across clients. Add data logic in `db.ts`, not in route/tool
-handlers. intervals.icu I/O is isolated in `src/intervals.ts` (injectable
+stays identical across clients. Cohesive internal services live in `src/services/`:
+OAuth grant transitions and Intervals reconciliation own their SQL and receive
+identity helpers through typed dependency injection. They must not import the
+facade at runtime. Keep data logic in these services or `db.ts`, and keep
+route/tool handlers thin. intervals.icu I/O is isolated in `src/intervals.ts` (injectable
 fetcher, dormant when no credentials are set); an hourly cron
 (`wrangler.jsonc` `triggers.crons`) re-syncs as a backstop for any
 undelivered webhook — the webhook is the primary sync path, not the cron.
@@ -100,8 +102,10 @@ design and dictates how you mutate things:
   /api/workouts/:id/exercises` (add), `PATCH /api/workouts/:id/exercises/:teId`
   (edit), and `DELETE /api/workouts/:id/exercises/:teId` (remove, detaching
   historical `set_logs.template_exercise_id`) each patch a single-field
-  allowlist or one slot through a write-time version claim. Legacy slot
-  APIs retain their existing inputs without requiring an expected version;
+  allowlist or one slot through a write-time version claim. Slot add/update/delete and MCP swap accept optional `expected_version`; the
+  current iOS editor sends the reviewed version. Stale or exhausted writes return
+  `{conflict:true,current_version}` (HTTP 409 on REST). Tokenless coaching calls
+  retain their existing inputs without requiring an expected version;
   bounded retries re-read and validate fresh state before applying only
   supplied fields. These give the iOS app direct, non-Claude
   write access to a day's exercises (audited as `actor='ios'`), reusing the
@@ -136,6 +140,12 @@ explicit invalidation or external replacement also discards that live value.
 `TrainingHistoryIndex` and requested summaries are disposable read models,
 invalidated on every published session/set/catalog mutation. Keep these caches
 out of write-authority decisions and preserve the calendar parity contract.
+`RunnerRecovery` owns pure checkpoint decisions and normalization; `SyncModel`
+applies effects through account/epoch ownership and persistence CAS. Offline
+start/resume requires a complete, intact, previously live-certified plan and
+known matching session attempt (or no observed session). Pending UUIDs and
+prescriptions stay fixed; cached rows never acknowledge them. Missing, legacy,
+invalidated or competing-attempt caches require live validation.
 
 **Weekly schedule & calendar projection.** The recurring weekly pattern
 (weekday → `workout_id`, `null` = rest) lives in `plans.meta.schedule`
@@ -225,8 +235,8 @@ resolver (`resolveExercise`) before hitting the catalog. Current tools:
 `get_upcoming_rides`, `get_recent_activities`, `get_group_feed`, `log_set`,
 `correct_set`, `delete_set`, `log_activity`, `log_workout_complete`,
 `discard_workout`, `add_note`,
-`update_plan`, `update_exercise`, `swap_exercise`, `add_exercise`, `add_day`,
-`update_day`, `delete_exercise`, `adjust_today`, `set_schedule`,
+`update_plan`, `update_exercise`, `swap_exercise`, `add_exercise`, `add_workout`,
+`update_workout`, `delete_workout`, `delete_exercise`, `adjust_today`, `set_schedule`,
 `set_planned_session`, `skip_planned_session`, `set_race`,
 `set_periodization`, `add_trip`, `update_trip`, `remove_trip`,
 `set_stress_model`, `refresh_rides`. Also exposes a

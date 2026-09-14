@@ -34,7 +34,7 @@ async function createPlanAndDay(
   expect(planResponse.status).toBe(201);
   const plan = await planResponse.json<{ id: string }>();
 
-  const dayResponse = await SELF.fetch(`${BASE}/api/days`, {
+  const dayResponse = await SELF.fetch(`${BASE}/api/workouts`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ name: 'Day A', day_label: 'A' }),
@@ -49,14 +49,14 @@ async function createPlanAndDay(
 }
 
 async function addBench(headers: Record<string, string>, dayId: string) {
-  return SELF.fetch(`${BASE}/api/days/${dayId}/exercises`, {
+  return SELF.fetch(`${BASE}/api/workouts/${dayId}/exercises`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ exercise: 'bench', target_sets: 3, target_reps: 5 }),
   });
 }
 
-describe('POST /api/days/:id/exercises scopes the day to the active plan', () => {
+describe('POST /api/workouts/:id/exercises scopes the day to the active plan', () => {
   it("does not add to another user's day or bump the caller's plan", async () => {
     const headers = auth(await devJwt());
     const owner = await createPlanAndDay(headers, 'Owner active');

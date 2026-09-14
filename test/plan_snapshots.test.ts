@@ -278,7 +278,7 @@ describe('plan snapshots', () => {
     const exported = await exportUserData(env.DB, userId) as {
       schema_version: number; training: { plan_snapshots: unknown[] };
     };
-    expect(exported.schema_version).toBe(2);
+    expect(exported.schema_version).toBe(3);
     expect(exported.training.plan_snapshots).toHaveLength(2);
   });
 

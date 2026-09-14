@@ -1,6 +1,6 @@
 # Workouts and Multi-Session Days
 
-Slug: workouts-and-multi-session · Status: active · Updated: 2026-09-10 · Theme: gym-floor
+Slug: workouts-and-multi-session · Status: active · Updated: 2026-09-14 · Theme: gym-floor
 
 ## Goal
 
@@ -9,8 +9,8 @@ Two model corrections that the workout library exposed:
 1. The reusable workout is stored as `day_templates` and referenced as
    `day_template_id`, a name from the original weekly-split design where a
    template was "a training day". Storage, service layer, REST, MCP, and iOS
-   should all call it a **workout**, with a bounded compatibility window for
-   clients already in the field.
+   should all call it a **workout**. The owner retired the sole installed legacy
+   client on 2026-09-14, removing the need for a client-adoption waiting period.
 2. `ux_session_user_date` (migration `0029`) makes one strength session per
    member per civil date a hard invariant. A member who lifts in the morning
    and does a second workout in the evening cannot record both. Done means a
@@ -81,14 +81,14 @@ Two model corrections that the workout library exposed:
     - [x] Release A deployed and migration 0045 applied on 2026-09-09;
       the verification completed and deferred under the approved exception
       is recorded below.
-    - [ ] Distribute compatible and later canonical-writing clients, then
-      observe the compatibility cycle after the canonical-writing build becomes
-      the minimum supported build. Retain the old routes, request keys and MCP
-      names until that evidence is recorded.
-  - [ ] **(c) Compatibility cleanup after the observed cycle**
-    - After the minimum supported client has completed the compatibility cycle,
-      remove temporary physical-schema adaptation and deprecated wire aliases.
-      Preserve historical audit names and legacy snapshot/cache decoding.
+    - [ ] Distribute the canonical-writing client and deploy the canonical-only
+      Worker under separate release authority. The owner explicitly retired the
+      sole legacy installation on 2026-09-14; no compatibility cycle is required.
+  - [ ] **(c) Owner-approved canonical-only cleanup**
+    - Remove temporary physical-schema adaptation and deprecated wire aliases in
+      the reliability-and-service-boundaries delivery. The owner waived the
+      adoption cycle because they are the sole installed client. Preserve
+      historical audit names and immutable snapshot/cache/outbox decoding.
 
 - [ ] **P1 — Ordered sessions per date**
   - Migration: add `sessions.slot INTEGER NOT NULL DEFAULT 0`; drop
@@ -214,30 +214,35 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0(b) | gated_by | external:owner-workout-canonical-client-release | Legacy-writing 1.0 (35) is available to internal Testers under the owner's explicit live-canary deferral. A later canonical-writing client still requires its own release authority, route checks and observed compatibility cycle. |
-| P0(c) | gated_by | external:workout-client-compatibility-cycle | Cleanup requires P0(b) release evidence and the observed released-client compatibility cycle. |
+| P0(b) | gated_by | external:owner-workout-canonical-client-release | Canonical-only code is prepared; app distribution and Worker deployment remain separate release actions. The owner retired the sole legacy installation, so there is no adoption-cycle requirement. |
+| P0(c) | coordinates_with | plan:reliability-and-service-boundaries#P3 | Canonical-only cleanup is delivered and verified with the owner-approved quality/performance work. |
 | P1 | feeds | plan:workout-library#P2 | A freestyle session is the most common second session of a day; P2 should allocate a slot rather than fail on the primary. |
 
 ## Next step
 
-**Now (@owner):** Authorize a later canonical-writing client rollout when that
-workstream resumes. Legacy-writing **1.0 (35)** was uploaded at 23:54:09 UTC on
-2026-09-10 after the owner explicitly deferred the live REST workout canary and
-its five-minute observation. At 23:56:53 UTC, Apple reported VALID /
-IN_BETA_TESTING and internal Testers membership. Those live checks are not claimed
-as passed. No production training records were modified. Do not repeat the upload
-or reinstate its waived canary gate.
+**Now (@agent):** Finish review/CI of the canonical-only cutover in
+[reliability and service boundaries](../reliability-and-service-boundaries/plan.md).
+On 2026-09-14 the owner explicitly said to stop supporting the old client because
+they are its only installed user. This supersedes the previous P0(c) minimum-build
+and observed-compatibility-cycle gate; it does not claim an observed cycle.
+Runtime legacy aliases and schema adaptation can be removed now. Immutable v1
+snapshots, historical audit records and durable cache/outbox readers stay intact.
 
-The matching adaptive Worker is version
+**Release follow-up:** the canonical iOS app can first be installed against the
+already-serving adaptive Worker, which accepts canonical requests. Then deploy
+the reviewed canonical-only Worker under release authority. The retired app's
+old workout routes/tools/fields will fail after that deployment; refresh an MCP
+client's tool list. Do not reapply migration 0045. P0(b) stays open until release
+receipts are recorded; multiple sessions per date (P1) remain later work.
+
+Last recorded release state: legacy-writing **1.0 (35)** was uploaded at 23:54:09
+UTC on 2026-09-10 under the owner's explicit live-canary deferral. At 23:56:53 UTC,
+Apple reported VALID / IN_BETA_TESTING and internal Testers membership. No live
+REST write canary is claimed. The matching adaptive Worker was
 `722fbf91-4b13-48e2-b233-747b1d437ca6` at 100%, from source
-`361cf2ba9d40ef6572de700b65cf649c665559ba`. Additive migrations 0046–0048 are applied,
-with no foreign-key violations; do not repeat 0045 or earlier rollout stages.
-See [the candidate release record](../app-store-submission/plan.md#next-step).
-Keep the adaptive Worker, old routes and legacy outgoing fields. Canonical-route
-checks and the observed compatibility cycle still precede cleanup. P0(b) remains
-open for the later canonical-writing rollout; P0(c) and multiple sessions per
-date (P1) remain later work. The owner exception for this legacy build does not
-satisfy or waive those later requirements.
+`361cf2ba9d40ef6572de700b65cf649c665559ba`. Additive migrations 0046–0048 were
+applied with no foreign-key violations. See [the candidate release record](../app-store-submission/plan.md#next-step).
+These are historical receipts, not fresh observations of production.
 
 Historical production release evidence (2026-09-09; later client exception above supersedes the pre-upload requirement):
 

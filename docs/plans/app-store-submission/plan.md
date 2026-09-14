@@ -57,13 +57,13 @@ preparation and TestFlight availability do not mean public release.
       validation and upload of 1.0 (40). Xcode validation/upload succeeded;
       Apple reports VALID and IN_BETA_TESTING in internal Testers. Exact source
       and the signed archive are retained. P3(a) live checks remain unperformed.
-- [ ] **P4 — Submission-ready handoff**
-  - After approval of concrete App Store changes, publish metadata, screenshots,
-    privacy answers and reviewer details, and select the verified build.
-  - Re-read App Store Connect and audit every requirement. Select manual release
-    after approval, then complete the requested review submission once Apple
-    requirements and reviewer access are satisfied. Retain the submission receipt;
-    do not equate Apple review submission with public release.
+- [ ] **P4 — Submission and manual-release handoff**
+  - [x] Select build 40 and retain Apple's review-submission receipt. The owner
+    submitted 1.0 (40) on 2026-09-14 at 01:23:28 UTC (2026-09-13 Pacific);
+    API readback confirms WAITING_FOR_REVIEW and MANUAL release.
+  - [ ] Resolve remaining P1/P2/P3 verification requirements and any Apple review
+    response before the separately authorized public-release decision. Submission
+    acceptance does not establish that unperformed checks passed or were waived.
 
 ## Execution frontier
 
@@ -74,7 +74,7 @@ preparation and TestFlight availability do not mean public release.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P4 | gated_by | external:app-store-owner-fields | Confirm account agreements and privacy publication before final review submission; the existing App Manager key now permits build selection. |
+| P4 | gated_by | external:app-store-owner-fields | Confirm account agreements and privacy publication before public release; review submission is already acknowledged and release remains manual. |
 
 ## Next step
 
@@ -87,8 +87,18 @@ is now deployed. Its authenticated session-swap and workout-name compatibility
 verification remains unperformed; public health and unauthenticated responses
 do not establish those behaviors. Build 40 was subsequently validated and uploaded
 with explicit owner approval. Do not mark the outstanding live checks passed or
-waived from that upload approval. Finish P1/P2 and retain the P3(a) evidence or a
-specific verification exception before final review submission. Keep manual public release.
+waived from that upload approval or Apple's submission acceptance. The owner
+has now submitted build 40; finish P1/P2 and retain the P3(a) evidence or a specific
+verification exception before the public-release decision. Keep manual release
+and inspect the existing submission for Apple review responses; do not resubmit.
+
+**App Review submitted (2026-09-13 Pacific):** At 2026-09-14T01:23:28.16Z Apple
+accepted review submission `ea595b5e-86a6-4704-b1ef-ae87b971c728`. A fresh API
+read at 01:24:20 UTC confirmed version 1.0 and that submission both in
+`WAITING_FOR_REVIEW`, build `34ed891c-837b-451a-aae8-28ef5ef9b0f7` (40) `VALID`,
+and release type `MANUAL`. The owner performed the final browser submission.
+The value-free receipt is retained on the release host under
+`release-credential/final-apple-state.json`. No public release occurred.
 
 **Credential and selection resolved (2026-09-13):** The owner identified the
 existing **TresFort CI Signing** team key as App Manager. Its installed key
@@ -98,9 +108,9 @@ The older Developer key caused the earlier 403. Upload and fastlane configuratio
 now use the existing App Manager key; no key was created, copied or revoked.
 Team keys cover all apps in the account. API authorization does not prove
 unattended code signing; the existing Xcode account/keychain path is retained.
-Refresh privacy publication, agreements and the existing draft before submission.
-If a field remains inaccessible, use the owner's signed-in browser rather than
-requesting repeated agent-browser sign-ins. Do not create a duplicate draft.
+Refresh privacy publication and agreements before public release. If a field
+remains inaccessible, use the owner's signed-in browser rather than requesting
+repeated agent-browser sign-ins. Do not create a duplicate submission.
 
 The [Garmin attribution fix](attribution.md) and [retired reviewer login](reviewer-access.md)
 merged in [PR #193](https://github.com/namarks/tres-fort/pull/193) at
@@ -126,7 +136,7 @@ readback confirms version 1.0 (40), VALID processing, IN_BETA_TESTING and intern
 Testers membership, with non-exempt encryption false. No second upload is needed.
 The signed archive, source manifest and affirmative Xcode/API receipts are retained.
 Xcode's optional post-upload local export button remained disabled; no separate
-IPA export is claimed. Build 40 is now selected; it has **not** been submitted for App Review.
+IPA export is claimed. Build 40 is selected and is now **Waiting for Review**; public release remains manual.
 
 PR #192's onboarding work and PR #188's catalog additions advanced main during
 preparation. PR #193's tested integration includes that work, but the release
@@ -155,7 +165,7 @@ it did not establish that Apple reviewers cannot use Sign in with Apple. Build
 39's password workaround was uploaded but is not the selected draft. The new
 candidate removes that login and revokes old sample API/renewal access, retaining
 only legacy identity/data-isolation safeguards. The replacement has since passed
-validation and processing, and build 40 is selected. Actual review submission remains incomplete.
+validation and processing; build 40 is selected and Apple has acknowledged its review submission.
 
 The owner is completing App Store Connect on another Mac. Do not repeatedly ask
 for sign-in on the agent browser. Listing copy, running-aware Claude description,
@@ -164,9 +174,11 @@ and manual release were saved during the walkthrough. Privacy answers were
 entered; final privacy publication and applicable agreements still need readback.
 The saved privacy URL is `https://tresfort.app/privacy`; that page, the homepage,
 Worker privacy page, health and OAuth discovery returned HTTP 200. The old
-Developer key could not read pricing or territory availability (403); refresh
-those fields with the App Manager key before treating owner-reported settings as
-provider-verified. The agent browser remains on Apple's failed sign-in page.
+Developer key could not read pricing or territory availability (403). The App
+Manager key subsequently read all 175 territory records: USA alone is enabled,
+new-territory availability is off, and the active US manual price is USD 0.0
+with no end date. Value-free receipts are retained in `release-credential/`.
+The agent browser remains on Apple's failed sign-in page.
 Keep review-contact values and all credentials out of repository documentation.
 
 The owner explicitly deferred the live workout canary and observation and asked

@@ -143,14 +143,17 @@ No second editor, no per-session template copies, no weeks table.
   - [ ] **(b) Authorized Worker release and verification**
     - Migration 0050 was applied once with explicit owner approval on 2026-09-12;
       ledger and nullable `sessions.exercise_swaps` TEXT-column readback passed.
-      After the remaining deployment approval, deploy the reviewed Worker and
-      verify the authenticated session-swap route before distributing build 40.
-      Retain the workout-rename compatibility gates and record device evidence.
-  - [ ] **(c) Authorized client distribution**
-    - After P0.2(b) verification and the pending Xcode signing approval,
-      validate/export/upload the pinned build 40 archive and verify Apple
-      processing. Follow the coordinated App Store release record for review
-      submission; public release remains manual.
+      The separately approved pinned Worker was deployed on 2026-09-12 Pacific
+      time; provider source attribution and public checks passed. Authenticated
+      session-swap and workout-name compatibility checks remain unperformed;
+      neither public health nor Apple processing proves those behaviors.
+  - [x] **(c) Authorized client distribution**
+    - The owner separately approved signing, validation and upload of build 40.
+      Xcode uploaded the pinned archive; Apple verified VALID processing and
+      internal Testers availability. The existing App Manager credential now
+      permits selecting build 40 for App Review. P0.2(b) live verification remains
+      open. Follow the coordinated App Store release record for submission;
+      public release remains manual.
 
 - [x] **P0.3(a) — Exercise-first creation and lookup (repository)**
   - Owner priority on 2026-09-13: improve creation and exercise discovery before
@@ -300,8 +303,6 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 | P0.3(a) | coordinates_with | plan:member-activation-and-adherence#P0 | Both use first-workout entry and the shared exercise catalog. |
 | P0.3(b) | gated_by | external:exercise-first-release-approval | Owner authority is needed for the compatible Worker and later iOS distribution. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
-| P0.2(b) | gated_by | external:release-40-deployment-approval | Migration 0050 is applied and verified; automatic approval review requires explicit approval for the pinned production Worker deployment. |
-| P0.2(c) | gated_by | external:release-40-signing-approval | The replacement upload and review submission are owner-authorized; Xcode automatic distribution signing requires explicit approval. |
 
 
 Freestyle sessions and save-as-workout will supply more logged evidence to the

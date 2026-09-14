@@ -1,9 +1,9 @@
 default_platform(:ios)
 
-# Reuses the same App Store Connect API key Tally uses — it's account-level
-# (team 8BA2RY6RCA), not app-scoped, so a single .p8 authorizes uploads for
-# every app under Nick's Apple Developer Program account.
-API_KEY_ID = "723T6CFSD9"
+# Existing "TresFort CI Signing" team key with App Manager access. The older
+# Developer key could upload builds but Apple rejected build selection with 403.
+# Team keys cover all apps in the account; the name does not restrict scope.
+API_KEY_ID = "VP9G3R7Q85"
 API_ISSUER_ID = "b169cd8d-cb73-4efc-8d72-8c92c5ad29ed"
 P8_PATH = File.expand_path("~/.appstoreconnect/private_keys/AuthKey_#{API_KEY_ID}.p8")
 

@@ -51,7 +51,7 @@ run_case() {
     '  MARKETING_VERSION: "0.1.0"' \
     '  CURRENT_PROJECT_VERSION: "29"' \
     > "${case_root}/repo/ios/project.yml"
-  : > "${case_root}/home/.appstoreconnect/private_keys/AuthKey_723T6CFSD9.p8"
+  : > "${case_root}/home/.appstoreconnect/private_keys/AuthKey_VP9G3R7Q85.p8"
 
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${case_root}/bin/xcodegen"
   printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${case_root}/bin/xcodebuild"

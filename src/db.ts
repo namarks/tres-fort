@@ -5704,29 +5704,31 @@ export async function getState(
           stress_model: baseMeta.stress_model ?? null,
         }
       : null;
-  const sessions = await workoutDB(db)
+  // The five collections below are independent reads; one D1 batch issues
+  // them as a single round trip (and one read snapshot) instead of five
+  // serial awaits. Each statement keeps its columns and ORDER BY unchanged.
+  const sessionsStatement = workoutDB(db)
     .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND updated_at > ?2 ORDER BY date')
-    .bind(userId, setsSince)
-    .all<SessionRow>();
+    .bind(userId, setsSince);
   // Full reload preserves the existing complete shape. Incremental pulls use
   // the server-owned mutable cursor directly from the member-first index and
-  // include soft-deleted rows as tombstones.
-  const sets = setsSince > 0
-    ? await workoutDB(db)
+  // include soft-deleted rows as tombstones. Both read set_logs.user_id
+  // (migration 0034: backfilled, asserted, and trigger-maintained for legacy
+  // inserts) so neither needs to join sessions for ownership.
+  const setsStatement = setsSince > 0
+    ? workoutDB(db)
         .prepare(
           `SELECT * FROM set_logs
             WHERE user_id = ?1 AND updated_at > ?2
             ORDER BY updated_at, id`,
         )
         .bind(userId, setsSince)
-        .all<SetLogRow>()
-    : await workoutDB(db)
+    : workoutDB(db)
         .prepare(
-          `SELECT sl.* FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
-            WHERE s.user_id = ?1 ORDER BY sl.logged_at`,
+          `SELECT sl.* FROM set_logs sl
+            WHERE sl.user_id = ?1 ORDER BY sl.logged_at`,
         )
-        .bind(userId)
-        .all<SetLogRow>();
+        .bind(userId);
   // external_events ride a SEPARATE watermark (synced_at epoch-ms). This is
   // a server-owned reconciled cache: NOT gated on plans.version and a ride
   // sync NEVER bumps it. TWO explicit modes (iOS must match):
@@ -5739,20 +5741,18 @@ export async function getState(
   //    cursor INCLUDING soft-deleted ones (deleted_at set), so a syncing
   //    client learns about removals and drops them — exactly the set_logs
   //    delta+tombstone pattern.
-  const events =
+  const eventsStatement =
     eventsSince > 0
-      ? await workoutDB(db)
+      ? workoutDB(db)
           .prepare(
             'SELECT * FROM external_events WHERE user_id = ?1 AND synced_at > ?2 ORDER BY synced_at',
           )
           .bind(userId, eventsSince)
-          .all<ExternalEventRow>()
-      : await workoutDB(db)
+      : workoutDB(db)
           .prepare(
             'SELECT * FROM external_events WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY synced_at',
           )
-          .bind(userId)
-          .all<ExternalEventRow>();
+          .bind(userId);
   // external_activities ride their OWN watermark (activities_since), exactly
   // like external_events: a separate server-owned reconciled cache (COMPLETED
   // endurance actuals), never gated on plans.version. Same two modes:
@@ -5760,20 +5760,18 @@ export async function getState(
   //    (full replace on the client — no tombstones to reconcile).
   //  - INCREMENTAL  (activities_since > 0): every row touched since the cursor
   //    INCLUDING soft-deleted ones, so a syncing client learns about removals.
-  const activities =
+  const activitiesStatement =
     activitiesSince > 0
-      ? await workoutDB(db)
+      ? workoutDB(db)
           .prepare(
             'SELECT * FROM external_activities WHERE user_id = ?1 AND synced_at > ?2 ORDER BY synced_at',
           )
           .bind(userId, activitiesSince)
-          .all<ExternalActivityRow>()
-      : await workoutDB(db)
+      : workoutDB(db)
           .prepare(
             'SELECT * FROM external_activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY date',
           )
-          .bind(userId)
-          .all<ExternalActivityRow>();
+          .bind(userId);
   // Generic activity log (M3 — `activities` table). Append-only,
   // user-authored. Same delta-sync pattern as set_logs / external_events:
   //  - FULL RELOAD  (log_since absent/0): full current non-deleted set.
@@ -5782,17 +5780,28 @@ export async function getState(
   //    removals. Uses server-owned `updated_at`, never the client-authored
   //    event time, so clock skew cannot strand rows (see
   //    listActivitiesForUser for the delta-sync contract).
-  const userActivities =
+  const activityLogStatement =
     logSince > 0
-      ? await listActivitiesForUser(db, userId, logSince)
-      : (
-          await workoutDB(db)
-            .prepare(
-              'SELECT * FROM activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY logged_at',
-            )
-            .bind(userId)
-            .all<ActivityRow>()
-        ).results;
+      ? listActivitiesForUserStatement(db, userId, logSince)
+      : workoutDB(db)
+          .prepare(
+            'SELECT * FROM activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY logged_at',
+          )
+          .bind(userId);
+  const [sessions, sets, events, activities, activityLog] = (await workoutDB(db).batch([
+    sessionsStatement,
+    setsStatement,
+    eventsStatement,
+    activitiesStatement,
+    activityLogStatement,
+  ])) as [
+    D1Result<SessionRow>,
+    D1Result<SetLogRow>,
+    D1Result<ExternalEventRow>,
+    D1Result<ExternalActivityRow>,
+    D1Result<ActivityRow>,
+  ];
+  const userActivities = activityLog.results;
   return {
     plan: tree,
     plan_version: plan?.version ?? 0,
@@ -6055,15 +6064,23 @@ export async function listActivitiesForUser(
   userId: string,
   sinceMs: number,
 ): Promise<ActivityRow[]> {
-  const rows = await workoutDB(db)
+  const rows = await listActivitiesForUserStatement(db, userId, sinceMs).all<ActivityRow>();
+  return rows.results;
+}
+
+/** The delta-sync statement behind `listActivitiesForUser`, for batching. */
+function listActivitiesForUserStatement(
+  db: D1Database,
+  userId: string,
+  sinceMs: number,
+): D1PreparedStatement {
+  return workoutDB(db)
     .prepare(
       `SELECT * FROM activities
        WHERE user_id = ?1 AND updated_at > ?2
        ORDER BY updated_at, id`,
     )
-    .bind(userId, sinceMs)
-    .all<ActivityRow>();
-  return rows.results;
+    .bind(userId, sinceMs);
 }
 
 // ---- plan-tree mutations (MCP write tools) -------------------------------

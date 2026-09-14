@@ -46,7 +46,7 @@ struct IntervalsSettingsView: View {
                         Text("Your connection is saved. Recent activities haven’t finished importing. You can retry without entering your credentials again.")
                             .font(.footnote)
                     } else if let lastSync = status?.last_synced_at {
-                        LabeledContent("Last synced", value: relative(epochMs: lastSync))
+                        LabeledContent("Last synced", value: RelativeTimeFormat.short(epochMs: lastSync))
                     }
                     Button(retry ? "Retry sync" : "Sync recent activities") {
                         errorMessage = nil
@@ -119,11 +119,5 @@ struct IntervalsSettingsView: View {
         .navigationTitle("Intervals.icu")
         .navigationBarTitleDisplayMode(.inline)
         .task { await groupModel.refreshMe() }
-    }
-
-    private func relative(epochMs: Int) -> String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .short
-        return formatter.localizedString(for: Date(timeIntervalSince1970: Double(epochMs) / 1000), relativeTo: Date())
     }
 }

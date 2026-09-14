@@ -213,13 +213,19 @@ private struct WorkoutConsistencyChart: View {
     }
 }
 
+private enum ProgressDateFormat {
+    static let shortDate: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = CalendarProjection.calendar
+        formatter.timeZone = CalendarProjection.calendar.timeZone
+        formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        return formatter
+    }()
+}
+
 private func shortDate(_ civilDate: String) -> String {
     guard let date = CalendarProjection.date(from: civilDate) else { return civilDate }
-    let formatter = DateFormatter()
-    formatter.calendar = CalendarProjection.calendar
-    formatter.timeZone = CalendarProjection.calendar.timeZone
-    formatter.setLocalizedDateFormatFromTemplate("MMM d")
-    return formatter.string(from: date)
+    return ProgressDateFormat.shortDate.string(from: date)
 }
 
 private func progressHeading(_ title: String, icon: String) -> some View {

@@ -102,7 +102,6 @@ struct TemplateExercise: Codable, Identifiable, Equatable {
     /// Duration-pinned loaded exercises still need their positive load, while
     /// cardio efforts do not expose a synthetic weight field.
     var showsLoadControl: Bool { exercise_modality != "cardio" }
-    var isUnilateral: Bool { exercise_laterality == "unilateral" }
     var isPerHand: Bool { exercise_load_mode == "per_hand" }
     /// Prescribed hold/effort for a timed or cardio set, in seconds. Uses
     /// target_duration_s (the real field) and falls back to target_reps for
@@ -440,6 +439,12 @@ extension SetLog {
     }
 }
 
+/// Minimal `Identifiable` box so a bare `String` id — a workout id, a
+/// `YYYY-MM-DD` — can drive a `.sheet(item:)` presentation.
+struct IdentifiedString: Identifiable {
+    let id: String
+}
+
 /// One formatter for persisted, pending, history, agenda, and group-feed set
 /// values. `weight` is external load for bodyweight work: positive is added
 /// load, negative is assistance, and zero is strict bodyweight.
@@ -595,10 +600,10 @@ struct ExternalActivity: Codable, Identifiable, Equatable {
         return kind.capitalized
     }
 
-    /// SF Symbol per activity kind (calendar glyph + agenda header).
-    /// Mirrors the kinds emitted by `kindOf` in the backend's
-    /// src/intervals.ts and FeedItemRow.rideGlyph — keep them in sync.
-    var glyph: String {
+    /// SF Symbol per activity kind (calendar glyph, agenda header, and the
+    /// group feed's ride rows). Mirrors the kinds emitted by `kindOf` in the
+    /// backend's src/intervals.ts — keep them in sync.
+    static func glyph(forKind kind: String) -> String {
         switch kind {
         case "ride":       return "bicycle"
         case "run":        return "figure.run"
@@ -613,6 +618,8 @@ struct ExternalActivity: Codable, Identifiable, Equatable {
         default:           return "figure.mixed.cardio"
         }
     }
+
+    var glyph: String { ExternalActivity.glyph(forKind: kind) }
 
     /// "1h 30m" / "45m" from `moving_time_sec` (nil → nil).
     var durationLabel: String? {

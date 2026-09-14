@@ -96,7 +96,7 @@ struct ManualActivitySheet: View {
         saving = true
         let activity = PendingActivity(
             id: UUID().uuidString,
-            date: ymd(date),
+            date: CalendarProjection.dateString(date),
             kind: kind,
             title: title.trimmingCharacters(in: .whitespaces),
             duration_minutes: durationMin,
@@ -107,15 +107,6 @@ struct ManualActivitySheet: View {
         // the network round trip.
         Task { await onSave(activity) }
         dismiss()
-    }
-
-    private func ymd(_ d: Date) -> String {
-        let f = DateFormatter()
-        f.calendar = Calendar(identifier: .gregorian)
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = .current
-        f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: d)
     }
 }
 

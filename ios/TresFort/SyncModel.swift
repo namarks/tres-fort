@@ -542,13 +542,12 @@ final class SyncModel: ObservableObject {
             defaults: defaults)
     }
 
+    /// Device-local civil date. Formatting goes through the projection's
+    /// cached formatter — same gregorian / en_US_POSIX / device-tz /
+    /// `yyyy-MM-dd` configuration this used to rebuild on every access, and
+    /// this property is read ~80 times per render pass.
     var todayString: String {
-        let f = DateFormatter()
-        f.calendar = Calendar(identifier: .gregorian)
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = .current
-        f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: now())
+        CalendarProjection.dateString(now())
     }
 
     var selectedDay: Workout? {
@@ -586,7 +585,13 @@ final class SyncModel: ObservableObject {
         return true
     }
 
-    func load() async {
+    /// Set by a caller that needs the exercise library re-read even though
+    /// the plan version did not move (the picker's pull-to-refresh). Consumed
+    /// by the next successful catalog read.
+    private var catalogRefreshRequested = false
+
+    func load(refreshingCatalog: Bool = false) async {
+        if refreshingCatalog { catalogRefreshRequested = true }
         await load(requiringFreshness: stateFreshnessGeneration)
     }
 
@@ -683,11 +688,14 @@ final class SyncModel: ObservableObject {
                     loadError = "Couldn't save the latest sync state."
                     return
                 }
-                // A cached catalog is presentation-only too: always attempt a live
-                // replacement after state succeeds so renamed exercises and changed
-                // load semantics do not freeze forever. A catalog failure retains
-                // the last successful rows, matching the pre-cache best-effort load.
-                if let catalogJWT = currentJWT,
+                // A cached catalog is presentation-only, but it only goes stale
+                // when the plan tree moves (a delta pull returns `plan == nil`),
+                // so re-read it then, when nothing is cached at all, or when a
+                // caller explicitly asked — not after every state pull. A catalog
+                // failure retains the last successful rows, matching the
+                // pre-cache best-effort load.
+                if catalogRefreshRequested || catalog.isEmpty || state.plan != nil,
+                   let catalogJWT = currentJWT,
                    let rows = try? await catalogAPI.getExercises(jwt: catalogJWT) {
                     guard isCurrentAccount, canMutateBoundSetAccount,
                           key.featureSessionEpoch == featureSessionEpoch,
@@ -699,6 +707,7 @@ final class SyncModel: ObservableObject {
                     catalog = rows
                     ExerciseCatalogSnapshotStore.save(
                         rows, userID: accountID, defaults: defaults)
+                    catalogRefreshRequested = false
                 }
                 loadError = nil
                 return
@@ -2299,10 +2308,6 @@ final class SyncModel: ObservableObject {
         historyIndex.workingSetsByExercise[exerciseID] ?? []
     }
 
-    func lastWorkingSet(_ exerciseID: String) -> SetLog? {
-        live(exerciseID).max { $0.logged_at < $1.logged_at }
-    }
-
     func todaySets(_ exerciseID: String) -> [SetLog] {
         guard let sid = todaySession?.id else { return [] }
         return live(exerciseID)
@@ -2525,14 +2530,6 @@ final class SyncModel: ObservableObject {
     var pendingTerminalIntentCount: Int {
         terminalOutbox.intents.filter { $0.deliveryState != .acknowledged }.count
     }
-    var failedTerminalIntentCount: Int {
-        terminalOutbox.intents.filter { $0.deliveryState == .failed }.count
-    }
-    var queuedTerminalIntentCount: Int {
-        terminalOutbox.intents.filter {
-            $0.deliveryState == .queued && $0.id != sendingTerminalIntentID
-        }.count
-    }
     var sendingTerminalIntentCount: Int { sendingTerminalIntentID == nil ? 0 : 1 }
 
     var currentTerminalIntent: WorkoutTerminalIntent? {
@@ -2550,11 +2547,6 @@ final class SyncModel: ObservableObject {
 
     var visibleTerminalIntent: WorkoutTerminalIntent? {
         terminalOutbox.intents.first { $0.deliveryState != .acknowledged }
-    }
-
-    var hasUnacknowledgedDiscardForToday: Bool {
-        guard let intent = terminalOutbox.intent(for: todayString) else { return false }
-        return intent.action == .discard && intent.deliveryState != .acknowledged
     }
 
     private var discardBarrierDates: Set<String> {
@@ -2636,14 +2628,6 @@ final class SyncModel: ObservableObject {
             setIntent($0, matches: ex, on: date)
                 && $0.deliveryState == .failed
         }
-    }
-
-    /// Terminal workout mutations are P1, but P0 must not let an acknowledged
-    /// discard/finish erase the session context that queued set retries need.
-    var hasPendingSetsForCurrentWorkout: Bool {
-        let date = todaySession?.date ?? todayString
-        return setOutbox.pending.contains { $0.date == date }
-            || setCorrections.contains { $0.date == date }
     }
 
     private func persistEnqueuedSetIntent(_ intent: PendingSetIntent) -> Bool {
@@ -2902,10 +2886,20 @@ final class SyncModel: ObservableObject {
     /// pull acknowledges commit-then-timeout results or detects a stale
     /// post-discard revival; the second pass immediately settles anything the
     /// reconciliation requeued.
+    ///
+    /// With nothing queued there is no local mutation to reconcile, so the
+    /// recovery pull only needs current state: `load()` may JOIN the launch
+    /// pull already in flight instead of bumping the freshness generation and
+    /// forcing a second round trip behind it.
     func recoverWorkoutWrites() async {
+        let hadQueuedWork = !setOutbox.isEmpty || !terminalOutbox.intents.isEmpty || !setCorrections.isEmpty
         await drainWorkoutWriteOutboxes()
         guard currentJWT != nil, canInitiateBoundFeatureAction else { return }
-        await loadAfterMutation()
+        if hadQueuedWork {
+            await loadAfterMutation()
+        } else {
+            await load()
+        }
         guard currentJWT != nil, canInitiateBoundFeatureAction else { return }
         await drainWorkoutWriteOutboxes()
     }
@@ -4607,16 +4601,6 @@ final class SyncModel: ObservableObject {
             || hasRunnerAwaitingSetRecovery
             || isReopeningSkippedWorkout
     }
-    var liveWorkoutValidationActionTitle: String {
-        hasSavedRunnerAwaitingValidation
-            ? "CONNECT TO RESUME"
-            : "CONNECT TO VERIFY"
-    }
-    var liveWorkoutValidationBlockTitle: String {
-        hasSavedRunnerAwaitingValidation
-            ? "Connect to resume first"
-            : "Connect to verify workout first"
-    }
 
     /// Restore only a checkpoint that a live `/api/state` response already
     /// validated against today's still-in-progress server session and current
@@ -4908,8 +4892,10 @@ final class SyncModel: ObservableObject {
     }
 
     /// The prescribed hold completed (countdown reached the end) — logs the
-    /// FULL target hold. The model-owned deadline task calls this even when
-    /// the runner view is no longer mounted.
+    /// FULL target hold. The model-owned deadline task does NOT come through
+    /// here: it calls the private `finishTimedSetIfDue(requiring:)` variant,
+    /// which re-validates the exact attempt it was scheduled for. This is the
+    /// unconditional entry point.
     func finishTimedSetAuto() async {
         guard let validated = validatedTimedSetAttempt() else { return }
         await commitTimedSet(validated, held: validated.attempt.holdSeconds)
@@ -5029,7 +5015,6 @@ final class SyncModel: ObservableObject {
     /// "Resolved" = nothing left to do here: either completed or skipped.
     /// Drives requeue/finish so a skipped exercise is never auto-represented.
     func isResolved(_ ex: TemplateExercise) -> Bool { isComplete(ex) || isSkipped(ex) }
-    var allComplete: Bool { !exercises.isEmpty && exercises.allSatisfy { isComplete($0) } }
 
     /// First UNRESOLVED exercise after the current one (wraps), so a
     /// completed-or-skipped lift never traps you and order is flexible.
@@ -6443,6 +6428,22 @@ final class SyncModel: ObservableObject {
         return nil
     }
 
+    private static let weekdayLabelFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = CalendarProjection.calendar
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "EEEE"
+        return f
+    }()
+
+    private static let dayMonthLabelFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = CalendarProjection.calendar
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "EEE d MMM"
+        return f
+    }()
+
     /// Friendly relative label for an upcoming `YYYY-MM-DD`:
     /// "Tomorrow", a weekday name ("Wed") within the week, else a date.
     func relativeLabel(for ymd: String) -> String {
@@ -6452,17 +6453,9 @@ final class SyncModel: ObservableObject {
             .dateComponents([.day], from: today, to: target).day ?? 0
         if days == 1 { return "Tomorrow" }
         if days >= 2 && days <= 6 {
-            let f = DateFormatter()
-            f.calendar = CalendarProjection.calendar
-            f.locale = Locale(identifier: "en_US_POSIX")
-            f.dateFormat = "EEEE"
-            return f.string(from: target)
+            return Self.weekdayLabelFormatter.string(from: target)
         }
-        let f = DateFormatter()
-        f.calendar = CalendarProjection.calendar
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "EEE d MMM"
-        return f.string(from: target)
+        return Self.dayMonthLabelFormatter.string(from: target)
     }
 
     /// Start the guided workout for the template TODAY resolves to (via

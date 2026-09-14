@@ -7,162 +7,128 @@ the iOS app. It exists so the work can be resumed by any agent or person, in any
 AI app, without the originating chat session.
 
 `AGENTS.md` remains the durable repository contract; this file is a temporary
-work record, not guidance. Delete it once the packages below land.
-
-## Why this file exists
-
-Chat sessions are not portable between AI apps. Findings and work briefs held
-only in a conversation die with it. Everything needed to finish this sweep is
-therefore written down here: what was found, what landed, what remains, and how
-to verify. Any compatible coding agent reads `AGENTS.md` on entry and can pick
-up from the sections below.
+work record, not guidance. Delete it once the sweep lands.
 
 ## Scope and method
 
 Four read-only discovery passes covered `src/db.ts`, the REST routes, the MCP
 server and shared modules, the iOS sync layer, and the iOS view layer. A
 mechanical unused-export scan (`npx ts-prune`) cross-checked the TypeScript
-findings. Every claim below was verified against the code rather than against
-existing documentation.
+findings. Three implementation passes then ran in isolated worktrees, each
+followed by an independent reviewer whose only job was to disprove the
+no-behaviour-change claim. Every claim here was verified against the code rather
+than against existing documentation.
 
-Baseline before any change: `tsc --noEmit` clean; 78 test files, 1102 tests
-passing in about seven minutes under the Workers pool.
+Baseline before any change: `tsc --noEmit` clean; 78 test files, 1102 tests.
 
-This sweep deliberately changes no behaviour. It removes dead code, collapses
-duplication, and cuts redundant round trips. Defects found along the way are
-recorded separately and are not fixed here.
+This sweep changes no behaviour. It removes dead code, collapses duplication,
+and cuts redundant round trips. Defects found along the way are recorded at the
+end and are not fixed here.
 
-## Landed
+## What the sweep did
 
-| Commit | Change |
-|---|---|
-| `bc18fe0` | Delete the dead legacy plan-write cluster and `accountDeletionReceiptMatches` |
-| `c36ffda` | Extract `loadPlanTree` so `getState` and `deleteWorkout` reuse the plan row they already hold |
-| `aed7a7e` | `deleteWorkoutAtVersion` takes the plan row the REST route already read |
-| `314cb48` | Batch the five `getState` collection reads; drop the ownership join on the full sets reload |
-| `672a61d` | Beta-feedback mirror dedupes against both issue marker syntaxes and every label |
-| `d95d5a3` | Revert the `getState` read batching; keep the ownership join removal |
+**Backend, `db.ts` and routes.** Deleted the dead legacy plan-write cluster.
+Extracted `loadPlanTree` so callers holding a plan row stop re-reading it.
+`deleteWorkout` takes the plan row the route already read. Bound the plan fence
+values that were being spliced into SQL text. Extracted `fetchIntervalsArray`
+from the two intervals readers. Routed group and Apple-identity reads through
+`db.ts` helpers. Memoised the legacy SQL rewrite per query and mode. Read the
+calendar projection inputs once for both ride-conflict windows, taking that call
+from eleven queries to six.
 
-The dead plan-write cluster mattered beyond tidiness. `addWorkout`,
+**Backend, MCP and shared modules.** Dropped the unreachable `note` hooks from
+fourteen atomic-write tools and made the type enforce it. Deleted unreferenced
+helpers and unexported in-file-only symbols. Projected the weekly schedule from
+the plan tree in hand instead of re-reading the database. Batched the coach
+brief's per-session set reads. Shared one field-validation module between REST
+and MCP. Reused the canonical tonnage metric, trip-type set and weekday list.
+Resolved the member's today through one helper. Moved MCP day-reference lookups
+into `db.ts`, as the architecture rule requires. Sent tool results as compact
+JSON.
+
+**iOS.** Deleted verified-unused accessors and two dead members. Routed three
+private weight formatters through the canonical one. Replaced four identical
+sheet-item wrappers with one. Folded a duplicated activity glyph switch into the
+model. Read the Live Activity timer kind through one computed property. Hoisted
+per-render date formatters out of view bodies and computed repeated per-render
+values once.
+
+## The three things worth knowing
+
+**The dead plan-write cluster mattered beyond tidiness.** `addWorkout`,
 `patchWorkout`, `bumpPlanVersion`, `bumpPlanVersionByDay` and
 `dedupePlanDayOrderIndexes` predate migration `0040` and bumped `plans.version`
 without going through `preparePlanWriteStart` / `preparePlanWriteFinish`. Any
 future caller would have written a plan mutation with no audit row, no coaching
-note and no snapshot, violating the one-atomic-writer rule. They had no callers
-and are now gone.
+note and no snapshot, violating the one-atomic-writer rule. They had no callers.
 
-`314cb48` was committed without a suite run because its author stopped mid-item,
-and CI then caught what it broke. Batching the five `getState` collection reads
-into one D1 call means the sets statement's `.all()` is never invoked, so the P1
-delta-cursor test that proxies it to commit a write mid-read never fires its
-interleave. That test guards against real delta-sync data loss, so `d95d5a3`
-restores the serial reads rather than adapting the test to the new seam.
+**Batching the `getState` reads is not cleanup, and must not be re-attempted as
+such.** An early commit batched the five collection reads into one D1 call. CI
+caught it. `test/data_storage_p1.test.ts` proves the watermark contract by
+proxying the sets statement's `.all()` to commit a write mid-read; a batch never
+calls `.all()`, so the interleave never fires. Two independent passes reached the
+same conclusion and reverted it. The change also replaces five independent reads
+with a single read snapshot, which is a real semantic difference on the hottest
+sync path. If those round trips are worth collapsing, it is a deliberate
+performance change that must also re-point that test, not a cleanup.
 
-**Do not re-attempt the read batching as part of a cleanup.** It changes
-read-interleaving semantics, which is by definition not behaviour-preserving. If
-the five round trips are worth removing, that is its own change, and it owes an
-argument about what the batch's single read snapshot does to the watermark
-contract. The ownership join removal in the same commit was orthogonal and
-survives.
+The ownership half of that commit was orthogonal and survives: the full sets
+reload selects on `set_logs.user_id` instead of joining `sessions`. Migration
+`0034` backfills that column, asserts the backfill with a throwaway
+CHECK-constrained table that fails the migration if any row is orphaned or
+disagrees with its session, and maintains it by trigger for the old insert shape.
 
-## Remaining work
+**The beta-feedback mirror was filing every submission repeatedly.** Its dedup
+scan filtered on one label and matched one marker syntax. A second mirror outside
+this repository used a different label and a different syntax, so each run
+re-filed everything the other had captured. Several TestFlight submissions exist
+as three separate issues.
 
-Three independent packages. Each item is its own commit so a failing CI job can
-be bisected.
+## Rejected by review, deliberately not landed
 
-### Package A — backend, `db.ts` and routes
+An independent reviewer found two blocking defects and four behaviour changes in
+the iOS package. All six are reverted in `e66740b`. They are recorded here so
+they are not reintroduced.
 
-1. **Bind the interpolated fence values.** `updateExercise` interpolates
-   `plan.id`, `plan.version` and the write nonce into SQL text, and
-   `restorePlanSnapshot` interpolates the nonce. Roughly two dozen other fence
-   sites bind them. The values are server-generated, so this is consistency
-   rather than an injection fix.
-2. **Collapse the duplicate date helpers.** `todayLocal` in `intervals.ts`
-   equals `todayInTz(null)` in `db.ts`, and a second `addDays` there duplicates
-   the exported one. Check for an import cycle first.
-3. **Extract `fetchIntervalsArray`.** `fetchPlannedEvents` and
-   `fetchCompletedActivities` share about forty-five identical lines of fetch,
-   timeout, status and parse handling. Every failure reason string must survive.
-4. **Route-level D1 access that duplicates helpers.** The today route
-   re-implements `getSetsForSession`; two handlers repeat a group-existence
-   probe that `requireGroupMembership` already wraps; three sites repeat the
-   Apple-subject user lookup.
-5. **Memoise the schema rewriter.** `workoutSchema.ts` runs a full regex
-   tokenisation of every SQL statement on every execution, even once the cached
-   schema is `workouts`. Cache per query string and mode in a bounded map.
-   Probe timing, the sixty-second cache lifetime and retry-once semantics must
-   not change; the rename compatibility window depends on them.
-6. **Optional.** `getRideConflicts` projects the calendar twice, each projection
-   re-reading five tables. Pre-read the inputs once. The projection algorithm
-   must not change: it is in byte-for-byte parity with `CalendarProjection.swift`
-   and `test/calendar.test.ts` is the contract.
+| Change | Why it was rejected |
+|---|---|
+| Starter-availability task key | Kept two of the seven conjuncts the guard still tests, so the task could fire once while the guard was false and never re-fire, losing the starter entry point for the process. |
+| Catalog fetch gating | `/api/state` returns the plan only when its version moved, so a member not editing their plan would never re-read the exercise catalog, across relaunches. A migration adding exercises or changing laterality would never reach them. |
+| Write recovery joining an in-flight pull | On reconnect it could join the request already doomed by the outage and return having never fetched state. |
+| `todayString` via the cached formatter | That formatter captures the time zone once at first use, and this is the device-local civil date the client owns for session attribution. `ManualActivitySheet.ymd` was restored for the same reason. |
+| Shared join-error copy | The consolidation picked the typed-code wording, so a dead Universal Link told a member to check the characters of a code they never typed. |
+| `FinishedView` sets from the index | Row membership is identical, but the index comparator is not a total order, so the set review list could reorder. That is the list a member taps to correct a set. |
 
-### Package B — backend, MCP and shared modules
+The lesson generalises. Every one of these came from a brief that described a
+redundancy accurately but missed what the redundant-looking code was actually
+load-bearing for.
 
-1. **Remove the unreachable `note` hooks.** Tools declared `atomicWrite: true`
-   carry a `note` hook the dispatcher can never call, because it only runs in
-   the non-atomic branch. Fourteen tools are affected. Tighten the `Tool` type
-   so the two are mutually exclusive.
-2. **Dead exports.** `assertOwner`, `emptySchedule`, and five symbols exported
-   but used only in their own file.
-3. **Stop re-reading the plan.** `get_current_plan` and `get_today_workout`
-   resolve schedule names through a database call that re-reads the plan and
-   workouts already held in the tree in memory. `buildStateBrief` already
-   derives the same map purely. Extract that and reuse it in all three.
-4. **Fix the N+1 in the coach brief.** `buildStateBrief` fetches sets one
-   session at a time for up to eight sessions.
-5. **De-duplicate MCP against REST.** Two parallel sets of field validators,
-   an inline tonnage calculation that re-implements `positiveSetTonnage`,
-   trip-type and race normalisation, weekday literals, today-resolution, and a
-   coach projection expression written out twice.
-6. **Move raw SQL out of tool handlers.** Two MCP handlers query `workouts`
-   directly, against the rule that all D1 access goes through `db.ts`. Preserve
-   the existing `LIMIT 1` semantics, including its behaviour on duplicate names.
-7. **Stop pretty-printing tool results.** The dispatcher serialises with
-   two-space indentation, roughly doubling the tokens sent to the coaching
-   model, on top of the deprecated-key duplication `workoutWire` already adds.
-   Keep this in its own revertable commit.
+## Deliberately skipped during implementation
 
-### Package C — iOS
-
-No Swift toolchain exists in a Linux session, so this package is restricted to
-mechanical, grep-verified edits and is validated by CI on macOS.
-
-1. **Stop the duplicate launch pulls.** The tab view's task block and its
-   foreground scene-phase branch both call the write-recovery path, which always
-   forces a fresh state pull and a catalog fetch. A cold launch therefore pulls
-   two to three times. Route the empty-outbox case through the joining load
-   instead of the freshness-bumping one.
-2. **Stop the starter-availability refetch.** Its task identity includes the
-   loading flag, so it flips on every pull and re-issues the request.
-3. **Stop refetching the whole exercise catalog** after every successful pull.
-4. **Cache the date formatters.** The today-string accessor builds a
-   `DateFormatter` on every read across roughly eighty-three references,
-   including view bodies; the calendar projection already has a cached one with
-   identical configuration. A further nine inline formatter allocations sit in
-   view bodies, three of them per feed row.
-5. **Hoist repeated work in view builders**, only where both evaluations sit in
-   one scope with no state mutation between them.
-6. **Delete ten verified-unused symbols**, and fix two stale doc comments.
-7. **Collapse duplication**: three private weight formatters that duplicate the
-   canonical one, four identical identifiable-string wrappers, join-code error
-   copy written three times with drifted wording, an invite alphabet in four
-   files, a duplicated activity glyph switch, a widget predicate repeated six
-   times, and three different ways of computing today's working sets.
-
-An earlier pass wrongly flagged the rides-by-date helper as dead. It is used in
-three files. Treat every candidate with the same suspicion and grep first.
+- **Duplicate date helpers in `intervals.ts`.** `db.ts` imports from
+  `intervals.ts`, so importing back would create a cycle. Removing the
+  duplication needs the helpers moved to a third leaf module, which is a
+  different change.
+- **Race normalisation.** The MCP tool and the shared normaliser disagree on
+  empty strings, so sharing one would change which payloads are accepted.
+- **Two iOS deletions from the brief were wrong.** A helper the brief called
+  dead has seven test callers, and a fixture parameter it called unused is
+  passed. Both were kept. Grep before deleting, including the test targets.
 
 ## Verification
 
 ```bash
 npm run typecheck                  # fast
-npx vitest run                     # 78 files, 1102 tests, about 7 minutes
+npx vitest run                     # 78 test files
 npx vitest run test/calendar.test.ts    # calendar parity contract
 npm run plans:check                # planning conventions
 ```
 
-iOS builds and tests need macOS with Xcode:
+Run the suite without other test runs competing on the machine. Concurrent runs
+collide in the Workers pool's isolated storage and produce misleading timeouts in
+unrelated suites.
+
+iOS builds and tests need macOS with Xcode, and CI is the only place they run:
 
 ```bash
 cd ios && xcodegen generate
@@ -188,8 +154,8 @@ These are defects, not code health, and each deserves its own change.
 
 ## Future work
 
-`db.ts` is roughly 12.8k lines and `SyncModel.swift` roughly 6.9k, carrying at
-least seven concerns. The plan fence predicate appears about twenty-five times
-in `db.ts` and is the natural seam for a split along the two consistency
-classes. That is a structural change and should not ride along with a sweep
-whose whole claim is that nothing behaves differently.
+`db.ts` is roughly 12.6k lines and `SyncModel.swift` roughly 6.9k, carrying at
+least seven concerns. The plan fence predicate appears about twenty-five times in
+`db.ts` and is the natural seam for a split along the two consistency classes.
+That is a structural change and should not ride along with a sweep whose whole
+claim is that nothing behaves differently.

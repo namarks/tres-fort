@@ -439,6 +439,12 @@ extension SetLog {
     }
 }
 
+/// Minimal `Identifiable` box so a bare `String` id — a workout id, a
+/// `YYYY-MM-DD` — can drive a `.sheet(item:)` presentation.
+struct IdentifiedString: Identifiable {
+    let id: String
+}
+
 /// One formatter for persisted, pending, history, agenda, and group-feed set
 /// values. `weight` is external load for bodyweight work: positive is added
 /// load, negative is assistance, and zero is strict bodyweight.

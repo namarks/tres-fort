@@ -93,7 +93,7 @@ struct CalendarMonthView: View {
             }
         }
         .sheet(item: Binding(
-            get: { selectedDate.map(IdentifiedDate.init) },
+            get: { selectedDate.map(IdentifiedString.init) },
             set: { selectedDate = $0?.id })
         ) { wrapped in
             NavigationStack {
@@ -583,9 +583,6 @@ struct CalendarMonthView: View {
     }
 
 }
-
-/// Sheet item wrapper (a YYYY-MM-DD string identifies the day).
-private struct IdentifiedDate: Identifiable { let id: String }
 
 /// Tracks the History feed's scroll offset (iOS 17-compatible — no
 /// `onScrollGeometryChange`, which is 18+). The feed reports its top edge in a

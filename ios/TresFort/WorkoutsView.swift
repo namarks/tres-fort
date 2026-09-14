@@ -1,9 +1,5 @@
 import SwiftUI
 
-private struct WorkoutTarget: Identifiable {
-    let id: String
-}
-
 /// The routine editor reloads after every plan-tree write, but an exercise or
 /// name edit must not erase weekday choices that have not been saved yet.
 /// Only a different plan identity or persisted weekday mapping resets them.
@@ -72,8 +68,8 @@ struct WorkoutsView: View {
     @State private var addingDay = false
     @State private var renamingDay: Workout?
     @State private var deletingDay: Workout?
-    @State private var detailTarget: WorkoutTarget?
-    @State private var editTarget: WorkoutTarget?
+    @State private var detailTarget: IdentifiedString?
+    @State private var editTarget: IdentifiedString?
     @State private var assignmentTarget: Workout?
     @State private var showHistory = false
 
@@ -163,7 +159,7 @@ struct WorkoutsView: View {
                     ForEach(sync.plan?.workouts ?? []) { day in
                         HStack(spacing: 0) {
                             Button {
-                                detailTarget = WorkoutTarget(id: day.id)
+                                detailTarget = IdentifiedString(id: day.id)
                             } label: {
                                 HStack(spacing: 12) {
                                     VStack(alignment: .leading, spacing: 4) {
@@ -203,7 +199,7 @@ struct WorkoutsView: View {
                                 }
                                 .disabled(!WorkoutLibraryPolicy.isScheduled(workoutID: day.id, plan: sync.plan))
                                 Button("Edit exercises") {
-                                    editTarget = WorkoutTarget(id: day.id)
+                                    editTarget = IdentifiedString(id: day.id)
                                 }
                                 Button("Rename") {
                                     renameDayName = day.name

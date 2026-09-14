@@ -4,9 +4,6 @@ private func clock(_ s: Int) -> String {
     s <= 0 ? "GO" : String(format: "%d:%02d", s / 60, s % 60)
 }
 
-/// Identifies the day whose workout the editor sheet is editing.
-private struct EditDayTarget: Identifiable { let id: String }
-
 private struct PendingSetBanner: View {
     @ObservedObject var sync: SyncModel
     @State private var showAbandonConfirm = false
@@ -204,8 +201,9 @@ struct TodayView: View {
     @State private var showTrainingSetup = false
     @State private var starterAvailable: Bool?
     @State private var starterAvailabilityFailed = false
-    @State private var previewTarget: EditDayTarget?
-    @State private var unresolvedDate: AgendaDate?
+    /// The day whose workout the editor sheet is editing.
+    @State private var previewTarget: IdentifiedString?
+    @State private var unresolvedDate: IdentifiedString?
     /// Keeps a double tap from starting twice while iOS is presenting the
     /// one-time notification permission prompt before a new workout.
     @State private var isPreparingWorkoutStart = false
@@ -428,7 +426,7 @@ struct TodayView: View {
                             Text(workout.name).font(Theme.display(30)).foregroundStyle(Theme.text)
                             Text("\(workout.exercises.count) exercises")
                                 .font(.subheadline).foregroundStyle(Theme.muted)
-                            Button("View workout", systemImage: "chevron.right") { previewTarget = EditDayTarget(id: workout.id) }
+                            Button("View workout", systemImage: "chevron.right") { previewTarget = IdentifiedString(id: workout.id) }
                                 .frame(minHeight: 44).accessibilityIdentifier("today.viewWorkout")
                             Button(isPreparingWorkoutStart ? "Preparing…" : sync.hasResumableWorkout ? "Continue workout" : "Start workout") {
                                 prepareNewWorkout {
@@ -448,7 +446,7 @@ struct TodayView: View {
                         Text("Workout needs review").font(Theme.display(30)).foregroundStyle(Theme.text)
                         Text("There is a workout for today, but its saved workout details are unavailable. Your recorded sets are still available.")
                             .foregroundStyle(Theme.muted)
-                        Button("View workout record") { unresolvedDate = AgendaDate(id: session.date) }
+                        Button("View workout record") { unresolvedDate = IdentifiedString(id: session.date) }
                             .frame(minHeight: 44).accessibilityIdentifier("today.viewUnresolvedWorkout")
                         Button("Refresh workout") { Task { await sync.load() } }.frame(minHeight: 44)
                     } else {
@@ -514,16 +512,14 @@ struct TodayView: View {
     }
 }
 
-private struct AgendaDate: Identifiable { let id: String }
-
 private struct NextWorkoutCard: View {
     @ObservedObject var sync: SyncModel
     let next: SyncModel.NextWorkout
-    @State private var preview: AgendaDate?
+    @State private var preview: IdentifiedString?
 
     var body: some View {
         Button {
-            preview = AgendaDate(id: next.dateString)
+            preview = IdentifiedString(id: next.dateString)
         } label: {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
@@ -579,7 +575,7 @@ private struct WorkoutDoneView: View {
     @ObservedObject var sync: SyncModel
     /// Confirms discarding the just-completed session ("didn't really do
     /// this" — e.g. an accidental/test End workout).
-    @State private var recordDate: AgendaDate?
+    @State private var recordDate: IdentifiedString?
     @State private var showDiscardConfirm = false
     @State private var discardTarget: WorkoutTerminalActionTarget?
 
@@ -618,7 +614,7 @@ private struct WorkoutDoneView: View {
                     Text("\(sets.count) working sets · \(Set(sets.map(\.exercise_id)).count) exercises")
                         .font(.subheadline).foregroundStyle(Theme.muted)
                     Button("View workout", systemImage: "chevron.right") {
-                        recordDate = AgendaDate(id: sync.todayString)
+                        recordDate = IdentifiedString(id: sync.todayString)
                     }
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("today.viewCompletedWorkout")

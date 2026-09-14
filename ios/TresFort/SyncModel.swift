@@ -542,13 +542,12 @@ final class SyncModel: ObservableObject {
             defaults: defaults)
     }
 
+    /// Device-local civil date. Formatting goes through the projection's
+    /// cached formatter — same gregorian / en_US_POSIX / device-tz /
+    /// `yyyy-MM-dd` configuration this used to rebuild on every access, and
+    /// this property is read ~80 times per render pass.
     var todayString: String {
-        let f = DateFormatter()
-        f.calendar = Calendar(identifier: .gregorian)
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = .current
-        f.dateFormat = "yyyy-MM-dd"
-        return f.string(from: now())
+        CalendarProjection.dateString(now())
     }
 
     var selectedDay: Workout? {

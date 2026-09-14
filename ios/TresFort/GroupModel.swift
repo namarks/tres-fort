@@ -1100,7 +1100,7 @@ final class GroupModel: ObservableObject {
     /// against other users' codes. Copy-paste preserves the dashes, which are
     /// part of the stored code.
     private static func makeConnectCode() -> String {
-        let alphabet = Array("ABCDEFGHJKMNPQRSTUVWXYZ23456789")
+        let alphabet = Array(GroupInvite.codeAlphabet)
         let groups = (0..<4).map { _ in
             String((0..<4).map { _ in alphabet.randomElement()! })
         }

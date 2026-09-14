@@ -544,16 +544,25 @@ export async function isDeletedOwnerAppleSub(
   return row.apple_sub_sha256 === (await sha256Hex(appleSub));
 }
 
+/** The single Apple-identity lookup: sign-in, upsert and the owner claim all
+ *  resolve a principal by `users.apple_sub` through here. */
+export async function findUserByAppleSub(
+  db: D1Database,
+  appleSub: string,
+): Promise<User | null> {
+  return workoutDB(db)
+    .prepare('SELECT * FROM users WHERE apple_sub = ?1')
+    .bind(appleSub)
+    .first<User>();
+}
+
 export async function upsertUser(
   db: D1Database,
   appleSub: string,
   email: string | null,
   displayName: string | null,
 ): Promise<User> {
-  const existing = await workoutDB(db)
-    .prepare('SELECT * FROM users WHERE apple_sub = ?1')
-    .bind(appleSub)
-    .first<User>();
+  const existing = await findUserByAppleSub(db, appleSub);
   if (existing) {
     if (displayName && !existing.display_name) {
       await workoutDB(db)
@@ -734,10 +743,7 @@ export async function claimOrCreateOwner(
   if (byApple) return byApple;
 
   if (!ownerSubLocked) {
-    const bootstrap = await workoutDB(db)
-      .prepare('SELECT * FROM users WHERE apple_sub = ?1')
-      .bind(BOOTSTRAP_APPLE_SUB)
-      .first<User>();
+    const bootstrap = await findUserByAppleSub(db, BOOTSTRAP_APPLE_SUB);
     if (bootstrap) {
       const claimed = await workoutDB(db)
         .prepare(
@@ -2552,6 +2558,17 @@ export async function createGroup(
     'ios',
   );
   return group;
+}
+
+/** True iff `groupId` names a real group. The 404-vs-403 discriminator the
+ *  group routes share: membership answers "may you see this", this answers
+ *  "is there anything here at all". */
+export async function groupExists(db: D1Database, groupId: string): Promise<boolean> {
+  const r = await workoutDB(db)
+    .prepare('SELECT 1 AS x FROM groups WHERE id = ?1')
+    .bind(groupId)
+    .first<{ x: number }>();
+  return !!r;
 }
 
 /** True iff `userId` is currently a member of `groupId`. */

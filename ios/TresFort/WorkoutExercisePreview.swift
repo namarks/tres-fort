@@ -6,6 +6,8 @@ struct WorkoutExercisePreview: View {
     @ObservedObject var sync: SyncModel
     let exercises: [TemplateExercise]
     @State private var demoFor: TemplateExercise?
+    @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = "lb"
+    private var weightUnit: WeightUnit { WeightUnit(rawValue: weightUnitRaw) ?? .lb }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -38,8 +40,9 @@ struct WorkoutExercisePreview: View {
                                     .font(.headline).foregroundStyle(Theme.text)
                                     .fixedSize(horizontal: false, vertical: true)
                                 if exercise.isWarmup { WarmupTag() }
-                                Text(exercise.targetLabel)
+                                Text(exercise.prescriptionLabel(in: weightUnit))
                                     .font(Theme.mono(13)).foregroundStyle(Theme.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
                                 if let cues = exercise.cues, !cues.isEmpty {
                                     Text(cues)
                                         .font(.caption).foregroundStyle(Theme.muted)

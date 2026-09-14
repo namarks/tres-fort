@@ -1578,9 +1578,7 @@ private struct FinishedView: View {
     /// two slots can't double-count the summary.
     private var todaysSets: [SetLog] {
         guard let sid = sync.todaySession?.id else { return [] }
-        return sync.sets.filter {
-            $0.session_id == sid && $0.deleted_at == nil && $0.is_warmup == 0
-        }
+        return sync.setsForSession(sid).filter { $0.is_warmup == 0 }
     }
 
     var body: some View {
@@ -1623,9 +1621,10 @@ private struct FinishedView: View {
                     sumRow(sync.exerciseName(cohort.key.exerciseID), cohort.valueLabel)
                 }
 
-                SetReviewList(sync: sync, sets: sync.sets.filter {
-                    $0.session_id == sync.todaySession?.id && $0.deleted_at == nil
-                }, pending: pendingToday)
+                SetReviewList(
+                    sync: sync,
+                    sets: sync.todaySession.map { sync.setsForSession($0.id) } ?? [],
+                    pending: pendingToday)
                 WorkoutFeedbackEntry(sync: sync)
                 if readyToFinish {
                     Button { sync.jump(to: sync.exerciseIndex) } label: {

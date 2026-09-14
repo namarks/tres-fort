@@ -46,47 +46,15 @@ struct DayAgendaView: View {
         ZStack {
             Theme.bg.ignoresSafeArea()
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 16) {
                     header(proj, today: today)
-                    if canEditDate(projection: proj, today: today) {
-                        let dateWorkout = sync.previewWorkout(forDateString: dateString)
-                        Button {
-                            showDateEditor = true
-                        } label: {
-                            Label("Choose a workout", systemImage: "calendar.badge.clock")
-                                .font(Theme.mono(13, .bold))
-                                .foregroundStyle(Theme.accent)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 13)
-                                .background(Theme.surface)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("calendar.chooseWorkout")
-                        .disabled(sync.isRoutineMutationInFlight)
-                        if let workout = dateWorkout {
-                            Button("Move workout to another date") { movingWorkout = workout }
-                                .frame(minHeight: 44)
-                                .disabled(sync.isRoutineMutationInFlight)
-                                .accessibilityIdentifier("calendar.moveWorkout")
-                        }
-                        if dateWorkout != nil
-                            || sync.sessionsByDate[dateString]?.status == "planned" {
-                            Button("Remove workout from this date", role: .destructive) { confirmRemoval = true }
-                                .frame(minHeight: 44)
-                                .disabled(sync.isRoutineMutationInFlight)
-                                .accessibilityIdentifier("calendar.removeWorkout")
-                        }
-                        Text("Changes apply to this date only. Your weekly schedule stays the same.")
-                            .font(.footnote).foregroundStyle(Theme.muted)
-                    }
-                    content(proj, today: today)
                     if let error = sync.loadError {
                         Text(error)
                             .font(Theme.mono(12))
                             .foregroundStyle(Theme.danger)
                             .accessibilityIdentifier("calendarOverrideError")
                     }
+                    content(proj, today: today)
                     // On a can_train_light=false blackout the backend projects
                     // items: [] — so suppress the endurance cards here too, or a
                     // blackout day would still show training to do (Codex #61 P2).
@@ -96,11 +64,18 @@ struct DayAgendaView: View {
                         ridesSection
                     }
                 }
-                .padding(22)
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 22)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .preferredColorScheme(.dark)
+        .toolbar {
+            if canEditDate(today: today) {
+                ToolbarItem(placement: .topBarTrailing) { dateActions }
+            }
+        }
         .sheet(item: $movingWorkout) { workout in
             MoveWorkoutDateSheet(sync: sync, workout: workout, fromDate: dateString)
         }
@@ -118,12 +93,41 @@ struct DayAgendaView: View {
         }
     }
 
-    private func canEditDate(
-        projection: DayProjection,
-        today: String
-    ) -> Bool {
+    private func canEditDate(today: String) -> Bool {
         sync.plan != nil
             && sync.calendarAssignmentUnavailableReason(date: dateString, today: today) == nil
+    }
+
+    private var dateActions: some View {
+        let workout = sync.previewWorkout(forDateString: dateString)
+        return Menu {
+            Section("This date only") {
+                Button { showDateEditor = true } label: {
+                    Label(workout == nil ? "Choose a workout" : "Change workout", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .accessibilityIdentifier("calendar.chooseWorkout")
+                if let workout {
+                    Button { movingWorkout = workout } label: {
+                        Label("Move to another date", systemImage: "calendar.badge.clock")
+                    }
+                    .accessibilityIdentifier("calendar.moveWorkout")
+                }
+                if workout != nil || realSession?.status == "planned" {
+                    Button(role: .destructive) { confirmRemoval = true } label: {
+                        Label("Remove from this date", systemImage: "calendar.badge.minus")
+                    }
+                    .accessibilityIdentifier("calendar.removeWorkout")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("Workout date actions")
+        .accessibilityHint("Change, move or remove a workout for this date only. Your weekly schedule stays the same.")
+        .accessibilityIdentifier("calendar.dateActions")
+        .disabled(sync.isRoutineMutationInFlight)
     }
 
     // MARK: header
@@ -134,8 +138,9 @@ struct DayAgendaView: View {
                 .font(Theme.mono(11, .bold)).tracking(2)
                 .foregroundStyle(Theme.muted)
             Text(title(proj, today: today))
-                .font(Theme.display(34))
+                .font(Theme.display(30))
                 .foregroundStyle(Theme.text)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -170,7 +175,7 @@ struct DayAgendaView: View {
             default:            return compositeTitle(s.uppercased())
             }
         case .projected(let tid):
-            return withBike(sync.workout(id: tid)?.title.uppercased() ?? "WORKOUT")
+            return withBike(sync.workout(id: tid)?.name.uppercased() ?? "WORKOUT")
         // No lift on this day: a ride/run makes it a "<noun> DAY" (a ride
         // day is not a rest day); nothing at all is a true rest day.
         case .rest, .none:
@@ -246,7 +251,7 @@ struct DayAgendaView: View {
     ) -> String? {
         plannedDisplayDay(
             today: today,
-            allowScheduleInference: allowScheduleInference)?.title.uppercased()
+            allowScheduleInference: allowScheduleInference)?.name.uppercased()
     }
 
     private var realSession: SessionRow? {
@@ -395,34 +400,11 @@ struct DayAgendaView: View {
     }
 
     // planned / projected → template name + targets.
-    private func templateTargets(_ day: Workout) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if day.exercises.isEmpty {
-                note("This template has no exercises.")
-            } else {
-                ForEach(day.exercises) { ex in
-                    HStack(alignment: .firstTextBaseline) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(ex.exercise_name.uppercased())
-                                .font(Theme.display(20))
-                                .foregroundStyle(Theme.text)
-                            if let cues = ex.cues, !cues.isEmpty {
-                                Text(cues)
-                                    .font(Theme.mono(10))
-                                    .foregroundStyle(Theme.dim)
-                            }
-                        }
-                        Spacer()
-                        Text(ex.targetLabel)
-                            .font(Theme.mono(14, .bold))
-                            .foregroundStyle(Theme.accent)
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Theme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                }
-            }
+    @ViewBuilder private func templateTargets(_ day: Workout) -> some View {
+        if day.exercises.isEmpty {
+            note("This workout has no exercises.")
+        } else {
+            WorkoutExercisePreview(sync: sync, exercises: day.exercises)
         }
     }
 

@@ -328,6 +328,13 @@ private struct UIFixtureServer {
         if scenario == .appStore || scenario == .progress {
             sessions = AppStoreScreenshotData.sessions
             sets = AppStoreScreenshotData.sets
+            if scenario == .appStore,
+               ProcessInfo.processInfo.environment["TRESFORT_UI_GROUP_CONTRACT"] != nil,
+               var days = plan?["days"] as? [[String: Any]], !days.isEmpty {
+                days[0]["exercises"] = groupFixture["slots"]
+                days[0]["day_label"] = days[0]["name"]
+                plan?["days"] = days
+            }
             if scenario == .progress && ProcessInfo.processInfo.environment["TRESFORT_UI_PROGRESS_EMPTY"] == "1" {
                 sessions = []; sets = []
             }

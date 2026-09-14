@@ -106,7 +106,7 @@ struct CalendarMonthView: View {
                         }
                     }
             }
-                .presentationDetents([.medium, .large])
+                .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
         .task { if sync.plan == nil { await sync.load() } }

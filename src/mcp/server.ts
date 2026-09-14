@@ -84,7 +84,7 @@ import {
   writeAudit,
   writeNote,
 } from '../db';
-import { parsePlanMeta } from '../types';
+import { parsePlanMeta, TRIP_TYPES } from '../types';
 import { logUnexpectedError, publicToolErrorCode } from '../errors';
 import type {
   PeriodizationPhase,
@@ -1480,9 +1480,7 @@ const TOOLS: Record<string, Tool> = {
       const trip: Omit<Trip, 'id'> = {
         start: String(a.start),
         end: String(a.end),
-        type: (['travel', 'rest', 'injury', 'other'].includes(a.type as string)
-          ? a.type
-          : 'travel') as TripType,
+        type: (TRIP_TYPES.has(a.type as string) ? a.type : 'travel') as TripType,
       };
       if (typeof a.can_train_light === 'boolean') trip.can_train_light = a.can_train_light;
       if (typeof a.note === 'string') trip.note = a.note;
@@ -1519,7 +1517,7 @@ const TOOLS: Record<string, Tool> = {
       const patch: Partial<Omit<Trip, 'id'>> = {};
       if (typeof a.start === 'string') patch.start = a.start;
       if (typeof a.end === 'string') patch.end = a.end;
-      if (['travel', 'rest', 'injury', 'other'].includes(a.type as string)) patch.type = a.type as TripType;
+      if (TRIP_TYPES.has(a.type as string)) patch.type = a.type as TripType;
       if (typeof a.can_train_light === 'boolean') patch.can_train_light = a.can_train_light;
       if (typeof a.note === 'string') patch.note = a.note;
       return updateTrip(

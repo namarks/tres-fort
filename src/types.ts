@@ -578,7 +578,8 @@ function normalizePeriodization(v: unknown): PeriodizationPhase[] | undefined {
   return phases.length ? phases : undefined;
 }
 
-const TRIP_TYPES = new Set(['travel', 'rest', 'injury', 'other']);
+/** The accepted trip/blackout kinds. Shared with the MCP write tools. */
+export const TRIP_TYPES = new Set(['travel', 'rest', 'injury', 'other']);
 function normalizeTrips(v: unknown): Trip[] | undefined {
   if (!Array.isArray(v)) return undefined;
   const trips: Trip[] = [];

@@ -6462,6 +6462,22 @@ final class SyncModel: ObservableObject {
         return nil
     }
 
+    private static let weekdayLabelFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = CalendarProjection.calendar
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "EEEE"
+        return f
+    }()
+
+    private static let dayMonthLabelFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = CalendarProjection.calendar
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "EEE d MMM"
+        return f
+    }()
+
     /// Friendly relative label for an upcoming `YYYY-MM-DD`:
     /// "Tomorrow", a weekday name ("Wed") within the week, else a date.
     func relativeLabel(for ymd: String) -> String {
@@ -6471,17 +6487,9 @@ final class SyncModel: ObservableObject {
             .dateComponents([.day], from: today, to: target).day ?? 0
         if days == 1 { return "Tomorrow" }
         if days >= 2 && days <= 6 {
-            let f = DateFormatter()
-            f.calendar = CalendarProjection.calendar
-            f.locale = Locale(identifier: "en_US_POSIX")
-            f.dateFormat = "EEEE"
-            return f.string(from: target)
+            return Self.weekdayLabelFormatter.string(from: target)
         }
-        let f = DateFormatter()
-        f.calendar = CalendarProjection.calendar
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "EEE d MMM"
-        return f.string(from: target)
+        return Self.dayMonthLabelFormatter.string(from: target)
     }
 
     /// Start the guided workout for the template TODAY resolves to (via

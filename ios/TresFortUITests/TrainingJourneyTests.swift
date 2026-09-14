@@ -8,7 +8,8 @@ final class TrainingJourneyTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = fixture
         if largeText { app.launchEnvironment["TRESFORT_UI_LARGE_TEXT"] = "1" }
-        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                               "-com.nmarkspdx.tresfort.weight-entry-unit", "lb"]
         app.launch()
         XCTAssertTrue(app.staticTexts["fixture.scenario"].waitForExistence(timeout: 10))
         return app
@@ -128,6 +129,8 @@ final class TrainingJourneyTests: XCTestCase {
             navigation.tap()
             XCTAssertTrue(app.navigationBars["Workout preview"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.staticTexts[heading].exists)
+            XCTAssertTrue(app.staticTexts["2×8 · 25 lb"].exists)
+            XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "PRESCRIBED · ")).count, 0)
             XCTAssertTrue(app.staticTexts["runner.preview.timer"].label.hasPrefix("Stationary Bike · "))
             XCTAssertFalse(app.buttons["LOG SET 1"].exists)
             screenshot("timer-preview-\(heading)")

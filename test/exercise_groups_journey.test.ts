@@ -35,7 +35,7 @@ beforeAll(async () => {
   })) }] });
   plan = (await api('/state')).body.plan;
   for (const [index, group] of fixture.groups.entries()) {
-    const result = await api(`/days/${plan.workouts[0].id}/groups`, 'PUT', {
+    const result = await api(`/workouts/${plan.workouts[0].id}/groups`, 'PUT', {
       group_id: groupIDs[index], expected_version: plan.version,
       exercises: group.member_indices.map((i) => plan.workouts[0].exercises[i].id),
       round_rest: group.round_rest, transition_rest: group.transition_rest, target_sets: group.rounds,
@@ -112,7 +112,7 @@ describe('shared simulator and real-D1 superset workout', () => {
 
   it('moves a complete card and restores each ordinary rest when ungrouped', async () => {
     const first = fixture.groups[0]!;
-    const moved = await api(`/days/${plan.workouts[0].id}/groups`, 'PUT', {
+    const moved = await api(`/workouts/${plan.workouts[0].id}/groups`, 'PUT', {
       group_id: groupIDs[0], expected_version: plan.version,
       exercises: first.member_indices.map((i) => plan.workouts[0].exercises[i].id),
       round_rest: first.round_rest, transition_rest: first.transition_rest, target_sets: first.rounds, order_index: 2,
@@ -120,7 +120,7 @@ describe('shared simulator and real-D1 superset workout', () => {
     expect(moved.status).toBe(200);
     const reordered = (await api('/state')).body.plan.workouts[0].exercises;
     expect(reordered.map((slot: any) => slot.exercise_id)).toEqual([2, 3, 0, 1].map((i) => fixture.slots[i]!.exercise_id));
-    const cleared = await api(`/days/${plan.workouts[0].id}/groups`, 'PUT', {
+    const cleared = await api(`/workouts/${plan.workouts[0].id}/groups`, 'PUT', {
       group_id: groupIDs[0], expected_version: moved.body.version, exercises: [],
     });
     expect(cleared.status).toBe(200);

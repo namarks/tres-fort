@@ -10,7 +10,7 @@ performance evidence, and a safe path out of temporary workout compatibility.
 
 ## Phases
 
-- [ ] **P0 — Consistent workout edits and verification**
+- [x] **P0 — Consistent workout edits and verification**
   - Return actionable conflicts from add, patch, swap and delete; preserve
     successful wire shapes, legacy bounded retries and atomic attribution.
   - Make the default test entry point run the supported backend shards and
@@ -22,7 +22,7 @@ performance evidence, and a safe path out of temporary workout compatibility.
     test relaunch, delayed acknowledgements and remote terminal precedence.
   - End final-set rest; support bounded offline workout recovery/start with
     durable intent, exact attempt checks and visible conflict recovery.
-- [ ] **P2 — Measurement and canonical cutover**
+- [x] **P2 — Measurement and canonical cutover**
   - Extend value-free operational measurements to coaching reads and workout
     writes; preserve existing query budgets and iOS performance probes.
   - Use canonical iOS requests and remove runtime legacy routes, tools, output
@@ -45,9 +45,19 @@ physical schema prerequisite; release and app distribution remain separate work.
 
 ## Next step
 
-**Now (@agent):** Complete P3 verification on the final tree and publish the PR. P0–P2 code is
-implemented; focused conflict, service, privacy and canonical-contract tests
-passed before final integration checks. Record final counts and CI here.
+**Now (@agent):** Complete iOS CI and review of [PR #202](https://github.com/namarks/tres-fort/pull/202).
+All 1,098 backend tests across 81 files pass locally in the three supported
+shards. Typecheck, plan graph and 25 Python verification-command checks pass
+locally; the Ruby submission checks pass in CI. The 24
+extracted service function bodies match their predecessors after removing the
+SQL adapter and formatting differences. P1 awaits iOS build/unit/UI evidence;
+P3 remains open for final review and merge. Release is separate.
+
+The first iOS run built successfully and exercised 608 unit tests plus 12 smoke
+journeys. It exposed premature offline consumption of deferred group repairs;
+those receipts, pending corrections and terminal intents now retain live
+validation. The remaining final-rest expectations were updated. The final CI
+run must verify these corrections and the added attempt/date/UUID regressions.
 
 The scope includes canonical routes/tools/fields, native D1 without SQL adapters,
 structured slot conflicts and reviewed-version iOS editing, internal OAuth and

@@ -367,7 +367,7 @@ final class SyncModel: ObservableObject {
         {
             replaceState(with: cached.state, isLiveResponse: false)
             isUsingCachedState = true
-            if canUseOfflineWorkoutState { validatePersistedRunnerCheckpoint() }
+            validatePersistedRunnerCheckpoint()
         }
         activityPersistenceCancellable = auth.$activityPersistenceGeneration
             .dropFirst()
@@ -620,7 +620,7 @@ final class SyncModel: ObservableObject {
                    !isUnauthorized
                 {
                     isUsingCachedState = true
-                    if !running && canUseOfflineWorkoutState { validatePersistedRunnerCheckpoint() }
+                    if !running { validatePersistedRunnerCheckpoint() }
                 }
                 handle(error, jwt: jwt)
                 return
@@ -1500,7 +1500,8 @@ final class SyncModel: ObservableObject {
     }
 
     private func validatePersistedRunnerCheckpoint(preservingFocusIn groups: Set<String> = []) {
-        guard let checkpoint = persistedRunnerCheckpoint else {
+        guard let checkpoint = persistedRunnerCheckpoint,
+              !isUsingCachedState || canUseOfflineWorkoutState else {
             resumableCheckpoint = nil
             return
         }
@@ -3947,7 +3948,7 @@ final class SyncModel: ObservableObject {
     /// the outbox and keep reserving their original index even though the
     /// presentation count reopens them for retry.
     private func nextReservedSetIndex(for ex: TemplateExercise) -> Int {
-        todaySlotSets(ex).count + pendingSetIntents(for: ex).count + 1
+        reservedSetIDs(for: ex).count + 1
     }
 
     /// Runner progress counts every locally durable set exactly once. Pending
@@ -4310,17 +4311,23 @@ final class SyncModel: ObservableObject {
     var canUseOfflineWorkoutState: Bool {
         guard canInitiateBoundFeatureAction, currentJWT != nil, let plan else { return false }
         let session = sessions.first(where: { $0.date == todayString })
-        if let checkpoint = persistedRunnerCheckpoint, checkpoint.date == todayString,
+        let checkpoint = persistedRunnerCheckpoint.flatMap { $0.date == todayString ? $0 : nil }
+        // Deferred group repairs must validate the current member identity
+        // before consuming their receipt. Corrections and terminal intents
+        // also settle through the existing live recovery boundary.
+        guard checkpoint?.deferredGroupRepair == nil,
+              !setCorrections.contains(where: { $0.date == todayString }),
+              terminalOutbox.intent(for: todayString) == nil else { return false }
+        if let checkpoint,
            !RunnerRecovery.canResumeOffline(checkpoint, session: session) { return false }
         if let session {
             guard session.attempt != nil else { return false }
-            if session.status == "in_progress" && persistedRunnerCheckpoint == nil { return false }
+            if session.status == "in_progress" && checkpoint == nil { return false }
             if session.status != "planned" && session.status != "in_progress" {
-                guard let checkpoint = persistedRunnerCheckpoint,
+                guard let checkpoint,
                       RunnerRecovery.canResumeOffline(checkpoint, session: session) else { return false }
             }
         }
-        let checkpoint = persistedRunnerCheckpoint.flatMap { $0.date == todayString ? $0 : nil }
         let attempt = checkpoint?.sessionAttempt
             ?? checkpoint?.restartDiscardedAttempt.map { $0 + 1 }
             ?? session?.attempt ?? 0

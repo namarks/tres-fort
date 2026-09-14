@@ -1104,7 +1104,7 @@ describe('logging a set against a warm-up slot inherits is_warmup', () => {
 });
 
 describe('slot PATCH/DELETE are scoped to the URL day', () => {
-  // The nested /days/:id/exercises/:teId routes claim a day in their path. A
+  // The nested /workouts/:id/exercises/:teId routes claim a day in their path. A
   // stale edit sheet or mixed-up client must not mutate/delete a slot that
   // lives in a DIFFERENT day just because teId is globally unique.
   async function planWithTwoDays(H: Record<string, string>) {

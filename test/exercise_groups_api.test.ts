@@ -73,7 +73,7 @@ describe('group authoring API and released-client projection', () => {
   });
 
   it('projects both legacy plan reads without mutating stored ordinary rests', async () => {
-    expect((await api(`/days/${day().id}/groups`, 'PUT', grouping())).status).toBe(200);
+    expect((await api(`/workouts/${day().id}/groups`, 'PUT', grouping())).status).toBe(200);
     for (const path of ['/state', '/plan/active']) {
       const response = await api(path);
       expect(response.status).toBe(200);
@@ -91,8 +91,8 @@ describe('group authoring API and released-client projection', () => {
   });
 
   it.each([undefined, 'groups'])('projects a restored grouped plan for capability %s without changing stored rests', async (capability) => {
-    const grouped = await api(`/days/${day().id}/groups`, 'PUT', grouping());
-    await api(`/days/${day().id}/groups`, 'PUT', {
+    const grouped = await api(`/workouts/${day().id}/groups`, 'PUT', grouping());
+    await api(`/workouts/${day().id}/groups`, 'PUT', {
       group_id: groupId, exercises: [], expected_version: grouped.body.version,
     });
     const restored = await api(`/plan/history/${grouped.body.version}/restore`, 'POST', {
@@ -111,7 +111,7 @@ describe('group authoring API and released-client projection', () => {
   });
 
   it('honors groups among other comma-separated capabilities and preserves ungrouped slots', async () => {
-    await api(`/days/${day().id}/groups`, 'PUT', grouping());
+    await api(`/workouts/${day().id}/groups`, 'PUT', grouping());
     for (const path of ['/state', '/plan/active']) {
       const response = await api(path, 'GET', undefined, 'slots, groups ,future');
       if (path === '/state') expect(response.body.plan_groups_version).toBe(1);
@@ -136,44 +136,44 @@ describe('group authoring API and released-client projection', () => {
 
   it('recognizes a REST acknowledged retry before stale rejection, without duplicate history', async () => {
     const body = grouping();
-    const first = await api(`/days/${day().id}/groups`, 'PUT', body);
+    const first = await api(`/workouts/${day().id}/groups`, 'PUT', body);
     expect(first.status).toBe(200);
     const before = await trail();
-    const repeated = await api(`/days/${day().id}/groups`, 'PUT', body);
+    const repeated = await api(`/workouts/${day().id}/groups`, 'PUT', body);
     expect(repeated.status).toBe(200);
     expect(repeated.body).toMatchObject({ ok: true, version: plan.version + 1 });
     expect(await trail()).toEqual(before);
-    const changed = await api(`/days/${day().id}/groups`, 'PUT', { ...body, round_rest: 60 });
+    const changed = await api(`/workouts/${day().id}/groups`, 'PUT', { ...body, round_rest: 60 });
     expect(changed.status).toBe(409);
     expect(changed.body).toMatchObject({ conflict: true, current_version: plan.version + 1 });
     expect(await trail()).toEqual(before);
   });
 
   it('clears all members via the same REST endpoint and repeated clear keeps one history event', async () => {
-    await api(`/days/${day().id}/groups`, 'PUT', grouping());
+    await api(`/workouts/${day().id}/groups`, 'PUT', grouping());
     const clear = { group_id: groupId, exercises: [], expected_version: plan.version + 1 };
-    const result = await api(`/days/${day().id}/groups`, 'PUT', clear);
+    const result = await api(`/workouts/${day().id}/groups`, 'PUT', clear);
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ ok: true, cleared: true, version: plan.version + 2 });
     const before = await trail();
-    expect((await api(`/days/${day().id}/groups`, 'PUT', clear)).status).toBe(200);
+    expect((await api(`/workouts/${day().id}/groups`, 'PUT', clear)).status).toBe(200);
     expect(await trail()).toEqual(before);
     const view = (await api('/plan/active')).body;
     expect(view.workouts[0].exercises.map((slot: any) => slot.rest_seconds)).toEqual([45, 90, 120]);
   });
 
   it('scopes REST clear to its day while replaying an acknowledged clear after day replacement', async () => {
-    await api(`/days/${day().id}/groups`, 'PUT', grouping());
+    await api(`/workouts/${day().id}/groups`, 'PUT', grouping());
     const clear = { group_id: groupId, exercises: [], expected_version: plan.version + 1 };
     const before = await trail();
-    expect((await api(`/days/${crypto.randomUUID()}/groups`, 'PUT', clear)).status).toBe(404);
+    expect((await api(`/workouts/${crypto.randomUUID()}/groups`, 'PUT', clear)).status).toBe(404);
     expect(await trail()).toEqual(before);
-    const accepted = await api(`/days/${day().id}/groups`, 'PUT', clear);
+    const accepted = await api(`/workouts/${day().id}/groups`, 'PUT', clear);
     expect(accepted.status).toBe(200);
     await mcp('update_plan', { expected_version: accepted.body.version,
       workouts: [{ name: 'Replacement', exercises: [] }] });
     const after = await trail();
-    const replay = await api(`/days/${day().id}/groups`, 'PUT', clear);
+    const replay = await api(`/workouts/${day().id}/groups`, 'PUT', clear);
     expect(replay.status).toBe(200);
     expect(replay.body).toMatchObject({ ok: true, replayed: true, version: accepted.body.version });
     expect(await trail()).toEqual(after);
@@ -197,7 +197,7 @@ describe('group authoring API and released-client projection', () => {
     ['round_rest', 1.5], ['transition_rest', false], ['target_sets', 0], ['group_id', 'invalid'],
   ])('rejects invalid REST %s without attribution', async (field, value) => {
     const before = await trail();
-    const result = await api(`/days/${day().id}/groups`, 'PUT', { ...grouping(), [field]: value });
+    const result = await api(`/workouts/${day().id}/groups`, 'PUT', { ...grouping(), [field]: value });
     expect(result.status).toBe(400);
     expect(result.body.error).toBe('invalid_fields');
     expect(await trail()).toEqual(before);
@@ -206,11 +206,11 @@ describe('group authoring API and released-client projection', () => {
   it('rejects group-column single-slot writes on both authoring clients', async () => {
     const before = await trail();
     const patch = { group_id: groupId, group_rest_seconds: 30, group_transition_seconds: 0 };
-    const rest = await api(`/days/${day().id}/exercises/${members()[0]}`, 'PATCH', patch);
+    const rest = await api(`/workouts/${day().id}/exercises/${members()[0]}`, 'PATCH', patch);
     expect(rest.status).toBe(400);
     expect(rest.body.error).toBe('unknown_fields');
     expect((await mcp('update_exercise', { template_exercise_id: members()[0], patch })).error).toBe('unknown_fields');
-    const add = await api(`/days/${day().id}/exercises`, 'POST', { exercise: 'bench', target_sets: 2, target_reps: 5, ...patch });
+    const add = await api(`/workouts/${day().id}/exercises`, 'POST', { exercise: 'bench', target_sets: 2, target_reps: 5, ...patch });
     expect(add.status).toBe(400);
     expect(add.body.error).toBe('unknown_fields');
     expect((await mcp('add_exercise', { day: 'A', exercise: 'bench', target_sets: 2, target_reps: 5, ...patch })).error).toBe('unknown_fields');
@@ -218,8 +218,8 @@ describe('group authoring API and released-client projection', () => {
   });
 
   it('moves the whole group as one versioned block and keeps member rests intact', async () => {
-    await api(`/days/${day().id}/groups`, 'PUT', grouping());
-    const result = await api(`/days/${day().id}/groups`, 'PUT', {
+    await api(`/workouts/${day().id}/groups`, 'PUT', grouping());
+    const result = await api(`/workouts/${day().id}/groups`, 'PUT', {
       ...grouping(), expected_version: plan.version + 1, order_index: 1,
     });
     expect(result.status).toBe(200);
@@ -283,7 +283,7 @@ describe('group authoring API and released-client projection', () => {
 
   it('rejects unknown group arguments and malformed MCP values without coercing', async () => {
     const before = await trail();
-    const rest = await api(`/days/${day().id}/groups`, 'PUT', { ...grouping(), surprise: true });
+    const rest = await api(`/workouts/${day().id}/groups`, 'PUT', { ...grouping(), surprise: true });
     expect(rest.body).toEqual({ error: 'unknown_fields', fields: ['surprise'] });
     expect((await mcp('group_exercises', { ...grouping(), day: 'A', round_rest: '30' })).error).toBe('invalid_fields');
     expect((await mcp('ungroup_exercises', { group_id: groupId })).error).toBe('invalid_fields');

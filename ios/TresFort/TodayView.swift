@@ -963,7 +963,9 @@ private struct RunnerView: View {
                     Text(block.memberLabel(at: index)).font(Theme.mono(12, .bold))
                     VStack(alignment: .leading, spacing: 4) {
                         Text(member.exercise_name).font(.subheadline.weight(.semibold))
-                        Text(member.targetLabel).font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                        Text(member.prescriptionLabel(in: weightUnit))
+                            .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer()
                     Text(active ? "NOW" : (sync.isSkipped(member) ? "SKIPPED" : "\(sync.runnerSetsDone(member))/\(member.target_sets)"))
@@ -1193,9 +1195,7 @@ private struct RunnerView: View {
 
     private func prescriptionContext(ex: TemplateExercise) -> some View {
         let storedUnit = WeightUnit(rawValue: ex.exercise_unit) ?? .lb
-        let load = ex.target_weight.map { WeightUnit.text(storedUnit.convert($0, to: weightUnit)) + " \(weightUnit.rawValue) · " } ?? ""
-        let effort = ex.target_rpe.map { " · RPE " + SetValueFormatter.number($0) } ?? ""
-        let target = "PRESCRIBED · " + load + ex.targetLabel + effort
+        let target = "PRESCRIBED · " + ex.prescriptionLabel(in: weightUnit)
         let previous = sync.comparablePreviousSets(for: ex)
         let previousLabel = previous.map { set in
             let value = SetValueFormatter.value(weight: storedUnit.convert(set.weight, to: weightUnit),

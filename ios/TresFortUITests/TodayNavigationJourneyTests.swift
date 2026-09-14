@@ -96,7 +96,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
         capture("unchanged-weekly-schedule")
     }
 
-    func testCalendarPrioritizesGroupedWorkoutAndMatchesLibraryPreview() throws {
+    private func launchGroupedPreview() throws -> XCUIApplication {
         let contractURL = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "ExerciseGroups", withExtension: "json"))
         var contract = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: contractURL)) as? [String: Any])
         var slots = try XCTUnwrap(contract["slots"] as? [[String: Any]])
@@ -109,14 +109,41 @@ final class TodayNavigationJourneyTests: XCTestCase {
             }
         }
         slots[0]["cues"] = "Keep a steady tempo."
+        slots[2]["exercise_name"] = "Dumbbell Push Press"
+        slots[2]["exercise_modality"] = "dumbbell"
+        slots[2]["exercise_load_mode"] = "per_hand"
+        slots[2]["target_weight"] = 25
         contract["slots"] = slots
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "app-store"
         app.launchEnvironment["TRESFORT_UI_GROUP_CONTRACT"] = String(
             decoding: try JSONSerialization.data(withJSONObject: contract), as: UTF8.self)
-        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                               "-com.nmarkspdx.tresfort.weight-entry-unit", "lb"]
         app.launch()
         XCTAssertTrue(app.buttons["today.viewWorkout"].waitForExistence(timeout: 10))
+        return app
+    }
+
+    func testPrescribedWeightsAppearInLibraryAndCalendar() throws {
+        let app = try launchGroupedPreview()
+        tap(app.buttons["today.chooseWorkout"], in: app)
+        tap(app.buttons["library.workout.strength-a"], in: app)
+        XCTAssertTrue(app.navigationBars["Strength A"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["2×8 · 25 lb each hand"].exists)
+        XCTAssertTrue(app.staticTexts["2×8 · 45 lb"].exists)
+        capture("library-prescribed-weights")
+        tap(app.navigationBars["Strength A"].buttons["Done"], in: app)
+        tap(app.navigationBars["Choose a workout"].buttons["Done"], in: app)
+        tap(app.tabBars.buttons["Calendar"], in: app)
+        tap(app.buttons["calendar.date.2026-09-08"], in: app)
+        XCTAssertTrue(app.staticTexts["2×8 · 25 lb each hand"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["2×8 · 45 lb"].exists)
+        capture("calendar-prescribed-weights")
+    }
+
+    func testCalendarPrioritizesGroupedWorkoutAndMatchesLibraryPreview() throws {
+        let app = try launchGroupedPreview()
         tap(app.tabBars.buttons["Calendar"], in: app)
         tap(app.buttons["calendar.date.2026-09-08"], in: app)
         XCTAssertTrue(app.staticTexts["Superset A"].waitForExistence(timeout: 5))
@@ -139,11 +166,12 @@ final class TodayNavigationJourneyTests: XCTestCase {
             XCTAssertTrue(warmup.staticTexts["2 rounds · 30s round rest"].exists)
             XCTAssertTrue(warmup.staticTexts["Keep a steady tempo."].exists)
             let working = app.descendants(matching: .any)["workoutPreview.group:preview-1"].firstMatch
-            XCTAssertTrue(working.staticTexts["Bench Press"].exists)
+            XCTAssertTrue(working.staticTexts["Dumbbell Push Press"].exists)
             XCTAssertTrue(working.staticTexts["Barbell Row"].exists)
             XCTAssertTrue(working.staticTexts["2 rounds · 60s round rest"].exists)
             XCTAssertTrue(working.staticTexts["15s between exercises"].exists)
-            XCTAssertEqual(working.staticTexts.matching(identifier: "2×8").count, 2)
+            XCTAssertTrue(working.staticTexts["2×8 · 25 lb each hand"].exists)
+            XCTAssertTrue(working.staticTexts["2×8 · 45 lb"].exists)
         }
 
         assertGroupedPreview()

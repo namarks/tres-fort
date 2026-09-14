@@ -15,6 +15,29 @@ enum WeightUnit: String, CaseIterable {
     }
 }
 
+extension TemplateExercise {
+    /// Read the saved prescription, never a runner draft or a historical load.
+    /// Two-dumbbell targets are stored per hand; conversion keeps that meaning.
+    func prescriptionLabel(in unit: WeightUnit) -> String {
+        var parts = [targetLabel]
+        if showsLoadControl, let weight = target_weight {
+            let storedUnit = WeightUnit(rawValue: exercise_unit) ?? .lb
+            let value = WeightUnit.text(storedUnit.convert(abs(weight), to: unit))
+            if allowsAssistance && weight == 0 {
+                parts.append("Bodyweight")
+            } else if allowsAssistance && weight < 0 {
+                parts.append("\(value) \(unit.rawValue) assistance")
+            } else {
+                let prefix = allowsAssistance && weight > 0 ? "+" : ""
+                let perHand = isPerHand ? " each hand" : ""
+                parts.append("\(prefix)\(value) \(unit.rawValue)\(perHand)")
+            }
+        }
+        if let rpe = target_rpe { parts.append("RPE \(SetValueFormatter.number(rpe))") }
+        return parts.joined(separator: " · ")
+    }
+}
+
 /// Changing the display unit or saving untouched rounded text preserves the
 /// exact original load. Only an edited number changes the stored value.
 struct WeightEntryDraft {

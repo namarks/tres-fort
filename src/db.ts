@@ -3439,7 +3439,10 @@ export async function restorePlanSnapshot(
   const targetSlotIds = new Set(targetSlots.map((slot) => slot.id));
   const ts = now();
   const nonce = uuid();
-  const guarded = `EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce='${nonce}')`;
+  // Each statement binds the nonce at its own next free placeholder, so the
+  // fence value rides the positional list like every other fence site.
+  const guarded = (nonceParam: number) =>
+    `EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce=?${nonceParam})`;
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, {
       actor: input.actor, operation: 'restore_plan', args: input,
@@ -3451,14 +3454,14 @@ export async function restorePlanSnapshot(
     statements.push(workoutDB(db).prepare(
       `INSERT OR IGNORE INTO workouts
        (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
-       SELECT ?4,?1,?5,?6,?7,?8,?9,?9 WHERE ${guarded}`,
+       SELECT ?4,?1,?5,?6,?7,?8,?9,?9 WHERE ${guarded(10)}`,
     ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
-      day.order_index, day.notes, ts));
+      day.order_index, day.notes, ts, nonce));
     statements.push(workoutDB(db).prepare(
       `UPDATE workouts SET name=?5,day_label=?6,order_index=?7,notes=?8,updated_at=?9
-       WHERE id=?4 AND plan_id=?1 AND ${guarded}`,
+       WHERE id=?4 AND plan_id=?1 AND ${guarded(10)}`,
     ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
-      day.order_index, day.notes, ts));
+      day.order_index, day.notes, ts, nonce));
   }
   for (const slot of targetSlots) {
     statements.push(workoutDB(db).prepare(
@@ -3467,39 +3470,41 @@ export async function restorePlanSnapshot(
         target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,
         created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds)
        SELECT ?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18,?19,?20,?21
-       WHERE ${guarded}`,
+       WHERE ${guarded(22)}`,
     ).bind(plan.id, userId, -plan.version, slot.id, slot.workout_id,
       slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
       slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
       slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
-      slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null));
+      slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null,
+      nonce));
     statements.push(workoutDB(db).prepare(
       `UPDATE template_exercises SET workout_id=?5,exercise_id=?6,order_index=?7,
        target_sets=?8,target_reps=?9,target_reps_max=?10,target_rpe=?11,
        rest_seconds=?12,target_weight=?13,target_duration_s=?14,progression=?15,
        cues=?16,is_warmup=?17,updated_at=?18,group_id=?19,group_rest_seconds=?20,
-       group_transition_seconds=?21 WHERE id=?4 AND ${guarded}`,
+       group_transition_seconds=?21 WHERE id=?4 AND ${guarded(22)}`,
     ).bind(plan.id, userId, -plan.version, slot.id, slot.workout_id,
       slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
       slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
       slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
-      slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null));
+      slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null,
+      nonce));
   }
   for (const day of current.workouts) {
     for (const slot of day.exercises) if (!targetSlotIds.has(slot.id)) {
       statements.push(
-        workoutDB(db).prepare(`UPDATE set_logs SET template_exercise_id=NULL,updated_at=MAX(updated_at+1,?4) WHERE template_exercise_id=?5 AND ${guarded}`)
-          .bind(plan.id, userId, -plan.version, ts, slot.id),
-        workoutDB(db).prepare(`DELETE FROM template_exercises WHERE id=?4 AND ${guarded}`)
-          .bind(plan.id, userId, -plan.version, slot.id),
+        workoutDB(db).prepare(`UPDATE set_logs SET template_exercise_id=NULL,updated_at=MAX(updated_at+1,?4) WHERE template_exercise_id=?5 AND ${guarded(6)}`)
+          .bind(plan.id, userId, -plan.version, ts, slot.id, nonce),
+        workoutDB(db).prepare(`DELETE FROM template_exercises WHERE id=?4 AND ${guarded(5)}`)
+          .bind(plan.id, userId, -plan.version, slot.id, nonce),
       );
     }
     if (!targetDayIds.has(day.id)) {
       statements.push(
-        workoutDB(db).prepare(`UPDATE sessions SET workout_id=NULL,updated_at=?4 WHERE workout_id=?5 AND user_id=?2 AND ${guarded}`)
-          .bind(plan.id, userId, -plan.version, ts, day.id),
-        workoutDB(db).prepare(`DELETE FROM workouts WHERE id=?4 AND plan_id=?1 AND ${guarded}`)
-          .bind(plan.id, userId, -plan.version, day.id),
+        workoutDB(db).prepare(`UPDATE sessions SET workout_id=NULL,updated_at=?4 WHERE workout_id=?5 AND user_id=?2 AND ${guarded(6)}`)
+          .bind(plan.id, userId, -plan.version, ts, day.id, nonce),
+        workoutDB(db).prepare(`DELETE FROM workouts WHERE id=?4 AND plan_id=?1 AND ${guarded(5)}`)
+          .bind(plan.id, userId, -plan.version, day.id, nonce),
       );
     }
   }
@@ -6885,6 +6890,12 @@ export async function updateExercise(
     rangePredicates.push(`target_reps<=?${values.length}`);
   }
   const nonce = uuid();
+  // The fence values ride the positional list like every other fence site;
+  // they are appended last so the patch and range placeholders keep theirs.
+  values.push(plan.id, plan.version, nonce);
+  const nonceParam = values.length;
+  const versionParam = nonceParam - 1;
+  const planParam = nonceParam - 2;
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
     workoutDB(db).prepare(
@@ -6893,8 +6904,8 @@ export async function updateExercise(
           SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
            WHERE d.id=template_exercises.workout_id
              AND p.user_id=?${userParam} AND p.status='active'
-             AND p.id='${plan.id}' AND p.version=-${plan.version}
-             AND p.plan_write_nonce='${nonce}'
+             AND p.id=?${planParam} AND p.version=-?${versionParam}
+             AND p.plan_write_nonce=?${nonceParam}
         )${rangePredicates.length ? ` AND ${rangePredicates.join(' AND ')}` : ''}`,
     ).bind(...values),
   ];
@@ -6912,8 +6923,8 @@ export async function updateExercise(
         workoutDB(db).prepare(`UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
           AND EXISTS (SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
             JOIN template_exercises te ON te.workout_id=d.id
-            WHERE te.id=?4 AND p.id='${plan.id}' AND p.version=-${plan.version}
-              AND p.plan_write_nonce='${nonce}')`).bind(row.id, index, ts, slot.id),
+            WHERE te.id=?4 AND p.id=?5 AND p.version=-?6
+              AND p.plan_write_nonce=?7)`).bind(row.id, index, ts, slot.id, plan.id, plan.version, nonce),
       ));
     }
   }

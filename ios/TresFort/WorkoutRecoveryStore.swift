@@ -232,14 +232,6 @@ enum StateSyncAccountStore {
         defaults.set(userID, forKey: activeAccountKey)
         return previous != userID
     }
-
-    static func clearIfActive(
-        userID: String,
-        defaults: LocalPersistence = .standard
-    ) {
-        guard defaults.string(forKey: activeAccountKey) == userID else { return }
-        defaults.removeObject(forKey: activeAccountKey)
-    }
 }
 
 /// Exercise metadata is a separate read model from `/api/state`, but History

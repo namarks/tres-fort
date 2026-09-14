@@ -2308,10 +2308,6 @@ final class SyncModel: ObservableObject {
         historyIndex.workingSetsByExercise[exerciseID] ?? []
     }
 
-    func lastWorkingSet(_ exerciseID: String) -> SetLog? {
-        live(exerciseID).max { $0.logged_at < $1.logged_at }
-    }
-
     func todaySets(_ exerciseID: String) -> [SetLog] {
         guard let sid = todaySession?.id else { return [] }
         return live(exerciseID)
@@ -2534,14 +2530,6 @@ final class SyncModel: ObservableObject {
     var pendingTerminalIntentCount: Int {
         terminalOutbox.intents.filter { $0.deliveryState != .acknowledged }.count
     }
-    var failedTerminalIntentCount: Int {
-        terminalOutbox.intents.filter { $0.deliveryState == .failed }.count
-    }
-    var queuedTerminalIntentCount: Int {
-        terminalOutbox.intents.filter {
-            $0.deliveryState == .queued && $0.id != sendingTerminalIntentID
-        }.count
-    }
     var sendingTerminalIntentCount: Int { sendingTerminalIntentID == nil ? 0 : 1 }
 
     var currentTerminalIntent: WorkoutTerminalIntent? {
@@ -2559,11 +2547,6 @@ final class SyncModel: ObservableObject {
 
     var visibleTerminalIntent: WorkoutTerminalIntent? {
         terminalOutbox.intents.first { $0.deliveryState != .acknowledged }
-    }
-
-    var hasUnacknowledgedDiscardForToday: Bool {
-        guard let intent = terminalOutbox.intent(for: todayString) else { return false }
-        return intent.action == .discard && intent.deliveryState != .acknowledged
     }
 
     private var discardBarrierDates: Set<String> {
@@ -2645,14 +2628,6 @@ final class SyncModel: ObservableObject {
             setIntent($0, matches: ex, on: date)
                 && $0.deliveryState == .failed
         }
-    }
-
-    /// Terminal workout mutations are P1, but P0 must not let an acknowledged
-    /// discard/finish erase the session context that queued set retries need.
-    var hasPendingSetsForCurrentWorkout: Bool {
-        let date = todaySession?.date ?? todayString
-        return setOutbox.pending.contains { $0.date == date }
-            || setCorrections.contains { $0.date == date }
     }
 
     private func persistEnqueuedSetIntent(_ intent: PendingSetIntent) -> Bool {
@@ -4626,16 +4601,6 @@ final class SyncModel: ObservableObject {
             || hasRunnerAwaitingSetRecovery
             || isReopeningSkippedWorkout
     }
-    var liveWorkoutValidationActionTitle: String {
-        hasSavedRunnerAwaitingValidation
-            ? "CONNECT TO RESUME"
-            : "CONNECT TO VERIFY"
-    }
-    var liveWorkoutValidationBlockTitle: String {
-        hasSavedRunnerAwaitingValidation
-            ? "Connect to resume first"
-            : "Connect to verify workout first"
-    }
 
     /// Restore only a checkpoint that a live `/api/state` response already
     /// validated against today's still-in-progress server session and current
@@ -4927,8 +4892,10 @@ final class SyncModel: ObservableObject {
     }
 
     /// The prescribed hold completed (countdown reached the end) — logs the
-    /// FULL target hold. The model-owned deadline task calls this even when
-    /// the runner view is no longer mounted.
+    /// FULL target hold. The model-owned deadline task does NOT come through
+    /// here: it calls the private `finishTimedSetIfDue(requiring:)` variant,
+    /// which re-validates the exact attempt it was scheduled for. This is the
+    /// unconditional entry point.
     func finishTimedSetAuto() async {
         guard let validated = validatedTimedSetAttempt() else { return }
         await commitTimedSet(validated, held: validated.attempt.holdSeconds)
@@ -5048,7 +5015,6 @@ final class SyncModel: ObservableObject {
     /// "Resolved" = nothing left to do here: either completed or skipped.
     /// Drives requeue/finish so a skipped exercise is never auto-represented.
     func isResolved(_ ex: TemplateExercise) -> Bool { isComplete(ex) || isSkipped(ex) }
-    var allComplete: Bool { !exercises.isEmpty && exercises.allSatisfy { isComplete($0) } }
 
     /// First UNRESOLVED exercise after the current one (wraps), so a
     /// completed-or-skipped lift never traps you and order is flexible.

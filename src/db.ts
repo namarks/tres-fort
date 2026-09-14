@@ -7764,9 +7764,16 @@ function scrubSchedule(
   return changed ? { version: schedule.version + 1, week } : null;
 }
 
+export type DeleteWorkoutResult =
+  | { ok: true; version: number }
+  | { error: 'day_not_found' }
+  | { error: 'day_in_progress' }
+  | PlanVersionConflict
+  | GroupConflict;
+
 /**
- * Delete one day_template and, in the same transaction, scrub any schedule
- * entries pointing at it and bump plans.version exactly once.
+ * Delete one workout from the active plan. Reads the plan row, checks the
+ * caller's expected version, then delegates to `deleteWorkoutAtVersion`.
  */
 export async function deleteWorkout(
   db: D1Database,
@@ -7774,35 +7781,37 @@ export async function deleteWorkout(
   dayId: string,
   expectedVersion?: number,
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'delete_day' },
-): Promise<
-  { ok: true; version: number }
-  | { error: 'day_not_found' }
-  | { error: 'day_in_progress' }
-  | PlanVersionConflict
-  | GroupConflict
-> {
+): Promise<DeleteWorkoutResult> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'day_not_found' };
   if (expectedVersion !== undefined && expectedVersion !== plan.version) {
     return { conflict: true, current_version: plan.version };
   }
-  const writeVersion = expectedVersion ?? plan.version;
-  const day = await workoutDB(db)
-    .prepare('SELECT id FROM workouts WHERE id = ?1 AND plan_id = ?2')
-    .bind(dayId, plan.id)
-    .first<{ id: string }>();
-  if (!day) return { error: 'day_not_found' };
-  const groupTree = await loadPlanTree(db, plan);
-  const groupInvalid = validatePlanExerciseGroups(groupTree.workouts.filter((candidate) => candidate.id !== dayId));
+  return deleteWorkoutAtVersion(db, userId, plan, dayId, attribution);
+}
+
+/**
+ * Delete one workout tied to the exact plan row the caller read and, in the
+ * same transaction, scrub any schedule entries pointing at it and bump
+ * plans.version exactly once. `plan.version` is the write-time fence.
+ */
+export async function deleteWorkoutAtVersion(
+  db: D1Database,
+  userId: string,
+  plan: PlanRow,
+  dayId: string,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'delete_day' },
+): Promise<DeleteWorkoutResult> {
+  const writeVersion = plan.version;
+  const tree = await loadPlanTree(db, plan);
+  if (!tree.workouts.some((candidate) => candidate.id === dayId)) return { error: 'day_not_found' };
+  // Same `order_index, created_at, id` order the tree read uses, so the dense
+  // re-index below matches the former dedicated `remaining` query.
+  const remaining = tree.workouts.filter((candidate) => candidate.id !== dayId);
+  const groupInvalid = validatePlanExerciseGroups(remaining);
   if (groupInvalid) return groupInvalid;
   const meta = parsePlanMeta(plan.meta);
-  const remaining = await workoutDB(db)
-    .prepare(
-      'SELECT id FROM workouts WHERE plan_id = ?1 AND id != ?2 ORDER BY order_index, created_at, id',
-    )
-    .bind(plan.id, dayId)
-    .all<{ id: string }>();
-  const liveIds = new Set(remaining.results.map((r) => r.id));
+  const liveIds = new Set(remaining.map((r) => r.id));
   const scrubbed = scrubSchedule(meta.schedule, liveIds);
   // A session may deliberately keep workout_id NULL and resolve its
   // workout from the recurring schedule for that civil date. Treat those
@@ -7922,7 +7931,7 @@ export async function deleteWorkout(
           )`,
       )
       .bind(dayId, plan.id, userId, -writeVersion),
-    ...remaining.results.map((row, index) =>
+    ...remaining.map((row, index) =>
       workoutDB(db)
         .prepare(
           `UPDATE workouts SET order_index = ?2, updated_at = ?3

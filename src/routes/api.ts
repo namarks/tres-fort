@@ -28,7 +28,7 @@ import {
   clearGroup,
   createInvite,
   createPlan,
-  deleteWorkout,
+  deleteWorkoutAtVersion,
   deleteUserAccount,
   deleteTemplateExercise,
   discardSession,
@@ -437,7 +437,7 @@ apiRoutes.on('DELETE', ['/workouts/:id', '/days/:id'], async (c) => {
     }
   }
   const dayId = c.req.param('id');
-  const result = await deleteWorkout(c.env.DB, userId, dayId, plan.version, {
+  const result = await deleteWorkoutAtVersion(c.env.DB, userId, plan, dayId, {
     actor: 'ios', operation: c.req.path.startsWith('/api/workouts') ? 'delete_workout' : 'delete_day', args: { workout_id: dayId },
   });
   if ('conflict' in result) return c.json(workoutWire(result), 409);

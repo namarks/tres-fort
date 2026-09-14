@@ -1055,7 +1055,8 @@ private struct RunnerView: View {
                             .font(Theme.mono(13, .bold))
                             .foregroundStyle(Theme.accent)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(16)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
                             .accessibilityIdentifier("runner.preview.timer")
                     }
                 }
@@ -1063,22 +1064,27 @@ private struct RunnerView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 12) {
                             ForEach(ExerciseGroupBlock.blocks(sync.exercises)) { block in
-                                VStack(alignment: .leading, spacing: 16) {
+                                VStack(alignment: .leading, spacing: 12) {
                                     if block.isGroup {
-                                        Text(block.title.uppercased()).font(Theme.mono(13, .bold)).foregroundStyle(Theme.accent)
-                                        Text("\(block.rounds) rounds · \(block.roundRest)s round rest · \(block.transitionRest)s transition")
-                                            .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(block.title.uppercased()).font(Theme.mono(13, .bold)).foregroundStyle(Theme.accent)
+                                            Text("\(block.rounds) rounds · \(block.roundRest)s round rest"
+                                                 + (block.transitionRest > 0 ? " · \(block.transitionRest)s transition" : ""))
+                                                .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                                        }
                                     }
                                     ForEach(Array(block.members.enumerated()), id: \.element.id) { index, ex in
-                                        VStack(alignment: .leading, spacing: 8) {
+                                        if index > 0 { Divider().overlay(Theme.surface2) }
+                                        VStack(alignment: .leading, spacing: 6) {
                                             Text((block.isGroup ? block.memberLabel(at: index) + " · " : "") + ex.exercise_name.uppercased())
-                                                .font(Theme.display(28)).foregroundStyle(Theme.text)
+                                                .font(Theme.display(24)).foregroundStyle(Theme.text)
+                                                .fixedSize(horizontal: false, vertical: true)
                                             if ex.isWarmup { WarmupTag() }
+                                            prescriptionContext(ex: ex, isPreview: true)
                                             if !block.isGroup {
-                                                Text("SETS \(ex.target_sets) · \(ex.rest_seconds)s rest")
-                                                    .font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                                                Text("\(ex.rest_seconds)s rest")
+                                                    .font(Theme.mono(11)).foregroundStyle(Theme.muted)
                                             }
-                                            prescriptionContext(ex: ex)
                                         }
                                         .id(ex.id)
                                     }
@@ -1201,11 +1207,11 @@ private struct RunnerView: View {
         .accessibilityValue(value)
     }
 
-    private func prescriptionContext(ex: TemplateExercise) -> some View {
+    private func prescriptionContext(ex: TemplateExercise, isPreview: Bool = false) -> some View {
         let storedUnit = WeightUnit(rawValue: ex.exercise_unit) ?? .lb
         let load = ex.target_weight.map { WeightUnit.text(storedUnit.convert($0, to: weightUnit)) + " \(weightUnit.rawValue) · " } ?? ""
         let effort = ex.target_rpe.map { " · RPE " + SetValueFormatter.number($0) } ?? ""
-        let target = "PRESCRIBED · " + load + ex.targetLabel + effort
+        let target = (isPreview ? "" : "PRESCRIBED · ") + load + ex.targetLabel + effort
         let previous = sync.comparablePreviousSets(for: ex)
         let previousLabel = previous.map { set in
             let value = SetValueFormatter.value(weight: storedUnit.convert(set.weight, to: weightUnit),
@@ -1214,17 +1220,18 @@ private struct RunnerView: View {
             let effort = set.rpe.map { " RPE " + SetValueFormatter.number($0) } ?? ""
             return value + effort
         }.joined(separator: " · ")
-        return VStack(alignment: .leading, spacing: 8) {
-            Text(target).font(Theme.mono(11, .bold)).foregroundStyle(Theme.text)
+        return VStack(alignment: .leading, spacing: isPreview ? 6 : 8) {
+            Text(target).font(Theme.mono(isPreview ? 18 : 11, .bold)).foregroundStyle(Theme.text)
+                .fixedSize(horizontal: false, vertical: true)
             if let cues = ex.cues, !cues.isEmpty {
                 Text(cues).font(.subheadline).foregroundStyle(Theme.muted)
             }
             if !previous.isEmpty {
                 Text("LAST TIME (\(weightUnit.rawValue)) · " + previousLabel).font(Theme.mono(11)).foregroundStyle(Theme.muted)
-            } else {
+            } else if !isPreview {
                 Text("No comparable previous session").font(.caption).foregroundStyle(Theme.muted)
             }
-        }.padding(.top, 16)
+        }.padding(.top, isPreview ? 0 : 16)
     }
 
     private func completedChips(ex: TemplateExercise) -> some View {

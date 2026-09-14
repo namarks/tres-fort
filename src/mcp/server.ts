@@ -38,6 +38,7 @@ import {
   getRideConflicts,
   getSessionByDate,
   getSetsForSession,
+  getSetsForSessions,
   getUpcomingRides,
   getUserTimezone,
   getVolume,
@@ -1716,8 +1717,16 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
   const lastCompleted = await getLastCompletedSession(env.DB, userId, undefined, today);
   const summaryRows = [...recent];
   if (lastCompleted && !summaryRows.some(s => s.id === lastCompleted.id)) summaryRows.push(lastCompleted);
-  const summaries = new Map(await Promise.all(summaryRows.map(async session =>
-    [session.id, coachingSession(session, await getSetsForSession(env.DB, session.id), catalog)] as const)));
+  // One batched read for every session in the brief, grouped here — the
+  // per-session read was an N+1 over up to eight rows.
+  const briefSets = await getSetsForSessions(env.DB, userId, summaryRows.map(session => session.id));
+  const setsBySession = new Map<string, typeof briefSets>();
+  for (const set of briefSets) {
+    const rows = setsBySession.get(set.session_id);
+    if (rows) rows.push(set); else setsBySession.set(set.session_id, [set]);
+  }
+  const summaries = new Map(summaryRows.map(session =>
+    [session.id, coachingSession(session, setsBySession.get(session.id) ?? [], catalog)] as const));
   // Cycling awareness, zero extra Claude calls: a compact 28-day ride
   // window + conflicts folded straight into the auto-loaded brief.
   const horizon = addDaysIso(today, 28);

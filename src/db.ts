@@ -12810,3 +12810,30 @@ export async function decideMobileCoachRequest(
 export async function purgeExpiredMobileCoachRequests(db: D1Database): Promise<void> {
   await db.prepare('DELETE FROM oauth_mobile_requests WHERE expires_at <= ?1').bind(Date.now()).run();
 }
+
+/**
+ * Sets for SEVERAL sessions in one query — the batched form of
+ * `getSetsForSession`, with the same columns, `deleted_at` filter and
+ * `logged_at` ordering. Callers group the flat result by `session_id`; the
+ * relative order inside each session is the single-session order.
+ *
+ * The coach brief reads up to eight recent sessions at once, so the per-session
+ * read was an N+1 on the hottest MCP path.
+ */
+export async function getSetsForSessions(
+  db: D1Database,
+  userId: string,
+  sessionIds: string[],
+): Promise<SetLogRow[]> {
+  if (sessionIds.length === 0) return [];
+  const placeholders = sessionIds.map((_, i) => `?${i + 2}`).join(',');
+  const r = await workoutDB(db)
+    .prepare(
+      `SELECT * FROM set_logs
+        WHERE user_id = ?1 AND session_id IN (${placeholders}) AND deleted_at IS NULL
+        ORDER BY logged_at`,
+    )
+    .bind(userId, ...sessionIds)
+    .all<SetLogRow>();
+  return r.results;
+}

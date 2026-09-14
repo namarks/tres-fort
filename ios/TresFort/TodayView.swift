@@ -335,7 +335,13 @@ struct TodayView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .task(id: sync.canChooseStarterWorkout) { await loadStarterAvailability() }
+        // `canChooseStarterWorkout` folds in `!isLoading`, so it flips
+        // true -> false -> true on every state pull and re-fired this task
+        // (and its network read) each time. Key on the stable plan facts
+        // instead; the body still guards on the full predicate.
+        .task(id: sync.hasVerifiedPlanState && (sync.plan?.workouts.isEmpty ?? true)) {
+            await loadStarterAvailability()
+        }
     }
 
     /// A verified empty library alone cannot prove this account has an unused

@@ -76,6 +76,40 @@ final class TrainingJourneyTests: XCTestCase {
         screenshot("acknowledged-completion")
     }
 
+
+    func testUnilateralExercisesShowPerSideTargetsAndLogOneSetForBothSides() {
+        for (fixture, name) in [("unilateral-row", "Renegade Row"),
+                                ("unilateral-press", "Single-Arm Dumbbell Shoulder Press")] {
+            let app = launch(fixture)
+            XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 10))
+            XCTAssertTrue(app.staticTexts["runner.setSummary"].label.contains("10 per side"))
+            XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "3×10 per side")).firstMatch.exists)
+            let edit = app.buttons["Edit next set for " + name]
+            reveal(edit, in: app); edit.tap()
+            let reps = app.textFields["Reps"]
+            XCTAssertTrue(reps.waitForExistence(timeout: 5))
+            XCTAssertTrue(reps.label.contains("Reps per side"))
+            XCTAssertEqual(reps.value as? String, "10")
+            app.buttons["Save"].tap()
+            let increase = app.buttons["Increase reps per side by 1"]
+            reveal(increase, in: app)
+            XCTAssertTrue(app.staticTexts["REPS PER SIDE"].exists)
+            screenshot(fixture + "-per-side")
+            app.buttons["LOG SET 1"].tap()
+            XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
+            app.buttons["rest.done"].tap()
+            XCTAssertEqual(app.staticTexts["fixture.scenario"].value as? String,
+                           "sets:1;reps:10;total:20")
+            let correct = app.buttons["Edit set 1 of " + name]
+            reveal(correct, in: app); correct.tap()
+            XCTAssertTrue(reps.waitForExistence(timeout: 5))
+            XCTAssertTrue(reps.label.contains("Reps per side"))
+            XCTAssertEqual(reps.value as? String, "10")
+            app.buttons["Cancel"].tap()
+            app.terminate()
+        }
+    }
+
     func testSwapExerciseMidWorkoutPreservesCompletedSetAndRoutine() {
         let app = launch("workout-swap")
         let swap = app.buttons["runner.swap-exercise"]

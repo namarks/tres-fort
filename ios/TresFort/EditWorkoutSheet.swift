@@ -682,12 +682,14 @@ private struct ConfigureExerciseView: View {
             } else if !isCardio {
                 Section("Target") {
                     Stepper("\(sets) set\(sets == 1 ? "" : "s")", value: $sets, in: 1...10)
-                    Stepper(usesRepRange ? "\(reps) reps minimum" : "\(reps) reps",
+                    Stepper((usesRepRange ? "\(reps) reps minimum" : "\(reps) reps")
+                            + (exercise.laterality == "unilateral" ? " per side" : ""),
                             value: $reps, in: 1...30)
                     Toggle("Rep range", isOn: $usesRepRange)
                         .tint(Theme.accent)
                     if usesRepRange {
-                        Stepper("Up to \(max(reps, repsMax)) reps",
+                        Stepper("Up to \(max(reps, repsMax)) reps"
+                                + (exercise.laterality == "unilateral" ? " per side" : ""),
                                 value: Binding(
                                     get: { max(reps, repsMax) },
                                     set: { repsMax = max(reps, $0) }),
@@ -856,12 +858,13 @@ private struct EditExerciseTargetView: View {
                 Section("Target") {
                     Stepper("\(sets) \(isGrouped ? "rounds" : "sets")", value: $sets, in: 1...max(10, slot.target_sets))
                         .disabled(isGrouped)
-                    Stepper(usesRepRange ? "\(reps) reps minimum" : "\(reps) reps",
+                    Stepper((usesRepRange ? "\(reps) reps minimum" : "\(reps) reps")
+                            + (slot.isUnilateral ? " per side" : ""),
                             value: $reps, in: 1...repUpperBound)
                     Toggle("Rep range", isOn: $usesRepRange).tint(Theme.accent)
                     if usesRepRange {
                         Stepper(
-                            "Up to \(max(reps, repsMax)) reps",
+                            "Up to \(max(reps, repsMax)) reps" + (slot.isUnilateral ? " per side" : ""),
                             value: Binding(
                                 get: { max(reps, repsMax) },
                                 set: { repsMax = max(reps, $0) }),

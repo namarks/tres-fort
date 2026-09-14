@@ -722,8 +722,12 @@ private struct RunnerView: View {
     /// pre-start preview (#54).
     @State private var demoFor: TemplateExercise?
     @State private var swapTarget: WorkoutSwapTarget?
-    @State private var editingValues = false
-    @State private var valueDraft: RunnerInputState?
+    private struct SetValueDraft: Identifiable {
+        let id = UUID()
+        let input: RunnerInputState
+        let exercise: TemplateExercise
+    }
+    @State private var valueDraft: SetValueDraft?
     @State private var weightPrescription: RunnerPrescription?
     @State private var loadingTarget: Double?
     @State private var showingLoading = false
@@ -790,8 +794,9 @@ private struct RunnerView: View {
 
                         prescriptionContext(ex: ex)
                         Button {
-                            valueDraft = sync.currentInputState
-                            editingValues = true
+                            if let input = sync.currentInputState {
+                                valueDraft = SetValueDraft(input: input, exercise: ex)
+                            }
                         } label: {
                             Text("Edit weight, \(ex.isTimed ? "duration" : "reps") & RPE")
                                 .font(Theme.mono(12, .bold)).frame(minHeight: 44).contentShape(Rectangle())
@@ -823,9 +828,15 @@ private struct RunnerView: View {
                         if ex.isTimed {
                             TimedSetView(sync: sync, ex: ex)
                         } else {
-                            stepper(label: "REPS", value: "\(sync.reps)", context: "reps",
+                            stepper(label: ex.isUnilateral ? "REPS PER SIDE" : "REPS",
+                                    value: "\(sync.reps)", context: ex.isUnilateral ? "reps per side" : "reps",
                                     steps: [("−1", { sync.adjustReps(-1) }, false),
                                             ("+1", { sync.adjustReps(1) }, false)])
+                            if ex.isUnilateral {
+                                Text("Complete both sides, then log one set.")
+                                    .font(.caption).foregroundStyle(Theme.muted)
+                                    .padding(.top, 8)
+                            }
                         }
 
                         Button {
@@ -911,17 +922,16 @@ private struct RunnerView: View {
             .onChange(of: sync.timedActive) {
                 if !sync.timedActive { previewFor = nil }
             }
-            .sheet(isPresented: $editingValues) {
-                if let draft = valueDraft {
-                    SetValuesEditor(title: "Next set", values: SetCorrectionValues(
-                        weight: draft.weight, reps: draft.reps, rpe: draft.rpe,
-                        durationSeconds: draft.prescription.timed ? draft.durationSeconds : nil),
-                        timed: draft.prescription.timed, allowsAssistance: ex.allowsAssistance,
-                        storedUnit: WeightUnit(rawValue: ex.exercise_unit) ?? .lb,
-                        onSave: { values in
-                            sync.setRunnerValues(values, expected: draft.prescription)
-                        })
-                }
+            .sheet(item: $valueDraft) { draft in
+                SetValuesEditor(title: "Next set", values: SetCorrectionValues(
+                    weight: draft.input.weight, reps: draft.input.reps, rpe: draft.input.rpe,
+                    durationSeconds: draft.input.prescription.timed ? draft.input.durationSeconds : nil),
+                    timed: draft.input.prescription.timed, allowsAssistance: draft.exercise.allowsAssistance,
+                    storedUnit: WeightUnit(rawValue: draft.exercise.exercise_unit) ?? .lb,
+                    unilateral: draft.exercise.isUnilateral,
+                    onSave: { values in
+                        sync.setRunnerValues(values, expected: draft.input.prescription)
+                    })
             }
             .sheet(item: $demoFor) { ex in
                 ExerciseDemoSheet(
@@ -1206,7 +1216,7 @@ private struct RunnerView: View {
         let previousLabel = previous.map { set in
             let value = SetValueFormatter.value(weight: storedUnit.convert(set.weight, to: weightUnit),
                 reps: set.reps, durationSeconds: set.duration_s, timed: ex.isTimed,
-                bodyweight: ex.isBodyweight, unit: weightUnit.rawValue)
+                bodyweight: ex.isBodyweight, unit: weightUnit.rawValue, unilateral: ex.isUnilateral)
             let effort = set.rpe.map { " RPE " + SetValueFormatter.number($0) } ?? ""
             return value + effort
         }.joined(separator: " · ")
@@ -1358,7 +1368,7 @@ private struct RunnerSetAction: View {
             let values = SetValueFormatter.value(
                 weight: storedUnit.convert(sync.weight, to: unit), reps: sync.reps,
                 durationSeconds: ex.isTimed ? sync.holdDurationSeconds : nil, timed: ex.isTimed,
-                bodyweight: ex.isBodyweight, unit: unit.rawValue)
+                bodyweight: ex.isBodyweight, unit: unit.rawValue, unilateral: ex.isUnilateral)
             Text(values + (!ex.isTimed && sync.weight != 0 ? " · \(unit.rawValue)" : "")
                  + (sync.rpe.map { " · RPE \(SetValueFormatter.number($0))" } ?? ""))
                 .font(.caption).foregroundStyle(Theme.muted)

@@ -9,6 +9,7 @@ import { workoutDB } from '../workoutSchema';
 // goes through src/db.ts, identical to REST.
 import type { Env } from '../types';
 import { coachGroupSlots, coachGroupSummary } from '../exerciseGroupViews';
+import { resolvedScheduleNames } from '../planViews';
 import { isGroupId } from '../exerciseGroups';
 import {
   getTrainingProfile,
@@ -34,7 +35,6 @@ import {
   getPlanTree,
   getRecentActivities,
   getRecentSessions,
-  getResolvedScheduleNames,
   getRideConflicts,
   getSessionByDate,
   getSetsForSession,
@@ -74,7 +74,7 @@ import {
   writeAudit,
   writeNote,
 } from '../db';
-import { parsePlanMeta, WEEKDAYS } from '../types';
+import { parsePlanMeta } from '../types';
 import { logUnexpectedError, publicToolErrorCode } from '../errors';
 import type {
   PeriodizationPhase,
@@ -327,8 +327,9 @@ const TOOLS: Record<string, Tool> = {
       const tree = await getPlanTree(env.DB, userId);
       const training_profile = await getTrainingProfile(env.DB, userId);
       if (!tree) return { plan: null, training_profile, note: 'No active plan yet.' };
-      // Fold in the resolved recurring weekly schedule (weekday → day name).
-      const schedule = await getResolvedScheduleNames(env.DB, userId);
+      // Fold in the resolved recurring weekly schedule (weekday → day name),
+      // projected from the tree already in hand.
+      const schedule = resolvedScheduleNames(tree);
       // Conflict-aware with zero extra calls: a compact 28-day lift/ride
       // conflict list rides along with the plan context.
       const today = await ownerToday(env, userId);
@@ -437,7 +438,7 @@ const TOOLS: Record<string, Tool> = {
       const lastCompleted = await getLastCompletedSession(env.DB, userId, date);
       // `schedule` lets an agent answer "what should I do today?" without
       // a second call to get_current_plan — the natural one-shot answer.
-      const schedule = tree ? await getResolvedScheduleNames(env.DB, userId) : null;
+      const schedule = tree ? resolvedScheduleNames(tree) : null;
       return {
         date,
         session,
@@ -1711,10 +1712,7 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
   // Resolve metadata and names from this exact plan tree, not a later read.
   const authoredContext = tree ? coachingPlanMeta(tree.meta) : null;
   const hasSchedule = authoredContext?.schedule != null;
-  const schedule = tree && hasSchedule ? Object.fromEntries(WEEKDAYS.map(day => {
-    const id = parsePlanMeta(tree.meta).schedule.week[day];
-    return [day, id ? tree.workouts.find(workout => workout.id === id)?.name ?? null : null];
-  })) : null;
+  const schedule = tree && hasSchedule ? resolvedScheduleNames(tree) : null;
   const lastCompleted = await getLastCompletedSession(env.DB, userId, undefined, today);
   const summaryRows = [...recent];
   if (lastCompleted && !summaryRows.some(s => s.id === lastCompleted.id)) summaryRows.push(lastCompleted);

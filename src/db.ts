@@ -7581,15 +7581,6 @@ export function addDays(ymd: string, n: number): string {
   return `${pad(yr, 4)}-${pad(m)}-${pad(d)}`;
 }
 
-export async function getPlanSchedule(
-  db: D1Database,
-  userId: string,
-): Promise<{ plan: PlanRow; schedule: WeeklySchedule } | null> {
-  const plan = await getActivePlan(db, userId);
-  if (!plan) return null;
-  return { plan, schedule: parsePlanMeta(plan.meta).schedule };
-}
-
 /**
  * Replace the full weekly map. Resolves each value (id, day_label, or day
  * name) to a workout_id belonging to the active plan; rejects any ref
@@ -9045,26 +9036,6 @@ export async function getProjectedCalendar(
     plannedEvents.results,
     completedActivities.results,
   );
-}
-
-/** Resolve the schedule to human-readable weekday → day name, for context. */
-export async function getResolvedScheduleNames(
-  db: D1Database,
-  userId: string,
-): Promise<Record<Weekday, string | null> | null> {
-  const got = await getPlanSchedule(db, userId);
-  if (!got) return null;
-  const days = await workoutDB(db)
-    .prepare('SELECT id, name FROM workouts WHERE plan_id = ?1')
-    .bind(got.plan.id)
-    .all<{ id: string; name: string }>();
-  const nameById = new Map(days.results.map((d) => [d.id, d.name]));
-  const out = {} as Record<Weekday, string | null>;
-  for (const wd of WEEKDAYS) {
-    const id = got.schedule.week[wd];
-    out[wd] = id ? nameById.get(id) ?? null : null;
-  }
-  return out;
 }
 
 // ---- external events (cycling-awareness; own consistency class) ----------

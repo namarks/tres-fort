@@ -13,9 +13,9 @@ export type MetricSet = {
   duration_s: number | null;
   is_timed: number;
 };
-export const epley = (weight: number, reps: number) =>
+const epley = (weight: number, reps: number) =>
   Math.round(weight * (1 + reps / 30) * 10) / 10;
-export const timedDurationSeconds = (set: Pick<MetricSet, 'duration_s' | 'reps'>) =>
+const timedDurationSeconds = (set: Pick<MetricSet, 'duration_s' | 'reps'>) =>
   set.duration_s ?? set.reps;
 
 export function estimatedOneRepMax(set: MetricSet, exercise: MetricExercise): number | null {

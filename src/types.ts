@@ -49,7 +49,7 @@ export interface Env {
    * "Webhook Secret" configured on the intervals.icu Manage App page. Every
    * delivery carries this in its JSON body; the receiver matches it to
    * authenticate. UNSET → the webhook receiver is dormant (it 401s every
-   * request) and the 15-min polling cron remains the only sync path.
+   * request) and the hourly backstop cron remains the only sync path.
    */
   INTERVALS_WEBHOOK_SECRET?: string;
   /**
@@ -539,10 +539,6 @@ function emptyWeek(): ScheduleWeek {
   return { mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null };
 }
 
-export function emptySchedule(): WeeklySchedule {
-  return { version: 1, week: emptyWeek() };
-}
-
 const isStr = (v: unknown): v is string => typeof v === 'string' && v.length > 0;
 const YMD = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -582,7 +578,8 @@ function normalizePeriodization(v: unknown): PeriodizationPhase[] | undefined {
   return phases.length ? phases : undefined;
 }
 
-const TRIP_TYPES = new Set(['travel', 'rest', 'injury', 'other']);
+/** The accepted trip/blackout kinds. Shared with the MCP write tools. */
+export const TRIP_TYPES = new Set(['travel', 'rest', 'injury', 'other']);
 function normalizeTrips(v: unknown): Trip[] | undefined {
   if (!Array.isArray(v)) return undefined;
   const trips: Trip[] = [];

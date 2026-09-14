@@ -48,7 +48,6 @@ import {
   getWorkoutInPlan,
   getPlanTree,
   getState,
-  getUserTimezone,
   getVolume,
   getWorkoutSummary,
   getSetsForSession,
@@ -84,7 +83,7 @@ import {
   softDeleteActivity,
   reviveDiscardedSession,
   SessionWriteConflictError,
-  todayInTz,
+  todayForUser,
   updateExercise,
   swapExercise,
   upsertHealthKitActivity,
@@ -92,6 +91,15 @@ import {
   ensureActivePlan,
 } from '../db';
 import { isWorkoutWriteFenceEnabled } from '../workout-write-fence';
+import {
+  hasField as hasOwn,
+  invalidFields as invalidMutationFields,
+  isNonEmptyString,
+  isNonNegativeInteger,
+  isPositiveInteger,
+  type FieldRule,
+} from '../validation';
+import { WEEKDAYS } from '../types';
 import type { Weekday } from '../types';
 
 export const apiRoutes = new Hono<HonoEnv>();
@@ -112,18 +120,9 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const ACCOUNT_DELETION_RECENT_AUTH_SECONDS = 5 * 60;
 
 type JsonObject = Record<string, unknown>;
-type FieldRule = (value: unknown) => boolean;
 
-const hasOwn = (body: JsonObject, field: string) =>
-  Object.prototype.hasOwnProperty.call(body, field);
-const isNonEmptyString: FieldRule = (value) =>
-  typeof value === 'string' && value.trim().length > 0;
 const isFiniteNumber: FieldRule = (value) =>
   typeof value === 'number' && Number.isFinite(value);
-const isNonNegativeInteger: FieldRule = (value) =>
-  Number.isSafeInteger(value) && (value as number) >= 0;
-const isPositiveInteger: FieldRule = (value) =>
-  Number.isSafeInteger(value) && (value as number) > 0;
 const parsePositiveIntegerText = (value: string | undefined): number | undefined => {
   if (value === undefined || !/^[1-9]\d*$/.test(value)) return undefined;
   const parsed = Number(value);
@@ -158,22 +157,6 @@ async function readMutationBody(
   }
   try { return { ok: true, body: workoutInput(value as JsonObject) }; }
   catch { return { ok: false, error: 'conflicting_workout_fields' }; }
-}
-
-/** Return required or present optional fields whose runtime value is invalid. */
-function invalidMutationFields(
-  body: JsonObject,
-  required: Record<string, FieldRule>,
-  optional: Record<string, FieldRule> = {},
-): string[] {
-  const invalid: string[] = [];
-  for (const [field, rule] of Object.entries(required)) {
-    if (!hasOwn(body, field) || !rule(body[field])) invalid.push(field);
-  }
-  for (const [field, rule] of Object.entries(optional)) {
-    if (hasOwn(body, field) && !rule(body[field])) invalid.push(field);
-  }
-  return invalid;
 }
 
 function readExpectedAttemptQuery(
@@ -465,7 +448,7 @@ apiRoutes.put('/plan/schedule', async (c) => {
   if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
   const week = b.week as Record<string, unknown>;
   const badKeys = Object.keys(week).filter(
-    (key) => !['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].includes(key),
+    (key) => !(WEEKDAYS as readonly string[]).includes(key),
   );
   const badValues = Object.entries(week)
     .filter(([, value]) => value !== null && typeof value !== 'string')
@@ -742,7 +725,7 @@ apiRoutes.get('/today', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
   if (!plan) return c.json(workoutWire({ error: 'no_active_plan' }), 400);
-  const date = todayInTz(await getUserTimezone(c.env.DB, userId));
+  const date = await todayForUser(c.env.DB, userId);
   const session = await getOrCreateSession(
     c.env.DB,
     userId,
@@ -799,7 +782,7 @@ apiRoutes.post('/sessions', async (c) => {
   const date =
     typeof b.date === 'string'
       ? b.date
-      : todayInTz(await getUserTimezone(c.env.DB, userId));
+      : await todayForUser(c.env.DB, userId);
   const workoutId =
     (b.workout_id as string | null | undefined) ?? null;
   // An offline intent may retain a day UUID that update_plan has since

@@ -7475,15 +7475,6 @@ export function addDays(ymd: string, n: number): string {
   return `${pad(yr, 4)}-${pad(m)}-${pad(d)}`;
 }
 
-export async function getPlanSchedule(
-  db: D1Database,
-  userId: string,
-): Promise<{ plan: PlanRow; schedule: WeeklySchedule } | null> {
-  const plan = await getActivePlan(db, userId);
-  if (!plan) return null;
-  return { plan, schedule: parsePlanMeta(plan.meta).schedule };
-}
-
 /**
  * Replace the full weekly map. Resolves each value (id, day_label, or day
  * name) to a workout_id belonging to the active plan; rejects any ref
@@ -8997,26 +8988,6 @@ export async function getProjectedCalendar(
 ): Promise<CalendarCell[]> {
   const inputs = await readCalendarInputs(db, userId, fromDate, toDate);
   return inputs ? projectCalendarWindow(inputs, fromDate, toDate, today) : [];
-}
-
-/** Resolve the schedule to human-readable weekday → day name, for context. */
-export async function getResolvedScheduleNames(
-  db: D1Database,
-  userId: string,
-): Promise<Record<Weekday, string | null> | null> {
-  const got = await getPlanSchedule(db, userId);
-  if (!got) return null;
-  const days = await workoutDB(db)
-    .prepare('SELECT id, name FROM workouts WHERE plan_id = ?1')
-    .bind(got.plan.id)
-    .all<{ id: string; name: string }>();
-  const nameById = new Map(days.results.map((d) => [d.id, d.name]));
-  const out = {} as Record<Weekday, string | null>;
-  for (const wd of WEEKDAYS) {
-    const id = got.schedule.week[wd];
-    out[wd] = id ? nameById.get(id) ?? null : null;
-  }
-  return out;
 }
 
 // ---- external events (cycling-awareness; own consistency class) ----------
@@ -12794,4 +12765,66 @@ export async function decideMobileCoachRequest(
 
 export async function purgeExpiredMobileCoachRequests(db: D1Database): Promise<void> {
   await db.prepare('DELETE FROM oauth_mobile_requests WHERE expires_at <= ?1').bind(Date.now()).run();
+}
+
+/**
+ * Sets for SEVERAL sessions in one query — the batched form of
+ * `getSetsForSession`, with the same columns, `deleted_at` filter and
+ * `logged_at` ordering. Callers group the flat result by `session_id`; the
+ * relative order inside each session is the single-session order.
+ *
+ * The coach brief reads up to eight recent sessions at once, so the per-session
+ * read was an N+1 on the hottest MCP path.
+ */
+export async function getSetsForSessions(
+  db: D1Database,
+  userId: string,
+  sessionIds: string[],
+): Promise<SetLogRow[]> {
+  if (sessionIds.length === 0) return [];
+  const placeholders = sessionIds.map((_, i) => `?${i + 2}`).join(',');
+  const r = await workoutDB(db)
+    .prepare(
+      `SELECT * FROM set_logs
+        WHERE user_id = ?1 AND session_id IN (${placeholders}) AND deleted_at IS NULL
+        ORDER BY logged_at`,
+    )
+    .bind(userId, ...sessionIds)
+    .all<SetLogRow>();
+  return r.results;
+}
+
+/**
+ * The member's civil "today" (YYYY-MM-DD) in the timezone their device last
+ * reported, falling back to UTC when none is recorded.
+ *
+ * MCP calls arrive from a chat client rather than the device, so resolving
+ * "today" from the stored tz is what stops get_today_workout returning
+ * tomorrow's date after ~17:00 PT. REST resolves it the same way whenever the
+ * client did not send an explicit date, so both surfaces share this read.
+ */
+export async function todayForUser(db: D1Database, userId: string): Promise<string> {
+  return todayInTz(await getUserTimezone(db, userId));
+}
+
+/**
+ * The first workout in a plan whose `day_label` or `name` equals `ref`.
+ *
+ * The MCP write tools accept a natural-language day reference; an explicit
+ * workout id is resolved by the caller before this. There is deliberately no
+ * ORDER BY, so a duplicated label or name resolves exactly as the inline
+ * queries this replaced did.
+ */
+export async function findWorkoutByRef(
+  db: D1Database,
+  planId: string,
+  ref: string,
+): Promise<string | null> {
+  const row = await workoutDB(db)
+    .prepare(
+      'SELECT id FROM workouts WHERE plan_id = ?1 AND (day_label = ?2 OR name = ?2) LIMIT 1',
+    )
+    .bind(planId, ref)
+    .first<{ id: string }>();
+  return row?.id ?? null;
 }

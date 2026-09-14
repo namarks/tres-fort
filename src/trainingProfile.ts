@@ -18,9 +18,9 @@ export interface TrainingProfile {
   }[];
 }
 
-export const TRAINING_ACTIVITIES = ['weightlifting', 'running', 'swimming', 'cycling', 'walking', 'yoga', 'other'];
-export const MOVEMENT_PATTERNS = ['squat', 'hinge', 'push', 'pull', 'core'];
-export const BASELINE_EXERCISES = ['ex_goblet_squat', 'ex_db_rdl', 'ex_db_press', 'ex_one_arm_db_row', 'ex_back_squat', 'ex_rdl', 'ex_bench', 'ex_lat_pulldown'];
+const TRAINING_ACTIVITIES = ['weightlifting', 'running', 'swimming', 'cycling', 'walking', 'yoga', 'other'];
+const MOVEMENT_PATTERNS = ['squat', 'hinge', 'push', 'pull', 'core'];
+const BASELINE_EXERCISES = ['ex_goblet_squat', 'ex_db_rdl', 'ex_db_press', 'ex_one_arm_db_row', 'ex_back_squat', 'ex_rdl', 'ex_bench', 'ex_lat_pulldown'];
 
 const record = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v);
 const choice = (v: unknown, values: readonly string[]): v is string => typeof v === 'string' && values.includes(v);

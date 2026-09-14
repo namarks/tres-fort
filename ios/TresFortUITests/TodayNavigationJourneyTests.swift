@@ -128,7 +128,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
     func testPrescribedWeightsAppearInLibraryAndCalendar() throws {
         let app = try launchGroupedPreview()
         tap(app.buttons["today.chooseWorkout"], in: app)
-        tap(app.buttons["library.workout.strength-a"], in: app)
+        tap(app.buttons["library.workout.synthetic-day"], in: app)
         XCTAssertTrue(app.navigationBars["Strength A"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["2×8 · 25 lb each hand"].exists)
         XCTAssertTrue(app.staticTexts["2×8 · 45 lb"].exists)

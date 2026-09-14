@@ -722,8 +722,12 @@ private struct RunnerView: View {
     /// pre-start preview (#54).
     @State private var demoFor: TemplateExercise?
     @State private var swapTarget: WorkoutSwapTarget?
-    @State private var editingValues = false
-    @State private var valueDraft: RunnerInputState?
+    private struct SetValueDraft: Identifiable {
+        let id = UUID()
+        let input: RunnerInputState
+        let exercise: TemplateExercise
+    }
+    @State private var valueDraft: SetValueDraft?
     @State private var weightPrescription: RunnerPrescription?
     @State private var loadingTarget: Double?
     @State private var showingLoading = false
@@ -790,8 +794,9 @@ private struct RunnerView: View {
 
                         prescriptionContext(ex: ex)
                         Button {
-                            valueDraft = sync.currentInputState
-                            editingValues = true
+                            if let input = sync.currentInputState {
+                                valueDraft = SetValueDraft(input: input, exercise: ex)
+                            }
                         } label: {
                             Text("Edit weight, \(ex.isTimed ? "duration" : "reps") & RPE")
                                 .font(Theme.mono(12, .bold)).frame(minHeight: 44).contentShape(Rectangle())
@@ -917,18 +922,16 @@ private struct RunnerView: View {
             .onChange(of: sync.timedActive) {
                 if !sync.timedActive { previewFor = nil }
             }
-            .sheet(isPresented: $editingValues) {
-                if let draft = valueDraft {
-                    SetValuesEditor(title: "Next set", values: SetCorrectionValues(
-                        weight: draft.weight, reps: draft.reps, rpe: draft.rpe,
-                        durationSeconds: draft.prescription.timed ? draft.durationSeconds : nil),
-                        timed: draft.prescription.timed, allowsAssistance: ex.allowsAssistance,
-                        storedUnit: WeightUnit(rawValue: ex.exercise_unit) ?? .lb,
-                        unilateral: ex.isUnilateral,
-                        onSave: { values in
-                            sync.setRunnerValues(values, expected: draft.prescription)
-                        })
-                }
+            .sheet(item: $valueDraft) { draft in
+                SetValuesEditor(title: "Next set", values: SetCorrectionValues(
+                    weight: draft.input.weight, reps: draft.input.reps, rpe: draft.input.rpe,
+                    durationSeconds: draft.input.prescription.timed ? draft.input.durationSeconds : nil),
+                    timed: draft.input.prescription.timed, allowsAssistance: draft.exercise.allowsAssistance,
+                    storedUnit: WeightUnit(rawValue: draft.exercise.exercise_unit) ?? .lb,
+                    unilateral: draft.exercise.isUnilateral,
+                    onSave: { values in
+                        sync.setRunnerValues(values, expected: draft.input.prescription)
+                    })
             }
             .sheet(item: $demoFor) { ex in
                 ExerciseDemoSheet(

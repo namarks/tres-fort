@@ -2,7 +2,6 @@ import { ATTRIBUTION_INSTRUCTIONS } from '../dataAttribution';
 import { coachingSession, coachingPlanMeta } from '../coachingContext';
 import { TRAINING_PROFILE_COACH_GUIDANCE } from '../trainingProfile';
 import { workoutInput, workoutWire } from '../workoutWire';
-import { workoutDB } from '../workoutSchema';
 // Minimal, spec-correct MCP server over Streamable HTTP (JSON-RPC 2.0,
 // single application/json responses — no server-initiated streams needed
 // for read tools). Stateless: no Mcp-Session-Id required. All data access
@@ -32,6 +31,7 @@ import {
   deleteWorkout,
   discardSession,
   findRecentMatchingSet,
+  findWorkoutByRef,
   findMcpExerciseGroupAcknowledgement,
   getActivePlan,
   getExercises,
@@ -265,13 +265,7 @@ function updateWorkoutTool(operation: 'update_day' | 'update_workout'): Tool {
       if (typeof a.workout_id === 'string') {
         dayId = a.workout_id;
       } else if (typeof a.day === 'string') {
-        const row = await workoutDB(env.DB)
-          .prepare(
-            "SELECT id FROM workouts WHERE plan_id = ?1 AND (day_label = ?2 OR name = ?2) LIMIT 1",
-          )
-          .bind(plan.id, a.day)
-          .first<{ id: string }>();
-        dayId = row?.id ?? null;
+        dayId = await findWorkoutByRef(env.DB, plan.id, a.day);
       }
       if (!dayId) return { error: 'day_not_found' };
       const r = await patchWorkoutAtVersion(
@@ -1183,12 +1177,8 @@ const TOOLS: Record<string, Tool> = {
       if (groupFields.length) return { error: 'unknown_fields', fields: groupFields };
       const plan = await getActivePlan(env.DB, userId);
       if (!plan) return { error: 'no_active_plan' };
-      const day = await workoutDB(env.DB).prepare(
-        "SELECT d.id FROM workouts d JOIN plans p ON p.id=d.plan_id WHERE p.user_id=?1 AND p.status='active' AND (d.day_label=?2 OR d.name=?2) LIMIT 1",
-      )
-        .bind(userId, String(a.day))
-        .first<{ id: string }>();
-      if (!day) return { error: 'day_not_found', day: a.day };
+      const dayId = await findWorkoutByRef(env.DB, plan.id, String(a.day));
+      if (!dayId) return { error: 'day_not_found', day: a.day };
       const ex = await resolveExercise(env.DB, String(a.exercise));
       if (!ex) return { error: 'unknown_exercise', query: a.exercise };
       // Honor an explicit order_index; otherwise append densely (max+1)
@@ -1197,9 +1187,9 @@ const TOOLS: Record<string, Tool> = {
       const orderIndex =
         a.order_index !== undefined
           ? a.order_index as number
-          : await nextExerciseOrderIndex(env.DB, day.id);
+          : await nextExerciseOrderIndex(env.DB, dayId);
       return addTemplateExercise(env.DB, plan.id, {
-        workout_id: day.id,
+        workout_id: dayId,
         exercise_id: (ex as { id: string }).id,
         order_index: orderIndex,
         target_sets: a.target_sets as number,

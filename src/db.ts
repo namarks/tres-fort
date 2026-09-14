@@ -12850,3 +12850,25 @@ export async function getSetsForSessions(
 export async function todayForUser(db: D1Database, userId: string): Promise<string> {
   return todayInTz(await getUserTimezone(db, userId));
 }
+
+/**
+ * The first workout in a plan whose `day_label` or `name` equals `ref`.
+ *
+ * The MCP write tools accept a natural-language day reference; an explicit
+ * workout id is resolved by the caller before this. There is deliberately no
+ * ORDER BY, so a duplicated label or name resolves exactly as the inline
+ * queries this replaced did.
+ */
+export async function findWorkoutByRef(
+  db: D1Database,
+  planId: string,
+  ref: string,
+): Promise<string | null> {
+  const row = await workoutDB(db)
+    .prepare(
+      'SELECT id FROM workouts WHERE plan_id = ?1 AND (day_label = ?2 OR name = ?2) LIMIT 1',
+    )
+    .bind(planId, ref)
+    .first<{ id: string }>();
+  return row?.id ?? null;
+}

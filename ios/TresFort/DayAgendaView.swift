@@ -15,10 +15,6 @@ import SwiftUI
 // session — that precedence lives entirely in CalendarProjection (the
 // frozen algorithm); this view only renders whatever it returns.
 
-private func fmtWeight(_ w: Double) -> String {
-    w.rounded() == w ? String(Int(w)) : String(format: "%.1f", w)
-}
-
 struct DayAgendaView: View {
     @ObservedObject var sync: SyncModel
     let dateString: String
@@ -393,7 +389,7 @@ struct DayAgendaView: View {
         var parts: [String] = [s.valueLabel(
             timed: sync.isTimedSet(s),
             bodyweight: sync.isBodyweightExercise(s.exercise_id))]
-        if let r = s.rpe { parts.append("RPE \(fmtWeight(r))") }
+        if let r = s.rpe { parts.append("RPE \(SetValueFormatter.number(r))") }
         if s.is_warmup == 1 { parts.append("(warmup)") }
         return parts.joined(separator: "  ")
     }

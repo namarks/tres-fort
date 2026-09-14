@@ -160,7 +160,7 @@ export interface BgScheduler {
   waitUntil(p: Promise<unknown>): void;
 }
 
-interface Tool {
+interface ToolBase {
   description: string;
   inputSchema: Json;
   handler: (
@@ -173,12 +173,26 @@ interface Tool {
   write?: boolean;
   /** Appends records without replacing or deleting existing user data. */
   appendOnly?: boolean;
-  /** Plan writer persisted its audit/note in the same D1 transaction. */
-  atomicWrite?: boolean;
   /** The service writes its own audit trail; do not duplicate it in dispatch. */
   handlerAudited?: boolean;
-  note?: (args: Json, result: any) => string | null;
 }
+
+/**
+ * `atomicWrite` and `note` are mutually exclusive: the dispatcher consults
+ * `note` only on the non-atomic, non-handler-audited path, so a plan writer
+ * that commits its audit/note inside the same D1 transaction can never have
+ * a dispatcher note run. The type keeps a dead hook from being re-added.
+ */
+type Tool =
+  | (ToolBase & {
+      /** Plan writer persisted its audit/note in the same D1 transaction. */
+      atomicWrite: true;
+      note?: never;
+    })
+  | (ToolBase & {
+      atomicWrite?: false;
+      note?: (args: Json, result: any) => string | null;
+    });
 
 const obj = (props: Json, required: string[] = []): Json => ({
   type: 'object',
@@ -245,8 +259,6 @@ function addWorkoutTool(operation: 'add_day' | 'add_workout'): Tool {
         { actor: 'mcp', operation, args: a, note: `Added workout "${a.name}".` },
       );
     },
-    note: (a, r) =>
-      r?.conflict || r?.error ? null : `Added workout "${a.name}".`,
   };
   if (operation === 'add_day') tool.description += ' Deprecated name: use add_workout. Supported for one TestFlight compatibility cycle.';
   return tool;
@@ -293,10 +305,6 @@ function updateWorkoutTool(operation: 'update_day' | 'update_workout'): Tool {
       );
       return r ?? { error: 'day_not_found' };
     },
-    note: (_a, r) =>
-      r?.conflict || r?.error
-        ? null
-        : `Updated workout "${(r as { name: string }).name}".`,
   };
   if (operation === 'update_day') tool.description += ' Deprecated name: use update_workout. Supported for one TestFlight compatibility cycle.';
   return tool;
@@ -1027,10 +1035,6 @@ const TOOLS: Record<string, Tool> = {
         a as unknown as Parameters<typeof updatePlanTree>[2],
         { actor: 'mcp', operation: 'update_plan', args: a, note: 'Rebuilt training plan.' },
       ),
-    note: (_a, r) =>
-      r?.conflict || r?.error
-        ? null
-        : `Rebuilt plan: ${r.plan.workouts.length} day(s), v${r.plan.version}.`,
   },
   group_exercises: {
     description: 'Group adjacent exercise slots into a superset or circuit. Use a caller-generated group_id UUID and current expected_version. Exercises are template slot IDs (recommended, especially for repeated exercises) or unambiguous names/aliases in the selected day. Every member performs the same number of rounds. round_rest follows the last member; transition_rest defaults to zero between members. Ordinary per-slot rest is preserved. Retry the same ID, version and payload after an uncertain response; refetch on conflict.',
@@ -1139,7 +1143,6 @@ const TOOLS: Record<string, Tool> = {
       );
       return r ?? { error: 'slot_not_found' };
     },
-    note: (_a, r) => (r?.conflict || r?.error ? null : `Updated slot ${r.id}.`),
   },
   swap_exercise: {
     description: 'Replace an exercise in a day with another (e.g. RDL → good mornings on Wednesday), preserving its targets, order, warm-up flag, and slot identity. Carried targets must be valid for the destination modality. Historical sets keep their original exercise. Both names must match the closed catalog — use list_exercises to discover valid names.',
@@ -1164,8 +1167,6 @@ const TOOLS: Record<string, Tool> = {
       });
       return r ?? { error: 'slot_not_found' };
     },
-    note: (a, r) =>
-      r?.error ? null : `Swapped ${a.from_exercise} → ${a.to_exercise} on ${a.day}.`,
   },
   add_exercise: {
     description: 'Add an exercise to a day in the active plan. `exercise` must match the closed catalog — use list_exercises to discover valid names. order_index defaults to max(existing)+1 (append dense), not the old 99 sentinel. Set is_warmup:true for a prescribed warm-up (erg, mobility) — its logged sets stay out of working-set rollups / session RPE. For a duration-based warm-up (e.g. 5-min row), use a cardio exercise and set target_duration_s. For bodyweight or timed work, target_weight is external load relative to bodyweight: positive for added load, zero for strict bodyweight, and negative for assistance; never store body mass. For AMRAP, use target_reps as the minimum, leave target_reps_max unset, and put "AMRAP" in cues.',
@@ -1233,7 +1234,6 @@ const TOOLS: Record<string, Tool> = {
         note: `Added ${a.exercise} to ${a.day}.`,
       });
     },
-    note: (a, r) => (r?.error ? null : `Added ${a.exercise} to ${a.day}.`),
   },
   add_workout: addWorkoutTool('add_workout'),
   add_day: addWorkoutTool('add_day'),
@@ -1277,8 +1277,6 @@ const TOOLS: Record<string, Tool> = {
       });
       return r ?? { error: 'slot_not_found' };
     },
-    note: (_a, r) =>
-      r?.error ? null : `Deleted exercise slot ${r.id}.`,
   },
   adjust_today: {
     description:
@@ -1308,12 +1306,6 @@ const TOOLS: Record<string, Tool> = {
             (typeof a.reason === 'string' ? ` Reason: ${a.reason}` : ''),
         },
       ),
-    note: (a, r) =>
-      `Recurring template adjustment ${a.intent}(${a.magnitude ?? 'moderate'}) for ` +
-      `${a.day_label ? String(a.day_label) : 'all workouts'}: ` +
-      `${r?.changes?.length ?? 0} change(s). ` +
-      `${r?.changes?.join('; ') || 'No representable reduction; no targets changed.'}` +
-      (typeof a.reason === 'string' ? ` Reason: ${a.reason}` : ''),
   },
   set_schedule: {
     description:
@@ -1353,13 +1345,6 @@ const TOOLS: Record<string, Tool> = {
       );
       return r;
     },
-    note: (_a, r) =>
-      r?.ok
-        ? `Set recurring weekly schedule (v${r.version}): ` +
-          (['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const)
-            .map((d) => `${d}:${r.schedule.week[d] ?? 'rest'}`)
-            .join(' ')
-        : null,
   },
   set_planned_session: {
     description:
@@ -1441,10 +1426,6 @@ const TOOLS: Record<string, Tool> = {
         },
       );
     },
-    note: (a, r) =>
-      r?.ok
-        ? `Set A-race: ${a.name} — ${a.discipline}${a.distance ? ` ${a.distance}` : ''} on ${a.date}${a.location ? ` (${a.location})` : ''}.`
-        : null,
   },
   set_periodization: {
     description:
@@ -1484,10 +1465,6 @@ const TOOLS: Record<string, Tool> = {
         typeof a.expected_version === 'number' ? a.expected_version : null,
         { actor: 'mcp', operation: 'set_periodization', args: a, note: 'Set periodization.' },
       ),
-    note: (a, r) =>
-      r?.ok
-        ? `Set periodization: ${((a.phases as Array<{ phase: string; start: string; end: string }>) ?? []).map((p) => `${p.phase}(${p.start}→${p.end})`).join(', ')}.`
-        : null,
   },
   add_trip: {
     description:
@@ -1526,10 +1503,6 @@ const TOOLS: Record<string, Tool> = {
         },
       );
     },
-    note: (a, r) =>
-      r?.ok
-        ? `Added ${a.type ?? 'travel'} trip ${a.start}→${a.end}${a.note ? `: ${a.note}` : ''}.`
-        : null,
   },
   update_trip: {
     description:
@@ -1564,7 +1537,6 @@ const TOOLS: Record<string, Tool> = {
         { actor: 'mcp', operation: 'update_trip', args: a, note: `Updated trip ${a.id}.` },
       );
     },
-    note: (a, r) => (r?.ok ? `Updated trip ${a.id}.` : null),
   },
   remove_trip: {
     description:
@@ -1583,7 +1555,6 @@ const TOOLS: Record<string, Tool> = {
         typeof a.expected_version === 'number' ? a.expected_version : null,
         { actor: 'mcp', operation: 'remove_trip', args: a, note: `Removed trip ${a.id}.` },
       ),
-    note: (a, r) => (r?.ok ? `Removed trip ${a.id}.` : null),
   },
   set_stress_model: {
     description:
@@ -1618,7 +1589,6 @@ const TOOLS: Record<string, Tool> = {
         { actor: 'mcp', operation: 'set_stress_model', args: a, note: 'Updated planning stress model.' },
       );
     },
-    note: (_a, r) => (r?.ok ? `Updated planning stress model.` : null),
   },
   refresh_rides: {
     description:

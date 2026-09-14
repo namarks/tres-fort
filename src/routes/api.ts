@@ -48,7 +48,6 @@ import {
   getWorkoutInPlan,
   getPlanTree,
   getState,
-  getUserTimezone,
   getVolume,
   getWorkoutSummary,
   isGroupMember,
@@ -82,7 +81,7 @@ import {
   softDeleteActivity,
   reviveDiscardedSession,
   SessionWriteConflictError,
-  todayInTz,
+  todayForUser,
   updateExercise,
   swapExercise,
   upsertHealthKitActivity,
@@ -724,7 +723,7 @@ apiRoutes.get('/today', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
   if (!plan) return c.json(workoutWire({ error: 'no_active_plan' }), 400);
-  const date = todayInTz(await getUserTimezone(c.env.DB, userId));
+  const date = await todayForUser(c.env.DB, userId);
   const session = await getOrCreateSession(
     c.env.DB,
     userId,
@@ -784,7 +783,7 @@ apiRoutes.post('/sessions', async (c) => {
   const date =
     typeof b.date === 'string'
       ? b.date
-      : todayInTz(await getUserTimezone(c.env.DB, userId));
+      : await todayForUser(c.env.DB, userId);
   const workoutId =
     (b.workout_id as string | null | undefined) ?? null;
   // An offline intent may retain a day UUID that update_plan has since

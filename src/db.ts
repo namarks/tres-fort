@@ -12837,3 +12837,16 @@ export async function getSetsForSessions(
     .all<SetLogRow>();
   return r.results;
 }
+
+/**
+ * The member's civil "today" (YYYY-MM-DD) in the timezone their device last
+ * reported, falling back to UTC when none is recorded.
+ *
+ * MCP calls arrive from a chat client rather than the device, so resolving
+ * "today" from the stored tz is what stops get_today_workout returning
+ * tomorrow's date after ~17:00 PT. REST resolves it the same way whenever the
+ * client did not send an explicit date, so both surfaces share this read.
+ */
+export async function todayForUser(db: D1Database, userId: string): Promise<string> {
+  return todayInTz(await getUserTimezone(db, userId));
+}

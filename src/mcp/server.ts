@@ -49,7 +49,6 @@ import {
   getSetsForSession,
   getSetsForSessions,
   getUpcomingRides,
-  getUserTimezone,
   getVolume,
   getWorkoutSummary,
   ensureActivePlan,
@@ -74,7 +73,7 @@ import {
   setStressModel,
   SessionWriteConflictError,
   skipPlannedSession,
-  todayInTz,
+  todayForUser,
   swapExercise,
   syncExternalActivities,
   syncExternalEvents,
@@ -132,15 +131,6 @@ const err = (id: RpcRequest['id'], code: number, message: string) => ({
   id: id ?? null,
   error: { code, message },
 });
-
-/**
- * The owner's civil "today" (YYYY-MM-DD) in their device-reported timezone.
- * MCP calls come from Claude, not the device, so we resolve "today" from the
- * tz the iOS app last synced (falls back to UTC when none recorded). This is
- * what stops get_today_workout returning tomorrow's date after ~17:00 PT.
- */
-const ownerToday = async (env: Env, userId: string): Promise<string> =>
-  todayInTz(await getUserTimezone(env.DB, userId));
 
 /** Add n whole days to a YYYY-MM-DD (UTC math, date part only — no DST). */
 const addDaysIso = (ymd: string, n: number) =>
@@ -321,7 +311,7 @@ const TOOLS: Record<string, Tool> = {
       const schedule = resolvedScheduleNames(tree);
       // Conflict-aware with zero extra calls: a compact 28-day lift/ride
       // conflict list rides along with the plan context.
-      const today = await ownerToday(env, userId);
+      const today = await todayForUser(env.DB, userId);
       const ride_conflicts = await getRideConflicts(
         env.DB,
         userId,
@@ -417,7 +407,7 @@ const TOOLS: Record<string, Tool> = {
       "Get today's workout: the date, any existing session for today, the reusable workout library, the recurring weekly schedule (so you can answer 'what should I do today?' from one call), and prior-session context. `last_session` is the most recent non-discarded session of ANY status (could be a skip/planned row); `last_completed_session` is the most recent COMPLETED session — use that for real training context, since a skipped day in between obscures `last_session`.",
     inputSchema: obj({}),
     handler: async (_a, env, userId) => {
-      const date = await ownerToday(env, userId);
+      const date = await todayForUser(env.DB, userId);
       const tree = await getPlanTree(env.DB, userId);
       const session = await getSessionByDate(env.DB, userId, date);
       const recent = await getRecentSessions(env.DB, userId, 2);
@@ -535,7 +525,7 @@ const TOOLS: Record<string, Tool> = {
     ),
     handler: async (a, env, userId) => {
       const range = typeof a.range === 'number' ? Math.min(90, Math.max(1, a.range)) : 30;
-      const today = await ownerToday(env, userId);
+      const today = await todayForUser(env.DB, userId);
       const to = addDaysIso(today, range);
       const rides = await getUpcomingRides(env.DB, userId, { from: today, range });
       const conflicts = await getRideConflicts(env.DB, userId, today, to, today);
@@ -635,7 +625,7 @@ const TOOLS: Record<string, Tool> = {
     handler: async (a, env, userId) => {
       const plan = await getActivePlan(env.DB, userId);
       if (!plan) return { error: 'no_active_plan' };
-      const today = await ownerToday(env, userId);
+      const today = await todayForUser(env.DB, userId);
       const date = typeof a.session_date === 'string' ? a.session_date : today;
       const ex = await resolveExercise(env.DB, String(a.exercise));
       if (!ex) return { error: 'unknown_exercise', query: a.exercise };
@@ -911,7 +901,7 @@ const TOOLS: Record<string, Tool> = {
     write: true,
     appendOnly: true,
     handler: async (a, env, userId) => {
-      const today = await ownerToday(env, userId);
+      const today = await todayForUser(env.DB, userId);
       const date = typeof a.date === 'string' && a.date.length > 0 ? a.date : today;
       const type = String(a.type).toLowerCase().trim();
       if (!type) return { error: 'invalid_type' };
@@ -955,7 +945,7 @@ const TOOLS: Record<string, Tool> = {
     ),
     write: true,
     handler: async (a, env, userId) => {
-      const date = typeof a.session_date === 'string' ? a.session_date : await ownerToday(env, userId);
+      const date = typeof a.session_date === 'string' ? a.session_date : await todayForUser(env.DB, userId);
       const s = await logWorkoutComplete(
         env.DB,
         userId,
@@ -1615,7 +1605,7 @@ const TOOLS: Record<string, Tool> = {
     handler: async (a, env, userId) => {
       const range = typeof a.range === 'number' ? Math.min(365, Math.max(1, a.range)) : 30;
       const limit = typeof a.limit === 'number' ? Math.min(200, Math.max(1, a.limit)) : 20;
-      const today = await ownerToday(env, userId);
+      const today = await todayForUser(env.DB, userId);
       const acts = await getRecentActivities(env.DB, userId, { to: today, range, limit });
       return {
         to: today,
@@ -1696,7 +1686,7 @@ const STATE_URI = 'coach://state/current';
 
 async function buildStateBrief(env: Env, userId: string): Promise<string> {
   const tree = await getPlanTree(env.DB, userId);
-  const today = await ownerToday(env, userId);
+  const today = await todayForUser(env.DB, userId);
   const recent = await getRecentSessions(env.DB, userId, 7, today);
   const catalog = await getExercises(env.DB);
   const last = recent[0] ?? null;

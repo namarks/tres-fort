@@ -53,6 +53,7 @@ struct DayAgendaView: View {
                 VStack(alignment: .leading, spacing: 18) {
                     header(proj, today: today)
                     if canEditDate(projection: proj, today: today) {
+                        let dateWorkout = sync.previewWorkout(forDateString: dateString)
                         Button {
                             showDateEditor = true
                         } label: {
@@ -67,13 +68,13 @@ struct DayAgendaView: View {
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("calendar.chooseWorkout")
                         .disabled(sync.isRoutineMutationInFlight)
-                        if let workout = sync.previewWorkout(forDateString: dateString) {
+                        if let workout = dateWorkout {
                             Button("Move workout to another date") { movingWorkout = workout }
                                 .frame(minHeight: 44)
                                 .disabled(sync.isRoutineMutationInFlight)
                                 .accessibilityIdentifier("calendar.moveWorkout")
                         }
-                        if sync.previewWorkout(forDateString: dateString) != nil
+                        if dateWorkout != nil
                             || sync.sessionsByDate[dateString]?.status == "planned" {
                             Button("Remove workout from this date", role: .destructive) { confirmRemoval = true }
                                 .frame(minHeight: 44)

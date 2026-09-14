@@ -102,6 +102,7 @@ struct TemplateExercise: Codable, Identifiable, Equatable {
     /// Duration-pinned loaded exercises still need their positive load, while
     /// cardio efforts do not expose a synthetic weight field.
     var showsLoadControl: Bool { exercise_modality != "cardio" }
+    var isUnilateral: Bool { exercise_laterality == "unilateral" }
     var isPerHand: Bool { exercise_load_mode == "per_hand" }
     /// Prescribed hold/effort for a timed or cardio set, in seconds. Uses
     /// target_duration_s (the real field) and falls back to target_reps for
@@ -119,17 +120,18 @@ struct TemplateExercise: Codable, Identifiable, Equatable {
         return "\(s)s"
     }
 
-    /// "3×5" / "3×5–8" / "3×45s" (hold) / "5 min" (single-set warm-up erg).
+    /// Rep targets include their per-side convention; durations keep their own units.
     var targetLabel: String {
         if isTimed {
             // A single-set timed effort (a warm-up erg, one plank) reads
             // cleaner as just the duration than "1×5 min".
             return target_sets <= 1 ? holdLabel : "\(target_sets)×\(holdLabel)"
         }
+        let side = isUnilateral ? " per side" : ""
         if let hi = target_reps_max, hi != target_reps {
-            return "\(target_sets)×\(target_reps)–\(hi)"
+            return "\(target_sets)×\(target_reps)–\(hi)\(side)"
         }
-        return "\(target_sets)×\(target_reps)"
+        return "\(target_sets)×\(target_reps)\(side)"
     }
 }
 
@@ -424,18 +426,19 @@ extension SetLog {
     /// One-line value for a logged set: a timed hold reads "45s"; a bodyweight
     /// rep set reads "BW+45 × 5", "BW−30 × 8", or "BW × 8"; a weighted set
     /// reads "85 × 5". A SetLog carries
-    /// no modality, so the caller resolves both flags from the exercise's
+    /// no modality or laterality, so the caller resolves the flags from the exercise's
     /// catalog row (see SyncModel.isTimedExercise / isBodyweightExercise) —
     /// "BW" keys off modality == "bw", NOT weight == 0, so a weighted lift
     /// logged at 0 load (unloaded warmup, machine/cable at zero) still reads
     /// "0 × reps", not "BW × reps". #30
-    func valueLabel(timed: Bool, bodyweight: Bool) -> String {
+    func valueLabel(timed: Bool, bodyweight: Bool, unilateral: Bool) -> String {
         SetValueFormatter.value(
             weight: weight,
             reps: reps,
             durationSeconds: duration_s,
             timed: timed,
-            bodyweight: bodyweight)
+            bodyweight: bodyweight,
+            unilateral: unilateral)
     }
 }
 
@@ -461,7 +464,8 @@ enum SetValueFormatter {
         durationSeconds: Int?,
         timed: Bool,
         bodyweight: Bool,
-        unit: String = "lb"
+        unit: String = "lb",
+        unilateral: Bool = false
     ) -> String {
         if timed {
             // Legacy MCP timed sets stored elapsed seconds in reps before the
@@ -473,12 +477,13 @@ enum SetValueFormatter {
                 return "\(seconds)s\(load)"
             }
         }
+        let side = unilateral && !timed ? " per side" : ""
         if bodyweight {
-            if weight > 0 { return "BW+\(number(weight)) × \(reps)" }
-            if weight < 0 { return "BW−\(number(abs(weight))) × \(reps)" }
-            return "BW × \(reps)"
+            if weight > 0 { return "BW+\(number(weight)) × \(reps)\(side)" }
+            if weight < 0 { return "BW−\(number(abs(weight))) × \(reps)\(side)" }
+            return "BW × \(reps)\(side)"
         }
-        return "\(number(weight)) × \(reps)"
+        return "\(number(weight)) × \(reps)\(side)"
     }
 }
 

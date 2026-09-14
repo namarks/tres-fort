@@ -9,6 +9,9 @@ enum UIFixtureScenario: String, CaseIterable {
     case ordinary, bodyweight, timed, pending, onboarding, groups, library
     case workoutSummary = "workout-summary"
     case weight = "weight", progress = "progress"
+    case unilateralRow = "unilateral-row", unilateralPress = "unilateral-press"
+    var isUnilateral: Bool { self == .unilateralRow || self == .unilateralPress }
+    var unilateralName: String { self == .unilateralRow ? "Renegade Row" : "Single-Arm Dumbbell Shoulder Press" }
     case workoutSwap = "workout-swap"
     case appStore = "app-store"
     case groupSafety = "group-safety"
@@ -199,6 +202,9 @@ private struct UIFixtureTrainingView: View {
 
     private var fixtureEvidence: String {
         if scenario.isHistory { return "\(sync.sets.count) sets" }
+        if scenario.isUnilateral {
+            return "sets:\(sync.sets.count);reps:\(sync.sets.first?.reps ?? 0);total:\(sync.totalReps(for: sync.sets))"
+        }
         if scenario == .workoutSwap {
             return "original:\(sync.sets.filter { $0.exercise_id == "synthetic-exercise" }.count);replacement:\(sync.sets.filter { $0.exercise_id == "synthetic-replacement" }.count);plan:\(sync.plan?.version ?? 0)"
         }
@@ -440,6 +446,13 @@ private struct UIFixtureServer {
             "exercise_unit": "lb", "exercise_modality": modality, "order_index": 0,
             "target_sets": 1, "target_reps": 5, "rest_seconds": 0,
             "target_weight": modality == "barbell" ? 45 : 0]
+        if scenario.isUnilateral {
+            slot["exercise_name"] = scenario.unilateralName
+            slot["exercise_modality"] = "dumbbell"
+            slot["exercise_laterality"] = "unilateral"
+            slot["target_reps"] = 10
+            slot["target_sets"] = 3
+        }
         if scenario == .timed { slot["target_duration_s"] = 5 }
         if scenario == .workoutSwap { slot["target_sets"] = 3 }
         let meta = scenario == .activationManual ? "{}"
@@ -640,6 +653,11 @@ private struct UIFixtureServer {
                 "name": scenario == .bodyweight ? "Pull-Up" : scenario == .timed ? "Plank" : "Barbell Squat",
                 "modality": scenario == .bodyweight ? "bw" : scenario == .timed ? "timed" : "barbell",
                 "unit": "lb", "primary_muscle": "legs"]]
+            if scenario.isUnilateral {
+                response = [["id": "synthetic-exercise", "name": scenario.unilateralName,
+                    "modality": "dumbbell", "unit": "lb", "primary_muscle": "upper body",
+                    "laterality": "unilateral", "load_mode": "total"]]
+            }
             if scenario == .empty || scenario == .library {
                 response = (response as! [[String: Any]]) + [
                     ["id": "synthetic-upper", "name": "Bench Press", "modality": "barbell", "unit": "lb", "primary_muscle": "chest", "aliases": "[\"bench\",\"bp\"]"],

@@ -393,7 +393,8 @@ struct DayAgendaView: View {
     private func setLine(_ s: SetLog) -> String {
         var parts: [String] = [s.valueLabel(
             timed: sync.isTimedSet(s),
-            bodyweight: sync.isBodyweightExercise(s.exercise_id))]
+            bodyweight: sync.isBodyweightExercise(s.exercise_id),
+            unilateral: sync.sides(for: s.exercise_id) == 2)]
         if let r = s.rpe { parts.append("RPE \(SetValueFormatter.number(r))") }
         if s.is_warmup == 1 { parts.append("(warmup)") }
         return parts.joined(separator: "  ")

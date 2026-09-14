@@ -102,7 +102,6 @@ struct TemplateExercise: Codable, Identifiable, Equatable {
     /// Duration-pinned loaded exercises still need their positive load, while
     /// cardio efforts do not expose a synthetic weight field.
     var showsLoadControl: Bool { exercise_modality != "cardio" }
-    var isUnilateral: Bool { exercise_laterality == "unilateral" }
     var isPerHand: Bool { exercise_load_mode == "per_hand" }
     /// Prescribed hold/effort for a timed or cardio set, in seconds. Uses
     /// target_duration_s (the real field) and falls back to target_reps for

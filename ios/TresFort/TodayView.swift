@@ -1,8 +1,5 @@
 import SwiftUI
 
-private func fmt(_ w: Double) -> String {
-    w.rounded() == w ? String(Int(w)) : String(format: "%.1f", w)
-}
 private func clock(_ s: Int) -> String {
     s <= 0 ? "GO" : String(format: "%d:%02d", s / 60, s % 60)
 }

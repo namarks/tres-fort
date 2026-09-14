@@ -28,7 +28,8 @@
 set -euo pipefail
 
 readonly TEAM_ID="8BA2RY6RCA"
-readonly API_KEY_ID="723T6CFSD9"
+# Existing "TresFort CI Signing" team key, with App Manager access.
+readonly API_KEY_ID="VP9G3R7Q85"
 readonly API_ISSUER_ID="b169cd8d-cb73-4efc-8d72-8c92c5ad29ed"
 readonly SCHEME="TresFort"
 
@@ -54,19 +55,10 @@ rm -rf build/TresFort.xcarchive build/export
 readonly P8_PATH="${HOME}/.appstoreconnect/private_keys/AuthKey_${API_KEY_ID}.p8"
 test -f "${P8_PATH}" || { echo "Missing ASC API key at ${P8_PATH}"; exit 1; }
 
-# Signing-asset fetching (Distribution cert + App Store provisioning profile)
-# goes through Xcode's signed-in account, NOT the ASC API key, because Apple
-# never granted this account-level .p8 the "Access to Cloud Managed App
-# Distribution" permission. So no -authenticationKey* flags here — passing
-# them produces a "Cloud signing permission error" on exportArchive. Make
-# sure Xcode is signed in: Xcode → Settings → Accounts → +Apple ID.
-#
-# TODO(future): grant the ASC API key 723T6CFSD9 the cloud-signing permission
-# in ASC web UI (Users and Access → Integrations → key → enable cloud-managed
-# distribution access), then re-add -authenticationKeyPath / -authenticationKeyID
-# / -authenticationKeyIssuerID flags below. That makes this script work on any
-# Mac with the .p8 on disk, regardless of Xcode GUI state — needed if we ever
-# move this to CI.
+# Signing assets still use Xcode's signed-in account and local keychain.
+# App Manager API access permits upload and build selection, but does not by
+# itself prove unattended signing works. Keep this verified signing path until
+# a separate signing-runner setup is tested. Xcode → Settings → Accounts.
 xcodebuild \
   -project TresFort.xcodeproj \
   -scheme "${SCHEME}" \

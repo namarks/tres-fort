@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-09-12 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-09-13 · Theme: release
 
 ## Goal
 
@@ -43,18 +43,20 @@ preparation and TestFlight availability do not mean public release.
     - Independently review the final head and pass all required checks.
     - Read deployed source/configuration and migration ledger; prepare an exact
       migration/deployment proposal if the candidate needs a newer backend.
-    - After deployment, verify the authenticated session-swap route and retain
-      the existing workout-name compatibility checks before exporting/uploading
-      build 40. A public health response does not establish those API behaviors.
+    - Retain the authenticated session-swap and workout-name compatibility
+      verification requirements. These live checks remain unperformed after
+      the owner-authorized build 40 upload; neither public health nor Apple
+      processing establishes those API behaviors.
     - Retain physical-iPhone verification results and any explicit owner deferral
       without claiming unperformed checks passed. The owner deferred the live
       pre-upload workout canary and its observation on 2026-09-10. Other physical
       coverage remains unverified; reuse the [device procedure](../completed/coaching-feedback-loop/device-verification.md)
       when that follow-up resumes.
-  - [ ] **(b) Signed candidate and Apple processing**
-    - After P3(a) verification and separate release/signing authorization,
-      validate/export/upload the chosen archive, verify Apple processing and
-      version, and retain exact source identity.
+  - [x] **(b) Signed candidate and Apple processing**
+    - The owner separately approved Xcode signing and then explicitly approved
+      validation and upload of 1.0 (40). Xcode validation/upload succeeded;
+      Apple reports VALID and IN_BETA_TESTING in internal Testers. Exact source
+      and the signed archive are retained. P3(a) live checks remain unperformed.
 - [ ] **P4 — Submission-ready handoff**
   - After approval of concrete App Store changes, publish metadata, screenshots,
     privacy answers and reviewer details, and select the verified build.
@@ -72,9 +74,7 @@ preparation and TestFlight availability do not mean public release.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P3(a) | gated_by | external:release-40-deployment-approval | Automatic approval review requires explicit owner approval to deploy the pinned build 40 Worker; migration 0050 is applied and verified. |
-| P3(b) | gated_by | external:release-40-signing-approval | Automatic approval review requires explicit owner approval for Xcode to manage Apple certificates, app IDs and provisioning profiles for build 40. |
-| P4 | gated_by | external:app-store-owner-fields | Confirm any account agreements or privacy publication fields inaccessible to existing tools before final review submission. |
+| P4 | gated_by | external:app-store-owner-fields | Confirm account agreements and privacy publication before final review submission; the existing App Manager key now permits build selection. |
 
 ## Next step
 
@@ -82,24 +82,25 @@ preparation and TestFlight availability do not mean public release.
 `9373d6f0acad9a9ef444e54fe9c9d8a8b7ad24c8`: reconcile privacy/account and group
 controls, public policy/support availability, listing and reviewer instructions,
 and the documented verification exceptions. Record evidence and identify any
-owner-only App Store fields before completing those phases. P3 production and
-signing approvals do not block this read-only preparation.
+owner-only App Store fields before completing those phases. The pinned backend
+is now deployed. Its authenticated session-swap and workout-name compatibility
+verification remains unperformed; public health and unauthenticated responses
+do not establish those behaviors. Build 40 was subsequently validated and uploaded
+with explicit owner approval. Do not mark the outstanding live checks passed or
+waived from that upload approval. Finish P1/P2 and retain the P3(a) evidence or a
+specific verification exception before final review submission. Keep manual public release.
 
-**Owner approvals:** Answer the pending explicit approvals for the production Worker
-deployment and Xcode automatic distribution signing. The owner approved the
-fixes, replacement upload and Apple review submission on 2026-09-12. Migration
-0050 was subsequently explicitly approved, applied and verified, but automatic
-approval review requires separate authority for these two remaining operations.
-Do not retry either rejected operation, or use an indirect substitute, until its
-missing approval arrives. These approvals clear only their named external gates;
-they do not complete the open P1/P2 phases. The agent should finish and record
-P1 verification before the remaining P3 deployment/upload work, and finish P2
-and P3 before P4 submission. Once P1 and deployment approval are satisfied,
-deploy the pinned Worker and verify its authenticated session-swap route,
-preserving the existing workout-name compatibility checks. Only after those
-checks pass (or the owner explicitly waives them for this candidate) and signing
-approval arrives, validate/export/upload build 40. Complete P2/P3 before replacing
-and submitting the existing draft for review. Keep manual public release.
+**Credential and selection resolved (2026-09-13):** The owner identified the
+existing **TresFort CI Signing** team key as App Manager. Its installed key
+authenticated, and the authorized build-selection PATCH returned HTTP 204;
+readback confirmed build 40 on version 1.0, READY_FOR_REVIEW, with MANUAL release.
+The older Developer key caused the earlier 403. Upload and fastlane configuration
+now use the existing App Manager key; no key was created, copied or revoked.
+Team keys cover all apps in the account. API authorization does not prove
+unattended code signing; the existing Xcode account/keychain path is retained.
+Refresh privacy publication, agreements and the existing draft before submission.
+If a field remains inaccessible, use the owner's signed-in browser rather than
+requesting repeated agent-browser sign-ins. Do not create a duplicate draft.
 
 The [Garmin attribution fix](attribution.md) and [retired reviewer login](reviewer-access.md)
 merged in [PR #193](https://github.com/namarks/tres-fort/pull/193) at
@@ -117,13 +118,15 @@ The replacement **1.0 (40)** archive is pinned to reviewed source
 `f2a29e8e21e94bfc6f25b85b1406849a9ea3433d`. Xcode's desktop Release archive
 succeeded, code signing verifies, both app and widget report 1.0 (40), and all
 293 tracked snapshot inputs still match. Build 40 was unused at preparation.
-It has **not** been exported for App Store distribution, uploaded or submitted.
-The automatic approval review blocked Xcode's distribution-signing step because
-automatic signing may create or update Apple certificates, app IDs and profiles;
-specific owner approval of that signing approach is required before continuing.
-Existing matching profiles and a distribution identity were verified, but the
-manual profile picker did not accept them. Do not retry the blocked automatic
-step without the missing approval or substitute shell signing as a bypass.
+The owner confirmed the signing dialog, then explicitly approved sending this
+same build to Apple for validation and upload. Xcode reported all validation
+checks passed and upload complete. Apple build
+`34ed891c-837b-451a-aae8-28ef5ef9b0f7` was uploaded at 2026-09-13 05:09:18 UTC;
+readback confirms version 1.0 (40), VALID processing, IN_BETA_TESTING and internal
+Testers membership, with non-exempt encryption false. No second upload is needed.
+The signed archive, source manifest and affirmative Xcode/API receipts are retained.
+Xcode's optional post-upload local export button remained disabled; no separate
+IPA export is claimed. Build 40 is now selected; it has **not** been submitted for App Review.
 
 PR #192's onboarding work and PR #188's catalog additions advanced main during
 preparation. PR #193's tested integration includes that work, but the release
@@ -131,11 +134,16 @@ remains pinned to the source above; a later integration commit must not silently
 replace it. The owner explicitly approved additive migration **0050** after the
 initial automatic approval rejection. It was applied once; readback confirms its
 ledger entry and the nullable `sessions.exercise_swaps` TEXT column. The separate
-Worker deployment was then rejected before execution because the migration
-approval does not authorize that production code deployment. The production
-Worker remains on version `d3e77da0-7204-40bb-9494-56791febb406`, deployment
-`bd3364e1-24a2-4cba-a88f-5039ef58fbb8`, pending explicit deployment approval.
-Migration 0051,
+Worker deployment initially required separate approval, which the owner then
+provided. At 2026-09-13 04:42:59 UTC, deployment
+`e738fc8f-9625-441d-b0c5-e811ad2f5cca` activated version
+`09d2241f-5869-477b-b6b1-a3288dccbbed` at 100% traffic. Its provider annotation
+matches the pinned source/tree above. Existing D1/R2 bindings, credentials,
+runtime compatibility and hourly cron are preserved; development auth is absent.
+Health, privacy and OAuth discovery returned 200; the removed reviewer-login
+endpoint returned 404. Unauthenticated state returned 401, which is not evidence
+of authenticated session-swap behavior. Deployment receipts are retained alongside
+the archive. Migration 0051,
 the new onboarding feature and PR #188's catalog migration are outside this
 pinned candidate. The pre-migration private recovery bookmark, migration receipts and signed archive/manifest
 are retained under the release host's `release-attribution` artifact directory.
@@ -146,8 +154,8 @@ build 38 selected, `MANUAL` release and Apple-only notes with
 it did not establish that Apple reviewers cannot use Sign in with Apple. Build
 39's password workaround was uploaded but is not the selected draft. The new
 candidate removes that login and revokes old sample API/renewal access, retaining
-only legacy identity/data-isolation safeguards. The replacement still needs
-distribution validation, upload and actual review submission.
+only legacy identity/data-isolation safeguards. The replacement has since passed
+validation and processing, and build 40 is selected. Actual review submission remains incomplete.
 
 The owner is completing App Store Connect on another Mac. Do not repeatedly ask
 for sign-in on the agent browser. Listing copy, running-aware Claude description,
@@ -155,9 +163,10 @@ five iPhone screenshots, subtitle/category, review contact, free US availability
 and manual release were saved during the walkthrough. Privacy answers were
 entered; final privacy publication and applicable agreements still need readback.
 The saved privacy URL is `https://tresfort.app/privacy`; that page, the homepage,
-Worker privacy page, health and OAuth discovery returned HTTP 200. The existing
-API key cannot read pricing or territory availability (403), so those choices
-remain owner-reported. The agent browser remains on Apple's failed sign-in page.
+Worker privacy page, health and OAuth discovery returned HTTP 200. The old
+Developer key could not read pricing or territory availability (403); refresh
+those fields with the App Manager key before treating owner-reported settings as
+provider-verified. The agent browser remains on Apple's failed sign-in page.
 Keep review-contact values and all credentials out of repository documentation.
 
 The owner explicitly deferred the live workout canary and observation and asked

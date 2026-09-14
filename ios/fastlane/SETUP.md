@@ -22,10 +22,21 @@ avoid `sudo` prompts when installing into `/Library/Ruby/Gems`. Future
 ### 2. ASC API key on disk
 
 Verify the key exists at
-`~/.appstoreconnect/private_keys/AuthKey_723T6CFSD9.p8`. This is the same
-account-level key Tally uses (team `8BA2RY6RCA`); no per-app provisioning
-needed. If missing, regenerate from App Store Connect → Users and Access →
-Integrations → App Store Connect API.
+`~/.appstoreconnect/private_keys/AuthKey_VP9G3R7Q85.p8`, owned by the release
+user with file permissions `600`. This is the existing **TresFort CI Signing**
+team key with **App Manager** access (team `8BA2RY6RCA`). The upload script,
+fastlane and beta-feedback command all use it. The previous Developer key could upload but received HTTP
+403 when selecting the App Store build.
+
+Team keys apply across all apps in the Apple account; their names do not limit
+app access. Leave unrelated keys intact. If this key is missing, the owner must
+install it privately on the release Mac. Never commit or paste the `.p8` into
+chat. A successful read-only API call proves authentication; verify permission
+to change a build through the actual authorized build selection.
+
+Apple API access and code signing are separate. Archiving and exporting still
+use Xcode's signed-in account and the local keychain. Changing this API key does
+not establish unattended signing or authorize a public release.
 
 ### 3. Register the bundle ID in Apple Developer Portal
 

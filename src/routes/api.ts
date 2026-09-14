@@ -98,6 +98,7 @@ import {
   isPositiveInteger,
   type FieldRule,
 } from '../validation';
+import { WEEKDAYS } from '../types';
 import type { Weekday } from '../types';
 
 export const apiRoutes = new Hono<HonoEnv>();
@@ -446,7 +447,7 @@ apiRoutes.put('/plan/schedule', async (c) => {
   if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
   const week = b.week as Record<string, unknown>;
   const badKeys = Object.keys(week).filter(
-    (key) => !['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].includes(key),
+    (key) => !(WEEKDAYS as readonly string[]).includes(key),
   );
   const badValues = Object.entries(week)
     .filter(([, value]) => value !== null && typeof value !== 'string')

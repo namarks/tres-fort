@@ -24,7 +24,6 @@ export function publicToolErrorCode(error: unknown): string | null {
   // Exercise lookup historically appended caller input. The code is enough
   // to explain the failure without reflecting arbitrary text into a response.
   if (error.message.startsWith('unknown_exercise:')) return 'unknown_exercise';
-  if (error.message.startsWith('conflicting_workout_fields:')) return 'conflicting_workout_fields';
   return null;
 }
 

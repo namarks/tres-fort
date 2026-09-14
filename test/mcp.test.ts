@@ -36,13 +36,13 @@ async function seed() {
     body: JSON.stringify({ name: 'Upper/Lower' }),
   });
   const day = await (
-    await SELF.fetch(`${BASE}/api/days`, {
+    await SELF.fetch(`${BASE}/api/workouts`, {
       method: 'POST',
       headers: H,
       body: JSON.stringify({ name: 'Upper A', day_label: 'A' }),
     })
   ).json<{ id: string }>();
-  await SELF.fetch(`${BASE}/api/days/${day.id}/exercises`, {
+  await SELF.fetch(`${BASE}/api/workouts/${day.id}/exercises`, {
     method: 'POST',
     headers: H,
     body: JSON.stringify({ exercise: 'bench', target_sets: 3, target_reps: 5 }),
@@ -142,7 +142,6 @@ describe('mcp tools list', () => {
         'add_workout',
         'update_workout',
         'delete_workout',
-        'add_day',
         'adjust_today',
         'set_schedule',
         'set_planned_session',
@@ -150,7 +149,6 @@ describe('mcp tools list', () => {
         'refresh_rides',
         'get_upcoming_rides',
         'get_recent_activities',
-        'update_day',
         'delete_exercise',
         'log_activity',
         'get_group_feed',
@@ -162,7 +160,7 @@ describe('mcp tools list', () => {
         'set_stress_model',
       ]),
     );
-    expect(names).toHaveLength(44);
+    expect(names).toHaveLength(42);
     for (const t of body.result.tools) expect(t.inputSchema.type).toBe('object');
     const correction = body.result.tools.find((t: any) => t.name === 'correct_set');
     expect(correction.inputSchema.required).toEqual(['set_id']);

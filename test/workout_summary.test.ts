@@ -19,8 +19,8 @@ async function fixture() {
     return response.json<any>();
   }
   const plan = await post('plan', { name: 'Runner summary' });
-  const day = await post('days', { name: 'Bench day' });
-  const slot = await post(`days/${day.id}/exercises`, { exercise: 'ex_bench', target_sets: 3,
+  const day = await post('workouts', { name: 'Bench day' });
+  const slot = await post(`workouts/${day.id}/exercises`, { exercise: 'ex_bench', target_sets: 3,
     target_reps: 5, target_weight: 135, target_rpe: 8 });
   const session = await post('sessions', { date: '2038-09-08', workout_id: day.id });
   const created = await post(`sessions/${session.id}/sets`, { id: crypto.randomUUID(),
@@ -61,7 +61,7 @@ describe('persisted completion summary', () => {
       .bind(f.session.id).first<{ runner_targets: string }>();
     const version = JSON.parse(first!.runner_targets).plan_version;
     const later = await f.post('sessions', { date: '2038-09-09', workout_id: f.day.id });
-    const edit = await SELF.fetch(`${BASE}/api/days/${f.day.id}/exercises/${f.slot.id}`, {
+    const edit = await SELF.fetch(`${BASE}/api/workouts/${f.day.id}/exercises/${f.slot.id}`, {
       method: 'PATCH', headers: f.headers, body: JSON.stringify({ target_weight: 185 }),
     });
     expect(edit.status).toBe(200);

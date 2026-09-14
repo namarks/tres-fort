@@ -150,7 +150,7 @@ describe('external AI client compatibility', () => {
     expect(me.coach.connected).toBe(true);
   });
 
-  it.each(['add_exercise', 'add_workout', 'add_day'])('%s warns before inserting ahead of existing plan entries', async (name) => {
+  it.each(['add_exercise', 'add_workout'])('%s warns before inserting ahead of existing plan entries', async (name) => {
     const access = connections.get('Codex')!.access_token;
     const catalog = await (await rpc(access, 'tools/list')).json<any>();
     expect(catalog.result.tools.find((t: any) => t.name === name).annotations)

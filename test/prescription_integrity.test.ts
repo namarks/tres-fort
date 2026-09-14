@@ -160,7 +160,7 @@ describe('prescription integrity', () => {
       body: JSON.stringify({ name: 'REST wrapper plan' }),
     });
     expect(active.status).toBe(201);
-    const day = await SELF.fetch('https://tres-fort.test/api/days', {
+    const day = await SELF.fetch('https://tres-fort.test/api/workouts', {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${jwt}` },
       body: JSON.stringify({ name: 'A' }),
     });
@@ -168,7 +168,7 @@ describe('prescription integrity', () => {
     const before = (await SELF.fetch('https://tres-fort.test/api/plan/active', {
       headers: { authorization: `Bearer ${jwt}` },
     }).then((r) => r.json<{ version: number }>())).version;
-    const rejected = await SELF.fetch(`https://tres-fort.test/api/days/${dayId}/exercises`, {
+    const rejected = await SELF.fetch(`https://tres-fort.test/api/workouts/${dayId}/exercises`, {
       method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${jwt}` },
       body: JSON.stringify({ exercise: 'bench', target_sets: 3, target_reps: 5, rest_seconds: '120', is_warmup: 'false' }),
     });

@@ -2,6 +2,7 @@ import SwiftUI
 
 private struct ExerciseEditTarget: Identifiable {
     let exercise: TemplateExercise
+    let version: Int
     var id: String { exercise.id }
 }
 
@@ -118,7 +119,7 @@ struct EditWorkoutSheet: View {
                     EditExerciseTargetView(
                         sync: sync,
                         dayID: dayID,
-                        slot: target.exercise)
+                        slot: target.exercise, expectedVersion: target.version)
                 }
             }
             .sheet(item: $replacingExercise) { target in
@@ -130,7 +131,7 @@ struct EditWorkoutSheet: View {
             .alert("Remove \(removingExercise?.exercise.exercise_name ?? "exercise")?",
                    isPresented: Binding(get: { removingExercise != nil }, set: { if !$0 { removingExercise = nil } }),
                    presenting: removingExercise) { target in
-                Button("Remove exercise", role: .destructive) { removeSlot(target.id) }
+                Button("Remove exercise", role: .destructive) { removeSlot(target.id, expectedVersion: target.version) }
                 Button("Cancel", role: .cancel) {}
             } message: { _ in
                 Text("This removes the exercise from this saved workout. Previously logged sets stay in your history.")
@@ -219,7 +220,7 @@ struct EditWorkoutSheet: View {
                         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                             if !selectingGroup && !reordering {
                                 Button("Remove", role: .destructive) {
-                                    removingExercise = ExerciseEditTarget(exercise: block.members[0])
+                                    removingExercise = ExerciseEditTarget(exercise: block.members[0], version: sync.plan?.version ?? 0)
                                 }
                             }
                         }
@@ -240,7 +241,7 @@ struct EditWorkoutSheet: View {
                             roundRest: moved.roundRest, transitionRest: moved.transitionRest,
                             targetSets: moved.rounds, orderIndex: destination)
                     } else {
-                        await sync.moveSlot(dayID: dayID, teID: moved.members[0].id, toIndex: destination)
+                        await sync.moveSlot(dayID: dayID, teID: moved.members[0].id, toIndex: destination, expectedVersion: version)
                     }
                     mutationWorking = false
                 }
@@ -306,7 +307,7 @@ struct EditWorkoutSheet: View {
                 .accessibilityIdentifier("editor.select.\(ex.id)")
             }
             Button {
-                editingExercise = ExerciseEditTarget(exercise: ex)
+                editingExercise = ExerciseEditTarget(exercise: ex, version: sync.plan?.version ?? 0)
             } label: {
                 let layout = dynamicTypeSize.isAccessibilitySize
                     ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout(spacing: 10))
@@ -338,7 +339,7 @@ struct EditWorkoutSheet: View {
                         replacingExercise = ExerciseReplacementTarget(exercise: current, version: plan.version)
                     }
                     Button("Remove exercise", role: .destructive) {
-                        removingExercise = ExerciseEditTarget(exercise: ex)
+                        removingExercise = ExerciseEditTarget(exercise: ex, version: sync.plan?.version ?? 0)
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle").foregroundStyle(Theme.accent).frame(width: 44, height: 44)
@@ -349,10 +350,10 @@ struct EditWorkoutSheet: View {
         }
     }
 
-    private func removeSlot(_ id: String) {
+    private func removeSlot(_ id: String, expectedVersion: Int) {
         mutationWorking = true
         Task {
-            await sync.deleteSlot(dayID: dayID, teID: id)
+            await sync.deleteSlot(dayID: dayID, teID: id, expectedVersion: expectedVersion)
             mutationWorking = false
         }
     }
@@ -625,11 +626,13 @@ private struct ConfigureExerciseView: View {
     @State private var seconds = 45
     @State private var restSeconds = 120
     @State private var working = false
+    @State private var expectedVersion: Int?
     @State private var targetMode: TargetMode
 
     init(sync: SyncModel, dayID: String, exercise: ExerciseCatalog,
          presetWarmup: Bool, onDone: @escaping () -> Void) {
         self.sync = sync
+        _expectedVersion = State(initialValue: sync.plan?.version)
         self.dayID = dayID
         self.exercise = exercise
         self.presetWarmup = presetWarmup
@@ -716,7 +719,7 @@ private struct ConfigureExerciseView: View {
                             targetReps: isCardio ? 1 : (isHold ? seconds : reps),
                             targetRepsMax: targetRepsMax,
                             restSeconds: restSeconds,
-                            targetDurationS: durationS)
+                            targetDurationS: durationS, expectedVersion: expectedVersion)
                         working = false
                         if saved { onDone() }
                     }
@@ -770,6 +773,7 @@ private struct EditExerciseTargetView: View {
     @ObservedObject var sync: SyncModel
     let dayID: String
     let slot: TemplateExercise
+    let expectedVersion: Int
     @Environment(\.dismiss) private var dismiss
 
     @State private var isWarmup: Bool
@@ -783,10 +787,11 @@ private struct EditExerciseTargetView: View {
     @State private var working = false
     private let repUpperBound: Int
 
-    init(sync: SyncModel, dayID: String, slot: TemplateExercise) {
+    init(sync: SyncModel, dayID: String, slot: TemplateExercise, expectedVersion: Int) {
         self.sync = sync
         self.dayID = dayID
         self.slot = slot
+        self.expectedVersion = expectedVersion
         let initialReps = ExercisePrescriptionPolicy.initialEditableReps(
             targetReps: slot.target_reps,
             isTimed: slot.isTimed,
@@ -925,7 +930,7 @@ private struct EditExerciseTargetView: View {
                 targetReps: isCardio ? slot.target_reps : (isHold ? seconds : reps),
                 targetRepsMax: rangeMax,
                 restSeconds: restSeconds,
-                targetDurationS: durationS)
+                targetDurationS: durationS, expectedVersion: expectedVersion)
             working = false
             if saved { dismiss() }
         }

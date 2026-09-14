@@ -269,16 +269,23 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `POST /api/calendar/{date}/move` | Move one projected or unstarted workout to an empty date. The request pins the workout, active plan/version, both observed attempts and a caller UUID. Source rest, destination assignment and audit receipt commit atomically. Both attempts advance; an identical retry returns its original acknowledgement. A concurrent change to either date or the weekly schedule rejects the whole move. |
 | `PUT /api/calendar/{date}` | Assign one concrete date to a day (`workout_id`) or rest (`null`) without changing the recurring schedule or plan version. `expected_attempt=0` represents no observed assignment; the first assignment and every changed choice advance the session attempt, while an identical retry is idempotent. Started/completed sessions cannot be reassigned, and iOS also fences the mutation against a locally running workout before its first set creates the server session or a hard travel blackout. |
 
-Canonical routes use `/api/workouts`; `/api/days` remains an alias for one
-TestFlight compatibility cycle. Plan responses carry `workouts` plus deprecated
-`days`; workout references carry `workout_id` plus `day_template_id`. Requests
-accept either and reject conflicting dual fields. MCP registers `add_workout`,
-`update_workout` and `delete_workout`, retaining `add_day` and `update_day` during
-the cycle. Export schema v2 preserves `training.day_templates` alongside
-`training.workouts`. Snapshot schema v2 uses `workouts`; immutable v1 documents
-remain readable/restorable without rewriting history. The first iOS build reads
-both vocabularies and sends the old one. See the [server-first rollout](plans/workouts-and-multi-session/rollout.md)
-for the physical-schema transition and the later outgoing-client switch.
+Runtime routes and payloads use `/api/workouts`, `workouts`, `workout_id` and
+`plan_workouts`; MCP registers `add_workout`, `update_workout`, `delete_workout`.
+The owner retired the sole installed legacy client on 2026-09-14, authorizing
+removal of old routes, tool names and dual output fields without an adoption
+waiting period. Retired identity fields fail before mutation. New account exports use schema version 3 and
+contain `training.workouts`. Immutable v1 snapshots and durable iOS cache/outbox
+readers still preserve old stored data. Migration 0045 is already applied; current
+services use native D1 with no schema-adaptive SQL or probes. Canonical iOS
+requests work with the already-deployed adaptive Worker, permitting an app-first
+cutover. See the [release record](plans/workouts-and-multi-session/plan.md).
+
+Slot add/update/delete and MCP swap accept a reviewed `expected_version`.
+A stale version or exhausted tokenless retry returns `{conflict:true,current_version}`;
+REST uses HTTP 409. The iOS editor carries the version from the opened form,
+refreshes a conflict, and requires review before retrying. Tokenless coaching
+patches retain one bounded fresh-state retry. Successful mutation, version,
+audit, note and snapshot remain one transaction.
 
 In-app manual authoring uses the same `plans` / `workouts` /
 `template_exercises` tree and `plans.meta.schedule` that MCP uses. The Workouts
@@ -518,13 +525,24 @@ certificate, and a durable oversized-cache invalidation marker cannot retain it.
 Grouped slots rotate by rounds using acknowledged plus durable queued set UUIDs,
 excluding failed intents. The displayed round is separate from the physical
 per-slot set number used to bind a tap or timed hold. A newly queued set cues
-round rest when it completes the derived round, including a repaired round with
+round rest when it completes the derived round and unresolved work remains, including a repaired round with
 uneven member counts; otherwise it cues transition rest, where zero skips the
 cue. Rest and Live Activity point to the resulting next member. Selection
 revisions preserve newer manual focus across older pending deletions and cold
 recovery. Repairs deferred by a timed hold survive process termination, and a
 later manual choice cancels them durably. Acknowledgements never restart a rest
-timer.
+timer. The final resolved set skips rest and exposes completion immediately.
+
+`RunnerRecovery` decides checkpoint validity and normalizes progress without
+network or persistence effects; `RunnerArtifactOwnership` protects same-account
+views across feature epochs. Cold offline start/resume requires an intact,
+previously live-certified plan plus a known matching attempt or an unbound
+checkpoint for a date with no observed session. Legacy/invalidated caches remain
+browse-only. Recheck eligibility when the action is taken. Persist queued set
+UUIDs, attempt tokens and prescription identity before advancing; cached set
+rows never clear the outbox. Live conflicts stop stale work and preserve its
+original intent identity for review. Account switching retains existing fences.
+
 The workout editor selects adjacent slots and moves each group as one card,
 with rounds, round rest and transition rest edited together. Ordinary slot rest
 stays intact and inactive until ungrouping.
@@ -834,3 +852,17 @@ After each: summary of what changed / what's testable / what's next / what's ope
 | Cloudflare Workers + D1 | $5/month + usage (Workers Paid; active 2026-09-05) |
 | Domain | already owned |
 | **New spend** | **$5/month + usage** |
+
+## Operational performance evidence
+
+`d1_usage` emits one fixed-label event for state/profile reads, selected MCP
+coaching reads and set/terminal writes, and each cron tick. Counters include
+query count, rows read/written, elapsed `duration_ms`, and uncompressed JSON
+`response_bytes` where the route serializes the response (null for cron and
+responses generated outside that boundary). Measured JSON is encoded once;
+measurement never clones or consumes the response stream. Request totals include
+authentication; best-effort work after response completion is outside the total.
+No member IDs, URLs with query strings, arguments, tokens or free text are logged.
+Aggregate duration percentiles and payload sizes by operation to find real hot
+paths. CI enforces query budgets and response/accounting correctness; wall-clock
+and synthetic benchmark timings are observations, not latency thresholds.

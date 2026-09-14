@@ -8,7 +8,7 @@ import {
 } from 'cloudflare:test';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import worker from '../src/index';
-import { createD1UsageObserver } from '../src/db';
+import { createD1UsageObserver, createPlan, ensureOwnerUser } from '../src/db';
 
 const BASE = 'https://tres-fort.test';
 
@@ -19,6 +19,8 @@ interface UsageLog {
   query_count: number;
   rows_read: number;
   rows_written: number;
+  duration_ms: number;
+  response_bytes: number | null;
 }
 
 const USAGE_LOG_KEYS = [
@@ -28,6 +30,8 @@ const USAGE_LOG_KEYS = [
   'query_count',
   'rows_read',
   'rows_written',
+  'duration_ms',
+  'response_bytes',
 ].sort();
 
 beforeAll(async () => {
@@ -68,6 +72,9 @@ function usageLogs(spy: ReturnType<typeof vi.spyOn>): UsageLog[] {
     ) {
       continue;
     }
+    expect(typeof fields.duration_ms).toBe('number');
+    expect(fields.duration_ms).toBeGreaterThanOrEqual(0);
+    expect(fields.response_bytes === null || (Number.isSafeInteger(fields.response_bytes) && Number(fields.response_bytes) >= 0)).toBe(true);
     logs.push({
       event: fields.event,
       operation: fields.operation,
@@ -75,6 +82,8 @@ function usageLogs(spy: ReturnType<typeof vi.spyOn>): UsageLog[] {
       query_count: fields.query_count,
       rows_read: fields.rows_read,
       rows_written: fields.rows_written,
+      duration_ms: fields.duration_ms as number,
+      response_bytes: fields.response_bytes as number | null,
     });
   }
   return logs;
@@ -341,4 +350,73 @@ describe('D1 usage observability', () => {
     );
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
+  it('measures the actual UTF-8 coaching response without logging its content', async () => {
+    await devJwt();
+    const owner = await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB);
+    if (!owner) throw new Error('fixture_owner_missing');
+    await createPlan(env.DB, owner.id, 'Très fort — 私の計画');
+    let bytes = 0;
+    const log = await expectOneUsageLog('MCP get_coach_brief', async () => {
+      const response = await SELF.fetch(`${BASE}/mcp`, { method: 'POST',
+        headers: { Authorization: 'Bearer test-mcp-token', 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+          params: { name: 'get_coach_brief', arguments: {} } }) });
+      expect(response.status).toBe(200);
+      const body = await response.text();
+      expect(body).toContain('Très fort');
+      bytes = new TextEncoder().encode(body).byteLength;
+      expect(bytes).toBeGreaterThan(body.length);
+    });
+    expect(log.response_bytes).toBe(bytes);
+    expect(log.rows_written).toBe(0);
+  });
+
+  it('measures session and set writes with fixed route labels and exact response sizes', async () => {
+    const jwt = await devJwt();
+    const owner = await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB);
+    if (!owner) throw new Error('fixture_owner_missing');
+    await createPlan(env.DB, owner.id, 'Measurement fixture');
+    await env.DB.prepare('UPDATE workout_write_fence SET enabled=1, activated_at=1 WHERE id=1').run();
+    const headers = { Authorization: `Bearer ${jwt}`, 'content-type': 'application/json',
+      'X-TresFort-Write-Protocol': 'attempt-v1' };
+    let session: { id: string; attempt: number };
+    let bytes = 0;
+    const created = await expectOneUsageLog('POST /api/sessions', async () => {
+      const response = await SELF.fetch(`${BASE}/api/sessions`, { method: 'POST', headers,
+        body: JSON.stringify({ date: '2026-09-14', expected_attempt: 0 }) });
+      expect(response.status).toBe(201);
+      const body = await response.text();
+      session = JSON.parse(body);
+      bytes = new TextEncoder().encode(body).byteLength;
+    });
+    expect(created.response_bytes).toBe(bytes);
+    expect(created.rows_written).toBeGreaterThan(0);
+    const logged = await expectOneUsageLog('POST /api/sessions/:id/sets', async () => {
+      const response = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, { method: 'POST', headers,
+        body: JSON.stringify({ id: crypto.randomUUID(), exercise_id: 'ex_bench', set_index: 1,
+          weight: 100, reps: 5, is_warmup: false, logged_at: Date.now(), expected_attempt: session.attempt }) });
+      expect(response.status).toBe(201);
+      bytes = (await response.arrayBuffer()).byteLength;
+    });
+    expect(logged.response_bytes).toBe(bytes);
+    expect(logged.rows_written).toBeGreaterThan(0);
+  });
+
+  it('counts rejected writes as errors without using request data as a metric label', async () => {
+    const jwt = await devJwt();
+    const log = await expectOneUsageLog('POST /api/sessions', async () => {
+      const response = await SELF.fetch(`${BASE}/api/sessions?private=value`, { method: 'POST',
+        headers: { Authorization: `Bearer ${jwt}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ date: 'private member input' }) });
+      expect(response.status).toBe(400);
+    }, 'error');
+    expect(log.response_bytes).toBeGreaterThan(0);
+    expect(log.rows_written).toBe(0);
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    await SELF.fetch(`${BASE}/mcp`, { method: 'POST',
+      headers: { Authorization: 'Bearer test-mcp-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'private member input' } }) });
+    expect(usageLogs(spy)).toEqual([]);
+  });
+
 });

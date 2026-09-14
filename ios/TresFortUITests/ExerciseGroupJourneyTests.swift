@@ -123,7 +123,10 @@ final class ExerciseGroupJourneyTests: XCTestCase {
             // Exercise its actual touch target; the exact next member/rest and
             // fixture sequence below prove the tap logged one physical set.
             log.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-            if index == 0 || index == 2 {
+            if index + 1 == names.count {
+                XCTAssertTrue(app.staticTexts["READY TO FINISH"].waitForExistence(timeout: 5))
+                XCTAssertFalse(app.buttons["rest.done"].exists, "Final work must go directly to completion")
+            } else if index == 0 || index == 2 {
                 // A zero transition advances immediately without a rest cue.
                 XCTAssertTrue(app.staticTexts[names[index + 1]].waitForExistence(timeout: 5))
                 XCTAssertFalse(app.buttons["rest.done"].exists)
@@ -131,7 +134,7 @@ final class ExerciseGroupJourneyTests: XCTestCase {
                 let done = app.buttons["rest.done"]
                 XCTAssertTrue(done.waitForExistence(timeout: 5))
                 XCTAssertEqual(app.staticTexts["rest.upNext"].label,
-                               index + 1 < names.count ? names[index + 1] : "DONE")
+                               names[index + 1])
                 if index == 4 { screenshot("transition-rest-next-member") }
                 done.tap()
             }
@@ -142,8 +145,8 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         XCTAssertTrue(finish.isEnabled)
         XCTAssertTrue(app.frame.contains(finish.frame))
         XCTAssertGreaterThanOrEqual(finish.frame.height, 44)
-        // The final pinned action follows the same rest/chrome transition as
-        // Log. Verify a real touch and the acknowledged completion below.
+        // Finish stays reachable immediately after the final logged member.
+        // Verify a real touch and the acknowledged completion below.
         finish.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["Synthetic member sequence mismatch"].exists)

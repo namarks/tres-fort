@@ -536,6 +536,24 @@ struct IntervalsConnection: Codable, Equatable {
 
 // MARK: - Helpers
 
+/// Short relative age ("2h ago") for a timestamp — the profile,
+/// intervals.icu and Apple Health settings rows all render this.
+enum RelativeTimeFormat {
+    private static let formatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f
+    }()
+
+    static func short(_ date: Date) -> String {
+        formatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    static func short(epochMs: Int) -> String {
+        short(Date(timeIntervalSince1970: TimeInterval(epochMs) / 1000))
+    }
+}
+
 /// Friendly relative label for a feed item's `occurred_at` (epoch ms):
 ///   - within today:     "Today · 9:42 AM"
 ///   - yesterday:        "Yesterday · 5:01 PM"

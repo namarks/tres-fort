@@ -26,13 +26,17 @@ struct DayAgendaView: View {
     @State private var confirmRemoval = false
     @State private var movingWorkout: Workout?
 
-    private var prettyDate: String {
-        guard let d = CalendarProjection.date(from: dateString) else { return dateString }
+    private static let prettyDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.calendar = CalendarProjection.calendar
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "EEEE · d MMM yyyy"
-        return f.string(from: d).uppercased()
+        return f
+    }()
+
+    private var prettyDate: String {
+        guard let d = CalendarProjection.date(from: dateString) else { return dateString }
+        return Self.prettyDateFormatter.string(from: d).uppercased()
     }
 
     var body: some View {

@@ -259,12 +259,16 @@ struct CalendarMonthView: View {
 
     // MARK: month nav
 
-    private var monthTitle: String {
+    private static let monthTitleFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.calendar = cal
+        f.calendar = CalendarProjection.calendar
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "MMMM yyyy"
-        return f.string(from: monthAnchor).uppercased()
+        return f
+    }()
+
+    private var monthTitle: String {
+        Self.monthTitleFormatter.string(from: monthAnchor).uppercased()
     }
 
     private func shiftMonth(_ delta: Int) {
@@ -630,23 +634,45 @@ private struct ActivityFeedRow: View {
 
     private var dateBlock: some View {
         VStack(spacing: 1) {
-            Text(part("EEE").uppercased())
+            Text(part(Self.weekdayPartFormatter).uppercased())
                 .font(Theme.mono(9, .bold)).tracking(1).foregroundStyle(Theme.muted)
-            Text(part("d"))
+            Text(part(Self.dayPartFormatter))
                 .font(Theme.display(26)).foregroundStyle(Theme.text)
-            Text(part("MMM").uppercased())
+            Text(part(Self.monthPartFormatter).uppercased())
                 .font(Theme.mono(9, .bold)).tracking(1).foregroundStyle(Theme.dim)
         }
         .frame(width: 46)
     }
 
-    private func part(_ fmt: String) -> String {
-        guard let d = CalendarProjection.date(from: ymd) else { return "" }
+    // One formatter per field, built once, instead of three allocations
+    // per feed row.
+    private static let weekdayPartFormatter: DateFormatter = {
         let f = DateFormatter()
         f.calendar = CalendarProjection.calendar
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = fmt
-        return f.string(from: d)
+        f.dateFormat = "EEE"
+        return f
+    }()
+
+    private static let dayPartFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = CalendarProjection.calendar
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "d"
+        return f
+    }()
+
+    private static let monthPartFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = CalendarProjection.calendar
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "MMM"
+        return f
+    }()
+
+    private func part(_ formatter: DateFormatter) -> String {
+        guard let d = CalendarProjection.date(from: ymd) else { return "" }
+        return formatter.string(from: d)
     }
 
     private var items: [Item] {

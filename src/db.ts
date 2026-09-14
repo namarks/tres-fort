@@ -5704,31 +5704,31 @@ export async function getState(
           stress_model: baseMeta.stress_model ?? null,
         }
       : null;
-  // The five collections below are independent reads; one D1 batch issues
-  // them as a single round trip (and one read snapshot) instead of five
-  // serial awaits. Each statement keeps its columns and ORDER BY unchanged.
-  const sessionsStatement = workoutDB(db)
+  const sessions = await workoutDB(db)
     .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND updated_at > ?2 ORDER BY date')
-    .bind(userId, setsSince);
+    .bind(userId, setsSince)
+    .all<SessionRow>();
   // Full reload preserves the existing complete shape. Incremental pulls use
   // the server-owned mutable cursor directly from the member-first index and
   // include soft-deleted rows as tombstones. Both read set_logs.user_id
   // (migration 0034: backfilled, asserted, and trigger-maintained for legacy
   // inserts) so neither needs to join sessions for ownership.
-  const setsStatement = setsSince > 0
-    ? workoutDB(db)
+  const sets = setsSince > 0
+    ? await workoutDB(db)
         .prepare(
           `SELECT * FROM set_logs
             WHERE user_id = ?1 AND updated_at > ?2
             ORDER BY updated_at, id`,
         )
         .bind(userId, setsSince)
-    : workoutDB(db)
+        .all<SetLogRow>()
+    : await workoutDB(db)
         .prepare(
           `SELECT sl.* FROM set_logs sl
             WHERE sl.user_id = ?1 ORDER BY sl.logged_at`,
         )
-        .bind(userId);
+        .bind(userId)
+        .all<SetLogRow>();
   // external_events ride a SEPARATE watermark (synced_at epoch-ms). This is
   // a server-owned reconciled cache: NOT gated on plans.version and a ride
   // sync NEVER bumps it. TWO explicit modes (iOS must match):
@@ -5741,18 +5741,20 @@ export async function getState(
   //    cursor INCLUDING soft-deleted ones (deleted_at set), so a syncing
   //    client learns about removals and drops them — exactly the set_logs
   //    delta+tombstone pattern.
-  const eventsStatement =
+  const events =
     eventsSince > 0
-      ? workoutDB(db)
+      ? await workoutDB(db)
           .prepare(
             'SELECT * FROM external_events WHERE user_id = ?1 AND synced_at > ?2 ORDER BY synced_at',
           )
           .bind(userId, eventsSince)
-      : workoutDB(db)
+          .all<ExternalEventRow>()
+      : await workoutDB(db)
           .prepare(
             'SELECT * FROM external_events WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY synced_at',
           )
-          .bind(userId);
+          .bind(userId)
+          .all<ExternalEventRow>();
   // external_activities ride their OWN watermark (activities_since), exactly
   // like external_events: a separate server-owned reconciled cache (COMPLETED
   // endurance actuals), never gated on plans.version. Same two modes:
@@ -5760,18 +5762,20 @@ export async function getState(
   //    (full replace on the client — no tombstones to reconcile).
   //  - INCREMENTAL  (activities_since > 0): every row touched since the cursor
   //    INCLUDING soft-deleted ones, so a syncing client learns about removals.
-  const activitiesStatement =
+  const activities =
     activitiesSince > 0
-      ? workoutDB(db)
+      ? await workoutDB(db)
           .prepare(
             'SELECT * FROM external_activities WHERE user_id = ?1 AND synced_at > ?2 ORDER BY synced_at',
           )
           .bind(userId, activitiesSince)
-      : workoutDB(db)
+          .all<ExternalActivityRow>()
+      : await workoutDB(db)
           .prepare(
             'SELECT * FROM external_activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY date',
           )
-          .bind(userId);
+          .bind(userId)
+          .all<ExternalActivityRow>();
   // Generic activity log (M3 — `activities` table). Append-only,
   // user-authored. Same delta-sync pattern as set_logs / external_events:
   //  - FULL RELOAD  (log_since absent/0): full current non-deleted set.
@@ -5780,28 +5784,17 @@ export async function getState(
   //    removals. Uses server-owned `updated_at`, never the client-authored
   //    event time, so clock skew cannot strand rows (see
   //    listActivitiesForUser for the delta-sync contract).
-  const activityLogStatement =
+  const userActivities =
     logSince > 0
-      ? listActivitiesForUserStatement(db, userId, logSince)
-      : workoutDB(db)
-          .prepare(
-            'SELECT * FROM activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY logged_at',
-          )
-          .bind(userId);
-  const [sessions, sets, events, activities, activityLog] = (await workoutDB(db).batch([
-    sessionsStatement,
-    setsStatement,
-    eventsStatement,
-    activitiesStatement,
-    activityLogStatement,
-  ])) as [
-    D1Result<SessionRow>,
-    D1Result<SetLogRow>,
-    D1Result<ExternalEventRow>,
-    D1Result<ExternalActivityRow>,
-    D1Result<ActivityRow>,
-  ];
-  const userActivities = activityLog.results;
+      ? await listActivitiesForUser(db, userId, logSince)
+      : (
+          await workoutDB(db)
+            .prepare(
+              'SELECT * FROM activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY logged_at',
+            )
+            .bind(userId)
+            .all<ActivityRow>()
+        ).results;
   return {
     plan: tree,
     plan_version: plan?.version ?? 0,
@@ -6064,23 +6057,15 @@ export async function listActivitiesForUser(
   userId: string,
   sinceMs: number,
 ): Promise<ActivityRow[]> {
-  const rows = await listActivitiesForUserStatement(db, userId, sinceMs).all<ActivityRow>();
-  return rows.results;
-}
-
-/** The delta-sync statement behind `listActivitiesForUser`, for batching. */
-function listActivitiesForUserStatement(
-  db: D1Database,
-  userId: string,
-  sinceMs: number,
-): D1PreparedStatement {
-  return workoutDB(db)
+  const rows = await workoutDB(db)
     .prepare(
       `SELECT * FROM activities
        WHERE user_id = ?1 AND updated_at > ?2
        ORDER BY updated_at, id`,
     )
-    .bind(userId, sinceMs);
+    .bind(userId, sinceMs)
+    .all<ActivityRow>();
+  return rows.results;
 }
 
 // ---- plan-tree mutations (MCP write tools) -------------------------------

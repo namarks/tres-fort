@@ -2902,10 +2902,20 @@ final class SyncModel: ObservableObject {
     /// pull acknowledges commit-then-timeout results or detects a stale
     /// post-discard revival; the second pass immediately settles anything the
     /// reconciliation requeued.
+    ///
+    /// With nothing queued there is no local mutation to reconcile, so the
+    /// recovery pull only needs current state: `load()` may JOIN the launch
+    /// pull already in flight instead of bumping the freshness generation and
+    /// forcing a second round trip behind it.
     func recoverWorkoutWrites() async {
+        let hadQueuedWork = !setOutbox.isEmpty || !terminalOutbox.intents.isEmpty || !setCorrections.isEmpty
         await drainWorkoutWriteOutboxes()
         guard currentJWT != nil, canInitiateBoundFeatureAction else { return }
-        await loadAfterMutation()
+        if hadQueuedWork {
+            await loadAfterMutation()
+        } else {
+            await load()
+        }
         guard currentJWT != nil, canInitiateBoundFeatureAction else { return }
         await drainWorkoutWriteOutboxes()
     }

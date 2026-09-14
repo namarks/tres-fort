@@ -287,7 +287,7 @@ struct ProfileView: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Connected").font(.headline)
                         if let t = groupModel.me?.coach.last_active {
-                            Text("Last active \(relative(epochMs: t))")
+                            Text("Last active \(RelativeTimeFormat.short(epochMs: t))")
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                     }
@@ -414,13 +414,6 @@ struct ProfileView: View {
                  ? "Tap a group to make it active — it's shown in the Group tab."
                  : "Friends-and-family groups cheer each other on in the Group tab.")
         }
-    }
-
-    private func relative(epochMs: Int) -> String {
-        let d = Date(timeIntervalSince1970: TimeInterval(epochMs) / 1000)
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .short
-        return f.localizedString(for: d, relativeTo: Date())
     }
 }
 

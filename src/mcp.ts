@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { HonoEnv } from './types';
 import { createD1UsageObserver, logD1Usage } from './db';
-import { handleMcp } from './mcp/server';
+import { handleMcp, type BgScheduler } from './mcp/server';
 import { validateBearer } from './oauth';
 
 export const mcpRoutes = new Hono<HonoEnv>();
@@ -86,7 +86,7 @@ mcpRoutes.post('*', async (c) => {
   // intervals.icu load export) runs via waitUntil AFTER the response is
   // sent — log_workout_complete must not be blocked by an intervals
   // round-trip (BLOCKER-2). executionCtx can throw if unavailable; guard.
-  let bg: { waitUntil(p: Promise<unknown>): void } | undefined;
+  let bg: BgScheduler | undefined;
   try {
     const ec = c.executionCtx;
     if (ec && typeof ec.waitUntil === 'function') {

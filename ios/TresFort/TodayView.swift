@@ -1,14 +1,8 @@
 import SwiftUI
 
-private func fmt(_ w: Double) -> String {
-    w.rounded() == w ? String(Int(w)) : String(format: "%.1f", w)
-}
 private func clock(_ s: Int) -> String {
     s <= 0 ? "GO" : String(format: "%d:%02d", s / 60, s % 60)
 }
-
-/// Identifies the day whose workout the editor sheet is editing.
-private struct EditDayTarget: Identifiable { let id: String }
 
 private struct PendingSetBanner: View {
     @ObservedObject var sync: SyncModel
@@ -207,8 +201,9 @@ struct TodayView: View {
     @State private var showTrainingSetup = false
     @State private var starterAvailable: Bool?
     @State private var starterAvailabilityFailed = false
-    @State private var previewTarget: EditDayTarget?
-    @State private var unresolvedDate: AgendaDate?
+    /// The day whose workout the editor sheet is editing.
+    @State private var previewTarget: IdentifiedString?
+    @State private var unresolvedDate: IdentifiedString?
     /// Keeps a double tap from starting twice while iOS is presenting the
     /// one-time notification permission prompt before a new workout.
     @State private var isPreparingWorkoutStart = false
@@ -425,7 +420,7 @@ struct TodayView: View {
                             Text(workout.name).font(Theme.display(30)).foregroundStyle(Theme.text)
                             Text("\(workout.exercises.count) exercises")
                                 .font(.subheadline).foregroundStyle(Theme.muted)
-                            Button("View workout", systemImage: "chevron.right") { previewTarget = EditDayTarget(id: workout.id) }
+                            Button("View workout", systemImage: "chevron.right") { previewTarget = IdentifiedString(id: workout.id) }
                                 .frame(minHeight: 44).accessibilityIdentifier("today.viewWorkout")
                             Button(isPreparingWorkoutStart ? "Preparing…" : sync.hasResumableWorkout ? "Continue workout" : "Start workout") {
                                 prepareNewWorkout {
@@ -445,7 +440,7 @@ struct TodayView: View {
                         Text("Workout needs review").font(Theme.display(30)).foregroundStyle(Theme.text)
                         Text("There is a workout for today, but its saved workout details are unavailable. Your recorded sets are still available.")
                             .foregroundStyle(Theme.muted)
-                        Button("View workout record") { unresolvedDate = AgendaDate(id: session.date) }
+                        Button("View workout record") { unresolvedDate = IdentifiedString(id: session.date) }
                             .frame(minHeight: 44).accessibilityIdentifier("today.viewUnresolvedWorkout")
                         Button("Refresh workout") { Task { await sync.load() } }.frame(minHeight: 44)
                     } else {
@@ -511,16 +506,14 @@ struct TodayView: View {
     }
 }
 
-private struct AgendaDate: Identifiable { let id: String }
-
 private struct NextWorkoutCard: View {
     @ObservedObject var sync: SyncModel
     let next: SyncModel.NextWorkout
-    @State private var preview: AgendaDate?
+    @State private var preview: IdentifiedString?
 
     var body: some View {
         Button {
-            preview = AgendaDate(id: next.dateString)
+            preview = IdentifiedString(id: next.dateString)
         } label: {
             VStack(alignment: .leading, spacing: 10) {
                 HStack {
@@ -576,7 +569,7 @@ private struct WorkoutDoneView: View {
     @ObservedObject var sync: SyncModel
     /// Confirms discarding the just-completed session ("didn't really do
     /// this" — e.g. an accidental/test End workout).
-    @State private var recordDate: AgendaDate?
+    @State private var recordDate: IdentifiedString?
     @State private var showDiscardConfirm = false
     @State private var discardTarget: WorkoutTerminalActionTarget?
 
@@ -595,6 +588,7 @@ private struct WorkoutDoneView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                let sets = todaySets
                 VStack(alignment: .leading, spacing: 10) {
                     Text("TODAY")
                         .font(Theme.mono(11, .bold)).tracking(2)
@@ -611,10 +605,10 @@ private struct WorkoutDoneView: View {
                     Text(doneTemplateTitle)
                         .font(Theme.mono(13, .bold)).tracking(1)
                         .foregroundStyle(Theme.accent)
-                    Text("\(todaySets.count) working sets · \(Set(todaySets.map(\.exercise_id)).count) exercises")
+                    Text("\(sets.count) working sets · \(Set(sets.map(\.exercise_id)).count) exercises")
                         .font(.subheadline).foregroundStyle(Theme.muted)
                     Button("View workout", systemImage: "chevron.right") {
-                        recordDate = AgendaDate(id: sync.todayString)
+                        recordDate = IdentifiedString(id: sync.todayString)
                     }
                     .frame(minHeight: 44)
                     .accessibilityIdentifier("today.viewCompletedWorkout")
@@ -728,6 +722,9 @@ private struct RunnerView: View {
     var body: some View {
         if let ex = sync.currentExercise {
             let displayedSetNumber = sync.currentSetNumber
+            // One grouping pass for this render: the group card and the jump
+            // strip below both read it.
+            let blocks = ExerciseGroupBlock.blocks(sync.exercises)
             VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
@@ -745,7 +742,7 @@ private struct RunnerView: View {
                                     currentIndex: sync.exerciseIndex, sync: sync)
                             .padding(.bottom, 22)
 
-                        if let block = ExerciseGroupBlock.blocks(sync.exercises).first(where: { $0.members.contains(where: { $0.id == ex.id }) }), block.isGroup {
+                        if let block = blocks.first(where: { $0.members.contains(where: { $0.id == ex.id }) }), block.isGroup {
                             groupCard(block, current: ex)
                                 .padding(.bottom, 20)
                         }
@@ -797,7 +794,7 @@ private struct RunnerView: View {
                         Toggle("Timer sounds", isOn: $timerCuesEnabled)
                             .font(Theme.mono(11)).tint(Theme.accent)
                             .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
-                        jumpStrip(ex: ex)
+                        jumpStrip(ex: ex, blocks: blocks)
 
                         if ex.showsLoadControl {
                             loadControl(ex: ex).disabled(sync.timedActive)
@@ -979,10 +976,10 @@ private struct RunnerView: View {
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.accent.opacity(0.4)))
     }
 
-    private func jumpStrip(ex: TemplateExercise) -> some View {
+    private func jumpStrip(ex: TemplateExercise, blocks: [ExerciseGroupBlock]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                ForEach(ExerciseGroupBlock.blocks(sync.exercises)) { block in
+                ForEach(blocks) { block in
                     let current = block.members.contains { $0.id == ex.id }
                     let done = block.members.allSatisfy { sync.runnerSetsDone($0) >= $0.target_sets }
                     let skipped = block.members.allSatisfy { sync.isSkipped($0) } && !done
@@ -1599,9 +1596,12 @@ private struct FinishedView: View {
                 // Match the WorkoutDoneView rollup: reps count both sides;
                 // volume also counts both implements for per-hand loads.
                 let reps = sync.totalReps(for: sets)
+                // One clock, one scan: the queued count and the review list
+                // below both need today's undelivered intents.
+                let pendingToday = sync.setOutbox.pending.filter { $0.date == sync.todayString }
                 VStack(spacing: 0) {
                     sumRow("Sets saved", "\(sets.count)")
-                    let queued = sync.setOutbox.pending.filter { $0.date == sync.todayString }.count
+                    let queued = pendingToday.count
                     if queued > 0 { sumRow("Sets queued on this device", "\(queued)") }
                     if reps > 0 {
                         sumRow("Total reps", "\(reps)")
@@ -1619,7 +1619,7 @@ private struct FinishedView: View {
 
                 SetReviewList(sync: sync, sets: sync.sets.filter {
                     $0.session_id == sync.todaySession?.id && $0.deleted_at == nil
-                }, pending: sync.setOutbox.pending.filter { $0.date == sync.todayString })
+                }, pending: pendingToday)
                 WorkoutFeedbackEntry(sync: sync)
                 if readyToFinish {
                     Button { sync.jump(to: sync.exerciseIndex) } label: {

@@ -185,33 +185,29 @@ function intervalsAuthHeader(
   return null;
 }
 
+/** A raw intervals.icu array response, or the failure arm both read paths
+ *  share. The reason strings are the caller-visible contract — keep them. */
+type IntervalsArrayResult =
+  | { ok: true; body: unknown[] }
+  | {
+      ok: false;
+      reason: 'disabled' | 'http' | 'timeout' | 'parse';
+      status?: number;
+      retryAfterMs?: number;
+    };
+
 /**
- * GET intervals.icu planned events in [today, today+windowDays]. Returns a
- * discriminated result:
- *   - {ok:true, events}     on 2xx + parseable body
- *   - {ok:false, reason}    on disabled / non-2xx / timeout / parse-error
- *
- * Only `category == "WORKOUT"` rows are kept. `date` is the intervals
- * `start_date_local` date part VERBATIM — no timezone math (the contract).
+ * GET one intervals.icu JSON array. Everything the planned-event and
+ * completed-activity readers do identically — timeout-bounded fetch, HTTP
+ * and parse classification — lives here; each caller keeps its own URL,
+ * dormant-credential guard and per-item mapping.
  */
-export async function fetchPlannedEvents(
-  apiKey: string | null | undefined,
-  athleteId: string | null | undefined,
-  deps: FetchDeps = {},
-): Promise<FetchResult> {
-  // Dormant when unconfigured: a clean no-op, never an error/throw. Auth is
-  // OAuth Bearer when a token is supplied, else HTTP Basic with the API key.
-  const authHeader = intervalsAuthHeader(apiKey, deps.accessToken);
-  if (!authHeader || !athleteId) return { ok: false, reason: 'disabled' };
-
+async function fetchIntervalsArray(
+  url: string,
+  authHeader: string,
+  deps: { fetcher?: Fetcher; timeoutMs?: number },
+): Promise<IntervalsArrayResult> {
   const fetcher = deps.fetcher ?? (globalThis.fetch as unknown as Fetcher);
-  const today = deps.today ?? todayLocal();
-  const windowDays = deps.windowDays ?? 90;
-  const newest = addDays(today, windowDays);
-  const url =
-    `https://intervals.icu/api/v1/athlete/${encodeURIComponent(athleteId)}` +
-    `/events?oldest=${today}&newest=${newest}`;
-
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 10_000);
   let res: {
@@ -251,9 +247,40 @@ export async function fetchPlannedEvents(
     return { ok: false, reason: 'parse' };
   }
   if (!Array.isArray(body)) return { ok: false, reason: 'parse' };
+  return { ok: true, body };
+}
+
+/**
+ * GET intervals.icu planned events in [today, today+windowDays]. Returns a
+ * discriminated result:
+ *   - {ok:true, events}     on 2xx + parseable body
+ *   - {ok:false, reason}    on disabled / non-2xx / timeout / parse-error
+ *
+ * Only `category == "WORKOUT"` rows are kept. `date` is the intervals
+ * `start_date_local` date part VERBATIM — no timezone math (the contract).
+ */
+export async function fetchPlannedEvents(
+  apiKey: string | null | undefined,
+  athleteId: string | null | undefined,
+  deps: FetchDeps = {},
+): Promise<FetchResult> {
+  // Dormant when unconfigured: a clean no-op, never an error/throw. Auth is
+  // OAuth Bearer when a token is supplied, else HTTP Basic with the API key.
+  const authHeader = intervalsAuthHeader(apiKey, deps.accessToken);
+  if (!authHeader || !athleteId) return { ok: false, reason: 'disabled' };
+
+  const today = deps.today ?? todayLocal();
+  const windowDays = deps.windowDays ?? 90;
+  const newest = addDays(today, windowDays);
+  const url =
+    `https://intervals.icu/api/v1/athlete/${encodeURIComponent(athleteId)}` +
+    `/events?oldest=${today}&newest=${newest}`;
+
+  const fetched = await fetchIntervalsArray(url, authHeader, deps);
+  if (!fetched.ok) return fetched;
 
   const events: PlannedEvent[] = [];
-  for (const item of body) {
+  for (const item of fetched.body) {
     // A non-record cannot be safely classified as a deliberately ignored
     // provider row, so fail the complete response closed before D1 mutation.
     if (!isRecord(item)) return { ok: false, reason: 'parse' };
@@ -346,7 +373,6 @@ export async function fetchCompletedActivities(
   const authHeader = intervalsAuthHeader(apiKey, deps.accessToken);
   if (!authHeader || !athleteId) return { ok: false, reason: 'disabled' };
 
-  const fetcher = deps.fetcher ?? (globalThis.fetch as unknown as Fetcher);
   const today = deps.today ?? todayLocal();
   const pastDays = deps.pastDays ?? 90;
   const oldest = addDays(today, -pastDays);
@@ -354,46 +380,11 @@ export async function fetchCompletedActivities(
     `https://intervals.icu/api/v1/athlete/${encodeURIComponent(athleteId)}` +
     `/activities?oldest=${oldest}&newest=${today}`;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 10_000);
-  let res: {
-    ok: boolean;
-    status: number;
-    json: () => Promise<unknown>;
-    headers?: { get: (name: string) => string | null };
-  };
-  try {
-    res = await fetcher(url, {
-      method: 'GET',
-      headers: { Authorization: authHeader, Accept: 'application/json' },
-      signal: controller.signal,
-    });
-  } catch {
-    return { ok: false, reason: 'timeout' };
-  } finally {
-    clearTimeout(timer);
-  }
-
-  if (!res.ok) {
-    const retryAfter = res.status === 429 ? retryAfterMs(res.headers) : undefined;
-    return {
-      ok: false,
-      reason: 'http',
-      status: res.status,
-      ...(retryAfter !== undefined ? { retryAfterMs: retryAfter } : {}),
-    };
-  }
-
-  let body: unknown;
-  try {
-    body = await res.json();
-  } catch {
-    return { ok: false, reason: 'parse' };
-  }
-  if (!Array.isArray(body)) return { ok: false, reason: 'parse' };
+  const fetched = await fetchIntervalsArray(url, authHeader, deps);
+  if (!fetched.ok) return fetched;
 
   const activities: CompletedActivity[] = [];
-  for (const item of body) {
+  for (const item of fetched.body) {
     // Completed-feed rows have no category filter, so every unmarked record
     // is relevant. Non-records fail the complete response closed as well.
     if (!isRecord(item)) return { ok: false, reason: 'parse' };

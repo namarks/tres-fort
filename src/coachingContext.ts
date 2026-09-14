@@ -11,13 +11,26 @@ export type CoachingSession = {
 export function coachingSession(session: CoachingSession, sets: CoachingSet[], catalog: CoachingExercise[]) {
   const live = sets.filter(s => s.session_id === session.id && !s.is_warmup && s.deleted_at == null)
     .sort((a, b) => a.logged_at - b.logged_at || a.id.localeCompare(b.id));
-  const cohorts = catalog.flatMap(ex => metricCohorts(live.filter(s => s.exercise_id === ex.id), ex));
+  // Index this invocation's inputs once. These are disposable projections,
+  // never cross-request caches or sources of write authority.
+  const exercises = new Map<string, CoachingExercise>();
+  for (const ex of catalog) if (!exercises.has(ex.id)) exercises.set(ex.id, ex);
+  const setsByExercise = new Map<string, CoachingSet[]>();
+  const muscleCounts = new Map<string, number>();
+  for (const set of live) {
+    const rows = setsByExercise.get(set.exercise_id);
+    if (rows) rows.push(set); else setsByExercise.set(set.exercise_id, [set]);
+    const muscle = exercises.get(set.exercise_id)?.primary_muscle ?? 'unknown';
+    muscleCounts.set(muscle, (muscleCounts.get(muscle) ?? 0) + 1);
+  }
+  // Preserve catalog order for cohorts and logged_at/id order for key sets.
+  const cohorts = catalog.flatMap(ex => metricCohorts(setsByExercise.get(ex.id) ?? [], ex));
   const representativeIDs = new Set(cohorts.map(c => c.top.id));
   // One best observed rep/hold set per exact comparable condition, not a PR.
   // Unknown catalog rows remain raw examples rather than fabricated cohorts.
-  const representatives = live.filter(s => representativeIDs.has(s.id) || !catalog.some(e => e.id === s.exercise_id));
+  const representatives = live.filter(s => representativeIDs.has(s.id) || !exercises.has(s.exercise_id));
   const keySets = representatives.map(s => {
-    const ex = catalog.find(e => e.id === s.exercise_id);
+    const ex = exercises.get(s.exercise_id);
     const timed = s.is_timed === 1;
     const signed = ex?.modality === 'bw' || ex?.modality === 'timed';
     const unit = ex?.modality === 'cardio' ? null : ex?.unit === 'sec' ? 'lb' : ex?.unit ?? null;
@@ -38,10 +51,9 @@ export function coachingSession(session: CoachingSession, sets: CoachingSet[], c
       load_mode: ex?.load_mode ?? null, weight: load, load_condition: condition,
       reps, duration_s: duration, is_timed: timed, rpe: s.rpe, label };
   });
-  const muscles = [...new Set(live.map(s => catalog.find(e => e.id === s.exercise_id)?.primary_muscle ?? 'unknown'))].sort();
   const volumes = new Map<string, { value: number; sets: number }>();
   for (const s of live) {
-    const ex = catalog.find(e => e.id === s.exercise_id);
+    const ex = exercises.get(s.exercise_id);
     if (!ex || ex.modality === 'cardio' || ex.unit === 'sec') continue;
     const value = positiveSetTonnage(s, ex);
     if (value == null) continue;
@@ -52,8 +64,8 @@ export function coachingSession(session: CoachingSession, sets: CoachingSet[], c
     id: session.id, date: session.date, status: session.status,
     notes: session.notes ?? null, perceived_fatigue: session.perceived_fatigue ?? null,
     logged_working_sets: live.length, sets_with_effort: live.filter(s => s.rpe != null).length,
-    primary_muscle_sets: muscles.map(muscle => ({ muscle,
-      logged_working_sets: live.filter(s => (catalog.find(e => e.id === s.exercise_id)?.primary_muscle ?? 'unknown') === muscle).length })),
+    primary_muscle_sets: [...muscleCounts.keys()].sort().map(muscle => ({ muscle,
+      logged_working_sets: muscleCounts.get(muscle)! })),
     external_load_volume: [...volumes].sort(([a], [b]) => a.localeCompare(b))
       .map(([unit, v]) => ({ unit, value: v.value, contributing_sets: v.sets })),
     // Keep the legacy string array, now carrying explicit semantics.

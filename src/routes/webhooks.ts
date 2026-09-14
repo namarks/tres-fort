@@ -1,5 +1,6 @@
-// intervals.icu push webhook receiver — the §8 "sync evolution" that replaces
-// the 15-min polling cron with push.
+// intervals.icu push webhook receiver — the §8 "sync evolution" that made push
+// the primary sync path. The `wrangler.jsonc` cron (hourly: "0 * * * *") is now
+// only the backstop for an undelivered webhook.
 //
 // One PUBLIC route, mounted at /webhooks:
 //   POST /intervals  → intervals.icu POSTs a batch of events here whenever an

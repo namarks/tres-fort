@@ -235,11 +235,15 @@ struct GroupSettingsView: View {
     }
 
 
-    private func absoluteDate(epochMs: Int) -> String {
-        let d = Date(timeIntervalSince1970: TimeInterval(epochMs) / 1000)
+    private static let absoluteDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateStyle = .medium
         f.timeStyle = .none
-        return f.string(from: d)
+        return f
+    }()
+
+    private func absoluteDate(epochMs: Int) -> String {
+        let d = Date(timeIntervalSince1970: TimeInterval(epochMs) / 1000)
+        return Self.absoluteDateFormatter.string(from: d)
     }
 }

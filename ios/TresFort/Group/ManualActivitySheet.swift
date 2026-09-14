@@ -109,6 +109,8 @@ struct ManualActivitySheet: View {
         dismiss()
     }
 
+    // Reads .current per call on purpose: this is a civil date the member
+    // picks, so a device time-zone change must move it without a relaunch.
     private func ymd(_ d: Date) -> String {
         let f = DateFormatter()
         f.calendar = Calendar(identifier: .gregorian)

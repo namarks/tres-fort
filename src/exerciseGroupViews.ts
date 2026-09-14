@@ -46,6 +46,14 @@ export function coachGroupSlots(slots: EnrichedTemplateExercise[]) {
   });
 }
 
+/** Every workout in the plan with coach-facing group labels on its slots. */
+export function coachWorkouts(tree: PlanTree) {
+  return tree.workouts.map((workout) => ({
+    ...workout,
+    exercises: coachGroupSlots(workout.exercises),
+  }));
+}
+
 export function coachGroupSummary(slots: EnrichedTemplateExercise[]) {
   return coachGroupSlots(slots).filter((slot) => slot.group_id).map((slot) => ({
     template_exercise_id: slot.id,

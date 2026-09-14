@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { coachingSession, coachingPlanMeta } from '../src/coachingContext';
-import { detectConflicts } from '../src/db';
+import { detectConflicts } from '../src/calendarProjection';
 import fixture from '../ios/TresFortTests/Fixtures/CoachingContext.json';
 import progress from '../ios/TresFortTests/Fixtures/BodyweightProgress.json';
 

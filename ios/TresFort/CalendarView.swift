@@ -93,7 +93,7 @@ struct CalendarMonthView: View {
             }
         }
         .sheet(item: Binding(
-            get: { selectedDate.map(IdentifiedDate.init) },
+            get: { selectedDate.map(IdentifiedString.init) },
             set: { selectedDate = $0?.id })
         ) { wrapped in
             NavigationStack {
@@ -120,11 +120,14 @@ struct CalendarMonthView: View {
     /// Full-width + column-aligned in both states, so the condensed grid merges
     /// seamlessly into the full calendar, one row at a time.
     private var calendarHub: some View {
-        VStack(spacing: 0) {
+        // ~31 date additions per build: compute the month's cells once and
+        // hand them to the grid instead of rebuilding them there.
+        let days = gridDays
+        return VStack(spacing: 0) {
             header
             // Full width — aligns with the grid in BOTH states (the condensed
             // grid is full-width too), so it stays put through the merge.
-            if gridDays.compactMap({ $0 }).contains(where: { day in
+            if days.compactMap({ $0 }).contains(where: { day in
                 let ymd = CalendarProjection.dateString(day)
                 return !sync.projection(for: ymd).suppressesScheduleAndEndurance
                     && sync.activities(on: ymd).contains { $0.source_attribution != nil }
@@ -132,7 +135,7 @@ struct CalendarMonthView: View {
                 SourceAttributionLabel(text: SourceAttributionLabel.summary).padding(.bottom, 8)
             }
             weekdayHeader
-            grid
+            grid(days)
                 .padding(.bottom, collapsed ? 10 : 12)
         }
         .frame(maxWidth: .infinity)
@@ -259,12 +262,16 @@ struct CalendarMonthView: View {
 
     // MARK: month nav
 
-    private var monthTitle: String {
+    private static let monthTitleFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.calendar = cal
+        f.calendar = CalendarProjection.calendar
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "MMMM yyyy"
-        return f.string(from: monthAnchor).uppercased()
+        return f
+    }()
+
+    private var monthTitle: String {
+        Self.monthTitleFormatter.string(from: monthAnchor).uppercased()
     }
 
     private func shiftMonth(_ delta: Int) {
@@ -353,9 +360,8 @@ struct CalendarMonthView: View {
     private var rowGap: CGFloat { collapsed ? 3 : 6 }
 
     /// gridDays chunked into calendar weeks (rows of 7).
-    private var gridRows: [[Date?]] {
-        let days = gridDays
-        return stride(from: 0, to: days.count, by: 7).map {
+    private func gridRows(_ days: [Date?]) -> [[Date?]] {
+        stride(from: 0, to: days.count, by: 7).map {
             Array(days[$0 ..< min($0 + 7, days.count)])
         }
     }
@@ -364,9 +370,9 @@ struct CalendarMonthView: View {
     /// lines up cell-for-cell with the expanded calendar. Each row animates on
     /// its OWN slightly-delayed beat off `collapsed`, so the calendar merges
     /// with / peels away from the feed ONE ROW AT A TIME instead of all at once.
-    private var grid: some View {
+    private func grid(_ days: [Date?]) -> some View {
         VStack(spacing: rowGap) {
-            ForEach(Array(gridRows.enumerated()), id: \.offset) { rowIndex, row in
+            ForEach(Array(gridRows(days).enumerated()), id: \.offset) { rowIndex, row in
                 HStack(spacing: colGap) {
                     ForEach(Array(row.enumerated()), id: \.offset) { _, day in
                         Group {
@@ -578,9 +584,6 @@ struct CalendarMonthView: View {
 
 }
 
-/// Sheet item wrapper (a YYYY-MM-DD string identifies the day).
-private struct IdentifiedDate: Identifiable { let id: String }
-
 /// Tracks the History feed's scroll offset (iOS 17-compatible — no
 /// `onScrollGeometryChange`, which is 18+). The feed reports its top edge in a
 /// named coordinate space; `CalendarMonthView` reads it to morph the calendar.
@@ -630,23 +633,45 @@ private struct ActivityFeedRow: View {
 
     private var dateBlock: some View {
         VStack(spacing: 1) {
-            Text(part("EEE").uppercased())
+            Text(part(Self.weekdayPartFormatter).uppercased())
                 .font(Theme.mono(9, .bold)).tracking(1).foregroundStyle(Theme.muted)
-            Text(part("d"))
+            Text(part(Self.dayPartFormatter))
                 .font(Theme.display(26)).foregroundStyle(Theme.text)
-            Text(part("MMM").uppercased())
+            Text(part(Self.monthPartFormatter).uppercased())
                 .font(Theme.mono(9, .bold)).tracking(1).foregroundStyle(Theme.dim)
         }
         .frame(width: 46)
     }
 
-    private func part(_ fmt: String) -> String {
-        guard let d = CalendarProjection.date(from: ymd) else { return "" }
+    // One formatter per field, built once, instead of three allocations
+    // per feed row.
+    private static let weekdayPartFormatter: DateFormatter = {
         let f = DateFormatter()
         f.calendar = CalendarProjection.calendar
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = fmt
-        return f.string(from: d)
+        f.dateFormat = "EEE"
+        return f
+    }()
+
+    private static let dayPartFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = CalendarProjection.calendar
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "d"
+        return f
+    }()
+
+    private static let monthPartFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = CalendarProjection.calendar
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "MMM"
+        return f
+    }()
+
+    private func part(_ formatter: DateFormatter) -> String {
+        guard let d = CalendarProjection.date(from: ymd) else { return "" }
+        return formatter.string(from: d)
     }
 
     private var items: [Item] {

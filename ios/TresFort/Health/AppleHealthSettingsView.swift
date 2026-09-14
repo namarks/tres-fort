@@ -65,7 +65,7 @@ struct AppleHealthSettingsView: View {
                             Text("Syncing your workouts…")
                                 .font(.footnote).foregroundStyle(.secondary)
                         } else if let t = health.lastSyncedAt {
-                            Text("Last synced \(relative(t))")
+                            Text("Last synced \(RelativeTimeFormat.short(t))")
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                     }
@@ -205,11 +205,5 @@ struct AppleHealthSettingsView: View {
             sharing = previous
             sharingError = "Couldn’t update workout sharing. Please try again."
         }
-    }
-
-    private func relative(_ d: Date) -> String {
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .short
-        return f.localizedString(for: d, relativeTo: Date())
     }
 }

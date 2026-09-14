@@ -2,13 +2,22 @@ import { ATTRIBUTION_INSTRUCTIONS } from '../dataAttribution';
 import { coachingSession, coachingPlanMeta } from '../coachingContext';
 import { TRAINING_PROFILE_COACH_GUIDANCE } from '../trainingProfile';
 import { workoutInput, workoutWire } from '../workoutWire';
-import { workoutDB } from '../workoutSchema';
 // Minimal, spec-correct MCP server over Streamable HTTP (JSON-RPC 2.0,
 // single application/json responses — no server-initiated streams needed
 // for read tools). Stateless: no Mcp-Session-Id required. All data access
 // goes through src/db.ts, identical to REST.
 import type { Env } from '../types';
-import { coachGroupSlots, coachGroupSummary } from '../exerciseGroupViews';
+import { coachGroupSummary, coachWorkouts } from '../exerciseGroupViews';
+import { resolvedScheduleNames } from '../planViews';
+import { positiveSetTonnage } from '../metrics';
+import type { MetricExercise } from '../metrics';
+import {
+  hasField,
+  invalidFields,
+  isNonEmptyString,
+  isNonNegativeInteger,
+  isPositiveInteger,
+} from '../validation';
 import { isGroupId } from '../exerciseGroups';
 import {
   getTrainingProfile,
@@ -22,6 +31,7 @@ import {
   deleteWorkout,
   discardSession,
   findRecentMatchingSet,
+  findWorkoutByRef,
   findMcpExerciseGroupAcknowledgement,
   getActivePlan,
   getExercises,
@@ -34,12 +44,11 @@ import {
   getPlanTree,
   getRecentActivities,
   getRecentSessions,
-  getResolvedScheduleNames,
   getRideConflicts,
   getSessionByDate,
   getSetsForSession,
+  getSetsForSessions,
   getUpcomingRides,
-  getUserTimezone,
   getVolume,
   getWorkoutSummary,
   ensureActivePlan,
@@ -64,7 +73,7 @@ import {
   setStressModel,
   SessionWriteConflictError,
   skipPlannedSession,
-  todayInTz,
+  todayForUser,
   swapExercise,
   syncExternalActivities,
   syncExternalEvents,
@@ -74,7 +83,7 @@ import {
   writeAudit,
   writeNote,
 } from '../db';
-import { parsePlanMeta, WEEKDAYS } from '../types';
+import { parsePlanMeta, TRIP_TYPES } from '../types';
 import { logUnexpectedError, publicToolErrorCode } from '../errors';
 import type {
   PeriodizationPhase,
@@ -123,15 +132,6 @@ const err = (id: RpcRequest['id'], code: number, message: string) => ({
   error: { code, message },
 });
 
-/**
- * The owner's civil "today" (YYYY-MM-DD) in their device-reported timezone.
- * MCP calls come from Claude, not the device, so we resolve "today" from the
- * tz the iOS app last synced (falls back to UTC when none recorded). This is
- * what stops get_today_workout returning tomorrow's date after ~17:00 PT.
- */
-const ownerToday = async (env: Env, userId: string): Promise<string> =>
-  todayInTz(await getUserTimezone(env.DB, userId));
-
 /** Add n whole days to a YYYY-MM-DD (UTC math, date part only — no DST). */
 const addDaysIso = (ymd: string, n: number) =>
   new Date(Date.parse(`${ymd}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
@@ -160,7 +160,7 @@ export interface BgScheduler {
   waitUntil(p: Promise<unknown>): void;
 }
 
-interface Tool {
+interface ToolBase {
   description: string;
   inputSchema: Json;
   handler: (
@@ -173,12 +173,26 @@ interface Tool {
   write?: boolean;
   /** Appends records without replacing or deleting existing user data. */
   appendOnly?: boolean;
-  /** Plan writer persisted its audit/note in the same D1 transaction. */
-  atomicWrite?: boolean;
   /** The service writes its own audit trail; do not duplicate it in dispatch. */
   handlerAudited?: boolean;
-  note?: (args: Json, result: any) => string | null;
 }
+
+/**
+ * `atomicWrite` and `note` are mutually exclusive: the dispatcher consults
+ * `note` only on the non-atomic, non-handler-audited path, so a plan writer
+ * that commits its audit/note inside the same D1 transaction can never have
+ * a dispatcher note run. The type keeps a dead hook from being re-added.
+ */
+type Tool =
+  | (ToolBase & {
+      /** Plan writer persisted its audit/note in the same D1 transaction. */
+      atomicWrite: true;
+      note?: never;
+    })
+  | (ToolBase & {
+      atomicWrite?: false;
+      note?: (args: Json, result: any) => string | null;
+    });
 
 const obj = (props: Json, required: string[] = []): Json => ({
   type: 'object',
@@ -186,27 +200,6 @@ const obj = (props: Json, required: string[] = []): Json => ({
   required,
   additionalProperties: false,
 });
-
-type ToolFieldRule = (value: unknown) => boolean;
-const hasToolField = (args: Json, field: string) => Object.prototype.hasOwnProperty.call(args, field);
-const positiveSafeInteger: ToolFieldRule = (value) => Number.isSafeInteger(value) && (value as number) > 0;
-const nonNegativeSafeInteger: ToolFieldRule = (value) =>
-  Number.isSafeInteger(value) && (value as number) >= 0;
-const nonEmptyToolString: ToolFieldRule = (value) =>
-  typeof value === 'string' && value.trim().length > 0;
-function invalidToolFields(
-  args: Json,
-  required: Record<string, ToolFieldRule>,
-  optional: Record<string, ToolFieldRule> = {},
-): string[] {
-  const fields = Object.entries(required)
-    .filter(([field, rule]) => !hasToolField(args, field) || !rule(args[field]))
-    .map(([field]) => field);
-  for (const [field, rule] of Object.entries(optional)) {
-    if (hasToolField(args, field) && !rule(args[field])) fields.push(field);
-  }
-  return fields;
-}
 
 function addWorkoutTool(operation: 'add_day' | 'add_workout'): Tool {
   const tool: Tool = {
@@ -245,8 +238,6 @@ function addWorkoutTool(operation: 'add_day' | 'add_workout'): Tool {
         { actor: 'mcp', operation, args: a, note: `Added workout "${a.name}".` },
       );
     },
-    note: (a, r) =>
-      r?.conflict || r?.error ? null : `Added workout "${a.name}".`,
   };
   if (operation === 'add_day') tool.description += ' Deprecated name: use add_workout. Supported for one TestFlight compatibility cycle.';
   return tool;
@@ -274,13 +265,7 @@ function updateWorkoutTool(operation: 'update_day' | 'update_workout'): Tool {
       if (typeof a.workout_id === 'string') {
         dayId = a.workout_id;
       } else if (typeof a.day === 'string') {
-        const row = await workoutDB(env.DB)
-          .prepare(
-            "SELECT id FROM workouts WHERE plan_id = ?1 AND (day_label = ?2 OR name = ?2) LIMIT 1",
-          )
-          .bind(plan.id, a.day)
-          .first<{ id: string }>();
-        dayId = row?.id ?? null;
+        dayId = await findWorkoutByRef(env.DB, plan.id, a.day);
       }
       if (!dayId) return { error: 'day_not_found' };
       const r = await patchWorkoutAtVersion(
@@ -293,10 +278,6 @@ function updateWorkoutTool(operation: 'update_day' | 'update_workout'): Tool {
       );
       return r ?? { error: 'day_not_found' };
     },
-    note: (_a, r) =>
-      r?.conflict || r?.error
-        ? null
-        : `Updated workout "${(r as { name: string }).name}".`,
   };
   if (operation === 'update_day') tool.description += ' Deprecated name: use update_workout. Supported for one TestFlight compatibility cycle.';
   return tool;
@@ -319,11 +300,12 @@ const TOOLS: Record<string, Tool> = {
       const tree = await getPlanTree(env.DB, userId);
       const training_profile = await getTrainingProfile(env.DB, userId);
       if (!tree) return { plan: null, training_profile, note: 'No active plan yet.' };
-      // Fold in the resolved recurring weekly schedule (weekday → day name).
-      const schedule = await getResolvedScheduleNames(env.DB, userId);
+      // Fold in the resolved recurring weekly schedule (weekday → day name),
+      // projected from the tree already in hand.
+      const schedule = resolvedScheduleNames(tree);
       // Conflict-aware with zero extra calls: a compact 28-day lift/ride
       // conflict list rides along with the plan context.
-      const today = await ownerToday(env, userId);
+      const today = await todayForUser(env.DB, userId);
       const ride_conflicts = await getRideConflicts(
         env.DB,
         userId,
@@ -337,7 +319,7 @@ const TOOLS: Record<string, Tool> = {
       return {
         ...tree,
         training_profile,
-        workouts: tree.workouts.map((day) => ({ ...day, exercises: coachGroupSlots(day.exercises) })),
+        workouts: coachWorkouts(tree),
         schedule,
         ride_conflicts,
         race: meta.race ?? null,
@@ -355,9 +337,9 @@ const TOOLS: Record<string, Tool> = {
       before_version: { type: 'integer', minimum: 1 },
     }),
     handler: async (a, env, userId) => {
-      const fields = invalidToolFields(a, {}, {
-        limit: (value) => positiveSafeInteger(value) && (value as number) <= 100,
-        before_version: positiveSafeInteger,
+      const fields = invalidFields(a, {}, {
+        limit: (value) => isPositiveInteger(value) && (value as number) <= 100,
+        before_version: isPositiveInteger,
       });
       if (fields.length > 0) return { error: 'invalid_fields', fields };
       return listPlanHistory(
@@ -375,8 +357,8 @@ const TOOLS: Record<string, Tool> = {
       to_version: { type: 'integer', minimum: 1 },
     }, ['from_version']),
     handler: async (a, env, userId) => {
-      const fields = invalidToolFields(a, { from_version: positiveSafeInteger }, {
-        to_version: positiveSafeInteger,
+      const fields = invalidFields(a, { from_version: isPositiveInteger }, {
+        to_version: isPositiveInteger,
       });
       if (fields.length > 0) return { error: 'invalid_fields', fields };
       return comparePlanVersions(
@@ -395,10 +377,10 @@ const TOOLS: Record<string, Tool> = {
       reason: { type: 'string' },
     }, ['snapshot_version', 'plan_id', 'expected_version']),
     handler: async (a, env, userId) => {
-      const fields = invalidToolFields(a, {
-        snapshot_version: positiveSafeInteger,
-        plan_id: nonEmptyToolString,
-        expected_version: positiveSafeInteger,
+      const fields = invalidFields(a, {
+        snapshot_version: isPositiveInteger,
+        plan_id: isNonEmptyString,
+        expected_version: isPositiveInteger,
       }, { reason: (value) => typeof value === 'string' });
       if (fields.length > 0) return { error: 'invalid_fields', fields };
       return restorePlanSnapshot(env.DB, userId, {
@@ -419,7 +401,7 @@ const TOOLS: Record<string, Tool> = {
       "Get today's workout: the date, any existing session for today, the reusable workout library, the recurring weekly schedule (so you can answer 'what should I do today?' from one call), and prior-session context. `last_session` is the most recent non-discarded session of ANY status (could be a skip/planned row); `last_completed_session` is the most recent COMPLETED session — use that for real training context, since a skipped day in between obscures `last_session`.",
     inputSchema: obj({}),
     handler: async (_a, env, userId) => {
-      const date = await ownerToday(env, userId);
+      const date = await todayForUser(env.DB, userId);
       const tree = await getPlanTree(env.DB, userId);
       const session = await getSessionByDate(env.DB, userId, date);
       const recent = await getRecentSessions(env.DB, userId, 2);
@@ -429,12 +411,12 @@ const TOOLS: Record<string, Tool> = {
       const lastCompleted = await getLastCompletedSession(env.DB, userId, date);
       // `schedule` lets an agent answer "what should I do today?" without
       // a second call to get_current_plan — the natural one-shot answer.
-      const schedule = tree ? await getResolvedScheduleNames(env.DB, userId) : null;
+      const schedule = tree ? resolvedScheduleNames(tree) : null;
       return {
         date,
         session,
         sets: session ? await getSetsForSession(env.DB, session.id) : [],
-        plan_workouts: tree?.workouts.map((day) => ({ ...day, exercises: coachGroupSlots(day.exercises) })) ?? [],
+        plan_workouts: tree ? coachWorkouts(tree) : [],
         schedule,
         last_session: last,
         last_session_sets: last ? await getSetsForSession(env.DB, last.id) : [],
@@ -537,7 +519,7 @@ const TOOLS: Record<string, Tool> = {
     ),
     handler: async (a, env, userId) => {
       const range = typeof a.range === 'number' ? Math.min(90, Math.max(1, a.range)) : 30;
-      const today = await ownerToday(env, userId);
+      const today = await todayForUser(env.DB, userId);
       const to = addDaysIso(today, range);
       const rides = await getUpcomingRides(env.DB, userId, { from: today, range });
       const conflicts = await getRideConflicts(env.DB, userId, today, to, today);
@@ -637,7 +619,7 @@ const TOOLS: Record<string, Tool> = {
     handler: async (a, env, userId) => {
       const plan = await getActivePlan(env.DB, userId);
       if (!plan) return { error: 'no_active_plan' };
-      const today = await ownerToday(env, userId);
+      const today = await todayForUser(env.DB, userId);
       const date = typeof a.session_date === 'string' ? a.session_date : today;
       const ex = await resolveExercise(env.DB, String(a.exercise));
       if (!ex) return { error: 'unknown_exercise', query: a.exercise };
@@ -719,6 +701,13 @@ const TOOLS: Record<string, Tool> = {
       const sides = exLat === 'unilateral' ? 2 : 1;
       const perHand = exLoad === 'per_hand';
       const implementsUsed = perHand ? 2 : 1;
+      // One tonnage policy for every surface: the shared read-only metric,
+      // fed the same defaulted laterality/load_mode echoed to the caller.
+      const metricExercise: MetricExercise = {
+        ...(ex as MetricExercise),
+        laterality: exLat,
+        load_mode: exLoad,
+      };
       return {
         set,
         deduped,
@@ -734,10 +723,7 @@ const TOOLS: Record<string, Tool> = {
           implements: implementsUsed,
           total_reps: set.is_timed === 1 ? null : set.reps * sides,
           tonnage_basis: 'external_load',
-          tonnage:
-            set.is_timed === 0 && set.weight > 0
-              ? set.weight * set.reps * sides * implementsUsed
-              : null,
+          tonnage: positiveSetTonnage(set, metricExercise),
           // For two-dumbbell lifts, the weight is one dumbbell — surface a
           // ready-to-say phrasing so guidance never reads as the vague total.
           weight_display: perHand
@@ -869,9 +855,9 @@ const TOOLS: Record<string, Tool> = {
     write: true,
     handlerAudited: true,
     handler: async (a, env, userId) => {
-      const invalid = invalidToolFields(a, {
-        session_id: nonEmptyToolString,
-        expected_attempt: nonNegativeSafeInteger,
+      const invalid = invalidFields(a, {
+        session_id: isNonEmptyString,
+        expected_attempt: isNonNegativeInteger,
       });
       if (invalid.length > 0) return { error: 'invalid_fields', fields: invalid };
       const session = await discardSession(
@@ -909,7 +895,7 @@ const TOOLS: Record<string, Tool> = {
     write: true,
     appendOnly: true,
     handler: async (a, env, userId) => {
-      const today = await ownerToday(env, userId);
+      const today = await todayForUser(env.DB, userId);
       const date = typeof a.date === 'string' && a.date.length > 0 ? a.date : today;
       const type = String(a.type).toLowerCase().trim();
       if (!type) return { error: 'invalid_type' };
@@ -953,7 +939,7 @@ const TOOLS: Record<string, Tool> = {
     ),
     write: true,
     handler: async (a, env, userId) => {
-      const date = typeof a.session_date === 'string' ? a.session_date : await ownerToday(env, userId);
+      const date = typeof a.session_date === 'string' ? a.session_date : await todayForUser(env.DB, userId);
       const s = await logWorkoutComplete(
         env.DB,
         userId,
@@ -1027,10 +1013,6 @@ const TOOLS: Record<string, Tool> = {
         a as unknown as Parameters<typeof updatePlanTree>[2],
         { actor: 'mcp', operation: 'update_plan', args: a, note: 'Rebuilt training plan.' },
       ),
-    note: (_a, r) =>
-      r?.conflict || r?.error
-        ? null
-        : `Rebuilt plan: ${r.plan.workouts.length} day(s), v${r.plan.version}.`,
   },
   group_exercises: {
     description: 'Group adjacent exercise slots into a superset or circuit. Use a caller-generated group_id UUID and current expected_version. Exercises are template slot IDs (recommended, especially for repeated exercises) or unambiguous names/aliases in the selected day. Every member performs the same number of rounds. round_rest follows the last member; transition_rest defaults to zero between members. Ordinary per-slot rest is preserved. Retry the same ID, version and payload after an uncertain response; refetch on conflict.',
@@ -1050,11 +1032,11 @@ const TOOLS: Record<string, Tool> = {
       const unknown = Object.keys(a).filter((key) => !['day', 'group_id', 'expected_version', 'exercises',
         'round_rest', 'transition_rest', 'target_sets', 'order_index'].includes(key));
       if (unknown.length) return { error: 'unknown_fields', fields: unknown };
-      const fields = invalidToolFields(a, {
-        day: nonEmptyToolString, group_id: isGroupId, expected_version: positiveSafeInteger,
-        exercises: (value) => Array.isArray(value) && value.length >= 2 && value.every(nonEmptyToolString),
-        round_rest: nonNegativeSafeInteger,
-      }, { transition_rest: nonNegativeSafeInteger, target_sets: positiveSafeInteger, order_index: nonNegativeSafeInteger });
+      const fields = invalidFields(a, {
+        day: isNonEmptyString, group_id: isGroupId, expected_version: isPositiveInteger,
+        exercises: (value) => Array.isArray(value) && value.length >= 2 && value.every(isNonEmptyString),
+        round_rest: isNonNegativeInteger,
+      }, { transition_rest: isNonNegativeInteger, target_sets: isPositiveInteger, order_index: isNonNegativeInteger });
       if (fields.length) return { error: 'invalid_fields', fields };
       const replay = await findMcpExerciseGroupAcknowledgement(env.DB, userId, 'group_exercises', a);
       if (replay) return replay;
@@ -1087,9 +1069,9 @@ const TOOLS: Record<string, Tool> = {
       }
       return setGroup(env.DB, userId, day?.id ?? a.day as string, a.group_id as string, members, {
         expected_version: a.expected_version as number, round_rest: a.round_rest as number,
-        ...(hasToolField(a, 'transition_rest') ? { transition_rest: a.transition_rest as number } : {}),
-        ...(hasToolField(a, 'target_sets') ? { target_sets: a.target_sets as number } : {}),
-        ...(hasToolField(a, 'order_index') ? { order_index: a.order_index as number } : {}),
+        ...(hasField(a, 'transition_rest') ? { transition_rest: a.transition_rest as number } : {}),
+        ...(hasField(a, 'target_sets') ? { target_sets: a.target_sets as number } : {}),
+        ...(hasField(a, 'order_index') ? { order_index: a.order_index as number } : {}),
       }, { actor: 'mcp', operation: 'group_exercises', args: a, note: 'Grouped exercise slots.' });
     },
   },
@@ -1102,7 +1084,7 @@ const TOOLS: Record<string, Tool> = {
     handler: async (a, env, userId) => {
       const unknown = Object.keys(a).filter((key) => !['group_id', 'expected_version'].includes(key));
       if (unknown.length) return { error: 'unknown_fields', fields: unknown };
-      const fields = invalidToolFields(a, { group_id: isGroupId, expected_version: positiveSafeInteger });
+      const fields = invalidFields(a, { group_id: isGroupId, expected_version: isPositiveInteger });
       if (fields.length) return { error: 'invalid_fields', fields };
       const replay = await findMcpExerciseGroupAcknowledgement(env.DB, userId, 'ungroup_exercises', a);
       if (replay) return replay;
@@ -1139,7 +1121,6 @@ const TOOLS: Record<string, Tool> = {
       );
       return r ?? { error: 'slot_not_found' };
     },
-    note: (_a, r) => (r?.conflict || r?.error ? null : `Updated slot ${r.id}.`),
   },
   swap_exercise: {
     description: 'Replace an exercise in a day with another (e.g. RDL → good mornings on Wednesday), preserving its targets, order, warm-up flag, and slot identity. Carried targets must be valid for the destination modality. Historical sets keep their original exercise. Both names must match the closed catalog — use list_exercises to discover valid names.',
@@ -1164,8 +1145,6 @@ const TOOLS: Record<string, Tool> = {
       });
       return r ?? { error: 'slot_not_found' };
     },
-    note: (a, r) =>
-      r?.error ? null : `Swapped ${a.from_exercise} → ${a.to_exercise} on ${a.day}.`,
   },
   add_exercise: {
     description: 'Add an exercise to a day in the active plan. `exercise` must match the closed catalog — use list_exercises to discover valid names. order_index defaults to max(existing)+1 (append dense), not the old 99 sentinel. Set is_warmup:true for a prescribed warm-up (erg, mobility) — its logged sets stay out of working-set rollups / session RPE. For a duration-based warm-up (e.g. 5-min row), use a cardio exercise and set target_duration_s. For bodyweight or timed work, target_weight is external load relative to bodyweight: positive for added load, zero for strict bodyweight, and negative for assistance; never store body mass. For AMRAP, use target_reps as the minimum, leave target_reps_max unset, and put "AMRAP" in cues.',
@@ -1198,12 +1177,8 @@ const TOOLS: Record<string, Tool> = {
       if (groupFields.length) return { error: 'unknown_fields', fields: groupFields };
       const plan = await getActivePlan(env.DB, userId);
       if (!plan) return { error: 'no_active_plan' };
-      const day = await workoutDB(env.DB).prepare(
-        "SELECT d.id FROM workouts d JOIN plans p ON p.id=d.plan_id WHERE p.user_id=?1 AND p.status='active' AND (d.day_label=?2 OR d.name=?2) LIMIT 1",
-      )
-        .bind(userId, String(a.day))
-        .first<{ id: string }>();
-      if (!day) return { error: 'day_not_found', day: a.day };
+      const dayId = await findWorkoutByRef(env.DB, plan.id, String(a.day));
+      if (!dayId) return { error: 'day_not_found', day: a.day };
       const ex = await resolveExercise(env.DB, String(a.exercise));
       if (!ex) return { error: 'unknown_exercise', query: a.exercise };
       // Honor an explicit order_index; otherwise append densely (max+1)
@@ -1212,9 +1187,9 @@ const TOOLS: Record<string, Tool> = {
       const orderIndex =
         a.order_index !== undefined
           ? a.order_index as number
-          : await nextExerciseOrderIndex(env.DB, day.id);
+          : await nextExerciseOrderIndex(env.DB, dayId);
       return addTemplateExercise(env.DB, plan.id, {
-        workout_id: day.id,
+        workout_id: dayId,
         exercise_id: (ex as { id: string }).id,
         order_index: orderIndex,
         target_sets: a.target_sets as number,
@@ -1233,7 +1208,6 @@ const TOOLS: Record<string, Tool> = {
         note: `Added ${a.exercise} to ${a.day}.`,
       });
     },
-    note: (a, r) => (r?.error ? null : `Added ${a.exercise} to ${a.day}.`),
   },
   add_workout: addWorkoutTool('add_workout'),
   add_day: addWorkoutTool('add_day'),
@@ -1245,7 +1219,7 @@ const TOOLS: Record<string, Tool> = {
     write: true,
     atomicWrite: true,
     handler: async (a, env, userId) => {
-      const invalid = invalidToolFields(a, { workout_id: nonEmptyToolString, expected_version: positiveSafeInteger });
+      const invalid = invalidFields(a, { workout_id: isNonEmptyString, expected_version: isPositiveInteger });
       if (invalid.length) return { error: 'invalid_fields', fields: invalid };
       return deleteWorkout(env.DB, userId, String(a.workout_id), Number(a.expected_version), {
         actor: 'mcp', operation: 'delete_workout', args: a, note: 'Deleted workout.',
@@ -1277,8 +1251,6 @@ const TOOLS: Record<string, Tool> = {
       });
       return r ?? { error: 'slot_not_found' };
     },
-    note: (_a, r) =>
-      r?.error ? null : `Deleted exercise slot ${r.id}.`,
   },
   adjust_today: {
     description:
@@ -1308,12 +1280,6 @@ const TOOLS: Record<string, Tool> = {
             (typeof a.reason === 'string' ? ` Reason: ${a.reason}` : ''),
         },
       ),
-    note: (a, r) =>
-      `Recurring template adjustment ${a.intent}(${a.magnitude ?? 'moderate'}) for ` +
-      `${a.day_label ? String(a.day_label) : 'all workouts'}: ` +
-      `${r?.changes?.length ?? 0} change(s). ` +
-      `${r?.changes?.join('; ') || 'No representable reduction; no targets changed.'}` +
-      (typeof a.reason === 'string' ? ` Reason: ${a.reason}` : ''),
   },
   set_schedule: {
     description:
@@ -1353,13 +1319,6 @@ const TOOLS: Record<string, Tool> = {
       );
       return r;
     },
-    note: (_a, r) =>
-      r?.ok
-        ? `Set recurring weekly schedule (v${r.version}): ` +
-          (['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const)
-            .map((d) => `${d}:${r.schedule.week[d] ?? 'rest'}`)
-            .join(' ')
-        : null,
   },
   set_planned_session: {
     description:
@@ -1441,10 +1400,6 @@ const TOOLS: Record<string, Tool> = {
         },
       );
     },
-    note: (a, r) =>
-      r?.ok
-        ? `Set A-race: ${a.name} — ${a.discipline}${a.distance ? ` ${a.distance}` : ''} on ${a.date}${a.location ? ` (${a.location})` : ''}.`
-        : null,
   },
   set_periodization: {
     description:
@@ -1484,10 +1439,6 @@ const TOOLS: Record<string, Tool> = {
         typeof a.expected_version === 'number' ? a.expected_version : null,
         { actor: 'mcp', operation: 'set_periodization', args: a, note: 'Set periodization.' },
       ),
-    note: (a, r) =>
-      r?.ok
-        ? `Set periodization: ${((a.phases as Array<{ phase: string; start: string; end: string }>) ?? []).map((p) => `${p.phase}(${p.start}→${p.end})`).join(', ')}.`
-        : null,
   },
   add_trip: {
     description:
@@ -1509,9 +1460,7 @@ const TOOLS: Record<string, Tool> = {
       const trip: Omit<Trip, 'id'> = {
         start: String(a.start),
         end: String(a.end),
-        type: (['travel', 'rest', 'injury', 'other'].includes(a.type as string)
-          ? a.type
-          : 'travel') as TripType,
+        type: (TRIP_TYPES.has(a.type as string) ? a.type : 'travel') as TripType,
       };
       if (typeof a.can_train_light === 'boolean') trip.can_train_light = a.can_train_light;
       if (typeof a.note === 'string') trip.note = a.note;
@@ -1526,10 +1475,6 @@ const TOOLS: Record<string, Tool> = {
         },
       );
     },
-    note: (a, r) =>
-      r?.ok
-        ? `Added ${a.type ?? 'travel'} trip ${a.start}→${a.end}${a.note ? `: ${a.note}` : ''}.`
-        : null,
   },
   update_trip: {
     description:
@@ -1552,7 +1497,7 @@ const TOOLS: Record<string, Tool> = {
       const patch: Partial<Omit<Trip, 'id'>> = {};
       if (typeof a.start === 'string') patch.start = a.start;
       if (typeof a.end === 'string') patch.end = a.end;
-      if (['travel', 'rest', 'injury', 'other'].includes(a.type as string)) patch.type = a.type as TripType;
+      if (TRIP_TYPES.has(a.type as string)) patch.type = a.type as TripType;
       if (typeof a.can_train_light === 'boolean') patch.can_train_light = a.can_train_light;
       if (typeof a.note === 'string') patch.note = a.note;
       return updateTrip(
@@ -1564,7 +1509,6 @@ const TOOLS: Record<string, Tool> = {
         { actor: 'mcp', operation: 'update_trip', args: a, note: `Updated trip ${a.id}.` },
       );
     },
-    note: (a, r) => (r?.ok ? `Updated trip ${a.id}.` : null),
   },
   remove_trip: {
     description:
@@ -1583,7 +1527,6 @@ const TOOLS: Record<string, Tool> = {
         typeof a.expected_version === 'number' ? a.expected_version : null,
         { actor: 'mcp', operation: 'remove_trip', args: a, note: `Removed trip ${a.id}.` },
       ),
-    note: (a, r) => (r?.ok ? `Removed trip ${a.id}.` : null),
   },
   set_stress_model: {
     description:
@@ -1618,11 +1561,10 @@ const TOOLS: Record<string, Tool> = {
         { actor: 'mcp', operation: 'set_stress_model', args: a, note: 'Updated planning stress model.' },
       );
     },
-    note: (_a, r) => (r?.ok ? `Updated planning stress model.` : null),
   },
   refresh_rides: {
     description:
-      'Force an immediate refresh from intervals.icu (the cron also does this every 6h): both the PLANNED cycling/endurance calendar (upcoming rides) AND the COMPLETED activity feed (rides/runs you finished, with their actual duration/power/HR). Returns how many of each are cached and the sync status. Does NOT change the training plan or its version. No-op if the intervals.icu integration is not configured.',
+      'Force an immediate refresh from intervals.icu: both the PLANNED cycling/endurance calendar (upcoming rides) AND the COMPLETED activity feed (rides/runs you finished, with their actual duration/power/HR). Webhooks are the primary sync path; an hourly backstop checks for caches never synced or last successfully synced more than two hours ago. Returns how many of each are cached and the sync status. Does NOT change the training plan or its version. No-op if the intervals.icu integration is not configured.',
     inputSchema: obj({}),
     // An action → audited. Reconciled caches only: NO plans.version bump and
     // (no `note`) NO notes row.
@@ -1653,7 +1595,7 @@ const TOOLS: Record<string, Tool> = {
     handler: async (a, env, userId) => {
       const range = typeof a.range === 'number' ? Math.min(365, Math.max(1, a.range)) : 30;
       const limit = typeof a.limit === 'number' ? Math.min(200, Math.max(1, a.limit)) : 20;
-      const today = await ownerToday(env, userId);
+      const today = await todayForUser(env.DB, userId);
       const acts = await getRecentActivities(env.DB, userId, { to: today, range, limit });
       return {
         to: today,
@@ -1734,22 +1676,27 @@ const STATE_URI = 'coach://state/current';
 
 async function buildStateBrief(env: Env, userId: string): Promise<string> {
   const tree = await getPlanTree(env.DB, userId);
-  const today = await ownerToday(env, userId);
+  const today = await todayForUser(env.DB, userId);
   const recent = await getRecentSessions(env.DB, userId, 7, today);
   const catalog = await getExercises(env.DB);
   const last = recent[0] ?? null;
   // Resolve metadata and names from this exact plan tree, not a later read.
   const authoredContext = tree ? coachingPlanMeta(tree.meta) : null;
   const hasSchedule = authoredContext?.schedule != null;
-  const schedule = tree && hasSchedule ? Object.fromEntries(WEEKDAYS.map(day => {
-    const id = parsePlanMeta(tree.meta).schedule.week[day];
-    return [day, id ? tree.workouts.find(workout => workout.id === id)?.name ?? null : null];
-  })) : null;
+  const schedule = tree && hasSchedule ? resolvedScheduleNames(tree) : null;
   const lastCompleted = await getLastCompletedSession(env.DB, userId, undefined, today);
   const summaryRows = [...recent];
   if (lastCompleted && !summaryRows.some(s => s.id === lastCompleted.id)) summaryRows.push(lastCompleted);
-  const summaries = new Map(await Promise.all(summaryRows.map(async session =>
-    [session.id, coachingSession(session, await getSetsForSession(env.DB, session.id), catalog)] as const)));
+  // One batched read for every session in the brief, grouped here — the
+  // per-session read was an N+1 over up to eight rows.
+  const briefSets = await getSetsForSessions(env.DB, userId, summaryRows.map(session => session.id));
+  const setsBySession = new Map<string, typeof briefSets>();
+  for (const set of briefSets) {
+    const rows = setsBySession.get(set.session_id);
+    if (rows) rows.push(set); else setsBySession.set(set.session_id, [set]);
+  }
+  const summaries = new Map(summaryRows.map(session =>
+    [session.id, coachingSession(session, setsBySession.get(session.id) ?? [], catalog)] as const));
   // Cycling awareness, zero extra Claude calls: a compact 28-day ride
   // window + conflicts folded straight into the auto-loaded brief.
   const horizon = addDaysIso(today, 28);
@@ -1883,8 +1830,12 @@ async function dispatch(
           const noteBody = tool.note?.(args, result);
           if (noteBody) await writeNote(env.DB, userId, 'plan', null, 'coach', noteBody);
         }
+        // Compact JSON reduces formatting overhead while preserving parsed
+        // values and deprecated keys. Raw text changes; token savings depend
+        // on the payload and client. Strings (including the Markdown brief)
+        // retain their own whitespace.
         return ok(req.id, {
-          content: [{ type: 'text', text: JSON.stringify(workoutWire(result), null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(workoutWire(result)) }],
         });
       } catch (e) {
         const code = publicToolErrorCode(e);

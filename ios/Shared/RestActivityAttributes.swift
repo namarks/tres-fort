@@ -10,6 +10,10 @@ struct RestActivityAttributes: ActivityAttributes {
         var upNext: String
         var timerKind: String? = nil
         var controlID: String? = nil
+
+        /// The countdown is a prescribed hold rather than rest. Computed, so
+        /// it stays out of the Codable/Hashable synthesis.
+        var isTimedSet: Bool { timerKind == "set" }
     }
     var exercise: String      // the lift you just finished a set of
 }

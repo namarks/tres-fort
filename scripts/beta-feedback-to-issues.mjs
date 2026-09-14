@@ -3,8 +3,9 @@
 //
 // Pulls screenshot + crash feedback from App Store Connect and opens one
 // GitHub issue per submission. Idempotent: each issue body carries an
-// `<!-- asc-feedback:<id> -->` marker and existing issues are scanned for it,
-// so re-running never creates duplicates. Safe to run on a schedule.
+// `<!-- asc-feedback:<id> -->` marker and every existing issue is scanned for
+// it (and for the `<!-- ASC-ID: <id> -->` marker an earlier mirror wrote), so
+// re-running never creates duplicates. Safe to run on a schedule.
 //
 // Auth (no secrets committed — same model as upload-testflight.sh):
 //   - App Store Connect: the account-level API key .p8 on disk. Only the
@@ -25,6 +26,7 @@ import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
+import { feedbackIdFromBody } from "./beta-feedback-marker.mjs";
 
 // Account-level ASC API key — same one upload-testflight.sh and the Fastfile
 // use (team 8BA2RY6RCA). These ids are not secret; the .p8 stays on disk.
@@ -108,26 +110,29 @@ function resolveRepo() {
 }
 
 // Existing issues already filed from feedback, keyed by ASC submission id.
-// Fully paginated so the dedup scan never silently drops older `asc-feedback`
-// markers once the repo has many mirrored issues — `gh issue list --limit N`
-// would cap. `--paginate --jq` applies the filter per page and concatenates,
-// yielding newline-delimited JSON across all pages (plain `--paginate` would
-// emit one separate JSON array per page, which JSON.parse can't read; `--slurp`
-// can't be combined with `--jq`). Filtering by the beta-feedback label scopes
-// it to feedback issues (and excludes PRs, which the issues endpoint otherwise
-// returns); an absent label just yields nothing.
+// Fully paginated so the dedup scan never silently drops older markers once
+// the repo has many mirrored issues — `gh issue list --limit N` would cap.
+// `--paginate --jq` applies the filter per page and concatenates, yielding
+// newline-delimited JSON across all pages (plain `--paginate` would emit one
+// separate JSON array per page, which JSON.parse can't read; `--slurp` can't
+// be combined with `--jq`). Deliberately NOT filtered by label: an earlier
+// mirror filed its issues under `testflight-feedback` with an
+// `<!-- ASC-ID: <id> -->` marker, and those must dedup too — so every issue
+// is scanned and both marker syntaxes are recognised (see
+// beta-feedback-marker.mjs). The issues endpoint also returns pull requests;
+// the jq filter drops them.
 function existingFeedbackIds(repo) {
   const out = gh([
     "api", "--paginate",
-    `repos/${repo}/issues?state=all&labels=${LABEL}&per_page=100`,
-    "--jq", ".[] | {number, body}",
+    `repos/${repo}/issues?state=all&per_page=100`,
+    "--jq", ".[] | select(.pull_request == null) | {number, body}",
   ]);
   const ids = new Map();
   for (const line of out.split("\n")) {
     if (!line.trim()) continue;
     const it = JSON.parse(line);
-    const m = (it.body || "").match(/<!--\s*asc-feedback:([^\s>]+)\s*-->/);
-    if (m) ids.set(m[1], it.number);
+    const id = feedbackIdFromBody(it.body);
+    if (id) ids.set(id, it.number);
   }
   return ids;
 }

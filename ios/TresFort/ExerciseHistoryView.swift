@@ -1,10 +1,6 @@
 import Charts
 import SwiftUI
 
-private func fmtW(_ w: Double) -> String {
-    w.rounded() == w ? String(Int(w)) : String(format: "%.1f", w)
-}
-
 /// Strength history shared by the Progress overview and its exercise list.
 struct ExerciseHistoryList: View {
     @ObservedObject var sync: SyncModel
@@ -89,7 +85,7 @@ struct ExerciseDetailView: View {
                                 Text("\(session.totalReps) total reps · work logged")
                             }
                             if let volume = session.volume {
-                                Text("\(fmtW(volume)) lb external-load volume")
+                                Text("\(SetValueFormatter.number(volume)) lb external-load volume")
                             }
                             if let row = sync.sessions.first(where: { $0.id == session.id }) {
                                 let feedback = WorkoutFeedback(notes: row.notes, perceivedFatigue: row.perceived_fatigue)
@@ -137,7 +133,7 @@ struct ExerciseDetailView: View {
             }
             if let last = progress.points.last {
                 if progress.hasTrend {
-                    Text("Best \(fmtW(progress.points.map(\.value).max() ?? 0)) · Latest \(fmtW(last.value)) \(progress.unit)")
+                    Text("Best \(SetValueFormatter.number(progress.points.map(\.value).max() ?? 0)) · Latest \(SetValueFormatter.number(last.value)) \(progress.unit)")
                         .font(Theme.mono(12)).foregroundStyle(Theme.accent)
                     Chart(progress.points) { point in
                         LineMark(x: .value("Date", point.date), y: .value(progress.title, point.value))
@@ -157,7 +153,7 @@ struct ExerciseDetailView: View {
                     .frame(height: 180)
                     .accessibilityIdentifier("history.progress.chart")
                 } else {
-                    Text("\(fmtW(last.value)) \(progress.unit) · \(last.date)")
+                    Text("\(SetValueFormatter.number(last.value)) \(progress.unit) · \(last.date)")
                         .font(Theme.mono(14)).foregroundStyle(Theme.accent)
                         .accessibilityIdentifier("history.progress.summary")
                     Text("Log another day to see a trend.")

@@ -1,3 +1,7 @@
+import { addDays, weekdayOf, projectCalendar, projectCalendarWindow, projectRideConflicts } from './calendarProjection';
+import type { CalendarCell, CalendarInputs, ProjectionEvent, ProjectionActivity, StrengthCalendarInputs } from './calendarProjection';
+export { addDays, weekdayOf, projectCalendar, detectConflicts } from './calendarProjection';
+export type { CalendarCell, EnduranceItem, ProjectionEvent, ProjectionActivity } from './calendarProjection';
 import { activitySourceAttribution, withActivityAttribution, deviceNameSQL, GARMIN_ACTIVITY_SQL, GARMIN_SUMMARY_ATTRIBUTION } from './dataAttribution';
 import { applicableSessionSwap, parseSessionExerciseSwaps } from './sessionExerciseSwaps';
 import { parseTrainingProfile, starterWorkouts, type TrainingProfile } from './trainingProfile';
@@ -258,28 +262,6 @@ export function isAccountDeletionKey(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value,
   );
-}
-
-/**
- * Match the second half of a durable deletion-receipt credential without
- * exposing the stored digest. Used by app-JWT middleware only for the narrow
- * case where the signed bearer has expired after deletion already committed.
- */
-export async function accountDeletionReceiptMatches(
-  db: D1Database,
-  userId: string,
-  idempotencyKey: string,
-): Promise<boolean> {
-  if (!isAccountDeletionKey(idempotencyKey)) return false;
-  const receipt = await workoutDB(db)
-    .prepare(
-      `SELECT idempotency_key_sha256
-         FROM account_deletion_receipts WHERE user_id = ?1`,
-    )
-    .bind(userId)
-    .first<{ idempotency_key_sha256: string }>();
-  if (!receipt) return false;
-  return receipt.idempotency_key_sha256 === (await sha256Hex(idempotencyKey));
 }
 
 /**
@@ -566,16 +548,25 @@ export async function isDeletedOwnerAppleSub(
   return row.apple_sub_sha256 === (await sha256Hex(appleSub));
 }
 
+/** The single Apple-identity lookup: sign-in, upsert and the owner claim all
+ *  resolve a principal by `users.apple_sub` through here. */
+export async function findUserByAppleSub(
+  db: D1Database,
+  appleSub: string,
+): Promise<User | null> {
+  return workoutDB(db)
+    .prepare('SELECT * FROM users WHERE apple_sub = ?1')
+    .bind(appleSub)
+    .first<User>();
+}
+
 export async function upsertUser(
   db: D1Database,
   appleSub: string,
   email: string | null,
   displayName: string | null,
 ): Promise<User> {
-  const existing = await workoutDB(db)
-    .prepare('SELECT * FROM users WHERE apple_sub = ?1')
-    .bind(appleSub)
-    .first<User>();
+  const existing = await findUserByAppleSub(db, appleSub);
   if (existing) {
     if (displayName && !existing.display_name) {
       await workoutDB(db)
@@ -756,10 +747,7 @@ export async function claimOrCreateOwner(
   if (byApple) return byApple;
 
   if (!ownerSubLocked) {
-    const bootstrap = await workoutDB(db)
-      .prepare('SELECT * FROM users WHERE apple_sub = ?1')
-      .bind(BOOTSTRAP_APPLE_SUB)
-      .first<User>();
+    const bootstrap = await findUserByAppleSub(db, BOOTSTRAP_APPLE_SUB);
     if (bootstrap) {
       const claimed = await workoutDB(db)
         .prepare(
@@ -1432,6 +1420,19 @@ export function todayInTz(tz: string | null | undefined): string {
   }).formatToParts(new Date());
   const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '';
   return `${get('year')}-${get('month')}-${get('day')}`;
+}
+
+/**
+ * The member's civil "today" (YYYY-MM-DD) in the timezone their device last
+ * reported, falling back to UTC when none is recorded.
+ *
+ * MCP calls arrive from a chat client rather than the device, so resolving
+ * "today" from the stored tz is what stops get_today_workout returning
+ * tomorrow's date after ~17:00 PT. REST resolves it the same way whenever the
+ * client did not send an explicit date, so both surfaces share this read.
+ */
+export async function todayForUser(db: D1Database, userId: string): Promise<string> {
+  return todayInTz(await getUserTimezone(db, userId));
 }
 
 /** The owner's stored IANA timezone, or null if none recorded yet. */
@@ -2576,6 +2577,17 @@ export async function createGroup(
   return group;
 }
 
+/** True iff `groupId` names a real group. The 404-vs-403 discriminator the
+ *  group routes share: membership answers "may you see this", this answers
+ *  "is there anything here at all". */
+export async function groupExists(db: D1Database, groupId: string): Promise<boolean> {
+  const r = await workoutDB(db)
+    .prepare('SELECT 1 AS x FROM groups WHERE id = ?1')
+    .bind(groupId)
+    .first<{ x: number }>();
+  return !!r;
+}
+
 /** True iff `userId` is currently a member of `groupId`. */
 export async function isGroupMember(
   db: D1Database,
@@ -3044,6 +3056,15 @@ export async function getPlanTree(
 ): Promise<PlanTree | null> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
+  return loadPlanTree(db, plan);
+}
+
+/**
+ * Load workouts and slots for the plan row the caller already holds. This
+ * avoids repeating plan selection; the independent reads are not an atomic
+ * snapshot. Version claims still happen at the write boundary.
+ */
+async function loadPlanTree(db: D1Database, plan: PlanRow): Promise<PlanTree> {
   const days = await workoutDB(db)
     .prepare('SELECT * FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id')
     .bind(plan.id)
@@ -3452,7 +3473,10 @@ export async function restorePlanSnapshot(
   const targetSlotIds = new Set(targetSlots.map((slot) => slot.id));
   const ts = now();
   const nonce = uuid();
-  const guarded = `EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce='${nonce}')`;
+  // Each statement binds the nonce at its own next free placeholder, so the
+  // fence value rides the positional list like every other fence site.
+  const guarded = (nonceParam: number) =>
+    `EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce=?${nonceParam})`;
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, {
       actor: input.actor, operation: 'restore_plan', args: input,
@@ -3464,14 +3488,14 @@ export async function restorePlanSnapshot(
     statements.push(workoutDB(db).prepare(
       `INSERT OR IGNORE INTO workouts
        (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
-       SELECT ?4,?1,?5,?6,?7,?8,?9,?9 WHERE ${guarded}`,
+       SELECT ?4,?1,?5,?6,?7,?8,?9,?9 WHERE ${guarded(10)}`,
     ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
-      day.order_index, day.notes, ts));
+      day.order_index, day.notes, ts, nonce));
     statements.push(workoutDB(db).prepare(
       `UPDATE workouts SET name=?5,day_label=?6,order_index=?7,notes=?8,updated_at=?9
-       WHERE id=?4 AND plan_id=?1 AND ${guarded}`,
+       WHERE id=?4 AND plan_id=?1 AND ${guarded(10)}`,
     ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
-      day.order_index, day.notes, ts));
+      day.order_index, day.notes, ts, nonce));
   }
   for (const slot of targetSlots) {
     statements.push(workoutDB(db).prepare(
@@ -3480,39 +3504,41 @@ export async function restorePlanSnapshot(
         target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,
         created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds)
        SELECT ?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18,?19,?20,?21
-       WHERE ${guarded}`,
+       WHERE ${guarded(22)}`,
     ).bind(plan.id, userId, -plan.version, slot.id, slot.workout_id,
       slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
       slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
       slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
-      slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null));
+      slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null,
+      nonce));
     statements.push(workoutDB(db).prepare(
       `UPDATE template_exercises SET workout_id=?5,exercise_id=?6,order_index=?7,
        target_sets=?8,target_reps=?9,target_reps_max=?10,target_rpe=?11,
        rest_seconds=?12,target_weight=?13,target_duration_s=?14,progression=?15,
        cues=?16,is_warmup=?17,updated_at=?18,group_id=?19,group_rest_seconds=?20,
-       group_transition_seconds=?21 WHERE id=?4 AND ${guarded}`,
+       group_transition_seconds=?21 WHERE id=?4 AND ${guarded(22)}`,
     ).bind(plan.id, userId, -plan.version, slot.id, slot.workout_id,
       slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
       slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
       slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
-      slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null));
+      slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null,
+      nonce));
   }
   for (const day of current.workouts) {
     for (const slot of day.exercises) if (!targetSlotIds.has(slot.id)) {
       statements.push(
-        workoutDB(db).prepare(`UPDATE set_logs SET template_exercise_id=NULL,updated_at=MAX(updated_at+1,?4) WHERE template_exercise_id=?5 AND ${guarded}`)
-          .bind(plan.id, userId, -plan.version, ts, slot.id),
-        workoutDB(db).prepare(`DELETE FROM template_exercises WHERE id=?4 AND ${guarded}`)
-          .bind(plan.id, userId, -plan.version, slot.id),
+        workoutDB(db).prepare(`UPDATE set_logs SET template_exercise_id=NULL,updated_at=MAX(updated_at+1,?4) WHERE template_exercise_id=?5 AND ${guarded(6)}`)
+          .bind(plan.id, userId, -plan.version, ts, slot.id, nonce),
+        workoutDB(db).prepare(`DELETE FROM template_exercises WHERE id=?4 AND ${guarded(5)}`)
+          .bind(plan.id, userId, -plan.version, slot.id, nonce),
       );
     }
     if (!targetDayIds.has(day.id)) {
       statements.push(
-        workoutDB(db).prepare(`UPDATE sessions SET workout_id=NULL,updated_at=?4 WHERE workout_id=?5 AND user_id=?2 AND ${guarded}`)
-          .bind(plan.id, userId, -plan.version, ts, day.id),
-        workoutDB(db).prepare(`DELETE FROM workouts WHERE id=?4 AND plan_id=?1 AND ${guarded}`)
-          .bind(plan.id, userId, -plan.version, day.id),
+        workoutDB(db).prepare(`UPDATE sessions SET workout_id=NULL,updated_at=?4 WHERE workout_id=?5 AND user_id=?2 AND ${guarded(6)}`)
+          .bind(plan.id, userId, -plan.version, ts, day.id, nonce),
+        workoutDB(db).prepare(`DELETE FROM workouts WHERE id=?4 AND plan_id=?1 AND ${guarded(5)}`)
+          .bind(plan.id, userId, -plan.version, day.id, nonce),
       );
     }
   }
@@ -3651,49 +3677,26 @@ export async function ensureActivePlan(
   return { plan: winner, created: false };
 }
 
-/** Bump the plan version + updated_at. Called by every plan-tree mutation. */
-export async function bumpPlanVersion(db: D1Database, planId: string): Promise<number> {
-  const row = await workoutDB(db)
-    .prepare('UPDATE plans SET version = version + 1, updated_at = ?2 WHERE id = ?1 RETURNING version')
-    .bind(planId, now())
-    .first<{ version: number }>();
-  return row?.version ?? 0;
-}
-
-export async function addWorkout(
+/**
+ * The first workout in a plan whose `day_label` or `name` equals `ref`.
+ *
+ * The MCP write tools accept a natural-language day reference; an explicit
+ * workout id is resolved by the caller before this. There is deliberately no
+ * ORDER BY, so a duplicated label or name resolves exactly as the inline
+ * queries this replaced did.
+ */
+export async function findWorkoutByRef(
   db: D1Database,
   planId: string,
-  name: string,
-  dayLabel: string | null,
-  orderIndex: number,
-  normalizeOrder = false,
-): Promise<WorkoutRow> {
-  const ts = now();
-  const row: WorkoutRow = {
-    id: uuid(),
-    plan_id: planId,
-    name,
-    day_label: dayLabel,
-    order_index: orderIndex,
-    notes: null,
-    created_at: ts,
-    updated_at: ts,
-  };
-  await workoutDB(db)
+  ref: string,
+): Promise<string | null> {
+  const row = await workoutDB(db)
     .prepare(
-      'INSERT INTO workouts (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)',
+      'SELECT id FROM workouts WHERE plan_id = ?1 AND (day_label = ?2 OR name = ?2) LIMIT 1',
     )
-    .bind(row.id, row.plan_id, row.name, row.day_label, row.order_index, row.notes, row.created_at, row.updated_at)
-    .run();
-  if (normalizeOrder && await dedupePlanDayOrderIndexes(db, planId, row.id)) {
-    const fresh = await workoutDB(db)
-      .prepare('SELECT order_index FROM workouts WHERE id = ?1')
-      .bind(row.id)
-      .first<{ order_index: number }>();
-    if (fresh) row.order_index = fresh.order_index;
-  }
-  await bumpPlanVersion(db, planId);
-  return row;
+    .bind(planId, ref)
+    .first<{ id: string }>();
+  return row?.id ?? null;
 }
 
 /** Resolve a day only inside one already-authorized plan. */
@@ -3708,7 +3711,7 @@ export async function getWorkoutInPlan(
     .first<WorkoutRow>();
 }
 
-/** Allowlist of patch keys accepted by `patchWorkout`. Unknown keys
+/** Allowlist of patch keys accepted by `patchWorkoutAtVersion`. Unknown keys
  *  surface as `{ error: 'unknown_fields', fields }` — same diagnosability
  *  contract as updateExercise. */
 const DAY_TEMPLATE_PATCH_KEYS = new Set<string>([
@@ -3717,47 +3720,6 @@ const DAY_TEMPLATE_PATCH_KEYS = new Set<string>([
   'order_index',
   'notes',
 ]);
-
-export async function patchWorkout(
-  db: D1Database,
-  planId: string,
-  dayId: string,
-  patch: {
-    name?: string;
-    day_label?: string | null;
-    order_index?: number;
-    notes?: string | null;
-  },
-  normalizeOrder = false,
-): Promise<WorkoutRow | { error: 'unknown_fields'; fields: string[] } | null> {
-  const existing = await workoutDB(db)
-    .prepare('SELECT * FROM workouts WHERE id = ?1 AND plan_id = ?2')
-    .bind(dayId, planId)
-    .first<WorkoutRow>();
-  if (!existing) return null;
-  const unknown = Object.keys(patch).filter((k) => !DAY_TEMPLATE_PATCH_KEYS.has(k));
-  if (unknown.length > 0) return { error: 'unknown_fields', fields: unknown };
-  const merged = {
-    name: patch.name ?? existing.name,
-    day_label: patch.day_label === undefined ? existing.day_label : patch.day_label,
-    order_index: patch.order_index ?? existing.order_index,
-    notes: patch.notes === undefined ? existing.notes : patch.notes,
-  };
-  await workoutDB(db)
-    .prepare('UPDATE workouts SET name=?2, day_label=?3, order_index=?4, notes=?5, updated_at=?6 WHERE id=?1')
-    .bind(dayId, merged.name, merged.day_label, merged.order_index, merged.notes, now())
-    .run();
-  if (normalizeOrder && patch.order_index !== undefined) {
-    await dedupePlanDayOrderIndexes(db, planId, dayId);
-    const fresh = await workoutDB(db)
-      .prepare('SELECT order_index FROM workouts WHERE id = ?1')
-      .bind(dayId)
-      .first<{ order_index: number }>();
-    if (fresh) merged.order_index = fresh.order_index;
-  }
-  await bumpPlanVersion(db, planId);
-  return { ...existing, ...merged, updated_at: now() };
-}
 
 export type PlanVersionConflict = { conflict: true; current_version: number };
 
@@ -3962,35 +3924,6 @@ export async function patchWorkoutAtVersion(
     merged.order_index = ordered.findIndex((day) => day.id === dayId);
   }
   return merged;
-}
-
-/** Dense, deterministic order for workout days after an explicit move. */
-export async function dedupePlanDayOrderIndexes(
-  db: D1Database,
-  planId: string,
-  preferId?: string,
-): Promise<boolean> {
-  const rows = await workoutDB(db)
-    .prepare(
-      'SELECT id, order_index FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
-    )
-    .bind(planId)
-    .all<{ id: string; order_index: number }>();
-  const list = rows.results;
-  const dense = list.every((row, index) => row.order_index === index);
-  if (dense) return false;
-
-  const ordered = preferId ? orderDayRows(list, preferId) : list;
-  const ts = now();
-  for (let index = 0; index < ordered.length; index++) {
-    if (ordered[index]!.order_index !== index) {
-      await workoutDB(db)
-        .prepare('UPDATE workouts SET order_index = ?2, updated_at = ?3 WHERE id = ?1')
-        .bind(ordered[index]!.id, index, ts)
-        .run();
-    }
-  }
-  return true;
 }
 
 /**
@@ -5812,7 +5745,7 @@ export async function getState(
   const serverTime = now();
   const plan = await getActivePlan(db, userId);
   const baseTree =
-    plan && plan.version > sincePlanVersion ? await getPlanTree(db, userId) : null;
+    plan && plan.version > sincePlanVersion ? await loadPlanTree(db, plan) : null;
   // The weekly schedule rides the existing plan-tree sync: it is only
   // returned when the tree is (i.e. when plans.version advanced past the
   // client cursor). Parsed via the single meta accessor so iOS never
@@ -5838,7 +5771,9 @@ export async function getState(
     .all<SessionRow>();
   // Full reload preserves the existing complete shape. Incremental pulls use
   // the server-owned mutable cursor directly from the member-first index and
-  // include soft-deleted rows as tombstones.
+  // include soft-deleted rows as tombstones. Both read set_logs.user_id
+  // (migration 0034: backfilled, asserted, and trigger-maintained for legacy
+  // inserts) so neither needs to join sessions for ownership.
   const sets = setsSince > 0
     ? await workoutDB(db)
         .prepare(
@@ -5850,8 +5785,8 @@ export async function getState(
         .all<SetLogRow>()
     : await workoutDB(db)
         .prepare(
-          `SELECT sl.* FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
-            WHERE s.user_id = ?1 ORDER BY sl.logged_at`,
+          `SELECT sl.* FROM set_logs sl
+            WHERE sl.user_id = ?1 ORDER BY sl.logged_at`,
         )
         .bind(userId)
         .all<SetLogRow>();
@@ -5956,6 +5891,33 @@ export async function getSetsForSession(db: D1Database, sessionId: string) {
       'SELECT * FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL ORDER BY logged_at',
     )
     .bind(sessionId)
+    .all<SetLogRow>();
+  return r.results;
+}
+
+/**
+ * Sets for SEVERAL sessions in one query — the batched form of
+ * `getSetsForSession`, with the same columns, `deleted_at` filter and
+ * `logged_at` ordering. Callers group the flat result by `session_id`; the
+ * relative order inside each session is the single-session order.
+ *
+ * The coach brief reads up to eight recent sessions at once, so the per-session
+ * read was an N+1 on the hottest MCP path.
+ */
+export async function getSetsForSessions(
+  db: D1Database,
+  userId: string,
+  sessionIds: string[],
+): Promise<SetLogRow[]> {
+  if (sessionIds.length === 0) return [];
+  const placeholders = sessionIds.map((_, i) => `?${i + 2}`).join(',');
+  const r = await workoutDB(db)
+    .prepare(
+      `SELECT * FROM set_logs
+        WHERE user_id = ?1 AND session_id IN (${placeholders}) AND deleted_at IS NULL
+        ORDER BY logged_at`,
+    )
+    .bind(userId, ...sessionIds)
     .all<SetLogRow>();
   return r.results;
 }
@@ -7011,6 +6973,12 @@ export async function updateExercise(
     rangePredicates.push(`target_reps<=?${values.length}`);
   }
   const nonce = uuid();
+  // The fence values ride the positional list like every other fence site;
+  // they are appended last so the patch and range placeholders keep theirs.
+  values.push(plan.id, plan.version, nonce);
+  const nonceParam = values.length;
+  const versionParam = nonceParam - 1;
+  const planParam = nonceParam - 2;
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
     workoutDB(db).prepare(
@@ -7019,8 +6987,8 @@ export async function updateExercise(
           SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
            WHERE d.id=template_exercises.workout_id
              AND p.user_id=?${userParam} AND p.status='active'
-             AND p.id='${plan.id}' AND p.version=-${plan.version}
-             AND p.plan_write_nonce='${nonce}'
+             AND p.id=?${planParam} AND p.version=-?${versionParam}
+             AND p.plan_write_nonce=?${nonceParam}
         )${rangePredicates.length ? ` AND ${rangePredicates.join(' AND ')}` : ''}`,
     ).bind(...values),
   ];
@@ -7038,8 +7006,8 @@ export async function updateExercise(
         workoutDB(db).prepare(`UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
           AND EXISTS (SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
             JOIN template_exercises te ON te.workout_id=d.id
-            WHERE te.id=?4 AND p.id='${plan.id}' AND p.version=-${plan.version}
-              AND p.plan_write_nonce='${nonce}')`).bind(row.id, index, ts, slot.id),
+            WHERE te.id=?4 AND p.id=?5 AND p.version=-?6
+              AND p.plan_write_nonce=?7)`).bind(row.id, index, ts, slot.id, plan.id, plan.version, nonce),
       ));
     }
   }
@@ -7186,14 +7154,6 @@ export async function swapExercise(
   }
   if ((results[2]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) return null;
   return { ...slot, exercise_id: destination.id, updated_at: ts };
-}
-
-async function bumpPlanVersionByDay(db: D1Database, workoutId: string): Promise<void> {
-  const row = await workoutDB(db)
-    .prepare('SELECT plan_id FROM workouts WHERE id = ?1')
-    .bind(workoutId)
-    .first<{ plan_id: string }>();
-  if (row) await bumpPlanVersion(db, row.plan_id);
 }
 
 export async function logWorkoutComplete(
@@ -7528,69 +7488,6 @@ export async function getVolume(
 // session writes are append-only sessions rows and do NOT bump version.
 
 /**
- * Calendar weekday rule (iOS MUST mirror this byte-for-byte):
- * parse the device-local 'YYYY-MM-DD' string as a proleptic Gregorian date,
- * compute days since the fixed Monday epoch 1970-01-05 using integer day
- * arithmetic (NOT a UTC Date offset, NOT timezone-aware), and index
- * WEEKDAYS = [mon,tue,wed,thu,fri,sat,sun]. 1970-01-05 was a Monday, so
- * ((daysSinceEpoch % 7) + 7) % 7 gives 0=mon ... 6=sun.
- */
-function dayNumber(ymd: string): number {
-  const parts = ymd.split('-');
-  const y = Number(parts[0]);
-  const m = Number(parts[1]);
-  const d = Number(parts[2]);
-  // Days from 1970-01-01 via a pure civil-from-date algorithm (Howard
-  // Hinnant's days_from_civil) — no Date object, no UTC, no DST.
-  const yy = m <= 2 ? y - 1 : y;
-  const era = Math.floor((yy >= 0 ? yy : yy - 399) / 400);
-  const yoe = yy - era * 400;
-  const doy = Math.floor((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5) + d - 1;
-  const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
-  return era * 146097 + doe - 719468; // days since 1970-01-01
-}
-
-/** 'YYYY-MM-DD' -> weekday key, via the calendar rule above (1970-01-05=Mon). */
-export function weekdayOf(ymd: string): Weekday {
-  const days = dayNumber(ymd) - 4; // 1970-01-05 (Monday) is day 4
-  const idx = ((days % 7) + 7) % 7;
-  return WEEKDAYS[idx]!;
-}
-
-/** Inclusive day count between two 'YYYY-MM-DD' strings (calendar, not UTC). */
-function daySpan(from: string, to: string): number {
-  return dayNumber(to) - dayNumber(from);
-}
-
-/** Add n days to a 'YYYY-MM-DD' string, returning 'YYYY-MM-DD'. */
-export function addDays(ymd: string, n: number): string {
-  // Civil-from-days inverse of dayNumber (Hinnant), pure integer math.
-  let z = dayNumber(ymd) + n + 719468;
-  const era = Math.floor((z >= 0 ? z : z - 146096) / 146097);
-  const doe = z - era * 146097;
-  const yoe = Math.floor(
-    (doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365,
-  );
-  const y = yoe + era * 400;
-  const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
-  const mp = Math.floor((5 * doy + 2) / 153);
-  const d = doy - Math.floor((153 * mp + 2) / 5) + 1;
-  const m = mp < 10 ? mp + 3 : mp - 9;
-  const yr = m <= 2 ? y + 1 : y;
-  const pad = (x: number, w = 2) => String(x).padStart(w, '0');
-  return `${pad(yr, 4)}-${pad(m)}-${pad(d)}`;
-}
-
-export async function getPlanSchedule(
-  db: D1Database,
-  userId: string,
-): Promise<{ plan: PlanRow; schedule: WeeklySchedule } | null> {
-  const plan = await getActivePlan(db, userId);
-  if (!plan) return null;
-  return { plan, schedule: parsePlanMeta(plan.meta).schedule };
-}
-
-/**
  * Replace the full weekly map. Resolves each value (id, day_label, or day
  * name) to a workout_id belonging to the active plan; rejects any ref
  * that doesn't resolve to a day in THIS plan (no partial write). Optimistic
@@ -7900,9 +7797,16 @@ function scrubSchedule(
   return changed ? { version: schedule.version + 1, week } : null;
 }
 
+export type DeleteWorkoutResult =
+  | { ok: true; version: number }
+  | { error: 'day_not_found' }
+  | { error: 'day_in_progress' }
+  | PlanVersionConflict
+  | GroupConflict;
+
 /**
- * Delete one day_template and, in the same transaction, scrub any schedule
- * entries pointing at it and bump plans.version exactly once.
+ * Delete one workout from the active plan. Reads the plan row, checks the
+ * caller's expected version, then delegates to `deleteWorkoutAtVersion`.
  */
 export async function deleteWorkout(
   db: D1Database,
@@ -7910,35 +7814,37 @@ export async function deleteWorkout(
   dayId: string,
   expectedVersion?: number,
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'delete_day' },
-): Promise<
-  { ok: true; version: number }
-  | { error: 'day_not_found' }
-  | { error: 'day_in_progress' }
-  | PlanVersionConflict
-  | GroupConflict
-> {
+): Promise<DeleteWorkoutResult> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'day_not_found' };
   if (expectedVersion !== undefined && expectedVersion !== plan.version) {
     return { conflict: true, current_version: plan.version };
   }
-  const writeVersion = expectedVersion ?? plan.version;
-  const day = await workoutDB(db)
-    .prepare('SELECT id FROM workouts WHERE id = ?1 AND plan_id = ?2')
-    .bind(dayId, plan.id)
-    .first<{ id: string }>();
-  if (!day) return { error: 'day_not_found' };
-  const groupTree = await getPlanTree(db, userId);
-  const groupInvalid = validatePlanExerciseGroups(groupTree?.workouts.filter((candidate) => candidate.id !== dayId) ?? []);
+  return deleteWorkoutAtVersion(db, userId, plan, dayId, attribution);
+}
+
+/**
+ * Delete one workout tied to the exact plan row the caller read and, in the
+ * same transaction, scrub any schedule entries pointing at it and bump
+ * plans.version exactly once. `plan.version` is the write-time fence.
+ */
+export async function deleteWorkoutAtVersion(
+  db: D1Database,
+  userId: string,
+  plan: PlanRow,
+  dayId: string,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'delete_day' },
+): Promise<DeleteWorkoutResult> {
+  const writeVersion = plan.version;
+  const tree = await loadPlanTree(db, plan);
+  if (!tree.workouts.some((candidate) => candidate.id === dayId)) return { error: 'day_not_found' };
+  // Same `order_index, created_at, id` order the tree read uses, so the dense
+  // re-index below matches the former dedicated `remaining` query.
+  const remaining = tree.workouts.filter((candidate) => candidate.id !== dayId);
+  const groupInvalid = validatePlanExerciseGroups(remaining);
   if (groupInvalid) return groupInvalid;
   const meta = parsePlanMeta(plan.meta);
-  const remaining = await workoutDB(db)
-    .prepare(
-      'SELECT id FROM workouts WHERE plan_id = ?1 AND id != ?2 ORDER BY order_index, created_at, id',
-    )
-    .bind(plan.id, dayId)
-    .all<{ id: string }>();
-  const liveIds = new Set(remaining.results.map((r) => r.id));
+  const liveIds = new Set(remaining.map((r) => r.id));
   const scrubbed = scrubSchedule(meta.schedule, liveIds);
   // A session may deliberately keep workout_id NULL and resolve its
   // workout from the recurring schedule for that civil date. Treat those
@@ -8058,7 +7964,7 @@ export async function deleteWorkout(
           )`,
       )
       .bind(dayId, plan.id, userId, -writeVersion),
-    ...remaining.results.map((row, index) =>
+    ...remaining.map((row, index) =>
       workoutDB(db)
         .prepare(
           `UPDATE workouts SET order_index = ?2, updated_at = ?3
@@ -8665,328 +8571,13 @@ export async function skipPlannedSession(
   return useExisting(winner);
 }
 
-/**
- * An endurance item on a calendar day (MULTISPORT.md §6.1). These COEXIST
- * with the strength side (`workout_id`) — a brick is a lift + a ride on
- * the same day — so they live in their own array rather than replacing the
- * strength cell. Read-only (endurance executes on the watch); on today+ days
- * these are planned `external_events`, on past days completed
- * `external_activities`. iOS renders them as read-only cards.
- */
-export interface EnduranceItem {
-  /** external_event / external_activity id (e.g. "intervals:{external_id}"). */
-  id: string;
-  /** ride | run | swim | other. */
-  kind: string;
-  title: string | null;
-  /** Planned (future) duration; null for completed-actual items. */
-  planned_duration_sec: number | null;
-  /** TSS-like load (planned or actual). */
-  training_load: number | null;
-  /** true → a completed actual (past), false → a planned event (today+). */
-  completed: boolean;
-}
-
-export interface CalendarCell {
-  date: string;
-  /**
-   * The day's coarse status. Strength + endurance + trips collapse into one:
-   *   - 'unavailable' — a trip covers the date with can_train_light=false:
-   *     no logged strength happened and items is []. A real in_progress/
-   *     completed strength session instead keeps its status, but still has
-   *     no endurance items. (The trip type remains in `trip_type`.)
-   *   - 'light'       — a trip covers the date with can_train_light=true:
-   *     training is possible but constrained; items reflect what's planned.
-   *   - real session status (planned|in_progress|completed|skipped) — a real
-   *     strength sessions row drives it.
-   *   - 'projected'   — no real session; the weekly pattern projects a lift.
-   *   - 'rest'        — no template that weekday and no items.
-   * NOTE: a day with ONLY endurance (no strength) and no trip reports
-   * 'projected' (it has planned training) so existing lift-or-not consumers
-   * keep working; inspect `items` to distinguish a pure-endurance day.
-   */
-  status:
-    | 'projected'
-    | 'rest'
-    | 'planned'
-    | 'in_progress'
-    | 'completed'
-    | 'skipped'
-    | 'unavailable'
-    | 'light';
-  /** Set when a template resolves (projected or a real session w/ day). */
-  workout_id: string | null;
-  /** True iff this cell came from a real sessions row. */
-  real: boolean;
-  /**
-   * Endurance items for the day (bricks / doubles). Empty array when there is
-   * no endurance. ADDITIVE — existing single-item strength consumers ignore
-   * this and keep reading `status`/`workout_id`/`real` unchanged.
-   */
-  items: EnduranceItem[];
-  /** When status is a trip status ('unavailable'/'light'), the trip.type. */
-  trip_type?: string;
-  /** True when a hard blackout suppressed both recurring strength and every
-   *  endurance event. Real in-progress/completed strength may remain visible,
-   *  so consumers cannot infer this solely from `status`. */
-  suppresses_schedule_and_endurance?: true;
-}
-
-/**
- * A planned endurance event for the projection (future days). Mirror-shape of
- * the relevant ExternalEventRow columns; `date` is the civil YYYY-MM-DD.
- */
-export type ProjectionEvent = Pick<
-  ExternalEventRow,
-  'id' | 'date' | 'kind' | 'title' | 'planned_duration_sec' | 'training_load'
->;
-
-/**
- * A completed endurance actual for the projection (past days). Mirror-shape of
- * the relevant ExternalActivityRow columns.
- */
-export type ProjectionActivity = Pick<
-  ExternalActivityRow,
-  'id' | 'date' | 'kind' | 'name' | 'moving_time_sec' | 'training_load'
->;
-
-/** Index a list by its civil `date` into a Map<date, T[]>. */
-function groupByDate<T extends { date: string }>(rows: Iterable<T>): Map<string, T[]> {
-  const m = new Map<string, T[]>();
-  for (const r of rows) {
-    const arr = m.get(r.date);
-    if (arr) arr.push(r);
-    else m.set(r.date, [r]);
-  }
-  return m;
-}
-
-/**
- * Pure COMPOSITE projection (MULTISPORT.md §6.1). Given the plan, schedule,
- * real sessions, trips, and the endurance feeds (planned events for today+,
- * completed actuals for the past), emit a calendar cell per date. A
- * today-or-future day is a COMPOSITE: a strength side (status/workout_id)
- * PLUS an `items` array of coexisting endurance (bricks/doubles), PLUS a trip
- * status. It stays COMPUTED — no materialized rows.
- *
- * Per civil date:
- *  - date < today (PAST): emit ONLY if there is real history — a real
- *    sessions row (NOT a vanished discarded/planned one) OR a completed
- *    endurance actual. Never fabricate past rest/missed days. items =
- *    completed actuals on the date.
- *  - date >= today (TODAY+):
- *      trip covering date with can_train_light=false:
- *        a real in_progress/completed strength session stays visible with
- *          its own status/template; otherwise status = 'unavailable'.
- *        Either way, items = [] and no schedule/endurance is projected.
- *      else:
- *        strength: a real sessions row wins; else schedule[weekday] template
- *          (cleared if a trip covers the date — a trip blanks the schedule
- *          projection but keeps explicitly-pinned sessions).
- *        endurance: planned external_events on the date COEXIST (items).
- *        status: trip (can_train_light=true) → 'light'; else any strength or
- *          items → its lift/'projected' status; else 'rest'.
- *
- * Weekday is derived from the 'YYYY-MM-DD' string via weekdayOf() (calendar
- * rule, NOT a UTC offset) — iOS must mirror weekdayOf byte-for-byte.
- */
-export function projectCalendar(
-  plan: { id: string },
-  schedule: WeeklySchedule,
-  realSessions: SessionRow[],
-  fromDate: string,
-  toDate: string,
-  today: string,
-  /** Day-template ids that still exist; a schedule id not here is dangling
-   *  and degrades to 'rest'. Pass [] only if you have no plan tree. */
-  liveDayIds: Iterable<string> = [],
-  /** Availability ranges (meta.trips). A covering trip drives the status. */
-  trips: Trip[] = [],
-  /** Planned endurance events (future days) — the coexisting brick/double. */
-  plannedEvents: ProjectionEvent[] = [],
-  /** Completed endurance actuals (past days) — what actually happened. */
-  completedActivities: ProjectionActivity[] = [],
-): CalendarCell[] {
-  void plan;
-  const resolvable = new Set(liveDayIds);
-  // Clamp the span to 90 days (inclusive endpoint counts as span 0..89).
-  let span = daySpan(fromDate, toDate);
-  if (span < 0) return [];
-  if (span > 89) span = 89;
-  const byDate = new Map<string, SessionRow>();
-  for (const s of realSessions) {
-    // A 'discarded' session is treated as if it never existed: the user
-    // explicitly threw it away (its set_logs are soft-deleted by
-    // discardSession). Skipping it here makes the date fall through to the
-    // schedule projection (past → no cell; today/future → projected/rest)
-    // — i.e. it VANISHES rather than showing as a skip. This carve-out is
-    // mirrored byte-for-byte in CalendarProjection.swift (`project`): the
-    // frozen truth table now reads "a real session WINS *unless* it is
-    // 'discarded'". test/calendar.test.ts is the contract.
-    if (s.status === 'discarded') continue;
-    if (!byDate.has(s.date)) byDate.set(s.date, s);
-  }
-  const eventsByDate = groupByDate(plannedEvents);
-  const actsByDate = groupByDate(completedActivities);
-
-  // Returns the trip covering `date` (first match), or null. A trip range is
-  // [start, end] inclusive, compared on the civil YYYY-MM-DD string (the same
-  // tz-free rule as weekdayOf/addDays). String compare is valid because the
-  // format is zero-padded and sortable.
-  const tripFor = (date: string): Trip | null => {
-    for (const t of trips) {
-      if (date >= t.start && date <= t.end) return t;
-    }
-    return null;
-  };
-
-  const eventItem = (e: ProjectionEvent): EnduranceItem => ({
-    id: e.id,
-    kind: e.kind,
-    title: e.title,
-    planned_duration_sec: e.planned_duration_sec,
-    training_load: e.training_load,
-    completed: false,
-  });
-  const actItem = (a: ProjectionActivity): EnduranceItem => ({
-    id: a.id,
-    kind: a.kind,
-    title: a.name,
-    planned_duration_sec: a.moving_time_sec,
-    training_load: a.training_load,
-    completed: true,
-  });
-
-  const cells: CalendarCell[] = [];
-  for (let i = 0; i <= span; i++) {
-    const date = addDays(fromDate, i);
-    const real = byDate.get(date);
-    const isPast = daySpan(today, date) < 0;
-
-    if (isPast) {
-      // PAST — show only real history: a real (non-vanished) session and/or
-      // completed endurance actuals. A still-'planned' past session never
-      // executed (logging flips it to in_progress/completed), so it VANISHES
-      // like 'discarded' (#48). Mirrored byte-for-byte in
-      // CalendarProjection.swift; calendar.test.ts is the contract.
-      const items = (actsByDate.get(date) ?? []).map(actItem);
-      if (real && real.status !== 'planned') {
-        cells.push({
-          date,
-          status: real.status as CalendarCell['status'],
-          workout_id: real.workout_id,
-          real: true,
-          items,
-        });
-      } else if (items.length) {
-        // Endurance-only past day: completed actuals with no strength session.
-        cells.push({
-          date,
-          status: 'completed',
-          workout_id: null,
-          real: false,
-          items,
-        });
-      }
-      // else: no real history → no fabricated past cell.
-      continue;
-    }
-
-    // TODAY or FUTURE.
-    const trip = tripFor(date);
-    if (trip && trip.can_train_light === false) {
-      // BLACKOUT TRUTH TABLE — keep byte-for-byte in backend and iOS:
-      //   real in_progress/completed → surface the real session;
-      //   real planned/skipped/other, or no real → unavailable.
-      // In every case the blackout suppresses schedule and endurance items.
-      if (real && (real.status === 'in_progress' || real.status === 'completed')) {
-        cells.push({
-          date,
-          status: real.status,
-          workout_id: real.workout_id,
-          real: true,
-          items: [],
-          trip_type: trip.type,
-          suppresses_schedule_and_endurance: true,
-        });
-        continue;
-      }
-      cells.push({
-        date,
-        status: 'unavailable',
-        workout_id: null,
-        real: false,
-        items: [],
-        trip_type: trip.type,
-        suppresses_schedule_and_endurance: true,
-      });
-      continue;
-    }
-
-    // Outside a hard blackout, a real session wins; else the schedule
-    // projection, UNLESS a trip covers the date (a trip blanks the recurring
-    // pattern — Claude re-plans the week as explicit sessions). An explicitly-
-    // pinned real session always survives a light trip.
-    let status: CalendarCell['status'];
-    let workoutId: string | null;
-    let real_ = false;
-    if (real) {
-      status = real.status as CalendarCell['status'];
-      workoutId = real.workout_id;
-      real_ = true;
-    } else {
-      const tid = trip ? null : schedule.week[weekdayOf(date)];
-      if (tid && resolvable.has(tid)) {
-        status = 'projected';
-        workoutId = tid;
-      } else {
-        status = 'rest';
-        workoutId = null;
-      }
-    }
-
-    // Endurance side coexists (brick / double).
-    const items = (eventsByDate.get(date) ?? []).map(eventItem);
-
-    // Resolve the composite status.
-    let finalStatus = status;
-    if (trip) {
-      // can_train_light=true → constrained but possible. A pinned real
-      // session keeps its own status; otherwise the day is 'light'.
-      finalStatus = real_ ? status : 'light';
-    } else if (status === 'rest' && items.length) {
-      // Pure-endurance day (no strength) → report 'projected' so existing
-      // lift-or-not consumers see planned training; items disambiguate.
-      finalStatus = 'projected';
-    }
-
-    const cell: CalendarCell = {
-      date,
-      status: finalStatus,
-      workout_id: workoutId,
-      real: real_,
-      items,
-    };
-    if (trip) cell.trip_type = trip.type;
-    cells.push(cell);
-  }
-  return cells;
-}
-
-/**
- * Data-layer entry point: load the active plan, its schedule, the live day
- * ids (for dangling detection), and the real sessions in range, then return
- * the pure projection. fromDate/toDate are device-local 'YYYY-MM-DD'.
- */
-export async function getProjectedCalendar(
+/** Resolve the caller-owned plan and live workout IDs for any calendar read. */
+async function readCalendarPlan(
   db: D1Database,
   userId: string,
-  fromDate: string,
-  toDate: string,
-  today: string,
-): Promise<CalendarCell[]> {
+): Promise<Omit<StrengthCalendarInputs, 'sessions'> | null> {
   const plan = await getActivePlan(db, userId);
-  if (!plan) return [];
+  if (!plan) return null;
   const meta = parsePlanMeta(plan.meta);
   const schedule = meta.schedule;
   const trips = meta.trips ?? [];
@@ -8994,6 +8585,29 @@ export async function getProjectedCalendar(
     .prepare('SELECT id FROM workouts WHERE plan_id = ?1')
     .bind(plan.id)
     .all<{ id: string }>();
+  return { plan, schedule, trips, liveDayIds: liveDays.results.map((r) => r.id) };
+}
+
+async function readCalendarSessions(db: D1Database, userId: string, fromDate: string, toDate: string): Promise<SessionRow[]> {
+  // Sessions use skipped/discarded statuses, not a deleted_at column. The
+  // projection owns their visibility and includes past completed history.
+  const rows = await workoutDB(db)
+    .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND date >= ?2 AND date <= ?3 ORDER BY date')
+    .bind(userId, fromDate, toDate)
+    .all<SessionRow>();
+  return rows.results;
+}
+
+/** Read the projection inputs for [fromDate, toDate]. Null when the user has
+ *  no active plan — the projection is empty in that case. */
+async function readCalendarInputs(
+  db: D1Database,
+  userId: string,
+  fromDate: string,
+  toDate: string,
+): Promise<CalendarInputs | null> {
+  const planInputs = await readCalendarPlan(db, userId);
+  if (!planInputs) return null;
   // Endurance feeds for the composite projection. Planned events drive
   // today+ bricks/doubles; completed actuals drive past endurance items.
   // Both are soft-deleted caches — exclude tombstones. The window matches
@@ -9016,55 +8630,24 @@ export async function getProjectedCalendar(
     )
     .bind(userId, fromDate, toDate)
     .all<ProjectionActivity>();
-  // NOTE: the `sessions` table has NO soft-delete column (only set_logs and
-  // external_events carry deleted_at — see migrations 0001/0006). A session
-  // is never soft-deleted; a cancelled/rest day is modelled as a real row
-  // with status='skipped', and a thrown-away session as status='discarded'.
-  // So there is intentionally no `deleted_at IS NULL` guard here (it would
-  // reference a non-existent column). Spurious lift dates are prevented
-  // downstream: getRideConflicts' liftDates filter includes only
-  // projected|planned|in_progress|completed and EXCLUDES 'skipped'; a
-  // 'discarded' session never even reaches that filter because
-  // projectCalendar drops it from byDate (vanishes), so it likewise
-  // produces no conflict.
-  const sessions = await workoutDB(db)
-    .prepare(
-      'SELECT * FROM sessions WHERE user_id = ?1 AND date >= ?2 AND date <= ?3 ORDER BY date',
-    )
-    .bind(userId, fromDate, toDate)
-    .all<SessionRow>();
-  return projectCalendar(
-    plan,
-    schedule,
-    sessions.results,
-    fromDate,
-    toDate,
-    today,
-    liveDays.results.map((r) => r.id),
-    trips,
-    plannedEvents.results,
-    completedActivities.results,
-  );
+  const sessions = await readCalendarSessions(db, userId, fromDate, toDate);
+  return {
+    ...planInputs,
+    plannedEvents: plannedEvents.results,
+    completedActivities: completedActivities.results,
+    sessions,
+  };
 }
 
-/** Resolve the schedule to human-readable weekday → day name, for context. */
-export async function getResolvedScheduleNames(
+export async function getProjectedCalendar(
   db: D1Database,
   userId: string,
-): Promise<Record<Weekday, string | null> | null> {
-  const got = await getPlanSchedule(db, userId);
-  if (!got) return null;
-  const days = await workoutDB(db)
-    .prepare('SELECT id, name FROM workouts WHERE plan_id = ?1')
-    .bind(got.plan.id)
-    .all<{ id: string; name: string }>();
-  const nameById = new Map(days.results.map((d) => [d.id, d.name]));
-  const out = {} as Record<Weekday, string | null>;
-  for (const wd of WEEKDAYS) {
-    const id = got.schedule.week[wd];
-    out[wd] = id ? nameById.get(id) ?? null : null;
-  }
-  return out;
+  fromDate: string,
+  toDate: string,
+  today: string,
+): Promise<CalendarCell[]> {
+  const inputs = await readCalendarInputs(db, userId, fromDate, toDate);
+  return inputs ? projectCalendarWindow(inputs, fromDate, toDate, today) : [];
 }
 
 // ---- external events (cycling-awareness; own consistency class) ----------
@@ -11052,49 +10635,6 @@ export async function dedupeHealthKitAgainstIntervals(
   return results.reduce((total, result) => total + (result.meta.changes ?? 0), 0);
 }
 
-/** Scheduling heuristic, mirrored by Swift. These fixed thresholds use only
- * planned endurance load/duration and lift dates; they cannot establish
- * individualized interference or safety. One missing measure leaves context
- * incomplete even when the other is known. Same-day takes priority. */
-export function detectConflicts(
-  liftDates: Iterable<string>,
-  events: Pick<ExternalEventRow, 'id' | 'date' | 'training_load' | 'planned_duration_sec'>[],
-): DayConflict[] {
-  const byDate = new Map<string, typeof events>();
-  for (const e of events) {
-    const arr = byDate.get(e.date);
-    if (arr) arr.push(e);
-    else byDate.set(e.date, [e]);
-  }
-  const isHard = (e: { training_load: number | null; planned_duration_sec: number | null }) =>
-    (e.training_load ?? 0) >= 150 || (e.planned_duration_sec ?? 0) >= 9000;
-
-  const out: DayConflict[] = [];
-  // Dedupe + stable order: iterate sorted unique lift dates.
-  const dates = [...new Set(liftDates)].sort();
-  for (const d of dates) {
-    const sameDay = byDate.get(d);
-    if (sameDay && sameDay.length) {
-      // Known threshold evidence wins; missing inputs never mean easy work.
-      const severity: DayConflict['severity'] = sameDay.some(isHard) ? 'clash'
-        : sameDay.some(e => e.training_load == null || e.planned_duration_sec == null) ? 'unknown' : 'brick';
-      out.push({ date: d, conflicts: sameDay.map((e) => e.id), severity });
-      continue;
-    }
-    const next = byDate.get(addDays(d, 1));
-    if (next) {
-      const hard = next.filter(isHard);
-      if (hard.length) {
-        out.push({ date: d, conflicts: hard.map((e) => e.id), severity: 'heavy-next-day' });
-      } else {
-        const incomplete = next.filter(e => e.training_load == null || e.planned_duration_sec == null);
-        if (incomplete.length) out.push({ date: d, conflicts: incomplete.map(e => e.id), severity: 'unknown' });
-      }
-    }
-  }
-  return out;
-}
-
 /**
  * Data-layer convenience: collect lift dates from the projected calendar in
  * a window and run detectConflicts against the live ride cache. Pure read.
@@ -11106,38 +10646,11 @@ export async function getRideConflicts(
   toDate: string,
   today: string,
 ): Promise<DayConflict[]> {
-  // Conflict detection reads one day beyond the visible range for its
-  // next-day warning, so projection/suppression must cover that same day.
-  const cal = await getProjectedCalendar(db, userId, fromDate, toDate, today);
-  // `projectCalendar` intentionally caps one call at 90 cells. Probe the
-  // visible boundary separately so a max-range request still learns that the
-  // day after its final projected lift is a hard blackout. Without this small
-  // window, a hard ride suppressed on that blackout could leak back as a
-  // false heavy-next-day conflict.
-  const boundaryCal = await getProjectedCalendar(
-    db, userId, toDate, addDays(toDate, 1), today,
-  );
-  const suppressedDates = new Set(
-    [...cal, ...boundaryCal]
-      .filter((c) => c.suppresses_schedule_and_endurance === true)
-      .map((c) => c.date),
-  );
-  // A LIFT date carries actual STRENGTH (the conflict subject) — NOT a pure
-  // endurance day. The composite projection now also reports 'projected'/
-  // 'completed' for endurance-only days, distinguishable by the absence of a
-  // strength template/session: a real strength session (planned|in_progress|
-  // completed) OR a projected strength template (workout_id != null).
-  // 'skipped' lifts and pure-endurance cells (workout_id == null and
-  // !real) are excluded, keeping the prior contract intact.
-  const liftDates = cal
-    .filter(
-      (c) =>
-        c.date <= toDate &&
-        !c.suppresses_schedule_and_endurance &&
-        ((c.real && (c.status === 'planned' || c.status === 'in_progress' || c.status === 'completed')) ||
-          (c.status === 'projected' && c.workout_id != null)),
-    )
-    .map((c) => c.date);
+  const planInputs = await readCalendarPlan(db, userId);
+  if (!planInputs) return [];
+  // Only real strength rows and planned-event load affect conflicts. Full
+  // calendar reads still load both endurance feeds for presentation.
+  const sessions = await readCalendarSessions(db, userId, fromDate, addDays(toDate, 1));
   const events = await workoutDB(db)
     .prepare(
       `SELECT id, date, training_load, planned_duration_sec
@@ -11147,9 +10660,8 @@ export async function getRideConflicts(
     )
     .bind(userId, fromDate, addDays(toDate, 1))
     .all<Pick<ExternalEventRow, 'id' | 'date' | 'training_load' | 'planned_duration_sec'>>();
-  return detectConflicts(
-    liftDates,
-    events.results.filter((event) => !suppressedDates.has(event.date)),
+  return projectRideConflicts(
+    { ...planInputs, sessions }, events.results, fromDate, toDate, today,
   );
 }
 

@@ -336,7 +336,7 @@ less work. Structured-step DSL is a deferred non-goal (§11).
    keyed `intervals:{external_id}` with `marker = tresfort:planned:{local_id}`.
 
 So the holistic calendar is **instantly consistent** for anything Claude
-schedules — no waiting for the 15-min cron. The cron (§8) then only matters for
+schedules — no waiting for the stale-cache backstop. The cron (§8) then only matters for
 changes that originate *outside* tres-fort. Generalize the existing export
 client (`src/intervals.ts` `pushLoad`): same OAuth/Bearer header logic, same
 idempotent-by-marker lookup, different `category/type` payload.
@@ -477,7 +477,7 @@ webhook"). Plan:
 |---|---|---|
 | **Write-through** (§5.2) | Claude-initiated changes are instantly mirrored | Primary — kills most latency without webhooks |
 | **On-demand refresh** | Sync when iOS foregrounds / when Claude is asked to plan; `refresh_rides` already does this | Add foreground trigger |
-| **15-min cron** | Backstop for externally-originated changes (watch-recorded actuals, edits in intervals' own UI) | Keep, lower urgency |
+| **Hourly cron** | Checks for caches never synced or last successfully synced more than two hours ago | Backstop for missed webhooks |
 | **Webhooks** | True push for actuals | **Implemented** — `POST /webhooks/intervals` (`src/routes/webhooks.ts`). intervals.icu DOES expose outbound third-party webhooks via the Manage App page; the receiver reconciles the same idempotent caches the cron does, so it never replaces the cron — it just front-runs it. |
 
 ### 8.1 Webhook receiver (`POST /webhooks/intervals`) — shipped
@@ -519,8 +519,10 @@ whenever an athlete's data changes. The receiver:
 4. (Optional) set a "Webhook Authorization Header" on the page and mirror it
    with `wrangler secret put INTERVALS_WEBHOOK_AUTH_HEADER`.
 
-Once registered, the 15-min cron stays as a backstop but most actuals land in
-seconds instead of up to 15 minutes.
+Once registered, webhooks provide the primary sync path. The hourly cron
+checks for caches never synced or last successfully synced more than two hours
+ago. An hourly trigger does not guarantee an hourly provider refresh; manual
+`refresh_rides` can request an immediate refresh.
 
 **Token-expiry risk (R3).** `intervalsAuth.ts:92` notes refresh/expiry are
 "not documented — tokens appear long-lived." If they *do* expire, the per-user

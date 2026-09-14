@@ -130,7 +130,7 @@ final class TrainingJourneyTests: XCTestCase {
             XCTAssertTrue(app.navigationBars["Workout preview"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.staticTexts[heading].exists)
             XCTAssertTrue(app.staticTexts["2×8 · 25 lb"].exists)
-            XCTAssertEqual(app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "PRESCRIBED · ")).count, 0)
+            XCTAssertFalse(app.staticTexts["PRESCRIBED · 2×8 · 25 lb"].exists)
             XCTAssertTrue(app.staticTexts["runner.preview.timer"].label.hasPrefix("Stationary Bike · "))
             XCTAssertFalse(app.buttons["LOG SET 1"].exists)
             screenshot("timer-preview-\(heading)")

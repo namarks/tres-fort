@@ -261,28 +261,6 @@ export function isAccountDeletionKey(value: string): boolean {
 }
 
 /**
- * Match the second half of a durable deletion-receipt credential without
- * exposing the stored digest. Used by app-JWT middleware only for the narrow
- * case where the signed bearer has expired after deletion already committed.
- */
-export async function accountDeletionReceiptMatches(
-  db: D1Database,
-  userId: string,
-  idempotencyKey: string,
-): Promise<boolean> {
-  if (!isAccountDeletionKey(idempotencyKey)) return false;
-  const receipt = await workoutDB(db)
-    .prepare(
-      `SELECT idempotency_key_sha256
-         FROM account_deletion_receipts WHERE user_id = ?1`,
-    )
-    .bind(userId)
-    .first<{ idempotency_key_sha256: string }>();
-  if (!receipt) return false;
-  return receipt.idempotency_key_sha256 === (await sha256Hex(idempotencyKey));
-}
-
-/**
  * A signed, expired app bearer may continue only a deletion that was already
  * claimed while authentication was recent, or acknowledge its committed
  * receipt. The exact high-entropy key must match either durable row.
@@ -3651,51 +3629,6 @@ export async function ensureActivePlan(
   return { plan: winner, created: false };
 }
 
-/** Bump the plan version + updated_at. Called by every plan-tree mutation. */
-export async function bumpPlanVersion(db: D1Database, planId: string): Promise<number> {
-  const row = await workoutDB(db)
-    .prepare('UPDATE plans SET version = version + 1, updated_at = ?2 WHERE id = ?1 RETURNING version')
-    .bind(planId, now())
-    .first<{ version: number }>();
-  return row?.version ?? 0;
-}
-
-export async function addWorkout(
-  db: D1Database,
-  planId: string,
-  name: string,
-  dayLabel: string | null,
-  orderIndex: number,
-  normalizeOrder = false,
-): Promise<WorkoutRow> {
-  const ts = now();
-  const row: WorkoutRow = {
-    id: uuid(),
-    plan_id: planId,
-    name,
-    day_label: dayLabel,
-    order_index: orderIndex,
-    notes: null,
-    created_at: ts,
-    updated_at: ts,
-  };
-  await workoutDB(db)
-    .prepare(
-      'INSERT INTO workouts (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)',
-    )
-    .bind(row.id, row.plan_id, row.name, row.day_label, row.order_index, row.notes, row.created_at, row.updated_at)
-    .run();
-  if (normalizeOrder && await dedupePlanDayOrderIndexes(db, planId, row.id)) {
-    const fresh = await workoutDB(db)
-      .prepare('SELECT order_index FROM workouts WHERE id = ?1')
-      .bind(row.id)
-      .first<{ order_index: number }>();
-    if (fresh) row.order_index = fresh.order_index;
-  }
-  await bumpPlanVersion(db, planId);
-  return row;
-}
-
 /** Resolve a day only inside one already-authorized plan. */
 export async function getWorkoutInPlan(
   db: D1Database,
@@ -3708,7 +3641,7 @@ export async function getWorkoutInPlan(
     .first<WorkoutRow>();
 }
 
-/** Allowlist of patch keys accepted by `patchWorkout`. Unknown keys
+/** Allowlist of patch keys accepted by `patchWorkoutAtVersion`. Unknown keys
  *  surface as `{ error: 'unknown_fields', fields }` — same diagnosability
  *  contract as updateExercise. */
 const DAY_TEMPLATE_PATCH_KEYS = new Set<string>([
@@ -3717,47 +3650,6 @@ const DAY_TEMPLATE_PATCH_KEYS = new Set<string>([
   'order_index',
   'notes',
 ]);
-
-export async function patchWorkout(
-  db: D1Database,
-  planId: string,
-  dayId: string,
-  patch: {
-    name?: string;
-    day_label?: string | null;
-    order_index?: number;
-    notes?: string | null;
-  },
-  normalizeOrder = false,
-): Promise<WorkoutRow | { error: 'unknown_fields'; fields: string[] } | null> {
-  const existing = await workoutDB(db)
-    .prepare('SELECT * FROM workouts WHERE id = ?1 AND plan_id = ?2')
-    .bind(dayId, planId)
-    .first<WorkoutRow>();
-  if (!existing) return null;
-  const unknown = Object.keys(patch).filter((k) => !DAY_TEMPLATE_PATCH_KEYS.has(k));
-  if (unknown.length > 0) return { error: 'unknown_fields', fields: unknown };
-  const merged = {
-    name: patch.name ?? existing.name,
-    day_label: patch.day_label === undefined ? existing.day_label : patch.day_label,
-    order_index: patch.order_index ?? existing.order_index,
-    notes: patch.notes === undefined ? existing.notes : patch.notes,
-  };
-  await workoutDB(db)
-    .prepare('UPDATE workouts SET name=?2, day_label=?3, order_index=?4, notes=?5, updated_at=?6 WHERE id=?1')
-    .bind(dayId, merged.name, merged.day_label, merged.order_index, merged.notes, now())
-    .run();
-  if (normalizeOrder && patch.order_index !== undefined) {
-    await dedupePlanDayOrderIndexes(db, planId, dayId);
-    const fresh = await workoutDB(db)
-      .prepare('SELECT order_index FROM workouts WHERE id = ?1')
-      .bind(dayId)
-      .first<{ order_index: number }>();
-    if (fresh) merged.order_index = fresh.order_index;
-  }
-  await bumpPlanVersion(db, planId);
-  return { ...existing, ...merged, updated_at: now() };
-}
 
 export type PlanVersionConflict = { conflict: true; current_version: number };
 
@@ -3962,35 +3854,6 @@ export async function patchWorkoutAtVersion(
     merged.order_index = ordered.findIndex((day) => day.id === dayId);
   }
   return merged;
-}
-
-/** Dense, deterministic order for workout days after an explicit move. */
-export async function dedupePlanDayOrderIndexes(
-  db: D1Database,
-  planId: string,
-  preferId?: string,
-): Promise<boolean> {
-  const rows = await workoutDB(db)
-    .prepare(
-      'SELECT id, order_index FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
-    )
-    .bind(planId)
-    .all<{ id: string; order_index: number }>();
-  const list = rows.results;
-  const dense = list.every((row, index) => row.order_index === index);
-  if (dense) return false;
-
-  const ordered = preferId ? orderDayRows(list, preferId) : list;
-  const ts = now();
-  for (let index = 0; index < ordered.length; index++) {
-    if (ordered[index]!.order_index !== index) {
-      await workoutDB(db)
-        .prepare('UPDATE workouts SET order_index = ?2, updated_at = ?3 WHERE id = ?1')
-        .bind(ordered[index]!.id, index, ts)
-        .run();
-    }
-  }
-  return true;
 }
 
 /**
@@ -7186,14 +7049,6 @@ export async function swapExercise(
   }
   if ((results[2]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) return null;
   return { ...slot, exercise_id: destination.id, updated_at: ts };
-}
-
-async function bumpPlanVersionByDay(db: D1Database, workoutId: string): Promise<void> {
-  const row = await workoutDB(db)
-    .prepare('SELECT plan_id FROM workouts WHERE id = ?1')
-    .bind(workoutId)
-    .first<{ plan_id: string }>();
-  if (row) await bumpPlanVersion(db, row.plan_id);
 }
 
 export async function logWorkoutComplete(

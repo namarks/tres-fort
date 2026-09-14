@@ -823,9 +823,15 @@ private struct RunnerView: View {
                         if ex.isTimed {
                             TimedSetView(sync: sync, ex: ex)
                         } else {
-                            stepper(label: "REPS", value: "\(sync.reps)", context: "reps",
+                            stepper(label: ex.isUnilateral ? "REPS PER SIDE" : "REPS",
+                                    value: "\(sync.reps)", context: ex.isUnilateral ? "reps per side" : "reps",
                                     steps: [("−1", { sync.adjustReps(-1) }, false),
                                             ("+1", { sync.adjustReps(1) }, false)])
+                            if ex.isUnilateral {
+                                Text("Complete both sides, then log one set.")
+                                    .font(.caption).foregroundStyle(Theme.muted)
+                                    .padding(.top, 8)
+                            }
                         }
 
                         Button {
@@ -918,6 +924,7 @@ private struct RunnerView: View {
                         durationSeconds: draft.prescription.timed ? draft.durationSeconds : nil),
                         timed: draft.prescription.timed, allowsAssistance: ex.allowsAssistance,
                         storedUnit: WeightUnit(rawValue: ex.exercise_unit) ?? .lb,
+                        unilateral: ex.isUnilateral,
                         onSave: { values in
                             sync.setRunnerValues(values, expected: draft.prescription)
                         })
@@ -1200,7 +1207,7 @@ private struct RunnerView: View {
         let previousLabel = previous.map { set in
             let value = SetValueFormatter.value(weight: storedUnit.convert(set.weight, to: weightUnit),
                 reps: set.reps, durationSeconds: set.duration_s, timed: ex.isTimed,
-                bodyweight: ex.isBodyweight, unit: weightUnit.rawValue)
+                bodyweight: ex.isBodyweight, unit: weightUnit.rawValue, unilateral: ex.isUnilateral)
             let effort = set.rpe.map { " RPE " + SetValueFormatter.number($0) } ?? ""
             return value + effort
         }.joined(separator: " · ")
@@ -1351,7 +1358,7 @@ private struct RunnerSetAction: View {
             let values = SetValueFormatter.value(
                 weight: storedUnit.convert(sync.weight, to: unit), reps: sync.reps,
                 durationSeconds: ex.isTimed ? sync.holdDurationSeconds : nil, timed: ex.isTimed,
-                bodyweight: ex.isBodyweight, unit: unit.rawValue)
+                bodyweight: ex.isBodyweight, unit: unit.rawValue, unilateral: ex.isUnilateral)
             Text(values + (!ex.isTimed && sync.weight != 0 ? " · \(unit.rawValue)" : "")
                  + (sync.rpe.map { " · RPE \(SetValueFormatter.number($0))" } ?? ""))
                 .font(.caption).foregroundStyle(Theme.muted)

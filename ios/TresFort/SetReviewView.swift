@@ -40,6 +40,7 @@ struct SetReviewList: View {
                 allowsAssistance: sync.isBodyweightExercise(item.exerciseID)
                     || sync.isTimedExercise(item.exerciseID),
                 storedUnit: WeightUnit(rawValue: sync.catalogRow(item.exerciseID)?.unit ?? "lb") ?? .lb,
+                unilateral: sync.sides(for: item.exerciseID) == 2,
                 onSave: { values in
                     if let set = item.set { return sync.enqueueCorrection(set: set, values: values) }
                     return sync.enqueueCorrection(pending: item.pending!, values: values)
@@ -76,7 +77,8 @@ struct SetReviewList: View {
                     Text(SetValueFormatter.value(
                         weight: storedUnit.convert(item.values.weight, to: unit), reps: item.values.reps,
                         durationSeconds: item.values.durationSeconds, timed: timed,
-                        bodyweight: sync.isBodyweightExercise(item.exerciseID), unit: unit.rawValue))
+                        bodyweight: sync.isBodyweightExercise(item.exerciseID), unit: unit.rawValue,
+                        unilateral: sync.sides(for: item.exerciseID) == 2))
                         .font(Theme.mono(14, .bold))
                     if item.values.weight != 0 { Text("Load in \(unit.rawValue)").font(.caption).foregroundStyle(Theme.muted) }
                     if let rpe = item.values.rpe { Text("RPE \(SetValueFormatter.number(rpe))").font(.caption) }
@@ -103,7 +105,8 @@ struct SetReviewList: View {
                 if let values = correction.values {
                     Text("Requested: " + SetValueFormatter.value(
                         weight: storedUnit.convert(values.weight, to: unit), reps: values.reps, durationSeconds: values.durationSeconds,
-                        timed: timed, bodyweight: sync.isBodyweightExercise(item.exerciseID), unit: unit.rawValue))
+                        timed: timed, bodyweight: sync.isBodyweightExercise(item.exerciseID), unit: unit.rawValue,
+                        unilateral: sync.sides(for: item.exerciseID) == 2))
                         .font(.caption).foregroundStyle(Theme.muted)
                 }
                 if failed {
@@ -137,6 +140,7 @@ struct SetValuesEditor: View {
     let setDescription: String?
     let timed: Bool
     let allowsAssistance: Bool
+    let unilateral: Bool
     let onSave: (SetCorrectionValues) -> Bool
     let onDelete: (() -> Bool)?
     @Environment(\.dismiss) private var dismiss
@@ -149,10 +153,11 @@ struct SetValuesEditor: View {
     @State private var showDeleteConfirmation = false
 
     init(title: String, values: SetCorrectionValues, setDescription: String? = nil,
-         timed: Bool, allowsAssistance: Bool, storedUnit: WeightUnit = .lb,
+         timed: Bool, allowsAssistance: Bool, storedUnit: WeightUnit = .lb, unilateral: Bool = false,
          onSave: @escaping (SetCorrectionValues) -> Bool, onDelete: (() -> Bool)? = nil) {
         self.title = title; self.setDescription = setDescription
         self.timed = timed; self.allowsAssistance = allowsAssistance
+        self.unilateral = unilateral
         self.onSave = onSave; self.onDelete = onDelete
         _weight = State(initialValue: WeightEntryDraft(weight: values.weight, storedUnit: storedUnit, unit: storedUnit))
         _reps = State(initialValue: String(values.reps))
@@ -196,9 +201,12 @@ struct SetValuesEditor: View {
                 }))
                 valueField(allowsAssistance ? "Load / assist (\(weight.unit.rawValue))" : "Weight (\(weight.unit.rawValue))",
                            placeholder: "Weight", text: $weight.text, keyboard: .numbersAndPunctuation)
-                valueField(timed ? "Duration (seconds)" : "Reps",
+                valueField(timed ? "Duration (seconds)" : (unilateral ? "Reps per side" : "Reps"),
                            placeholder: timed ? "Seconds" : "Reps", text: timed ? $duration : $reps,
                            keyboard: .numberPad)
+                if unilateral && !timed {
+                    Text("Enter reps for one side. One set covers both sides.").font(.caption)
+                }
                 valueField("RPE (optional)", placeholder: "—", text: $rpe, keyboard: .decimalPad)
                 if allowsAssistance { Text("Use a negative load for assistance, 0 for bodyweight, or a positive added load.").font(.caption) }
                 if let error { Text(error).foregroundStyle(.red) }

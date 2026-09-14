@@ -85,10 +85,19 @@ describe('native strength and HealthKit identity', () => {
     ['missing absolute time', {start_date_utc_ms:null,source_timezone:null}],
     ['different kind', {kind:'run'}],
     ['unrelated end', {elapsed_time_sec:duration+600}],
-    ['unrelated start', {start_date_utc_ms:start+600_000,start_date_local_ms:start+600_000}],
+    ['unrelated start', {date:new Date(start+600_000).toISOString().slice(0,10),
+      start_date_utc_ms:start+600_000,start_date_local_ms:start+600_000}],
   ] as Array<[string,Partial<HealthKitActivityInput>]>)('does not suppress %s', async (_, over) => {
     const {userId}=await seed();
     expect((await upsertHealthKitActivity(env.DB,userId,health(over))).deleted_at).toBeNull();
+  });
+
+  it('does not suppress an unrelated start across midnight', async () => {
+    const nativeStart=Date.parse('2026-06-18T23:55:00Z');
+    const watchStart=nativeStart+600_000;
+    const {userId}=await seed('completed',nativeStart,nativeStart+duration*1000,'2026-06-18');
+    const input=health({date:'2026-06-19',start_date_utc_ms:watchStart,start_date_local_ms:watchStart});
+    expect((await upsertHealthKitActivity(env.DB,userId,input)).deleted_at).toBeNull();
   });
 
   it('does not match another member or a native workout without a recorded start', async () => {

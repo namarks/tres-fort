@@ -28,7 +28,7 @@ import { execFileSync } from "node:child_process";
 
 // Account-level ASC API key — same one upload-testflight.sh and the Fastfile
 // use (team 8BA2RY6RCA). These ids are not secret; the .p8 stays on disk.
-const KEY_ID = "723T6CFSD9";
+const KEY_ID = "VP9G3R7Q85";
 const ISSUER_ID = "b169cd8d-cb73-4efc-8d72-8c92c5ad29ed";
 const BUNDLE_ID = "com.nmarkspdx.tresfort";
 const P8_PATH = join(homedir(), ".appstoreconnect", "private_keys", `AuthKey_${KEY_ID}.p8`);

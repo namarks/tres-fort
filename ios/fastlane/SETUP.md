@@ -24,8 +24,8 @@ avoid `sudo` prompts when installing into `/Library/Ruby/Gems`. Future
 Verify the key exists at
 `~/.appstoreconnect/private_keys/AuthKey_VP9G3R7Q85.p8`, owned by the release
 user with file permissions `600`. This is the existing **TresFort CI Signing**
-team key with **App Manager** access (team `8BA2RY6RCA`). Both the upload script
-and fastlane use it. The previous Developer key could upload but received HTTP
+team key with **App Manager** access (team `8BA2RY6RCA`). The upload script,
+fastlane and beta-feedback command all use it. The previous Developer key could upload but received HTTP
 403 when selecting the App Store build.
 
 Team keys apply across all apps in the Apple account; their names do not limit

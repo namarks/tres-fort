@@ -8881,15 +8881,56 @@ export function projectCalendar(
  * ids (for dangling detection), and the real sessions in range, then return
  * the pure projection. fromDate/toDate are device-local 'YYYY-MM-DD'.
  */
-export async function getProjectedCalendar(
+/** Everything `projectCalendar` needs that lives in D1. Read once over the
+ *  widest window a caller needs; `projectCalendarWindow` then narrows the
+ *  windowed collections per projection, so each projection sees exactly the
+ *  rows its own window query would have returned. */
+interface CalendarInputs {
+  plan: PlanRow;
+  schedule: WeeklySchedule;
+  trips: Trip[];
+  liveDayIds: string[];
+  /** All three below cover the read window, not necessarily the projected one. */
+  plannedEvents: ProjectionEvent[];
+  completedActivities: ProjectionActivity[];
+  sessions: SessionRow[];
+}
+
+/** Project one window out of already-read rows. The algorithm itself stays in
+ *  `projectCalendar` — mirrored byte-for-byte in CalendarProjection.swift. */
+function projectCalendarWindow(
+  inputs: CalendarInputs,
+  fromDate: string,
+  toDate: string,
+  today: string,
+): CalendarCell[] {
+  // `date` is a civil YYYY-MM-DD string, so this is the same lexicographic
+  // comparison the `date >= ?2 AND date <= ?3` predicates perform.
+  const inWindow = (row: { date: string }) => row.date >= fromDate && row.date <= toDate;
+  return projectCalendar(
+    inputs.plan,
+    inputs.schedule,
+    inputs.sessions.filter(inWindow),
+    fromDate,
+    toDate,
+    today,
+    inputs.liveDayIds,
+    inputs.trips,
+    inputs.plannedEvents.filter(inWindow),
+    inputs.completedActivities.filter(inWindow),
+  );
+}
+
+/** Read the projection inputs for [fromDate, toDate]. Null when the user has
+ *  no active plan — the projection is empty in that case. */
+async function readCalendarInputs(
   db: D1Database,
   userId: string,
   fromDate: string,
   toDate: string,
-  today: string,
-): Promise<CalendarCell[]> {
+): Promise<CalendarInputs | null> {
   const plan = await getActivePlan(db, userId);
-  if (!plan) return [];
+  if (!plan) return null;
   const meta = parsePlanMeta(plan.meta);
   const schedule = meta.schedule;
   const trips = meta.trips ?? [];
@@ -8936,18 +8977,26 @@ export async function getProjectedCalendar(
     )
     .bind(userId, fromDate, toDate)
     .all<SessionRow>();
-  return projectCalendar(
+  return {
     plan,
     schedule,
-    sessions.results,
-    fromDate,
-    toDate,
-    today,
-    liveDays.results.map((r) => r.id),
     trips,
-    plannedEvents.results,
-    completedActivities.results,
-  );
+    liveDayIds: liveDays.results.map((r) => r.id),
+    plannedEvents: plannedEvents.results,
+    completedActivities: completedActivities.results,
+    sessions: sessions.results,
+  };
+}
+
+export async function getProjectedCalendar(
+  db: D1Database,
+  userId: string,
+  fromDate: string,
+  toDate: string,
+  today: string,
+): Promise<CalendarCell[]> {
+  const inputs = await readCalendarInputs(db, userId, fromDate, toDate);
+  return inputs ? projectCalendarWindow(inputs, fromDate, toDate, today) : [];
 }
 
 /** Resolve the schedule to human-readable weekday → day name, for context. */
@@ -11011,15 +11060,19 @@ export async function getRideConflicts(
 ): Promise<DayConflict[]> {
   // Conflict detection reads one day beyond the visible range for its
   // next-day warning, so projection/suppression must cover that same day.
-  const cal = await getProjectedCalendar(db, userId, fromDate, toDate, today);
+  // Both projections below draw on the same five tables, and the boundary
+  // window is contained in the visible one extended by a day — so read the
+  // union once and project each window out of those rows.
+  const inputs = await readCalendarInputs(db, userId, fromDate, addDays(toDate, 1));
+  const cal = inputs ? projectCalendarWindow(inputs, fromDate, toDate, today) : [];
   // `projectCalendar` intentionally caps one call at 90 cells. Probe the
   // visible boundary separately so a max-range request still learns that the
   // day after its final projected lift is a hard blackout. Without this small
   // window, a hard ride suppressed on that blackout could leak back as a
   // false heavy-next-day conflict.
-  const boundaryCal = await getProjectedCalendar(
-    db, userId, toDate, addDays(toDate, 1), today,
-  );
+  const boundaryCal = inputs
+    ? projectCalendarWindow(inputs, toDate, addDays(toDate, 1), today)
+    : [];
   const suppressedDates = new Set(
     [...cal, ...boundaryCal]
       .filter((c) => c.suppresses_schedule_and_endurance === true)

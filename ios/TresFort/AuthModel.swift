@@ -737,7 +737,7 @@ final class AuthModel: ObservableObject {
     /// require exactly 6. Mirrors the server's `normalizeInviteCode`
     /// (src/routes/invites.ts) and the in-app code fields.
     static func normalizedInviteCode(_ raw: String) -> String? {
-        let alphabet = GroupInvite.codeAlphabet
+        let alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
         let cleaned = raw.uppercased().filter { alphabet.contains($0) }
         return cleaned.count == 6 ? cleaned : nil
     }

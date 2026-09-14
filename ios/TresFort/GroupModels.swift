@@ -536,25 +536,6 @@ struct IntervalsConnection: Codable, Equatable {
 
 // MARK: - Helpers
 
-/// Shared invite-code facts. Mirrors the server's `normalizeInviteCode` and
-/// invite generation in `src/routes/invites.ts` — keep them in sync.
-enum GroupInvite {
-    /// Unambiguous uppercase base-32 alphabet (no I/L/O/0/1). Group invite
-    /// codes are 6 of these; the coach connect code draws from the same set.
-    static let codeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
-
-    /// One wording for a failed join, shared by the manual code sheet, the
-    /// Universal Link confirm sheet and onboarding.
-    static func joinErrorMessage(status: Int) -> String {
-        switch status {
-        case 404: return "Invalid code — check the characters and try again."
-        case 409: return "You're already in this group."
-        case 410: return "This invite has expired or already been used."
-        default:  return "Couldn't join (HTTP \(status))."
-        }
-    }
-}
-
 /// Short relative age ("2h ago") for a timestamp — the profile,
 /// intervals.icu and Apple Health settings rows all render this.
 enum RelativeTimeFormat {

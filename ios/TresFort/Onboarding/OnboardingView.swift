@@ -127,6 +127,11 @@ private struct JoinGroupStep: View {
     @State private var saving = false
     @State private var error: String?
 
+    /// Invite codes are 6 chars of the uppercase base-32 alphabet (no
+    /// I/L/O/0/1) — mirror JoinGroupSheet's normalization so a pasted or
+    /// lower-case code still works.
+    private static let alphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
     var body: some View {
         VStack(spacing: 20) {
             StepHeader(icon: "person.2.fill",
@@ -144,9 +149,7 @@ private struct JoinGroupStep: View {
                 .frame(maxWidth: .infinity)
                 .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12))
                 .onChange(of: code) { _, new in
-                    // Invite codes are 6 chars of the uppercase base-32
-                    // alphabet — normalize so a pasted or lower-case code works.
-                    let cleaned = new.uppercased().filter { GroupInvite.codeAlphabet.contains($0) }.prefix(6)
+                    let cleaned = new.uppercased().filter { Self.alphabet.contains($0) }.prefix(6)
                     if String(cleaned) != new { code = String(cleaned) }
                 }
 
@@ -171,10 +174,19 @@ private struct JoinGroupStep: View {
                 saving = false
                 onDone()
             } catch let APIError.http(status, _) {
-                error = GroupInvite.joinErrorMessage(status: status); saving = false
+                error = Self.message(for: status); saving = false
             } catch {
                 self.error = error.localizedDescription; saving = false
             }
+        }
+    }
+
+    private static func message(for status: Int) -> String {
+        switch status {
+        case 404: return "Invalid code — check the characters and try again."
+        case 409: return "You're already in this group."
+        case 410: return "This invite has expired or already been used."
+        default:  return "Couldn't join (HTTP \(status))."
         }
     }
 }

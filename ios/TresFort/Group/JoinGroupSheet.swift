@@ -23,7 +23,7 @@ struct JoinGroupSheet: View {
                             // (no I/L/O/0/1). Normalize on the fly so a
                             // pasted lowercase code still works.
                             let cleaned = new.uppercased()
-                                .filter { GroupInvite.codeAlphabet.contains($0) }
+                                .filter { "ABCDEFGHJKMNPQRSTUVWXYZ23456789".contains($0) }
                                 .prefix(6)
                             if String(cleaned) != new {
                                 code = String(cleaned)
@@ -64,12 +64,21 @@ struct JoinGroupSheet: View {
                 saving = false
                 dismiss()
             } catch let APIError.http(code, _) {
-                errorMessage = GroupInvite.joinErrorMessage(status: code)
+                errorMessage = errorMessageFor(code)
                 saving = false
             } catch {
                 errorMessage = error.localizedDescription
                 saving = false
             }
+        }
+    }
+
+    private func errorMessageFor(_ status: Int) -> String {
+        switch status {
+        case 404: return "Invalid code — check the characters and try again."
+        case 409: return "You're already in this group."
+        case 410: return "This invite has expired or already been used."
+        default:  return "Couldn't join (HTTP \(status))."
         }
     }
 }

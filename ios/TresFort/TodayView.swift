@@ -330,13 +330,7 @@ struct TodayView: View {
             }
         }
         .preferredColorScheme(.dark)
-        // `canChooseStarterWorkout` folds in `!isLoading`, so it flips
-        // true -> false -> true on every state pull and re-fired this task
-        // (and its network read) each time. Key on the stable plan facts
-        // instead; the body still guards on the full predicate.
-        .task(id: sync.hasVerifiedPlanState && (sync.plan?.workouts.isEmpty ?? true)) {
-            await loadStarterAvailability()
-        }
+        .task(id: sync.canChooseStarterWorkout) { await loadStarterAvailability() }
     }
 
     /// A verified empty library alone cannot prove this account has an unused
@@ -1578,7 +1572,9 @@ private struct FinishedView: View {
     /// two slots can't double-count the summary.
     private var todaysSets: [SetLog] {
         guard let sid = sync.todaySession?.id else { return [] }
-        return sync.setsForSession(sid).filter { $0.is_warmup == 0 }
+        return sync.sets.filter {
+            $0.session_id == sid && $0.deleted_at == nil && $0.is_warmup == 0
+        }
     }
 
     var body: some View {
@@ -1621,10 +1617,9 @@ private struct FinishedView: View {
                     sumRow(sync.exerciseName(cohort.key.exerciseID), cohort.valueLabel)
                 }
 
-                SetReviewList(
-                    sync: sync,
-                    sets: sync.todaySession.map { sync.setsForSession($0.id) } ?? [],
-                    pending: pendingToday)
+                SetReviewList(sync: sync, sets: sync.sets.filter {
+                    $0.session_id == sync.todaySession?.id && $0.deleted_at == nil
+                }, pending: pendingToday)
                 WorkoutFeedbackEntry(sync: sync)
                 if readyToFinish {
                     Button { sync.jump(to: sync.exerciseIndex) } label: {

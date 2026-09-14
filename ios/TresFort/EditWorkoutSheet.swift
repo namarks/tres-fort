@@ -579,7 +579,7 @@ private struct AddExerciseSheet: View {
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         NavigationStack {
-            ExercisePickerList(catalog: sync.catalog, reload: { await sync.load(refreshingCatalog: true) }) { ex in
+            ExercisePickerList(catalog: sync.catalog, reload: { await sync.load() }) { ex in
                 NavigationLink {
                     ConfigureExerciseView(
                         sync: sync, dayID: dayID, exercise: ex,

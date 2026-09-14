@@ -542,12 +542,13 @@ final class SyncModel: ObservableObject {
             defaults: defaults)
     }
 
-    /// Device-local civil date. Formatting goes through the projection's
-    /// cached formatter — same gregorian / en_US_POSIX / device-tz /
-    /// `yyyy-MM-dd` configuration this used to rebuild on every access, and
-    /// this property is read ~80 times per render pass.
     var todayString: String {
-        CalendarProjection.dateString(now())
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: now())
     }
 
     var selectedDay: Workout? {
@@ -585,13 +586,7 @@ final class SyncModel: ObservableObject {
         return true
     }
 
-    /// Set by a caller that needs the exercise library re-read even though
-    /// the plan version did not move (the picker's pull-to-refresh). Consumed
-    /// by the next successful catalog read.
-    private var catalogRefreshRequested = false
-
-    func load(refreshingCatalog: Bool = false) async {
-        if refreshingCatalog { catalogRefreshRequested = true }
+    func load() async {
         await load(requiringFreshness: stateFreshnessGeneration)
     }
 
@@ -688,14 +683,11 @@ final class SyncModel: ObservableObject {
                     loadError = "Couldn't save the latest sync state."
                     return
                 }
-                // A cached catalog is presentation-only, but it only goes stale
-                // when the plan tree moves (a delta pull returns `plan == nil`),
-                // so re-read it then, when nothing is cached at all, or when a
-                // caller explicitly asked — not after every state pull. A catalog
-                // failure retains the last successful rows, matching the
-                // pre-cache best-effort load.
-                if catalogRefreshRequested || catalog.isEmpty || state.plan != nil,
-                   let catalogJWT = currentJWT,
+                // A cached catalog is presentation-only too: always attempt a live
+                // replacement after state succeeds so renamed exercises and changed
+                // load semantics do not freeze forever. A catalog failure retains
+                // the last successful rows, matching the pre-cache best-effort load.
+                if let catalogJWT = currentJWT,
                    let rows = try? await catalogAPI.getExercises(jwt: catalogJWT) {
                     guard isCurrentAccount, canMutateBoundSetAccount,
                           key.featureSessionEpoch == featureSessionEpoch,
@@ -707,7 +699,6 @@ final class SyncModel: ObservableObject {
                     catalog = rows
                     ExerciseCatalogSnapshotStore.save(
                         rows, userID: accountID, defaults: defaults)
-                    catalogRefreshRequested = false
                 }
                 loadError = nil
                 return
@@ -2886,20 +2877,10 @@ final class SyncModel: ObservableObject {
     /// pull acknowledges commit-then-timeout results or detects a stale
     /// post-discard revival; the second pass immediately settles anything the
     /// reconciliation requeued.
-    ///
-    /// With nothing queued there is no local mutation to reconcile, so the
-    /// recovery pull only needs current state: `load()` may JOIN the launch
-    /// pull already in flight instead of bumping the freshness generation and
-    /// forcing a second round trip behind it.
     func recoverWorkoutWrites() async {
-        let hadQueuedWork = !setOutbox.isEmpty || !terminalOutbox.intents.isEmpty || !setCorrections.isEmpty
         await drainWorkoutWriteOutboxes()
         guard currentJWT != nil, canInitiateBoundFeatureAction else { return }
-        if hadQueuedWork {
-            await loadAfterMutation()
-        } else {
-            await load()
-        }
+        await loadAfterMutation()
         guard currentJWT != nil, canInitiateBoundFeatureAction else { return }
         await drainWorkoutWriteOutboxes()
     }

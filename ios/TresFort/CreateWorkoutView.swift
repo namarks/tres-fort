@@ -33,7 +33,7 @@ struct CreateWorkoutView: View {
                 WorkoutDetailsView(sync: sync, workoutID: createdID, onStart: onStart)
             } else {
                 NavigationStack {
-                    ExercisePickerList(catalog: sync.catalog, reload: { await sync.load(refreshingCatalog: true) }) { exercise in
+                    ExercisePickerList(catalog: sync.catalog, reload: { await sync.load() }) { exercise in
                         let selectedIndex = selectedExercises.firstIndex { $0.id == exercise.id }
                         Button {
                             if let selectedIndex { selectedExercises.remove(at: selectedIndex) }

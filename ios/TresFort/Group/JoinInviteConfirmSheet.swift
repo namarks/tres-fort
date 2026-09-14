@@ -148,11 +148,20 @@ struct JoinInviteConfirmSheet: View {
                 dismiss()
             } catch let APIError.http(status, _) {
                 joining = false
-                error = GroupInvite.joinErrorMessage(status: status)
+                error = Self.message(for: status)
             } catch {
                 joining = false
                 self.error = error.localizedDescription
             }
+        }
+    }
+
+    private static func message(for status: Int) -> String {
+        switch status {
+        case 404: return "This invite is no longer valid."
+        case 409: return "You're already in this group."
+        case 410: return "This invite has expired or already been used."
+        default: return "Couldn't join (HTTP \(status))."
         }
     }
 }

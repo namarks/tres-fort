@@ -552,7 +552,18 @@ private struct NextWorkoutCard: View {
         }
         .buttonStyle(.plain)
         .sheet(item: $preview) { d in
-            DayAgendaView(sync: sync, dateString: d.id)
+            NavigationStack {
+                DayAgendaView(sync: sync, dateString: d.id)
+                    .navigationTitle("Workout date")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { preview = nil }
+                        }
+                    }
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
         }
     }
 }

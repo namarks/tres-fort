@@ -11,7 +11,6 @@ struct WorkoutDetailsView: View {
     @State private var editing = false
     @State private var saving = false
     @State private var refreshing = false
-    @State private var demoFor: TemplateExercise?
 
     private var workout: Workout? { sync.workout(id: workoutID) }
     private var canResume: Bool { sync.hasResumableWorkout && sync.resumableCheckpoint?.selectedDayID == workoutID }
@@ -23,29 +22,7 @@ struct WorkoutDetailsView: View {
                     if let workout {
                         Text(date.map { "For \($0)" } ?? "Saved workout")
                             .font(Theme.mono(12)).foregroundStyle(Theme.muted)
-                        ForEach(ExerciseGroupBlock.blocks(workout.exercises)) { block in
-                            VStack(alignment: .leading, spacing: 12) {
-                                if block.isGroup {
-                                    Text(block.title).font(.headline).foregroundStyle(Theme.accent)
-                                    Text("\(block.rounds) rounds · \(block.roundRest)s round rest")
-                                        .font(.caption).foregroundStyle(Theme.muted)
-                                }
-                                ForEach(block.members) { exercise in
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        HStack {
-                                            Text(exercise.exercise_name).font(.headline)
-                                            DemoInfoButton(exerciseName: exercise.exercise_name) { demoFor = exercise }
-                                            if exercise.isWarmup { WarmupTag() }
-                                        }
-                                        Text(exercise.targetLabel)
-                                            .font(Theme.mono(13)).foregroundStyle(Theme.muted)
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                            }
-                            .padding(16).background(Theme.surface)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                        }
+                        WorkoutExercisePreview(sync: sync, exercises: workout.exercises)
                         if workout.exercises.isEmpty {
                             Text("No exercises yet. Edit this workout to add exercises and targets.")
                                 .foregroundStyle(Theme.muted)
@@ -100,15 +77,6 @@ struct WorkoutDetailsView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
             .sheet(isPresented: $editing) { EditWorkoutSheet(sync: sync, dayID: workoutID) }
-            .sheet(item: $demoFor) { exercise in
-                ExerciseDemoSheet(
-                    exerciseID: exercise.exercise_id, name: exercise.exercise_name,
-                    primaryMuscle: sync.catalogRow(exercise.exercise_id)?.primary_muscle ?? exercise.exercise_modality,
-                    secondaryMuscles: [], modality: exercise.exercise_modality,
-                    laterality: exercise.exercise_laterality ?? "bilateral",
-                    loadMode: exercise.exercise_load_mode ?? "total",
-                    demoSlug: exercise.exercise_demo_slug, jwt: sync.exerciseDemoJWT)
-            }
         }
         .preferredColorScheme(.dark)
     }

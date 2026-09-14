@@ -586,7 +586,13 @@ final class SyncModel: ObservableObject {
         return true
     }
 
-    func load() async {
+    /// Set by a caller that needs the exercise library re-read even though
+    /// the plan version did not move (the picker's pull-to-refresh). Consumed
+    /// by the next successful catalog read.
+    private var catalogRefreshRequested = false
+
+    func load(refreshingCatalog: Bool = false) async {
+        if refreshingCatalog { catalogRefreshRequested = true }
         await load(requiringFreshness: stateFreshnessGeneration)
     }
 
@@ -683,11 +689,14 @@ final class SyncModel: ObservableObject {
                     loadError = "Couldn't save the latest sync state."
                     return
                 }
-                // A cached catalog is presentation-only too: always attempt a live
-                // replacement after state succeeds so renamed exercises and changed
-                // load semantics do not freeze forever. A catalog failure retains
-                // the last successful rows, matching the pre-cache best-effort load.
-                if let catalogJWT = currentJWT,
+                // A cached catalog is presentation-only, but it only goes stale
+                // when the plan tree moves (a delta pull returns `plan == nil`),
+                // so re-read it then, when nothing is cached at all, or when a
+                // caller explicitly asked — not after every state pull. A catalog
+                // failure retains the last successful rows, matching the
+                // pre-cache best-effort load.
+                if catalogRefreshRequested || catalog.isEmpty || state.plan != nil,
+                   let catalogJWT = currentJWT,
                    let rows = try? await catalogAPI.getExercises(jwt: catalogJWT) {
                     guard isCurrentAccount, canMutateBoundSetAccount,
                           key.featureSessionEpoch == featureSessionEpoch,
@@ -699,6 +708,7 @@ final class SyncModel: ObservableObject {
                     catalog = rows
                     ExerciseCatalogSnapshotStore.save(
                         rows, userID: accountID, defaults: defaults)
+                    catalogRefreshRequested = false
                 }
                 loadError = nil
                 return

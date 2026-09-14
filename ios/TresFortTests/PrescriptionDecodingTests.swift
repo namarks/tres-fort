@@ -55,6 +55,17 @@ final class PrescriptionDecodingTests: XCTestCase {
             timed: true, bodyweight: true, unilateral: true), "30s")
     }
 
+    func testSavedSetDetailsRequireTheExerciseRepConvention() {
+        let set = SetLog(id: "set", session_id: "session", exercise_id: "row",
+            template_exercise_id: nil, set_index: 1, weight: 25, reps: 10,
+            rpe: nil, is_warmup: 0, logged_at: 1, duration_s: nil,
+            is_timed: 0, deleted_at: nil)
+        XCTAssertEqual(set.valueLabel(timed: false, bodyweight: false, unilateral: true),
+                       "25 × 10 per side")
+        XCTAssertEqual(set.valueLabel(timed: false, bodyweight: false, unilateral: false),
+                       "25 × 10")
+    }
+
     private func exercise(name: String = "Exercise", laterality: String?,
                           maxReps: Int? = nil, duration: Int? = nil) throws -> TemplateExercise {
         var json: [String: Any] = [

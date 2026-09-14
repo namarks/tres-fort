@@ -426,18 +426,19 @@ extension SetLog {
     /// One-line value for a logged set: a timed hold reads "45s"; a bodyweight
     /// rep set reads "BW+45 × 5", "BW−30 × 8", or "BW × 8"; a weighted set
     /// reads "85 × 5". A SetLog carries
-    /// no modality, so the caller resolves both flags from the exercise's
+    /// no modality or laterality, so the caller resolves the flags from the exercise's
     /// catalog row (see SyncModel.isTimedExercise / isBodyweightExercise) —
     /// "BW" keys off modality == "bw", NOT weight == 0, so a weighted lift
     /// logged at 0 load (unloaded warmup, machine/cable at zero) still reads
     /// "0 × reps", not "BW × reps". #30
-    func valueLabel(timed: Bool, bodyweight: Bool) -> String {
+    func valueLabel(timed: Bool, bodyweight: Bool, unilateral: Bool) -> String {
         SetValueFormatter.value(
             weight: weight,
             reps: reps,
             durationSeconds: duration_s,
             timed: timed,
-            bodyweight: bodyweight)
+            bodyweight: bodyweight,
+            unilateral: unilateral)
     }
 }
 

@@ -93,7 +93,8 @@ struct ExerciseDetailView: View {
                             }
                             ForEach(sessionSets(session.id)) { set in
                                 Text(set.valueLabel(timed: sync.isTimedSet(set),
-                                    bodyweight: sync.isBodyweightExercise(exerciseID)))
+                                    bodyweight: sync.isBodyweightExercise(exerciseID),
+                                    unilateral: sync.sides(for: exerciseID) == 2))
                             }
                         }
                         .font(Theme.mono(12)).foregroundStyle(Theme.text)

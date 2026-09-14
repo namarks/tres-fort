@@ -10,6 +10,8 @@ import { workoutDB } from '../workoutSchema';
 import type { Env } from '../types';
 import { coachGroupSlots, coachGroupSummary } from '../exerciseGroupViews';
 import { resolvedScheduleNames } from '../planViews';
+import { positiveSetTonnage } from '../metrics';
+import type { MetricExercise } from '../metrics';
 import {
   hasField,
   invalidFields,
@@ -715,6 +717,13 @@ const TOOLS: Record<string, Tool> = {
       const sides = exLat === 'unilateral' ? 2 : 1;
       const perHand = exLoad === 'per_hand';
       const implementsUsed = perHand ? 2 : 1;
+      // One tonnage policy for every surface: the shared read-only metric,
+      // fed the same defaulted laterality/load_mode echoed to the caller.
+      const metricExercise: MetricExercise = {
+        ...(ex as MetricExercise),
+        laterality: exLat,
+        load_mode: exLoad,
+      };
       return {
         set,
         deduped,
@@ -730,10 +739,7 @@ const TOOLS: Record<string, Tool> = {
           implements: implementsUsed,
           total_reps: set.is_timed === 1 ? null : set.reps * sides,
           tonnage_basis: 'external_load',
-          tonnage:
-            set.is_timed === 0 && set.weight > 0
-              ? set.weight * set.reps * sides * implementsUsed
-              : null,
+          tonnage: positiveSetTonnage(set, metricExercise),
           // For two-dumbbell lifts, the weight is one dumbbell — surface a
           // ready-to-say phrasing so guidance never reads as the vague total.
           weight_display: perHand

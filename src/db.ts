@@ -544,16 +544,25 @@ export async function isDeletedOwnerAppleSub(
   return row.apple_sub_sha256 === (await sha256Hex(appleSub));
 }
 
+/** The single Apple-identity lookup: sign-in, upsert and the owner claim all
+ *  resolve a principal by `users.apple_sub` through here. */
+export async function findUserByAppleSub(
+  db: D1Database,
+  appleSub: string,
+): Promise<User | null> {
+  return workoutDB(db)
+    .prepare('SELECT * FROM users WHERE apple_sub = ?1')
+    .bind(appleSub)
+    .first<User>();
+}
+
 export async function upsertUser(
   db: D1Database,
   appleSub: string,
   email: string | null,
   displayName: string | null,
 ): Promise<User> {
-  const existing = await workoutDB(db)
-    .prepare('SELECT * FROM users WHERE apple_sub = ?1')
-    .bind(appleSub)
-    .first<User>();
+  const existing = await findUserByAppleSub(db, appleSub);
   if (existing) {
     if (displayName && !existing.display_name) {
       await workoutDB(db)
@@ -734,10 +743,7 @@ export async function claimOrCreateOwner(
   if (byApple) return byApple;
 
   if (!ownerSubLocked) {
-    const bootstrap = await workoutDB(db)
-      .prepare('SELECT * FROM users WHERE apple_sub = ?1')
-      .bind(BOOTSTRAP_APPLE_SUB)
-      .first<User>();
+    const bootstrap = await findUserByAppleSub(db, BOOTSTRAP_APPLE_SUB);
     if (bootstrap) {
       const claimed = await workoutDB(db)
         .prepare(
@@ -2554,6 +2560,17 @@ export async function createGroup(
   return group;
 }
 
+/** True iff `groupId` names a real group. The 404-vs-403 discriminator the
+ *  group routes share: membership answers "may you see this", this answers
+ *  "is there anything here at all". */
+export async function groupExists(db: D1Database, groupId: string): Promise<boolean> {
+  const r = await workoutDB(db)
+    .prepare('SELECT 1 AS x FROM groups WHERE id = ?1')
+    .bind(groupId)
+    .first<{ x: number }>();
+  return !!r;
+}
+
 /** True iff `userId` is currently a member of `groupId`. */
 export async function isGroupMember(
   db: D1Database,
@@ -3439,7 +3456,10 @@ export async function restorePlanSnapshot(
   const targetSlotIds = new Set(targetSlots.map((slot) => slot.id));
   const ts = now();
   const nonce = uuid();
-  const guarded = `EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce='${nonce}')`;
+  // Each statement binds the nonce at its own next free placeholder, so the
+  // fence value rides the positional list like every other fence site.
+  const guarded = (nonceParam: number) =>
+    `EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce=?${nonceParam})`;
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, {
       actor: input.actor, operation: 'restore_plan', args: input,
@@ -3451,14 +3471,14 @@ export async function restorePlanSnapshot(
     statements.push(workoutDB(db).prepare(
       `INSERT OR IGNORE INTO workouts
        (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
-       SELECT ?4,?1,?5,?6,?7,?8,?9,?9 WHERE ${guarded}`,
+       SELECT ?4,?1,?5,?6,?7,?8,?9,?9 WHERE ${guarded(10)}`,
     ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
-      day.order_index, day.notes, ts));
+      day.order_index, day.notes, ts, nonce));
     statements.push(workoutDB(db).prepare(
       `UPDATE workouts SET name=?5,day_label=?6,order_index=?7,notes=?8,updated_at=?9
-       WHERE id=?4 AND plan_id=?1 AND ${guarded}`,
+       WHERE id=?4 AND plan_id=?1 AND ${guarded(10)}`,
     ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
-      day.order_index, day.notes, ts));
+      day.order_index, day.notes, ts, nonce));
   }
   for (const slot of targetSlots) {
     statements.push(workoutDB(db).prepare(
@@ -3467,39 +3487,41 @@ export async function restorePlanSnapshot(
         target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,
         created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds)
        SELECT ?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18,?19,?20,?21
-       WHERE ${guarded}`,
+       WHERE ${guarded(22)}`,
     ).bind(plan.id, userId, -plan.version, slot.id, slot.workout_id,
       slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
       slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
       slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
-      slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null));
+      slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null,
+      nonce));
     statements.push(workoutDB(db).prepare(
       `UPDATE template_exercises SET workout_id=?5,exercise_id=?6,order_index=?7,
        target_sets=?8,target_reps=?9,target_reps_max=?10,target_rpe=?11,
        rest_seconds=?12,target_weight=?13,target_duration_s=?14,progression=?15,
        cues=?16,is_warmup=?17,updated_at=?18,group_id=?19,group_rest_seconds=?20,
-       group_transition_seconds=?21 WHERE id=?4 AND ${guarded}`,
+       group_transition_seconds=?21 WHERE id=?4 AND ${guarded(22)}`,
     ).bind(plan.id, userId, -plan.version, slot.id, slot.workout_id,
       slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
       slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
       slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
-      slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null));
+      slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null,
+      nonce));
   }
   for (const day of current.workouts) {
     for (const slot of day.exercises) if (!targetSlotIds.has(slot.id)) {
       statements.push(
-        workoutDB(db).prepare(`UPDATE set_logs SET template_exercise_id=NULL,updated_at=MAX(updated_at+1,?4) WHERE template_exercise_id=?5 AND ${guarded}`)
-          .bind(plan.id, userId, -plan.version, ts, slot.id),
-        workoutDB(db).prepare(`DELETE FROM template_exercises WHERE id=?4 AND ${guarded}`)
-          .bind(plan.id, userId, -plan.version, slot.id),
+        workoutDB(db).prepare(`UPDATE set_logs SET template_exercise_id=NULL,updated_at=MAX(updated_at+1,?4) WHERE template_exercise_id=?5 AND ${guarded(6)}`)
+          .bind(plan.id, userId, -plan.version, ts, slot.id, nonce),
+        workoutDB(db).prepare(`DELETE FROM template_exercises WHERE id=?4 AND ${guarded(5)}`)
+          .bind(plan.id, userId, -plan.version, slot.id, nonce),
       );
     }
     if (!targetDayIds.has(day.id)) {
       statements.push(
-        workoutDB(db).prepare(`UPDATE sessions SET workout_id=NULL,updated_at=?4 WHERE workout_id=?5 AND user_id=?2 AND ${guarded}`)
-          .bind(plan.id, userId, -plan.version, ts, day.id),
-        workoutDB(db).prepare(`DELETE FROM workouts WHERE id=?4 AND plan_id=?1 AND ${guarded}`)
-          .bind(plan.id, userId, -plan.version, day.id),
+        workoutDB(db).prepare(`UPDATE sessions SET workout_id=NULL,updated_at=?4 WHERE workout_id=?5 AND user_id=?2 AND ${guarded(6)}`)
+          .bind(plan.id, userId, -plan.version, ts, day.id, nonce),
+        workoutDB(db).prepare(`DELETE FROM workouts WHERE id=?4 AND plan_id=?1 AND ${guarded(5)}`)
+          .bind(plan.id, userId, -plan.version, day.id, nonce),
       );
     }
   }
@@ -5710,7 +5732,9 @@ export async function getState(
     .all<SessionRow>();
   // Full reload preserves the existing complete shape. Incremental pulls use
   // the server-owned mutable cursor directly from the member-first index and
-  // include soft-deleted rows as tombstones.
+  // include soft-deleted rows as tombstones. Both read set_logs.user_id
+  // (migration 0034: backfilled, asserted, and trigger-maintained for legacy
+  // inserts) so neither needs to join sessions for ownership.
   const sets = setsSince > 0
     ? await workoutDB(db)
         .prepare(
@@ -5722,9 +5746,6 @@ export async function getState(
         .all<SetLogRow>()
     : await workoutDB(db)
         .prepare(
-          // Ownership comes from set_logs.user_id, which migration 0034
-          // backfills, asserts and trigger-maintains for legacy inserts, so
-          // this no longer joins sessions. Columns and ORDER BY are unchanged.
           `SELECT sl.* FROM set_logs sl
             WHERE sl.user_id = ?1 ORDER BY sl.logged_at`,
         )
@@ -6886,6 +6907,12 @@ export async function updateExercise(
     rangePredicates.push(`target_reps<=?${values.length}`);
   }
   const nonce = uuid();
+  // The fence values ride the positional list like every other fence site;
+  // they are appended last so the patch and range placeholders keep theirs.
+  values.push(plan.id, plan.version, nonce);
+  const nonceParam = values.length;
+  const versionParam = nonceParam - 1;
+  const planParam = nonceParam - 2;
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
     workoutDB(db).prepare(
@@ -6894,8 +6921,8 @@ export async function updateExercise(
           SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
            WHERE d.id=template_exercises.workout_id
              AND p.user_id=?${userParam} AND p.status='active'
-             AND p.id='${plan.id}' AND p.version=-${plan.version}
-             AND p.plan_write_nonce='${nonce}'
+             AND p.id=?${planParam} AND p.version=-?${versionParam}
+             AND p.plan_write_nonce=?${nonceParam}
         )${rangePredicates.length ? ` AND ${rangePredicates.join(' AND ')}` : ''}`,
     ).bind(...values),
   ];
@@ -6913,8 +6940,8 @@ export async function updateExercise(
         workoutDB(db).prepare(`UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
           AND EXISTS (SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
             JOIN template_exercises te ON te.workout_id=d.id
-            WHERE te.id=?4 AND p.id='${plan.id}' AND p.version=-${plan.version}
-              AND p.plan_write_nonce='${nonce}')`).bind(row.id, index, ts, slot.id),
+            WHERE te.id=?4 AND p.id=?5 AND p.version=-?6
+              AND p.plan_write_nonce=?7)`).bind(row.id, index, ts, slot.id, plan.id, plan.version, nonce),
       ));
     }
   }
@@ -8854,15 +8881,56 @@ export function projectCalendar(
  * ids (for dangling detection), and the real sessions in range, then return
  * the pure projection. fromDate/toDate are device-local 'YYYY-MM-DD'.
  */
-export async function getProjectedCalendar(
+/** Everything `projectCalendar` needs that lives in D1. Read once over the
+ *  widest window a caller needs; `projectCalendarWindow` then narrows the
+ *  windowed collections per projection, so each projection sees exactly the
+ *  rows its own window query would have returned. */
+interface CalendarInputs {
+  plan: PlanRow;
+  schedule: WeeklySchedule;
+  trips: Trip[];
+  liveDayIds: string[];
+  /** All three below cover the read window, not necessarily the projected one. */
+  plannedEvents: ProjectionEvent[];
+  completedActivities: ProjectionActivity[];
+  sessions: SessionRow[];
+}
+
+/** Project one window out of already-read rows. The algorithm itself stays in
+ *  `projectCalendar` — mirrored byte-for-byte in CalendarProjection.swift. */
+function projectCalendarWindow(
+  inputs: CalendarInputs,
+  fromDate: string,
+  toDate: string,
+  today: string,
+): CalendarCell[] {
+  // `date` is a civil YYYY-MM-DD string, so this is the same lexicographic
+  // comparison the `date >= ?2 AND date <= ?3` predicates perform.
+  const inWindow = (row: { date: string }) => row.date >= fromDate && row.date <= toDate;
+  return projectCalendar(
+    inputs.plan,
+    inputs.schedule,
+    inputs.sessions.filter(inWindow),
+    fromDate,
+    toDate,
+    today,
+    inputs.liveDayIds,
+    inputs.trips,
+    inputs.plannedEvents.filter(inWindow),
+    inputs.completedActivities.filter(inWindow),
+  );
+}
+
+/** Read the projection inputs for [fromDate, toDate]. Null when the user has
+ *  no active plan — the projection is empty in that case. */
+async function readCalendarInputs(
   db: D1Database,
   userId: string,
   fromDate: string,
   toDate: string,
-  today: string,
-): Promise<CalendarCell[]> {
+): Promise<CalendarInputs | null> {
   const plan = await getActivePlan(db, userId);
-  if (!plan) return [];
+  if (!plan) return null;
   const meta = parsePlanMeta(plan.meta);
   const schedule = meta.schedule;
   const trips = meta.trips ?? [];
@@ -8909,18 +8977,26 @@ export async function getProjectedCalendar(
     )
     .bind(userId, fromDate, toDate)
     .all<SessionRow>();
-  return projectCalendar(
+  return {
     plan,
     schedule,
-    sessions.results,
-    fromDate,
-    toDate,
-    today,
-    liveDays.results.map((r) => r.id),
     trips,
-    plannedEvents.results,
-    completedActivities.results,
-  );
+    liveDayIds: liveDays.results.map((r) => r.id),
+    plannedEvents: plannedEvents.results,
+    completedActivities: completedActivities.results,
+    sessions: sessions.results,
+  };
+}
+
+export async function getProjectedCalendar(
+  db: D1Database,
+  userId: string,
+  fromDate: string,
+  toDate: string,
+  today: string,
+): Promise<CalendarCell[]> {
+  const inputs = await readCalendarInputs(db, userId, fromDate, toDate);
+  return inputs ? projectCalendarWindow(inputs, fromDate, toDate, today) : [];
 }
 
 /** Resolve the schedule to human-readable weekday → day name, for context. */
@@ -10984,15 +11060,19 @@ export async function getRideConflicts(
 ): Promise<DayConflict[]> {
   // Conflict detection reads one day beyond the visible range for its
   // next-day warning, so projection/suppression must cover that same day.
-  const cal = await getProjectedCalendar(db, userId, fromDate, toDate, today);
+  // Both projections below draw on the same five tables, and the boundary
+  // window is contained in the visible one extended by a day — so read the
+  // union once and project each window out of those rows.
+  const inputs = await readCalendarInputs(db, userId, fromDate, addDays(toDate, 1));
+  const cal = inputs ? projectCalendarWindow(inputs, fromDate, toDate, today) : [];
   // `projectCalendar` intentionally caps one call at 90 cells. Probe the
   // visible boundary separately so a max-range request still learns that the
   // day after its final projected lift is a hard blackout. Without this small
   // window, a hard ride suppressed on that blackout could leak back as a
   // false heavy-next-day conflict.
-  const boundaryCal = await getProjectedCalendar(
-    db, userId, toDate, addDays(toDate, 1), today,
-  );
+  const boundaryCal = inputs
+    ? projectCalendarWindow(inputs, toDate, addDays(toDate, 1), today)
+    : [];
   const suppressedDates = new Set(
     [...cal, ...boundaryCal]
       .filter((c) => c.suppresses_schedule_and_endurance === true)

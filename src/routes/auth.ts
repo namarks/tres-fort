@@ -18,6 +18,7 @@ import {
   beginAppleGrantExchange,
   claimOrCreateOwner,
   finishAppleGrantExchange,
+  findUserByAppleSub,
   isAccountDeletionInProgress,
   isBootstrapClaimEligible,
   isDeletedOwnerAppleSub,
@@ -155,10 +156,7 @@ export function createAuthRoutes(
     // Resolve an already-known principal without mutating it so a claimed
     // deletion can reject both legacy and current clients before any provider
     // request or new bearer issuance.
-    const existing = await c.env.DB
-      .prepare('SELECT * FROM users WHERE apple_sub = ?1')
-      .bind(claims.sub)
-      .first<User>();
+    const existing = await findUserByAppleSub(c.env.DB, claims.sub);
     if (
       existing &&
       (await isAccountDeletionInProgress(c.env.DB, existing.id))

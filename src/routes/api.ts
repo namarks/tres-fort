@@ -51,6 +51,8 @@ import {
   getUserTimezone,
   getVolume,
   getWorkoutSummary,
+  getSetsForSession,
+  groupExists,
   isGroupMember,
   isAccountDeletionKey,
   leaveGroup,
@@ -752,11 +754,8 @@ apiRoutes.get('/today', async (c) => {
     // leaves an attempt-v1 tombstone untouched.
     { reviveDiscarded: true },
   );
-  const sets = await c.env.DB
-    .prepare('SELECT * FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL ORDER BY logged_at')
-    .bind(session.id)
-    .all();
-  return c.json(workoutWire({ session, sets: sets.results }));
+  const sets = await getSetsForSession(c.env.DB, session.id);
+  return c.json(workoutWire({ session, sets }));
 });
 
 apiRoutes.post('/sessions', async (c) => {
@@ -1683,17 +1682,11 @@ apiRoutes.get('/groups/invite/:code', async (c) => {
 apiRoutes.get('/groups/:id', async (c) => {
   const userId = c.get('userId');
   const groupId = c.req.param('id');
-  // Non-member -> 403 (do not 404, which would silently leak nothing-vs-
-  // not-mine — but also do not list members of arbitrary groups). The
-  // 404 case is the truly-unknown group id below.
-  const exists = await c.env.DB
-    .prepare('SELECT 1 AS x FROM groups WHERE id = ?1')
-    .bind(groupId)
-    .first<{ x: number }>();
-  if (!exists) return c.json(workoutWire({ error: 'not_found' }), 404);
-  if (!(await isGroupMember(c.env.DB, userId, groupId))) {
-    return c.json(workoutWire({ error: 'forbidden' }), 403);
-  }
+  // Unknown group -> 404; known group the caller is not in -> 403 (do not
+  // 404, which would silently leak nothing-vs-not-mine — but also do not
+  // list members of arbitrary groups). Same ordering as the feed/stats guard.
+  const guard = await requireGroupMembership(c, userId, groupId);
+  if (guard) return guard;
   const full = await getGroupWithMembers(c.env.DB, groupId, userId);
   return c.json(workoutWire(full));
 });
@@ -1707,11 +1700,9 @@ apiRoutes.post('/groups/:id/invites', async (c) => {
     // the latter from a UX point of view — the iOS client can't tell the
     // difference and shouldn't, since the only way to know a group id is
     // membership).
-    const exists = await c.env.DB
-      .prepare('SELECT 1 AS x FROM groups WHERE id = ?1')
-      .bind(groupId)
-      .first<{ x: number }>();
-    if (!exists) return c.json(workoutWire({ error: 'not_found' }), 404);
+    if (!(await groupExists(c.env.DB, groupId))) {
+      return c.json(workoutWire({ error: 'not_found' }), 404);
+    }
     return c.json(workoutWire({ error: 'forbidden' }), 403);
   }
   let b: { expires_at?: unknown };
@@ -1825,11 +1816,9 @@ async function requireGroupMembership(
   userId: string,
   groupId: string,
 ): Promise<Response | null> {
-  const exists = await c.env.DB
-    .prepare('SELECT 1 AS x FROM groups WHERE id = ?1')
-    .bind(groupId)
-    .first<{ x: number }>();
-  if (!exists) return c.json(workoutWire({ error: 'not_found' }), 404);
+  if (!(await groupExists(c.env.DB, groupId))) {
+    return c.json(workoutWire({ error: 'not_found' }), 404);
+  }
   if (!(await isGroupMember(c.env.DB, userId, groupId))) {
     return c.json(workoutWire({ error: 'forbidden' }), 403);
   }

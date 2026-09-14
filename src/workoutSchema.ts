@@ -19,10 +19,31 @@ const legacyIdentifiers: Readonly<Record<string, string>> = {
   workouts: 'day_templates', workout_id: 'day_template_id', ix_te_workout: 'ix_te_day',
 };
 
+// execute() calls this once per statement execution purely to decide whether a
+// query is schema-adaptive, so the same handful of service SQL strings are
+// re-tokenised on every request. The rewrite is a pure function of (query,
+// mode), so memoise it. Keyed by mode too, so a future mode cannot collide.
+// Bounded and insertion-ordered: on overflow the oldest entry is dropped.
+const REWRITE_CACHE_LIMIT = 1024;
+const rewriteCache = new Map<string, string>();
+
 /** Rewrite SQL identifiers, never text literals, bound values or comments.
  * In particular json_object('workout_id', ...) must retain its canonical key. */
 export function workoutSchemaSQL(query: string, schema: Schema): string {
   if (schema === 'workouts') return query;
+  const key = `${schema}\u0000${query}`;
+  const hit = rewriteCache.get(key);
+  if (hit !== undefined) return hit;
+  const rewritten = rewriteLegacySQL(query);
+  if (rewriteCache.size >= REWRITE_CACHE_LIMIT) {
+    const oldest = rewriteCache.keys().next();
+    if (!oldest.done) rewriteCache.delete(oldest.value);
+  }
+  rewriteCache.set(key, rewritten);
+  return rewritten;
+}
+
+function rewriteLegacySQL(query: string): string {
   return query.replace(
     /'(?:''|[^'])*'|--[^\n]*|\/\*[\s\S]*?\*\/|"(?:""|[^"])*"|`(?:``|[^`])*`|\[[^\]]*\]|[A-Za-z_][A-Za-z_0-9]*/g,
     (token) => {

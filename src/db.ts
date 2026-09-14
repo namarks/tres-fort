@@ -3022,6 +3022,15 @@ export async function getPlanTree(
 ): Promise<PlanTree | null> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
+  return loadPlanTree(db, plan);
+}
+
+/**
+ * Load the workouts + slots for a plan row the caller already holds, so a
+ * caller that read `plans` for a version check does not re-read it and then
+ * report one version with another version's tree contents.
+ */
+export async function loadPlanTree(db: D1Database, plan: PlanRow): Promise<PlanTree> {
   const days = await workoutDB(db)
     .prepare('SELECT * FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id')
     .bind(plan.id)
@@ -5675,7 +5684,7 @@ export async function getState(
   const serverTime = now();
   const plan = await getActivePlan(db, userId);
   const baseTree =
-    plan && plan.version > sincePlanVersion ? await getPlanTree(db, userId) : null;
+    plan && plan.version > sincePlanVersion ? await loadPlanTree(db, plan) : null;
   // The weekly schedule rides the existing plan-tree sync: it is only
   // returned when the tree is (i.e. when plans.version advanced past the
   // client cursor). Parsed via the single meta accessor so iOS never
@@ -7783,8 +7792,8 @@ export async function deleteWorkout(
     .bind(dayId, plan.id)
     .first<{ id: string }>();
   if (!day) return { error: 'day_not_found' };
-  const groupTree = await getPlanTree(db, userId);
-  const groupInvalid = validatePlanExerciseGroups(groupTree?.workouts.filter((candidate) => candidate.id !== dayId) ?? []);
+  const groupTree = await loadPlanTree(db, plan);
+  const groupInvalid = validatePlanExerciseGroups(groupTree.workouts.filter((candidate) => candidate.id !== dayId));
   if (groupInvalid) return groupInvalid;
   const meta = parsePlanMeta(plan.meta);
   const remaining = await workoutDB(db)

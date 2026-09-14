@@ -49,7 +49,7 @@ export interface Env {
    * "Webhook Secret" configured on the intervals.icu Manage App page. Every
    * delivery carries this in its JSON body; the receiver matches it to
    * authenticate. UNSET → the webhook receiver is dormant (it 401s every
-   * request) and the 15-min polling cron remains the only sync path.
+   * request) and the hourly backstop cron remains the only sync path.
    */
   INTERVALS_WEBHOOK_SECRET?: string;
   /**

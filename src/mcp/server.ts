@@ -1592,7 +1592,7 @@ const TOOLS: Record<string, Tool> = {
   },
   refresh_rides: {
     description:
-      'Force an immediate refresh from intervals.icu (the cron also does this every 6h): both the PLANNED cycling/endurance calendar (upcoming rides) AND the COMPLETED activity feed (rides/runs you finished, with their actual duration/power/HR). Returns how many of each are cached and the sync status. Does NOT change the training plan or its version. No-op if the intervals.icu integration is not configured.',
+      'Force an immediate refresh from intervals.icu (the hourly backstop cron also does this): both the PLANNED cycling/endurance calendar (upcoming rides) AND the COMPLETED activity feed (rides/runs you finished, with their actual duration/power/HR). Returns how many of each are cached and the sync status. Does NOT change the training plan or its version. No-op if the intervals.icu integration is not configured.',
     inputSchema: obj({}),
     // An action → audited. Reconciled caches only: NO plans.version bump and
     // (no `note`) NO notes row.

@@ -256,7 +256,7 @@ final class MemberActivationJourneyTests: XCTestCase {
         onboard(app)
         tap(app.buttons["Enter Très Fort"], in: app)
         XCTAssertTrue(app.navigationBars["Connect your coach"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Your coach is connected"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["coach.connected-status"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["coach.data-sharing"].exists)
         tap(app.navigationBars["Connect your coach"].buttons["Done"], in: app)
         tap(app.tabBars.buttons["Today"], in: app)
@@ -310,6 +310,11 @@ final class MemberActivationJourneyTests: XCTestCase {
         let picker = app.buttons["coach.app-picker"]
         XCTAssertTrue(app.staticTexts["coach.data-sharing"].label.contains("Anthropic"))
         XCTAssertFalse(app.buttons["coach.generate-code"].exists)
+        app.buttons["coach.connect-claude"].press(forDuration: 1.2)
+        tap(app.buttons["Copy setup link"], in: app)
+        XCTAssertTrue(app.navigationBars["Connect your coach"].exists)
+        let claudeImage = XCTAttachment(screenshot: app.screenshot())
+        claudeImage.name = "claude-direct-coach-setup"; claudeImage.lifetime = .keepAlways; add(claudeImage)
         tap(app.buttons["coach.connect-claude"], in: app)
         let opened = app.staticTexts["fixture.opened-url"]
         XCTAssertTrue(opened.waitForExistence(timeout: 5))
@@ -319,8 +324,16 @@ final class MemberActivationJourneyTests: XCTestCase {
         XCTAssertEqual(parts.queryItems?.first { $0.name == "connectorUrl" }?.value,
                        "https://ui-fixture.invalid/mcp")
         XCTAssertEqual(parts.queryItems?.first { $0.name == "connectorName" }?.value, "Très Fort")
-        let claudeImage = XCTAttachment(screenshot: app.screenshot())
-        claudeImage.name = "claude-direct-coach-setup"; claudeImage.lifetime = .keepAlways; add(claudeImage)
+        XCTAssertFalse(app.navigationBars["Connect your coach"].exists)
+        // Exercise the browser return through the real intent/presentation path.
+        tap(app.buttons["fixture.coach-return"], in: app)
+        XCTAssertTrue(app.staticTexts["Review AI access"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["coach-approval.continue"].exists)
+        scrollAndTap(app.buttons["coach-approval.allow"], in: app)
+        XCTAssertTrue(app.staticTexts["Access allowed"].waitForExistence(timeout: 10))
+        tap(app.buttons["Done"], in: app)
+        tap(app.tabBars.buttons["Today"], in: app)
+        tap(app.buttons["Set up my coach"], in: app)
 
         tap(picker, in: app)
         tap(app.buttons["Other compatible app"], in: app)

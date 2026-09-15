@@ -34,7 +34,7 @@ struct MemberEntryPresentation: ViewModifier {
                         }
                     case .coach:
                         NavigationStack {
-                            CoachConnectView(groupModel: groupModel)
+                            CoachConnectView(groupModel: groupModel, onHandoff: { showing = false })
                                 .toolbar {
                                     ToolbarItem(placement: .cancellationAction) {
                                         Button("Done") { showing = false }

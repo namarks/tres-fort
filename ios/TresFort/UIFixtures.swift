@@ -128,6 +128,12 @@ struct UIFixtureView: View {
                     if ProcessInfo.processInfo.environment["TRESFORT_UI_CAPTURE_LINKS"] == "1", let openedURL {
                         Text(openedURL.absoluteString).font(.caption2).lineLimit(1)
                             .accessibilityIdentifier("fixture.opened-url")
+                        if openedURL.host == "claude.ai" {
+                            Button("Simulate coach return") {
+                                auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
+                            }
+                            .accessibilityIdentifier("fixture.coach-return")
+                        }
                     }
                     RootView(defaults: UIFixtureModel.defaults,
                              now: { CalendarProjection.date(from: "2026-09-08")! }).environmentObject(auth)
@@ -140,6 +146,9 @@ struct UIFixtureView: View {
         .tint(Theme.accent)
         .environment(\.openURL, OpenURLAction { url in
             openedURL = url
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_CAPTURE_LINKS"] == "1", url.host == "claude.ai" {
+                return .handled
+            }
             return .discarded
         })
         .environment(\.dynamicTypeSize,
@@ -473,7 +482,7 @@ private struct UIFixtureServer {
     mutating func respond(_ request: URLRequest) throws -> (Int, Data) {
         guard request.url?.host == "ui-fixture.invalid" else { throw URLError(.unsupportedURL) }
         guard !scenario.isHistory else { throw URLError(.notConnectedToInternet) }
-        if scenario == .coachApproval, request.url?.path.hasPrefix("/api/coach-requests/") == true {
+        if (scenario == .coachApproval || scenario.isActivation), request.url?.path.hasPrefix("/api/coach-requests/") == true {
             let value: [String: Any]
             if request.httpMethod == "POST" {
                 value = ["allowed": true, "redirect_uri": "https://client.example/callback?code=synthetic"]

@@ -58,14 +58,18 @@ Repository delivery and actual provider connection/release evidence remain disti
   - Approved 2026-09-14: present both provider choices with setup actions before
     optional code generation. Default to Claude's available mobile web flow.
   - Claude uses its documented prefilled install link; native account approval
-    remains explicit and the connect-code form remains a fallback.
+    remains explicit and the connect-code form remains a fallback. Successful
+    browser handoff dismisses setup so returned approval can present immediately.
+    Press and hold the connect button to copy the prefilled link for Safari.
   - Codex receives a credential-free setup request with manual desktop/CLI
     fallbacks. Explain its computer requirement and Remote support. A hosted
     mobile install still requires the P4 provider-issued listing URL.
-  - Local verification: 26 backend protocol/approval tests, 14 iOS unit tests,
-    all three focused UI journeys, TypeScript and plan validation passed.
-    Inspected synthetic Claude/Codex screenshots; local Codex review found no
-    actionable regressions. Exact-head independent GitHub review and CI are
+  - Verification covers 26 backend protocol/approval tests, 14 iOS unit tests,
+    four focused UI journeys (provider handoff, code fallback, approval and
+    connected-member continuation), TypeScript and plan validation.
+    Inspected synthetic Claude/Codex screenshots. Review follow-ups cover the
+    browser-return presentation, connected-status journey and family quickstart.
+    Exact-head independent GitHub review and CI are
     required for the follow-up merge. Real-device provider handoff remains P2/P4.
 - [ ] **P4 — Publish and verify the consumer Connect button**
   - Obtain owner release/submission authority, verified publisher identity,

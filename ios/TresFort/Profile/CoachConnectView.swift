@@ -47,6 +47,9 @@ enum CoachSetup {
 
 struct CoachConnectView: View {
     @ObservedObject var groupModel: GroupModel
+    var onHandoff: (() -> Void)? = nil
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
     @State private var selectedApp: CoachApp = .claude
     @State private var code: String?
     @State private var generating = false
@@ -59,6 +62,7 @@ struct CoachConnectView: View {
             if groupModel.me?.coach.connected == true {
                 Section {
                     Label("An AI app has access", systemImage: "checkmark.circle.fill")
+                        .accessibilityIdentifier("coach.connected-status")
                     Text("You can connect Claude and Codex to the same training account.")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
@@ -115,14 +119,26 @@ struct CoachConnectView: View {
                 .accessibilityIdentifier("coach.data-sharing")
             switch selectedApp {
             case .claude:
-                Link(destination: CoachSetup.claudeInstallURL(baseURL: Config.apiBaseURL)) {
+                Button {
+                    openURL(CoachSetup.claudeInstallURL(baseURL: Config.apiBaseURL)) { accepted in
+                        guard accepted else { return }
+                        // Free the setup presentation before the browser returns
+                        // with a separate, explicit access-approval intent.
+                        if let onHandoff { onHandoff() } else { dismiss() }
+                    }
+                } label: {
                     Label("Connect with Claude", systemImage: "arrow.up.right.square")
                         .font(.headline).frame(minHeight: 44)
                 }
                 .accessibilityIdentifier("coach.connect-claude")
+                .contextMenu {
+                    Button("Copy setup link", systemImage: "link") {
+                        UIPasteboard.general.url = CoachSetup.claudeInstallURL(baseURL: Config.apiBaseURL)
+                    }
+                }
                 Text("The link fills in Très Fort’s details. Sign in to Claude, confirm the connector, then choose Open Très Fort to review access and allow the connection.")
                     .font(.footnote)
-                Text("If Claude opens without the setup form, open the link in Safari. If app approval is unavailable, use a connect code below.")
+                Text("If Claude opens without the setup form, return here and press and hold Connect with Claude to copy the link, then paste it into Safari. If app approval is unavailable, use a connect code below.")
                     .font(.footnote).foregroundStyle(.secondary)
                 DisclosureGroup("Manual setup") {
                     Text("On claude.ai, open Customize → Connectors → + → Add custom connector.")

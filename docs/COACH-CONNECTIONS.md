@@ -21,8 +21,11 @@ opens Claude's custom-connector form with the name and current environment's
 MCP URL filled in. It contains no member code or credential. Sign in if needed,
 review and add the connector, then choose **Open Très Fort to review access**
 on the consent page. Explicitly allow access in the signed-in app and continue
-back to Claude. If the app intercepts the install link without displaying the
-form, open it in Safari. Native mobile connector installation is in beta;
+back to Claude. Setup closes after a successful browser handoff so the returned
+access request can present immediately. If Claude intercepts the install link
+without displaying the form, return to setup, press and hold **Connect with
+Claude**, choose **Copy setup link**, and paste it into Safari. Native mobile
+connector installation is in beta;
 [web setup remains the primary custom-connector path](https://support.claude.com/en/articles/11176164-use-connectors-to-extend-claude-s-capabilities).
 
 If the installed Worker or iOS version cannot complete app approval, expand

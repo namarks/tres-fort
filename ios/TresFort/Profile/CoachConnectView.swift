@@ -47,8 +47,7 @@ enum CoachSetup {
 
 struct CoachConnectView: View {
     @ObservedObject var groupModel: GroupModel
-    var onHandoff: (() -> Void)? = nil
-    @Environment(\.dismiss) private var dismiss
+    var onHandoff: () -> Void
     @Environment(\.openURL) private var openURL
     @State private var selectedApp: CoachApp = .claude
     @State private var code: String?
@@ -124,7 +123,7 @@ struct CoachConnectView: View {
                         guard accepted else { return }
                         // Free the setup presentation before the browser returns
                         // with a separate, explicit access-approval intent.
-                        if let onHandoff { onHandoff() } else { dismiss() }
+                        onHandoff()
                     }
                 } label: {
                     Label("Connect with Claude", systemImage: "arrow.up.right.square")

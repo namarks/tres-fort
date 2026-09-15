@@ -62,6 +62,7 @@ Repository delivery and actual provider connection/release evidence remain disti
     browser handoff dismisses setup so returned approval can present immediately.
     Press and hold the connect button to copy the prefilled link for Safari.
     Incoming approval also replaces open or restored setup after a copied link.
+    Profile, Today and onboarding share the same setup presentation.
   - Codex receives a credential-free setup request with manual desktop/CLI
     fallbacks. Explain its computer requirement and Remote support. A hosted
     mobile install still requires the P4 provider-issued listing URL.

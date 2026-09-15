@@ -298,12 +298,10 @@ struct ProfileView: View {
                     showCoachDisconnectConfirmation = true
                 }
                 .disabled(isDisconnectingCoach)
-                NavigationLink("Connect another AI app") {
-                    CoachConnectView(groupModel: groupModel)
-                }
+                Button("Connect another AI app") { auth.requestEntry(.coach) }
             } else {
-                NavigationLink {
-                    CoachConnectView(groupModel: groupModel)
+                Button {
+                    auth.requestEntry(.coach)
                 } label: {
                     HStack(spacing: 10) {
                         Image(systemName: "brain.head.profile").foregroundStyle(Theme.accent)

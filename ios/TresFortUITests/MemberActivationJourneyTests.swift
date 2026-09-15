@@ -262,6 +262,9 @@ final class MemberActivationJourneyTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["coach.connected-status"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["coach.data-sharing"].exists)
         tap(app.navigationBars["Connect your coach"].buttons["Done"], in: app)
+        scrollAndTap(app.buttons["Connect another AI app"], in: app)
+        XCTAssertTrue(app.navigationBars["Connect your coach"].waitForExistence(timeout: 10))
+        tap(app.navigationBars["Connect your coach"].buttons["Done"], in: app)
         tap(app.tabBars.buttons["Today"], in: app)
         completeFirstWorkout(app)
     }
@@ -359,24 +362,32 @@ final class MemberActivationJourneyTests: XCTestCase {
     }
 
     func testIncomingCoachApprovalReplacesOpenSetup() {
-        let app = launch("activation-manual", returnWithSetupOpen: true)
-        tap(app.buttons["Sign in with Apple"], in: app)
-        onboard(app)
-        tap(app.buttons["Enter Très Fort"], in: app)
-        tap(app.buttons["Set up my coach"], in: app)
-        app.buttons["coach.connect-claude"].press(forDuration: 1.2)
-        tap(app.buttons["Copy setup link"], in: app)
-        XCTAssertTrue(app.navigationBars["Connect your coach"].exists)
-        // The fixture uses this action to deliver an incoming approval without
-        // accepting the outbound URL, preserving the copied-link setup state.
-        tap(app.buttons["coach.connect-claude"], in: app)
-        XCTAssertTrue(app.staticTexts["Review AI access"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.navigationBars["Connect your coach"].exists)
-        XCTAssertFalse(app.buttons["coach-approval.continue"].exists)
-        scrollAndTap(app.buttons["coach-approval.allow"], in: app)
-        XCTAssertTrue(app.staticTexts["Access allowed"].waitForExistence(timeout: 10))
-        tap(app.buttons["Done"], in: app)
-        XCTAssertFalse(app.navigationBars["Connect your coach"].exists)
+        for entry in ["Today", "Profile"] {
+            let app = launch("activation-manual", returnWithSetupOpen: true)
+            tap(app.buttons["Sign in with Apple"], in: app)
+            onboard(app)
+            tap(app.buttons["Enter Très Fort"], in: app)
+            if entry == "Profile" {
+                tap(app.tabBars.buttons["Profile"], in: app)
+                scrollAndTap(app.buttons.containing(.staticText, identifier: "Set up your AI coach").firstMatch, in: app)
+            } else {
+                tap(app.buttons["Set up my coach"], in: app)
+            }
+            app.buttons["coach.connect-claude"].press(forDuration: 1.2)
+            tap(app.buttons["Copy setup link"], in: app)
+            XCTAssertTrue(app.navigationBars["Connect your coach"].exists)
+            // The fixture uses this action to deliver an incoming approval without
+            // accepting the outbound URL, preserving the copied-link setup state.
+            tap(app.buttons["coach.connect-claude"], in: app)
+            XCTAssertTrue(app.staticTexts["Review AI access"].waitForExistence(timeout: 10))
+            XCTAssertFalse(app.navigationBars["Connect your coach"].exists)
+            XCTAssertFalse(app.buttons["coach-approval.continue"].exists)
+            scrollAndTap(app.buttons["coach-approval.allow"], in: app)
+            XCTAssertTrue(app.staticTexts["Access allowed"].waitForExistence(timeout: 10))
+            tap(app.buttons["Done"], in: app)
+            XCTAssertFalse(app.navigationBars["Connect your coach"].exists)
+            app.terminate()
+        }
     }
 
     func testEmptyTodayOffersCoachSetupDirectly() {

@@ -373,6 +373,7 @@ final class MemberActivationJourneyTests: XCTestCase {
             } else {
                 tap(app.buttons["Set up my coach"], in: app)
             }
+            XCTAssertTrue(app.navigationBars["Connect your coach"].waitForExistence(timeout: 10))
             app.buttons["coach.connect-claude"].press(forDuration: 1.2)
             tap(app.buttons["Copy setup link"], in: app)
             XCTAssertTrue(app.navigationBars["Connect your coach"].exists)

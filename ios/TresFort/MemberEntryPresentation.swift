@@ -19,6 +19,7 @@ struct MemberEntryPresentation: ViewModifier {
     func body(content: Content) -> some View {
         content
             .task(id: auth.nextEntryIntent?.id) { presentNext() }
+            .onChange(of: auth.pendingEntryIntents) { _, _ in presentNext() }
             .sheet(isPresented: $showing, onDismiss: finishPresented) {
                 if let presentation = presented {
                     if auth.isReviewAccount && presentation.intent.destination != .workouts {
@@ -60,9 +61,33 @@ struct MemberEntryPresentation: ViewModifier {
     }
 
     private func presentNext() {
-        guard presented == nil, !showing, let intent = auth.nextEntryIntent else { return }
+        if let presentation = presented {
+            // A copied link can return while setup is still open. Consume that
+            // setup at dismissal, then present the account-bound approval.
+            if presentation.intent.destination == .coach,
+               auth.isCurrentFeatureSession(accountID: presentation.intent.accountID, epoch: presentation.epoch),
+               hasCoachApproval(for: presentation.intent.accountID) {
+                showing = false
+            }
+            return
+        }
+        guard !showing, let intent = auth.nextEntryIntent else { return }
+        // Also handle a cold launch with setup persisted ahead of the return.
+        if intent.destination == .coach, hasCoachApproval(for: intent.accountID) {
+            guard auth.finishEntry(intent, epoch: auth.featureSessionEpoch) else { return }
+            presentNext()
+            return
+        }
         presented = Presentation(intent: intent, epoch: auth.featureSessionEpoch)
         if intent.destination == .coach { onCoach() }
         showing = true
+    }
+
+    private func hasCoachApproval(for accountID: String?) -> Bool {
+        guard let accountID, accountID == auth.userID else { return false }
+        return auth.pendingEntryIntents.contains { intent in
+            if case .coachApproval = intent.destination { return intent.accountID == accountID }
+            return false
+        }
     }
 }

@@ -71,6 +71,9 @@ enum UIFixtureModel {
             auth.phase = .signedIn
         }
         if UIFixtureScenario.selected == .coachApproval {
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_PENDING_COACH_SETUP"] == "1" {
+                auth.requestEntry(.coach)
+            }
             auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
         }
         if UIFixtureScenario.selected == .activationInvite {
@@ -146,6 +149,12 @@ struct UIFixtureView: View {
         .tint(Theme.accent)
         .environment(\.openURL, OpenURLAction { url in
             openedURL = url
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_RETURN_WITH_SETUP_OPEN"] == "1", url.host == "claude.ai" {
+                // Simulate an incoming link without accepting an outbound
+                // handoff: setup must be replaced by the incoming intent alone.
+                auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
+                return .discarded
+            }
             if ProcessInfo.processInfo.environment["TRESFORT_UI_CAPTURE_LINKS"] == "1", url.host == "claude.ai" {
                 return .handled
             }

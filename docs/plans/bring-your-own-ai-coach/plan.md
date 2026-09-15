@@ -61,12 +61,14 @@ Repository delivery and actual provider connection/release evidence remain disti
     remains explicit and the connect-code form remains a fallback. Successful
     browser handoff dismisses setup so returned approval can present immediately.
     Press and hold the connect button to copy the prefilled link for Safari.
+    Incoming approval also replaces open or restored setup after a copied link.
   - Codex receives a credential-free setup request with manual desktop/CLI
     fallbacks. Explain its computer requirement and Remote support. A hosted
     mobile install still requires the P4 provider-issued listing URL.
   - Verification covers 26 backend protocol/approval tests, 14 iOS unit tests,
-    four focused UI journeys (provider handoff, code fallback, approval and
-    connected-member continuation), TypeScript and plan validation.
+    five focused UI journeys (provider handoff, open/restored setup return,
+    code fallback, approval and connected-member continuation), TypeScript and
+    plan validation.
     Inspected synthetic Claude/Codex screenshots. Review follow-ups cover the
     browser-return presentation, connected-status journey and family quickstart.
     Exact-head independent GitHub review and CI are

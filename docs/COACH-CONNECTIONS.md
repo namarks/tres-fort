@@ -22,7 +22,8 @@ MCP URL filled in. It contains no member code or credential. Sign in if needed,
 review and add the connector, then choose **Open Très Fort to review access**
 on the consent page. Explicitly allow access in the signed-in app and continue
 back to Claude. Setup closes after a successful browser handoff so the returned
-access request can present immediately. If Claude intercepts the install link
+access request can present immediately. Incoming approval also replaces an open
+or restored setup sheet, including when a copied link was used. If Claude intercepts the install link
 without displaying the form, return to setup, press and hold **Connect with
 Claude**, choose **Copy setup link**, and paste it into Safari. Native mobile
 connector installation is in beta;

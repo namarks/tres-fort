@@ -11,10 +11,12 @@ final class MemberActivationJourneyTests: XCTestCase {
         }
     }
 
-    private func launch(_ fixture: String, retry: Bool = false, pendingSetup: Bool = false, starterUsed: Bool = false, pendingStage: String? = nil, captureLinks: Bool = false) -> XCUIApplication {
+    private func launch(_ fixture: String, retry: Bool = false, pendingSetup: Bool = false, starterUsed: Bool = false, pendingStage: String? = nil, captureLinks: Bool = false, returnWithSetupOpen: Bool = false, pendingCoachSetup: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = fixture
         if captureLinks { app.launchEnvironment["TRESFORT_UI_CAPTURE_LINKS"] = "1" }
+        if returnWithSetupOpen { app.launchEnvironment["TRESFORT_UI_RETURN_WITH_SETUP_OPEN"] = "1" }
+        if pendingCoachSetup { app.launchEnvironment["TRESFORT_UI_PENDING_COACH_SETUP"] = "1" }
         if let pendingStage { app.launchEnvironment["TRESFORT_UI_PENDING_TRAINING_STAGE"] = pendingStage }
         if pendingSetup { app.launchEnvironment["TRESFORT_UI_PENDING_TRAINING_PROFILE"] = "1" }
         if starterUsed { app.launchEnvironment["TRESFORT_UI_STARTER_ALREADY_USED"] = "1" }
@@ -53,7 +55,7 @@ final class MemberActivationJourneyTests: XCTestCase {
     }
 
     func testMobileCoachApprovalRequiresExplicitDecision() {
-        let app = launch("coach-approval")
+        let app = launch("coach-approval", pendingCoachSetup: true)
         XCTAssertTrue(app.staticTexts["Review AI access"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["App name supplied by the connecting client: Synthetic AI app"].exists)
         XCTAssertFalse(app.buttons["coach-approval.continue"].exists)
@@ -65,6 +67,7 @@ final class MemberActivationJourneyTests: XCTestCase {
         // Leave before the AI app exchanges its code. Cancellation must still
         // be reachable when the profile reports no connected grant.
         tap(app.buttons["Done"], in: app)
+        XCTAssertFalse(app.navigationBars["Connect your coach"].exists)
         tap(app.tabBars.buttons["Profile"], in: app)
         scrollAndTap(app.buttons["coach.manageAccess"], in: app)
         scrollAndTap(app.buttons["Disconnect all AI apps"], in: app)
@@ -353,6 +356,27 @@ final class MemberActivationJourneyTests: XCTestCase {
         scrollAndTap(app.buttons["Command-line setup"], in: app)
         scrollAndTap(app.buttons.containing(.staticText, identifier: "Sign in").firstMatch, in: app)
         XCTAssertTrue(app.staticTexts["codex mcp login tres-fort"].exists)
+    }
+
+    func testIncomingCoachApprovalReplacesOpenSetup() {
+        let app = launch("activation-manual", returnWithSetupOpen: true)
+        tap(app.buttons["Sign in with Apple"], in: app)
+        onboard(app)
+        tap(app.buttons["Enter Très Fort"], in: app)
+        tap(app.buttons["Set up my coach"], in: app)
+        app.buttons["coach.connect-claude"].press(forDuration: 1.2)
+        tap(app.buttons["Copy setup link"], in: app)
+        XCTAssertTrue(app.navigationBars["Connect your coach"].exists)
+        // The fixture uses this action to deliver an incoming approval without
+        // accepting the outbound URL, preserving the copied-link setup state.
+        tap(app.buttons["coach.connect-claude"], in: app)
+        XCTAssertTrue(app.staticTexts["Review AI access"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.navigationBars["Connect your coach"].exists)
+        XCTAssertFalse(app.buttons["coach-approval.continue"].exists)
+        scrollAndTap(app.buttons["coach-approval.allow"], in: app)
+        XCTAssertTrue(app.staticTexts["Access allowed"].waitForExistence(timeout: 10))
+        tap(app.buttons["Done"], in: app)
+        XCTAssertFalse(app.navigationBars["Connect your coach"].exists)
     }
 
     func testEmptyTodayOffersCoachSetupDirectly() {

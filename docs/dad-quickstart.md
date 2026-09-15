@@ -90,5 +90,5 @@ go. The app just shows you what to do.
 
 ## Stuck?
 
-Text Nick. Most likely snag is step 4 or 6 (the coach connection) — that's the
+Text Nick. Most likely snag is step 4 (the coach connection) — that's the
 only technical bit, and he can sort it out in two minutes.

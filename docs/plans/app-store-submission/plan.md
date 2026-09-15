@@ -11,7 +11,9 @@ exceptions, accurate privacy disclosures, listing and reviewer access. The owner
 requested expedited shipment on 2026-09-10. Complete the prepared App Store
 package and submission requirements while retaining the existing submission.
 The current Apple release setting is AFTER_APPROVAL, as read back on 2026-09-14
-Pacific; preparation and TestFlight availability do not mean public release.
+Pacific. Resolve that automatic-publication setting with the owner before review
+finishes; it is not evidence of separate public-release authority. Preparation
+and TestFlight availability do not mean public release.
 
 ## Phases
 
@@ -75,11 +77,19 @@ Pacific; preparation and TestFlight availability do not mean public release.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P4 | gated_by | external:app-store-owner-fields | Confirm account agreements and privacy publication before public release; review submission is already acknowledged; current AFTER_APPROVAL behavior is recorded below. |
+| P4 | gated_by | external:app-store-owner-fields | Confirm account agreements and privacy publication before public release; Resolve automatic-publication authority or restore MANUAL under owner instruction, and confirm agreements/privacy before public release; review submission is already acknowledged. |
 
 ## Next step
 
-**Now (@agent):** Finish the runnable P1/P2 audit against pinned source
+**Now (@owner):** Resolve build 40's AFTER_APPROVAL setting before Apple finishes
+review. Choose an authorized change to MANUAL, or explicitly authorize automatic
+public release after addressing or specifically waiving the remaining readiness
+gates. The 2026-09-14 deployment request authorized the latest backend and
+TestFlight release; it did not establish that those App Store gates were closed.
+The agent has asked whether to switch build 40 to manual release. Do not infer
+approval from silence or change the Apple setting without the owner's decision.
+
+**Agent follow-through:** Finish the runnable P1/P2 audit against pinned source
 `9373d6f0acad9a9ef444e54fe9c9d8a8b7ad24c8`: reconcile privacy/account and group
 controls, public policy/support availability, listing and reviewer instructions,
 and the documented verification exceptions. Record evidence and identify any
@@ -92,8 +102,9 @@ with explicit owner approval. Do not mark the outstanding live checks passed or
 waived from that upload approval or Apple's submission acceptance. The owner
 has now submitted build 40; finish P1/P2 and retain the P3(a) evidence or a specific
 verification exception before the public-release decision. Inspect the existing
-submission for Apple review responses and retain its current configuration;
-do not resubmit or change the selected build from a TestFlight upload.
+submission for Apple review responses, carry out the owner's release-mode
+decision when supplied, and read the result back. Do not resubmit or change the
+selected build from a TestFlight upload.
 
 **Latest production/TestFlight release (2026-09-14 Pacific):** The owner
 requested the latest version. [Build 42's release receipt](release-42.md) records

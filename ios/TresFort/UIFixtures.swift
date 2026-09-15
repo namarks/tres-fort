@@ -104,6 +104,7 @@ struct UIFixtureView: View {
     @Environment(\.dynamicTypeSize) private var systemDynamicTypeSize
     @ObservedObject var auth: AuthModel
     let scenario: UIFixtureScenario
+    @State private var openedURL: URL?
 
     var body: some View {
         Group {
@@ -124,6 +125,10 @@ struct UIFixtureView: View {
                     Text("SYNTHETIC · \(scenario.rawValue)")
                         .font(.caption).dynamicTypeSize(.large)
                         .accessibilityIdentifier("fixture.scenario")
+                    if ProcessInfo.processInfo.environment["TRESFORT_UI_CAPTURE_LINKS"] == "1", let openedURL {
+                        Text(openedURL.absoluteString).font(.caption2).lineLimit(1)
+                            .accessibilityIdentifier("fixture.opened-url")
+                    }
                     RootView(defaults: UIFixtureModel.defaults,
                              now: { CalendarProjection.date(from: "2026-09-08")! }).environmentObject(auth)
                 }
@@ -133,7 +138,10 @@ struct UIFixtureView: View {
         }
         .defaultAppStorage(UIFixtureModel.defaults.preferences)
         .tint(Theme.accent)
-        .environment(\.openURL, OpenURLAction { _ in .discarded })
+        .environment(\.openURL, OpenURLAction { url in
+            openedURL = url
+            return .discarded
+        })
         .environment(\.dynamicTypeSize,
             ProcessInfo.processInfo.environment["TRESFORT_UI_LARGE_TEXT"] == "1" ? .accessibility5 : systemDynamicTypeSize)
     }

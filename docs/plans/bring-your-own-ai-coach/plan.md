@@ -21,7 +21,7 @@ Repository delivery and actual provider connection/release evidence remain disti
   - Exercise synthetic OAuth client flows, coaching reads/writes, stale-version
     conflicts, refresh/disconnect, API rollout compatibility, and iOS setup.
   - Local Codex review completed after the callback and disclosure fixes.
-    Repository merge still requires the delivery gate below.
+    Repository delivery is complete; the merged PR and release evidence are below.
 - [ ] **P2 — Release and verify a real Codex connection**
   - Worker and iOS 1.0 (42) released under explicit owner authority on
     2026-09-14 Pacific; [release receipt](../app-store-submission/release-42.md)
@@ -44,7 +44,7 @@ Repository delivery and actual provider connection/release evidence remain disti
     a Chromium CSP redirect regression and an understated legacy logging hint;
     both are fixed with behavioral regression coverage. Unfinished approvals
     remain cancellable from Profile even before a token exists.
-    Final local review and exact-head GitHub review/CI remain merge gates.
+    PR #191 retains the completed foundation delivery checks.
   - CI scope correction: the former smoke list had expanded to 56 of 77 UI
     methods; one shard spent 18 minutes on UI tests and another hit the job
     timeout. Following the owner's cost/latency concern, PRs keep all unit tests
@@ -136,13 +136,13 @@ P3.1 landed in [PR #207](https://github.com/namarks/tres-fort/pull/207).
   across the full run and the two corrected lazy-row navigation reruns; the
   Codex setup screenshots were inspected. Local Codex reviews, including review
   of the command-free setup, found no actionable regressions. The revised setup
-  UI journey also passed; fresh independent GitHub review and CI remain required
-  before merge. PR checks carry final evidence.
+  UI journey also passed. The merged PR checks carry the final independent
+  review and CI evidence; no repository-delivery gate remains open.
 - [PR #191](https://github.com/namarks/tres-fort/pull/191) carries the merged P3
   foundation. Its checks retain the final repository-delivery evidence.
-- Start: verified remote main `90f968383629107bd7a95b37bd44da177f87305f`.
-  Concurrent onboarding and App Store sessions require isolated work; keep shared
-  entry-copy changes narrow and reconcile current main before merge.
+- Initial source was remote main `90f968383629107bd7a95b37bd44da177f87305f`.
+  Implementation used isolated worktrees and integrated the concurrent onboarding
+  and App Store changes before the recorded merges.
 - [Connection guide](../../COACH-CONNECTIONS.md) defines supported capabilities,
   rollout behavior and the real-account verification procedure. Synthetic protocol
   fixtures do not prove a specific installed Codex version or live model response.

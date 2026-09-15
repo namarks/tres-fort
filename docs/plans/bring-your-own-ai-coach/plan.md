@@ -1,6 +1,6 @@
 # Bring Your Own AI Coach
 
-Slug: bring-your-own-ai-coach · Status: active · Updated: 2026-09-12 · Theme: coaching
+Slug: bring-your-own-ai-coach · Status: gated · Updated: 2026-09-14 · Theme: coaching
 
 ## Goal
 
@@ -54,6 +54,26 @@ Repository delivery and actual provider connection/release evidence remain disti
     review uses an ordinary synthetic member, not the retired shared sample
     identity. Focused verification passed 111 backend tests, 14 iOS unit tests
     and two approval/sign-in UI journeys, plus the verifier/scope and plan checks.
+- [x] **P3.1 — Simplify linking for Claude and Codex**
+  - Approved 2026-09-14: present both provider choices with setup actions before
+    optional code generation. Default to Claude's available mobile web flow.
+  - Claude uses its documented prefilled install link; native account approval
+    remains explicit and the connect-code form remains a fallback. Successful
+    browser handoff dismisses setup so returned approval can present immediately.
+    Press and hold the connect button to copy the prefilled link for Safari.
+    Incoming approval also replaces open or restored setup after a copied link.
+    Profile, Today and onboarding share the same setup presentation.
+  - Codex receives a credential-free setup request with manual desktop/CLI
+    fallbacks. Explain its computer requirement and Remote support. A hosted
+    mobile install still requires the P4 provider-issued listing URL.
+  - Verification covers 26 backend protocol/approval tests, 14 iOS unit tests,
+    five focused UI journeys (provider handoff, open/restored setup return,
+    code fallback, approval and connected-member continuation), TypeScript and
+    plan validation.
+    Inspected synthetic Claude/Codex screenshots. Review follow-ups cover the
+    browser-return presentation, connected-status journey and family quickstart.
+    Exact-head independent GitHub review and CI are
+    required for the follow-up merge. Real-device provider handoff remains P2/P4.
 - [ ] **P4 — Publish and verify the consumer Connect button**
   - Obtain owner release/submission authority, verified publisher identity,
     dedicated synthetic reviewer access and approved terms. Worldwide availability
@@ -73,15 +93,19 @@ Repository delivery and actual provider connection/release evidence remain disti
 
 ## Next step
 
-**Now (@agent):** Deliver P3 through PR #191 using the exact-head review/CI
-gate below. Then proceed to P2/P4 only with the documented release/publication
-authority. The owner selected worldwide provider-supported availability and
-requested the service-terms draft; identity verification, synthetic reviewer
-access, terms approval and provider attestations remain owner-managed inputs.
+**Now (@owner):** Approve the staged app/website/Worker release and complete
+provider identity, reviewer-access, terms and submission inputs for P2/P4.
+The P3.1 follow-up is implemented and locally verified; its repository delivery
+must pass the exact-head gate below. P3 landed in [PR #191](https://github.com/namarks/tres-fort/pull/191),
+merged 2026-09-13 as `5312a32b05ed4375b754573fcbcbbd453d16b940`.
+P2/P4 retain their release/publication gates. Claude's documented install link
+does not require directory review; a phone-only Codex install still does.
+Identity verification, synthetic reviewer access, terms approval and provider
+attestations remain owner-managed inputs.
 
-**Repository delivery gate (@agent):** Before merging PR #191, require fresh
-independent review of its exact head, all relevant CI terminal-green, and no
-blocking findings or unresolved threads. PR merge is not a production release.
+**Repository delivery gate (@agent):** Require fresh independent review of the
+exact follow-up head, all relevant CI terminal-green, and no blocking findings
+or unresolved threads. Merge is not a production or iOS release.
 
 ## Notes / open questions
 
@@ -102,8 +126,8 @@ blocking findings or unresolved threads. PR merge is not a production release.
   of the command-free setup, found no actionable regressions. The revised setup
   UI journey also passed; fresh independent GitHub review and CI remain required
   before merge. PR checks carry final evidence.
-- [PR #191](https://github.com/namarks/tres-fort/pull/191) carries this implementation;
-  exact-head independent review and all CI remain required before merge.
+- [PR #191](https://github.com/namarks/tres-fort/pull/191) carries the merged P3
+  foundation. Its checks retain the final repository-delivery evidence.
 - Start: verified remote main `90f968383629107bd7a95b37bd44da177f87305f`.
   Concurrent onboarding and App Store sessions require isolated work; keep shared
   entry-copy changes narrow and reconcile current main before merge.

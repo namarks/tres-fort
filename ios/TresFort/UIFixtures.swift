@@ -71,6 +71,9 @@ enum UIFixtureModel {
             auth.phase = .signedIn
         }
         if UIFixtureScenario.selected == .coachApproval {
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_PENDING_COACH_SETUP"] == "1" {
+                auth.requestEntry(.coach)
+            }
             auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
         }
         if UIFixtureScenario.selected == .activationInvite {
@@ -104,6 +107,7 @@ struct UIFixtureView: View {
     @Environment(\.dynamicTypeSize) private var systemDynamicTypeSize
     @ObservedObject var auth: AuthModel
     let scenario: UIFixtureScenario
+    @State private var openedURL: URL?
 
     var body: some View {
         Group {
@@ -124,6 +128,16 @@ struct UIFixtureView: View {
                     Text("SYNTHETIC · \(scenario.rawValue)")
                         .font(.caption).dynamicTypeSize(.large)
                         .accessibilityIdentifier("fixture.scenario")
+                    if ProcessInfo.processInfo.environment["TRESFORT_UI_CAPTURE_LINKS"] == "1", let openedURL {
+                        Text(openedURL.absoluteString).font(.caption2).lineLimit(1)
+                            .accessibilityIdentifier("fixture.opened-url")
+                        if openedURL.host == "claude.ai" {
+                            Button("Simulate coach return") {
+                                auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
+                            }
+                            .accessibilityIdentifier("fixture.coach-return")
+                        }
+                    }
                     RootView(defaults: UIFixtureModel.defaults,
                              now: { CalendarProjection.date(from: "2026-09-08")! }).environmentObject(auth)
                 }
@@ -133,7 +147,19 @@ struct UIFixtureView: View {
         }
         .defaultAppStorage(UIFixtureModel.defaults.preferences)
         .tint(Theme.accent)
-        .environment(\.openURL, OpenURLAction { _ in .discarded })
+        .environment(\.openURL, OpenURLAction { url in
+            openedURL = url
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_RETURN_WITH_SETUP_OPEN"] == "1", url.host == "claude.ai" {
+                // Simulate an incoming link without accepting an outbound
+                // handoff: setup must be replaced by the incoming intent alone.
+                auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
+                return .discarded
+            }
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_CAPTURE_LINKS"] == "1", url.host == "claude.ai" {
+                return .handled
+            }
+            return .discarded
+        })
         .environment(\.dynamicTypeSize,
             ProcessInfo.processInfo.environment["TRESFORT_UI_LARGE_TEXT"] == "1" ? .accessibility5 : systemDynamicTypeSize)
     }
@@ -465,7 +491,7 @@ private struct UIFixtureServer {
     mutating func respond(_ request: URLRequest) throws -> (Int, Data) {
         guard request.url?.host == "ui-fixture.invalid" else { throw URLError(.unsupportedURL) }
         guard !scenario.isHistory else { throw URLError(.notConnectedToInternet) }
-        if scenario == .coachApproval, request.url?.path.hasPrefix("/api/coach-requests/") == true {
+        if (scenario == .coachApproval || scenario.isActivation), request.url?.path.hasPrefix("/api/coach-requests/") == true {
             let value: [String: Any]
             if request.httpMethod == "POST" {
                 value = ["allowed": true, "redirect_uri": "https://client.example/callback?code=synthetic"]

@@ -49,7 +49,10 @@ beforeAll(async () => {
   await db.prepare('SELECT id FROM workouts LIMIT 1').all();
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 it('bounds conflict-read work while retaining the real scheduling result', async () => {
   const observer = createD1UsageObserver(env.DB);
@@ -61,7 +64,8 @@ it('bounds conflict-read work while retaining the real scheduling result', async
 });
 
 it('bounds the eight-session coaching brief and retains text, tombstones and older completion context', async () => {
-  vi.spyOn(Date, 'now').mockReturnValue(Date.parse(`${TODAY}T12:00:00Z`));
+  // The brief's civil-date boundary uses new Date(), not only Date.now().
+  vi.setSystemTime(new Date(`${TODAY}T12:00:00Z`));
   const observer = createD1UsageObserver(env.DB);
   const result = await handleMcp({ jsonrpc: '2.0', id: 7, method: 'tools/call',
     params: { name: 'get_coach_brief', arguments: {} } }, { ...env, DB: observer.db }, userId);

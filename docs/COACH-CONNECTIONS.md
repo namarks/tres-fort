@@ -8,55 +8,70 @@ API usage, API-key entry, embedded chat, or automatic model selection.
 ## Setup
 
 In Très Fort, open **Profile → Coach → Set up your AI coach** (or **Connect
-another AI app**). Choose an app, review the disclosure, and generate a connect
-code. Copy the server URL from that environment's setup screen. The personal
-code is entered only on the Très Fort OAuth consent page, never into chat,
-a shell command, an API-key field, or a bearer-token field.
+another AI app**). Choose Claude, Codex, or another compatible app. Setup is
+available immediately; generating a connect code is not a prerequisite.
+Both providers can have separate connections to the same training account.
+The status at the top means an AI app has access, not that the selected
+provider completed setup.
+
+### Claude
+
+Tap **Connect with Claude**. The [documented install link](https://claude.com/docs/connectors/building/directory-vs-custom#share-an-install-link)
+opens Claude's custom-connector form with the name and current environment's
+MCP URL filled in. It contains no member code or credential. Sign in if needed,
+review and add the connector, then choose **Open Très Fort to review access**
+on the consent page. Explicitly allow access in the signed-in app and continue
+back to Claude. Setup closes after a successful browser handoff so the returned
+access request can present immediately. Incoming approval also replaces an open
+or restored setup sheet, including when a copied link was used. Profile, Today
+and onboarding all use this same setup presentation. If Claude intercepts the install link
+without displaying the form, return to setup, press and hold **Connect with
+Claude**, choose **Copy setup link**, and paste it into Safari. Native mobile
+connector installation is in beta;
+[web setup remains the primary custom-connector path](https://support.claude.com/en/articles/11176164-use-connectors-to-extend-claude-s-capabilities).
+
+If the installed Worker or iOS version cannot complete app approval, expand
+**Use a connect code** in Très Fort. Generate a code and enter it only on the
+Très Fort consent page. **Manual setup** retains the name and server URL.
+Existing Claude grants are unaffected by selecting another app.
 
 ### Codex
 
-Use the desktop app's form; terminal commands are optional:
+Tap **Copy setup for Codex** and paste the request into Codex. It asks Codex to
+add the environment's remote MCP endpoint with OAuth, preserve existing
+connections, guide the browser sign-in and verify access by reading the coaching
+brief. It contains no member code and requests no plan changes or logging.
+Copying the request itself does not create or verify a connection.
 
-1. Open **Settings → Plugins → Add → Add MCP server**. Older versions use
-   **Settings → MCP servers → Add server**.
+The direct Codex connection still needs a computer for initial setup. Complete
+OAuth in that computer's browser and use the **Use a connect code** fallback
+when prompted. A desktop loopback callback cannot complete on an iPhone.
+After pairing, [ChatGPT Remote](https://learn.chatgpt.com/docs/remote-connections)
+can use the connected host's tools from a phone while the host stays awake,
+online and signed in. This does not install a hosted ChatGPT plugin.
+
+**Manual setup** retains the desktop form:
+
+1. Open **Settings → MCP servers → Add server** in the desktop app.
 2. Choose **Streamable HTTP**, name the server `tres-fort`, and enter the URL
    shown by Très Fort.
-3. Save, then choose **Authenticate**. Restart the server if prompted, and
-   complete the browser consent using the personal connect code.
+3. Save, restart if prompted, select **Authenticate**, then complete browser
+   consent. Some older versions place MCP setup under **Settings → Plugins**.
 
-Desktop configuration does not install a hosted plugin into ChatGPT web or
-iPhone. This path still requires entering a server URL once.
-
-For users who prefer the CLI, **Advanced: command-line setup** contains:
+**Command-line setup**, nested inside Manual setup, contains:
 
 ```sh
 codex mcp add tres-fort --url "https://<your-worker>.workers.dev/mcp"
 codex mcp login tres-fort
 ```
 
-Complete the browser consent using the personal connect code. In Codex, ask
-“Use Très Fort to load my coaching brief.” Confirm the returned plan belongs
-to the signed-in Très Fort member. The CLI and other Codex clients using the
-same host configuration share the connection; a different host needs its own
-setup. Provider account access and limits are controlled by that provider.
-
-[Official Codex MCP documentation](https://developers.openai.com/codex/mcp)
-documents Streamable HTTP, OAuth, Dynamic Client Registration, server instructions,
-and the login command. Native HTTP loopback callbacks may vary their listener
+[Official Codex MCP documentation](https://learn.chatgpt.com/docs/extend/mcp)
+documents the shared host configuration, OAuth and login command. A different
+host needs its own setup. Native HTTP loopback callbacks may vary their listener
 port at authorization time under [RFC 8252 section 7.3](https://www.rfc-editor.org/rfc/rfc8252#section-7.3).
 Très Fort allows this for literal `127.0.0.1` and `[::1]` callbacks while keeping
 the registered host, path and query fixed. Token exchange remains bound to the
 exact authorized callback, including its chosen port.
-These are the capabilities this setup uses; advertising
-support is not evidence of a successful connection to a deployed Très Fort release.
-
-### Claude
-
-Use an account supporting custom connectors. Open **Settings → Connectors → Add
-custom connector**, name it Très Fort, and enter the server URL. Leave optional
-client ID/secret fields empty so Dynamic Client Registration can run. Connect,
-then enter the personal code on the Très Fort consent page. Existing Claude
-OAuth grants continue working; switching the app's setup choice does not revoke them.
 
 ### Other compatible apps and models
 
@@ -99,7 +114,7 @@ No provider API credentials are stored or forwarded by Très Fort.
 ### A full button-based connection
 
 The intended consumer flow is **Connect → install/authorize → return to Très
-Fort**. A button cannot register an arbitrary server in another app unless that
+Fort**. Claude provides a public prefilled install link without directory publication. A button cannot register an arbitrary server in another app unless that
 app supports an install link or already lists the integration.
 
 For ChatGPT/Codex, the supported distribution route is a published remote

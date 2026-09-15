@@ -21,9 +21,11 @@ Repository delivery and actual provider connection/release evidence remain disti
   - Exercise synthetic OAuth client flows, coaching reads/writes, stale-version
     conflicts, refresh/disconnect, API rollout compatibility, and iOS setup.
   - Local Codex review completed after the callback and disclosure fixes.
-    Repository merge still requires the delivery gate below.
+    Repository delivery is complete; the merged PR and release evidence are below.
 - [ ] **P2 — Release and verify a real Codex connection**
-  - Release the Worker and updated iOS build under explicit release authority.
+  - Worker and iOS 1.0 (42) released under explicit owner authority on
+    2026-09-14 Pacific; [release receipt](../app-store-submission/release-42.md)
+    records exact source, production traffic and internal TestFlight availability.
   - Owner completes Codex sign-in using their own code, verifies a read and one
     reversible plan change in iOS, then disconnects/reconnects.
 - [x] **P3 — Prepare mobile account approval and the plugin**
@@ -42,7 +44,7 @@ Repository delivery and actual provider connection/release evidence remain disti
     a Chromium CSP redirect regression and an understated legacy logging hint;
     both are fixed with behavioral regression coverage. Unfinished approvals
     remain cancellable from Profile even before a token exists.
-    Final local review and exact-head GitHub review/CI remain merge gates.
+    PR #191 retains the completed foundation delivery checks.
   - CI scope correction: the former smoke list had expanded to 56 of 77 UI
     methods; one shard spent 18 minutes on UI tests and another hit the job
     timeout. Following the owner's cost/latency concern, PRs keep all unit tests
@@ -72,14 +74,17 @@ Repository delivery and actual provider connection/release evidence remain disti
     plan validation.
     Inspected synthetic Claude/Codex screenshots. Review follow-ups cover the
     browser-return presentation, connected-status journey and family quickstart.
-    Exact-head independent GitHub review and CI are
-    required for the follow-up merge. Real-device provider handoff remains P2/P4.
+    [PR #207](https://github.com/namarks/tres-fort/pull/207) merged as
+    `5df9208fc01219f298866ee4528cda533b86d33d` after exact-head independent
+    review and all eight checks passed. The merged-source CI also passed.
+    Real-device provider handoff remains P2/P4.
 - [ ] **P4 — Publish and verify the consumer Connect button**
-  - Obtain owner release/submission authority, verified publisher identity,
+  - Obtain owner plugin submission/publication authority, verified publisher identity,
     dedicated synthetic reviewer access and approved terms. Worldwide availability
     in provider-supported countries is selected; a terms draft is prepared for review.
-  - Release/verify the website association, iOS app and Worker; submit the
-    prepared remote MCP plugin and address provider review.
+  - Website association, iOS app and Worker release are recorded in the
+    build 42 receipt; submit the prepared remote MCP plugin after the named
+    owner inputs and address provider review.
   - After provider approval/publication produces an actual install URL, wire
     that URL into the app and verify install, approval, coaching read/write,
     iOS sync and disconnect on iPhone. No placeholder install URL is shipped.
@@ -88,24 +93,31 @@ Repository delivery and actual provider connection/release evidence remain disti
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P2 | gated_by | external:owner-byo-coach-release | Production, iOS distribution and a real account connection need their own authority and owner-side credentials. |
+| P2 | gated_by | external:owner-byo-coach-device-verification | Production and internal TestFlight release are complete; the real-provider connection requires the owner's signed-in iPhone and AI account. |
 | P4 | gated_by | external:owner-coach-plugin-publication | Publisher identity, public listing and provider submission require owner authority; provider approval must produce a real install URL. |
 
 ## Next step
 
-**Now (@owner):** Approve the staged app/website/Worker release and complete
-provider identity, reviewer-access, terms and submission inputs for P2/P4.
-The P3.1 follow-up is implemented and locally verified; its repository delivery
-must pass the exact-head gate below. P3 landed in [PR #191](https://github.com/namarks/tres-fort/pull/191),
-merged 2026-09-13 as `5312a32b05ed4375b754573fcbcbbd453d16b940`.
-P2/P4 retain their release/publication gates. Claude's documented install link
-does not require directory review; a phone-only Codex install still does.
-Identity verification, synthetic reviewer access, terms approval and provider
-attestations remain owner-managed inputs.
+**Now (@owner):** Install TestFlight 1.0 (42) and complete the real-provider
+connection, coaching read, reversible edit, iOS sync and disconnect/reconnect
+checks. Claude's install link and native approval are released, but their full
+physical-iPhone round trip has not been verified. Codex's direct connection still
+uses the desktop setup; a phone-only hosted install requires P4 publication.
 
-**Repository delivery gate (@agent):** Require fresh independent review of the
-exact follow-up head, all relevant CI terminal-green, and no blocking findings
-or unresolved threads. Merge is not a production or iOS release.
+**Release complete (2026-09-14 Pacific):** The owner authorized the latest
+production and TestFlight release. Worker version
+`92adb0e0-28bd-4952-81ad-b09029f75ac9` serves the reviewed source at 100% traffic;
+Apple reports build 42 VALID, IN_BETA_TESTING and assigned to internal Testers.
+The website already matched the release and all migrations were already applied.
+See the [exact release receipt](../app-store-submission/release-42.md). Public
+checks do not prove authenticated training behavior or a physical-device handoff.
+
+**Plugin publication remains gated:** Complete publisher identity, dedicated
+synthetic reviewer access, terms approval and explicit submission/publication
+authority. This release did not submit a plugin or publish the draft terms.
+Claude's documented install link does not require directory review; a phone-only
+Codex install still does. P3 landed in [PR #191](https://github.com/namarks/tres-fort/pull/191);
+P3.1 landed in [PR #207](https://github.com/namarks/tres-fort/pull/207).
 
 ## Notes / open questions
 
@@ -124,13 +136,13 @@ or unresolved threads. Merge is not a production or iOS release.
   across the full run and the two corrected lazy-row navigation reruns; the
   Codex setup screenshots were inspected. Local Codex reviews, including review
   of the command-free setup, found no actionable regressions. The revised setup
-  UI journey also passed; fresh independent GitHub review and CI remain required
-  before merge. PR checks carry final evidence.
+  UI journey also passed. The merged PR checks carry the final independent
+  review and CI evidence; no repository-delivery gate remains open.
 - [PR #191](https://github.com/namarks/tres-fort/pull/191) carries the merged P3
   foundation. Its checks retain the final repository-delivery evidence.
-- Start: verified remote main `90f968383629107bd7a95b37bd44da177f87305f`.
-  Concurrent onboarding and App Store sessions require isolated work; keep shared
-  entry-copy changes narrow and reconcile current main before merge.
+- Initial source was remote main `90f968383629107bd7a95b37bd44da177f87305f`.
+  Implementation used isolated worktrees and integrated the concurrent onboarding
+  and App Store changes before the recorded merges.
 - [Connection guide](../../COACH-CONNECTIONS.md) defines supported capabilities,
   rollout behavior and the real-account verification procedure. Synthetic protocol
   fixtures do not prove a specific installed Codex version or live model response.

@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-09-13 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-09-14 · Theme: release
 
 ## Goal
 
@@ -9,8 +9,11 @@ for a free, United States-only first release. Completion requires an exact
 candidate, compatible production backend, documented verification and owner
 exceptions, accurate privacy disclosures, listing and reviewer access. The owner
 requested expedited shipment on 2026-09-10. Complete the prepared App Store
-package and submission requirements with the agreed manual-release setting;
-preparation and TestFlight availability do not mean public release.
+package and submission requirements while retaining the existing submission.
+The current Apple release setting is AFTER_APPROVAL, as read back on 2026-09-14
+Pacific. Resolve that automatic-publication setting with the owner before review
+finishes; it is not evidence of separate public-release authority. Preparation
+and TestFlight availability do not mean public release.
 
 ## Phases
 
@@ -57,7 +60,7 @@ preparation and TestFlight availability do not mean public release.
       validation and upload of 1.0 (40). Xcode validation/upload succeeded;
       Apple reports VALID and IN_BETA_TESTING in internal Testers. Exact source
       and the signed archive are retained. P3(a) live checks remain unperformed.
-- [ ] **P4 — Submission and manual-release handoff**
+- [ ] **P4 — Submission and public-release handoff**
   - [x] Select build 40 and retain Apple's review-submission receipt. The owner
     submitted 1.0 (40) on 2026-09-14 at 01:23:28 UTC (2026-09-13 Pacific);
     API readback confirms WAITING_FOR_REVIEW and MANUAL release.
@@ -74,23 +77,46 @@ preparation and TestFlight availability do not mean public release.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P4 | gated_by | external:app-store-owner-fields | Confirm account agreements and privacy publication before public release; review submission is already acknowledged and release remains manual. |
+| P4 | gated_by | external:app-store-owner-fields | Confirm account agreements and privacy publication before public release; Resolve automatic-publication authority or restore MANUAL under owner instruction, and confirm agreements/privacy before public release; review submission is already acknowledged. |
 
 ## Next step
 
-**Now (@agent):** Finish the runnable P1/P2 audit against pinned source
+**Now (@owner):** Resolve build 40's AFTER_APPROVAL setting before Apple finishes
+review. Choose an authorized change to MANUAL, or explicitly authorize automatic
+public release after addressing or specifically waiving the remaining readiness
+gates. The 2026-09-14 deployment request authorized the latest backend and
+TestFlight release; it did not establish that those App Store gates were closed.
+The agent has asked whether to switch build 40 to manual release. Do not infer
+approval from silence or change the Apple setting without the owner's decision.
+
+**Agent follow-through:** Finish the runnable P1/P2 audit against pinned source
 `9373d6f0acad9a9ef444e54fe9c9d8a8b7ad24c8`: reconcile privacy/account and group
 controls, public policy/support availability, listing and reviewer instructions,
 and the documented verification exceptions. Record evidence and identify any
 owner-only App Store fields before completing those phases. The pinned backend
-is now deployed. Its authenticated session-swap and workout-name compatibility
+was released; production has since advanced to the source in the build 42
+receipt below. Authenticated session-swap and workout-name compatibility
 verification remains unperformed; public health and unauthenticated responses
 do not establish those behaviors. Build 40 was subsequently validated and uploaded
 with explicit owner approval. Do not mark the outstanding live checks passed or
 waived from that upload approval or Apple's submission acceptance. The owner
 has now submitted build 40; finish P1/P2 and retain the P3(a) evidence or a specific
-verification exception before the public-release decision. Keep manual release
-and inspect the existing submission for Apple review responses; do not resubmit.
+verification exception before the public-release decision. Inspect the existing
+submission for Apple review responses, carry out the owner's release-mode
+decision when supplied, and read the result back. Do not resubmit or change the
+selected build from a TestFlight upload.
+
+**Latest production/TestFlight release (2026-09-14 Pacific):** The owner
+requested the latest version. [Build 42's release receipt](release-42.md) records
+source `5df9208fc01219f298866ee4528cda533b86d33d`, terminal-green checks,
+production at 100% traffic, public health/discovery and app-link verification,
+and iOS 1.0 (42) VALID in internal Testers. No migration was needed. This latest
+beta does not replace the App Review candidate. Apple readback at
+2026-09-15T03:02:09.514Z still selects **build 40**, WAITING_FOR_REVIEW, with
+**AFTER_APPROVAL** release. That live setting supersedes the older MANUAL
+receipts below; this run did not change it or make a public App Store release.
+External Alpha Testers do not have build 42. Physical-device and authenticated
+training verification remain open; no new waiver is inferred from this release.
 
 **App Review submitted (2026-09-13 Pacific):** At 2026-09-14T01:23:28.16Z Apple
 accepted review submission `ea595b5e-86a6-4704-b1ef-ae87b971c728`. A fresh API
@@ -136,7 +162,8 @@ readback confirms version 1.0 (40), VALID processing, IN_BETA_TESTING and intern
 Testers membership, with non-exempt encryption false. No second upload is needed.
 The signed archive, source manifest and affirmative Xcode/API receipts are retained.
 Xcode's optional post-upload local export button remained disabled; no separate
-IPA export is claimed. Build 40 is selected and is now **Waiting for Review**; public release remains manual.
+IPA export is claimed. Build 40 remains selected and **Waiting for Review**;
+the current release setting is recorded in the latest distribution update above.
 
 PR #192's onboarding work and PR #188's catalog additions advanced main during
 preparation. PR #193's tested integration includes that work, but the release

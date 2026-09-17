@@ -84,14 +84,18 @@ final class TodayNavigationJourneyTests: XCTestCase {
         tap(app.buttons["calendar.dateActions"], in: app)
         XCTAssertTrue(app.buttons["calendar.chooseWorkout"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["calendar.moveWorkout"].exists)
-        app.staticTexts["SKIPPED"].tap()
+        app.staticTexts["SKIPPED"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         tap(app.navigationBars["Workout date"].buttons["Done"], in: app)
         tap(app.buttons["calendar.date.2026-09-09"], in: app)
         XCTAssertTrue(app.buttons["calendar.dateActions"].waitForExistence(timeout: 5))
         capture("moved-workout-date")
         tap(app.buttons["calendar.dateActions"], in: app)
         tap(app.buttons["calendar.removeWorkout"], in: app)
-        tap(app.buttons["Cancel"], in: app)
+        // Native confirmation popovers omit the cancel row; tapping their
+        // dismissal region cancels without changing the planned workout.
+        let dismissRegion = app.otherElements["PopoverDismissRegion"]
+        XCTAssertTrue(dismissRegion.waitForExistence(timeout: 5))
+        dismissRegion.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)).tap()
         XCTAssertTrue(app.staticTexts["STRENGTH A"].waitForExistence(timeout: 5))
         tap(app.buttons["calendar.dateActions"], in: app)
         tap(app.buttons["calendar.removeWorkout"], in: app)
@@ -100,7 +104,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
         tap(app.buttons["calendar.dateActions"], in: app)
         XCTAssertTrue(app.buttons["calendar.chooseWorkout"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["calendar.removeWorkout"].exists)
-        app.staticTexts["SKIPPED"].tap()
+        app.staticTexts["SKIPPED"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         tap(app.navigationBars["Workout date"].buttons["Done"], in: app)
         tap(app.buttons["calendar.weeklySchedule"], in: app)
         XCTAssertTrue(app.navigationBars["Weekly schedule"].waitForExistence(timeout: 5))
@@ -167,6 +171,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
         XCTAssertFalse(app.buttons["calendar.removeWorkout"].exists)
         let actions = app.buttons["calendar.dateActions"]
         XCTAssertGreaterThanOrEqual(actions.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(actions.frame.height, 44)
         XCTAssertTrue(actions.isHittable)
 
         func assertGroupedPreview() {
@@ -189,11 +194,20 @@ final class TodayNavigationJourneyTests: XCTestCase {
         assertGroupedPreview()
         capture("calendar-grouped-workout")
         tap(app.buttons["Show demo for Push-Up"], in: app)
-        XCTAssertTrue(app.staticTexts["PUSH-UP"].waitForExistence(timeout: 5))
-        app.swipeDown()
+        let demoTitle = app.staticTexts["PUSH-UP"]
+        XCTAssertTrue(demoTitle.waitForExistence(timeout: 5))
+        // Drag the presented sheet's top padding. An application-wide swipe
+        // can scroll its content while leaving the modal over the agenda.
+        let sheetTop = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
+            .withOffset(CGVector(dx: 0, dy: demoTitle.frame.minY - 12))
+        sheetTop.press(forDuration: 0.1,
+            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)))
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: demoTitle)
+        waitForExpectations(timeout: 5)
         XCTAssertTrue(actions.waitForExistence(timeout: 5))
-        // Native toolbar accessibility bounds can be smaller than its touch
-        // area. Exercise the edge of the intended 44pt target directly.
+        XCTAssertTrue(actions.isHittable)
+        // A large accessibility frame alone does not prove the full target
+        // receives touches. Exercise the bottom edge of the 44pt area.
         actions.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
             .withOffset(CGVector(dx: 0, dy: 21)).tap()
         XCTAssertTrue(app.buttons["calendar.moveWorkout"].waitForExistence(timeout: 5))

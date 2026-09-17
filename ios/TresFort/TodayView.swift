@@ -177,6 +177,7 @@ private struct PendingTerminalBanner: View {
 }
 
 struct TodayView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var feedbackPresentation: WorkoutFeedbackPresentation?
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
@@ -191,7 +192,7 @@ struct TodayView: View {
     /// Confirms discarding the in-progress workout (destructive, undo-less).
     @State private var showDiscardConfirm = false
     @State private var discardTarget: WorkoutTerminalActionTarget?
-    /// Rest overlay collapsed to a floating pill so the runner underneath
+    /// Rest overlay collapsed to compact controls so the runner underneath
     /// (current exercise, jump strip, completed sets) is visible/scrollable
     /// without ending the rest timer. Remember the member's presentation
     /// preference across rests; the timer itself remains model-owned.
@@ -224,7 +225,7 @@ struct TodayView: View {
                     if !sync.setCorrections.isEmpty {
                         PendingCorrectionsView(sync: sync)
                     }
-                    if sync.restEndDate != nil && restMinimized {
+                    if sync.restEndDate != nil && restMinimized && !dynamicTypeSize.isAccessibilitySize {
                         RestPill(sync: sync) { restMinimized = false }
                     }
                     content
@@ -347,11 +348,16 @@ struct TodayView: View {
         }
     }
 
+    private var scrollableRestExpansion: (() -> Void)? {
+        guard dynamicTypeSize.isAccessibilitySize, sync.restEndDate != nil, restMinimized else { return nil }
+        return { restMinimized = false }
+    }
+
     @ViewBuilder private var content: some View {
         if sync.finished {
-            FinishedView(sync: sync)
+            FinishedView(sync: sync, onExpandRest: scrollableRestExpansion)
         } else if sync.running {
-            RunnerView(sync: sync, auth: auth)
+            RunnerView(sync: sync, auth: auth, onExpandRest: scrollableRestExpansion)
         } else if sync.plan == nil && !sync.canCreateRoutine {
             PlanLoadRecoveryView(sync: sync)
         } else if sync.canChooseStarterWorkout && !sync.todayIsCompleted {
@@ -703,6 +709,7 @@ private struct RunnerView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
+    var onExpandRest: (() -> Void)? = nil
 
     /// Tap-to-edit on the big weight number → decimal-pad sheet. Persists
     /// the in-flight edit string (`""` while the sheet is open and the user
@@ -737,6 +744,10 @@ private struct RunnerView: View {
             VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
+                        if let onExpandRest {
+                            RestPill(sync: sync, horizontalPadding: 0, onExpand: onExpandRest)
+                                .padding(.bottom, 16)
+                        }
                         if sync.workoutStart != nil {
                             TimelineView(.periodic(from: .now, by: 1)) { _ in
                                 let e = sync.workoutElapsedSeconds
@@ -840,12 +851,10 @@ private struct RunnerView: View {
                             }
                         }
                         .font(.subheadline).padding(.top, 8)
-                        .accessibilityIdentifier("runner.options")
                         DisclosureGroup("Last session & technique") {
                             prescriptionContext(ex: ex)
                         }
                         .font(.subheadline).padding(.top, 12)
-                        .accessibilityIdentifier("runner.context")
                         Button {
                             swapTarget = sync.workoutSwapTarget
                         } label: {
@@ -894,9 +903,11 @@ private struct RunnerView: View {
                     }
                     .padding(20)
                 }
+                .contentShape(Rectangle())
                 // A sibling keeps the action inside the runner's hit-testing
                 // bounds as the full rest screen hides and restores app chrome.
                 RunnerSetAction(sync: sync, ex: ex)
+                    .zIndex(1)
             }
             .sheet(item: $swapTarget) { target in
                 WorkoutExerciseSwapSheet(sync: sync, target: target)
@@ -1556,23 +1567,29 @@ private struct RestOverlay: View {
 
 /// In-flow rest controls leave workout inputs available and never overlap them.
 private struct RestPill: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var sync: SyncModel
+    var horizontalPadding: CGFloat = 20
     let onExpand: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
                 let remaining = sync.restEndDate.map { Int(ceil($0.timeIntervalSince(ctx.date))) } ?? 0
-                HStack {
+                let layout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4)) : AnyLayout(HStackLayout())
+                layout {
                     Button(action: onExpand) {
                         Label("Rest " + clock(remaining), systemImage: "timer")
                             .font(.headline).frame(minHeight: 44)
                     }
                     .accessibilityLabel("Expand rest timer")
                     .accessibilityValue("\(max(0, remaining)) seconds remaining")
-                    Spacer()
-                    Button("End rest") { sync.skipRest() }
-                        .frame(minHeight: 44).accessibilityIdentifier("rest.done")
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer() }
+                    Button { sync.skipRest() } label: {
+                        Text("End rest").frame(minHeight: 44).contentShape(Rectangle())
+                    }
+                    .accessibilityIdentifier("rest.done")
                 }
             }
             if !sync.finished, let exercise = sync.currentExercise {
@@ -1582,9 +1599,8 @@ private struct RestPill: View {
             LastRunnerSetReview(sync: sync)
         }
         .foregroundStyle(Theme.text).tint(Theme.accent)
-        .padding(.horizontal, 20).padding(.bottom, 8)
+        .padding(.horizontal, horizontalPadding).padding(.bottom, 8)
         .background(Theme.surface)
-        .accessibilityIdentifier("rest.compact")
     }
 }
 
@@ -1615,6 +1631,7 @@ private struct RestNextSetValues: View {
 
 private struct FinishedView: View {
     @ObservedObject var sync: SyncModel
+    var onExpandRest: (() -> Void)? = nil
 
     /// All live WORKING sets in today's session (warm-ups excluded), taken
     /// straight from the session rather than per-slot so the same movement in
@@ -1632,6 +1649,9 @@ private struct FinishedView: View {
         let readyToFinish = sync.canFinishResolvedWorkout
         ScrollView {
             VStack(spacing: 16) {
+                if let onExpandRest {
+                    RestPill(sync: sync, horizontalPadding: 0, onExpand: onExpandRest)
+                }
                 Text(finishPending ? "WAITING" : readyToFinish ? "SETS DONE" : "REVIEW SETS")
                     .font(Theme.display(finishPending ? 64 : 58))
                     .foregroundStyle(Theme.done)

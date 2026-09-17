@@ -3,7 +3,20 @@ import XCTest
 final class WeeklyScheduleJourneyTests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
-    private func launch(fixture: String = "library", failure: String? = nil) -> XCUIApplication {
+    override func tearDownWithError() throws {
+        if (testRun?.failureCount ?? 0) > 0 {
+            let hierarchy = XCTAttachment(string: XCUIApplication().debugDescription)
+            hierarchy.name = "weekly-schedule-failure-accessibility"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+            let screenshot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+            screenshot.name = "weekly-schedule-failure"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
+        }
+    }
+
+    private func launch(fixture: String = "app-store", failure: String? = nil) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = fixture
         if let failure { app.launchEnvironment["TRESFORT_UI_SCHEDULE_FAILURE"] = failure }
@@ -48,33 +61,33 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
         openSchedule(in: app)
         XCTAssertFalse(app.buttons["weeklySchedule.save"].isEnabled)
         assertChoice("Rest", on: "mon", in: app)
-        choose("Hotel", on: "mon", in: app)
+        choose("Strength B", on: "mon", in: app)
         app.buttons["weeklySchedule.save"].tap()
         assertClosed(in: app)
         openSchedule(in: app)
-        assertChoice("Hotel", on: "mon", in: app)
-        assertChoice("Gym", on: "tue", in: app)
+        assertChoice("Strength B", on: "mon", in: app)
+        assertChoice("Strength A", on: "tue", in: app)
         XCTAssertFalse(app.buttons["weeklySchedule.save"].isEnabled)
     }
 
     func testDirtyDraftSurvivesSwipeAndKeepEditingUntilExplicitDiscard() {
         let app = launch()
         openSchedule(in: app)
-        choose("Hotel", on: "mon", in: app)
+        choose("Strength B", on: "mon", in: app)
         app.navigationBars["Weekly schedule"].swipeDown()
-        assertChoice("Hotel", on: "mon", in: app)
+        assertChoice("Strength B", on: "mon", in: app)
         app.buttons["weeklySchedule.cancel"].tap()
         let confirmation = app.alerts["Discard schedule changes?"]
         XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
         confirmation.buttons["Keep editing"].tap()
-        assertChoice("Hotel", on: "mon", in: app)
+        assertChoice("Strength B", on: "mon", in: app)
         XCTAssertTrue(app.buttons["weeklySchedule.save"].isEnabled)
         app.buttons["weeklySchedule.cancel"].tap()
         confirmation.buttons["Discard changes"].tap()
         assertClosed(in: app)
         openSchedule(in: app)
         assertChoice("Rest", on: "mon", in: app)
-        assertChoice("Gym", on: "tue", in: app)
+        assertChoice("Strength A", on: "tue", in: app)
         app.buttons["weeklySchedule.cancel"].tap()
         assertClosed(in: app)
         XCTAssertFalse(confirmation.exists, "An unchanged schedule should close directly")
@@ -91,12 +104,12 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
     private func assertFailedSaveCanRetry(failure: String) {
         let app = launch(failure: failure)
         openSchedule(in: app)
-        choose("Hotel", on: "mon", in: app)
+        choose("Strength B", on: "mon", in: app)
         app.buttons["weeklySchedule.save"].tap()
         XCTAssertTrue(app.staticTexts["weeklySchedule.error"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.navigationBars["Weekly schedule"].exists)
-        assertChoice("Hotel", on: "mon", in: app)
-        assertChoice("Gym", on: "tue", in: app)
+        assertChoice("Strength B", on: "mon", in: app)
+        assertChoice("Strength A", on: "tue", in: app)
         if failure == "conflict" {
             XCTAssertTrue(app.staticTexts["weeklySchedule.conflict"].exists)
         }
@@ -104,7 +117,7 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
         app.buttons["weeklySchedule.save"].tap()
         assertClosed(in: app)
         openSchedule(in: app)
-        assertChoice("Hotel", on: "mon", in: app)
+        assertChoice("Strength B", on: "mon", in: app)
     }
 
     func testWorkoutStartStaysVisibleWhilePreviewScrolls() {

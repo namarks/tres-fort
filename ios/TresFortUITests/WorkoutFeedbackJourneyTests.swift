@@ -2,6 +2,9 @@ import XCTest
 
 final class WorkoutFeedbackJourneyTests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
+    override func tearDownWithError() throws {
+        if (testRun?.failureCount ?? 0) > 0 { print(XCUIApplication().debugDescription) }
+    }
     struct Fixture: Decodable { let recognized: String; let edited: String; let perceived_fatigue: Int }
     private func fixture() throws -> Fixture {
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "WorkoutFeedback", withExtension: "json"))
@@ -109,7 +112,13 @@ final class WorkoutFeedbackJourneyTests: XCTestCase {
         openFeedback(app); type("Previously saved feedback", app: app)
         app.buttons["Save feedback"].tap()
         let returnToExercises = app.buttons["Return to exercises"]
-        reveal(returnToExercises, app: app); returnToExercises.tap()
+        XCTAssertTrue(returnToExercises.waitForExistence(timeout: 5))
+        let finishAction = app.buttons["FINISH"]
+        // Hittability alone can include a clipped row behind the fixed footer.
+        for _ in 0..<6 where !returnToExercises.isHittable
+            || returnToExercises.frame.maxY > finishAction.frame.minY { app.swipeUp() }
+        XCTAssertLessThanOrEqual(returnToExercises.frame.maxY, finishAction.frame.minY)
+        returnToExercises.tap()
         openFinishSummary(app)
         XCTAssertTrue(app.staticTexts["Your saved feedback will be included."].exists)
         XCTAssertFalse(app.textViews["feedback.note"].exists)

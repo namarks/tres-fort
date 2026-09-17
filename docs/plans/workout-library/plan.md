@@ -184,13 +184,14 @@ No second editor, no per-session template copies, no weeks table.
   - Retain exact deployed source and client distribution evidence separately.
     This UX request does not authorize deployment, TestFlight or App Review.
 - [ ] **P0.4 — Streamline observed iOS workflows**
-  - [ ] **(a) Implement and verify the observed usability fixes**
+  - [x] **(a) Implement and verify the observed usability fixes**
     - Owner-approved after a hands-on simulator audit of `12dd49c`: put load
       and reps ahead of secondary controls, retain visible circuit membership,
       remember compact rest, and correct the exact last logged set from rest.
     - Use one Workouts entry for browsing and creation on scheduled/completed
       Today; retain direct creation for an empty library. Keep date-specific
-      selection explicit and Start/Schedule pinned in workout details.
+      selection explicit and Start/Schedule pinned in workout details. Place
+      date actions beside the date heading with a verified 44-point touch target.
     - Weekly scheduling uses explicit Cancel/Save, protects dirty drafts,
       submits the loaded plan identity/version, and retains failed/conflicted
       drafts for member-reviewed retry. Early finish starts with a summary;
@@ -200,9 +201,16 @@ No second editor, no per-session template copies, no weeks table.
       disclosure, and distinguishes Apple Health opt-in from Intervals status.
       RPE semantics, new onboarding behavior and additional providers remain
       outside this observed-fix slice.
-    - Verify synthetic simulator journeys, timer/navigation and circuit/load
-      regressions, accessibility-size rest controls, all iOS unit tests and
-      independent review. Hosted review and required CI remain merge gates.
+    - Local verification: 610 iOS unit tests completed with one existing skip
+      and no failures. All 43 distinct targeted UI journeys passed after fixes,
+      covering timer/navigation, circuit/load and kg entry, exact last-set
+      correction, accessibility-size rest/logging, schedule conflicts/retry,
+      calendar moves/removal and the 44-point menu edge, finish feedback and
+      Intervals connections. Runner, pinned workout actions, early finish and
+      calendar screenshots were inspected. Independent local review found no
+      remaining blocking issue. [PR #209](https://github.com/namarks/tres-fort/pull/209)
+      carries current-head hosted review and required CI as merge gates.
+      Manual physical-device and VoiceOver behavior remain unverified.
   - [ ] **(b) Distribute the verified client changes**
     - Owner-authorized release is separate from repository completion. Carry
       the exact merged source into the App Store release record; this request
@@ -311,7 +319,6 @@ No second editor, no per-session template copies, no weeks table.
 ## Execution frontier
 
 - P0.3(b)
-- P0.4(a)
 - P0.4(b)
 - P1
 
@@ -338,11 +345,11 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@agent):** Complete P0.4(a) simulator verification,
-exact-head independent review and CI, then merge the focused client changes.
-Manual desktop interaction is currently unavailable while the Mac is locked;
-automated simulator journeys retain screenshots for visual verification.
-P0.4(b) remains a separate owner-authorized distribution step.
+**Now (@owner):** Authorize P0.4(b) client distribution when ready, after
+PR #209 passes exact-head review/CI and merges. P0.4(a) implementation and local
+verification are complete; the repository delivery does not update an installed
+phone build. Carry the merged source through the App Store release record.
+The wider onboarding redesign and RPE semantics remain outside this slice.
 
 **Exercise-first release (@owner):** Authorize P0.3(b) when ready to release the exercise-first
 creation flow: deploy the compatible Worker before distributing its iOS build.

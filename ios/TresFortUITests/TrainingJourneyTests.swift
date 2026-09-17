@@ -8,8 +8,9 @@ final class TrainingJourneyTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = fixture
         if largeText { app.launchEnvironment["TRESFORT_UI_LARGE_TEXT"] = "1" }
-        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
-                               "-com.nmarkspdx.tresfort.weight-entry-unit", "lb"]
+        // The fixture clears its preference suite before launch. A command-line
+        // weight override would mask unit changes made through the UI.
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         XCTAssertTrue(app.staticTexts["fixture.scenario"].waitForExistence(timeout: 10))
         return app
@@ -321,7 +322,7 @@ final class TrainingJourneyTests: XCTestCase {
         app.buttons["Save"].tap()
         XCTAssertEqual(weight.value as? String, "20")
         screenshot("kilogram-weight-entry")
-        let options = app.buttons["runner.options"]
+        let options = app.buttons["Exercise options"]
         reveal(options, in: app); options.tap()
         reveal(app.segmentedControls["runner.weight.unit"], in: app)
         app.segmentedControls["runner.weight.unit"].buttons["lb"].tap()

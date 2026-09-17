@@ -33,11 +33,20 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertTrue(minimize.isHittable); minimize.tap()
         XCTAssertTrue(app.buttons["Expand rest timer"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["rest.done"].isHittable)
-        XCTAssertTrue(app.buttons["rest.editLastSet"].isHittable)
         XCTAssertTrue(app.buttons["LOG SET 2"].isHittable)
+        XCTAssertGreaterThan(app.scrollViews.firstMatch.frame.height, 100)
+        let edit = app.buttons["rest.editLastSet"]
+        for _ in 0..<6 where !edit.isHittable
+            || edit.frame.maxY > app.buttons["LOG SET 2"].frame.minY { app.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(edit.isHittable); edit.tap()
+        XCTAssertTrue(app.navigationBars["Correct set"].waitForExistence(timeout: 5))
+        app.buttons["Cancel"].tap()
+        for _ in 0..<6 where !app.buttons["rest.done"].isHittable { app.scrollViews.firstMatch.swipeDown() }
         capture("compact-rest-accessibility-size")
         app.buttons["rest.done"].tap()
         XCTAssertTrue(app.buttons["LOG SET 2"].isHittable)
+        app.buttons["LOG SET 2"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+        XCTAssertTrue(app.buttons["LOG SET 3"].waitForExistence(timeout: 5))
     }
 
     private func capture(_ name: String) {
@@ -83,8 +92,13 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         let reps = app.textFields["Reps"]
         XCTAssertTrue(reps.waitForExistence(timeout: 5))
         let old = reps.value as? String ?? ""
-        reps.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+        reps.tap()
+        // The numeric value is right-aligned; 95% falls before a one-digit
+        // value. Place the caret after the final glyph before replacing it.
+        reps.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0.5))
+            .withOffset(CGVector(dx: -1, dy: 0)).tap()
         reps.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: old.count) + "6")
+        XCTAssertEqual(reps.value as? String, "6")
         app.buttons["Save"].tap()
         XCTAssertTrue(app.staticTexts["135 × 6"].waitForExistence(timeout: 10))
         XCTAssertEqual(edit.label, "Edit last set of Barbell Squat")

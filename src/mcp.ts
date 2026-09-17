@@ -1,3 +1,4 @@
+import { measuredJson, measuredMcpOperation, responseBytes } from './operationMetrics';
 // /mcp route. Dual auth by design (DESIGN.md §6): static bearer (this
 // milestone — Claude Code / curl) plus OAuth 2.1 (next, for claude.ai /
 // desktop custom connectors). The 401 already advertises the OAuth
@@ -36,19 +37,6 @@ function unauthorized(c: any) {
   return c.json({ error: 'unauthorized' }, 401);
 }
 
-function isGetHistoryCall(body: unknown): boolean {
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) return false;
-  const request = body as { method?: unknown; params?: unknown };
-  if (
-    request.method !== 'tools/call' ||
-    request.params === null ||
-    typeof request.params !== 'object'
-  ) {
-    return false;
-  }
-  return (request.params as { name?: unknown }).name === 'get_history';
-}
-
 function isToolErrorResponse(body: unknown): boolean {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) return false;
   const result = (body as { result?: unknown }).result;
@@ -65,10 +53,11 @@ mcpRoutes.get('*', (c) => c.json({ error: 'method_not_allowed' }, 405));
 
 mcpRoutes.post('*', async (c) => {
   // Start the request-local collector before bearer resolution so the
-  // get_history total includes its authentication/owner reads. We identify
+  // selected-tool total includes its authentication/owner reads. We identify
   // the tool only after successful authentication and body parsing, preserving
   // the existing boundary that rejects unauthenticated bodies without reading
   // them. Other MCP calls discard their unused collector without logging.
+  const startedAt = performance.now();
   const observer = createD1UsageObserver(c.env.DB);
   const measuredEnv = { ...c.env, DB: observer.db };
   const token = bearer(c);
@@ -95,22 +84,28 @@ mcpRoutes.post('*', async (c) => {
   } catch {
     bg = undefined;
   }
-  const measuresHistory = isGetHistoryCall(body);
+  const operation = measuredMcpOperation(body);
+  let response_bytes: number | null = null;
   let outcome: 'ok' | 'error' = 'ok';
   try {
     const { status, json } = await handleMcp(
       body,
-      measuresHistory ? measuredEnv : c.env,
+      operation ? measuredEnv : c.env,
       userId,
       bg,
     );
-    if (status >= 500 || isToolErrorResponse(json)) outcome = 'error';
+    if (status >= 400 || isToolErrorResponse(json)) outcome = 'error';
     if (json === undefined) return c.body(null, status as any);
-    return c.json(json as object, status as any);
+    if (!operation) return c.json(json as object, status as any);
+    const response = measuredJson(c, json, status as any);
+    response_bytes = responseBytes(response);
+    return response;
   } catch (error) {
     outcome = 'error';
     throw error;
   } finally {
-    if (measuresHistory) logD1Usage('MCP get_history', outcome, observer.usage);
+    if (operation) logD1Usage(operation, outcome, observer.usage, {
+      duration_ms: performance.now() - startedAt, response_bytes,
+    });
   }
 });

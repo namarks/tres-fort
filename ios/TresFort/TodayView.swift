@@ -103,12 +103,13 @@ private struct PendingSetBannerGate: View {
 }
 
 struct CachedStateBanner: View {
+    var canTrainOffline = false
     var body: some View {
         HStack(spacing: 9) {
             Image(systemName: "wifi.slash")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundStyle(Theme.muted)
-            Text("OFFLINE · SHOWING LAST SAVED DATA")
+            Text(canTrainOffline ? "OFFLINE · SAVING WORK ON THIS IPHONE" : "OFFLINE · SHOWING LAST SAVED DATA")
                 .font(Theme.mono(10, .bold)).tracking(1)
                 .foregroundStyle(Theme.muted)
             Spacer()
@@ -216,7 +217,7 @@ struct TodayView: View {
                 Theme.background
                 VStack(spacing: 0) {
                     if sync.isUsingCachedState {
-                        CachedStateBanner()
+                        CachedStateBanner(canTrainOffline: sync.canUseOfflineWorkoutState)
                     }
                     if sync.pendingTerminalIntentCount > 0 {
                         PendingTerminalBanner(sync: sync)

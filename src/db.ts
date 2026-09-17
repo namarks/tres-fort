@@ -1,17 +1,23 @@
+import {
+  createIntervalsSyncService, INTERVALS_EFFECTIVE_ATHLETE_SQL, INTERVALS_SOURCE_FENCE_ENABLED_SQL,
+  type IntervalsConnectionStatus, type IntervalsUserCreds, type ActivityDedupeWindow,
+} from './services/intervalsSync';
+import { createOAuthGrantService } from './services/oauthGrants';
 import { addDays, weekdayOf, projectCalendar, projectCalendarWindow, projectRideConflicts } from './calendarProjection';
+import type { PlanVersionConflict, SlotEditOptions, SlotEditResult } from './planEditResult';
+export type { PlanVersionConflict } from './planEditResult';
 import type { CalendarCell, CalendarInputs, ProjectionEvent, ProjectionActivity, StrengthCalendarInputs } from './calendarProjection';
 export { addDays, weekdayOf, projectCalendar, detectConflicts } from './calendarProjection';
 export type { CalendarCell, EnduranceItem, ProjectionEvent, ProjectionActivity } from './calendarProjection';
-import { activitySourceAttribution, withActivityAttribution, deviceNameSQL, GARMIN_ACTIVITY_SQL, GARMIN_SUMMARY_ATTRIBUTION } from './dataAttribution';
+import { activitySourceAttribution, withActivityAttribution, GARMIN_ACTIVITY_SQL, GARMIN_SUMMARY_ATTRIBUTION } from './dataAttribution';
 import { applicableSessionSwap, parseSessionExerciseSwaps } from './sessionExerciseSwaps';
 import { parseTrainingProfile, starterWorkouts, type TrainingProfile } from './trainingProfile';
 import { sharedText, type GroupReportReason } from './groupSafety';
 import { APP_REVIEW_SUB } from './appReview';
-import { shareWorkoutSchemaCache, workoutDB } from './workoutSchema';
+
 import { validActivitySourceTime } from './activityTime';
-import { diagnosticErrorType } from './errors';
-// Service layer: all D1 access goes through here so REST (now) and MCP
-// (milestone b) share identical behavior. Timestamps are epoch-ms integers.
+// Public service facade: REST and MCP share the same domain operations.
+// Cohesive internal services live in services/; they never import this facade. Timestamps are epoch-ms integers.
 import { parseRunnerTargets, summarizeWorkout, type SummaryExercise, type SummarySet, type RunnerTargetSnapshot, type WorkoutSummary } from './workoutSummary';
 import { metricCohorts, estimatedOneRepMax, positiveSetTonnage, type MetricExercise } from './metrics';
 import type {
@@ -19,12 +25,10 @@ import type {
   DayConflict,
   WorkoutRow,
   EnrichedTemplateExercise,
-  Env,
   ExternalActivityRow,
   ExternalEventRow,
   Group,
   GroupInvite,
-  GroupMember,
   PeriodizationPhase,
   PlanMeta,
   PlanRow,
@@ -37,7 +41,6 @@ import type {
   StressModel,
   TemplateExerciseRow,
   Trip,
-  TripType,
   User,
   Weekday,
   WeeklySchedule,
@@ -49,13 +52,6 @@ import {
   serializePlanSnapshot,
   type PlanSnapshotDocument,
 } from './planSnapshots';
-import {
-  fetchCompletedActivities,
-  fetchPlannedEvents,
-  type ActivityFetchDeps,
-  type FetchDeps,
-  type Fetcher,
-} from './intervals';
 import {
   hasAppleProviderSigningConfig,
   revokeAppleRefreshToken,
@@ -93,7 +89,7 @@ interface SetPrescriptionContext { plan_id: string; version: number; day_id: str
 async function targetsForSetPrescription(
   db: D1Database, userId: string, context: SetPrescriptionContext, capturedAt: number,
 ): Promise<string | null> {
-  const stored = await workoutDB(db).prepare(
+  const stored = await db.prepare(
     'SELECT document FROM plan_snapshots WHERE user_id=?1 AND plan_id=?2 AND version=?3')
     .bind(userId, context.plan_id, context.version).first<{ document: string }>();
   if (!stored) return null;
@@ -214,7 +210,6 @@ export function createD1UsageObserver(db: D1Database): D1UsageObserver {
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
-  shareWorkoutSchemaCache(measuredDb, db);
   return { db: measuredDb, usage };
 }
 
@@ -222,8 +217,9 @@ export function logD1Usage(
   operation: string,
   outcome: 'ok' | 'error',
   usage: D1Usage,
+  measurement: { duration_ms: number; response_bytes: number | null },
 ): void {
-  console.log({ event: 'd1_usage', operation, outcome, ...usage });
+  console.log({ event: 'd1_usage', operation, outcome, ...usage, ...measurement });
 }
 
 export async function observeD1Usage<T>(
@@ -231,18 +227,24 @@ export async function observeD1Usage<T>(
   operation: string,
   task: (measuredDb: D1Database) => Promise<T>,
   outcomeForResult?: (result: T) => 'ok' | 'error',
+  bytesForResult?: (result: T) => number | null,
 ): Promise<T> {
+  const startedAt = performance.now();
+  let response_bytes: number | null = null;
   const observer = createD1UsageObserver(db);
   let outcome: 'ok' | 'error' = 'ok';
   try {
     const result = await task(observer.db);
     outcome = outcomeForResult?.(result) ?? 'ok';
+    response_bytes = bytesForResult?.(result) ?? null;
     return result;
   } catch (error) {
     outcome = 'error';
     throw error;
   } finally {
-    logD1Usage(operation, outcome, observer.usage);
+    logD1Usage(operation, outcome, observer.usage, {
+      duration_ms: performance.now() - startedAt, response_bytes,
+    });
   }
 }
 
@@ -275,7 +277,7 @@ export async function accountDeletionContinuationMatches(
   idempotencyKey: string,
 ): Promise<boolean> {
   if (!isAccountDeletionKey(idempotencyKey)) return false;
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(
       `SELECT idempotency_key_sha256
          FROM account_deletion_intents WHERE user_id = ?1
@@ -297,7 +299,7 @@ export async function isAccountDeletionInProgress(
   userId: string,
 ): Promise<boolean> {
   return (
-    (await workoutDB(db)
+    (await db
       .prepare(
         'SELECT 1 AS x FROM account_deletion_intents WHERE user_id = ?1',
       )
@@ -316,7 +318,7 @@ export async function storeAppleRefreshToken(
   refreshToken: string,
 ): Promise<boolean> {
   if (!refreshToken) return false;
-  const result = await workoutDB(db)
+  const result = await db
     .prepare(
       `INSERT INTO apple_refresh_tokens (user_id, refresh_token, updated_at)
        SELECT ?1, ?2, ?3
@@ -355,7 +357,7 @@ export async function beginAppleGrantExchange(
 ): Promise<boolean> {
   if (!isAccountDeletionKey(reservationId)) return false;
   const staleBefore = nowMs - APPLE_GRANT_EXCHANGE_FRESH_MS;
-  const result = await workoutDB(db)
+  const result = await db
     .prepare(
       `INSERT INTO apple_grant_exchange_state
          (user_id, reservation_id, active_since, revocation_uncertain)
@@ -403,7 +405,7 @@ export async function markAppleGrantExchangeUncertain(
   reservationId: string,
 ): Promise<boolean> {
   if (!isAccountDeletionKey(reservationId)) return false;
-  const result = await workoutDB(db)
+  const result = await db
     .prepare(
       `UPDATE apple_grant_exchange_state
           SET reservation_id = NULL,
@@ -431,8 +433,8 @@ export async function finishAppleGrantExchange(
 ): Promise<boolean> {
   if (!isAccountDeletionKey(reservationId) || !refreshToken) return false;
   const ts = now();
-  const [stored, retained] = await workoutDB(db).batch([
-    workoutDB(db)
+  const [stored, retained] = await db.batch([
+    db
       .prepare(
         `INSERT INTO apple_refresh_tokens (user_id, refresh_token, updated_at)
          SELECT s.user_id, ?3, ?4
@@ -451,7 +453,7 @@ export async function finishAppleGrantExchange(
            updated_at = excluded.updated_at`,
       )
       .bind(userId, reservationId, refreshToken, ts),
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE apple_grant_exchange_state
             SET active_since = ?3
@@ -481,15 +483,15 @@ export async function acknowledgeAppleGrantExchange(
   reservationId: string,
 ): Promise<boolean> {
   if (!isAccountDeletionKey(reservationId)) return false;
-  const [cleared, removed] = await workoutDB(db).batch([
-    workoutDB(db)
+  const [cleared, removed] = await db.batch([
+    db
       .prepare(
         `UPDATE apple_grant_exchange_state
             SET reservation_id = NULL, active_since = NULL
           WHERE user_id = ?1 AND reservation_id = ?2`,
       )
       .bind(userId, reservationId),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM apple_grant_exchange_state
           WHERE user_id = ?1
@@ -513,7 +515,7 @@ export async function acknowledgeAppleGrantExchange(
 export async function isOwnerDeletionTombstoned(
   db: D1Database,
 ): Promise<boolean> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare('SELECT 1 AS x FROM owner_deletion_tombstone WHERE singleton = 1')
     .first<{ x: number }>();
   return row !== null;
@@ -525,7 +527,7 @@ export async function isOwnerDeletionTombstoned(
  * from treating the earliest surviving member as the new distinguished owner.
  */
 async function hasOwnerDeletionReceipt(db: D1Database): Promise<boolean> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(
       `SELECT 1 AS x FROM account_deletion_receipts
         WHERE owner_tombstoned = 1 LIMIT 1`,
@@ -539,7 +541,7 @@ export async function isDeletedOwnerAppleSub(
   db: D1Database,
   appleSub: string,
 ): Promise<boolean> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(
       'SELECT apple_sub_sha256 FROM owner_deletion_tombstone WHERE singleton = 1',
     )
@@ -554,7 +556,7 @@ export async function findUserByAppleSub(
   db: D1Database,
   appleSub: string,
 ): Promise<User | null> {
-  return workoutDB(db)
+  return db
     .prepare('SELECT * FROM users WHERE apple_sub = ?1')
     .bind(appleSub)
     .first<User>();
@@ -569,7 +571,7 @@ export async function upsertUser(
   const existing = await findUserByAppleSub(db, appleSub);
   if (existing) {
     if (displayName && !existing.display_name) {
-      await workoutDB(db)
+      await db
         .prepare('UPDATE users SET display_name = ?2 WHERE id = ?1')
         .bind(existing.id, displayName)
         .run();
@@ -600,7 +602,7 @@ export async function upsertUser(
     mcp_passphrase_hash: null,
     mcp_passphrase_salt: null,
   };
-  await workoutDB(db)
+  await db
     .prepare(
       'INSERT INTO users (id, apple_sub, email, display_name, created_at) VALUES (?1,?2,?3,?4,?5)',
     )
@@ -624,7 +626,7 @@ export async function upsertUserUnlessDeletedOwner(
   const candidateId = uuid();
   const createdAt = now();
   const appleSubHash = await sha256Hex(appleSub);
-  await workoutDB(db)
+  await db
     .prepare(
       `INSERT INTO users (id, apple_sub, email, display_name, created_at)
        SELECT ?1, ?2, ?3, ?4, ?5
@@ -636,7 +638,7 @@ export async function upsertUserUnlessDeletedOwner(
     )
     .bind(candidateId, appleSub, email, displayName, createdAt, appleSubHash)
     .run();
-  return workoutDB(db)
+  return db
     .prepare(
       `SELECT u.* FROM users u
         WHERE u.apple_sub = ?1
@@ -686,7 +688,7 @@ async function insertOwnerUnlessTombstoned(
     mcp_passphrase_hash: null,
     mcp_passphrase_salt: null,
   };
-  await workoutDB(db)
+  await db
     .prepare(
       `INSERT INTO users (id, apple_sub, email, display_name, created_at)
        SELECT ?1, ?2, ?3, ?4, ?5
@@ -706,7 +708,7 @@ async function insertOwnerUnlessTombstoned(
       APP_REVIEW_SUB,
     )
     .run();
-  return workoutDB(db)
+  return db
     .prepare(
       `SELECT u.* FROM users u
         WHERE u.apple_sub = ?1
@@ -734,7 +736,7 @@ export async function claimOrCreateOwner(
   ownerSubLocked: boolean,
 ): Promise<User | null> {
   if (appleSub === APP_REVIEW_SUB) return null;
-  const byApple = await workoutDB(db)
+  const byApple = await db
     .prepare(
       `SELECT u.* FROM users u
         WHERE u.apple_sub = ?1
@@ -749,7 +751,7 @@ export async function claimOrCreateOwner(
   if (!ownerSubLocked) {
     const bootstrap = await findUserByAppleSub(db, BOOTSTRAP_APPLE_SUB);
     if (bootstrap) {
-      const claimed = await workoutDB(db)
+      const claimed = await db
         .prepare(
           `UPDATE users
               SET apple_sub = ?2, email = ?3, display_name = ?4
@@ -768,7 +770,7 @@ export async function claimOrCreateOwner(
         )
         .run();
       if ((claimed.meta.changes ?? 0) === 1) {
-        return workoutDB(db)
+        return db
           .prepare(
             `SELECT u.* FROM users u
               WHERE u.id = ?1 AND u.apple_sub = ?2
@@ -843,7 +845,7 @@ export async function findOwnerRow(
 ): Promise<User | null> {
   if (ownerAppleSub === APP_REVIEW_SUB) return null;
   if (ownerAppleSub) {
-    return await workoutDB(db)
+    return await db
       .prepare(
         `SELECT u.* FROM users u
           WHERE u.apple_sub = ?1
@@ -855,7 +857,7 @@ export async function findOwnerRow(
       .first<User>();
   }
   if (await hasOwnerDeletionReceipt(db)) {
-    return await workoutDB(db)
+    return await db
       .prepare(
         `SELECT u.* FROM users u
           WHERE u.apple_sub = ?1
@@ -867,7 +869,7 @@ export async function findOwnerRow(
       .bind(BOOTSTRAP_APPLE_SUB)
       .first<User>();
   }
-  return await workoutDB(db)
+  return await db
     .prepare(
       `SELECT u.* FROM users u
         WHERE u.apple_sub != ?1 AND NOT EXISTS (
@@ -893,7 +895,7 @@ export async function isBootstrapClaimEligible(db: D1Database): Promise<boolean>
   ) {
     return false;
   }
-  const rows = await workoutDB(db)
+  const rows = await db
     .prepare('SELECT apple_sub FROM users WHERE apple_sub != ?1')
     .bind(APP_REVIEW_SUB)
     .all<{ apple_sub: string }>();
@@ -933,7 +935,7 @@ async function getAccountDeletionReceipt(
   db: D1Database,
   userId: string,
 ): Promise<AccountDeletionReceiptRow | null> {
-  return workoutDB(db)
+  return db
     .prepare(
       `SELECT idempotency_key_sha256, owner_tombstoned, apple_revocation
          FROM account_deletion_receipts WHERE user_id = ?1`,
@@ -979,8 +981,8 @@ export async function deleteUserAccount(
   // Apple exchange reservation blocks the claim. Sticky uncertainty or a
   // stale active exchange is consumed into an immediately-sticky manual
   // outcome, so deletion can never report revocation of only an older grant.
-  await workoutDB(db).batch([
-    workoutDB(db)
+  await db.batch([
+    db
       .prepare(
         `INSERT OR IGNORE INTO account_deletion_intents
            (user_id, idempotency_key_sha256, apple_revocation, created_at)
@@ -1008,7 +1010,7 @@ export async function deleteUserAccount(
                 )`,
       )
       .bind(userId, idempotencyKeyHash, claimTime, staleExchangeBefore),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM apple_grant_exchange_state
           WHERE user_id = ?1
@@ -1028,7 +1030,7 @@ export async function deleteUserAccount(
       : { error: 'not_found' };
   }
 
-  let intent = await workoutDB(db)
+  let intent = await db
     .prepare(
       `SELECT idempotency_key_sha256, apple_revocation
          FROM account_deletion_intents WHERE user_id = ?1`,
@@ -1043,7 +1045,7 @@ export async function deleteUserAccount(
     // proof that the account disappeared. iOS reserves 404 for cross-device
     // completion and must not erase local state for this case.
     if (intent) return { error: 'conflict' };
-    const liveUser = await workoutDB(db)
+    const liveUser = await db
       .prepare('SELECT 1 AS x FROM users WHERE id = ?1')
       .bind(userId)
       .first<{ x: number }>();
@@ -1052,7 +1054,7 @@ export async function deleteUserAccount(
 
   let appleRevocation = intent.apple_revocation;
   if (appleRevocation === null) {
-    const credential = await workoutDB(db)
+    const credential = await db
       .prepare(
         'SELECT refresh_token FROM apple_refresh_tokens WHERE user_id = ?1',
       )
@@ -1080,7 +1082,7 @@ export async function deleteUserAccount(
     // Persist provider truth on the intent immediately. If local finalization
     // is interrupted, a matching retry skips provider I/O and carries this
     // exact outcome into the durable receipt.
-    await workoutDB(db)
+    await db
       .prepare(
         `UPDATE account_deletion_intents
             SET apple_revocation = ?3
@@ -1090,7 +1092,7 @@ export async function deleteUserAccount(
       )
       .bind(userId, idempotencyKeyHash, appleRevocation)
       .run();
-    intent = await workoutDB(db)
+    intent = await db
       .prepare(
         `SELECT idempotency_key_sha256, apple_revocation
            FROM account_deletion_intents WHERE user_id = ?1`,
@@ -1115,7 +1117,7 @@ export async function deleteUserAccount(
     appleRevocation = intent.apple_revocation;
   }
 
-  const user = await workoutDB(db)
+  const user = await db
     .prepare('SELECT * FROM users WHERE id = ?1')
     .bind(userId)
     .first<User>();
@@ -1130,7 +1132,7 @@ export async function deleteUserAccount(
   const deletingOwner = owner?.id === userId;
   const deletionTime = now();
   const statements: D1PreparedStatement[] = [
-    workoutDB(db)
+    db
       .prepare(
         `INSERT OR IGNORE INTO account_deletion_receipts
            (user_id, idempotency_key_sha256, owner_tombstoned, deleted_at,
@@ -1148,7 +1150,7 @@ export async function deleteUserAccount(
 
   if (deletingOwner) {
     statements.push(
-      workoutDB(db)
+      db
         .prepare(
           `INSERT INTO owner_deletion_tombstone
              (singleton, apple_sub_sha256, deleted_at)
@@ -1163,7 +1165,7 @@ export async function deleteUserAccount(
 
   // Empty groups owned by the caller have no shared state to preserve.
   statements.push(
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM group_invites
           WHERE group_id IN (
@@ -1176,7 +1178,7 @@ export async function deleteUserAccount(
           )`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM group_members
           WHERE group_id IN (
@@ -1189,7 +1191,7 @@ export async function deleteUserAccount(
           )`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM groups
           WHERE created_by = ?1
@@ -1202,7 +1204,7 @@ export async function deleteUserAccount(
 
     // Preserve a shared group by transferring its creator anchor before the
     // deleting user's membership and users row disappear.
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE groups
             SET created_by = (
@@ -1222,14 +1224,14 @@ export async function deleteUserAccount(
     // Invites created by the account are credentials and are revoked. Invites
     // another member created remain, but no longer retain used_by attribution
     // to the deleted account.
-    workoutDB(db).prepare('DELETE FROM group_invites WHERE created_by = ?1').bind(userId),
-    workoutDB(db).prepare('UPDATE group_invites SET used_by = NULL WHERE used_by = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM group_members WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM group_invites WHERE created_by = ?1').bind(userId),
+    db.prepare('UPDATE group_invites SET used_by = NULL WHERE used_by = ?1').bind(userId),
+    db.prepare('DELETE FROM group_members WHERE user_id = ?1').bind(userId),
 
     // Session-dependent ledgers and logs must go before their canonical
     // sessions; the plan tree follows sessions because those rows hold plan/day
     // references under strict foreign keys.
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM session_aliases
           WHERE canonical_session_id IN (
@@ -1237,21 +1239,21 @@ export async function deleteUserAccount(
           )`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM session_load_exports
           WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?1)`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM set_logs
           WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?1)`,
       )
       .bind(userId),
-    workoutDB(db).prepare('DELETE FROM sessions WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM plan_snapshots WHERE user_id = ?1').bind(userId),
-    workoutDB(db)
+    db.prepare('DELETE FROM sessions WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM plan_snapshots WHERE user_id = ?1').bind(userId),
+    db
       .prepare(
         `DELETE FROM template_exercises
           WHERE workout_id IN (
@@ -1261,39 +1263,39 @@ export async function deleteUserAccount(
           )`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM workouts
           WHERE plan_id IN (SELECT id FROM plans WHERE user_id = ?1)`,
       )
       .bind(userId),
-    workoutDB(db).prepare('DELETE FROM plans WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM plans WHERE user_id = ?1').bind(userId),
 
-    workoutDB(db).prepare('DELETE FROM training_profiles WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM starter_workout_receipts WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM activities WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM external_events WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM external_activities WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM notes WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM audit_log WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM intervals_oauth_states WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM oauth_codes WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM oauth_tokens WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM oauth_grants WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM training_profiles WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM starter_workout_receipts WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM activities WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM external_events WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM external_activities WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM notes WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM audit_log WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM intervals_oauth_states WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM oauth_codes WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM oauth_tokens WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM oauth_grants WHERE user_id = ?1').bind(userId),
   );
 
   // Tokens issued before multi-user MCP have a NULL principal and resolve to
   // the owner. Revoke them only when the distinguished owner is deleted.
   if (deletingOwner) {
     statements.push(
-      workoutDB(db).prepare('DELETE FROM oauth_codes WHERE user_id IS NULL'),
-      workoutDB(db).prepare('DELETE FROM oauth_tokens WHERE user_id IS NULL'),
-      workoutDB(db).prepare('DELETE FROM oauth_grants WHERE user_id IS NULL'),
+      db.prepare('DELETE FROM oauth_codes WHERE user_id IS NULL'),
+      db.prepare('DELETE FROM oauth_tokens WHERE user_id IS NULL'),
+      db.prepare('DELETE FROM oauth_grants WHERE user_id IS NULL'),
     );
   }
 
-  statements.push(workoutDB(db).prepare('DELETE FROM users WHERE id = ?1').bind(userId));
-  await workoutDB(db).batch(statements);
+  statements.push(db.prepare('DELETE FROM users WHERE id = ?1').bind(userId));
+  await db.batch(statements);
   const receipt = await getAccountDeletionReceipt(db, userId);
   if (!receipt || receipt.idempotency_key_sha256 !== idempotencyKeyHash) {
     return { error: 'not_found' };
@@ -1356,7 +1358,7 @@ export async function setUserMcpPassphrase(
   const saltBytes = crypto.getRandomValues(new Uint8Array(16));
   const salt = btoa(String.fromCharCode(...saltBytes));
   const hash = await pbkdf2(passphrase, salt);
-  await workoutDB(db)
+  await db
     .prepare('UPDATE users SET mcp_passphrase_hash = ?2, mcp_passphrase_salt = ?3 WHERE id = ?1')
     .bind(userId, hash, salt)
     .run();
@@ -1373,7 +1375,7 @@ export async function findUserByMcpPassphrase(
   passphrase: string,
 ): Promise<string | null> {
   if (!passphrase) return null;
-  const rows = await workoutDB(db)
+  const rows = await db
     .prepare(
       'SELECT id, mcp_passphrase_hash, mcp_passphrase_salt FROM users WHERE mcp_passphrase_hash IS NOT NULL AND mcp_passphrase_salt IS NOT NULL',
     )
@@ -1440,7 +1442,7 @@ export async function getUserTimezone(
   db: D1Database,
   userId: string,
 ): Promise<string | null> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare('SELECT timezone FROM users WHERE id = ?1')
     .bind(userId)
     .first<{ timezone: string | null }>();
@@ -1461,21 +1463,8 @@ export async function setUserTimezoneIfChanged(
   if (!tz || !isValidTimezone(tz)) return;
   const current = await getUserTimezone(db, userId);
   if (current === tz) return;
-  await workoutDB(db).prepare('UPDATE users SET timezone = ?2 WHERE id = ?1').bind(userId, tz).run();
+  await db.prepare('UPDATE users SET timezone = ?2 WHERE id = ?1').bind(userId, tz).run();
 }
-
-// ---- intervals.icu credentials (per-user; M1 multi-user foundation) ------
-
-/**
- * P4.6 dual-mode SQL. Migration 0039 keeps the shadow column NULL until its
- * monotonic fence is activated, then atomically moves every durable athlete id
- * into it and clears the legacy column. COALESCE is therefore unambiguous on
- * both sides of the cutover.
- */
-const INTERVALS_EFFECTIVE_ATHLETE_SQL =
-  'COALESCE(intervals_cutover_athlete_id, intervals_athlete_id)';
-const INTERVALS_SOURCE_FENCE_ENABLED_SQL =
-  'COALESCE((SELECT enabled FROM intervals_source_fence WHERE singleton = 1), 0)';
 
 export interface IntervalsSourceFenceState {
   enabled: boolean;
@@ -1497,7 +1486,7 @@ export async function activateIntervalsSourceFence(
   if (!Number.isSafeInteger(activatedAt) || activatedAt < 0) {
     throw new Error('intervals_source_fence_invalid_activation_time');
   }
-  const activated = await workoutDB(db)
+  const activated = await db
     .prepare(
       `UPDATE intervals_source_fence
           SET enabled = 1,
@@ -1529,7 +1518,7 @@ export async function activateIntervalsSourceFence(
     };
   }
 
-  const current = await workoutDB(db)
+  const current = await db
     .prepare(
       `SELECT enabled, activated_at,
               activated_user_count, activated_connected_count
@@ -1551,24 +1540,6 @@ export async function activateIntervalsSourceFence(
 }
 
 /**
- * A user paired with their intervals.icu credentials. `athlete_id` is always
- * present; auth is EITHER `api_key` (HTTP Basic) OR `access_token` (OAuth
- * Bearer) — for a connected user exactly one is non-null (intervals.ts
- * prefers Bearer if both ever co-exist).
- */
-export interface IntervalsUserCreds {
-  user_id: string;
-  api_key: string | null;
-  access_token: string | null;
-  refresh_token: string | null;
-  expires_at: number | null;
-  athlete_id: string;
-  credential_generation: number;
-  events_synced_at: number | null;
-  activities_synced_at: number | null;
-}
-
-/**
  * Enumerate users who have BOTH intervals.icu credentials populated. Used by
  * sync* in src/index.ts (cron) and refresh_rides (MCP) to loop per user
  * — each user's events/activities tag to their own user_id, so a second
@@ -1578,7 +1549,7 @@ export interface IntervalsUserCreds {
 export async function listUsersWithIntervalsCreds(
   db: D1Database,
 ): Promise<IntervalsUserCreds[]> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       `SELECT id, intervals_api_key, intervals_oauth_access_token,
               intervals_oauth_refresh_token, intervals_oauth_expires_at,
@@ -1627,7 +1598,7 @@ export async function getUserIntervalsCreds(
   auth_error_at: number | null;
   credential_generation: number;
 }> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       `SELECT intervals_api_key AS api_key,
               intervals_oauth_access_token AS access_token,
@@ -1670,7 +1641,7 @@ export async function getUserByIntervalsAthleteId(
   db: D1Database,
   athleteId: string,
 ): Promise<User | null> {
-  return await workoutDB(db)
+  return await db
     .prepare(`SELECT * FROM users WHERE ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?1`)
     .bind(athleteId)
     .first<User>();
@@ -1688,7 +1659,7 @@ export async function userHasTouchedIntervalsCreds(
   db: D1Database,
   userId: string,
 ): Promise<boolean> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       "SELECT 1 FROM audit_log WHERE user_id = ?1 AND tool = 'set_intervals_creds' LIMIT 1",
     )
@@ -1756,7 +1727,7 @@ export async function seedOwnerIntervalsCredsFromEnv(
   }
   // No env values to seed from → dormant.
   if (!apiKey || !athleteId) return listUsersWithIntervalsCreds(db);
-  await workoutDB(db)
+  await db
     .prepare(
       `UPDATE users
           SET intervals_api_key = ?2,
@@ -1807,7 +1778,7 @@ export async function setUserIntervalsCreds(
   // The API-key and OAuth schemes are mutually exclusive: writing an API key
   // clears any OAuth token, and a disconnect (nulls) clears BOTH schemes'
   // columns so "not connected" is unambiguous across the codebase.
-  const { results: [row] } = await workoutDB(db)
+  const { results: [row] } = await db
     .prepare(
       `UPDATE users
           SET intervals_api_key = ?2,
@@ -1881,7 +1852,7 @@ async function writeUserIntervalsOAuth(
   athleteId: string,
   expectedGeneration?: number,
 ): Promise<{ credential_generation: number; activity_sync_after: number | null } | null> {
-  const { results: [row] } = await workoutDB(db)
+  const { results: [row] } = await db
     .prepare(
       `UPDATE users
           SET intervals_oauth_access_token = ?2,
@@ -1972,11 +1943,11 @@ export async function createIntervalsOAuthState(
   const state =
     crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
   const ts = now();
-  const account = await workoutDB(db).prepare(
+  const account = await db.prepare(
     'SELECT intervals_credential_generation AS generation FROM users WHERE id = ?1',
   ).bind(userId).first<{ generation: number }>();
   if (!account) throw new Error('intervals_user_not_found');
-  const inserted = await workoutDB(db)
+  const inserted = await db
     .prepare(
       `INSERT INTO intervals_oauth_states (state, user_id, created_at, expires_at, credential_generation)
        SELECT ?1, ?2, ?3, ?4, ?5 FROM users
@@ -2012,14 +1983,14 @@ export async function consumeIntervalsOAuthAttempt(
   // in one statement, so two concurrent callbacks (browser preload, double-tap,
   // replay) can't both observe the same valid state — only one DELETE returns
   // the row, the other gets nothing.
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(`DELETE FROM intervals_oauth_states WHERE state = ?1
       RETURNING user_id, expires_at, credential_generation`)
     .bind(state)
     .first<{ user_id: string; expires_at: number; credential_generation: number | null }>();
   // Best-effort sweep of any OTHER now-expired rows (kept out of the atomic
   // statement above so it never affects the single-use result).
-  await workoutDB(db).prepare('DELETE FROM intervals_oauth_states WHERE expires_at < ?1').bind(ts).run();
+  await db.prepare('DELETE FROM intervals_oauth_states WHERE expires_at < ?1').bind(ts).run();
   if (!row || row.expires_at < ts || row.credential_generation === null) return null;
   return { user_id: row.user_id, credential_generation: row.credential_generation };
 }
@@ -2084,15 +2055,6 @@ export interface MeProfile {
   health: { sharing_in_group: boolean };
 }
 
-export interface IntervalsConnectionStatus {
-  connected: boolean;
-  athlete_id: string | null;
-  needs_reauth: boolean;
-  credential_generation: number;
-  sync_pending: boolean;
-  last_synced_at: number | null;
-}
-
 interface IntervalsStatusRow {
   intervals_effective_athlete_id: string | null;
   intervals_auth_error_at: number | null;
@@ -2113,7 +2075,7 @@ function intervalsStatus(row: IntervalsStatusRow | null): IntervalsConnectionSta
 }
 
 export async function getIntervalsConnectionStatus(db: D1Database, userId: string): Promise<IntervalsConnectionStatus> {
-  return intervalsStatus(await workoutDB(db).prepare(`SELECT
+  return intervalsStatus(await db.prepare(`SELECT
     ${INTERVALS_EFFECTIVE_ATHLETE_SQL} AS intervals_effective_athlete_id,
     intervals_auth_error_at, intervals_credential_generation, intervals_activities_synced_at
     FROM users WHERE id = ?1`).bind(userId).first<IntervalsStatusRow>());
@@ -2126,7 +2088,7 @@ export interface TrainingProfileState {
 }
 
 export async function getTrainingProfile(db: D1Database, userId: string): Promise<TrainingProfileState> {
-  const row = await workoutDB(db).prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1')
+  const row = await db.prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1')
     .bind(userId).first<{ document: string; version: number; updated_at: number }>();
   return row ? { profile: JSON.parse(row.document) as TrainingProfile, version: row.version, updated_at: row.updated_at }
     : { profile: null, version: 0, updated_at: null };
@@ -2138,18 +2100,18 @@ export async function saveTrainingProfile(db: D1Database, userId: string, input:
   if (!profile || !Number.isSafeInteger(expectedVersion) || expectedVersion < 0) return { error: 'invalid_fields' } as const;
   const document = JSON.stringify(profile);
   const ts = now();
-  const results = await workoutDB(db).batch<{ document: string; version: number; updated_at: number }>([
-    workoutDB(db).prepare(`INSERT INTO training_profiles (user_id,document,version,updated_at)
+  const results = await db.batch<{ document: string; version: number; updated_at: number }>([
+    db.prepare(`INSERT INTO training_profiles (user_id,document,version,updated_at)
       SELECT ?1,?2,1,?3 WHERE ?4=0
         AND EXISTS (SELECT 1 FROM users WHERE id=?1)
         AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id=?1)
         AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id=?1)
       ON CONFLICT(user_id) DO NOTHING`).bind(userId, document, ts, expectedVersion),
-    workoutDB(db).prepare(`UPDATE training_profiles SET document=?2,version=version+1,updated_at=MAX(updated_at+1,?3)
+    db.prepare(`UPDATE training_profiles SET document=?2,version=version+1,updated_at=MAX(updated_at+1,?3)
       WHERE user_id=?1 AND version=?4 AND document<>?2
         AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id=?1)
         AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id=?1)`).bind(userId, document, ts, expectedVersion),
-    workoutDB(db).prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1').bind(userId),
+    db.prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1').bind(userId),
   ]);
   const saved = results[2]?.results[0];
   if (!saved || saved.document !== document) return { conflict: true } as const;
@@ -2167,7 +2129,7 @@ export async function getStarterWorkouts(db: D1Database, userId: string) {
     }),
   })) : [];
   const tree = await getPlanTree(db, userId);
-  const accepted = await workoutDB(db).prepare('SELECT 1 AS accepted FROM starter_workout_receipts WHERE user_id=?1')
+  const accepted = await db.prepare('SELECT 1 AS accepted FROM starter_workout_receipts WHERE user_id=?1')
     .bind(userId).first();
   return { profile_version: state.version, can_accept: !accepted && (!tree || tree.workouts.length === 0), workouts };
 }
@@ -2178,7 +2140,7 @@ interface StarterReceipt {
 
 /** First-workout creation is atomic and never replaces or appends to an existing library. */
 export async function acceptStarterWorkout(db: D1Database, userId: string, starterId: string, profileVersion: number) {
-  const receipt = () => workoutDB(db).prepare(
+  const receipt = () => db.prepare(
     'SELECT starter_id,profile_version,plan_id,starter_workout_id AS workout_id,version FROM starter_workout_receipts WHERE user_id=?1',
   ).bind(userId).first<StarterReceipt>();
   const replay = await receipt();
@@ -2197,7 +2159,7 @@ export async function acceptStarterWorkout(db: D1Database, userId: string, start
     args: { starter_id: starterId, profile_version: profileVersion }, reason: 'Member accepted a starter workout.' };
   const guarded = `EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND version=?3 AND plan_write_nonce=?4)`;
   const statements = [
-    workoutDB(db).prepare(`UPDATE plans SET plan_write_nonce=?4,version=-version
+    db.prepare(`UPDATE plans SET plan_write_nonce=?4,version=-version
       WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce IS NULL
         AND EXISTS (SELECT 1 FROM training_profiles WHERE user_id=?2 AND version=?5)
         AND NOT EXISTS (SELECT 1 FROM starter_workout_receipts WHERE user_id=?2)
@@ -2208,16 +2170,16 @@ export async function acceptStarterWorkout(db: D1Database, userId: string, start
       .bind(plan.id, userId, plan.version, nonce, profileVersion),
     preparePlanSnapshotInsert(db, { userId, planId: plan.id, version: plan.version, actor: 'system',
       operation: 'baseline', createdAt: ts, ignoreExisting: true, writeNonce: nonce, databaseVersion: -plan.version }),
-    workoutDB(db).prepare(`INSERT INTO workouts (id,plan_id,name,order_index,notes,created_at,updated_at)
+    db.prepare(`INSERT INTO workouts (id,plan_id,name,order_index,notes,created_at,updated_at)
       SELECT ?5,?1,?6,0,?7,?8,?8 WHERE ${guarded}`)
       .bind(plan.id, userId, -plan.version, nonce, workoutId, starter.name, starter.explanation, ts),
-    ...starter.exercises.map((slot, index) => workoutDB(db).prepare(
+    ...starter.exercises.map((slot, index) => db.prepare(
       `INSERT INTO template_exercises (id,workout_id,exercise_id,order_index,target_sets,target_reps,
         target_weight,rest_seconds,cues,progression,created_at,updated_at)
        SELECT ?5,?6,?7,?8,?9,?10,0,90,?11,?12,?13,?13 WHERE ${guarded}`,
     ).bind(plan.id, userId, -plan.version, nonce, uuid(), workoutId, slot.exercise_id, index,
       slot.sets, slot.reps, slot.cues, JSON.stringify({ type: 'manual', starting_load: 'choose_comfortable_load' }), ts)),
-    workoutDB(db).prepare(`INSERT INTO starter_workout_receipts
+    db.prepare(`INSERT INTO starter_workout_receipts
       (user_id,starter_id,profile_version,plan_id,starter_workout_id,version,created_at)
       SELECT ?2,?5,?6,?1,?7,?8,?9 WHERE ${guarded}`)
       .bind(plan.id, userId, -plan.version, nonce, starterId, profileVersion, workoutId, plan.version + 1, ts),
@@ -2238,7 +2200,7 @@ export async function getMeProfile(
   userId: string,
   ownerAppleSub: string | undefined,
 ): Promise<MeProfile> {
-  const u = await workoutDB(db)
+  const u = await db
     .prepare(
       `SELECT display_name, email,
               ${INTERVALS_EFFECTIVE_ATHLETE_SQL} AS intervals_effective_athlete_id,
@@ -2262,7 +2224,7 @@ export async function getMeProfile(
   const owner = await findOwnerRow(db, ownerAppleSub);
   const isOwner = !!owner && owner.id === userId;
 
-  const grant = await workoutDB(db)
+  const grant = await db
     .prepare(
       'SELECT 1 AS x FROM oauth_tokens WHERE refresh_token IS NOT NULL AND (user_id = ?1' +
         (isOwner ? ' OR user_id IS NULL' : '') +
@@ -2271,7 +2233,7 @@ export async function getMeProfile(
     .bind(userId)
     .first<{ x: number }>();
   const coachConnected = !!grant;
-  const lastMcp = await workoutDB(db)
+  const lastMcp = await db
     .prepare("SELECT MAX(created_at) AS t FROM audit_log WHERE user_id = ?1 AND actor = 'mcp'")
     .bind(userId)
     .first<{ t: number | null }>();
@@ -2314,8 +2276,8 @@ export async function exportUserData(
   // D1 batches are transactional, including read-only batches. Reading the
   // complete projection through one batch keeps the account, plan tree, logs,
   // and memberships on one coherent database snapshot while writes continue.
-  const projection = await workoutDB(db).batch<Record<string, unknown>>([
-    workoutDB(db)
+  const projection = await db.batch<Record<string, unknown>>([
+    db
       .prepare(
         `SELECT id, apple_sub, email, display_name, created_at, timezone,
                 ${INTERVALS_EFFECTIVE_ATHLETE_SQL} AS intervals_athlete_id,
@@ -2324,10 +2286,10 @@ export async function exportUserData(
            FROM users WHERE id = ?1`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM plans WHERE user_id = ?1 ORDER BY created_at, id')
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT d.* FROM workouts d
          JOIN plans p ON p.id = d.plan_id
@@ -2335,7 +2297,7 @@ export async function exportUserData(
          ORDER BY d.plan_id, d.order_index, d.created_at, d.id`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT te.* FROM template_exercises te
          JOIN workouts d ON d.id = te.workout_id
@@ -2344,10 +2306,10 @@ export async function exportUserData(
          ORDER BY te.workout_id, te.order_index, te.created_at, te.id`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM sessions WHERE user_id = ?1 ORDER BY date, created_at, id')
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT sl.* FROM set_logs sl
          JOIN sessions s ON s.id = sl.session_id
@@ -2355,7 +2317,7 @@ export async function exportUserData(
          ORDER BY sl.logged_at, sl.id`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT e.* FROM exercises e
          WHERE e.id IN (
@@ -2371,7 +2333,7 @@ export async function exportUserData(
          ORDER BY e.name, e.id`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT sa.* FROM session_aliases sa
          JOIN sessions s ON s.id = sa.canonical_session_id
@@ -2379,7 +2341,7 @@ export async function exportUserData(
          ORDER BY sa.alias_session_id`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT sle.* FROM session_load_exports sle
          JOIN sessions s ON s.id = sle.session_id
@@ -2387,32 +2349,32 @@ export async function exportUserData(
          ORDER BY sle.updated_at, sle.session_id`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM notes WHERE user_id = ?1 ORDER BY created_at, id')
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM audit_log WHERE user_id = ?1 ORDER BY created_at, id')
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM external_events WHERE user_id = ?1 ORDER BY date, id')
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         'SELECT * FROM external_activities WHERE user_id = ?1 ORDER BY date, id',
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         'SELECT * FROM activities WHERE user_id = ?1 ORDER BY date, logged_at, id',
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT id,user_id,plan_id,version,document,actor,operation,reason,created_at
            FROM plan_snapshots WHERE user_id=?1 ORDER BY plan_id,version`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT gm.group_id, gm.display_name, gm.joined_at,
                 g.created_by = ?1 AS owns_group,
@@ -2431,14 +2393,14 @@ export async function exportUserData(
           ORDER BY gm.joined_at, gm.group_id`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare('SELECT blocked_id AS user_id, created_at FROM group_member_blocks WHERE blocker_id = ?1 AND active = 1 ORDER BY created_at, blocked_id')
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare('SELECT active, reason, updated_at FROM group_sharing_restrictions WHERE user_id = ?1')
       .bind(userId),
-    workoutDB(db).prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1').bind(userId),
-    workoutDB(db).prepare('SELECT starter_id,profile_version,plan_id,starter_workout_id AS workout_id,version,created_at FROM starter_workout_receipts WHERE user_id=?1').bind(userId),
+    db.prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1').bind(userId),
+    db.prepare('SELECT starter_id,profile_version,plan_id,starter_workout_id AS workout_id,version,created_at FROM starter_workout_receipts WHERE user_id=?1').bind(userId),
   ]);
   const rowsAt = (index: number): Record<string, unknown>[] =>
     projection[index]?.results ?? [];
@@ -2481,7 +2443,7 @@ export async function exportUserData(
     }
   });
   return {
-    schema_version: 2,
+    schema_version: 3,
     exported_at: now(),
     account,
     training: {
@@ -2515,7 +2477,7 @@ export async function setUserDisplayName(
   userId: string,
   displayName: string,
 ): Promise<boolean> {
-  const result = await workoutDB(db)
+  const result = await db
     .prepare('UPDATE users SET display_name = ?2 WHERE id = ?1')
     .bind(userId, displayName)
     .run();
@@ -2533,7 +2495,7 @@ export async function setHealthActivitySharing(
   userId: string,
   enabled: boolean,
 ): Promise<{ sharing_in_group: boolean }> {
-  await workoutDB(db)
+  await db
     .prepare('UPDATE users SET share_health_activities = ?2 WHERE id = ?1')
     .bind(userId, enabled ? 1 : 0)
     .run();
@@ -2556,11 +2518,11 @@ export async function createGroup(
   // Use a batch so the membership row lands with the group row — D1 batches
   // run in a single transaction (an atomicity guarantee documented by
   // Cloudflare). If either statement fails the group is never visible.
-  await workoutDB(db).batch([
-    workoutDB(db)
+  await db.batch([
+    db
       .prepare('INSERT INTO groups (id,name,created_by,created_at) VALUES (?1,?2,?3,?4)')
       .bind(id, name, userId, ts),
-    workoutDB(db)
+    db
       .prepare(
         'INSERT INTO group_members (group_id,user_id,display_name,joined_at) VALUES (?1,?2,?3,?4)',
       )
@@ -2581,7 +2543,7 @@ export async function createGroup(
  *  group routes share: membership answers "may you see this", this answers
  *  "is there anything here at all". */
 export async function groupExists(db: D1Database, groupId: string): Promise<boolean> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare('SELECT 1 AS x FROM groups WHERE id = ?1')
     .bind(groupId)
     .first<{ x: number }>();
@@ -2594,7 +2556,7 @@ export async function isGroupMember(
   userId: string,
   groupId: string,
 ): Promise<boolean> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare('SELECT 1 AS x FROM group_members WHERE group_id = ?1 AND user_id = ?2')
     .bind(groupId, userId)
     .first<{ x: number }>();
@@ -2613,7 +2575,7 @@ interface VisibleGroupMember {
 // One visibility rule for rosters, REST/MCP feeds, stats and activity series.
 // Filtering before activity reads keeps pagination and totals consistent.
 async function visibleGroupMembers(db: D1Database, groupId: string, callerUserId: string): Promise<VisibleGroupMember[]> {
-  const rows = await workoutDB(db).prepare(`
+  const rows = await db.prepare(`
     SELECT gm.user_id, gm.display_name AS per_group_name, gm.joined_at,
            u.display_name AS global_name, u.email, u.timezone
       FROM group_members gm JOIN users u ON u.id = gm.user_id
@@ -2630,7 +2592,7 @@ async function visibleGroupMembers(db: D1Database, groupId: string, callerUserId
 }
 
 export async function listGroupBlocks(db: D1Database, userId: string) {
-  const rows = await workoutDB(db).prepare(`
+  const rows = await db.prepare(`
     SELECT blocked_id AS user_id, created_at FROM group_member_blocks
      WHERE blocker_id = ?1 AND active = 1 ORDER BY created_at, blocked_id
   `).bind(userId).all<{ user_id: string; created_at: number }>();
@@ -2641,11 +2603,11 @@ export async function setGroupMemberBlock(db: D1Database, userId: string, target
   if (userId === targetId) return false;
   if (!active) {
     // Only the block's owner can undo it; retry and leaving the group are safe.
-    await workoutDB(db).prepare('UPDATE group_member_blocks SET active = 0 WHERE blocker_id = ?1 AND blocked_id = ?2')
+    await db.prepare('UPDATE group_member_blocks SET active = 0 WHERE blocker_id = ?1 AND blocked_id = ?2')
       .bind(userId, targetId).run();
     return true;
   }
-  const result = await workoutDB(db).prepare(`
+  const result = await db.prepare(`
     INSERT INTO group_member_blocks (blocker_id, blocked_id, created_at, active)
     SELECT ?1, ?2, ?3, 1
      WHERE EXISTS (SELECT 1 FROM group_members a JOIN group_members b ON a.group_id = b.group_id
@@ -2660,7 +2622,7 @@ export async function setGroupMemberBlock(db: D1Database, userId: string, target
 // promote the earliest account or a group creator into platform moderation.
 export async function isGroupSafetyOperator(db: D1Database, userId: string, ownerAppleSub: string | undefined): Promise<boolean> {
   if (!ownerAppleSub) return false;
-  const row = await workoutDB(db).prepare(`SELECT 1 AS allowed FROM users
+  const row = await db.prepare(`SELECT 1 AS allowed FROM users
     WHERE id = ?1 AND apple_sub = ?2
       AND NOT EXISTS (SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1)
       AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?1)
@@ -2669,7 +2631,7 @@ export async function isGroupSafetyOperator(db: D1Database, userId: string, owne
 }
 
 export async function getGroupSharingRestriction(db: D1Database, userId: string) {
-  return workoutDB(db).prepare('SELECT active, reason, updated_at FROM group_sharing_restrictions WHERE user_id = ?1')
+  return db.prepare('SELECT active, reason, updated_at FROM group_sharing_restrictions WHERE user_id = ?1')
     .bind(userId).first<{ active: number; reason: GroupReportReason; updated_at: number }>();
 }
 
@@ -2681,15 +2643,15 @@ export async function setGroupSharingRestriction(
   const ts = now();
   // Restriction and audit commit together. Authority is rechecked at the write,
   // including account deletion; no report content is copied into the audit.
-  const [result] = await workoutDB(db).batch([
-    workoutDB(db).prepare(`INSERT INTO group_sharing_restrictions (user_id, active, reason, updated_at)
+  const [result] = await db.batch([
+    db.prepare(`INSERT INTO group_sharing_restrictions (user_id, active, reason, updated_at)
       SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM users WHERE id = ?1)
         AND EXISTS (SELECT 1 FROM users WHERE id = ?5 AND apple_sub = ?6)
         AND NOT EXISTS (SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1)
         AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id IN (?1, ?5))
       ON CONFLICT (user_id) DO UPDATE SET active = excluded.active, reason = excluded.reason, updated_at = excluded.updated_at
     `).bind(targetId, active ? 1 : 0, reason, ts, operatorId, ownerAppleSub),
-    workoutDB(db).prepare(`INSERT INTO audit_log (id, user_id, actor, tool, args, result, created_at)
+    db.prepare(`INSERT INTO audit_log (id, user_id, actor, tool, args, result, created_at)
       SELECT ?1, ?2, 'ios', 'set_group_sharing_restriction', ?3, ?4, ?5 WHERE changes() = 1
     `).bind(uuid(), operatorId, JSON.stringify({ user_id: targetId, reason }), active ? 'restricted' : 'restored', ts),
   ]);
@@ -2726,7 +2688,7 @@ export async function listGroupsForUser(
   db: D1Database,
   userId: string,
 ): Promise<Array<Group & { members: ResolvedGroupMember[] }>> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       `SELECT g.*, CASE WHEN EXISTS (SELECT 1 FROM group_sharing_restrictions r WHERE r.user_id = g.created_by AND r.active = 1) THEN 'Private group' ELSE g.name END AS name FROM groups g
          JOIN group_members gm ON gm.group_id = g.id
@@ -2748,7 +2710,7 @@ export async function getGroupWithMembers(
   groupId: string,
   callerUserId: string,
 ): Promise<(Group & { members: ResolvedGroupMember[] }) | null> {
-  const g = await workoutDB(db)
+  const g = await db
     .prepare("SELECT g.*, CASE WHEN EXISTS (SELECT 1 FROM group_sharing_restrictions r WHERE r.user_id = g.created_by AND r.active = 1) THEN 'Private group' ELSE g.name END AS name FROM groups g WHERE id = ?1")
     .bind(groupId)
     .first<Group>();
@@ -2780,7 +2742,7 @@ export async function createInvite(
   for (let attempt = 0; attempt < 5; attempt++) {
     code = newInviteCode();
     try {
-      await workoutDB(db)
+      await db
         .prepare(
           `INSERT INTO group_invites
              (code,group_id,created_by,created_at,expires_at,used_at,used_by)
@@ -2827,7 +2789,7 @@ export async function getInviteForRedemption(
   db: D1Database,
   code: string,
 ): Promise<GroupInvite | null> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare('SELECT * FROM group_invites WHERE code = ?1')
     .bind(code)
     .first<GroupInvite>();
@@ -2857,7 +2819,7 @@ export async function getInvitePreview(
   // landing page and the authenticated /api/groups/invite/:code route.
   const invite = await getInviteForRedemption(db, code.trim().toUpperCase());
   if (!invite) return { status: 'unknown', group_name: null };
-  const group = await workoutDB(db)
+  const group = await db
     .prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM group_sharing_restrictions r WHERE r.user_id = g.created_by AND r.active = 1) THEN 'Private group' ELSE g.name END AS name FROM groups g WHERE id = ?1")
     .bind(invite.group_id)
     .first<{ name: string }>();
@@ -2905,12 +2867,12 @@ export async function redeemInvite(
   const ts = now();
   const auditId = uuid();
   const auditArgs = JSON.stringify({ group_id: invite.group_id });
-  const [claim] = await workoutDB(db).batch([
+  const [claim] = await db.batch([
     // Repeat every mutable validation inside the transaction. In particular,
     // requiring a live principal with no deletion intent prevents a deletion
     // that won the database write lock first from consuming the invite, even
     // while provider revocation intentionally keeps the users row present.
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE group_invites
             SET used_at = ?2, used_by = ?3
@@ -2934,7 +2896,7 @@ export async function redeemInvite(
     // changes() observes the immediately preceding conditional UPDATE on this
     // SQLite connection. A losing batch creates neither an audit attempt nor a
     // membership; the unique audit id then gates the final INSERT.
-    workoutDB(db)
+    db
       .prepare(
         `INSERT INTO audit_log
            (id,user_id,actor,tool,args,result,created_at)
@@ -2942,7 +2904,7 @@ export async function redeemInvite(
           WHERE changes() = 1`,
       )
       .bind(auditId, userId, auditArgs, ts),
-    workoutDB(db)
+    db
       .prepare(
         `INSERT INTO group_members (group_id,user_id,display_name,joined_at)
          SELECT group_id,?2,NULL,?3 FROM group_invites
@@ -2980,7 +2942,7 @@ export async function leaveGroup(
   userId: string,
   groupId: string,
 ): Promise<boolean> {
-  const res = await workoutDB(db)
+  const res = await db
     .prepare('DELETE FROM group_members WHERE group_id = ?1 AND user_id = ?2')
     .bind(groupId, userId)
     .run();
@@ -3010,7 +2972,7 @@ export async function setGroupDisplayName(
   groupId: string,
   displayName: string | null,
 ): Promise<boolean> {
-  const res = await workoutDB(db)
+  const res = await db
     .prepare(
       'UPDATE group_members SET display_name = ?3 WHERE group_id = ?1 AND user_id = ?2',
     )
@@ -3032,7 +2994,7 @@ export async function setGroupDisplayName(
 
 /** Count rows in the users table. Used by /auth/apple to detect the fresh-install bootstrap path. */
 export async function countUsers(db: D1Database): Promise<number> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare('SELECT COUNT(*) AS c FROM users')
     .first<{ c: number }>();
   return r?.c ?? 0;
@@ -3044,7 +3006,7 @@ export async function getActivePlan(
   db: D1Database,
   userId: string,
 ): Promise<PlanRow | null> {
-  return workoutDB(db)
+  return db
     .prepare("SELECT * FROM plans WHERE user_id = ?1 AND status = 'active'")
     .bind(userId)
     .first<PlanRow>();
@@ -3065,7 +3027,7 @@ export async function getPlanTree(
  * snapshot. Version claims still happen at the write boundary.
  */
 async function loadPlanTree(db: D1Database, plan: PlanRow): Promise<PlanTree> {
-  const days = await workoutDB(db)
+  const days = await db
     .prepare('SELECT * FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id')
     .bind(plan.id)
     .all<WorkoutRow>();
@@ -3073,7 +3035,7 @@ async function loadPlanTree(db: D1Database, plan: PlanRow): Promise<PlanTree> {
   let exercises: EnrichedTemplateExercise[] = [];
   if (dayIds.length) {
     const placeholders = dayIds.map((_, i) => `?${i + 1}`).join(',');
-    const res = await workoutDB(db)
+    const res = await db
       .prepare(
         `SELECT te.*, e.name AS exercise_name, e.unit AS exercise_unit,
                 e.primary_muscle AS exercise_muscle, e.modality AS exercise_modality,
@@ -3139,7 +3101,7 @@ export function preparePlanSnapshotInsert(
   },
 ): D1PreparedStatement {
   const insert = input.ignoreExisting ? 'INSERT OR IGNORE' : 'INSERT';
-  return workoutDB(db).prepare(
+  return db.prepare(
     `${insert} INTO plan_snapshots
        (id,user_id,plan_id,version,document,actor,operation,reason,created_at)
      SELECT ?1,p.user_id,p.id,COALESCE(?4,p.version),
@@ -3193,7 +3155,7 @@ export function preparePlanWriteStart(
   rejectActiveWorkout = false,
 ): D1PreparedStatement[] {
   return [
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE plans SET plan_write_nonce=?4,version=-version
         WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3
           AND plan_write_nonce IS NULL
@@ -3222,12 +3184,12 @@ export function preparePlanWriteFinish(
 ): D1PreparedStatement[] {
   const nextVersion = plan.version + 1;
   const statements: D1PreparedStatement[] = [
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE plans SET version=?6,updated_at=?5
         WHERE id=?1 AND user_id=?2 AND version=-?3 AND plan_write_nonce=?4
         RETURNING version`,
     ).bind(plan.id, plan.user_id, plan.version, nonce, ts, nextVersion),
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
        SELECT ?5,p.user_id,?6,?7,?8,?9,?10 FROM plans p
         WHERE p.id=?1 AND p.user_id=?2 AND p.version=?3 AND p.plan_write_nonce=?4`,
@@ -3238,7 +3200,7 @@ export function preparePlanWriteFinish(
         : JSON.stringify(attribution.result ?? { plan_id: plan.id, version: nextVersion }), ts),
   ];
   if (attribution.note) {
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
       `INSERT INTO notes (id,user_id,scope,ref_id,author,body,created_at)
        SELECT ?5,p.user_id,'plan',p.id,?6,?7,?8 FROM plans p
         WHERE p.id=?1 AND p.user_id=?2 AND p.version=?3 AND p.plan_write_nonce=?4`,
@@ -3253,7 +3215,7 @@ export function preparePlanWriteFinish(
       reason: attribution.reason ?? attribution.note ?? null, createdAt: ts,
       writeNonce: nonce,
     }),
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE plans SET plan_write_nonce=NULL
         WHERE id=?1 AND user_id=?2 AND version=?3 AND plan_write_nonce=?4`,
     ).bind(plan.id, plan.user_id, nextVersion, nonce),
@@ -3267,7 +3229,7 @@ export async function getPlanSnapshot(
   planId: string,
   version: number,
 ): Promise<(PlanSnapshotRow & { parsed: PlanSnapshotDocument }) | null> {
-  const row = await workoutDB(db).prepare(
+  const row = await db.prepare(
     'SELECT * FROM plan_snapshots WHERE user_id=?1 AND plan_id=?2 AND version=?3',
   ).bind(userId, planId, version).first<PlanSnapshotRow>();
   return row ? { ...row, parsed: parsePlanSnapshot(row.document) } : null;
@@ -3327,7 +3289,7 @@ export async function listPlanHistory(
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' as const };
   const capped = Math.max(1, Math.min(100, Math.floor(limit)));
-  const rows = await workoutDB(db).prepare(
+  const rows = await db.prepare(
     `SELECT * FROM plan_snapshots
       WHERE user_id=?1 AND plan_id=?2 AND (?3 IS NULL OR version < ?3) AND version <= ?5
       ORDER BY version DESC LIMIT ?4`,
@@ -3335,7 +3297,7 @@ export async function listPlanHistory(
   const visible = rows.results.slice(0, capped);
   const exerciseNames = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise.name]));
   const items = await Promise.all(visible.map(async (row) => {
-    const prior = await workoutDB(db).prepare(
+    const prior = await db.prepare(
       `SELECT version, document FROM plan_snapshots
         WHERE user_id=?1 AND plan_id=?2 AND version < ?3
         ORDER BY version DESC LIMIT 1`,
@@ -3457,7 +3419,7 @@ export async function restorePlanSnapshot(
   }
   const groupInvalid = validatePlanExerciseGroups(snapshot.parsed.workouts);
   if (groupInvalid) return groupInvalid;
-  const active = await workoutDB(db).prepare(
+  const active = await db.prepare(
     `SELECT 1 FROM sessions
       WHERE user_id=?1 AND plan_id=?2 AND status='in_progress' LIMIT 1`,
   ).bind(userId, plan.id).first();
@@ -3485,20 +3447,20 @@ export async function restorePlanSnapshot(
     }, ts, nonce, true),
   ];
   for (const day of target.workouts) {
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
       `INSERT OR IGNORE INTO workouts
        (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
        SELECT ?4,?1,?5,?6,?7,?8,?9,?9 WHERE ${guarded(10)}`,
     ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
       day.order_index, day.notes, ts, nonce));
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
       `UPDATE workouts SET name=?5,day_label=?6,order_index=?7,notes=?8,updated_at=?9
        WHERE id=?4 AND plan_id=?1 AND ${guarded(10)}`,
     ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
       day.order_index, day.notes, ts, nonce));
   }
   for (const slot of targetSlots) {
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
       `INSERT OR IGNORE INTO template_exercises
        (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,
         target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,
@@ -3511,7 +3473,7 @@ export async function restorePlanSnapshot(
       slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
       slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null,
       nonce));
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
       `UPDATE template_exercises SET workout_id=?5,exercise_id=?6,order_index=?7,
        target_sets=?8,target_reps=?9,target_reps_max=?10,target_rpe=?11,
        rest_seconds=?12,target_weight=?13,target_duration_s=?14,progression=?15,
@@ -3527,22 +3489,22 @@ export async function restorePlanSnapshot(
   for (const day of current.workouts) {
     for (const slot of day.exercises) if (!targetSlotIds.has(slot.id)) {
       statements.push(
-        workoutDB(db).prepare(`UPDATE set_logs SET template_exercise_id=NULL,updated_at=MAX(updated_at+1,?4) WHERE template_exercise_id=?5 AND ${guarded(6)}`)
+        db.prepare(`UPDATE set_logs SET template_exercise_id=NULL,updated_at=MAX(updated_at+1,?4) WHERE template_exercise_id=?5 AND ${guarded(6)}`)
           .bind(plan.id, userId, -plan.version, ts, slot.id, nonce),
-        workoutDB(db).prepare(`DELETE FROM template_exercises WHERE id=?4 AND ${guarded(5)}`)
+        db.prepare(`DELETE FROM template_exercises WHERE id=?4 AND ${guarded(5)}`)
           .bind(plan.id, userId, -plan.version, slot.id, nonce),
       );
     }
     if (!targetDayIds.has(day.id)) {
       statements.push(
-        workoutDB(db).prepare(`UPDATE sessions SET workout_id=NULL,updated_at=?4 WHERE workout_id=?5 AND user_id=?2 AND ${guarded(6)}`)
+        db.prepare(`UPDATE sessions SET workout_id=NULL,updated_at=?4 WHERE workout_id=?5 AND user_id=?2 AND ${guarded(6)}`)
           .bind(plan.id, userId, -plan.version, ts, day.id, nonce),
-        workoutDB(db).prepare(`DELETE FROM workouts WHERE id=?4 AND plan_id=?1 AND ${guarded(5)}`)
+        db.prepare(`DELETE FROM workouts WHERE id=?4 AND plan_id=?1 AND ${guarded(5)}`)
           .bind(plan.id, userId, -plan.version, day.id, nonce),
       );
     }
   }
-  statements.push(workoutDB(db).prepare(
+  statements.push(db.prepare(
     `UPDATE plans SET name=?4,meta=?5,updated_at=?6
      WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce=?7`,
   ).bind(plan.id, userId, -plan.version, target.plan.name, target.plan.meta, ts, nonce));
@@ -3555,7 +3517,7 @@ export async function restorePlanSnapshot(
   }, ts, nonce));
   const results = await runWorkoutWriteBatch(db, statements);
   if ((results[0]?.meta.changes ?? 0) !== 1 || (results[documentUpdateIndex]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
-    const nowActive = await workoutDB(db).prepare(
+    const nowActive = await db.prepare(
       `SELECT 1 FROM sessions WHERE user_id=?1 AND plan_id=?2 AND status='in_progress' LIMIT 1`,
     ).bind(userId, plan.id).first();
     if (nowActive) return { error: 'active_workout' };
@@ -3595,13 +3557,13 @@ export async function createPlan(
   // these statements and make the replacement violate ux_one_active_plan.
   // Allocate from every prior plan inside that transaction so replacement
   // never moves the per-user sync cursor backward or repeats it.
-  const results = await workoutDB(db).batch<PlanRow>([
-    workoutDB(db)
+  const results = await db.batch<PlanRow>([
+    db
       .prepare(
         "UPDATE plans SET status = 'archived', updated_at = ?2 WHERE user_id = ?1 AND status = 'active'",
       )
       .bind(userId, ts),
-    workoutDB(db)
+    db
       .prepare(
         `INSERT INTO plans
            (id,user_id,name,status,version,meta,created_at,updated_at)
@@ -3615,7 +3577,7 @@ export async function createPlan(
       userId, planId, actor: attribution.actor, operation: attribution.operation,
       reason: attribution.reason ?? attribution.note ?? null, createdAt: ts,
     }),
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
        SELECT ?1,?2,?3,?4,?5,?6,?7 WHERE EXISTS
        (SELECT 1 FROM plans WHERE id=?8 AND user_id=?2)`,
@@ -3644,7 +3606,7 @@ export async function ensureActivePlan(
 
   const ts = now();
   const candidateId = uuid();
-  const candidateInsert = workoutDB(db).prepare(
+  const candidateInsert = db.prepare(
       `INSERT INTO plans
          (id,user_id,name,status,version,meta,created_at,updated_at)
        SELECT ?1,?2,?3,'active',COALESCE(MAX(version),0)+1,NULL,?4,?4
@@ -3654,13 +3616,13 @@ export async function ensureActivePlan(
        RETURNING *`,
     )
     .bind(candidateId, userId, name, ts);
-  const results = await workoutDB(db).batch<PlanRow>([
+  const results = await db.batch<PlanRow>([
     candidateInsert,
     preparePlanSnapshotInsert(db, {
       userId, planId: candidateId, actor: attribution.actor,
       operation: attribution.operation, reason: attribution.reason ?? null, createdAt: ts,
     }),
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
        SELECT ?1,?2,?3,?4,?5,?6,?7 WHERE EXISTS
        (SELECT 1 FROM plans WHERE id=?8 AND user_id=?2)`,
@@ -3690,7 +3652,7 @@ export async function findWorkoutByRef(
   planId: string,
   ref: string,
 ): Promise<string | null> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(
       'SELECT id FROM workouts WHERE plan_id = ?1 AND (day_label = ?2 OR name = ?2) LIMIT 1',
     )
@@ -3705,7 +3667,7 @@ export async function getWorkoutInPlan(
   planId: string,
   dayId: string,
 ): Promise<WorkoutRow | null> {
-  return workoutDB(db)
+  return db
     .prepare('SELECT * FROM workouts WHERE id = ?1 AND plan_id = ?2')
     .bind(dayId, planId)
     .first<WorkoutRow>();
@@ -3720,8 +3682,6 @@ const DAY_TEMPLATE_PATCH_KEYS = new Set<string>([
   'order_index',
   'notes',
 ]);
-
-export type PlanVersionConflict = { conflict: true; current_version: number };
 
 const orderDayRows = <T extends { id: string; order_index: number }>(
   rows: T[],
@@ -3743,6 +3703,17 @@ async function currentPlanVersion(
   return { conflict: true, current_version: current?.version ?? fallback };
 }
 
+function validateSlotEditVersion(
+  plan: PlanRow, options: SlotEditOptions,
+): PlanVersionConflict | PrescriptionValidationError | null {
+  if (options.expectedVersion === undefined) return null;
+  if (!Number.isSafeInteger(options.expectedVersion) || options.expectedVersion < 1) {
+    return { error: 'invalid_fields', fields: ['expected_version'] };
+  }
+  return options.expectedVersion === plan.version ? null
+    : { conflict: true, current_version: plan.version };
+}
+
 /**
  * App day creation tied to the exact plan version the route read. D1 batches
  * are transactions, so the day insert, dense ordering, and version bump either
@@ -3755,7 +3726,7 @@ export async function addWorkoutAtVersion(
   name: string,
   dayLabel: string | null,
   orderIndex: number,
-  attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_day' },
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_workout' },
   exerciseIds: string[] = [],
 ): Promise<WorkoutRow | PlanVersionConflict | { error: 'invalid_exercises' }> {
   // Resolve every selection before opening the versioned write. The complete
@@ -3763,7 +3734,7 @@ export async function addWorkoutAtVersion(
   if (exerciseIds.length > 50 || new Set(exerciseIds).size !== exerciseIds.length) {
     return { error: 'invalid_exercises' };
   }
-  const catalog = exerciseIds.length ? await workoutDB(db).prepare(
+  const catalog = exerciseIds.length ? await db.prepare(
     'SELECT id, modality FROM exercises WHERE id IN (SELECT value FROM json_each(?1))',
   ).bind(JSON.stringify(exerciseIds)).all<{ id: string; modality: string }>() : { results: [] };
   if (catalog.results.length !== exerciseIds.length) return { error: 'invalid_exercises' };
@@ -3779,7 +3750,7 @@ export async function addWorkoutAtVersion(
     created_at: ts,
     updated_at: ts,
   };
-  const currentDays = await workoutDB(db)
+  const currentDays = await db
     .prepare(
       'SELECT id, order_index FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
     )
@@ -3789,7 +3760,7 @@ export async function addWorkoutAtVersion(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-    workoutDB(db)
+    db
       .prepare(
         `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
@@ -3804,7 +3775,7 @@ export async function addWorkoutAtVersion(
         row.created_at, row.updated_at, userId, -plan.version,
       ),
     ...ordered.map((day, index) =>
-      workoutDB(db)
+      db
         .prepare(
           `UPDATE workouts SET order_index = ?2, updated_at = ?3
             WHERE id = ?1 AND plan_id = ?4
@@ -3820,7 +3791,7 @@ export async function addWorkoutAtVersion(
     const modality = modalities.get(exerciseId);
     const cardio = modality === 'cardio';
     const timed = modality === 'timed';
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
       `INSERT INTO template_exercises
        (id,workout_id,exercise_id,order_index,target_sets,target_reps,rest_seconds,
         target_weight,target_duration_s,progression,is_warmup,created_at,updated_at)
@@ -3854,7 +3825,7 @@ export async function patchWorkoutAtVersion(
     order_index?: number;
     notes?: string | null;
   },
-  attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_day' },
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_workout' },
 ): Promise<WorkoutRow | { error: 'unknown_fields'; fields: string[] } | PlanVersionConflict | null> {
   const existing = await getWorkoutInPlan(db, plan.id, dayId);
   if (!existing) return null;
@@ -3868,7 +3839,7 @@ export async function patchWorkoutAtVersion(
     notes: patch.notes === undefined ? existing.notes : patch.notes,
     updated_at: now(),
   };
-  const currentDays = await workoutDB(db)
+  const currentDays = await db
     .prepare(
       'SELECT id, order_index FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
     )
@@ -3883,7 +3854,7 @@ export async function patchWorkoutAtVersion(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, merged.updated_at, nonce),
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE workouts
             SET name=?2, day_label=?3, order_index=?4, notes=?5, updated_at=?6
@@ -3900,7 +3871,7 @@ export async function patchWorkoutAtVersion(
     ...(patch.order_index === undefined
       ? []
       : ordered.map((day, index) =>
-          workoutDB(db)
+          db
             .prepare(
               `UPDATE workouts SET order_index=?2, updated_at=?3
                 WHERE id=?1 AND plan_id=?4
@@ -3937,7 +3908,7 @@ export async function nextExerciseOrderIndex(
   db: D1Database,
   workoutId: string,
 ): Promise<number> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare('SELECT COALESCE(MAX(order_index), -1) AS m FROM template_exercises WHERE workout_id = ?1')
     .bind(workoutId)
     .first<{ m: number }>();
@@ -3945,7 +3916,7 @@ export async function nextExerciseOrderIndex(
 }
 
 async function exerciseGroupDayRows(db: D1Database, dayId: string): Promise<TemplateExerciseRow[]> {
-  return (await workoutDB(db).prepare(
+  return (await db.prepare(
     'SELECT * FROM template_exercises WHERE workout_id=?1 ORDER BY order_index,created_at,id',
   ).bind(dayId).all<TemplateExerciseRow>()).results;
 }
@@ -3968,7 +3939,7 @@ async function exerciseGroupDayRows(db: D1Database, dayId: string): Promise<Temp
 export async function dedupeDayOrderIndexes(
   db: D1Database, workoutId: string, preferId?: string,
 ): Promise<boolean | GroupConflict> {
-  const plan = await workoutDB(db).prepare(
+  const plan = await db.prepare(
     `SELECT p.* FROM plans p JOIN workouts d ON d.plan_id=p.id
      WHERE d.id=?1 AND p.status='active'`,
   ).bind(workoutId).first<PlanRow>();
@@ -3986,7 +3957,7 @@ export async function dedupeDayOrderIndexes(
   const ts = now(); const nonce = uuid();
   const attribution: PlanWriteAttribution = { actor: 'system', operation: 'normalize_exercise_order' };
   const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
-  for (const row of ordered) statements.push(workoutDB(db).prepare(
+  for (const row of ordered) statements.push(db.prepare(
     `UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
      AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`,
   ).bind(row.id, row.order_index, ts, plan.id, plan.user_id, plan.version, nonce));
@@ -4002,7 +3973,7 @@ export async function nextWorkoutOrderIndex(
   db: D1Database,
   planId: string,
 ): Promise<number> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare('SELECT COALESCE(MAX(order_index), -1) AS m FROM workouts WHERE plan_id = ?1')
     .bind(planId)
     .first<{ m: number }>();
@@ -4016,11 +3987,15 @@ export async function addTemplateExercise(
     is_warmup: number | boolean;
   },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_exercise' },
-): Promise<TemplateExerciseRow | PrescriptionValidationError | GroupConflict> {
-  const plan = await workoutDB(db).prepare("SELECT * FROM plans WHERE id=?1 AND status='active'")
+  options: SlotEditOptions = {},
+): Promise<SlotEditResult> {
+  const plan = await db.prepare("SELECT * FROM plans WHERE id=?1 AND status='active'")
     .bind(planId).first<PlanRow>();
-  if (!plan) throw new Error('no_active_plan');
-  const exercise = await workoutDB(db).prepare('SELECT modality FROM exercises WHERE id=?1')
+  if (!plan) return { error: 'no_active_plan' };
+  const versionError = validateSlotEditVersion(plan, options);
+  if (versionError) return versionError;
+  if (!await getWorkoutInPlan(db, plan.id, input.workout_id)) return null;
+  const exercise = await db.prepare('SELECT modality FROM exercises WHERE id=?1')
     .bind(input.exercise_id).first<{ modality: string }>();
   const validationInput: Record<string, unknown> = {
     ...input,
@@ -4049,7 +4024,7 @@ export async function addTemplateExercise(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO template_exercises
        (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at)
        SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16
@@ -4061,7 +4036,7 @@ export async function addTemplateExercise(
       row.target_weight, row.target_duration_s, row.progression, row.cues, row.is_warmup ? 1 : 0,
       row.created_at, row.updated_at, plan.id, plan.user_id, plan.version, nonce,
     ),
-    ...(collides ? ordered.map((slot, index) => workoutDB(db).prepare(
+    ...(collides ? ordered.map((slot, index) => db.prepare(
       `UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
        AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`,
     ).bind(slot.id, index, ts, plan.id, plan.user_id, plan.version, nonce)) : []),
@@ -4069,8 +4044,13 @@ export async function addTemplateExercise(
   const versionResultIndex = statements.length;
   statements.push(...preparePlanWriteFinish(db, plan, { ...attribution, result: row.id }, ts, nonce));
   const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
-  if ((results[0]?.meta.changes ?? 0) !== 1 || (results[2]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
-    throw new Error('plan_write_conflict');
+  if ((results[0]?.meta.changes ?? 0) !== 1) {
+    return options.expectedVersion === undefined && options.retryLegacyConflict !== false
+      ? addTemplateExercise(db, planId, input, attribution, { ...options, retryLegacyConflict: false })
+      : currentPlanVersion(db, plan.user_id, plan.version);
+  }
+  if ((results[2]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
+    throw new Error('plan_write_ack_missing');
   }
   if (collides) row.order_index = ordered.findIndex((slot) => slot.id === row.id);
   return row;
@@ -4119,7 +4099,7 @@ export async function getExercises(
     'SELECT id, name, primary_muscle, modality, unit, laterality, load_mode, demo_slug, aliases FROM exercises' +
     (where.length ? ' WHERE ' + where.join(' AND ') : '') +
     ' ORDER BY name';
-  const stmt = workoutDB(db).prepare(sql);
+  const stmt = db.prepare(sql);
   const bound = binds.length === 0 ? stmt : stmt.bind(...binds);
   const r = await bound.all<{
     id: string;
@@ -4138,7 +4118,7 @@ export async function getExercises(
 /** Resolve an id, exact name, or alias to an exercise row. */
 export async function resolveExercise(db: D1Database, nameOrId: string) {
   const q = nameOrId.trim().toLowerCase();
-  return workoutDB(db)
+  return db
     .prepare(
       'SELECT * FROM exercises WHERE id = ?1 OR lower(name) = ?2 OR lower(aliases) LIKE ?3 LIMIT 1',
     )
@@ -4169,7 +4149,7 @@ export async function getOrCreateSession(
     throw new Error('session_expected_attempt_missing');
   }
   const selectExisting = () =>
-    workoutDB(db)
+    db
       .prepare(
         'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
       )
@@ -4222,7 +4202,7 @@ export async function getOrCreateSession(
       };
       const updated = await runWorkoutWriteStatement(
         db,
-        workoutDB(db).prepare(
+        db.prepare(
           `UPDATE sessions
               SET workout_id=?2,
                   runner_targets=NULL,
@@ -4262,7 +4242,7 @@ export async function getOrCreateSession(
       // A competing explicit restart or another resolver advanced the reused
       // row after our read. Adopt that winner without applying this stale
       // resolver's day pin or pristine-state reset to the newer generation.
-      const winner = await workoutDB(db)
+      const winner = await db
         .prepare('SELECT * FROM sessions WHERE id = ?1')
         .bind(existing.id)
         .first<SessionRow>();
@@ -4291,9 +4271,9 @@ export async function getOrCreateSession(
       // row eligible after another writer pins it so this request can still
       // perform its independent explicit protocol claim without clobbering the
       // winning day. (Codex P2 on #58.)
-      const res = await runWorkoutWriteStatement(
+      await runWorkoutWriteStatement(
         db,
-        workoutDB(db).prepare(
+        db.prepare(
           `UPDATE sessions
               SET workout_id = CASE
                     WHEN ?5 = 1 AND workout_id IS NULL THEN ?2
@@ -4324,7 +4304,7 @@ export async function getOrCreateSession(
       // immediately after the guarded update; synthesizing from `existing`
       // would acknowledge stale planned/live state. A zero-change result is
       // likewise a normal CAS loss (pin, status, generation, or protocol).
-      const fresh = await workoutDB(db)
+      const fresh = await db
         .prepare('SELECT * FROM sessions WHERE id = ?1')
         .bind(existing.id)
         .first<SessionRow>();
@@ -4362,7 +4342,7 @@ export async function getOrCreateSession(
   };
   const inserted = await runWorkoutWriteStatement(
     db,
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO sessions
        (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
@@ -4402,7 +4382,7 @@ export async function getOwnedSessionByDate(
   userId: string,
   date: string,
 ): Promise<SessionRow | null> {
-  return workoutDB(db)
+  return db
     .prepare(
       'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
     )
@@ -4428,7 +4408,7 @@ export async function reviveDiscardedSession(
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
   if (!canonicalSessionId) return null;
   const readCurrent = () =>
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId)
       .first<SessionRow>();
@@ -4450,7 +4430,7 @@ export async function reviveDiscardedSession(
     }
     await runWorkoutWriteStatement(
       db,
-      workoutDB(db).prepare(
+      db.prepare(
         `UPDATE sessions
             SET write_protocol = 'attempt-v1'
           WHERE id = ?1
@@ -4493,9 +4473,9 @@ export async function reviveDiscardedSession(
 
   const ts = now();
   const revivedAttempt = expectedAttempt + 1;
-  const updated = await runWorkoutWriteStatement(
+  await runWorkoutWriteStatement(
     db,
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE sessions
           SET workout_id = ?2,
               status = 'planned',
@@ -4548,7 +4528,7 @@ async function resolveOwnedSessionId(
   userId: string,
   requestedId: string,
 ): Promise<string | null> {
-  const resolved = await workoutDB(db)
+  const resolved = await db
     .prepare(
       `SELECT s.id
          FROM sessions AS s
@@ -4707,7 +4687,7 @@ export async function patchSession(
 > {
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
   if (!canonicalSessionId) return null;
-  const s = await workoutDB(db)
+  const s = await db
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
     .bind(canonicalSessionId, userId)
     .first<SessionRow>();
@@ -4807,7 +4787,7 @@ export async function patchSession(
   // concurrently installed started_at. Skip/planned transitions are stricter:
   // once a set promoted the row, they cannot hide or demote the live workout.
   const [updated] = await runWorkoutWriteBatch(db, [
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE sessions
           SET status = CASE WHEN ?8 = 1 THEN ?2 ELSE status END,
               perceived_fatigue = CASE
@@ -4883,7 +4863,7 @@ export async function patchSession(
     reconcileNativeHealthKitStatement(db, userId, ts, true),
   ]);
   if (updated!.meta.changes === 0) {
-    const current = await workoutDB(db)
+    const current = await db
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId)
       .first<SessionRow>();
@@ -4919,7 +4899,7 @@ export async function patchSession(
     if (current) return sessionStateConflict(s.status, current);
     return null;
   }
-  return workoutDB(db)
+  return db
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
     .bind(canonicalSessionId, userId)
     .first<SessionRow>();
@@ -4961,7 +4941,7 @@ export async function discardSession(
 > {
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
   if (!canonicalSessionId) return null;
-  const s = await workoutDB(db)
+  const s = await db
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
     .bind(canonicalSessionId, userId)
     .first<SessionRow>();
@@ -4988,7 +4968,7 @@ export async function discardSession(
     }
     await runWorkoutWriteStatement(
       db,
-      workoutDB(db).prepare(
+      db.prepare(
         `UPDATE sessions
             SET write_protocol = 'attempt-v1'
           WHERE id = ?1
@@ -4999,7 +4979,7 @@ export async function discardSession(
       )
       .bind(canonicalSessionId, userId, casAttempt),
     );
-    const authoritative = await workoutDB(db)
+    const authoritative = await db
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId)
       .first<SessionRow>();
@@ -5026,7 +5006,7 @@ export async function discardSession(
   // its new set is included in this tombstone; if discard wins first, its
   // status-guarded insert observes `discarded` and is rejected.
   const [transition, , tombstones, terminalState] = await runWorkoutWriteBatch(db, [
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE sessions
             SET status = 'discarded',
@@ -5048,7 +5028,7 @@ export async function discardSession(
         attemptScoped ? 1 : 0,
       ),
     reconcileNativeHealthKitStatement(db, userId, ts, true),
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE set_logs
             SET deleted_at = ?2,
@@ -5062,7 +5042,7 @@ export async function discardSession(
           RETURNING id`,
       )
       .bind(canonicalSessionId, ts, casAttempt),
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId),
   ]);
@@ -5154,7 +5134,7 @@ export async function logSet(
   // return a globally-matched row from another session/tenant, even if a
   // caller happens to know its UUID.
   const selectExisting = () =>
-    workoutDB(db)
+    db
       .prepare(
         `SELECT sl.*
            FROM set_logs AS sl
@@ -5163,12 +5143,12 @@ export async function logSet(
       )
       .bind(input.id, canonicalSessionId, userId);
   const selectSession = () =>
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId);
   // Read the UUID winner and its authoritative session from one D1 snapshot.
   // A retry must never pair an old planned read with a set that won later.
-  const [initialSetState, initialSessionState] = await workoutDB(db).batch([
+  const [initialSetState, initialSessionState] = await db.batch([
     selectExisting(),
     selectSession(),
   ]);
@@ -5239,7 +5219,7 @@ export async function logSet(
   let templateExerciseId: string | null = input.template_exercise_id ?? null;
   let slotIsWarmup: number | null = null;
   if (templateExerciseId) {
-    const slot = await workoutDB(db)
+    const slot = await db
       .prepare(`SELECT te.is_warmup, te.exercise_id FROM template_exercises te
         JOIN workouts w ON w.id=te.workout_id JOIN plans p ON p.id=w.plan_id
         WHERE te.id=?1 AND p.user_id=?2`)
@@ -5270,7 +5250,7 @@ export async function logSet(
   // row already holds it, in which case bump to max+1. The partial unique
   // index ux_set_slot (migration 0013) is the hard backstop for races.
   let setIndex = input.set_index;
-  const clash = await workoutDB(db)
+  const clash = await db
     .prepare(
       `SELECT 1 FROM set_logs
        WHERE session_id = ?1 AND exercise_id = ?2 AND set_index = ?3
@@ -5279,7 +5259,7 @@ export async function logSet(
     .bind(canonicalSessionId, input.exercise_id, setIndex, isWarmupInt)
     .first();
   if (clash) {
-    const max = await workoutDB(db)
+    const max = await db
       .prepare(
         `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
          WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
@@ -5299,7 +5279,7 @@ export async function logSet(
   if (typeof input.is_timed === 'boolean') {
     isTimedInt = input.is_timed ? 1 : 0;
   } else {
-    const exRow = await workoutDB(db)
+    const exRow = await db
       .prepare('SELECT modality FROM exercises WHERE id = ?1')
       .bind(input.exercise_id)
       .first<{ modality: string | null }>();
@@ -5337,7 +5317,7 @@ export async function logSet(
   const insertAndStart = () => {
     const ts = now();
     return runWorkoutWriteBatch(db, [
-      workoutDB(db)
+      db
         .prepare(
           `INSERT INTO set_logs
            (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at,user_id,updated_at)
@@ -5361,7 +5341,7 @@ export async function logSet(
       // first avoids mutating the session for a globally-colliding UUID, while
       // the enclosing D1 batch remains one atomic linearization point: no
       // legacy writer can slip between insertion and the protocol fence.
-      workoutDB(db)
+      db
         .prepare(
           `UPDATE sessions
               SET status = CASE WHEN status = 'planned' THEN 'in_progress' ELSE status END,
@@ -5399,10 +5379,10 @@ export async function logSet(
       // Capture both the target generation and the canonical current row at
       // the same linearization point. The latter gives a stable conflict body
       // when discard/restart moved the generation during this request.
-      workoutDB(db)
+      db
         .prepare('SELECT * FROM sessions WHERE id = ?1 AND attempt = ?2')
         .bind(canonicalSessionId, casAttempt),
-      workoutDB(db)
+      db
         .prepare('SELECT * FROM sessions WHERE id = ?1')
         .bind(canonicalSessionId),
       selectExisting(),
@@ -5482,7 +5462,7 @@ export async function logSet(
       const msg = String((e as Error)?.message ?? '');
       const slotConflict = /unique constraint failed/i.test(msg) && /set_index/i.test(msg);
       if (!slotConflict || attempt >= 5) throw e;
-      const max = await workoutDB(db)
+      const max = await db
         .prepare(
           `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
            WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
@@ -5516,7 +5496,7 @@ export async function findRecentMatchingSet(
   },
 ): Promise<SetLogRow | null> {
   const since = now() - (args.within_ms ?? 120_000);
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(
       `SELECT sl.* FROM set_logs sl
        JOIN sessions s ON s.id = sl.session_id
@@ -5564,7 +5544,7 @@ export async function patchSet(
   if (patch.deleted === false) {
     throw new Error('set_undelete_unsupported');
   }
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(
       `SELECT sl.*, s.attempt AS session_attempt
          FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
@@ -5622,7 +5602,7 @@ export async function patchSet(
         AND EXISTS (SELECT 1 FROM sessions WHERE id=set_logs.session_id AND attempt=?${values.length})
         AND deleted_at IS NULL`;
     }
-    statements.push(workoutDB(db).prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1${condition}`)
+    statements.push(db.prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1${condition}`)
       .bind(...values));
   }
   // Phantom-session guard. Logging a set promotes a session 'planned' ->
@@ -5643,7 +5623,7 @@ export async function patchSet(
     // false; if this demotion wins first, logSet's ordered batch promotes the
     // same attempt back to in_progress. A discard/restart advances `attempt`,
     // so a stale deletion can never demote the newer workout.
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
         `UPDATE sessions
             SET status = 'planned', started_at = NULL, updated_at = MAX(updated_at + 1, ?2)
           WHERE id = ?1
@@ -5659,7 +5639,7 @@ export async function patchSet(
   // Keep deletion and last-set demotion atomic; a lost reply can safely
   // replay the desired state without reopening or retargeting a workout.
   if (statements.length) await runWorkoutWriteBatch(db, statements);
-  const fresh = await workoutDB(db).prepare(
+  const fresh = await db.prepare(
     `SELECT sl.*, s.attempt AS session_attempt FROM set_logs sl
        JOIN sessions s ON s.id=sl.session_id WHERE sl.id=?1 AND s.user_id=?2`)
     .bind(setId, userId).first<SetLogRow & { session_attempt: number }>();
@@ -5669,7 +5649,7 @@ export async function patchSet(
   if (!fresh) return null;
   const { session_attempt, ...set } = fresh;
   if (!expected) return set;
-  const session = await workoutDB(db).prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
+  const session = await db.prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
     .bind(set.session_id, userId).first<SessionRow>();
   if (!session || session.attempt !== expected.attempt) throw new Error('set_correction_conflict');
   return { ...set, session };
@@ -5682,7 +5662,7 @@ export async function patchSet(
 export async function swapSessionExercise(db: D1Database, userId: string, sessionId: string,
   slotId: string, input: { to_exercise: string; expected_attempt: number;
     expected_version: number; expected_revision: number }) {
-  const session = await workoutDB(db).prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
+  const session = await db.prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
     .bind(sessionId, userId).first<SessionRow>();
   if (!session) return { error: 'not_found' as const };
   if (session.attempt !== input.expected_attempt || !['planned', 'in_progress'].includes(session.status)) {
@@ -5696,7 +5676,7 @@ export async function swapSessionExercise(db: D1Database, userId: string, sessio
   if (swaps.revision !== input.expected_revision) return { error: 'swap_conflict' as const };
   const exercise = await resolveExercise(db, input.to_exercise);
   if (!exercise) return { error: 'exercise_not_found' as const };
-  const destination = await workoutDB(db).prepare('SELECT * FROM exercises WHERE id=?1')
+  const destination = await db.prepare('SELECT * FROM exercises WHERE id=?1')
     .bind(exercise.id).first<{ id: string; name: string; unit: string; primary_muscle: string;
       modality: string; laterality: string; load_mode: string; demo_slug: string | null }>();
   if (!destination) return { error: 'exercise_not_found' as const };
@@ -5716,13 +5696,13 @@ export async function swapSessionExercise(db: D1Database, userId: string, sessio
     entries: [...swaps.entries.filter((entry) => entry.original.id !== slotId), entry] });
   const auditID = uuid();
   const results = await runWorkoutWriteBatch(db, [
-    workoutDB(db).prepare(`UPDATE sessions SET exercise_swaps=?3, updated_at=MAX(updated_at+1,?4)
+    db.prepare(`UPDATE sessions SET exercise_swaps=?3, updated_at=MAX(updated_at+1,?4)
       WHERE id=?1 AND user_id=?2 AND attempt=?5 AND status IN ('planned','in_progress')
         AND exercise_swaps IS ?6
         AND EXISTS (SELECT 1 FROM plans WHERE id=?7 AND user_id=?2 AND status='active' AND version=?8)
       RETURNING *`).bind(sessionId, userId, next, now(), input.expected_attempt,
         session.exercise_swaps ?? null, plan.id, input.expected_version),
-    workoutDB(db).prepare(`INSERT INTO audit_log(id,user_id,actor,tool,args,result,created_at)
+    db.prepare(`INSERT INTO audit_log(id,user_id,actor,tool,args,result,created_at)
       SELECT ?1,?2,'ios','swap_session_exercise',?3,?4,?5 WHERE changes()>0`)
       .bind(auditID, userId, JSON.stringify({ session_id: sessionId, slot_id: slotId, ...input }), next, now()),
   ]);
@@ -5765,7 +5745,7 @@ export async function getState(
           stress_model: baseMeta.stress_model ?? null,
         }
       : null;
-  const sessions = await workoutDB(db)
+  const sessions = await db
     .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND updated_at > ?2 ORDER BY date')
     .bind(userId, setsSince)
     .all<SessionRow>();
@@ -5775,7 +5755,7 @@ export async function getState(
   // (migration 0034: backfilled, asserted, and trigger-maintained for legacy
   // inserts) so neither needs to join sessions for ownership.
   const sets = setsSince > 0
-    ? await workoutDB(db)
+    ? await db
         .prepare(
           `SELECT * FROM set_logs
             WHERE user_id = ?1 AND updated_at > ?2
@@ -5783,7 +5763,7 @@ export async function getState(
         )
         .bind(userId, setsSince)
         .all<SetLogRow>()
-    : await workoutDB(db)
+    : await db
         .prepare(
           `SELECT sl.* FROM set_logs sl
             WHERE sl.user_id = ?1 ORDER BY sl.logged_at`,
@@ -5804,13 +5784,13 @@ export async function getState(
   //    delta+tombstone pattern.
   const events =
     eventsSince > 0
-      ? await workoutDB(db)
+      ? await db
           .prepare(
             'SELECT * FROM external_events WHERE user_id = ?1 AND synced_at > ?2 ORDER BY synced_at',
           )
           .bind(userId, eventsSince)
           .all<ExternalEventRow>()
-      : await workoutDB(db)
+      : await db
           .prepare(
             'SELECT * FROM external_events WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY synced_at',
           )
@@ -5825,13 +5805,13 @@ export async function getState(
   //    INCLUDING soft-deleted ones, so a syncing client learns about removals.
   const activities =
     activitiesSince > 0
-      ? await workoutDB(db)
+      ? await db
           .prepare(
             'SELECT * FROM external_activities WHERE user_id = ?1 AND synced_at > ?2 ORDER BY synced_at',
           )
           .bind(userId, activitiesSince)
           .all<ExternalActivityRow>()
-      : await workoutDB(db)
+      : await db
           .prepare(
             'SELECT * FROM external_activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY date',
           )
@@ -5849,7 +5829,7 @@ export async function getState(
     logSince > 0
       ? await listActivitiesForUser(db, userId, logSince)
       : (
-          await workoutDB(db)
+          await db
             .prepare(
               'SELECT * FROM activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY logged_at',
             )
@@ -5877,7 +5857,7 @@ export async function getInProgressSession(
   db: D1Database,
   userId: string,
 ): Promise<SessionRow | null> {
-  return workoutDB(db)
+  return db
     .prepare(
       "SELECT * FROM sessions WHERE user_id = ?1 AND status = 'in_progress' ORDER BY updated_at DESC LIMIT 1",
     )
@@ -5886,7 +5866,7 @@ export async function getInProgressSession(
 }
 
 export async function getSetsForSession(db: D1Database, sessionId: string) {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       'SELECT * FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL ORDER BY logged_at',
     )
@@ -5911,7 +5891,7 @@ export async function getSetsForSessions(
 ): Promise<SetLogRow[]> {
   if (sessionIds.length === 0) return [];
   const placeholders = sessionIds.map((_, i) => `?${i + 2}`).join(',');
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       `SELECT * FROM set_logs
         WHERE user_id = ?1 AND session_id IN (${placeholders}) AND deleted_at IS NULL
@@ -5933,7 +5913,7 @@ export async function getRecentSessions(
   // context. (Visual calendar surfaces vanish it via the projection;
   // set-based reads via deleted_at. This is the one session-list read
   // that needs an explicit filter.)
-  const r = await workoutDB(db)
+  const r = await db
     .prepare("SELECT * FROM sessions WHERE user_id = ?1 AND status != 'discarded' AND date <= ?3 ORDER BY date DESC, id LIMIT ?2")
     .bind(userId, n, throughDate)
     .all<SessionRow>();
@@ -5953,7 +5933,7 @@ export async function getLastCompletedSession(
   excludeDate?: string,
   throughDate = '9999-12-31',
 ): Promise<SessionRow | null> {
-  return workoutDB(db)
+  return db
     .prepare(
       "SELECT * FROM sessions WHERE user_id = ?1 AND status = 'completed' AND date != ?2 AND date <= ?3 ORDER BY date DESC, id LIMIT 1",
     )
@@ -5972,7 +5952,7 @@ export async function getSessionByDate(
   // applies. Revival/discard never route through here (getOrCreateSession
   // has its own query; discardSession takes a session id), so filtering is
   // safe.
-  return workoutDB(db)
+  return db
     .prepare("SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 AND status != 'discarded' ORDER BY created_at LIMIT 1")
     .bind(userId, date)
     .first<SessionRow>();
@@ -5982,13 +5962,13 @@ export async function getWorkoutSummary(
   db: D1Database, userId: string, sessionId: string,
 ): Promise<WorkoutSummary | null> {
   const owned = `SELECT id FROM sessions WHERE id=?1 AND user_id=?2 AND status!='discarded'`;
-  const [sessionResult, setResult, exerciseResult, previousResult] = await workoutDB(db).batch([
-    workoutDB(db).prepare(`SELECT * FROM sessions WHERE id IN (${owned})`).bind(sessionId, userId),
-    workoutDB(db).prepare(`SELECT * FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL`).bind(sessionId, userId),
-    workoutDB(db).prepare(`SELECT e.* FROM exercises e WHERE e.id IN (
+  const [sessionResult, setResult, exerciseResult, previousResult] = await db.batch([
+    db.prepare(`SELECT * FROM sessions WHERE id IN (${owned})`).bind(sessionId, userId),
+    db.prepare(`SELECT * FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL`).bind(sessionId, userId),
+    db.prepare(`SELECT e.* FROM exercises e WHERE e.id IN (
       SELECT exercise_id FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL)`)
       .bind(sessionId, userId),
-    workoutDB(db).prepare(`SELECT sl.exercise_id,sl.weight,sl.is_timed,MAX(sl.reps) AS reps,
+    db.prepare(`SELECT sl.exercise_id,sl.weight,sl.is_timed,MAX(sl.reps) AS reps,
         MAX(COALESCE(sl.duration_s,sl.reps)) AS duration_s
       FROM set_logs sl JOIN sessions s ON s.id=sl.session_id
       WHERE s.user_id=?2 AND s.status='completed' AND sl.deleted_at IS NULL AND sl.is_warmup=0
@@ -6013,7 +5993,7 @@ export async function writeNote(
   author: 'coach' | 'nick',
   body: string,
 ): Promise<void> {
-  await workoutDB(db)
+  await db
     .prepare(
       'INSERT INTO notes (id,user_id,scope,ref_id,author,body,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)',
     )
@@ -6029,7 +6009,7 @@ export async function writeAudit(
   result: string,
   actor: string = 'mcp',
 ): Promise<void> {
-  await workoutDB(db)
+  await db
     .prepare(
       'INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)',
     )
@@ -6071,7 +6051,7 @@ export async function logActivity(
 ): Promise<ActivityRow> {
   const updatedAt = now();
   const loggedAt = input.logged_at ?? updatedAt;
-  await workoutDB(db)
+  await db
     .prepare(
       `INSERT INTO activities
          (id,user_id,date,type,title,duration_minutes,notes,logged_at,source,deleted_at,updated_at)
@@ -6093,7 +6073,7 @@ export async function logActivity(
     .run();
   // Re-select so retries return the *original* persisted row (preserving the
   // original logged_at/title/etc.), not the fresh-looking input.
-  const row = await workoutDB(db)
+  const row = await db
     .prepare('SELECT * FROM activities WHERE id = ?1 AND user_id = ?2')
     .bind(input.id, userId)
     .first<ActivityRow>();
@@ -6120,7 +6100,7 @@ export async function softDeleteActivity(
   activityId: string,
 ): Promise<boolean> {
   const ts = now();
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       `UPDATE activities
           SET deleted_at = ?3,
@@ -6145,7 +6125,7 @@ export async function listActivitiesForUser(
   userId: string,
   sinceMs: number,
 ): Promise<ActivityRow[]> {
-  const rows = await workoutDB(db)
+  const rows = await db
     .prepare(
       `SELECT * FROM activities
        WHERE user_id = ?1 AND updated_at > ?2
@@ -6348,7 +6328,7 @@ export async function updatePlanTree(
     // Build the candidate only after the complete proposed tree has passed
     // resolution and runtime validation. Its INSERT joins the tree rebuild's
     // transaction below, so a downstream failure cannot leave an empty plan.
-    const prior = await workoutDB(db).prepare(
+    const prior = await db.prepare(
       'SELECT COALESCE(MAX(version),0) AS version FROM plans WHERE user_id=?1',
     ).bind(userId).first<{ version: number }>();
     const ts = now();
@@ -6364,7 +6344,7 @@ export async function updatePlanTree(
   // name/label matches. Without this, every update_plan (e.g. "add a
   // deadlift day") would silently wipe the entire weekly schedule because
   // rebuilt days get fresh UUIDs.
-  const oldDays = await workoutDB(db)
+  const oldDays = await db
     .prepare('SELECT id, name, day_label FROM workouts WHERE plan_id = ?1')
     .bind(plan.id)
     .all<{ id: string; name: string; day_label: string | null }>();
@@ -6409,7 +6389,7 @@ export async function updatePlanTree(
     const newId = (lk != null ? newIdByLabel.get(lk) : undefined) ?? newIdByName.get(nk) ?? null;
     oldToNewDay.set(od.id, newId);
   }
-  const oldTeRows = await workoutDB(db)
+  const oldTeRows = await db
     .prepare(
       `SELECT te.*
          FROM template_exercises te
@@ -6552,7 +6532,7 @@ export async function updatePlanTree(
   // referenced a row being deleted.
   const nonce = uuid();
   const stmts: D1PreparedStatement[] = createsPlan
-    ? [workoutDB(db).prepare(
+    ? [db.prepare(
         `INSERT INTO plans
            (id,user_id,name,status,version,meta,created_at,updated_at,plan_write_nonce)
          SELECT ?1,?2,?3,'active',?4,NULL,?5,?5,?6
@@ -6567,7 +6547,7 @@ export async function updatePlanTree(
   input.workouts.forEach((d, di) => {
     const dayId = newDayIds[di]!;
     stmts.push(
-      workoutDB(db)
+      db
         .prepare(
           `INSERT INTO workouts
            (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
@@ -6603,7 +6583,7 @@ export async function updatePlanTree(
       const isWarmup = isWarmupPerOccurrence[di]![ei]!;
       const group = groupCandidates[di]!.exercises[ei]!;
       stmts.push(
-        workoutDB(db)
+        db
           .prepare(
             `INSERT INTO template_exercises
              (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds)
@@ -6628,7 +6608,7 @@ export async function updatePlanTree(
   for (const [oldDayId, newDayId] of oldToNewDay.entries()) {
     if (newDayId != null) {
       stmts.push(
-        workoutDB(db)
+        db
           .prepare(
             `UPDATE sessions SET workout_id = ?2, updated_at = ?6
               WHERE workout_id = ?1
@@ -6641,7 +6621,7 @@ export async function updatePlanTree(
       );
     } else {
       stmts.push(
-        workoutDB(db)
+        db
           .prepare(
             `UPDATE sessions SET workout_id = NULL, updated_at = ?5
               WHERE workout_id = ?1
@@ -6658,7 +6638,7 @@ export async function updatePlanTree(
   for (const [oldTeId, newTeId] of oldToNewTe.entries()) {
     if (newTeId != null) {
       stmts.push(
-        workoutDB(db)
+        db
           .prepare(
             `UPDATE set_logs
                 SET template_exercise_id = ?2,
@@ -6673,7 +6653,7 @@ export async function updatePlanTree(
       );
     } else {
       stmts.push(
-        workoutDB(db)
+        db
           .prepare(
             `UPDATE set_logs
                 SET template_exercise_id = NULL,
@@ -6692,7 +6672,7 @@ export async function updatePlanTree(
   //    freshly-inserted new rows that now share plan_id). Children first.
   for (const ot of oldTeRows.results) {
     stmts.push(
-      workoutDB(db)
+      db
         .prepare(
           `DELETE FROM template_exercises
             WHERE id = ?1
@@ -6707,7 +6687,7 @@ export async function updatePlanTree(
   // 6) DELETE old workouts by EXPLICIT id. Parents last.
   for (const od of oldDays.results) {
     stmts.push(
-      workoutDB(db)
+      db
         .prepare(
           `DELETE FROM workouts
             WHERE id = ?1
@@ -6771,7 +6751,7 @@ export async function updatePlanTree(
     week: remappedWeek,
   };
   stmts.push(
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE plans
             SET name = ?2, meta = ?3, updated_at = ?4
@@ -6835,7 +6815,7 @@ async function findSlot(
   ref: { template_exercise_id?: string; workout_id?: string; day?: string; exercise?: string },
 ): Promise<TemplateExerciseRow | null> {
   if (ref.template_exercise_id) {
-    return workoutDB(db)
+    return db
       .prepare(
         `SELECT te.* FROM template_exercises te
          JOIN workouts d ON d.id = te.workout_id
@@ -6848,7 +6828,7 @@ async function findSlot(
   }
   if (!ref.day || !ref.exercise) return null;
   const exId = await resolveOrThrow(db, ref.exercise);
-  return workoutDB(db)
+  return db
     .prepare(
       `SELECT te.* FROM template_exercises te
        JOIN workouts d ON d.id = te.workout_id
@@ -6898,22 +6878,24 @@ export async function updateExercise(
     >
   > & { progression?: unknown },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_exercise' },
-  retryLegacyConflict = true,
-): Promise<TemplateExerciseRow | PlanVersionConflict | { error: 'unknown_fields'; fields: string[] } | PrescriptionValidationError | GroupConflict | null> {
+  options: SlotEditOptions = {},
+): Promise<SlotEditResult> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
   // Slot lookup first so a wrong ref returns the more actionable
   // `slot_not_found` (via null) before unknown_fields. A double-mistake
   // call gets the higher-priority diagnostic.
   const slot = await findSlot(db, userId, ref);
-  if (!slot) return null;
+  if (!slot || !await getWorkoutInPlan(db, plan.id, slot.workout_id)) return null;
+  const versionError = validateSlotEditVersion(plan, options);
+  if (versionError) return versionError;
   const unknown = Object.keys(patch).filter((k) => !TEMPLATE_EXERCISE_PATCH_KEYS.has(k));
   if (unknown.length > 0) return { error: 'unknown_fields', fields: unknown };
   if (slot.group_id != null) {
     const owned = ['order_index', 'target_sets'].filter((key) => Object.prototype.hasOwnProperty.call(patch, key));
     if (owned.length) return { error: 'group_conflict', fields: owned };
   }
-  const modality = await workoutDB(db).prepare('SELECT modality FROM exercises WHERE id=?1')
+  const modality = await db.prepare('SELECT modality FROM exercises WHERE id=?1')
     .bind(slot.exercise_id).first<{ modality: string }>();
   const merged = {
     target_sets: patch.target_sets === undefined ? slot.target_sets : patch.target_sets,
@@ -6981,7 +6963,7 @@ export async function updateExercise(
   const planParam = nonceParam - 2;
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE template_exercises SET ${assignments.join(',')}
         WHERE id=?1 AND EXISTS (
           SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
@@ -6994,7 +6976,7 @@ export async function updateExercise(
   ];
   let acknowledgedOrder = patch.order_index ?? slot.order_index;
   if (patch.order_index !== undefined) {
-    const siblings = await workoutDB(db).prepare(
+    const siblings = await db.prepare(
       'SELECT id,order_index FROM template_exercises WHERE workout_id=?1 ORDER BY order_index,created_at,id',
     ).bind(slot.workout_id).all<{ id: string; order_index: number }>();
     const moved = siblings.results.map((row) => row.id === slot.id ? { ...row, order_index: patch.order_index! } : row);
@@ -7003,7 +6985,7 @@ export async function updateExercise(
       const ordered = orderDayRows(moved, slot.id);
       acknowledgedOrder = ordered.findIndex((row) => row.id === slot.id);
       ordered.forEach((row, index) => statements.push(
-        workoutDB(db).prepare(`UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
+        db.prepare(`UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
           AND EXISTS (SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
             JOIN template_exercises te ON te.workout_id=d.id
             WHERE te.id=?4 AND p.id=?5 AND p.version=-?6
@@ -7015,8 +6997,8 @@ export async function updateExercise(
   statements.push(...preparePlanWriteFinish(db, plan, attribution, ts, nonce));
   const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
   if ((results[0]?.meta.changes ?? 0) !== 1) {
-    if (retryLegacyConflict) {
-      return updateExercise(db, userId, ref, patch, attribution, false);
+    if (options.expectedVersion === undefined && options.retryLegacyConflict !== false) {
+      return updateExercise(db, userId, ref, patch, attribution, { ...options, retryLegacyConflict: false });
     }
     return currentPlanVersion(db, userId, plan.version);
   }
@@ -7050,12 +7032,14 @@ export async function deleteTemplateExercise(
   userId: string,
   ref: { template_exercise_id?: string; workout_id?: string; day?: string; exercise?: string },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'delete_exercise' },
-  retryLegacyConflict = true,
-): Promise<TemplateExerciseRow | GroupConflict | null> {
+  options: SlotEditOptions = {},
+): Promise<SlotEditResult> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
   const slot = await findSlot(db, userId, ref);
-  if (!slot) return null;
+  if (!slot || !await getWorkoutInPlan(db, plan.id, slot.workout_id)) return null;
+  const versionError = validateSlotEditVersion(plan, options);
+  if (versionError) return versionError;
   const siblings = await exerciseGroupDayRows(db, slot.workout_id);
   const remaining = normalizeRemovedGroupMember(siblings.filter((row) => row.id !== slot.id), slot.group_id);
   const groupInvalid = validateExerciseGroups(remaining);
@@ -7065,7 +7049,7 @@ export async function deleteTemplateExercise(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
       ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-      workoutDB(db)
+      db
         .prepare(
           `UPDATE set_logs
               SET template_exercise_id = NULL,
@@ -7074,12 +7058,12 @@ export async function deleteTemplateExercise(
               AND EXISTS (SELECT 1 FROM plans WHERE id=?3 AND user_id=?4 AND version=-?5 AND plan_write_nonce=?6)`,
         )
         .bind(slot.id, ts, plan.id, userId, plan.version, nonce),
-      workoutDB(db).prepare(
+      db.prepare(
         `DELETE FROM template_exercises WHERE id=?1 AND EXISTS
          (SELECT 1 FROM plans WHERE id=?2 AND user_id=?3 AND version=-?4 AND plan_write_nonce=?5)`,
       ).bind(slot.id, plan.id, userId, plan.version, nonce),
   ];
-  for (const row of normalized) statements.push(workoutDB(db).prepare(
+  for (const row of normalized) statements.push(db.prepare(
     `UPDATE template_exercises SET group_id=NULL,group_rest_seconds=NULL,group_transition_seconds=NULL,
        updated_at=?2 WHERE id=?1 AND EXISTS
        (SELECT 1 FROM plans WHERE id=?3 AND user_id=?4 AND version=-?5 AND plan_write_nonce=?6)`,
@@ -7088,9 +7072,9 @@ export async function deleteTemplateExercise(
   statements.push(...preparePlanWriteFinish(db, plan, attribution, ts, nonce));
   const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
   if ((results[0]?.meta.changes ?? 0) !== 1) {
-    return retryLegacyConflict
-      ? deleteTemplateExercise(db, userId, ref, attribution, false)
-      : null;
+    return options.expectedVersion === undefined && options.retryLegacyConflict !== false
+      ? deleteTemplateExercise(db, userId, ref, attribution, { ...options, retryLegacyConflict: false })
+      : currentPlanVersion(db, userId, plan.version);
   }
   if ((results[3]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) return null;
   return slot;
@@ -7135,7 +7119,7 @@ export async function swapExercise(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE template_exercises SET exercise_id=?2,updated_at=?3 WHERE id=?1
         AND EXISTS (
           SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
@@ -7284,7 +7268,7 @@ export async function adjustToday(
           continue;
         }
         stmts.push(
-          workoutDB(db)
+          db
             .prepare(`UPDATE template_exercises SET target_weight=?2, updated_at=?3 WHERE id=?1
               AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
             .bind(te.id, w, ts, tree.id, userId, tree.version, nonce),
@@ -7304,7 +7288,7 @@ export async function adjustToday(
           continue;
         }
         stmts.push(
-          workoutDB(db)
+          db
             .prepare(`UPDATE template_exercises SET target_sets=?2, updated_at=?3 WHERE id=?1
               AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
             .bind(te.id, s, ts, tree.id, userId, tree.version, nonce),
@@ -7369,7 +7353,7 @@ export async function getHistory(
   to: number,
 ) {
   const exercise =
-    (await workoutDB(db)
+    (await db
       .prepare('SELECT modality, unit, laterality, load_mode FROM exercises WHERE id = ?1')
       .bind(exerciseId)
       .first<MetricExercise>()) ?? {
@@ -7378,7 +7362,7 @@ export async function getHistory(
       laterality: 'bilateral',
       load_mode: 'total',
     };
-  const sets = await workoutDB(db)
+  const sets = await db
     .prepare(
       `SELECT sl.*, s.date as session_date, s.notes AS session_notes,
          s.perceived_fatigue AS session_perceived_fatigue FROM set_logs sl
@@ -7436,11 +7420,11 @@ export async function getVolume(
   db: D1Database, userId: string, muscle: string, from: number, to: number,
 ) {
   const normalizedMuscle = muscle.trim().toLowerCase();
-  const known = await workoutDB(db)
+  const known = await db
     .prepare('SELECT 1 FROM exercises WHERE lower(primary_muscle) = ?1 LIMIT 1')
     .bind(normalizedMuscle).first();
   if (!known) return { error: 'unknown_muscle' as const, query: muscle };
-  const rows = await workoutDB(db).prepare(
+  const rows = await db.prepare(
     `SELECT strftime('%Y-%W', s.date) AS week, e.unit,
             COUNT(*) AS logged_working_sets, COUNT(sl.rpe) AS sets_with_effort,
             SUM(CASE WHEN sl.weight > 0 AND sl.is_timed = 0 AND e.unit != 'sec' AND e.modality != 'cardio'
@@ -7522,7 +7506,7 @@ export async function setPlanSchedule(
       current_version: plan.version,
     };
   }
-  const days = await workoutDB(db)
+  const days = await db
     .prepare('SELECT id, name, day_label FROM workouts WHERE plan_id = ?1')
     .bind(plan.id)
     .all<{ id: string; name: string; day_label: string | null }>();
@@ -7561,7 +7545,7 @@ export async function setPlanSchedule(
   // writePlanMeta; a concurrent plan write → no row updated → 409.
   const nonce = uuid();
   const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
-  statements.push(workoutDB(db).prepare(
+  statements.push(db.prepare(
     `UPDATE plans SET meta=?2,updated_at=?3
       WHERE id=?1 AND version=-?4 AND user_id=?5 AND status='active' AND plan_write_nonce=?6`,
   ).bind(plan.id, serializePlanMeta(meta, schedule), ts, plan.version, userId, nonce));
@@ -7628,7 +7612,7 @@ async function writePlanMeta(
   // changes. No row updated → another writer won → 409 (caller refetches).
   const nonce = uuid();
   const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
-  statements.push(workoutDB(db).prepare(
+  statements.push(db.prepare(
     `UPDATE plans SET meta=?2,updated_at=?3
       WHERE id=?1 AND version=-?4 AND user_id=?5 AND plan_write_nonce=?6`,
   ).bind(plan.id, serializePlanMeta(meta, meta.schedule), ts, plan.version, userId, nonce));
@@ -7890,7 +7874,7 @@ export async function deleteWorkoutAtVersion(
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
     // Preserve historical rows; only detach their pointers into the plan
     // document before deleting that document node.
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE sessions
             SET workout_id = NULL,
@@ -7914,7 +7898,7 @@ export async function deleteWorkoutAtVersion(
             )`,
       )
       .bind(userId, dayId, plan.id, -writeVersion, ts),
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE set_logs
             SET template_exercise_id = NULL,
@@ -7934,7 +7918,7 @@ export async function deleteWorkoutAtVersion(
             )`,
       )
       .bind(dayId, plan.id, userId, -writeVersion, ts),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM template_exercises WHERE workout_id = ?1
           AND EXISTS (
@@ -7949,7 +7933,7 @@ export async function deleteWorkoutAtVersion(
           )`,
       )
       .bind(dayId, plan.id, userId, -writeVersion),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM workouts WHERE id = ?1 AND plan_id = ?2
           AND EXISTS (
@@ -7965,7 +7949,7 @@ export async function deleteWorkoutAtVersion(
       )
       .bind(dayId, plan.id, userId, -writeVersion),
     ...remaining.map((row, index) =>
-      workoutDB(db)
+      db
         .prepare(
           `UPDATE workouts SET order_index = ?2, updated_at = ?3
             WHERE id = ?1 AND plan_id = ?4
@@ -7982,7 +7966,7 @@ export async function deleteWorkoutAtVersion(
         )
         .bind(row.id, index, ts, plan.id, userId, -writeVersion, dayId),
     ),
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE plans SET meta = ?2, updated_at = ?3
           WHERE id = ?1 AND user_id = ?4 AND status = 'active' AND version = ?5
@@ -8011,7 +7995,7 @@ export async function deleteWorkoutAtVersion(
   const results = await runWorkoutWriteBatch<{ version: number }>(db, stmts);
   const updatedPlan = results[versionResultIndex]?.results[0];
   if ((results[0]?.meta.changes ?? 0) !== 1 || (results[documentUpdateIndex]?.meta.changes ?? 0) !== 1 || !updatedPlan) {
-    const active = await workoutDB(db)
+    const active = await db
       .prepare(
         `SELECT 1 FROM sessions AS active_session
           WHERE active_session.user_id = ?1
@@ -8053,7 +8037,7 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
   const args = JSON.stringify(input);
   const receiptID = input.id;
   const readReceipt = async () => {
-    const row = await workoutDB(db).prepare(
+    const row = await db.prepare(
       'SELECT user_id,tool,args,result FROM audit_log WHERE id=?1').bind(receiptID)
       .first<{ user_id: string; tool: string; args: string; result: string }>();
     if (!row) return null;
@@ -8072,7 +8056,7 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
       || !plan.workouts.some((workout) => workout.id === input.workout_id)) {
     return { error: 'calendar_move_conflict' };
   }
-  const rows = (await workoutDB(db).prepare(
+  const rows = (await db.prepare(
     'SELECT * FROM sessions WHERE user_id=?1 AND date IN (?2,?3)')
     .bind(userId, input.from_date, input.to_date).all<SessionRow>()).results;
   const from = rows.find((row) => row.date === input.from_date);
@@ -8123,14 +8107,14 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
     conditions.push(`COALESCE((SELECT json_array(id,attempt,status,workout_id,updated_at,notes,perceived_fatigue)
       FROM sessions WHERE user_id=?2 AND date=?${index}), 'null')=?${index + 1}`);
   }
-  const statements = [workoutDB(db).prepare(
+  const statements = [db.prepare(
     `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
      SELECT ?1,?2,'ios','move_calendar_workout',?3,?4,?5
      WHERE EXISTS (SELECT 1 FROM plans WHERE id=?6 AND user_id=?2 AND status='active' AND version=?7)
        AND ${conditions.join(' AND ')}
      ON CONFLICT(id) DO NOTHING`).bind(...bindings)];
   for (const row of [acknowledgement.from, acknowledgement.to]) {
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
       `INSERT INTO sessions (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,
         perceived_fatigue,notes,runner_targets,created_at,updated_at,attempt,write_protocol)
        SELECT ?1,?2,?3,?4,?5,?6,NULL,NULL,?13,?14,NULL,?7,?8,?9,?10
@@ -8171,7 +8155,7 @@ export async function setPlannedSession(
 > {
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' };
-  const d = await workoutDB(db)
+  const d = await db
     .prepare(
       "SELECT id FROM workouts WHERE plan_id = ?1 AND (id = ?2 OR lower(day_label) = lower(?2) OR lower(name) = lower(?2)) LIMIT 1",
     )
@@ -8179,7 +8163,7 @@ export async function setPlannedSession(
     .first<{ id: string }>();
   if (!d) return { error: 'unknown_day_ref', ref: day };
   const readExisting = () =>
-    workoutDB(db)
+    db
       .prepare(
         'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
       )
@@ -8238,7 +8222,7 @@ export async function setPlannedSession(
     const newAttempt = casAttempt + 1;
     const updated = await runWorkoutWriteStatement(
       db,
-      workoutDB(db).prepare(
+      db.prepare(
         `UPDATE sessions
             SET plan_id = ?13,
                 workout_id = ?2,
@@ -8337,7 +8321,7 @@ export async function setPlannedSession(
   };
   const inserted = await runWorkoutWriteStatement(
     db,
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO sessions
        (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
        SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14
@@ -8404,7 +8388,7 @@ export async function skipPlannedSession(
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' };
   const readExisting = () =>
-    workoutDB(db)
+    db
       .prepare(
         'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
       )
@@ -8443,7 +8427,7 @@ export async function skipPlannedSession(
     const newAttempt = casAttempt + 1;
     const updated = await runWorkoutWriteStatement(
       db,
-      workoutDB(db).prepare(
+      db.prepare(
         `UPDATE sessions
             SET plan_id = ?6,
                 workout_id = NULL,
@@ -8529,7 +8513,7 @@ export async function skipPlannedSession(
   };
   const inserted = await runWorkoutWriteStatement(
     db,
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO sessions
        (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
        SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14
@@ -8581,7 +8565,7 @@ async function readCalendarPlan(
   const meta = parsePlanMeta(plan.meta);
   const schedule = meta.schedule;
   const trips = meta.trips ?? [];
-  const liveDays = await workoutDB(db)
+  const liveDays = await db
     .prepare('SELECT id FROM workouts WHERE plan_id = ?1')
     .bind(plan.id)
     .all<{ id: string }>();
@@ -8591,7 +8575,7 @@ async function readCalendarPlan(
 async function readCalendarSessions(db: D1Database, userId: string, fromDate: string, toDate: string): Promise<SessionRow[]> {
   // Sessions use skipped/discarded statuses, not a deleted_at column. The
   // projection owns their visibility and includes past completed history.
-  const rows = await workoutDB(db)
+  const rows = await db
     .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND date >= ?2 AND date <= ?3 ORDER BY date')
     .bind(userId, fromDate, toDate)
     .all<SessionRow>();
@@ -8612,7 +8596,7 @@ async function readCalendarInputs(
   // today+ bricks/doubles; completed actuals drive past endurance items.
   // Both are soft-deleted caches — exclude tombstones. The window matches
   // the sessions window (the projection clamps the span itself).
-  const plannedEvents = await workoutDB(db)
+  const plannedEvents = await db
     .prepare(
       `SELECT id, date, kind, title, planned_duration_sec, training_load
          FROM external_events
@@ -8621,7 +8605,7 @@ async function readCalendarInputs(
     )
     .bind(userId, fromDate, toDate)
     .all<ProjectionEvent>();
-  const completedActivities = await workoutDB(db)
+  const completedActivities = await db
     .prepare(
       `SELECT id, date, kind, name, moving_time_sec, training_load
          FROM external_activities
@@ -8650,1522 +8634,7 @@ export async function getProjectedCalendar(
   return inputs ? projectCalendarWindow(inputs, fromDate, toDate, today) : [];
 }
 
-// ---- external events (cycling-awareness; own consistency class) ----------
-//
-// `external_events` is a SERVER-OWNED RECONCILED CACHE. It is not the
-// versioned plan tree and not the append-only client-UUID log. A sync
-// MUST NOT bump plans.version. Rows are soft-deleted, never hard-deleted.
 
-export type SyncStatus =
-  | 'disabled' // INTERVALS_ICU_API_KEY/ATHLETE_ID unset — dormant no-op
-  | 'ok' // 2xx + parse: cache reconciled
-  | 'superseded' // a newer attempt or credential identity won while work was in flight
-  | 'fetch_failed'; // non-2xx/timeout/parse: cache left COMPLETELY untouched
-
-export interface SyncResult {
-  status: SyncStatus;
-  /** Count of non-deleted in-window rows after a successful sync (else 0). */
-  synced: number;
-  /** Diagnostic only (http status / reason) on a failed fetch. */
-  detail?: string;
-  /** Parsed Retry-After delay on a rate-limited fetch, for tick-local suppression. */
-  retryAfterMs?: number;
-}
-
-export interface SyncDeps extends FetchDeps {
-  /** Override the user id (defaults to the single owner). */
-  userId?: string;
-  /** Allow injecting the env-resolved owner sub (tests). */
-  ownerSub?: string;
-  /** Server-owned successful-sync stamp override for deterministic tests. */
-  syncedAt?: number;
-}
-
-type IntervalsCache = 'events' | 'activities';
-
-type IntervalsCredentialIdentity =
-  | { kind: 'api_key'; apiKey: string; athleteId: string; generation: number }
-  | {
-      kind: 'oauth';
-      accessToken: string;
-      refreshToken: string | null;
-      expiresAt: number | null;
-      athleteId: string;
-      generation: number;
-    };
-
-interface IntervalsSyncAttemptTuple {
-  eventsAttempt: number;
-  activitiesAttempt: number;
-}
-
-const MAX_INTERVALS_SYNC_ATTEMPT = Number.MAX_SAFE_INTEGER;
-
-function intervalsSyncAttemptColumn(cache: IntervalsCache): string {
-  return cache === 'events'
-    ? 'intervals_events_sync_attempt'
-    : 'intervals_activities_sync_attempt';
-}
-
-function usedIntervalsCredentialIdentity(
-  apiKey: string | null | undefined,
-  athleteId: string | null | undefined,
-  accessToken: string | null | undefined,
-  refreshToken: string | null | undefined,
-  expiresAt: number | null | undefined,
-  generation: number,
-): IntervalsCredentialIdentity | null {
-  if (!athleteId) return null;
-  if (accessToken) {
-    return {
-      kind: 'oauth',
-      accessToken,
-      refreshToken: refreshToken ?? null,
-      expiresAt: expiresAt ?? null,
-      athleteId,
-      generation,
-    };
-  }
-  if (!apiKey) return null;
-  return { kind: 'api_key', apiKey, athleteId, generation };
-}
-
-/**
- * Atomically start one cache poll. The UPDATE both verifies the exact durable
- * credential identity and advances only that cache's counter; RETURNING
- * captures the full cross-cache attempt tuple used by every later auth CAS.
- * A post-failure read only distinguishes exhaustion from supersession and is
- * never used to choose the value written by a claim.
- */
-async function claimIntervalsSyncAttempt(
-  db: D1Database,
-  userId: string,
-  cache: IntervalsCache,
-  credential: IntervalsCredentialIdentity,
-): Promise<
-  | { status: 'claimed'; attempts: IntervalsSyncAttemptTuple }
-  | { status: 'superseded' }
-  | { status: 'attempt_exhausted' }
-> {
-  const column = intervalsSyncAttemptColumn(cache);
-  const returning = `RETURNING intervals_events_sync_attempt AS eventsAttempt,
-                               intervals_activities_sync_attempt AS activitiesAttempt`;
-  const statement =
-    credential.kind === 'oauth'
-      ? workoutDB(db).prepare(
-          `UPDATE users
-              SET ${column} = ${column} + 1,
-                  intervals_protocol_write_seq = intervals_protocol_write_seq
-                    + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
-            WHERE id = ?1
-              AND intervals_credential_generation = ?2
-              AND intervals_oauth_access_token = ?3
-              AND intervals_oauth_refresh_token IS ?4
-              AND intervals_oauth_expires_at IS ?5
-              AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?6
-              AND intervals_api_key IS NULL
-              AND ${column} < ${MAX_INTERVALS_SYNC_ATTEMPT}
-            ${returning}`,
-        )
-      : workoutDB(db).prepare(
-          `UPDATE users
-              SET ${column} = ${column} + 1,
-                  intervals_protocol_write_seq = intervals_protocol_write_seq
-                    + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
-            WHERE id = ?1
-              AND intervals_credential_generation = ?2
-              AND intervals_api_key = ?3
-              AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?4
-              AND intervals_oauth_access_token IS NULL
-              AND intervals_oauth_refresh_token IS NULL
-              AND intervals_oauth_expires_at IS NULL
-              AND ${column} < ${MAX_INTERVALS_SYNC_ATTEMPT}
-            ${returning}`,
-        );
-  const claimed = await (credential.kind === 'oauth'
-    ? statement
-        .bind(
-          userId,
-          credential.generation,
-          credential.accessToken,
-          credential.refreshToken,
-          credential.expiresAt,
-          credential.athleteId,
-        )
-        .first<IntervalsSyncAttemptTuple>()
-    : statement
-        .bind(userId, credential.generation, credential.apiKey, credential.athleteId)
-        .first<IntervalsSyncAttemptTuple>());
-  if (claimed) return { status: 'claimed', attempts: claimed };
-
-  const diagnostic =
-    credential.kind === 'oauth'
-      ? await workoutDB(db)
-          .prepare(
-            `SELECT ${column} AS attempt FROM users
-              WHERE id = ?1
-                AND intervals_credential_generation = ?2
-                AND intervals_oauth_access_token = ?3
-                AND intervals_oauth_refresh_token IS ?4
-                AND intervals_oauth_expires_at IS ?5
-                AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?6
-                AND intervals_api_key IS NULL`,
-          )
-          .bind(
-            userId,
-            credential.generation,
-            credential.accessToken,
-            credential.refreshToken,
-            credential.expiresAt,
-            credential.athleteId,
-          )
-          .first<{ attempt: number }>()
-      : await workoutDB(db)
-          .prepare(
-            `SELECT ${column} AS attempt FROM users
-              WHERE id = ?1
-                AND intervals_credential_generation = ?2
-                AND intervals_api_key = ?3
-                AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?4
-                AND intervals_oauth_access_token IS NULL
-                AND intervals_oauth_refresh_token IS NULL
-                AND intervals_oauth_expires_at IS NULL`,
-          )
-          .bind(userId, credential.generation, credential.apiKey, credential.athleteId)
-          .first<{ attempt: number }>();
-  return diagnostic?.attempt === MAX_INTERVALS_SYNC_ATTEMPT
-    ? { status: 'attempt_exhausted' }
-    : { status: 'superseded' };
-}
-
-async function isCurrentIntervalsSyncAttempt(
-  db: D1Database,
-  userId: string,
-  cache: IntervalsCache,
-  credential: IntervalsCredentialIdentity,
-  attempts: IntervalsSyncAttemptTuple,
-): Promise<boolean> {
-  const column = intervalsSyncAttemptColumn(cache);
-  const ownAttempt = cache === 'events' ? attempts.eventsAttempt : attempts.activitiesAttempt;
-  const row = await workoutDB(db)
-    .prepare(
-      `SELECT EXISTS(
-                SELECT 1 FROM users
-                 WHERE id = ?1
-                   AND intervals_credential_generation = ?2
-                   AND ${column} = ?3
-              ) AS current_attempt`,
-    )
-    .bind(userId, credential.generation, ownAttempt)
-    .first<{ current_attempt: number }>();
-  return row?.current_attempt === 1;
-}
-
-/**
- * Advance one cache's freshness only after its complete reconcile succeeds.
- * The CASE keeps the stamp strictly monotonic when two webhook/manual/cron
- * calls finish in the same millisecond. This intentional users-row write is
- * separate from P2's cache-change cursor: an executed no-change poll writes
- * its attempt claim plus this freshness row, while a skipped cron poll writes
- * nothing.
- * The credential predicate is part of the same UPDATE: a completion racing a
- * replacement/disconnect changes zero rows and leaves the reset stamp NULL so
- * a later cron repairs the cache with the current identity.
- */
-async function stampIntervalsSyncSuccess(
-  db: D1Database,
-  userId: string,
-  cache: IntervalsCache,
-  timestamp: number,
-  credential: IntervalsCredentialIdentity,
-  attempts: IntervalsSyncAttemptTuple,
-): Promise<boolean> {
-  const freshnessColumn =
-    cache === 'events'
-      ? 'intervals_events_synced_at'
-      : 'intervals_activities_synced_at';
-  const attemptColumn = intervalsSyncAttemptColumn(cache);
-  const ownAttempt = cache === 'events' ? attempts.eventsAttempt : attempts.activitiesAttempt;
-  const statement =
-    credential.kind === 'oauth'
-      ? workoutDB(db).prepare(
-          `UPDATE users
-          SET ${freshnessColumn} = CASE
-                WHEN ${freshnessColumn} IS NULL OR ${freshnessColumn} < ?2 THEN ?2
-                ELSE ${freshnessColumn} + 1
-              END,
-              intervals_protocol_write_seq = intervals_protocol_write_seq
-                + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
-        WHERE id = ?1
-          AND intervals_credential_generation = ?3
-          AND intervals_oauth_access_token = ?4
-          AND intervals_oauth_refresh_token IS ?5
-          AND intervals_oauth_expires_at IS ?6
-          AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?7
-          AND intervals_api_key IS NULL
-          AND ${attemptColumn} = ?8`,
-        )
-      : workoutDB(db).prepare(
-          `UPDATE users
-          SET ${freshnessColumn} = CASE
-                WHEN ${freshnessColumn} IS NULL OR ${freshnessColumn} < ?2 THEN ?2
-                ELSE ${freshnessColumn} + 1
-              END,
-              intervals_protocol_write_seq = intervals_protocol_write_seq
-                + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
-        WHERE id = ?1
-          AND intervals_credential_generation = ?3
-          AND intervals_api_key = ?4
-          AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?5
-          AND intervals_oauth_access_token IS NULL
-          AND intervals_oauth_refresh_token IS NULL
-          AND intervals_oauth_expires_at IS NULL
-          AND ${attemptColumn} = ?6`,
-        );
-  const stamped = await (credential.kind === 'oauth'
-    ? statement
-        .bind(
-          userId,
-          timestamp,
-          credential.generation,
-          credential.accessToken,
-          credential.refreshToken,
-          credential.expiresAt,
-          credential.athleteId,
-          ownAttempt,
-        )
-        .run()
-    : statement
-        .bind(
-          userId,
-          timestamp,
-          credential.generation,
-          credential.apiKey,
-          credential.athleteId,
-          ownAttempt,
-        )
-        .run());
-  return (stamped.meta.changes ?? 0) === 1;
-}
-
-/** Legacy env credentials may stand in only for the distinguished owner. */
-async function canUseOwnerIntervalsEnvFallback(
-  db: D1Database,
-  userId: string,
-  ownerAppleSub: string | undefined,
-  creds: Awaited<ReturnType<typeof getUserIntervalsCreds>>,
-): Promise<boolean> {
-  if (
-    creds.api_key !== null ||
-    creds.access_token !== null ||
-    creds.athlete_id !== null ||
-    creds.auth_error_at !== null ||
-    creds.credential_generation !== 0
-  ) {
-    return false;
-  }
-  const owner = await findOwnerRow(db, ownerAppleSub);
-  return owner?.id === userId && !(await userHasTouchedIntervalsCreds(db, userId));
-}
-
-// ── intervals.icu auth-failure recovery ──────────────────────────────────
-// A 401/403 from intervals.icu means the credential is DEAD (expired or
-// revoked), not a transient outage — so it must NOT be swallowed as the
-// "leave the cache untouched and retry forever" fetch_failed (which is right
-// for a 5xx/timeout). Instead: try a token refresh once; if that is impossible
-// or also rejected, clear the credential and stamp `intervals_auth_error_at`
-// so the cron stops polling and iOS prompts a reconnect. The cache is still
-// left intact — we disconnect, we don't wipe ride history.
-
-/** True for a 401/403 auth rejection (vs disabled / 5xx / timeout / parse). */
-function isIntervalsAuthError(r: { ok: boolean; reason?: string; status?: number }): boolean {
-  return !r.ok && r.reason === 'http' && (r.status === 401 || r.status === 403);
-}
-
-/**
- * Clear a user's intervals.icu credentials and stamp `intervals_auth_error_at`.
- * Nulls BOTH auth schemes + the athlete id (canonical "disconnected") so the
- * per-user sync enumeration drops them and getMeProfile reports needs_reauth.
- * The cache rows are deliberately left intact.
- *
- * The credential clear and the system audit row go in ONE D1 batch (a
- * transaction) so we can never end up disconnected-without-audit. This is the
- * sole place the sync layer mutates user/audit state — a credential-lifecycle
- * event (only a 401/403 reaches here; a 5xx/timeout never does), NOT a cache
- * write, so the critical "leave the cache untouched on a failed fetch" guard is
- * unaffected. actor='system' marks it as the auto-disconnect, distinct from a
- * user PATCH.
- */
-async function markIntervalsAuthError(
-  db: D1Database,
-  userId: string,
-  credential: IntervalsCredentialIdentity,
-  attempts: IntervalsSyncAttemptTuple,
-): Promise<boolean> {
-  const ts = now();
-  const clearStatement =
-    credential.kind === 'oauth'
-      ? workoutDB(db).prepare(
-          `UPDATE users
-            SET intervals_api_key = NULL,
-                intervals_oauth_access_token = NULL,
-                intervals_oauth_refresh_token = NULL,
-                intervals_oauth_expires_at = NULL,
-                intervals_athlete_id = NULL,
-                intervals_cutover_athlete_id = NULL,
-                intervals_auth_error_at = ?2,
-                intervals_credential_generation = intervals_credential_generation + 1,
-                intervals_events_synced_at = NULL,
-                intervals_activities_synced_at = NULL,
-                intervals_events_sync_attempt = 0,
-                intervals_activities_sync_attempt = 0,
-                intervals_protocol_write_seq = intervals_protocol_write_seq
-                  + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
-          WHERE id = ?1
-            AND intervals_credential_generation = ?3
-            AND intervals_oauth_access_token = ?4
-            AND intervals_oauth_refresh_token IS ?5
-            AND intervals_oauth_expires_at IS ?6
-            AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?7
-            AND intervals_api_key IS NULL
-            AND intervals_events_sync_attempt = ?8
-            AND intervals_activities_sync_attempt = ?9`,
-        )
-      : workoutDB(db).prepare(
-          `UPDATE users
-            SET intervals_api_key = NULL,
-                intervals_oauth_access_token = NULL,
-                intervals_oauth_refresh_token = NULL,
-                intervals_oauth_expires_at = NULL,
-                intervals_athlete_id = NULL,
-                intervals_cutover_athlete_id = NULL,
-                intervals_auth_error_at = ?2,
-                intervals_credential_generation = intervals_credential_generation + 1,
-                intervals_events_synced_at = NULL,
-                intervals_activities_synced_at = NULL,
-                intervals_events_sync_attempt = 0,
-                intervals_activities_sync_attempt = 0,
-                intervals_protocol_write_seq = intervals_protocol_write_seq
-                  + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
-          WHERE id = ?1
-            AND intervals_credential_generation = ?3
-            AND intervals_api_key = ?4
-            AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?5
-            AND intervals_oauth_access_token IS NULL
-            AND intervals_oauth_refresh_token IS NULL
-            AND intervals_oauth_expires_at IS NULL
-            AND intervals_events_sync_attempt = ?6
-            AND intervals_activities_sync_attempt = ?7`,
-        );
-  const clear = credential.kind === 'oauth'
-    ? clearStatement.bind(
-        userId,
-        ts,
-        credential.generation,
-        credential.accessToken,
-        credential.refreshToken,
-        credential.expiresAt,
-        credential.athleteId,
-        attempts.eventsAttempt,
-        attempts.activitiesAttempt,
-      )
-    : clearStatement.bind(
-        userId,
-        ts,
-        credential.generation,
-        credential.apiKey,
-        credential.athleteId,
-        attempts.eventsAttempt,
-        attempts.activitiesAttempt,
-      );
-  const [cleared] = await workoutDB(db).batch([
-    clear,
-    workoutDB(db)
-      .prepare(
-        `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
-         SELECT ?1,?2,'system','intervals_auth_error',?3,'disconnected',?4
-          WHERE changes() = 1`,
-      )
-      .bind(
-        uuid(),
-        userId,
-        JSON.stringify({ disconnected: true, reason: 'auth_rejected' }),
-        ts,
-      ),
-  ]);
-  return (cleared?.meta.changes ?? 0) === 1;
-}
-
-type IntervalsOAuthCredential = Extract<
-  IntervalsCredentialIdentity,
-  { kind: 'oauth' }
->;
-
-type IntervalsOAuthRefreshResult =
-  | { status: 'refreshed'; credential: IntervalsOAuthCredential }
-  | { status: 'unavailable' }
-  | { status: 'superseded' };
-
-/**
- * Best-effort OAuth refresh against intervals.icu's token endpoint. DORMANT:
- * intervals.icu's documented token response carries no refresh_token (tokens
- * "appear long-lived" — intervalsAuth.ts), so a stored refresh_token is
- * typically null and this returns unavailable with NO network call. The D1
- * write exact-CASes the generation and every credential value it read before
- * provider I/O; a concurrent replacement therefore cannot be overwritten or
- * resurrected by the stale refresh response.
- */
-async function tryRefreshIntervalsOAuth(
-  db: D1Database,
-  env: Env,
-  userId: string,
-  credential: IntervalsOAuthCredential,
-  attempts: IntervalsSyncAttemptTuple,
-  fetcher?: Fetcher,
-): Promise<IntervalsOAuthRefreshResult> {
-  const clientId = env.INTERVALS_OAUTH_CLIENT_ID;
-  const clientSecret = env.INTERVALS_OAUTH_CLIENT_SECRET;
-  if (!clientId || !clientSecret) return { status: 'unavailable' };
-  if (!credential.refreshToken) return { status: 'unavailable' };
-  const row = await workoutDB(db)
-    .prepare(
-      `SELECT 1 AS current_credential
-         FROM users
-        WHERE id = ?1
-          AND intervals_credential_generation = ?2
-          AND intervals_oauth_access_token = ?3
-          AND intervals_oauth_refresh_token IS ?4
-          AND intervals_oauth_expires_at IS ?5
-          AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?6
-          AND intervals_api_key IS NULL
-          AND intervals_events_sync_attempt = ?7
-          AND intervals_activities_sync_attempt = ?8`,
-    )
-    .bind(
-      userId,
-      credential.generation,
-      credential.accessToken,
-      credential.refreshToken,
-      credential.expiresAt,
-      credential.athleteId,
-      attempts.eventsAttempt,
-      attempts.activitiesAttempt,
-    )
-    .first<{ current_credential: number }>();
-  if (!row) return { status: 'superseded' };
-  const refreshToken = credential.refreshToken;
-
-  const f: Fetcher = fetcher ?? ((input, init) => globalThis.fetch(input, init));
-  let res: { ok: boolean; status: number; json: () => Promise<unknown> };
-  try {
-    res = await f('https://intervals.icu/api/oauth/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        client_id: clientId,
-        client_secret: clientSecret,
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken,
-      }).toString(),
-    });
-  } catch {
-    return { status: 'unavailable' };
-  }
-  if (!res.ok) return { status: 'unavailable' };
-  let body: { access_token?: unknown; refresh_token?: unknown; expires_in?: unknown };
-  try {
-    body = (await res.json()) as typeof body;
-  } catch {
-    return { status: 'unavailable' };
-  }
-  const accessToken = typeof body.access_token === 'string' ? body.access_token : null;
-  if (!accessToken) return { status: 'unavailable' };
-  // Keep the old refresh token if the response rotates none; honour expiry if given.
-  const newRefresh = typeof body.refresh_token === 'string' ? body.refresh_token : refreshToken;
-  const expiresAt =
-    typeof body.expires_in === 'number' && Number.isFinite(body.expires_in)
-      ? now() + body.expires_in * 1000
-      : null;
-  const stored = await workoutDB(db)
-    .prepare(
-      `UPDATE users
-          SET intervals_oauth_access_token = ?9,
-              intervals_oauth_refresh_token = ?10,
-              intervals_oauth_expires_at = ?11,
-              intervals_auth_error_at = NULL,
-              intervals_protocol_write_seq = intervals_protocol_write_seq
-                + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
-        WHERE id = ?1
-          AND intervals_credential_generation = ?2
-          AND intervals_oauth_access_token = ?3
-          AND intervals_oauth_refresh_token IS ?4
-          AND intervals_oauth_expires_at IS ?5
-          AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?6
-          AND intervals_api_key IS NULL
-          AND intervals_events_sync_attempt = ?7
-          AND intervals_activities_sync_attempt = ?8`,
-    )
-    .bind(
-      userId,
-      credential.generation,
-      credential.accessToken,
-      refreshToken,
-      credential.expiresAt,
-      credential.athleteId,
-      attempts.eventsAttempt,
-      attempts.activitiesAttempt,
-      accessToken,
-      newRefresh,
-      expiresAt,
-    )
-    .run();
-  if ((stored.meta.changes ?? 0) !== 1) return { status: 'superseded' };
-  return {
-    status: 'refreshed',
-    credential: {
-      ...credential,
-      accessToken,
-      refreshToken: newRefresh,
-      expiresAt,
-    },
-  };
-}
-
-/**
- * Run an intervals.icu fetch with auth recovery. Runs `run(token)` once; on a
- * 401/403 attempts ONE token refresh and retries; if still rejected (or no
- * refresh possible) clears the credential and reports `reauthRequired`. Any
- * other outcome (disabled / 5xx / timeout / success) passes straight through.
- * Never throws into the sync path.
- */
-async function fetchIntervalsWithAuthRecovery<
-  T extends { ok: boolean; reason?: string; status?: number },
->(
-  db: D1Database,
-  env: Env,
-  userId: string,
-  credential: IntervalsCredentialIdentity,
-  attempts: IntervalsSyncAttemptTuple,
-  fetcher: Fetcher | undefined,
-  run: (token: string | null | undefined) => Promise<T>,
-): Promise<{
-  result: T;
-  reauthRequired: boolean;
-  superseded: boolean;
-  effectiveCredential: IntervalsCredentialIdentity;
-}> {
-  let effectiveCredential = credential;
-  let result = await run(
-    effectiveCredential?.kind === 'oauth' ? effectiveCredential.accessToken : null,
-  );
-  if (!isIntervalsAuthError(result)) {
-    return { result, reauthRequired: false, superseded: false, effectiveCredential };
-  }
-  if (effectiveCredential?.kind === 'oauth') {
-    const refreshed = await tryRefreshIntervalsOAuth(
-      db,
-      env,
-      userId,
-      effectiveCredential,
-      attempts,
-      fetcher,
-    );
-    if (refreshed.status === 'superseded') {
-      return { result, reauthRequired: false, superseded: true, effectiveCredential };
-    }
-    if (refreshed.status === 'refreshed') {
-      effectiveCredential = refreshed.credential;
-      result = await run(effectiveCredential.accessToken);
-    }
-    if (!isIntervalsAuthError(result)) {
-      return { result, reauthRequired: false, superseded: false, effectiveCredential };
-    }
-  }
-  const cleared = await markIntervalsAuthError(
-    db,
-    userId,
-    effectiveCredential,
-    attempts,
-  );
-  return {
-    result,
-    reauthRequired: cleared,
-    superseded: !cleared,
-    effectiveCredential,
-  };
-}
-
-/**
- * Pull intervals.icu planned events and reconcile the cache.
- *
- * THE critical correctness guard: on a failed/disabled fetch the cache is
- * left COMPLETELY untouched (no upsert, NO soft-delete) — a transient
- * intervals.icu outage must NEVER wipe the user's ride awareness. Only a
- * genuinely-empty *successful* window soft-deletes the in-window rows.
- *
- * Reconcile (on {ok:true}):
- *  - upsert each event by (source, external_id) — id = "intervals:{ext}";
- *    reschedules just update `date` (+ other fields) on the same row.
- *  - soft-delete (set deleted_at) any non-deleted row whose date is inside
- *    the synced [today, today+window] window but is no longer present in
- *    the fetched set (the source removed/cancelled it).
- *  - rows OUTSIDE the window are never touched (we didn't ask about them).
- *
- * Never bumps plans.version. Never writes a notes row. (The MCP action
- * wrapper writes the audit_log row — this layer stays pure data.) The ONE
- * exception is an upstream 401/403: that clears the dead credential and writes
- * a system audit row via markIntervalsAuthError, because the cron has no MCP
- * wrapper to record the auto-disconnect. The cache itself is still untouched.
- */
-export async function syncExternalEvents(
-  db: D1Database,
-  env: Env,
-  deps: SyncDeps = {},
-): Promise<SyncResult> {
-  const today = deps.today ?? new Date().toISOString().slice(0, 10);
-  const windowDays = deps.windowDays ?? 90;
-
-  // Resolve creds for THIS sync. Two call modes (M1 multi-user):
-  //   (a) deps.userId given (refresh_rides MCP tool / tests): sync that one
-  //       user, reading creds off their row. For the untouched owner only,
-  //       legacy env values are first persisted as a versioned DB identity.
-  //   (b) no userId: cron entrypoint. Run the env→DB seed (idempotent), then
-  //       iterate ALL users with creds. Aggregate the SyncResult.
-  let userId: string;
-  let apiKey: string | null | undefined;
-  let athleteId: string | null | undefined;
-  let accessToken: string | null | undefined;
-  let refreshToken: string | null | undefined;
-  let expiresAt: number | null | undefined;
-  let credentialGeneration = 0;
-  if (deps.userId) {
-    userId = deps.userId;
-    let creds = await getUserIntervalsCreds(db, userId);
-    // Legacy env credentials belong to the distinguished owner only. A newly
-    // invited member with empty columns must never inherit the owner's athlete
-    // merely because this explicit-user path was called. Require a completely
-    // empty stored identity as well, so partial rows cannot mix DB and env
-    // credential halves.
-    const envFallbackOk = await canUseOwnerIntervalsEnvFallback(
-      db,
-      userId,
-      deps.ownerSub ?? env.OWNER_APPLE_SUB,
-      creds,
-    );
-    if (envFallbackOk) {
-      // Store/version the legacy owner env identity before provider I/O. This
-      // removes the unversioned generation-zero secret-rotation corner and
-      // lets every later cache/auth mutation fence on one durable generation.
-      await seedOwnerIntervalsCredsFromEnv(
-        db,
-        env.INTERVALS_ICU_API_KEY,
-        env.INTERVALS_ICU_ATHLETE_ID,
-        deps.ownerSub ?? env.OWNER_APPLE_SUB,
-      );
-      creds = await getUserIntervalsCreds(db, userId);
-    }
-    credentialGeneration = creds.credential_generation;
-    apiKey = creds.api_key;
-    athleteId = creds.athlete_id;
-    // OAuth bearer token rides alongside (no env fallback — env is the
-    // legacy API-key path only). intervals.ts prefers it over the API key.
-    accessToken = creds.access_token;
-    refreshToken = creds.refresh_token;
-    expiresAt = creds.expires_at;
-  } else {
-    const owner = await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB);
-    const seeded = await seedOwnerIntervalsCredsFromEnv(
-      db,
-      env.INTERVALS_ICU_API_KEY,
-      env.INTERVALS_ICU_ATHLETE_ID,
-      deps.ownerSub ?? env.OWNER_APPLE_SUB,
-    );
-    if (seeded.length === 0) {
-      // No user has creds AND env is unset → dormant no-op for everyone.
-      return { status: 'disabled', synced: 0, detail: 'disabled' };
-    }
-    if (seeded.length === 1) {
-      userId = seeded[0]!.user_id;
-      apiKey = seeded[0]!.api_key;
-      athleteId = seeded[0]!.athlete_id;
-      accessToken = seeded[0]!.access_token;
-      refreshToken = seeded[0]!.refresh_token;
-      expiresAt = seeded[0]!.expires_at;
-      credentialGeneration = seeded[0]!.credential_generation;
-    } else {
-      // Multi-user fan-out. Sync each user's cache against THEIR creds; tag
-      // the per-user user_id everywhere. Aggregate sums + worst-status semantics:
-      //   any 'fetch_failed' wins (operator signal); else 'ok' if any ok'd;
-      //   else 'disabled'. `synced` is the sum across users.
-      let total = 0;
-      let agg: SyncStatus = 'disabled';
-      const details: string[] = [];
-      for (const c of seeded) {
-        const r = await syncExternalEvents(db, env, {
-          ...deps,
-          userId: c.user_id,
-          today,
-          windowDays,
-        });
-        total += r.synced;
-        if (r.status === 'fetch_failed') agg = 'fetch_failed';
-        else if (r.status === 'superseded' && agg !== 'fetch_failed') agg = 'superseded';
-        else if (r.status === 'ok' && agg === 'disabled') agg = 'ok';
-        if (r.detail) details.push(r.detail);
-      }
-      return {
-        status: agg,
-        synced: total,
-        ...(details.length ? { detail: details.join(',') } : {}),
-      };
-    }
-    // Single-user path: reference owner.id for downstream logic (it equals
-    // the single seeded row, but be explicit so the linter doesn't flag a
-    // possibly-unused binding when the multi-user branch returns early).
-    void owner;
-  }
-
-  const initialCredential = usedIntervalsCredentialIdentity(
-    apiKey,
-    athleteId,
-    accessToken,
-    refreshToken,
-    expiresAt,
-    credentialGeneration,
-  );
-  if (!initialCredential) {
-    return { status: 'disabled', synced: 0, detail: 'disabled' };
-  }
-  const claim = await claimIntervalsSyncAttempt(db, userId, 'events', initialCredential);
-  if (claim.status === 'attempt_exhausted') {
-    return { status: 'fetch_failed', synced: 0, detail: 'attempt_exhausted' };
-  }
-  if (claim.status === 'superseded') {
-    return { status: 'superseded', synced: 0, detail: 'superseded' };
-  }
-  const attempts = claim.attempts;
-  const {
-    result: fetched,
-    reauthRequired,
-    superseded,
-    effectiveCredential,
-  } = await fetchIntervalsWithAuthRecovery(
-    db,
-    env,
-    userId,
-    initialCredential,
-    attempts,
-    deps.fetcher,
-    (token) =>
-      fetchPlannedEvents(apiKey, athleteId, { ...deps, today, windowDays, accessToken: token }),
-  );
-  if (superseded) {
-    return { status: 'superseded', synced: 0, detail: 'superseded' };
-  }
-  if (!fetched.ok) {
-    if (
-      !reauthRequired &&
-      !(await isCurrentIntervalsSyncAttempt(
-        db,
-        userId,
-        'events',
-        effectiveCredential,
-        attempts,
-      ))
-    ) {
-      return { status: 'superseded', synced: 0, detail: 'superseded' };
-    }
-    // Disabled OR transient failure → DO NOT TOUCH the cache at all. A dead
-    // credential (401/403) was just disconnected inside the recovery helper;
-    // `reauthRequired` tags the operator detail so the reconnect is visible.
-    return {
-      status: fetched.reason === 'disabled' ? 'disabled' : 'fetch_failed',
-      synced: 0,
-      detail:
-        fetched.reason +
-        (fetched.reason === 'http' && 'status' in fetched ? `:${fetched.status}` : '') +
-        (reauthRequired ? ':reauth_required' : ''),
-      ...('retryAfterMs' in fetched && fetched.retryAfterMs !== undefined
-        ? { retryAfterMs: fetched.retryAfterMs }
-        : {}),
-    };
-  }
-  // Window upper bound, inclusive, as a YYYY-MM-DD string (string compare is
-  // valid for zero-padded ISO dates).
-  const newest = addDays(today, windowDays);
-  const ts = now();
-  const seen = new Set<string>();
-  const stmts: D1PreparedStatement[] = [];
-
-  for (const ev of fetched.events) {
-    // Per-user PK. The old "intervals:{external_id}" format collided when
-    // two users returned the same upstream id; migration 0019 re-keys
-    // legacy rows to the new format so this UPDATE path matches them.
-    const id = `intervals:${userId}:${ev.external_id}`;
-    seen.add(id);
-    // Upsert by PK (id is deterministic from source+user+external_id). A
-    // reschedule (same external_id, new date) just updates `date` on the
-    // same row and clears any prior soft-delete (the event came back).
-    stmts.push(
-      workoutDB(db)
-        .prepare(
-          `INSERT INTO external_events
-             (id,user_id,source,external_id,date,start_date_local_ms,kind,title,description,
-              planned_duration_sec,training_load,intensity,raw,synced_at,deleted_at)
-           SELECT ?1,?2,'intervals',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,NULL
-            WHERE EXISTS (
-                  SELECT 1 FROM users
-                   WHERE id = ?2 AND intervals_credential_generation = ?14
-                     AND intervals_events_sync_attempt = ?15
-                )
-           ON CONFLICT(id) DO UPDATE SET
-             date=excluded.date,
-             start_date_local_ms=excluded.start_date_local_ms,
-             kind=excluded.kind,
-             title=excluded.title,
-             description=excluded.description,
-             planned_duration_sec=excluded.planned_duration_sec,
-             training_load=excluded.training_load,
-             intensity=excluded.intensity,
-             raw=CASE WHEN
-               external_events.date IS NOT excluded.date OR
-               external_events.start_date_local_ms IS NOT excluded.start_date_local_ms OR
-               external_events.kind IS NOT excluded.kind OR
-               external_events.title IS NOT excluded.title OR
-               external_events.description IS NOT excluded.description OR
-               external_events.planned_duration_sec IS NOT excluded.planned_duration_sec OR
-               external_events.training_load IS NOT excluded.training_load OR
-               external_events.intensity IS NOT excluded.intensity
-             THEN excluded.raw ELSE external_events.raw END,
-             synced_at=CASE
-               WHEN excluded.synced_at > external_events.synced_at THEN excluded.synced_at
-               ELSE external_events.synced_at + 1
-             END,
-             deleted_at=NULL
-           WHERE EXISTS (
-                   SELECT 1 FROM users
-                    WHERE id = ?2 AND intervals_credential_generation = ?14
-                      AND intervals_events_sync_attempt = ?15
-                 )
-             AND (
-               external_events.deleted_at IS NOT NULL OR
-               external_events.date IS NOT excluded.date OR
-               external_events.start_date_local_ms IS NOT excluded.start_date_local_ms OR
-               external_events.kind IS NOT excluded.kind OR
-               external_events.title IS NOT excluded.title OR
-               external_events.description IS NOT excluded.description OR
-               external_events.planned_duration_sec IS NOT excluded.planned_duration_sec OR
-               external_events.training_load IS NOT excluded.training_load OR
-               external_events.intensity IS NOT excluded.intensity
-             )`,
-        )
-        .bind(
-          id,
-          userId,
-          ev.external_id,
-          ev.date,
-          ev.start_date_local_ms,
-          ev.kind,
-          ev.title,
-          ev.description,
-          ev.planned_duration_sec,
-          ev.training_load,
-          ev.intensity,
-          ev.raw,
-          ts,
-          effectiveCredential.generation,
-          attempts.eventsAttempt,
-        ),
-    );
-  }
-
-  // Soft-delete in-window rows that were NOT seen this sync. Rows outside
-  // [today,newest] are intentionally left alone (we didn't query them).
-  // Done as a single statement excluding the seen ids. Pass the set as one
-  // JSON value: expanding one placeholder per provider row exceeds D1's
-  // 100-bound-parameter ceiling for ordinary-sized calendars.
-  const seenIds = [...seen];
-  stmts.push(
-    workoutDB(db)
-      .prepare(
-        // Advance synced_at to the deletion time alongside deleted_at:
-        // /api/state?events_since= filters `synced_at > cursor`, so a
-        // tombstone that kept its old synced_at would never reach an
-        // incremental client (it would keep showing the deleted ride).
-        `UPDATE external_events
-            SET deleted_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
-                synced_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END
-          WHERE user_id = ?1
-            AND deleted_at IS NULL
-            AND date >= ?2 AND date <= ?5
-            AND id NOT IN (SELECT CAST(value AS TEXT) FROM json_each(?4))
-            AND EXISTS (
-                  SELECT 1 FROM users
-                   WHERE id = ?1 AND intervals_credential_generation = ?6
-                     AND intervals_events_sync_attempt = ?7
-                )`,
-      )
-      .bind(
-        userId,
-        today,
-        ts,
-        JSON.stringify(seenIds),
-        newest,
-        effectiveCredential.generation,
-        attempts.eventsAttempt,
-      ),
-  );
-  stmts.push(
-    workoutDB(db)
-      .prepare(
-        `SELECT EXISTS(
-                  SELECT 1 FROM users
-                   WHERE id = ?1 AND intervals_credential_generation = ?2
-                     AND intervals_events_sync_attempt = ?3
-                ) AS current_identity`,
-      )
-      .bind(userId, effectiveCredential.generation, attempts.eventsAttempt),
-  );
-
-  const reconcileResults = await workoutDB(db).batch(stmts);
-  const generationCheck = reconcileResults.at(-1)?.results[0] as
-    | { current_identity: number }
-    | undefined;
-  if (generationCheck?.current_identity !== 1) {
-    return { status: 'superseded', synced: 0, detail: 'superseded' };
-  }
-
-  const cnt = await workoutDB(db)
-    .prepare(
-      `SELECT COUNT(*) AS c FROM external_events
-        WHERE user_id = ?1 AND deleted_at IS NULL
-          AND date >= ?2 AND date <= ?3`,
-    )
-    .bind(userId, today, newest)
-    .first<{ c: number }>();
-  const stamped = await stampIntervalsSyncSuccess(
-    db,
-    userId,
-    'events',
-    deps.syncedAt ?? now(),
-    effectiveCredential,
-    attempts,
-  );
-  if (!stamped) return { status: 'superseded', synced: 0, detail: 'superseded' };
-  return { status: 'ok', synced: cnt?.c ?? 0 };
-}
-
-/**
- * Non-deleted upcoming external events for a user. `range` is an inclusive
- * day count from `from` (default: today .. +90d).
- */
-export async function getUpcomingRides(
-  db: D1Database,
-  userId: string,
-  opts: { from?: string; range?: number } = {},
-): Promise<ExternalEventRow[]> {
-  const from = opts.from ?? new Date().toISOString().slice(0, 10);
-  const to = addDays(from, opts.range ?? 90);
-  const r = await workoutDB(db)
-    .prepare(
-      `SELECT * FROM external_events
-        WHERE user_id = ?1 AND deleted_at IS NULL
-          AND date >= ?2 AND date <= ?3
-        ORDER BY date`,
-    )
-    .bind(userId, from, to)
-    .all<ExternalEventRow>();
-  return r.results;
-}
-
-// ---- completed activities (own consistency class; see migrations/0015) ----
-//
-// PARALLEL to syncExternalEvents/getUpcomingRides but for COMPLETED, PAST
-// recorded activities (the intervals.icu actuals) instead of planned events.
-// Same server-owned reconciled-cache discipline: failed/disabled fetch =>
-// cache left COMPLETELY untouched; only a successful window soft-deletes the
-// in-window rows that vanished. Never bumps plans.version; never writes notes.
-
-export interface ActivitySyncDeps extends ActivityFetchDeps {
-  /** Override the user id (defaults to the single owner). */
-  userId?: string;
-  /** Allow injecting the env-resolved owner sub (tests). */
-  ownerSub?: string;
-  /** Server-owned successful-sync stamp override for deterministic tests. */
-  syncedAt?: number;
-  /** Connect/retry work may only use the credential the member selected. */
-  expectedCredentialGeneration?: number;
-}
-
-export interface IntervalsImportResult {
-  status: 'synced' | 'retry' | 'reconnect' | 'disconnected' | 'superseded';
-  connection: IntervalsConnectionStatus | null;
-}
-
-/** Recent-activity import after an acknowledged connect, or an explicit retry.
- * Failures describe the import and never turn a saved credential into a failed
- * connect acknowledgement. All provider/cache writes retain the existing fence. */
-export async function reconcileIntervalsConnection(
-  db: D1Database,
-  env: Env,
-  userId: string,
-  expectedGeneration: number,
-  deps: Pick<ActivitySyncDeps, 'fetcher' | 'today' | 'timeoutMs'> = {},
-): Promise<IntervalsImportResult> {
-  try {
-    const before = await getIntervalsConnectionStatus(db, userId);
-    if (before.credential_generation !== expectedGeneration) {
-      return { status: 'superseded', connection: before };
-    }
-    if (!before.connected) {
-      return { status: before.needs_reauth ? 'reconnect' : 'disconnected', connection: before };
-    }
-    const timeoutMs = deps.timeoutMs ?? 10_000;
-    // This deadline covers response bodies and an optional OAuth refresh too;
-    // the existing adapter's fetch timeout ends once headers arrive.
-    const signal = AbortSignal.timeout(timeoutMs);
-    const fetcher: Fetcher = deps.fetcher ?? ((input, init) => globalThis.fetch(input, {
-      ...init, signal,
-    }));
-    const result = await syncExternalActivities(db, env, {
-      ...deps, fetcher, timeoutMs, userId,
-      today: deps.today ?? todayInTz(await getUserTimezone(db, userId)),
-      expectedCredentialGeneration: expectedGeneration,
-    });
-    const connection = await getIntervalsConnectionStatus(db, userId);
-    if (connection.needs_reauth) return { status: 'reconnect', connection };
-    if (connection.credential_generation !== expectedGeneration || result.status === 'superseded') {
-      return { status: 'superseded', connection };
-    }
-    return { status: result.status === 'ok' ? 'synced' : 'retry', connection };
-  } catch (error) {
-    console.warn({ event: 'intervals_connection_import_failed',
-      error_type: diagnosticErrorType(error) });
-    return { status: 'retry', connection: null };
-  }
-}
-
-/**
- * Pull intervals.icu completed activities and reconcile the cache.
- *
- * Window is BACKWARD: [today-pastDays, today]. On a failed/disabled fetch the
- * cache is left untouched (a transient outage must never wipe completed-
- * activity history). On a successful sync, in-window rows not present in the
- * fetched set are soft-deleted (an activity deleted in intervals.icu) — with
- * synced_at advanced to the deletion time so incremental clients see it
- * (the FIX 3 tombstone rule, same as external_events).
- */
-export async function syncExternalActivities(
-  db: D1Database,
-  env: Env,
-  deps: ActivitySyncDeps = {},
-): Promise<SyncResult> {
-  const today = deps.today ?? new Date().toISOString().slice(0, 10);
-  const pastDays = deps.pastDays ?? 90;
-
-  // Mirror of syncExternalEvents: per-user credentials (M1). See that
-  // function for the full rationale on explicit-user sync versus cron fan-out;
-  // an eligible legacy owner env identity is persisted before either fetches.
-  let userId: string;
-  let apiKey: string | null | undefined;
-  let athleteId: string | null | undefined;
-  let accessToken: string | null | undefined;
-  let refreshToken: string | null | undefined;
-  let expiresAt: number | null | undefined;
-  let credentialGeneration = 0;
-  if (deps.userId) {
-    userId = deps.userId;
-    let creds = await getUserIntervalsCreds(db, userId);
-    if (deps.expectedCredentialGeneration !== undefined &&
-        creds.credential_generation !== deps.expectedCredentialGeneration) {
-      return { status: 'superseded', synced: 0, detail: 'superseded' };
-    }
-    const envFallbackOk = deps.expectedCredentialGeneration === undefined && await canUseOwnerIntervalsEnvFallback(
-      db,
-      userId,
-      deps.ownerSub ?? env.OWNER_APPLE_SUB,
-      creds,
-    );
-    if (envFallbackOk) {
-      await seedOwnerIntervalsCredsFromEnv(
-        db,
-        env.INTERVALS_ICU_API_KEY,
-        env.INTERVALS_ICU_ATHLETE_ID,
-        deps.ownerSub ?? env.OWNER_APPLE_SUB,
-      );
-      creds = await getUserIntervalsCreds(db, userId);
-    }
-    credentialGeneration = creds.credential_generation;
-    apiKey = creds.api_key;
-    athleteId = creds.athlete_id;
-    // OAuth bearer token rides alongside (no env fallback — env is the
-    // legacy API-key path only). intervals.ts prefers it over the API key.
-    accessToken = creds.access_token;
-    refreshToken = creds.refresh_token;
-    expiresAt = creds.expires_at;
-  } else {
-    const owner = await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB);
-    const seeded = await seedOwnerIntervalsCredsFromEnv(
-      db,
-      env.INTERVALS_ICU_API_KEY,
-      env.INTERVALS_ICU_ATHLETE_ID,
-      deps.ownerSub ?? env.OWNER_APPLE_SUB,
-    );
-    if (seeded.length === 0) {
-      return { status: 'disabled', synced: 0, detail: 'disabled' };
-    }
-    if (seeded.length === 1) {
-      userId = seeded[0]!.user_id;
-      apiKey = seeded[0]!.api_key;
-      athleteId = seeded[0]!.athlete_id;
-      accessToken = seeded[0]!.access_token;
-      refreshToken = seeded[0]!.refresh_token;
-      expiresAt = seeded[0]!.expires_at;
-      credentialGeneration = seeded[0]!.credential_generation;
-    } else {
-      let total = 0;
-      let agg: SyncStatus = 'disabled';
-      const details: string[] = [];
-      for (const c of seeded) {
-        const r = await syncExternalActivities(db, env, {
-          ...deps,
-          userId: c.user_id,
-          today,
-          pastDays,
-        });
-        total += r.synced;
-        if (r.status === 'fetch_failed') agg = 'fetch_failed';
-        else if (r.status === 'superseded' && agg !== 'fetch_failed') agg = 'superseded';
-        else if (r.status === 'ok' && agg === 'disabled') agg = 'ok';
-        if (r.detail) details.push(r.detail);
-      }
-      return {
-        status: agg,
-        synced: total,
-        ...(details.length ? { detail: details.join(',') } : {}),
-      };
-    }
-    void owner;
-  }
-
-  const initialCredential = usedIntervalsCredentialIdentity(
-    apiKey,
-    athleteId,
-    accessToken,
-    refreshToken,
-    expiresAt,
-    credentialGeneration,
-  );
-  if (!initialCredential) {
-    return { status: 'disabled', synced: 0, detail: 'disabled' };
-  }
-  const claim = await claimIntervalsSyncAttempt(
-    db,
-    userId,
-    'activities',
-    initialCredential,
-  );
-  if (claim.status === 'attempt_exhausted') {
-    return { status: 'fetch_failed', synced: 0, detail: 'attempt_exhausted' };
-  }
-  if (claim.status === 'superseded') {
-    return { status: 'superseded', synced: 0, detail: 'superseded' };
-  }
-  const attempts = claim.attempts;
-  const {
-    result: fetched,
-    reauthRequired,
-    superseded,
-    effectiveCredential,
-  } = await fetchIntervalsWithAuthRecovery(
-    db,
-    env,
-    userId,
-    initialCredential,
-    attempts,
-    deps.fetcher,
-    (token) =>
-      fetchCompletedActivities(apiKey, athleteId, { ...deps, today, pastDays, accessToken: token }),
-  );
-  if (superseded) {
-    return { status: 'superseded', synced: 0, detail: 'superseded' };
-  }
-  if (!fetched.ok) {
-    if (
-      !reauthRequired &&
-      !(await isCurrentIntervalsSyncAttempt(
-        db,
-        userId,
-        'activities',
-        effectiveCredential,
-        attempts,
-      ))
-    ) {
-      return { status: 'superseded', synced: 0, detail: 'superseded' };
-    }
-    // Same guard as syncExternalEvents: transient/disabled leaves the cache
-    // untouched; a 401/403 was just disconnected inside the recovery helper.
-    return {
-      status: fetched.reason === 'disabled' ? 'disabled' : 'fetch_failed',
-      synced: 0,
-      detail:
-        fetched.reason +
-        (fetched.reason === 'http' && 'status' in fetched ? `:${fetched.status}` : '') +
-        (reauthRequired ? ':reauth_required' : ''),
-      ...('retryAfterMs' in fetched && fetched.retryAfterMs !== undefined
-        ? { retryAfterMs: fetched.retryAfterMs }
-        : {}),
-    };
-  }
-  const oldest = addDays(today, -pastDays);
-  const ts = now();
-  const seen = new Set<string>();
-  const stmts: D1PreparedStatement[] = [];
-
-  for (const a of fetched.activities) {
-    // Per-user PK — see note in syncExternalEvents and migration 0019.
-    const id = `intervals:activity:${userId}:${a.external_id}`;
-    seen.add(id);
-    stmts.push(
-      workoutDB(db)
-        .prepare(
-          `INSERT INTO external_activities
-             (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
-              moving_time_sec,elapsed_time_sec,distance_m,average_watts,
-              weighted_avg_watts,average_hr,max_hr,training_load,intensity,
-              calories,elevation_gain_m,raw,synced_at,deleted_at,start_date_utc_ms)
-           SELECT ?1,?2,'intervals',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,
-                  ?15,?16,?17,?18,?19,?20,NULL,?23
-            WHERE EXISTS (
-                  SELECT 1 FROM users
-                   WHERE id = ?2 AND intervals_credential_generation = ?21
-                     AND intervals_activities_sync_attempt = ?22
-                )
-           ON CONFLICT(id) DO UPDATE SET
-             date=excluded.date,
-             start_date_local_ms=excluded.start_date_local_ms,
-             start_date_utc_ms=CASE
-               WHEN excluded.start_date_utc_ms IS NOT NULL THEN excluded.start_date_utc_ms
-               WHEN external_activities.start_date_local_ms IS excluded.start_date_local_ms
-                 THEN external_activities.start_date_utc_ms
-               ELSE NULL
-             END,
-             kind=excluded.kind,
-             name=excluded.name,
-             moving_time_sec=excluded.moving_time_sec,
-             elapsed_time_sec=excluded.elapsed_time_sec,
-             distance_m=excluded.distance_m,
-             average_watts=excluded.average_watts,
-             weighted_avg_watts=excluded.weighted_avg_watts,
-             average_hr=excluded.average_hr,
-             max_hr=excluded.max_hr,
-             training_load=excluded.training_load,
-             intensity=excluded.intensity,
-             calories=excluded.calories,
-             elevation_gain_m=excluded.elevation_gain_m,
-             raw=CASE WHEN
-               (excluded.start_date_utc_ms IS NOT NULL AND external_activities.start_date_utc_ms IS NOT excluded.start_date_utc_ms) OR
-               external_activities.date IS NOT excluded.date OR
-               external_activities.start_date_local_ms IS NOT excluded.start_date_local_ms OR
-               external_activities.kind IS NOT excluded.kind OR
-               external_activities.name IS NOT excluded.name OR
-               external_activities.moving_time_sec IS NOT excluded.moving_time_sec OR
-               external_activities.elapsed_time_sec IS NOT excluded.elapsed_time_sec OR
-               external_activities.distance_m IS NOT excluded.distance_m OR
-               external_activities.average_watts IS NOT excluded.average_watts OR
-               external_activities.weighted_avg_watts IS NOT excluded.weighted_avg_watts OR
-               external_activities.average_hr IS NOT excluded.average_hr OR
-               external_activities.max_hr IS NOT excluded.max_hr OR
-               external_activities.training_load IS NOT excluded.training_load OR
-               external_activities.intensity IS NOT excluded.intensity OR
-               external_activities.calories IS NOT excluded.calories OR
-               external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m OR
-               ${deviceNameSQL('external_activities.raw')} IS NOT ${deviceNameSQL('excluded.raw')}
-             THEN excluded.raw ELSE external_activities.raw END,
-             synced_at=CASE
-               WHEN excluded.synced_at > external_activities.synced_at THEN excluded.synced_at
-               ELSE external_activities.synced_at + 1
-             END,
-             deleted_at=NULL
-           WHERE EXISTS (
-                   SELECT 1 FROM users
-                    WHERE id = ?2 AND intervals_credential_generation = ?21
-                      AND intervals_activities_sync_attempt = ?22
-                 )
-             AND (
-               external_activities.deleted_at IS NOT NULL OR
-               (excluded.start_date_utc_ms IS NOT NULL AND external_activities.start_date_utc_ms IS NOT excluded.start_date_utc_ms) OR
-               external_activities.date IS NOT excluded.date OR
-               external_activities.start_date_local_ms IS NOT excluded.start_date_local_ms OR
-               external_activities.kind IS NOT excluded.kind OR
-               external_activities.name IS NOT excluded.name OR
-               external_activities.moving_time_sec IS NOT excluded.moving_time_sec OR
-               external_activities.elapsed_time_sec IS NOT excluded.elapsed_time_sec OR
-               external_activities.distance_m IS NOT excluded.distance_m OR
-               external_activities.average_watts IS NOT excluded.average_watts OR
-               external_activities.weighted_avg_watts IS NOT excluded.weighted_avg_watts OR
-               external_activities.average_hr IS NOT excluded.average_hr OR
-               external_activities.max_hr IS NOT excluded.max_hr OR
-               external_activities.training_load IS NOT excluded.training_load OR
-               external_activities.intensity IS NOT excluded.intensity OR
-               external_activities.calories IS NOT excluded.calories OR
-               external_activities.elevation_gain_m IS NOT excluded.elevation_gain_m OR
-               ${deviceNameSQL('external_activities.raw')} IS NOT ${deviceNameSQL('excluded.raw')}
-             )`,
-        )
-        .bind(
-          id,
-          userId,
-          a.external_id,
-          a.date,
-          a.start_date_local_ms,
-          a.kind,
-          a.name,
-          a.moving_time_sec,
-          a.elapsed_time_sec,
-          a.distance_m,
-          a.average_watts,
-          a.weighted_avg_watts,
-          a.average_hr,
-          a.max_hr,
-          a.training_load,
-          a.intensity,
-          a.calories,
-          a.elevation_gain_m,
-          a.raw,
-          ts,
-          effectiveCredential.generation,
-          attempts.activitiesAttempt,
-          a.start_date_utc_ms ?? null,
-        ),
-    );
-  }
-
-  // Soft-delete in-window rows not seen this sync (advancing synced_at so the
-  // tombstone reaches incremental clients). Rows outside [oldest,today] are
-  // left alone (we didn't query them). SOURCE-SCOPED to 'intervals' (Phase 0,
-  // migration 0027): external_activities is now multi-source, so this reconcile
-  // must only tombstone rows IT owns — without the source filter an Apple-Health
-  // (or Polar/Wahoo) row would be wiped on every intervals cron tick because it
-  // is never in `seen`.
-  const seenIds = [...seen];
-  stmts.push(
-    workoutDB(db)
-      .prepare(
-        `UPDATE external_activities
-            SET deleted_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
-                synced_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END
-          WHERE user_id = ?1
-            AND source = 'intervals'
-            AND deleted_at IS NULL
-            AND date >= ?2 AND date <= ?5
-            AND id NOT IN (SELECT CAST(value AS TEXT) FROM json_each(?4))
-            AND EXISTS (
-                  SELECT 1 FROM users
-                   WHERE id = ?1 AND intervals_credential_generation = ?6
-                     AND intervals_activities_sync_attempt = ?7
-                )`,
-      )
-      .bind(
-        userId,
-        oldest,
-        ts,
-        JSON.stringify(seenIds),
-        today,
-        effectiveCredential.generation,
-        attempts.activitiesAttempt,
-      ),
-  );
-  stmts.push(
-    workoutDB(db)
-      .prepare(
-        `SELECT EXISTS(
-                  SELECT 1 FROM users
-                   WHERE id = ?1 AND intervals_credential_generation = ?2
-                     AND intervals_activities_sync_attempt = ?3
-                ) AS current_identity`,
-      )
-      .bind(userId, effectiveCredential.generation, attempts.activitiesAttempt),
-  );
-
-  const reconcileResults = await workoutDB(db).batch(stmts);
-  const generationCheck = reconcileResults.at(-1)?.results[0] as
-    | { current_identity: number }
-    | undefined;
-  if (generationCheck?.current_identity !== 1) {
-    return { status: 'superseded', synced: 0, detail: 'superseded' };
-  }
-
-  // Cross-source dedup (Codex P2): intervals rows just changed, so retire any
-  // HealthKit copies that now duplicate one — handles the ordering where the
-  // HealthKit push arrived BEFORE the intervals activity synced in.
-  // This reconcile can only change intervals rows in [oldest,today]. Expand
-  // the dedup scope by two civil days on each side: source clocks on opposite
-  // sides of the date line can differ by two dates for the same instant. Historical rows
-  // outside this affected window cannot have changed during this sync.
-  await dedupeHealthKitAgainstIntervals(
-    db,
-    userId,
-    {
-      healthKitFromDate: addDays(oldest, -2),
-      healthKitToDate: addDays(today, 2),
-      // A boundary HealthKit candidate can have a still-live winner on the
-      // other side of the date line. Look two days beyond the candidate range so that
-      // winner is present and the duplicate is not incorrectly restored.
-      intervalsFromDate: addDays(oldest, -4),
-      intervalsToDate: addDays(today, 4),
-    },
-    {
-      generation: effectiveCredential.generation,
-      attempt: attempts.activitiesAttempt,
-    },
-  );
-
-  const cnt = await workoutDB(db)
-    .prepare(
-      `SELECT COUNT(*) AS c FROM external_activities
-        WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
-          AND date >= ?2 AND date <= ?3`,
-    )
-    .bind(userId, oldest, today)
-    .first<{ c: number }>();
-  const stamped = await stampIntervalsSyncSuccess(
-    db,
-    userId,
-    'activities',
-    deps.syncedAt ?? now(),
-    effectiveCredential,
-    attempts,
-  );
-  if (!stamped) return { status: 'superseded', synced: 0, detail: 'superseded' };
-  return { status: 'ok', synced: cnt?.c ?? 0 };
-}
-
-/**
- * Non-deleted completed activities for a user, most-recent first. `range` is
- * an inclusive day count back from `to` (default: last 90 days). `limit`
- * caps the result (default 50).
- */
-export async function getRecentActivities(
-  db: D1Database,
-  userId: string,
-  opts: { to?: string; range?: number; limit?: number } = {},
-): Promise<Array<ExternalActivityRow & { source_attribution: string | null; attribution_version: number }>> {
-  const to = opts.to ?? new Date().toISOString().slice(0, 10);
-  const from = addDays(to, -(opts.range ?? 90));
-  const limit = Math.max(1, Math.min(500, opts.limit ?? 50));
-  const r = await workoutDB(db)
-    .prepare(
-      `SELECT * FROM external_activities
-        WHERE user_id = ?1 AND deleted_at IS NULL
-          AND date >= ?2 AND date <= ?3
-        ORDER BY date DESC
-        LIMIT ?4`,
-    )
-    .bind(userId, from, to, limit)
-    .all<ExternalActivityRow>();
-  return r.results.map(withActivityAttribution);
-}
 
 /** A completed activity pushed from the iOS app's HealthKit reader. Mirrors
  *  the intervals-derived CompletedActivity shape but `id` is the CLIENT-supplied
@@ -10189,6 +8658,12 @@ export interface HealthKitActivityInput {
   elevation_gain_m: number | null;
   raw: string | null;
 }
+export type { SyncStatus, SyncResult, SyncDeps, ActivitySyncDeps, IntervalsImportResult, IntervalsConnectionStatus, IntervalsUserCreds, ActivityDedupeWindow } from './services/intervalsSync';
+export const { syncExternalEvents, getUpcomingRides, reconcileIntervalsConnection, syncExternalActivities, getRecentActivities } = createIntervalsSyncService({
+  getUserIntervalsCreds, findOwnerRow, userHasTouchedIntervalsCreds,
+  seedOwnerIntervalsCredsFromEnv, ensureOwnerUser, getIntervalsConnectionStatus,
+  getUserTimezone, todayInTz, dedupeHealthKitAgainstIntervals,
+});
 
 /** HealthKit encodes the device-local wall clock as UTC-like epoch ms. */
 export function healthKitDateMatchesStart(date: string, startMs: number | null): boolean {
@@ -10222,7 +8697,7 @@ function reconcileNativeHealthKitStatement(
   requirePriorChange = false,
 ): D1PreparedStatement {
   const native = nativeHealthKitWinnerSQL('h');
-  return workoutDB(db).prepare(`WITH desired AS MATERIALIZED (
+  return db.prepare(`WITH desired AS MATERIALIZED (
     SELECT h.id, COALESCE(${native}, (
       SELECT id FROM (
         SELECT i.id,
@@ -10285,8 +8760,8 @@ export async function upsertHealthKitActivity(
   }
   const id = `healthkit:activity:${userId}:${input.id}`;
   const ts = now();
-  await workoutDB(db).batch([
-    workoutDB(db)
+  await db.batch([
+    db
     .prepare(
       `INSERT INTO external_activities
          (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
@@ -10359,7 +8834,7 @@ export async function upsertHealthKitActivity(
   // and is immediately re-deduped. An identical retry does not update/reset the
   // row; this idempotent pass therefore preserves an already-retired duplicate.
   await dedupeHealthKitAgainstIntervals(db, userId);
-  const row = await workoutDB(db)
+  const row = await db
     .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
     .bind(id, userId)
     .first<ExternalActivityRow>();
@@ -10370,15 +8845,6 @@ export async function upsertHealthKitActivity(
 /** Existing cross-source matching tolerance, applied to the shared clock:
  * source instants when both are known, otherwise legacy local wall time. */
 export const ACTIVITY_DEDUP_TOLERANCE_MS = 2 * 60 * 1000;
-
-export interface ActivityDedupeWindow {
-  /** Inclusive device-local range containing HealthKit rows that may change. */
-  healthKitFromDate: string;
-  healthKitToDate: string;
-  /** Inclusive wider range containing every possible intervals winner. */
-  intervalsFromDate: string;
-  intervalsToDate: string;
-}
 
 /**
  * Cross-source dedup: retire HealthKit activities that duplicate an
@@ -10431,7 +8897,7 @@ export async function dedupeHealthKitAgainstIntervals(
   // HealthKit rows we manage: currently live (candidates to retire) OR
   // previously retired BY US as a dup (deleted_at + duplicate_of set →
   // candidates to RESTORE if their winner is gone).
-  const hkStatement = workoutDB(db).prepare(
+  const hkStatement = db.prepare(
     `SELECT id, kind, start_date_local_ms, start_date_utc_ms, deleted_at, duplicate_of
        FROM external_activities
       WHERE user_id = ?1 AND source = 'healthkit'
@@ -10455,7 +8921,7 @@ export async function dedupeHealthKitAgainstIntervals(
   if (hk.length === 0) return 0;
   // Live intervals winners (NOT early-returned on empty: with no live winner,
   // any retired dup must be RESTORED).
-  const ivStatement = workoutDB(db).prepare(
+  const ivStatement = db.prepare(
     `SELECT id, kind, start_date_local_ms, start_date_utc_ms FROM external_activities
       WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
         AND (start_date_local_ms IS NOT NULL OR start_date_utc_ms IS NOT NULL)${dateClause}`,
@@ -10530,7 +8996,7 @@ export async function dedupeHealthKitAgainstIntervals(
     const isRetiredDup = h.deleted_at != null && h.duplicate_of != null;
     if (best && !isRetiredDup) {
       // Live HealthKit row duplicating a live intervals activity → retire it.
-      const statement = workoutDB(db).prepare(
+      const statement = db.prepare(
             `UPDATE external_activities
                 SET deleted_at = CASE
                       WHEN ?2 > synced_at THEN ?2 ELSE synced_at + 1
@@ -10566,7 +9032,7 @@ export async function dedupeHealthKitAgainstIntervals(
       // The row is already retired, but the deterministic winner changed.
       // Advance the tombstone watermark so downstream clients receive the
       // corrected provenance instead of retaining a stale duplicate_of.
-      const statement = workoutDB(db).prepare(
+      const statement = db.prepare(
             `UPDATE external_activities
                 SET synced_at = CASE
                       WHEN ?2 > synced_at THEN ?2 ELSE synced_at + 1
@@ -10597,7 +9063,7 @@ export async function dedupeHealthKitAgainstIntervals(
     } else if (!best && isRetiredDup) {
       // We retired this as a dup but its intervals winner is gone → restore it
       // as the surviving copy so the workout doesn't vanish.
-      const statement = workoutDB(db).prepare(
+      const statement = db.prepare(
             `UPDATE external_activities
                 SET deleted_at = NULL,
                     synced_at = CASE
@@ -10631,7 +9097,7 @@ export async function dedupeHealthKitAgainstIntervals(
     // present) → no-op, so steady-state syncs don't churn synced_at.
   }
   if (stmts.length === 0) return 0;
-  const results = await workoutDB(db).batch(stmts);
+  const results = await db.batch(stmts);
   return results.reduce((total, result) => total + (result.meta.changes ?? 0), 0);
 }
 
@@ -10651,7 +9117,7 @@ export async function getRideConflicts(
   // Only real strength rows and planned-event load affect conflicts. Full
   // calendar reads still load both endurance feeds for presentation.
   const sessions = await readCalendarSessions(db, userId, fromDate, addDays(toDate, 1));
-  const events = await workoutDB(db)
+  const events = await db
     .prepare(
       `SELECT id, date, training_load, planned_duration_sec
          FROM external_events
@@ -10691,7 +9157,6 @@ export async function getRideConflicts(
 // `is_me` is server-stamped so the iOS client does not have to compare
 // user ids manually.
 
-const FEED_LIMIT_DEFAULT = 30;
 const FEED_LIMIT_MAX = 100;
 
 /** Per-feed-item shapes the wire emits. Matches iOS m5-ios-spec.md §5. */
@@ -10879,7 +9344,7 @@ export async function getGroupFeed(
   //     the session is completed, else created_at — sessions still
   //     in_progress show as "currently doing X" rows so groupmates see
   //     today's lift as it's happening. Discarded sessions are excluded.
-  const sessionRows = await workoutDB(db)
+  const sessionRows = await db
     .prepare(
       `SELECT s.id,
               s.user_id,
@@ -10936,7 +9401,7 @@ export async function getGroupFeed(
   const setCountBySession = new Map<string, number>();
   if (sessionIds.length > 0) {
     const setPlaceholders = sessionIds.map((_, i) => `?${i + 1}`).join(',');
-    const sets = await workoutDB(db)
+    const sets = await db
       .prepare(
         `SELECT sl.session_id,
                 sl.exercise_id,
@@ -11052,7 +9517,7 @@ export async function getGroupFeed(
   //     sync and broke pagination. COALESCE handles any legacy row that
   //     somehow escaped the migration backfill (defensive — should not
   //     happen on a freshly-migrated DB).
-  const rideRows = await workoutDB(db)
+  const rideRows = await db
     .prepare(
       `SELECT id, user_id, source, raw, date, kind, name, moving_time_sec, distance_m,
               average_watts, training_load, elevation_gain_m,
@@ -11117,7 +9582,7 @@ export async function getGroupFeed(
   //     `notes` field IS shared — per the privacy contract above, the
   //     user-authored notes on an activity are the description of what
   //     they did.
-  const actRows = await workoutDB(db)
+  const actRows = await db
     .prepare(
       `SELECT id, user_id, date, type, title, duration_minutes, notes, logged_at
          FROM activities
@@ -11218,7 +9683,7 @@ export async function getGroupStats(
     // just the civil-date column. epoch_ms-keyed rows (set_logs.logged_at,
     // external_activities.synced_at) use the SESSION.date / activity.date
     // strings to keep the bucketing tz-correct.
-    const sessionsRows = await workoutDB(db)
+    const sessionsRows = await db
       .prepare(
         // Same planned-session leak fix as the feed query: a session row
         // with status='planned' (auto-created by GET /api/today) is intent,
@@ -11231,7 +9696,7 @@ export async function getGroupStats(
       )
       .bind(m.user_id, streakStart, today)
       .all<{ date: string }>();
-    const ridesRows = await workoutDB(db)
+    const ridesRows = await db
       .prepare(
         // HealthKit rows are gated behind the per-user opt-in (0028) so an
         // un-shared member's private health activity never inflates the
@@ -11246,7 +9711,7 @@ export async function getGroupStats(
       )
       .bind(m.user_id, streakStart, today)
       .all<{ date: string; garmin: number }>();
-    const actRows = await workoutDB(db)
+    const actRows = await db
       .prepare(
         `SELECT DISTINCT date FROM activities
           WHERE user_id = ?1
@@ -11380,7 +9845,7 @@ export async function getGroupActivitySeries(
     // excluded; rides/activities honor soft-delete. COUNT(*) per date is
     // the cell intensity (two sessions on a day → 2), unlike stats which
     // collapses to DISTINCT dates.
-    const sessRows = await workoutDB(db)
+    const sessRows = await db
       .prepare(
         `SELECT date, COUNT(*) AS n FROM sessions
           WHERE user_id = ?1
@@ -11392,7 +9857,7 @@ export async function getGroupActivitySeries(
       .all<{ date: string; n: number }>();
     for (const r of sessRows.results) ensure(r.date).sessions = r.n;
 
-    const rideRows = await workoutDB(db)
+    const rideRows = await db
       .prepare(
         // HealthKit rows gated behind the opt-in (0028), same as the feed/stats.
         `SELECT date, COUNT(*) AS n, MAX(CASE WHEN ${GARMIN_ACTIVITY_SQL} THEN 1 ELSE 0 END) AS garmin FROM external_activities
@@ -11411,7 +9876,7 @@ export async function getGroupActivitySeries(
       if (r.garmin === 1) ensure(r.date).source_attribution = GARMIN_SUMMARY_ATTRIBUTION;
     }
 
-    const actRows = await workoutDB(db)
+    const actRows = await db
       .prepare(
         `SELECT date, type, COUNT(*) AS n FROM activities
           WHERE user_id = ?1
@@ -11435,613 +9900,18 @@ export async function getGroupActivitySeries(
   return out;
 }
 
-// ---- OAuth grant transitions --------------------------------------------
-
-export interface OAuthCodeRedemption {
-  code: string;
-  client_id: string;
-  redirect_uri: string;
-  code_challenge: string;
-  code_challenge_method: string;
-  scope: string | null;
-  resource: string | null;
-  expires_at: number;
-  user_id: string | null;
-  access_token: string;
-  refresh_token: string;
-  access_expires_at: number;
-  grant_id: string;
-  owner_apple_sub?: string;
-}
-
-export interface OAuthRefreshRotation {
-  presented_refresh_token: string;
-  presented_client_id: string;
-  client_id: string;
-  scope: string | null;
-  expires_at: number;
-  user_id: string | null;
-  access_token: string;
-  refresh_token: string;
-  access_expires_at: number;
-  grant_id: string | null;
-  consumed_refresh_sha256: string;
-  owner_apple_sub?: string;
-}
-
-export interface OAuthTokenPair {
-  access_token: string;
-  refresh_token: string;
-  scope: string;
-  grant_id: string;
-  access_expires_at: number;
-}
-
-export const OAUTH_GRANT_INACTIVITY_MS = 90 * 24 * 60 * 60 * 1000;
-export const OAUTH_GRANT_ABSOLUTE_MS = 365 * 24 * 60 * 60 * 1000;
-
-/**
- * One-time administrative policy activation. Migration 0042's trigger makes
- * the conditional claim and every existing-grant update one transaction, so
- * failure rolls the whole activation back.
- * Existing deadlines are never overwritten, including a retry with the same
- * nonce. Migration 0042's trigger initializes existing grants in the same
- * transaction as this one conditional UPDATE.
- */
-export async function activateOAuthGrantLifecyclePolicy(
-  db: D1Database,
-  activatedAt: number,
-  nonce: string,
-): Promise<{ newly_activated: boolean; activated_at: number }> {
-  if (!Number.isSafeInteger(activatedAt) || activatedAt <= 0 || !nonce) {
-    throw new Error('invalid OAuth grant lifecycle activation');
-  }
-  const claimed = await workoutDB(db)
-    .prepare(
-      `UPDATE oauth_grant_lifecycle_policy
-          SET activated_at = ?1, activation_nonce = ?2
-        WHERE id = 1 AND activated_at IS NULL
-      RETURNING id`,
-    )
-    .bind(activatedAt, nonce)
-    .run();
-  const policy = await workoutDB(db).prepare(
-    'SELECT activated_at, activation_nonce FROM oauth_grant_lifecycle_policy WHERE id = 1',
-  ).first<{ activated_at: number; activation_nonce: string }>();
-  if (!policy) throw new Error('OAuth grant lifecycle policy row missing');
-  if (policy.activation_nonce !== nonce || policy.activated_at !== activatedAt) {
-    throw new Error('OAuth grant lifecycle policy already activated');
-  }
-  return { newly_activated: claimed.results.length === 1, activated_at: policy.activated_at };
-}
-
-/**
- * Consume one already-validated authorization-code snapshot and insert its
- * sole successor in one D1 transaction. Every immutable validation input is
- * repeated at the write boundary. If insertion fails, D1 rolls the batch back
- * and leaves the code available for a corrected retry.
- */
-export async function redeemOAuthAuthorizationCode(
-  db: D1Database,
-  redemption: OAuthCodeRedemption,
-): Promise<OAuthTokenPair | null> {
-  // Legacy unscoped grants belong only to an existing distinguished owner.
-  // Do not bootstrap a replacement identity while redeeming old credentials.
-  const principal = redemption.user_id
-    ? await workoutDB(db).prepare('SELECT id FROM users WHERE id = ?1').bind(redemption.user_id).first<{ id: string }>()
-    : await findOwnerRow(db, redemption.owner_apple_sub);
-  if (!principal) return null;
-
-  const nowMs = now();
-  const tokenCreatedAt = Math.floor(nowMs / 1000);
-  const legacy = redemption.user_id === null;
-  const [family, inserted, consumed, cleaned] = await workoutDB(db).batch([
-    workoutDB(db).prepare(
-      `INSERT INTO oauth_grants
-         (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy,
-          inactivity_expires_at, absolute_expires_at)
-       SELECT ?1, ?2, c.client_id, COALESCE(c.scope, 'mcp'), ?3, ?3, ?15,
-              CASE WHEN p.activated_at IS NULL THEN NULL
-                   ELSE MAX(c.created_at, p.activated_at) + ?16 END,
-              CASE WHEN p.activated_at IS NULL THEN NULL
-                   ELSE MAX(c.created_at, p.activated_at) + ?17 END
-         FROM oauth_codes c
-         LEFT JOIN oauth_grant_lifecycle_policy p ON p.id = 1
-        WHERE c.code = ?4
-          AND p.id = 1
-          AND c.client_id = ?5
-          AND c.redirect_uri = ?6
-          AND c.code_challenge = ?7
-          AND c.code_challenge_method = ?8
-          AND c.expires_at = ?9
-          AND c.expires_at >= ?10
-          AND c.scope IS ?11
-          AND c.resource IS ?12
-          AND (c.user_id = ?13 OR (?14 = 1 AND c.user_id IS NULL))
-          AND EXISTS (SELECT 1 FROM users WHERE id = ?2)
-          AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?2)
-          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?2)`,
-    ).bind(
-      redemption.grant_id,
-      principal.id,
-      nowMs,
-      redemption.code,
-      redemption.client_id,
-      redemption.redirect_uri,
-      redemption.code_challenge,
-      redemption.code_challenge_method,
-      redemption.expires_at,
-      nowMs,
-      redemption.scope,
-      redemption.resource,
-      redemption.user_id,
-      legacy ? 1 : 0,
-      legacy ? 1 : 0,
-      OAUTH_GRANT_INACTIVITY_MS,
-      OAUTH_GRANT_ABSOLUTE_MS,
-    ),
-    workoutDB(db).prepare(
-      `INSERT INTO oauth_tokens
-         (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id, grant_id)
-       SELECT ?1, ?2, c.client_id, COALESCE(c.scope, 'mcp'),
-              CASE WHEN g.inactivity_expires_at IS NULL THEN ?3
-                   ELSE MIN(?3, CAST(g.inactivity_expires_at / 1000 AS INTEGER),
-                                CAST(g.absolute_expires_at / 1000 AS INTEGER)) END,
-              ?4, ?5, ?17
-         FROM oauth_codes c
-         JOIN oauth_grants g ON g.id = ?17
-        WHERE c.code = ?6
-          AND c.client_id = ?7
-          AND c.redirect_uri = ?8
-          AND c.code_challenge = ?9
-          AND c.code_challenge_method = ?10
-          AND c.expires_at = ?11
-          AND c.expires_at >= ?12
-          AND c.scope IS ?13
-          AND c.resource IS ?14
-          AND (c.user_id = ?15 OR (?16 = 1 AND c.user_id IS NULL))
-          AND EXISTS (SELECT 1 FROM users WHERE id = ?5)
-          AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?5)
-          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?5)
-          AND changes() = 1
-       RETURNING expires_at`,
-    ).bind(
-      redemption.access_token,
-      redemption.refresh_token,
-      redemption.access_expires_at,
-      tokenCreatedAt,
-      principal.id,
-      redemption.code,
-      redemption.client_id,
-      redemption.redirect_uri,
-      redemption.code_challenge,
-      redemption.code_challenge_method,
-      redemption.expires_at,
-      nowMs,
-      redemption.scope,
-      redemption.resource,
-      redemption.user_id,
-      legacy ? 1 : 0,
-      redemption.grant_id,
-    ),
-    workoutDB(db).prepare(
-      `DELETE FROM oauth_codes
-        WHERE code = ?1
-          AND client_id = ?2
-          AND redirect_uri = ?3
-          AND code_challenge = ?4
-          AND code_challenge_method = ?5
-          AND expires_at = ?6
-          AND expires_at >= ?7
-          AND scope IS ?8
-          AND resource IS ?9
-          AND (user_id = ?10 OR (?11 = 1 AND user_id IS NULL))
-          AND changes() = 1`,
-    ).bind(
-      redemption.code,
-      redemption.client_id,
-      redemption.redirect_uri,
-      redemption.code_challenge,
-      redemption.code_challenge_method,
-      redemption.expires_at,
-      nowMs,
-      redemption.scope,
-      redemption.resource,
-      redemption.user_id,
-      legacy ? 1 : 0,
-    ),
-    workoutDB(db).prepare(
-      `DELETE FROM oauth_grants
-        WHERE id = ?1
-          AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)`,
-    ).bind(redemption.grant_id),
-  ]);
-  if (
-    family?.meta.changes !== 1 ||
-    inserted?.meta.changes !== 1 ||
-    consumed?.meta.changes !== 1 ||
-    cleaned?.meta.changes !== 0
-  ) return null;
-  return {
-    access_token: redemption.access_token,
-    refresh_token: redemption.refresh_token,
-    scope: redemption.scope ?? 'mcp',
-    grant_id: redemption.grant_id,
-    access_expires_at: (inserted.results?.[0] as { expires_at: number }).expires_at,
-  };
-}
-
-/** Rotate a refresh credential with one conditional write. */
-export async function rotateOAuthRefreshToken(
-  db: D1Database,
-  rotation: OAuthRefreshRotation,
-): Promise<OAuthTokenPair | null> {
-  if (!rotation.presented_client_id || rotation.presented_client_id !== rotation.client_id) {
-    return null;
-  }
-  const principal = rotation.user_id
-    ? await workoutDB(db).prepare('SELECT id FROM users WHERE id = ?1').bind(rotation.user_id).first<{ id: string }>()
-    : await findOwnerRow(db, rotation.owner_apple_sub);
-  if (!principal) return null;
-
-  const refreshedAt = now();
-  const tokenCreatedAt = Math.floor(refreshedAt / 1000);
-  const legacy = rotation.user_id === null;
-  const grantId = rotation.grant_id ?? crypto.randomUUID();
-  const [adopted, initialized, rotated, archived, touched, cleaned] = await workoutDB(db).batch([
-    workoutDB(db).prepare(
-      `INSERT INTO oauth_grants
-         (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy,
-          inactivity_expires_at, absolute_expires_at)
-       SELECT ?1, ?2, t.client_id, t.scope, t.created_at * 1000, ?3, 1,
-              CASE WHEN p.activated_at IS NULL THEN NULL
-                   ELSE MAX(t.created_at * 1000, p.activated_at) + ?10 END,
-              CASE WHEN p.activated_at IS NULL THEN NULL
-                   ELSE MAX(t.created_at * 1000, p.activated_at) + ?11 END
-         FROM oauth_tokens t
-         LEFT JOIN oauth_grant_lifecycle_policy p ON p.id = 1
-        WHERE t.refresh_token = ?4
-          AND p.id = 1
-          AND t.client_id = ?5
-          AND t.expires_at = ?6
-          AND t.scope IS ?7
-          AND t.grant_id IS NULL
-          AND (t.user_id = ?8 OR (?9 = 1 AND t.user_id IS NULL))
-          AND EXISTS (SELECT 1 FROM users WHERE id = ?2)
-          AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?2)
-          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?2)
-       ON CONFLICT(id) DO NOTHING`,
-    ).bind(
-      grantId,
-      principal.id,
-      refreshedAt,
-      rotation.presented_refresh_token,
-      rotation.client_id,
-      rotation.expires_at,
-      rotation.scope,
-      rotation.user_id,
-      legacy ? 1 : 0,
-      OAUTH_GRANT_INACTIVITY_MS,
-      OAUTH_GRANT_ABSOLUTE_MS,
-    ),
-    workoutDB(db).prepare(
-      `UPDATE oauth_grants
-          SET inactivity_expires_at = MAX(created_at, p.activated_at) + ?2,
-              absolute_expires_at = MAX(created_at, p.activated_at) + ?3
-         FROM oauth_grant_lifecycle_policy p
-        WHERE oauth_grants.id = ?1
-          AND p.id = 1 AND p.activated_at IS NOT NULL
-          AND oauth_grants.revoked_at IS NULL
-          AND oauth_grants.inactivity_expires_at IS NULL
-          AND oauth_grants.absolute_expires_at IS NULL`,
-    ).bind(grantId, OAUTH_GRANT_INACTIVITY_MS, OAUTH_GRANT_ABSOLUTE_MS),
-    workoutDB(db).prepare(
-    `UPDATE oauth_tokens
-        SET access_token = ?1,
-            refresh_token = ?2,
-            expires_at = CASE
-              WHEN g.inactivity_expires_at IS NULL AND g.absolute_expires_at IS NULL
-                   AND p.activated_at IS NULL THEN ?3
-              ELSE MIN(?3,
-                       CAST(MIN(CAST(unixepoch('subsec') * 1000 AS INTEGER) + ?14,
-                                    g.absolute_expires_at) / 1000 AS INTEGER))
-            END,
-            created_at = CAST(unixepoch('subsec') AS INTEGER),
-            user_id = ?5,
-            grant_id = ?12
-       FROM oauth_grants g
-       LEFT JOIN oauth_grant_lifecycle_policy p ON p.id = 1
-      WHERE oauth_tokens.refresh_token = ?6
-        AND oauth_tokens.client_id = ?7
-        AND oauth_tokens.expires_at = ?8
-        AND (oauth_tokens.user_id = ?9 OR (?10 = 1 AND oauth_tokens.user_id IS NULL))
-        AND EXISTS (SELECT 1 FROM users WHERE id = ?5)
-        AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?5)
-        AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?5)
-        AND oauth_tokens.scope IS ?11
-        AND (oauth_tokens.grant_id = ?12 OR oauth_tokens.grant_id IS NULL)
-        AND g.id = ?12 AND g.revoked_at IS NULL
-        AND (
-          (p.id = 1 AND p.activated_at IS NULL
-           AND g.inactivity_expires_at IS NULL AND g.absolute_expires_at IS NULL)
-          OR
-          (p.id = 1 AND p.activated_at IS NOT NULL
-           AND g.inactivity_expires_at > CAST(unixepoch('subsec') * 1000 AS INTEGER)
-           AND g.absolute_expires_at > CAST(unixepoch('subsec') * 1000 AS INTEGER))
-        )
-        AND NOT EXISTS (
-              SELECT 1 FROM oauth_refresh_history WHERE token_sha256 = ?13
-            )
-      RETURNING expires_at`,
-  ).bind(
-    rotation.access_token,
-    rotation.refresh_token,
-    rotation.access_expires_at,
-    tokenCreatedAt,
-    principal.id,
-    rotation.presented_refresh_token,
-    rotation.client_id,
-    rotation.expires_at,
-    rotation.user_id,
-    legacy ? 1 : 0,
-    rotation.scope,
-    grantId,
-    rotation.consumed_refresh_sha256,
-    OAUTH_GRANT_INACTIVITY_MS,
-  ),
-    workoutDB(db).prepare(
-      `INSERT INTO oauth_refresh_history (token_sha256, grant_id, client_id, consumed_at)
-       SELECT ?1, ?2, ?3, ?4
-        WHERE changes() = 1`,
-    ).bind(rotation.consumed_refresh_sha256, grantId, rotation.client_id, refreshedAt),
-    workoutDB(db).prepare(
-      `UPDATE oauth_grants
-          SET last_refreshed_at = CAST(unixepoch('subsec') * 1000 AS INTEGER),
-              inactivity_expires_at = CASE
-                WHEN inactivity_expires_at IS NULL THEN NULL
-                ELSE MIN(CAST(unixepoch('subsec') * 1000 AS INTEGER) + ?3,
-                         absolute_expires_at)
-              END
-        WHERE id = ?1 AND revoked_at IS NULL AND changes() = 1`,
-    ).bind(grantId, refreshedAt, OAUTH_GRANT_INACTIVITY_MS),
-    workoutDB(db).prepare(
-      `DELETE FROM oauth_grants
-        WHERE id = ?1 AND ?2 = 1
-          AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)
-          AND NOT EXISTS (SELECT 1 FROM oauth_refresh_history WHERE grant_id = ?1)`,
-    ).bind(grantId, rotation.grant_id === null ? 1 : 0),
-  ]);
-  if (rotated?.meta.changes !== 1 || archived?.meta.changes !== 1 || touched?.meta.changes !== 1) {
-    return null;
-  }
-  if (cleaned?.meta.changes !== 0) return null;
-  if (rotation.grant_id === null && adopted?.meta.changes !== 1) return null;
-  return {
-    access_token: rotation.access_token,
-    refresh_token: rotation.refresh_token,
-    scope: rotation.scope ?? 'mcp',
-    grant_id: grantId,
-    access_expires_at: (rotated.results?.[0] as { expires_at: number }).expires_at,
-  };
-}
-
-/**
- * Complete refresh behavior for one validated snapshot. A clean CAS loss may
- * mean another contender just consumed the same credential, so check history
- * before returning invalid_grant and revoke that family's surviving token.
- */
-export async function refreshOAuthGrant(
-  db: D1Database,
-  rotation: OAuthRefreshRotation,
-): Promise<OAuthTokenPair | null> {
-  const tokens = await rotateOAuthRefreshToken(db, rotation);
-  if (tokens) return tokens;
-  await revokeOAuthGrantOnRefreshReplay(
-    db,
-    rotation.consumed_refresh_sha256,
-    rotation.presented_client_id,
-    rotation.owner_apple_sub,
-  );
-  return null;
-}
-
-export interface OAuthGrantSummary {
-  id: string;
-  client_id: string;
-  scope: string;
-  created_at: number;
-  last_refreshed_at: number | null;
-  legacy: boolean;
-}
-
-/**
- * A matching replay of a consumed refresh credential invalidates only its
- * family. A wrong client id has no effect: public client ids bind requests but
- * do not authenticate whoever presented the stale credential.
- */
-export async function revokeOAuthGrantOnRefreshReplay(
-  db: D1Database,
-  tokenSha256: string,
-  clientId: string,
-  ownerAppleSub: string | undefined,
-): Promise<boolean> {
-  const replay = await workoutDB(db).prepare(
-    `SELECT g.id, g.user_id FROM oauth_refresh_history h
-       JOIN oauth_grants g ON g.id = h.grant_id
-      WHERE h.token_sha256 = ?1
-        AND h.client_id = ?2
-        AND g.client_id = ?2`,
-  ).bind(tokenSha256, clientId).first<{ id: string; user_id: string | null }>();
-  if (!replay) return false;
-  const principal = replay.user_id
-    ? await workoutDB(db).prepare('SELECT id FROM users WHERE id = ?1').bind(replay.user_id).first<{ id: string }>()
-    : await findOwnerRow(db, ownerAppleSub);
-  if (!principal) return false;
-  const revokedAt = now();
-  const [revoked, removed] = await workoutDB(db).batch([
-    workoutDB(db).prepare(
-      `UPDATE oauth_grants SET revoked_at = ?2
-        WHERE id = ?1 AND revoked_at IS NULL
-          AND (user_id = ?3 OR (?4 = 1 AND user_id IS NULL))`,
-    ).bind(replay.id, revokedAt, replay.user_id, replay.user_id === null ? 1 : 0),
-    workoutDB(db).prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1 AND changes() = 1')
-      .bind(replay.id),
-  ]);
-  return revoked?.meta.changes === 1 && (removed?.meta.changes ?? 0) <= 1;
-}
-
-async function adoptUntrackedOAuthGrants(
-  db: D1Database,
-  userId: string,
-  includeLegacyOwner: boolean,
-): Promise<void> {
-  const rows = await workoutDB(db).prepare(
-    `SELECT access_token, user_id, client_id, scope, created_at
-       FROM oauth_tokens
-      WHERE grant_id IS NULL
-        AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))`,
-  ).bind(userId, includeLegacyOwner ? 1 : 0).all<{
-    access_token: string;
-    user_id: string | null;
-    client_id: string;
-    scope: string | null;
-    created_at: number;
-  }>();
-  for (const row of rows.results) {
-    const grantId = crypto.randomUUID();
-    await workoutDB(db).batch([
-      workoutDB(db).prepare(
-        `INSERT INTO oauth_grants
-           (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy,
-            inactivity_expires_at, absolute_expires_at)
-         SELECT ?1, ?2, t.client_id, t.scope, t.created_at * 1000, t.created_at * 1000, 1,
-                CASE WHEN p.activated_at IS NULL THEN NULL
-                     ELSE MAX(t.created_at * 1000, p.activated_at) + ?5 END,
-                CASE WHEN p.activated_at IS NULL THEN NULL
-                     ELSE MAX(t.created_at * 1000, p.activated_at) + ?6 END
-           FROM oauth_tokens t
-           LEFT JOIN oauth_grant_lifecycle_policy p ON p.id = 1
-          WHERE access_token = ?3 AND grant_id IS NULL
-            AND (user_id = ?2 OR (?4 = 1 AND user_id IS NULL))
-            AND EXISTS (SELECT 1 FROM users WHERE id = ?2)
-            AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?2)
-            AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?2)`,
-      ).bind(
-        grantId,
-        row.user_id ?? userId,
-        row.access_token,
-        row.user_id === null ? 1 : 0,
-        OAUTH_GRANT_INACTIVITY_MS,
-        OAUTH_GRANT_ABSOLUTE_MS,
-      ),
-      workoutDB(db).prepare(
-        `UPDATE oauth_tokens SET grant_id = ?2
-          WHERE access_token = ?1 AND grant_id IS NULL AND changes() = 1`,
-      ).bind(row.access_token, grantId),
-      workoutDB(db).prepare(
-        `DELETE FROM oauth_grants
-          WHERE id = ?1
-            AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)`,
-      ).bind(grantId),
-    ]);
-  }
-}
-
-export async function listOAuthGrants(
-  db: D1Database,
-  userId: string,
-  ownerAppleSub: string | undefined,
-): Promise<OAuthGrantSummary[]> {
-  const owner = await findOwnerRow(db, ownerAppleSub);
-  const isOwner = owner?.id === userId;
-  await adoptUntrackedOAuthGrants(db, userId, isOwner);
-  const rows = await workoutDB(db).prepare(
-    `SELECT g.id, g.client_id, COALESCE(g.scope, 'mcp') AS scope, g.created_at,
-            g.last_refreshed_at, g.legacy
-       FROM oauth_grants g
-       JOIN oauth_grant_lifecycle_policy p ON p.id = 1
-      WHERE g.revoked_at IS NULL
-        AND (
-          (p.activated_at IS NULL
-           AND g.inactivity_expires_at IS NULL AND g.absolute_expires_at IS NULL)
-          OR
-          (p.activated_at IS NOT NULL
-           AND g.inactivity_expires_at > CAST(unixepoch('subsec') * 1000 AS INTEGER)
-           AND g.absolute_expires_at > CAST(unixepoch('subsec') * 1000 AS INTEGER))
-        )
-        AND (g.user_id = ?1 OR (?2 = 1 AND g.user_id IS NULL))
-      ORDER BY g.created_at DESC, g.id`,
-  ).bind(userId, isOwner ? 1 : 0).all<{
-    id: string;
-    client_id: string;
-    scope: string;
-    created_at: number;
-    last_refreshed_at: number | null;
-    legacy: number;
-  }>();
-  return rows.results.map((row) => ({ ...row, legacy: row.legacy === 1 }));
-}
-
-/** Caller-scoped and idempotent; never returns or audits credential values. */
-export async function revokeOAuthGrant(
-  db: D1Database,
-  userId: string,
-  grantId: string,
-  ownerAppleSub: string | undefined,
-): Promise<boolean> {
-  const owner = await findOwnerRow(db, ownerAppleSub);
-  const isOwner = owner?.id === userId;
-  const grant = await workoutDB(db).prepare(
-    `SELECT id FROM oauth_grants
-      WHERE id = ?1 AND (user_id = ?2 OR (?3 = 1 AND user_id IS NULL))`,
-  ).bind(grantId, userId, isOwner ? 1 : 0).first<{ id: string }>();
-  if (!grant) return false;
-  await workoutDB(db).batch([
-    workoutDB(db).prepare(
-      `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
-       VALUES (?1,?2,'ios','revoke_coach_grant',?3,'revoked',?4)`,
-    ).bind(uuid(), userId, JSON.stringify({ grant_id: grantId }), now()),
-    workoutDB(db).prepare(
-      'UPDATE oauth_grants SET revoked_at = COALESCE(revoked_at, ?2) WHERE id = ?1',
-    ).bind(grantId, now()),
-    workoutDB(db).prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1').bind(grantId),
-  ]);
-  return true;
-}
-
-export async function revokeAllOAuthGrants(
-  db: D1Database,
-  userId: string,
-  ownerAppleSub: string | undefined,
-): Promise<number> {
-  const owner = await findOwnerRow(db, ownerAppleSub);
-  const isOwner = owner?.id === userId;
-  await adoptUntrackedOAuthGrants(db, userId, isOwner);
-  const [, revoked] = await workoutDB(db).batch([
-    workoutDB(db).prepare(
-      `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
-       VALUES (?1,?2,'ios','revoke_coach_grants',?3,'revoked',?4)`,
-    ).bind(uuid(), userId, JSON.stringify({ scope: 'all' }), now()),
-    workoutDB(db).prepare(
-      `UPDATE oauth_grants SET revoked_at = COALESCE(revoked_at, ?3)
-        WHERE revoked_at IS NULL
-          AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))`,
-    ).bind(userId, isOwner ? 1 : 0, now()),
-    workoutDB(db).prepare(
-      `DELETE FROM oauth_tokens
-        WHERE grant_id IN (
-          SELECT id FROM oauth_grants
-           WHERE revoked_at IS NOT NULL
-             AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))
-        )`,
-    ).bind(userId, isOwner ? 1 : 0),
-    // Stop approved-but-not-yet-exchanged connections as well as tokens.
-    workoutDB(db).prepare(`DELETE FROM oauth_codes
-      WHERE user_id = ?1 OR (?2 = 1 AND user_id IS NULL)`)
-      .bind(userId, isOwner ? 1 : 0),
-  ]);
-  return revoked?.meta.changes ?? 0;
-}
+// OAuth grants share the existing owner resolver without importing the facade.
+export { type OAuthCodeRedemption, type OAuthRefreshRotation, type OAuthTokenPair, OAUTH_GRANT_INACTIVITY_MS, OAUTH_GRANT_ABSOLUTE_MS, type OAuthGrantSummary } from './services/oauthGrants';
+export const {
+  activateOAuthGrantLifecyclePolicy,
+  redeemOAuthAuthorizationCode,
+  rotateOAuthRefreshToken,
+  refreshOAuthGrant,
+  revokeOAuthGrantOnRefreshReplay,
+  listOAuthGrants,
+  revokeOAuthGrant,
+  revokeAllOAuthGrants
+} = createOAuthGrantService(findOwnerRow);
 
 // ---- prescribed exercise groups ------------------------------------------
 
@@ -12095,7 +9965,7 @@ export async function findMcpExerciseGroupAcknowledgement(
 ): Promise<ExerciseGroupAcknowledgement | null> {
   if (!isGroupId(args.group_id) || !Number.isSafeInteger(args.expected_version)
       || (args.expected_version as number) < 1) return null;
-  const rows = await workoutDB(db).prepare(
+  const rows = await db.prepare(
     `SELECT args,result FROM audit_log
       WHERE user_id=?1 AND actor='mcp' AND tool=?2
         AND json_extract(CASE WHEN json_valid(args) THEN args ELSE '{}' END,'$.group_id')=?3
@@ -12116,7 +9986,7 @@ export async function findMcpExerciseGroupAcknowledgement(
 }
 
 async function findExerciseGroupReceipt(db: D1Database, userId: string, actor: string, key: string): Promise<ExerciseGroupAcknowledgement | null> {
-  const row = await workoutDB(db).prepare(
+  const row = await db.prepare(
     `SELECT result FROM audit_log WHERE user_id=?1 AND actor=?2 AND json_valid(result)
       AND json_extract(CASE WHEN json_valid(result) THEN result ELSE '{}' END,'$.exercise_group_receipt')=?3 LIMIT 1`,
   ).bind(userId, actor, key).first<{ result: string }>();
@@ -12132,7 +10002,7 @@ async function commitExerciseGroup(
   const nonce = crypto.randomUUID();
   const ts = Date.now();
   const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
-  for (const slot of changed) statements.push(workoutDB(db).prepare(
+  for (const slot of changed) statements.push(db.prepare(
     `UPDATE template_exercises SET group_id=?2,group_rest_seconds=?3,group_transition_seconds=?4,
        target_sets=?5,order_index=?6,updated_at=?7 WHERE id=?1
        AND EXISTS (SELECT 1 FROM plans p JOIN workouts d ON d.plan_id=p.id

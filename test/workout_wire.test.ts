@@ -1,9 +1,8 @@
 import { applyD1Migrations, env, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { workoutInput, workoutWire } from '../src/workoutWire';
 import { acceptStarterWorkout, getPlanTree, saveTrainingProfile, upsertUser } from '../src/db';
 
-beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS.filter(m => m.name !== '0045_workouts.sql')));
+beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 const base = 'https://tres-fort.test';
 async function tool(name: string, args: unknown = {}) {
   const response = await SELF.fetch(`${base}/mcp`, { method: 'POST',
@@ -13,16 +12,7 @@ async function tool(name: string, args: unknown = {}) {
   return JSON.parse(rpc.result.content[0].text);
 }
 
-it('keeps opaque content unchanged and rejects contradictory aliases', () => {
-  const opaque = { workouts: ['user text'], workout_id: 'not a field to rename' };
-  expect(workoutWire({ workouts: [{ id: 'w' }], meta: opaque, notes: opaque, document: opaque }))
-    .toEqual({ workouts: [{ id: 'w' }], days: [{ id: 'w' }], meta: opaque, notes: opaque, document: opaque });
-  expect(workoutInput({ workouts: [{ name: 'A', exercises: [] }], days: [{ exercises: [], name: 'A' }] }))
-    .toEqual({ workouts: [{ exercises: [], name: 'A' }] });
-  expect(() => workoutInput({ workout_id: null, day_template_id: 'w' })).toThrow('conflicting_workout_fields');
-});
-
-describe.each([false, true])('wire contracts with migrated=%s', (migrated) => {
+describe('canonical workout contract', () => {
   let jwt: string;
   let tree: any;
   let gym: any;
@@ -37,13 +27,12 @@ describe.each([false, true])('wire contracts with migrated=%s', (migrated) => {
   // Seed once per schema. Each independent test gets the same isolated snapshot;
   // no long multi-stage HTTP chain competes with the default five-second limit.
   beforeAll(async () => {
-    if (migrated) await applyD1Migrations(env.DB, env.TEST_MIGRATIONS.filter(m => m.name === '0045_workouts.sql'));
     const auth = await SELF.fetch(`${base}/auth/dev`, { method: 'POST',
       headers: { 'content-type': 'application/json' }, body: JSON.stringify({ secret: 'test-dev' }) });
     jwt = (await auth.json<{ jwt: string }>()).jwt;
-    const original = await tool('update_plan', { days: [{ name: 'Gym', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] }] });
+    const original = await tool('update_plan', { workouts: [{ name: 'Gym', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] }] });
     expect(original).toHaveProperty('plan');
-    expect(original.plan.days).toEqual(original.plan.workouts);
+    expect(original.plan).not.toHaveProperty('days');
     gym = original.plan.workouts[0];
     const add = await api('workouts', 'POST', { name: 'Hotel' });
     expect(add.status).toBe(201); hotel = add.body.id;
@@ -54,7 +43,7 @@ describe.each([false, true])('wire contracts with migrated=%s', (migrated) => {
     tree = (await api('plan/active')).body;
   });
 
-  it('creates and replays a starter before and after the physical workout rename', async () => {
+  it('creates and replays a starter on the canonical schema', async () => {
     const member = await upsertUser(env.DB, crypto.randomUUID(), null, 'Synthetic starter member');
     await saveTrainingProfile(env.DB, member.id, { goal: 'general_fitness', activities: ['running'],
       activity_context: '', experience: 'new', strength_days: 2, session_minutes: 30,
@@ -67,12 +56,12 @@ describe.each([false, true])('wire contracts with migrated=%s', (migrated) => {
     expect(tree?.workouts[0]?.exercises).toHaveLength(3);
   });
 
-  it('accepts the released REST authoring route', async () => {
-    expect((await api(`days/${hotel}`, 'PATCH', { name: 'Travel' })).status).toBe(200);
+  it('authors through the canonical REST route', async () => {
+    expect((await api(`workouts/${hotel}`, 'PATCH', { name: 'Travel' })).status).toBe(200);
     expect((await api('plan/active')).body.workouts.find((w: any) => w.id === hotel).name).toBe('Travel');
   });
 
-  it.each(['add_day', 'add_workout'])('audits the called %s name', async (name) => {
+  it.each(['add_workout'])('audits the called %s name', async (name) => {
     const added = await tool(name, { name: 'Coach workout' });
     expect(added.id).toBeTruthy();
     const audit = await env.DB.prepare('SELECT tool FROM audit_log WHERE user_id=? AND tool=?')
@@ -80,8 +69,8 @@ describe.each([false, true])('wire contracts with migrated=%s', (migrated) => {
     expect(audit.results).toContainEqual({ tool: name });
   });
 
-  it.each(['update_day', 'update_workout'])('accepts the %s selector', async (name) => {
-    const key = name === 'update_day' ? 'day_template_id' : 'workout_id';
+  it.each(['update_workout'])('accepts the %s selector', async (name) => {
+    const key = 'workout_id';
     expect(await tool(name, { [key]: hotel, patch: { notes: 'On demand' } })).not.toHaveProperty('error');
     expect((await api('plan/active')).body.workouts.find((w: any) => w.id === hotel).notes).toBe('On demand');
   });
@@ -94,9 +83,9 @@ describe.each([false, true])('wire contracts with migrated=%s', (migrated) => {
   });
 
   it('assigns an on-demand workout over the scheduled workout without changing the recurring plan', async () => {
-    const assigned = await api(`calendar/${today}`, 'PUT', { day_template_id: hotel, expected_attempt: 0 });
+    const assigned = await api(`calendar/${today}`, 'PUT', { workout_id: hotel, expected_attempt: 0 });
     expect(assigned.status).toBe(200);
-    expect(assigned.body.session).toMatchObject({ workout_id: hotel, day_template_id: hotel });
+    expect(assigned.body.session).toMatchObject({ workout_id: hotel });
     const read = (await api('state')).body;
     expect(read.plan.version).toBe(tree.version); expect(read.plan.meta).toBe(tree.meta);
     expect(read.sessions.find((s: any) => s.id === assigned.body.session.id).workout_id).toBe(hotel);
@@ -106,28 +95,52 @@ describe.each([false, true])('wire contracts with migrated=%s', (migrated) => {
     expect(retry.body.session.attempt).toBe(assigned.body.session.attempt);
   });
 
-  it('moves a date with released request keys and dual acknowledgement fields', async () => {
+  it('moves a date with canonical request and acknowledgement fields', async () => {
     const next = new Date(`${today}T12:00:00Z`);
     next.setUTCDate(next.getUTCDate() + 1);
     const toDate = next.toISOString().slice(0, 10);
     const request = { id: crypto.randomUUID(), to_date: toDate, today,
-      day_template_id: gym.id, expected_plan_id: tree.id, expected_version: tree.version,
+      workout_id: gym.id, expected_plan_id: tree.id, expected_version: tree.version,
       expected_from_attempt: 0, expected_to_attempt: 0 };
     const move = await api(`calendar/${today}/move`, 'POST', request);
     expect(move.status).toBe(200);
     expect(move.body.from).toMatchObject({ date: today, status: 'skipped',
-      workout_id: null, day_template_id: null, attempt: 1 });
+      workout_id: null, attempt: 1 });
     expect(move.body.to).toMatchObject({ date: toDate, status: 'planned',
-      workout_id: gym.id, day_template_id: gym.id, attempt: 1 });
+      workout_id: gym.id, attempt: 1 });
     expect(await api(`calendar/${today}/move`, 'POST', request)).toEqual(move);
     const unchanged = (await api('plan/active')).body;
     expect(unchanged.version).toBe(tree.version);
     expect(unchanged.meta).toBe(tree.meta);
   });
 
-  it('retains the historical account export collection name', async () => {
+  it('exports the canonical collection without duplicating workouts', async () => {
     const exported = (await api('me/export')).body;
-    expect(exported.training.day_templates).toEqual(exported.training.workouts);
+    expect(exported.training).not.toHaveProperty('day_templates');
     expect(exported.training.workouts).toEqual(expect.arrayContaining([expect.objectContaining({ id: hotel })]));
   });
+  it('rejects retired routes, tool names and identity keys without changing the plan', async () => {
+    for (const [path, method, body] of [
+      ['days', 'POST', { name: 'Retired' }],
+      [`days/${hotel}`, 'PATCH', { name: 'Retired' }],
+      [`days/${hotel}`, 'DELETE', undefined],
+    ] as const) expect((await api(path, method, body)).status).toBe(404);
+    for (const [path, method, body] of [
+      [`calendar/${today}`, 'PUT', { day_template_id: hotel, expected_attempt: 0 }],
+      ['sessions', 'POST', { date: today, day_template_id: hotel, expected_attempt: 0 }],
+    ] as const) {
+      expect(await api(path, method, body)).toEqual({ status: 400, body: { error: 'unsupported_workout_fields' } });
+    }
+    expect(await tool('update_plan', { days: [] })).toEqual({ error: 'unsupported_workout_fields' });
+    for (const name of ['add_day', 'update_day']) {
+      const response = await SELF.fetch(`${base}/mcp`, { method: 'POST',
+        headers: { Authorization: 'Bearer test-mcp-token', 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { name: 'Retired' } } }) });
+      expect((await response.json<any>()).error.code).toBe(-32602);
+    }
+    const latest = (await api('plan/active')).body;
+    expect(latest.version).toBe(tree.version);
+    expect(latest.workouts.map((w: any) => w.id)).toEqual(tree.workouts.map((w: any) => w.id));
+  });
+
 });

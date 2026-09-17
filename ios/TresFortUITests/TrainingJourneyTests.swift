@@ -66,9 +66,8 @@ final class TrainingJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 10))
         screenshot("ordinary-workout")
         app.buttons["LOG SET 1"].tap()
-        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
-        app.buttons["rest.done"].tap()
         XCTAssertTrue(app.staticTexts["READY TO FINISH"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["rest.done"].exists)
         screenshot("logged-ready-to-finish")
         let finish = app.buttons["FINISH"]
         if !finish.isHittable { app.swipeUp() }
@@ -335,17 +334,14 @@ final class TrainingJourneyTests: XCTestCase {
         XCTAssertEqual(weight.value as? String, "20")
     }
 
-    func testRestAndCompletionRemainReachable() {
+    func testFinalSetCompletionRemainsReachable() {
         let app = launch("ordinary")
         let log = app.buttons["LOG SET 1"]
         reveal(log, in: app)
         log.tap()
-        let done = app.buttons["rest.done"]
-        reveal(done, in: app)
-        screenshot("journey-rest-complete")
-        done.tap()
         let finish = app.buttons["FINISH"]
         XCTAssertTrue(finish.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["rest.done"].exists)
         XCTAssertTrue(finish.isEnabled)
         XCTAssertTrue(app.frame.contains(finish.frame))
         XCTAssertGreaterThanOrEqual(finish.frame.height, 44)

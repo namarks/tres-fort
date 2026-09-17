@@ -64,10 +64,4 @@ final class WorkoutNamingTests: XCTestCase {
         }
     }
 
-    func testFirstBuildUsesReleasedRequestVocabularyUntilLaterServerFirstCutover() {
-        XCTAssertEqual(APIClient().workoutWireFormat.idKey, "day_template_id")
-        XCTAssertEqual(APIClient().workoutWireFormat.collectionPath, "api/days")
-        XCTAssertEqual(WorkoutWireFormat.canonical.idKey, "workout_id")
-        XCTAssertEqual(WorkoutWireFormat.canonical.collectionPath, "api/workouts")
-    }
 }

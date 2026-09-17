@@ -726,16 +726,16 @@ private struct UIFixtureServer {
             guard body["expected_attempt"] as? Int == (prior?["attempt"] as? Int ?? 0) else {
                 status = 409; response = ["error": "synthetic_calendar_attempt_mismatch"]; break
             }
-            let workout = body["day_template_id"] as? String
+            let workout = body["workout_id"] as? String
             let row: [String: Any] = ["id": prior?["id"] ?? "assignment-\(date)", "date": date,
                 "status": workout == nil ? "skipped" : "planned",
-                "day_template_id": workout as Any? ?? NSNull(),
+                "workout_id": workout as Any? ?? NSNull(),
                 "attempt": (prior?["attempt"] as? Int ?? 0) + 1, "updated_at": revision]
             sessions.removeAll { $0["date"] as? String == date }; sessions.append(row)
             response = ["ok": true, "session": row]
         case ("POST", "/api/calendar/2026-09-08/move") where scenario == .appStore:
             guard body["to_date"] as? String == "2026-09-09", body["today"] as? String == "2026-09-08",
-                  body["day_template_id"] as? String == dayID,
+                  body["workout_id"] as? String == dayID,
                   body["expected_plan_id"] as? String == "synthetic-plan",
                   body["expected_version"] as? Int == plan?["version"] as? Int,
                   body["expected_from_attempt"] as? Int == 0, body["expected_to_attempt"] as? Int == 0,
@@ -746,16 +746,16 @@ private struct UIFixtureServer {
                 status = 409; response = ["error": "calendar_move_conflict"]; break
             }
             let from: [String: Any] = ["id": "move-from", "date": "2026-09-08", "status": "skipped", "attempt": 1, "updated_at": revision]
-            let to: [String: Any] = ["id": "move-to", "date": "2026-09-09", "status": "planned", "day_template_id": dayID, "attempt": 1, "updated_at": revision]
+            let to: [String: Any] = ["id": "move-to", "date": "2026-09-09", "status": "planned", "workout_id": dayID, "attempt": 1, "updated_at": revision]
             sessions += [from, to]
             response = ["ok": true, "from": from, "to": to]
-        case ("DELETE", "/api/days/hotel") where scenario == .library:
+        case ("DELETE", "/api/workouts/hotel") where scenario == .library:
             let remaining = (plan?["days"] as? [[String: Any]] ?? []).filter { $0["id"] as? String != "hotel" }
             let version = (plan?["version"] as? Int ?? 1) + 1
             plan?["days"] = remaining
             plan?["version"] = version
             response = ["ok": true, "version": plan?["version"] ?? 1]
-        case ("PATCH", "/api/days/\(dayID)/exercises/created-slot-0") where scenario == .activationManual:
+        case ("PATCH", "/api/workouts/\(dayID)/exercises/created-slot-0") where scenario == .activationManual:
             var days = plan!["days"] as! [[String: Any]]
             var slots = days[0]["exercises"] as! [[String: Any]]
             guard slots[0]["id"] as? String == "created-slot-0" else { throw URLError(.badServerResponse) }
@@ -766,7 +766,7 @@ private struct UIFixtureServer {
             days[0]["exercises"] = slots; plan?["days"] = days
             plan?["version"] = version
             response = ["id": "created-slot-0"]
-        case ("POST", "/api/days/\(dayID)/exercises") where scenario == .activationManual:
+        case ("POST", "/api/workouts/\(dayID)/exercises") where scenario == .activationManual:
             guard body["exercise"] as? String == "synthetic-exercise" else { throw URLError(.badServerResponse) }
             var days = plan!["days"] as! [[String: Any]]
             let source = makePlan()["days"] as! [[String: Any]]
@@ -777,7 +777,7 @@ private struct UIFixtureServer {
             slot["target_weight"] = body["target_weight"] ?? NSNull()
             days[0]["exercises"] = [slot]; plan?["days"] = days; plan?["version"] = 3
             response = ["id": "synthetic-slot"]
-        case ("POST", "/api/days"):
+        case ("POST", "/api/workouts"):
             let creationFailure = ProcessInfo.processInfo.environment["TRESFORT_UI_CREATE_FAILURE"]
             if creationFailure == "conflict", !returnedCreationFailure {
                 returnedCreationFailure = true
@@ -816,7 +816,7 @@ private struct UIFixtureServer {
             }
             failCreatedWorkoutRefresh = ProcessInfo.processInfo.environment["TRESFORT_UI_CREATE_REFRESH_FAILURE"] == "1"
             response = ["id": id]
-        case ("PUT", "/api/days/\(dayID)/groups") where scenario == .groups:
+        case ("PUT", "/api/workouts/\(dayID)/groups") where scenario == .groups:
             let receiptKey = String(data: try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]), encoding: .utf8)!
             if let receipt = groupReceipts[receiptKey] { response = receipt; break }
             guard let version = plan?["version"] as? Int, body["expected_version"] as? Int == version else {
@@ -913,7 +913,7 @@ private struct UIFixtureServer {
             sessions.removeAll { $0["id"] as? String == sessionID }
             sessions.append(current)
             response = ["set": set, "session": current, "deduped": false]
-        case ("DELETE", let path) where scenario == .appStore && path.hasPrefix("/api/days/\(dayID)/exercises/"):
+        case ("DELETE", let path) where scenario == .appStore && path.hasPrefix("/api/workouts/\(dayID)/exercises/"):
             let slotID = String(path.split(separator: "/").last ?? "")
             var days = plan!["days"] as! [[String: Any]]
             let index = days.firstIndex { $0["id"] as? String == dayID }!
@@ -925,7 +925,7 @@ private struct UIFixtureServer {
             let version = (plan?["version"] as? Int ?? 1) + 1
             plan?["version"] = version
             response = ["id": slotID]
-        case ("PATCH", let path) where scenario == .appStore && path.hasPrefix("/api/days/\(dayID)/exercises/"):
+        case ("PATCH", let path) where scenario == .appStore && path.hasPrefix("/api/workouts/\(dayID)/exercises/"):
             let slotID = String(path.split(separator: "/").last ?? "")
             var days = plan!["days"] as! [[String: Any]]
             let dayIndex = days.firstIndex { $0["id"] as? String == dayID }!

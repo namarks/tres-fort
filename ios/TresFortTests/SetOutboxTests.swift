@@ -245,6 +245,7 @@ private final class SetPlanEditingAPIStub: PlanEditingAPI {
     var addHandler: (() async throws -> APIClient.SlotIDRow)?
     var updateHandler: (() async throws -> APIClient.SlotIDRow)?
     var deleteHandler: (() async throws -> Void)?
+    private(set) var slotEditVersions: [Int] = []
     private(set) var addCalls = 0
     private(set) var updateCalls = 0
     private(set) var deleteCalls = 0
@@ -294,8 +295,9 @@ private final class SetPlanEditingAPIStub: PlanEditingAPI {
         targetRepsMax: Int?,
         restSeconds: Int,
         targetDurationS: Int?,
-        jwt: String
+        expectedVersion: Int, jwt: String
     ) async throws -> APIClient.SlotIDRow {
+        slotEditVersions.append(expectedVersion)
         addCalls += 1
         guard let addHandler else { throw URLError(.badServerResponse) }
         return try await addHandler()
@@ -305,8 +307,9 @@ private final class SetPlanEditingAPIStub: PlanEditingAPI {
         dayID: String,
         teID: String,
         fields: [String: Any],
-        jwt: String
+        expectedVersion: Int, jwt: String
     ) async throws -> APIClient.SlotIDRow {
+        slotEditVersions.append(expectedVersion)
         updateCalls += 1
         updatedFields = fields
         guard let updateHandler else { throw URLError(.badServerResponse) }
@@ -316,8 +319,9 @@ private final class SetPlanEditingAPIStub: PlanEditingAPI {
     func deleteExerciseSlot(
         dayID: String,
         teID: String,
-        jwt: String
+        expectedVersion: Int, jwt: String
     ) async throws {
+        slotEditVersions.append(expectedVersion)
         deleteCalls += 1
         guard let deleteHandler else { throw URLError(.badServerResponse) }
         try await deleteHandler()
@@ -1601,7 +1605,7 @@ final class SetOutboxTests: XCTestCase {
             expected: ex, expectedSetNumber: 1)
 
         XCTAssertTrue(model.finished)
-        XCTAssertNotNil(model.restEndDate)
+        XCTAssertNil(model.restEndDate, "Final work exposes completion before delivery finishes")
         XCTAssertEqual(model.upNextName, "Done")
         XCTAssertEqual(model.runnerSetsDone(ex), 1)
         XCTAssertEqual(model.setOutbox.count, 1)
@@ -7471,7 +7475,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertTrue(model.loadError?.contains("Connect") == true)
     }
 
-    func testEveryCachedStateIsBrowseOnlyUntilLiveValidation() {
+    func testLegacyCachedStateIsBrowseOnlyUntilLiveValidation() {
         for includePlannedSession in [true, false] {
             let defaults = defaults()
             let ex = exercise()
@@ -11011,7 +11015,7 @@ extension SetOutboxTests {
         XCTAssertEqual(model.currentPhysicalSetNumber, 3)
     }
 
-    func testGroupSkipUsesPendingCountsAndLastRemainingMemberGetsRoundRest() async {
+    func testGroupSkipUsesPendingCountsAndLastRemainingMemberFinishesWithoutRest() async {
         let defaults = defaults(), api = SetWriteAPIStub()
         let a = exercise(targetSets: 1, groupID: "group-a", transitionRest: 0)
         let b = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 1,
@@ -11030,7 +11034,7 @@ extension SetOutboxTests {
         model.skip()
         XCTAssertEqual(model.currentExercise?.id, b.id)
         await model.logCurrentSet(expected: b, expectedSetNumber: 1)
-        XCTAssertEqual(model.restTotal, 75)
+        XCTAssertNil(model.restEndDate)
         XCTAssertTrue(model.finished)
         XCTAssertEqual(model.setOutbox.count, 2)
         XCTAssertEqual(model.sets.count, 0)
@@ -12242,7 +12246,14 @@ extension SetOutboxTests {
         let coldDate = change == "date" ? fixedDate.addingTimeInterval(86_400) : fixedDate
         let cold = SyncModel(auth: sharedAuth, setWriteAPI: SetWriteAPIStub(), defaults: coldDefaults, now: { coldDate })
         XCTAssertFalse(cold.timedActive)
-        XCTAssertNil(cold.resumableCheckpoint)
+        if change == "navigation" {
+            XCTAssertEqual(cold.resumableCheckpoint?.currentSlotID, d.id,
+                           "An explicit navigation with no deferred repair can resume offline")
+        } else {
+            if change != "date" { XCTAssertTrue(cold.needsLiveWorkoutValidation) }
+            XCTAssertNil(cold.resumableCheckpoint)
+            XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: coldDefaults)?.deferredGroupRepair, repair)
+        }
         var liveDays = days
         if change.map({ ["group", "class", "rounds"].contains($0) }) == true {
             let changedA = exercise(targetSets: change == "rounds" ? 2 : 1,
@@ -12314,6 +12325,7 @@ extension SetOutboxTests {
             api.correctionHandler = { _, _ in deletion }
             let cold = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
                                  defaults: defaults, now: { self.fixedDate })
+            XCTAssertTrue(cold.needsLiveWorkoutValidation, "A pending correction cannot certify offline progress")
             XCTAssertNil(cold.resumableCheckpoint)
             await cold.drainWorkoutWriteOutboxes()
             XCTAssertTrue(cold.setCorrections.isEmpty)
@@ -13761,5 +13773,198 @@ extension SetOutboxTests {
         await model.finishTimedSetIfDue()
         XCTAssertFalse(model.timedActive)
         XCTAssertEqual(model.setOutbox.pending.count, 2)
+    }
+}
+
+@MainActor
+extension SetOutboxTests {
+    func testCertifiedOfflineWorkoutStartsAndResumesQueuedProgressWithoutRetargeting() async throws {
+        let suite = "OfflineRunner.\(UUID().uuidString)"
+        let defaults = LocalPersistence(suiteName: suite)!, ex = exercise(targetSets: 2)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        _ = StateSyncAccountStore.activate(userID: "user-a", defaults: defaults)
+        let planned = session(status: "planned", attempt: 0)
+        StateSnapshotStore.save(state(session: planned, sets: [], exercise: ex), userID: "user-a", defaults: defaults)
+        let api = SetWriteAPIStub()
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        api.stateHandler = { _ in throw URLError(.notConnectedToInternet) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { self.fixedDate })
+        XCTAssertTrue(model.canUseOfflineWorkoutState)
+        model.startWorkout()
+        XCTAssertTrue(model.running)
+        await model.logCurrentSet(expected: ex, expectedSetNumber: 1)
+        let pending = try XCTUnwrap(model.setOutbox.pending.first)
+        XCTAssertEqual(pending.expectedAttempt, 0)
+        XCTAssertNotNil(model.restEndDate, "There is another set to perform")
+
+        let coldDefaults = LocalPersistence(suiteName: suite)!
+        let cold = SyncModel(auth: retainedAuth(defaults: coldDefaults), setWriteAPI: api,
+            defaults: coldDefaults, now: { self.fixedDate })
+        XCTAssertTrue(cold.hasResumableWorkout)
+        XCTAssertEqual(cold.setOutbox.pending.map(\.id), [pending.id])
+        cold.resumeWorkout()
+        XCTAssertTrue(cold.running)
+        XCTAssertEqual(cold.currentPhysicalSetNumber, 2)
+        await cold.logCurrentSet(expected: ex, expectedSetNumber: 2)
+        XCTAssertTrue(cold.finished)
+        XCTAssertNil(cold.restEndDate, "Final set must not hide completion behind rest")
+        XCTAssertEqual(cold.setOutbox.count, 2)
+        XCTAssertTrue(cold.setOutbox.pending.allSatisfy { $0.expectedAttempt == 0 })
+
+        cold.replaceState(with: state(session: session(status: "completed", attempt: 1), sets: [], exercise: ex))
+        XCTAssertFalse(cold.running)
+        XCTAssertTrue(cold.setOutbox.pending.allSatisfy { $0.expectedAttempt == 0 },
+            "A fresh competing attempt cannot retarget offline set UUIDs")
+    }
+
+    func testOfflineRecoveryDoesNotTreatCachedSetIDsAsAcknowledgements() throws {
+        let defaults = defaults(), ex = exercise(), s = session(attempt: 2)
+        _ = StateSyncAccountStore.activate(userID: "user-a", defaults: defaults)
+        let body = SetRequestBody(id: fixedUUID.uuidString, exercise_id: ex.exercise_id,
+            template_exercise_id: ex.id, set_index: 1, weight: 100, reps: 5,
+            is_warmup: false, logged_at: 1, duration_s: nil, is_timed: false)
+        var outbox = SetOutbox()
+        outbox.enqueue(.init(body: body, date: fixedCivilDate, workoutID: "day-a",
+            resolvedSessionID: s.id, deliveryState: .queued, failedHTTPStatus: nil, expectedAttempt: 2))
+        SetOutboxStore.save(outbox, userID: "user-a", defaults: defaults)
+        WorkoutRunnerCheckpointStore.save(.init(date: fixedCivilDate, sessionID: s.id,
+            selectedDayID: "day-a", currentSlotID: ex.id, skippedSlotIDs: [],
+            workoutStartedAtMS: 1, finished: false, sessionAttempt: 2), userID: "user-a", defaults: defaults)
+        let response = state(session: s, sets: [setLog(body: body)], exercise: ex)
+        StateSnapshotStore.save(response, userID: "user-a", defaults: defaults)
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), defaults: defaults, now: { self.fixedDate })
+        XCTAssertTrue(model.hasResumableWorkout)
+        XCTAssertEqual(model.setOutbox.count, 1)
+        model.resumeWorkout()
+        XCTAssertTrue(model.running)
+        XCTAssertEqual(model.currentPhysicalSetNumber, 2, "The same cached/queued UUID reserves one set index")
+        model.replaceState(with: response)
+        XCTAssertTrue(model.setOutbox.isEmpty, "Only live acknowledgement can clear the UUID")
+    }
+
+    func testInvalidatedCertifiedCacheCannotAuthorizeOfflineWork() {
+        let defaults = defaults(), ex = exercise(), s = session(status: "planned", attempt: 0)
+        _ = StateSyncAccountStore.activate(userID: "user-a", defaults: defaults)
+        StateSnapshotStore.save(state(session: s, sets: [], exercise: ex), userID: "user-a", defaults: defaults)
+        XCTAssertTrue(StateSnapshotStore.supportsOfflineWorkout(planID: "plan-a", planVersion: 1,
+            userID: "user-a", defaults: defaults))
+        _ = StateSnapshotStore.requireFullReload(userID: "user-a", defaults: defaults)
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), defaults: defaults, now: { self.fixedDate })
+        XCTAssertFalse(model.canUseOfflineWorkoutState)
+        model.startWorkout()
+        XCTAssertFalse(model.running)
+    }
+
+    func testFinalGroupedSetSkipsRoundRestAndKeepsBothDurableSets() async {
+        let defaults = defaults(), groupID = "00000000-0000-4000-8000-000000000099"
+        let first = exercise(id: "slot-a", exerciseID: "exercise-a", targetSets: 1, groupID: groupID)
+        let second = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 1, groupID: groupID)
+        let api = SetWriteAPIStub()
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: session(status: "planned", attempt: 0), sets: [], exercises: [first, second]))
+        model.startWorkout()
+        await model.logCurrentSet(expected: first, expectedSetNumber: 1)
+        XCTAssertNotNil(model.restEndDate, "Transition rest remains before the other member")
+        await model.logCurrentSet(expected: second, expectedSetNumber: 1)
+        XCTAssertTrue(model.finished)
+        XCTAssertNil(model.restEndDate)
+        XCTAssertEqual(model.setOutbox.count, 2)
+    }
+}
+
+@MainActor
+extension SetOutboxTests {
+    func testOfflineResumeRechecksInvalidationWithoutErasingSavedWork() {
+        let defaults = defaults(), s = session(attempt: 2), ex = exercise()
+        _ = StateSyncAccountStore.activate(userID: "user-a", defaults: defaults)
+        let checkpoint = WorkoutRunnerCheckpoint(date: fixedCivilDate, sessionID: s.id,
+            selectedDayID: "day-a", currentSlotID: ex.id, skippedSlotIDs: [],
+            workoutStartedAtMS: 1, finished: false, sessionAttempt: 2)
+        WorkoutRunnerCheckpointStore.save(checkpoint, userID: "user-a", defaults: defaults)
+        StateSnapshotStore.save(state(session: s, sets: [], exercise: ex), userID: "user-a", defaults: defaults)
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), defaults: defaults, now: { self.fixedDate })
+        XCTAssertTrue(model.hasResumableWorkout)
+        _ = StateSnapshotStore.requireFullReload(userID: "user-a", defaults: defaults)
+        model.resumeWorkout()
+        XCTAssertFalse(model.running)
+        XCTAssertNotNil(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults))
+    }
+
+    func testCachedAttemptMismatchCannotStartOverAnUnvalidatedCheckpoint() {
+        let defaults = defaults(), ex = exercise()
+        _ = StateSyncAccountStore.activate(userID: "user-a", defaults: defaults)
+        let checkpoint = WorkoutRunnerCheckpoint(date: fixedCivilDate, sessionID: "session-a",
+            selectedDayID: "day-a", currentSlotID: ex.id, skippedSlotIDs: [],
+            workoutStartedAtMS: 1, finished: false, sessionAttempt: 1)
+        WorkoutRunnerCheckpointStore.save(checkpoint, userID: "user-a", defaults: defaults)
+        StateSnapshotStore.save(state(session: session(status: "planned", attempt: 2), sets: [], exercise: ex),
+            userID: "user-a", defaults: defaults)
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), defaults: defaults, now: { self.fixedDate })
+        XCTAssertFalse(model.canUseOfflineWorkoutState)
+        model.startWorkout()
+        XCTAssertFalse(model.running)
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults), checkpoint)
+    }
+
+    func testOfflineResumeWaitsWhenQueuedWorkBelongsToAnotherAttempt() {
+        let defaults = defaults(), ex = exercise(), s = session(attempt: 2)
+        _ = StateSyncAccountStore.activate(userID: "user-a", defaults: defaults)
+        let checkpoint = WorkoutRunnerCheckpoint(date: fixedCivilDate, sessionID: s.id,
+            selectedDayID: "day-a", currentSlotID: ex.id, skippedSlotIDs: [],
+            workoutStartedAtMS: 1, finished: false, sessionAttempt: 2)
+        WorkoutRunnerCheckpointStore.save(checkpoint, userID: "user-a", defaults: defaults)
+        let body = SetRequestBody(id: fixedUUID.uuidString, exercise_id: ex.exercise_id,
+            template_exercise_id: ex.id, set_index: 1, weight: 100, reps: 5,
+            is_warmup: false, logged_at: 1, duration_s: nil, is_timed: false)
+        var outbox = SetOutbox()
+        outbox.enqueue(.init(body: body, date: fixedCivilDate, workoutID: "day-a",
+            resolvedSessionID: s.id, deliveryState: .queued, failedHTTPStatus: nil, expectedAttempt: 1))
+        SetOutboxStore.save(outbox, userID: "user-a", defaults: defaults)
+        StateSnapshotStore.save(state(session: s, sets: [], exercise: ex), userID: "user-a", defaults: defaults)
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), defaults: defaults, now: { self.fixedDate })
+        XCTAssertFalse(model.canUseOfflineWorkoutState)
+        XCTAssertFalse(model.hasResumableWorkout)
+        model.resumeWorkout()
+        XCTAssertFalse(model.running)
+        XCTAssertEqual(model.setOutbox.pending.first?.expectedAttempt, 1)
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults), checkpoint)
+    }
+
+    func testEarlierCheckpointCannotAuthorizeOfflineStartForAnActiveSessionToday() {
+        let defaults = defaults(), ex = exercise(), s = session(attempt: 2)
+        _ = StateSyncAccountStore.activate(userID: "user-a", defaults: defaults)
+        let checkpoint = WorkoutRunnerCheckpoint(date: "2020-01-01", sessionID: "earlier-session",
+            selectedDayID: "day-a", currentSlotID: ex.id, skippedSlotIDs: [],
+            workoutStartedAtMS: 1, finished: false, sessionAttempt: 2)
+        WorkoutRunnerCheckpointStore.save(checkpoint, userID: "user-a", defaults: defaults)
+        StateSnapshotStore.save(state(session: s, sets: [], exercise: ex), userID: "user-a", defaults: defaults)
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), defaults: defaults, now: { self.fixedDate })
+        XCTAssertFalse(model.canUseOfflineWorkoutState)
+        XCTAssertTrue(model.needsLiveWorkoutValidation)
+        model.startWorkout()
+        XCTAssertFalse(model.running)
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults), checkpoint)
+    }
+
+    func testSlotEditKeepsReviewedVersionAndRefreshesConflictWithoutReplaying() async {
+        let defaults = defaults(), editor = SetPlanEditingAPIStub(), api = SetWriteAPIStub()
+        let ex = exercise(), s = session(status: "planned", attempt: 0)
+        let latest = state(session: s, sets: [], workouts: [day(with: [ex])], planVersion: 2)
+        api.stateHandler = { _ in latest }
+        editor.updateHandler = { throw APIError.http(409, "plan_changed") }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            planEditingAPI: editor, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: latest)
+        let saved = await model.updateSlot(dayID: "day-a", teID: ex.id,
+            isWarmup: false, targetSets: 3, targetReps: 5, targetRepsMax: nil,
+            restSeconds: 90, targetDurationS: nil, expectedVersion: 1)
+        XCTAssertFalse(saved)
+        XCTAssertEqual(editor.slotEditVersions, [1], "Never substitute the newer in-memory plan version")
+        XCTAssertEqual(editor.updateCalls, 1, "A rejected form must be reviewed before another write")
+        XCTAssertEqual(model.plan?.version, 2)
+        XCTAssertTrue(model.loadError?.contains("Workout changed") == true)
     }
 }

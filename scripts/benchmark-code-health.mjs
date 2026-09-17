@@ -1,4 +1,5 @@
 // Synthetic CPU/serialization evidence. No D1, network, credentials or user data.
+// Baseline must precede the canonical cutover and contain workoutWire.ts.
 // Usage: node scripts/benchmark-code-health.mjs <baseline-git-ref>
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -26,32 +27,12 @@ async function load(ref) {
   const metrics = moduleURL(source('src/metrics.ts', ref));
   const context = source('src/coachingContext.ts', ref).replace("'./metrics'", JSON.stringify(metrics));
   return {
-    schema: await import(moduleURL(source('src/workoutSchema.ts', ref))),
     context: await import(moduleURL(context)),
-    wire: await import(moduleURL(source('src/workoutWire.ts', ref))),
+    wire: ref ? await import(moduleURL(source('src/workoutWire.ts', ref))) : null,
   };
 }
 const baseline = await load(baselineRef);
 const candidate = await load();
-
-// Use the same baseline SQL workload on both revisions, so extracting or
-// removing a query cannot make this comparison look artificially faster.
-const queries = new Set();
-const db = ts.createSourceFile('db.ts', source('src/db.ts', baselineRef), ts.ScriptTarget.ES2022, true);
-function visit(node) {
-  if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
-      && node.expression.name.text === 'prepare') {
-    const argument = node.arguments[0];
-    if (argument && (ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument))) {
-      queries.add(argument.text);
-    }
-  }
-  ts.forEachChild(node, visit);
-}
-visit(db);
-for (const sql of queries) for (const schema of ['legacy', 'workouts']) {
-  assert.equal(candidate.schema.workoutSchemaSQL(sql, schema), baseline.schema.workoutSchemaSQL(sql, schema));
-}
 
 const session = { id: 'synthetic-session', date: '2026-09-14', status: 'completed',
   notes: 'Member words: "keep this"\n  indented line — très fort', perceived_fatigue: 4 };
@@ -76,11 +57,12 @@ for (const rows of [[], sets.slice(0, 1), sets]) {
 }
 const payload = { workouts: [{ id: 'workout', notes: session.notes }],
   session: candidate.context.coachingSession(session, sets, catalog) };
-assert.deepEqual(candidate.wire.workoutWire(payload), baseline.wire.workoutWire(payload));
-const wire = candidate.wire.workoutWire(payload);
-const pretty = JSON.stringify(wire, null, 2);
-const compact = JSON.stringify(wire);
-assert.deepEqual(JSON.parse(compact), JSON.parse(pretty));
+const legacyWire = baseline.wire.workoutWire(payload);
+assert.deepEqual(legacyWire.workouts, payload.workouts);
+assert.deepEqual(legacyWire.session, payload.session);
+const legacyCompact = JSON.stringify(legacyWire);
+const canonicalCompact = JSON.stringify(payload);
+assert.deepEqual(JSON.parse(canonicalCompact), payload);
 
 function median(values) { return [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]; }
 function measure(before, after, iterations) {
@@ -101,12 +83,10 @@ function measure(before, after, iterations) {
 console.log(JSON.stringify({
   baseline: baselineRef, candidate: 'working tree', node: process.version,
   scope: 'Synthetic warm CPU workloads; not end-to-end Worker latency or model token counts.',
-  sql: { distinct_queries: queries.size, ...measure(
-    () => { for (const sql of queries) baseline.schema.workoutSchemaSQL(sql, 'legacy'); },
-    () => { for (const sql of queries) candidate.schema.workoutSchemaSQL(sql, 'legacy'); }, 100) },
   coaching: { catalog_entries: catalog.length, input_sets: sets.length, ...measure(
     () => baseline.context.coachingSession(session, sets, catalog),
     () => candidate.context.coachingSession(session, sets, catalog), 1000) },
-  serialization: { pretty_bytes: Buffer.byteLength(pretty), compact_bytes: Buffer.byteLength(compact) },
-  compatibility: 'All representative outputs deeply equal.',
+  serialization: { legacy_bytes: Buffer.byteLength(legacyCompact), canonical_bytes: Buffer.byteLength(canonicalCompact),
+    ...measure(() => JSON.stringify(baseline.wire.workoutWire(payload)), () => JSON.stringify(payload), 1000) },
+  compatibility: 'Canonical values deeply equal; deprecated output aliases intentionally removed.',
 }, null, 2));

@@ -99,7 +99,9 @@ docs/initiatives/    cross-plan initiatives (plans of plans)
 
 ```bash
 npm install
-npm test                              # integration tests vs real D1 (31 suites)
+npm test                              # prerequisites + all three backend shards
+npm test -- --shard=2/3                # one CI shard
+npm test -- test/mcp.test.ts           # prerequisites + one test file
 npm run typecheck
 
 npx wrangler d1 create tres-fort-db  # first time; paste id into wrangler.jsonc
@@ -111,6 +113,10 @@ npx wrangler secret put OWNER_APPLE_SUB        # lock to your Apple `sub`
 npx wrangler secret put OWNER_AUTH_PASSPHRASE  # OAuth consent gate
 npx wrangler deploy
 ```
+
+Tests require Node.js, project dependencies (`npm ci`), Bash, and `sqlite3` on PATH.
+The default command runs website, upload-script, and query-plan checks once,
+then all three Workers/D1 shards in sequence, stopping on the first failure.
 
 No secrets are committed; they live only as Cloudflare Worker secrets.
 `wrangler.jsonc` carries non-sensitive config (D1 id, bundle id).

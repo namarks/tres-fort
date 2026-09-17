@@ -4046,13 +4046,77 @@ final class SetOutboxTests: XCTestCase {
         model.replaceState(with: state(
             session: s, sets: [], workouts: [day(with: [ex])]))
 
-        await model.saveRecurringSchedule(["mon": "day-a", "tue": ""])
+        let accepted = await model.saveRecurringSchedule(["mon": "day-a", "tue": ""])
 
+        XCTAssertTrue(accepted)
         XCTAssertEqual(capturedPlanID, "plan-a")
         XCTAssertEqual(capturedVersion, 1)
         XCTAssertEqual(capturedWeek["mon"], "day-a")
         XCTAssertEqual(model.plan?.version, 2)
         XCTAssertEqual(model.plan?.schedule?.templateID(forWeekdayKey: "mon"), "day-a")
+    }
+
+    func testRejectedScheduleWriteReturnsFalseAndKeepsPersistedWeek() async {
+        let defaults = defaults()
+        let s = session(status: "planned", attempt: 0)
+        let workouts = [day(with: [exercise()])]
+        let meta = #"{"schedule":{"version":1,"week":{"mon":"day-a"}}}"#
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.scheduleHandler = { _, _, _, _ in
+            throw APIError.http(503, #"{"error":"schedule_save_failed"}"#)
+        }
+        let stateAPI = SetWriteAPIStub()
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(), routineEditingAPI: routineAPI,
+            defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], workouts: workouts, planMeta: meta))
+
+        let accepted = await model.saveRecurringSchedule(["mon": "", "tue": "day-a"])
+
+        XCTAssertFalse(accepted)
+        XCTAssertNotNil(model.loadError)
+        XCTAssertEqual(model.plan?.version, 1)
+        XCTAssertEqual(model.plan?.schedule?.templateID(forWeekdayKey: "mon"), "day-a")
+        XCTAssertNil(model.plan?.schedule?.templateID(forWeekdayKey: "tue"))
+        XCTAssertEqual(routineAPI.scheduleCalls, 1)
+        XCTAssertEqual(routineAPI.calendarCalls, 0)
+    }
+
+    func testScheduleSaveUsesDraftIdentityAndVersionEvenAfterLivePlanChanges() async {
+        let defaults = defaults()
+        let s = session(status: "planned", attempt: 3)
+        let workouts = [day(with: [exercise()])]
+        let meta = #"{"schedule":{"version":1,"week":{"fri":"day-a"}}}"#
+        let latest = state(session: s, sets: [], workouts: workouts,
+            planID: "plan-b", planVersion: 7, planMeta: meta)
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.scheduleHandler = { week, planID, version, _ in
+            XCTAssertEqual(week, ["mon": "day-a"])
+            XCTAssertEqual(planID, "plan-a", "A replaced live plan must not inherit an old draft")
+            XCTAssertEqual(version, 2, "Refreshing state must not silently advance the draft's write authority")
+            throw APIError.http(409, #"{"conflict":true,"current_version":7}"#)
+        }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { _ in latest }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(), routineEditingAPI: routineAPI,
+            defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: latest)
+
+        let accepted = await model.saveRecurringSchedule(["mon": "day-a"],
+            expectedPlanID: "plan-a", expectedVersion: 2)
+
+        XCTAssertFalse(accepted)
+        XCTAssertEqual(routineAPI.scheduleCalls, 1, "A conflict requires explicit review, not automatic retry")
+        XCTAssertEqual(stateAPI.stateCalls, 1)
+        XCTAssertEqual(model.plan?.id, "plan-b")
+        XCTAssertEqual(model.plan?.version, 7)
+        XCTAssertEqual(model.plan?.schedule?.templateID(forWeekdayKey: "fri"), "day-a")
+        XCTAssertNil(model.plan?.schedule?.templateID(forWeekdayKey: "mon"))
+        XCTAssertEqual(model.sessionsByDate[fixedCivilDate]?.attempt, 3)
+        XCTAssertEqual(routineAPI.calendarCalls, 0)
+        XCTAssertEqual(model.loadError,
+            "The routine changed elsewhere. Latest version loaded — review and try again.")
     }
 
     func testUnscheduleKeepsWorkoutAndDatedSessionAndOtherWeekdays() async {

@@ -146,7 +146,7 @@ final class UIActionJourneyTests: XCTestCase {
         XCTAssertFalse(app.buttons["LOG SET 2"].exists)
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
-        tap(app.buttons["Finish without feedback"], in: app)
+        tap(app.buttons["feedback.finishWithoutChanges"], in: app)
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
     }
 
@@ -157,7 +157,10 @@ final class UIActionJourneyTests: XCTestCase {
         tap(app.buttons["Finish workout"], in: app)
         XCTAssertTrue(app.navigationBars["Finish workout"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Skip"].exists)
-        XCTAssertTrue(app.buttons["feedback.saveAndFinish"].isHittable)
+        XCTAssertTrue(app.staticTexts["feedback.finishSummary"].exists)
+        XCTAssertTrue(app.buttons["feedback.expand"].isHittable)
+        XCTAssertFalse(app.textViews["feedback.note"].exists)
+        XCTAssertFalse(app.buttons["feedback.saveAndFinish"].exists)
         XCTAssertTrue(app.buttons["feedback.finishWithoutChanges"].isHittable)
         capture("finish")
         tap(app.buttons["Keep working"], in: app)
@@ -165,7 +168,7 @@ final class UIActionJourneyTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["WORKOUT COMPLETE"].exists)
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
-        tap(app.buttons["Finish without feedback"], in: app)
+        tap(app.buttons["feedback.finishWithoutChanges"], in: app)
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
     }
 
@@ -174,6 +177,7 @@ final class UIActionJourneyTests: XCTestCase {
         tap(app.buttons["today.startWorkout"], in: app)
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
+        tap(app.buttons["feedback.expand"], in: app)
         let note = app.textViews["feedback.note"]
         tap(note, in: app)
         note.typeText("Finished early today.")

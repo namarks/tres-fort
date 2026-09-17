@@ -174,6 +174,8 @@ final class SyncModel: ObservableObject {
     @Published private(set) var sendingCorrectionIDs: Set<String> = []
     @Published private(set) var correctionRefreshNeeded = false
     private var ownedCorrectionIDs: Set<String>
+    /// Most recent locally committed runner set; never inferred from the next slot.
+    @Published private(set) var lastRunnerSetID: String?
     @Published private(set) var setOutbox: SetOutbox
     /// Finish/discard intents share the same account boundary as set intents.
     /// An acknowledged discard remains here as a local barrier until the user
@@ -2823,6 +2825,7 @@ final class SyncModel: ObservableObject {
         guard let intent = enqueueSetIntent(
             ex, weight: weight, reps: reps, durationOverride: durationOverride, rpe: rpe
         ) else { return false }
+        lastRunnerSetID = intent.id
         runnerFocus.isExplicit = false
 
         if running {
@@ -5796,15 +5799,21 @@ final class SyncModel: ObservableObject {
         } as APIClient.DeleteWorkoutResult?
     }
 
-    func saveRecurringSchedule(_ week: [String: String]) async {
-        guard let currentPlan = plan else { return }
-        _ = await performRoutineMutation { api, jwt in
+    @discardableResult
+    func saveRecurringSchedule(
+        _ week: [String: String],
+        expectedPlanID: String? = nil,
+        expectedVersion: Int? = nil
+    ) async -> Bool {
+        guard let currentPlan = plan else { return false }
+        let result: APIClient.ScheduleWriteResult? = await performRoutineMutation { api, jwt in
             try await api.setSchedule(
                 week,
-                expectedPlanID: currentPlan.id,
-                expectedVersion: currentPlan.version,
+                expectedPlanID: expectedPlanID ?? currentPlan.id,
+                expectedVersion: expectedVersion ?? currentPlan.version,
                 jwt: jwt)
-        } as APIClient.ScheduleWriteResult?
+        }
+        return result?.ok == true
     }
 
     func unscheduleWorkout(workoutID: String) async {

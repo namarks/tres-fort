@@ -71,11 +71,6 @@ struct DayAgendaView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .toolbar {
-            if canEditDate(today: today) {
-                ToolbarItem(placement: .topBarTrailing) { dateActions }
-            }
-        }
         .sheet(item: $movingWorkout) { workout in
             MoveWorkoutDateSheet(sync: sync, workout: workout, fromDate: dateString)
         }
@@ -124,6 +119,7 @@ struct DayAgendaView: View {
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
         .accessibilityLabel("Workout date actions")
         .accessibilityHint("Change, move or remove a workout for this date only. Your weekly schedule stays the same.")
         .accessibilityIdentifier("calendar.dateActions")
@@ -133,14 +129,22 @@ struct DayAgendaView: View {
     // MARK: header
 
     private func header(_ proj: DayProjection, today: String) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(prettyDate)
-                .font(Theme.mono(11, .bold)).tracking(2)
-                .foregroundStyle(Theme.muted)
-            Text(title(proj, today: today))
-                .font(Theme.display(30))
-                .foregroundStyle(Theme.text)
-                .fixedSize(horizontal: false, vertical: true)
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(prettyDate)
+                    .font(Theme.mono(11, .bold)).tracking(2)
+                    .foregroundStyle(Theme.muted)
+                Text(title(proj, today: today))
+                    .font(Theme.display(30))
+                    .foregroundStyle(Theme.text)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if canEditDate(today: today) {
+                // Keep the full 44pt target in content: native toolbar buttons
+                // can constrain the menu's touch area below its label height.
+                dateActions.fixedSize()
+            }
         }
     }
 

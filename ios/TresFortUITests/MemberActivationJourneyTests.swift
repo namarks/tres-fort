@@ -89,6 +89,7 @@ final class MemberActivationJourneyTests: XCTestCase {
             tap(app.buttons["today.startWorkout"], in: app)
         } else {
             tap(app.buttons["today.chooseWorkout"], in: app)
+            XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
             tap(app.buttons["library.workout.synthetic-day"], in: app)
             tap(app.buttons["workoutDetails.start"], in: app)
         }
@@ -110,6 +111,8 @@ final class MemberActivationJourneyTests: XCTestCase {
         // button's hittability. A physical tap must complete the workout below.
         finish.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["today.chooseWorkout"].exists)
+        XCTAssertFalse(app.buttons["today.createWorkout"].exists)
         let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         image.name = "activation-first-completion"; image.lifetime = .keepAlways; add(image)
     }

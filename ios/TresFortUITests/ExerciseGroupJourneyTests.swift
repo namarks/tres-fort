@@ -72,7 +72,7 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         screenshot("authored-two-groups")
         app.navigationBars["Edit Warm-up and strength"].buttons["Done"].tap()
         app.navigationBars["Warm-up and strength"].buttons["Done"].tap()
-        app.navigationBars["Choose a workout"].buttons["Done"].tap()
+        app.navigationBars["Workouts"].buttons["Done"].tap()
         let start = app.buttons["today.startWorkout"]
         reveal(start, in: app)
         screenshot("group-workout-preview")

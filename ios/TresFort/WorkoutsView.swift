@@ -83,7 +83,7 @@ struct WorkoutsView: View {
                 }
             }
             .background(Theme.background)
-            .navigationTitle(onStart == nil && date == nil ? "Workouts" : "Choose a workout")
+            .navigationTitle(date == nil ? "Workouts" : "Choose a workout")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {

@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: active · Updated: 2026-09-13 · Theme: gym-floor
+Slug: workout-library · Status: active · Updated: 2026-09-17 · Theme: gym-floor
 
 ## Goal
 
@@ -183,6 +183,31 @@ No second editor, no per-session template copies, no weeks table.
     this client; do not fall back to sequential or empty-workout writes.
   - Retain exact deployed source and client distribution evidence separately.
     This UX request does not authorize deployment, TestFlight or App Review.
+- [ ] **P0.4 — Streamline observed iOS workflows**
+  - [ ] **(a) Implement and verify the observed usability fixes**
+    - Owner-approved after a hands-on simulator audit of `12dd49c`: put load
+      and reps ahead of secondary controls, retain visible circuit membership,
+      remember compact rest, and correct the exact last logged set from rest.
+    - Use one Workouts entry for browsing and creation on scheduled/completed
+      Today; retain direct creation for an empty library. Keep date-specific
+      selection explicit and Start/Schedule pinned in workout details.
+    - Weekly scheduling uses explicit Cancel/Save, protects dirty drafts,
+      submits the loaded plan identity/version, and retains failed/conflicted
+      drafts for member-reviewed retry. Early finish starts with a summary;
+      voice, notes and fatigue appear on request. Existing saved feedback and
+      recorded sets keep their existing write and recovery paths.
+    - Connections lists available sources, moves device-routing help into a
+      disclosure, and distinguishes Apple Health opt-in from Intervals status.
+      RPE semantics, new onboarding behavior and additional providers remain
+      outside this observed-fix slice.
+    - Verify synthetic simulator journeys, timer/navigation and circuit/load
+      regressions, accessibility-size rest controls, all iOS unit tests and
+      independent review. Hosted review and required CI remain merge gates.
+  - [ ] **(b) Distribute the verified client changes**
+    - Owner-authorized release is separate from repository completion. Carry
+      the exact merged source into the App Store release record; this request
+      does not authorize a Worker deployment, TestFlight upload or App Review.
+
 - [ ] **P1 — Library metadata: tags and archive**
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work
@@ -286,6 +311,8 @@ No second editor, no per-session template copies, no weeks table.
 ## Execution frontier
 
 - P0.3(b)
+- P0.4(a)
+- P0.4(b)
 - P1
 
 ## Dependencies
@@ -302,6 +329,7 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 | P0 | coordinates_with | plan:member-activation-and-adherence#P0 | Both edit the no-plan and Today entry surfaces; do not run concurrently on the same iOS files. |
 | P0.3(a) | coordinates_with | plan:member-activation-and-adherence#P0 | Both use first-workout entry and the shared exercise catalog. |
 | P0.3(b) | gated_by | external:exercise-first-release-approval | Owner authority is needed for the compatible Worker and later iOS distribution. |
+| P0.4(b) | gated_by | external:observed-ui-client-release-approval | Repository implementation approval does not authorize client distribution. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
 
 
@@ -310,7 +338,13 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@owner):** Authorize P0.3(b) when ready to release the exercise-first
+**Now (@agent):** Complete P0.4(a) simulator verification,
+exact-head independent review and CI, then merge the focused client changes.
+Manual desktop interaction is currently unavailable while the Mac is locked;
+automated simulator journeys retain screenshots for visual verification.
+P0.4(b) remains a separate owner-authorized distribution step.
+
+**Exercise-first release (@owner):** Authorize P0.3(b) when ready to release the exercise-first
 creation flow: deploy the compatible Worker before distributing its iOS build.
 There is no new migration. P1 tags/archive is the next repository slice; P2
 freestyle remains separate. This implementation request does not authorize

@@ -193,9 +193,9 @@ struct TodayView: View {
     @State private var discardTarget: WorkoutTerminalActionTarget?
     /// Rest overlay collapsed to a floating pill so the runner underneath
     /// (current exercise, jump strip, completed sets) is visible/scrollable
-    /// without ending the rest timer. Reset whenever `restEndDate` clears so
-    /// the next rest starts in the expanded state.
-    @State private var restMinimized = false
+    /// without ending the rest timer. Remember the member's presentation
+    /// preference across rests; the timer itself remains model-owned.
+    @AppStorage("restTimerMinimized") private var restMinimized = false
     /// Direct creation of a named saved workout.
     @State private var showRoutine = false
     @State private var showTrainingSetup = false
@@ -224,6 +224,9 @@ struct TodayView: View {
                     if !sync.setCorrections.isEmpty {
                         PendingCorrectionsView(sync: sync)
                     }
+                    if sync.restEndDate != nil && restMinimized {
+                        RestPill(sync: sync) { restMinimized = false }
+                    }
                     content
                     if let onLogActivity, !sync.running, !sync.finished {
                         Button(action: onLogActivity) {
@@ -239,16 +242,9 @@ struct TodayView: View {
                 // assistive actions can start/log a hidden set underneath it.
                 .disabled(fullRestOverlayVisible)
                 .accessibilityHidden(fullRestOverlayVisible)
-                if sync.restEndDate != nil {
-                    if restMinimized {
-                        RestPill(sync: sync) { restMinimized = false }
-                    } else {
-                        RestOverlay(sync: sync) { restMinimized = true }
-                    }
+                if fullRestOverlayVisible {
+                    RestOverlay(sync: sync) { restMinimized = true }
                 }
-            }
-            .onChange(of: sync.restEndDate) { _, new in
-                if new == nil { restMinimized = false }
             }
             .navigationTitle(sync.running ? "Workout" : "Today")
             .navigationBarTitleDisplayMode(.inline)
@@ -400,13 +396,9 @@ struct TodayView: View {
             VStack(spacing: 0) {
                 WorkoutDoneView(sync: sync)
                 Button { showOverridePicker = true } label: {
-                    todayRoute("Choose a workout", subtitle: "View and edit your library")
+                    todayRoute("Workouts", subtitle: "Your saved workouts")
                 }
                 .accessibilityIdentifier("today.chooseWorkout")
-                Button { showRoutine = true } label: {
-                    todayRoute("Create a workout", subtitle: "Save a workout for another day")
-                }
-                .accessibilityIdentifier("today.createWorkout")
             }
             .padding(.horizontal, 20)
         } else {
@@ -420,8 +412,15 @@ struct TodayView: View {
                             Text(workout.name).font(Theme.display(30)).foregroundStyle(Theme.text)
                             Text("\(workout.exercises.count) exercises")
                                 .font(.subheadline).foregroundStyle(Theme.muted)
-                            Button("View workout", systemImage: "chevron.right") { previewTarget = IdentifiedString(id: workout.id) }
-                                .frame(minHeight: 44).accessibilityIdentifier("today.viewWorkout")
+                            HStack {
+                                Button("View workout", systemImage: "chevron.right") { previewTarget = IdentifiedString(id: workout.id) }
+                                    .frame(minHeight: 44).accessibilityIdentifier("today.viewWorkout")
+                                Spacer()
+                                if !sync.hasResumableWorkout && !sync.blocksNewWorkoutStart {
+                                    Button("Change today") { showOverridePicker = true }
+                                        .frame(minHeight: 44).accessibilityIdentifier("today.changeWorkout")
+                                }
+                            }
                             Button(isPreparingWorkoutStart ? "Preparing…" : sync.hasResumableWorkout ? "Continue workout" : "Start workout") {
                                 prepareNewWorkout {
                                     if sync.hasResumableWorkout { sync.resumeWorkout() }
@@ -449,14 +448,9 @@ struct TodayView: View {
                             .foregroundStyle(Theme.muted)
                     }
                     Button { showOverridePicker = true } label: {
-                        todayRoute("Choose a workout", subtitle: "From your library")
+                        todayRoute("Workouts", subtitle: "Browse, create, and edit")
                     }
                     .accessibilityIdentifier("today.chooseWorkout")
-                    Button { showRoutine = true } label: {
-                        todayRoute("Create a workout", subtitle: "Build your own workout")
-                    }
-                    .accessibilityIdentifier("today.createWorkout")
-                    .disabled(sync.blocksNewWorkoutStart)
                     if let error = sync.loadError {
                         Text(error).font(.footnote).foregroundStyle(Theme.danger)
                     }
@@ -755,18 +749,18 @@ private struct RunnerView: View {
 
                         ProgressBar(exercises: sync.exercises,
                                     currentIndex: sync.exerciseIndex, sync: sync)
-                            .padding(.bottom, 22)
+                            .padding(.bottom, 12)
 
                         if let block = blocks.first(where: { $0.members.contains(where: { $0.id == ex.id }) }), block.isGroup {
-                            groupCard(block, current: ex)
-                                .padding(.bottom, 20)
+                            Text(block.title + " · Round \(min(displayedSetNumber, block.rounds)) of \(block.rounds)")
+                                .font(.subheadline).foregroundStyle(Theme.accent).padding(.bottom, 8)
                         }
 
                         // Keep the compact scoreboard at ordinary sizes; allow
                         // the full exercise name to wrap at accessibility sizes.
                         HStack(alignment: .center, spacing: 10) {
                             Text(ex.exercise_name.uppercased())
-                                .font(Theme.display(52)).foregroundStyle(Theme.text)
+                                .font(Theme.display(40)).foregroundStyle(Theme.text)
                                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                                 .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.4)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -785,46 +779,18 @@ private struct RunnerView: View {
                             meta(ex.group_id == nil ? "SET" : "ROUND", "\(min(displayedSetNumber, ex.target_sets))",
                                  complete ? "OF \(ex.target_sets) ✓" : "OF \(ex.target_sets)")
                             if !dynamicTypeSize.isAccessibilitySize { Spacer() }
-                            meta("TARGET", ex.targetLabel, "")
-                            if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                             meta(ex.group_id == nil ? "REST" : "ROUND REST",
                                  "\(ex.group_rest_seconds ?? ex.rest_seconds)s", "")
                         }
                         .padding(.top, 12)
 
-                        prescriptionContext(ex: ex)
-                        Button {
-                            if let input = sync.currentInputState {
-                                valueDraft = SetValueDraft(input: input, exercise: ex)
-                            }
-                        } label: {
-                            Text("Edit weight, \(ex.isTimed ? "duration" : "reps") & RPE")
-                                .font(Theme.mono(12, .bold)).frame(minHeight: 44).contentShape(Rectangle())
-                        }
-                        .accessibilityLabel("Edit next set for \(ex.exercise_name)")
-                        .disabled(sync.timedActive || sync.isSetEntryBlocked(ex))
-                        if let rpe = sync.rpe {
-                            Text("LOGGING RPE \(SetValueFormatter.number(rpe))")
-                                .font(Theme.mono(11)).foregroundStyle(Theme.accent)
-                        }
-                        Toggle("Timer sounds", isOn: $timerCuesEnabled)
-                            .font(Theme.mono(11)).tint(Theme.accent)
-                            .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
-                        jumpStrip(ex: ex, blocks: blocks)
-
+                        Text(ex.prescriptionLabel(in: weightUnit))
+                            .font(.subheadline).foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 8)
                         if ex.showsLoadControl {
                             loadControl(ex: ex).disabled(sync.timedActive)
                         }
-                        if ex.exercise_modality == "barbell", ex.exercise_unit == "lb" {
-                            Button {
-                                loadingTarget = sync.weight
-                                showingLoading = true
-                            } label: {
-                                Text("Plates & warm-up guide")
-                                    .font(Theme.mono(12, .bold)).frame(minHeight: 44).contentShape(Rectangle())
-                            }
-                        }
-
                         if ex.isTimed {
                             TimedSetView(sync: sync, ex: ex)
                         } else {
@@ -840,6 +806,47 @@ private struct RunnerView: View {
                         }
 
                         Button {
+                            if let input = sync.currentInputState {
+                                valueDraft = SetValueDraft(input: input, exercise: ex)
+                            }
+                        } label: {
+                            Text("Edit weight, \(ex.isTimed ? "duration" : "reps") & RPE")
+                                .font(Theme.mono(12, .bold)).frame(minHeight: 44).contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("Edit next set for \(ex.exercise_name)")
+                        .disabled(sync.timedActive || sync.isSetEntryBlocked(ex))
+                        if let rpe = sync.rpe {
+                            Text("LOGGING RPE \(SetValueFormatter.number(rpe))")
+                                .font(Theme.mono(11)).foregroundStyle(Theme.accent)
+                        }
+                        if let block = blocks.first(where: { $0.members.contains(where: { $0.id == ex.id }) }), block.isGroup {
+                            groupCard(block, current: ex).padding(.top, 16)
+                        }
+                        DisclosureGroup("Exercise options") {
+                            WeightUnitPicker(selection: Binding(
+                                get: { weightUnit }, set: { weightUnitRaw = $0.rawValue }), identifier: "runner.weight.unit")
+                                .padding(.vertical, 8)
+                            Toggle("Timer sounds", isOn: $timerCuesEnabled)
+                                .tint(Theme.accent)
+                                .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
+                            if ex.exercise_modality == "barbell", ex.exercise_unit == "lb" {
+                                Button {
+                                    loadingTarget = sync.weight
+                                    showingLoading = true
+                                } label: {
+                                    Text("Plates & warm-up guide")
+                                        .font(Theme.mono(12, .bold)).frame(minHeight: 44).contentShape(Rectangle())
+                                }
+                            }
+                        }
+                        .font(.subheadline).padding(.top, 8)
+                        .accessibilityIdentifier("runner.options")
+                        DisclosureGroup("Last session & technique") {
+                            prescriptionContext(ex: ex)
+                        }
+                        .font(.subheadline).padding(.top, 12)
+                        .accessibilityIdentifier("runner.context")
+                        Button {
                             swapTarget = sync.workoutSwapTarget
                         } label: {
                             Label("Swap exercise", systemImage: "arrow.triangle.swap")
@@ -854,6 +861,7 @@ private struct RunnerView: View {
                                 .font(.caption).foregroundStyle(Theme.muted)
                         }
 
+                        jumpStrip(ex: ex, blocks: blocks)
                         completedChips(ex: ex)
 
 
@@ -885,11 +893,6 @@ private struct RunnerView: View {
                         .padding(.top, 8)
                     }
                     .padding(20)
-                    // When a rest is running the floating RestPill sits at the
-                    // top-centre; reserve space so it never lands on the WORKOUT
-                    // timer + progress bar (#53). Invisible when the full rest
-                    // overlay is up (it covers the runner anyway).
-                    .padding(.top, sync.restEndDate != nil ? 52 : 0)
                 }
                 // A sibling keeps the action inside the runner's hit-testing
                 // bounds as the full rest screen hides and restores app chrome.
@@ -1123,9 +1126,6 @@ private struct RunnerView: View {
         let small = weightUnit == .kg ? 2.5 : 5.0
         let large = weightUnit == .kg ? 5.0 : 10.0
         return VStack(spacing: 8) {
-            WeightUnitPicker(selection: Binding(
-                get: { weightUnit }, set: { weightUnitRaw = $0.rawValue }), identifier: "runner.weight.unit")
-                .padding(.top, 16)
             stepper(
                 label: label,
                 value: value,
@@ -1436,7 +1436,7 @@ private struct RestOverlay: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var sync: SyncModel
-    /// Collapse the overlay to the floating pill (timer keeps running). The
+    /// Collapse the overlay to in-flow controls (timer keeps running). The
     /// pill caller restores it; this view never ends rest on its own —
     /// only DONE / +15 / −15 mutate the timer.
     let onMinimize: () -> Void
@@ -1498,8 +1498,10 @@ private struct RestOverlay: View {
                                     .accessibilityIdentifier("rest.upNext")
                             }
                             .padding(.top, 28)
+                            RestNextSetValues(sync: sync).padding(.top, 6)
+                            LastRunnerSetReview(sync: sync).padding(.top, 16)
 
-                            // Peek-through: collapse to a floating pill so the runner
+                            // Peek-through: collapse to in-flow controls so the runner
                             // (current exercise, jump strip, completed sets) is
                             // visible/scrollable without ending the timer. Discoverable
                             // tap target; swipe-down on the overlay also minimizes.
@@ -1516,6 +1518,7 @@ private struct RestOverlay: View {
                                 .background(Capsule().fill(Theme.surface))
                             }
                             .padding(.top, 36)
+                            .accessibilityIdentifier("rest.minimize")
                         }
                         .padding(20)
                         .frame(maxWidth: .infinity, minHeight: geometry.size.height)
@@ -1549,43 +1552,61 @@ private struct RestOverlay: View {
     }
 }
 
-// MARK: - Rest pill (minimized overlay)
+// MARK: - Compact rest controls
 
-/// Floating countdown chip shown when the rest overlay is minimized. Sits
-/// at the top safe area, hit-tests only itself (taps elsewhere pass through
-/// to the runner underneath), and re-expands the overlay on tap. The timer
-/// state lives in SyncModel — this view only renders it.
+/// In-flow rest controls leave workout inputs available and never overlap them.
 private struct RestPill: View {
     @ObservedObject var sync: SyncModel
     let onExpand: () -> Void
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
-            let remaining = sync.restEndDate
-                .map { Int(ceil($0.timeIntervalSince(ctx.date))) } ?? 0
-            let color = remaining <= 0 ? Theme.done : Theme.accent
-            Button(action: onExpand) {
-                HStack(spacing: 10) {
-                    Image(systemName: "timer")
-                        .font(.system(size: 13, weight: .bold))
-                    Text("REST")
-                        .font(Theme.mono(11, .bold)).tracking(2)
-                    Text(clock(remaining))
-                        .font(Theme.mono(15, .bold))
-                    Image(systemName: "chevron.up")
-                        .font(.system(size: 10, weight: .bold))
+        VStack(alignment: .leading, spacing: 4) {
+            TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
+                let remaining = sync.restEndDate.map { Int(ceil($0.timeIntervalSince(ctx.date))) } ?? 0
+                HStack {
+                    Button(action: onExpand) {
+                        Label("Rest " + clock(remaining), systemImage: "timer")
+                            .font(.headline).frame(minHeight: 44)
+                    }
+                    .accessibilityLabel("Expand rest timer")
+                    .accessibilityValue("\(max(0, remaining)) seconds remaining")
+                    Spacer()
+                    Button("End rest") { sync.skipRest() }
+                        .frame(minHeight: 44).accessibilityIdentifier("rest.done")
                 }
-                .foregroundStyle(color)
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .frame(minHeight: 44)
-                .background(Capsule().fill(Theme.surface))
-                .overlay(Capsule().stroke(color.opacity(0.5), lineWidth: 1))
-                .shadow(color: .black.opacity(0.45), radius: 12, y: 4)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Expand rest timer")
-            .accessibilityValue(remaining <= 0 ? "Rest complete" : "\(remaining) seconds remaining")
-            .padding(.top, 6)
+            if !sync.finished, let exercise = sync.currentExercise {
+                Text("Next · " + exercise.exercise_name).font(.subheadline)
+            }
+            RestNextSetValues(sync: sync)
+            LastRunnerSetReview(sync: sync)
+        }
+        .foregroundStyle(Theme.text).tint(Theme.accent)
+        .padding(.horizontal, 20).padding(.bottom, 8)
+        .background(Theme.surface)
+        .accessibilityIdentifier("rest.compact")
+    }
+}
+
+private struct RestNextSetValues: View {
+    @ObservedObject var sync: SyncModel
+    @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = "lb"
+
+    var body: some View {
+        if !sync.finished, let exercise = sync.currentExercise {
+            let unit = WeightUnit(rawValue: weightUnitRaw) ?? .lb
+            let storedUnit = WeightUnit(rawValue: exercise.exercise_unit) ?? .lb
+            let values = SetValueFormatter.value(
+                weight: storedUnit.convert(sync.weight, to: unit), reps: sync.reps,
+                durationSeconds: exercise.isTimed ? sync.holdDurationSeconds : nil,
+                timed: exercise.isTimed, bodyweight: exercise.isBodyweight,
+                unit: unit.rawValue, unilateral: exercise.isUnilateral)
+            Text("Set \(sync.currentPhysicalSetNumber) of \(exercise.target_sets) · " + values
+                 + (sync.weight != 0 && !exercise.isTimed ? " · \(unit.rawValue)" : "")
+                 + (exercise.isPerHand ? " each hand" : ""))
+                .font(.caption).foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("rest.nextValues")
         }
     }
 }

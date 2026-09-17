@@ -10,7 +10,7 @@ final class WorkoutLibraryJourneyTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["today.chooseWorkout"].waitForExistence(timeout: 10))
         app.buttons["today.chooseWorkout"].tap()
-        XCTAssertTrue(app.navigationBars["Choose a workout"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
         return app
     }
 
@@ -28,11 +28,11 @@ final class WorkoutLibraryJourneyTests: XCTestCase {
         app.buttons["Use on a date"].tap()
         XCTAssertTrue(app.buttons["assignLibraryWorkout"].waitForExistence(timeout: 5))
         app.buttons["assignLibraryWorkout"].tap()
-        XCTAssertTrue(app.navigationBars["Choose a workout"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.staticTexts["workoutSchedule-hotel"].label, "On demand")
         let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         image.name = "workout-library"; image.lifetime = .keepAlways; add(image)
-        app.navigationBars["Choose a workout"].buttons["Done"].tap()
+        app.navigationBars["Workouts"].buttons["Done"].tap()
         XCTAssertTrue(app.staticTexts["Hotel"].waitForExistence(timeout: 5))
     }
 
@@ -144,7 +144,7 @@ final class WorkoutLibraryJourneyTests: XCTestCase {
         let squat = app.buttons["exercisePicker.exercise.synthetic-exercise"]
         XCTAssertTrue(squat.waitForExistence(timeout: 5)); squat.tap()
         app.navigationBars["Add exercises"].buttons["Cancel"].tap()
-        XCTAssertTrue(app.navigationBars["Choose a workout"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "library.workout.")).count, 2)
         app.buttons["Actions for Gym"].tap()
         app.buttons["Edit exercises"].tap()

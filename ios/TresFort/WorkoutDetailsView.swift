@@ -27,29 +27,6 @@ struct WorkoutDetailsView: View {
                             Text("No exercises yet. Edit this workout to add exercises and targets.")
                                 .foregroundStyle(Theme.muted)
                         }
-                        if let onStart {
-                            Button(canResume ? "Continue workout" : "Start this workout") { onStart(workout.id) }
-                                .buttonStyle(WorkoutPrimaryButtonStyle())
-                                .disabled(workout.exercises.isEmpty || (sync.blocksNewWorkoutStart && !canResume)
-                                    || sync.todayIsCompleted || sync.isRoutineMutationInFlight)
-                                .accessibilityIdentifier("workoutDetails.start")
-                            Text("For today only. Your weekly schedule stays the same.")
-                                .font(.footnote).foregroundStyle(Theme.muted)
-                        } else if let date {
-                            Button(saving ? "Saving…" : "Schedule for \(date)") {
-                                saving = true
-                                Task {
-                                    let accepted = await sync.setCalendarOverride(date: date, dayID: workout.id)
-                                    saving = false
-                                    if accepted { dismiss() }
-                                }
-                            }
-                            .buttonStyle(WorkoutPrimaryButtonStyle())
-                            .disabled(saving || sync.isRoutineMutationInFlight
-                                || sync.calendarAssignmentUnavailableReason(date: date) != nil)
-                            Text("This date only. Your weekly schedule stays the same.")
-                                .font(.footnote).foregroundStyle(Theme.muted)
-                        }
                         Button("Edit \(workout.name)") { editing = true }
                             .frame(maxWidth: .infinity, minHeight: 44)
                             .accessibilityIdentifier("workoutDetails.edit")
@@ -71,6 +48,15 @@ struct WorkoutDetailsView: View {
                 }
                 .padding(20)
             }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if let workout, onStart != nil || date != nil {
+                    primaryAction(for: workout)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 12)
+                        .background(Theme.background)
+                        .overlay(alignment: .top) { Divider() }
+                }
+            }
             .background(Theme.background)
             .foregroundStyle(Theme.text)
             .navigationTitle(workout?.name ?? "Workout unavailable")
@@ -79,6 +65,36 @@ struct WorkoutDetailsView: View {
             .sheet(isPresented: $editing) { EditWorkoutSheet(sync: sync, dayID: workoutID) }
         }
         .preferredColorScheme(.dark)
+    }
+
+    @ViewBuilder
+    private func primaryAction(for workout: Workout) -> some View {
+        VStack(spacing: 8) {
+            if let onStart {
+                Button(canResume ? "Continue workout" : "Start this workout") { onStart(workout.id) }
+                    .buttonStyle(WorkoutPrimaryButtonStyle())
+                    .disabled(workout.exercises.isEmpty || (sync.blocksNewWorkoutStart && !canResume)
+                        || sync.todayIsCompleted || sync.isRoutineMutationInFlight)
+                    .accessibilityIdentifier("workoutDetails.start")
+                Text("Today only. Weekly schedule unchanged.")
+                    .font(.footnote).foregroundStyle(Theme.muted)
+            } else if let date {
+                Button(saving ? "Saving…" : "Schedule for \(date)") {
+                    saving = true
+                    Task {
+                        let accepted = await sync.setCalendarOverride(date: date, dayID: workout.id)
+                        saving = false
+                        if accepted { dismiss() }
+                    }
+                }
+                .buttonStyle(WorkoutPrimaryButtonStyle())
+                .disabled(saving || sync.isRoutineMutationInFlight
+                    || sync.calendarAssignmentUnavailableReason(date: date) != nil)
+                .accessibilityIdentifier("workoutDetails.schedule")
+                Text("This date only. Weekly schedule unchanged.")
+                    .font(.footnote).foregroundStyle(Theme.muted)
+            }
+        }
     }
 }
 
@@ -99,9 +115,17 @@ struct WeeklyScheduleView: View {
     @ObservedObject var sync: SyncModel
     @Environment(\.dismiss) private var dismiss
     @State private var draft: [String: String] = [:]
-    @State private var identity: [String] = []
+    @State private var savedDraft: [String: String] = [:]
+    @State private var loadedPlanID = ""
+    @State private var loadedVersion = 0
+    @State private var saving = false
+    @State private var confirmDiscard = false
+    @State private var scheduleChanged = false
     private let names = ["mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
                          "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"]
+
+    private var hasChanges: Bool { draft != savedDraft }
+    private var planWasReplaced: Bool { !loadedPlanID.isEmpty && sync.plan?.id != loadedPlanID }
 
     var body: some View {
         NavigationStack {
@@ -115,26 +139,76 @@ struct WeeklyScheduleView: View {
                                 Text(workout.name).tag(workout.id)
                             }
                         }
-                    }
-                    Button("Save weekly schedule") {
-                        Task { await sync.saveRecurringSchedule(draft) }
+                        .accessibilityIdentifier("weeklySchedule.\(key)")
                     }
                 } footer: {
                     Text("Repeats each week. Workouts assigned to specific dates stay in place.")
                 }
-                .disabled(sync.isRoutineMutationInFlight || sync.plan == nil)
-                if let error = sync.loadError { Text(error).foregroundStyle(Theme.danger) }
+                .disabled(saving || sync.isRoutineMutationInFlight || sync.plan == nil || planWasReplaced)
+                if planWasReplaced {
+                    Text("The active plan changed. Reopen this schedule to review it.")
+                        .foregroundStyle(Theme.danger)
+                } else if scheduleChanged {
+                    Text("The schedule changed elsewhere. Your choices are still here. Review them before saving to replace the current weekly schedule.")
+                        .foregroundStyle(Theme.danger)
+                        .accessibilityIdentifier("weeklySchedule.conflict")
+                }
+                if let error = sync.loadError {
+                    Text(error).foregroundStyle(Theme.danger)
+                        .accessibilityIdentifier("weeklySchedule.error")
+                }
             }
             .navigationTitle("Weekly schedule")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        if hasChanges { confirmDiscard = true } else { dismiss() }
+                    }
+                    .disabled(saving)
+                    .accessibilityIdentifier("weeklySchedule.cancel")
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(saving ? "Saving…" : "Save") { save() }
+                        .disabled(!hasChanges || saving || sync.isRoutineMutationInFlight
+                            || sync.plan == nil || planWasReplaced)
+                        .accessibilityIdentifier("weeklySchedule.save")
+                }
+            }
+            .alert("Discard schedule changes?", isPresented: $confirmDiscard) {
+                Button("Keep editing", role: .cancel) {}
+                Button("Discard changes", role: .destructive) { dismiss() }
+            } message: {
+                Text("Your weekly schedule has not been saved.")
+            }
             .task(id: [sync.plan?.id ?? "", String(sync.plan?.version ?? 0)]) {
-                let state = RoutineScheduleDraftPolicy.reconcile(
-                    currentDraft: draft, loadedIdentity: identity, plan: sync.plan)
-                draft = state.draft
-                identity = state.identity
+                // An external refresh must not replace an unsaved draft. Saving
+                // uses its loaded version so concurrent edits still conflict.
+                guard !saving, !hasChanges else { return }
+                savedDraft = RoutineScheduleDraftPolicy.persistedDraft(for: sync.plan)
+                draft = savedDraft
+                loadedPlanID = sync.plan?.id ?? ""
+                loadedVersion = sync.plan?.version ?? 0
             }
         }
+        .interactiveDismissDisabled(hasChanges || saving)
         .preferredColorScheme(.dark)
+    }
+
+    private func save() {
+        saving = true
+        Task {
+            let accepted = await sync.saveRecurringSchedule(draft,
+                expectedPlanID: loadedPlanID, expectedVersion: loadedVersion)
+            if accepted {
+                dismiss()
+            } else if let plan = sync.plan, plan.id == loadedPlanID {
+                let latest = RoutineScheduleDraftPolicy.persistedDraft(for: plan)
+                scheduleChanged = scheduleChanged || plan.version != loadedVersion || latest != savedDraft
+                savedDraft = latest
+                loadedVersion = plan.version
+            }
+            saving = false
+        }
     }
 }

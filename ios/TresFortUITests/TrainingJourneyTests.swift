@@ -321,10 +321,14 @@ final class TrainingJourneyTests: XCTestCase {
         app.buttons["Save"].tap()
         XCTAssertEqual(weight.value as? String, "20")
         screenshot("kilogram-weight-entry")
+        let options = app.buttons["runner.options"]
+        reveal(options, in: app); options.tap()
+        reveal(app.segmentedControls["runner.weight.unit"], in: app)
         app.segmentedControls["runner.weight.unit"].buttons["lb"].tap()
         XCTAssertEqual(weight.value as? String, "44.092")
         app.segmentedControls["runner.weight.unit"].buttons["kg"].tap()
         XCTAssertEqual(weight.value as? String, "20")
+        for _ in 0..<6 where !weight.isHittable { app.swipeDown() }
         weight.tap()
         app.buttons["Save"].tap()
         XCTAssertEqual(weight.value as? String, "20")

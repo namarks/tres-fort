@@ -23,11 +23,8 @@ private struct AccountExportDocument: FileDocument {
 }
 
 /// The "Profile" tab — one place to manage your setup: account, the AI
-/// coach connection, integrations (intervals.icu), and your groups. All
-/// connection state is server-derived (GET /api/me), so it reflects creds
-/// the app itself never set (env/MCP-seeded intervals, the claude.ai
-/// connector). Replaces the app-settings gear that used to hide in the
-/// Group tab.
+/// coach connection, integrations, and your groups. Server connection state
+/// comes from GET /api/me; Apple Health reflects the device's local opt-ins.
 struct ProfileView: View {
     @ObservedObject var groupModel: GroupModel
     @ObservedObject var auth: AuthModel
@@ -351,23 +348,7 @@ struct ProfileView: View {
             NavigationLink {
                 ConnectionsView(groupModel: groupModel, health: health)
             } label: {
-                HStack {
-                    Image(systemName: "link").foregroundStyle(Theme.muted)
-                    Text("Connections")
-                    Spacer()
-                    if groupModel.intervalsStatusUnavailable || groupModel.intervalsStatus == nil {
-                        Text("Check status").font(.footnote).foregroundStyle(.secondary)
-                    } else if groupModel.intervalsStatus?.needs_reauth == true {
-                        Text("Reconnect needed")
-                            .font(.footnote).foregroundStyle(.orange)
-                    } else if groupModel.intervalsStatus?.connected == true {
-                        Text(groupModel.intervalsStatus?.athlete_id ?? "Connected")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    } else {
-                        Text("Not connected")
-                            .font(.footnote).foregroundStyle(.secondary)
-                    }
-                }
+                ProfileConnectionsLabel(groupModel: groupModel, health: health, weight: health.weight)
             }
             .accessibilityIdentifier("profile.connections")
         }
@@ -411,6 +392,46 @@ struct ProfileView: View {
             Text(groupModel.groups.count > 1
                  ? "Tap a group to make it active — it's shown in the Group tab."
                  : "Friends-and-family groups cheer each other on in the Group tab.")
+        }
+    }
+}
+
+/// Observe both Health models: weight can be enabled independently of workouts.
+private struct ProfileConnectionsLabel: View {
+    @ObservedObject var groupModel: GroupModel
+    @ObservedObject var health: HealthKitSyncModel
+    @ObservedObject var weight: BodyWeightModel
+
+    private var healthEnabled: Bool {
+        health.isAvailable && (health.enabled || weight.enabled)
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "link").foregroundStyle(Theme.muted)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Connections")
+                VStack(alignment: .leading, spacing: 2) {
+                    if groupModel.intervalsStatusUnavailable || groupModel.intervalsStatus == nil {
+                        Text("intervals.icu · Check status")
+                    } else if groupModel.intervalsStatus?.needs_reauth == true {
+                        Text("intervals.icu · Reconnect needed").foregroundStyle(.orange)
+                    } else if groupModel.intervalsStatus?.connected == true {
+                        if groupModel.intervalsStatus?.sync_pending == true {
+                            Text("intervals.icu · Sync pending").foregroundStyle(.orange)
+                        } else {
+                            Text("intervals.icu connected")
+                        }
+                    } else if !healthEnabled {
+                        Text("Add a connection")
+                    }
+                    if healthEnabled {
+                        Text("Apple Health enabled")
+                    }
+                }
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            }
         }
     }
 }

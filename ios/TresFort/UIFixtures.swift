@@ -290,6 +290,7 @@ private struct UIFixtureServer {
     var failCreatedWorkoutRefresh = false
     var failedEnsureRequest = false
     var returnedMoveConflict = false
+    var returnedScheduleFailure = false
     var signInAttempts = 0
     var stateAttempts = 0
     var inviteAttempts = 0
@@ -698,8 +699,23 @@ private struct UIFixtureServer {
             plan = makePlan(name: body["name"] as? String ?? "My Training", workouts: false)
             failCreatedWorkoutRefresh = ensureFailure == "refresh"
             response = ["plan": ["id": "synthetic-plan", "name": plan!["name"]!, "version": 1], "created": true]
-        case ("PUT", "/api/plan/schedule") where scenario == .library:
-            let version = (plan?["version"] as? Int ?? 1) + 1
+        case ("PUT", "/api/plan/schedule") where scenario == .library || scenario == .appStore:
+            let currentVersion = plan?["version"] as? Int ?? 1
+            if let failure = ProcessInfo.processInfo.environment["TRESFORT_UI_SCHEDULE_FAILURE"], !returnedScheduleFailure {
+                returnedScheduleFailure = true
+                if failure == "conflict" {
+                    plan?["version"] = currentVersion + 1
+                    status = 409; response = ["error": "Synthetic schedule conflict", "current_version": currentVersion + 1]
+                } else {
+                    status = 503; response = ["error": "Synthetic schedule save failed"]
+                }
+                break
+            }
+            guard body["expected_plan_id"] as? String == plan?["id"] as? String,
+                  body["expected_version"] as? Int == currentVersion else {
+                status = 409; response = ["error": "Synthetic schedule conflict", "current_version": currentVersion]; break
+            }
+            let version = currentVersion + 1
             let schedule: [String: Any] = ["version": 1, "week": body["week"] ?? [:]]
             plan?["meta"] = String(data: try JSONSerialization.data(withJSONObject: ["schedule": schedule]), encoding: .utf8)
             plan?["version"] = version
@@ -924,6 +940,19 @@ private struct UIFixtureServer {
             let version = (plan?["version"] as? Int ?? 1) + 1
             plan?["version"] = version
             response = ["id": slotID]
+        case ("PATCH", let path) where scenario == .appStore && path.hasPrefix("/api/sets/")
+            && ProcessInfo.processInfo.environment["TRESFORT_UI_ACCEPT_CORRECTIONS"] == "1":
+            let setID = String(path.split(separator: "/").last ?? "")
+            guard let index = sets.firstIndex(where: { $0["id"] as? String == setID }),
+                  sets[index]["session_id"] as? String == sessionID else { throw URLError(.badServerResponse) }
+            for key in ["weight", "reps", "rpe", "duration_s"] where body.keys.contains(key) {
+                sets[index][key] = body[key]
+            }
+            if body["deleted"] as? Bool == true { sets[index]["deleted_at"] = revision }
+            sets[index]["updated_at"] = revision
+            var corrected = sets[index]
+            corrected["session"] = sessions.first { $0["id"] as? String == sessionID }
+            response = corrected
         case ("PATCH", "/api/sets/synthetic-set") where scenario == .readyToFinish && body["deleted"] as? Bool == true:
             guard let index = sets.firstIndex(where: { $0["id"] as? String == "synthetic-set" }) else { throw URLError(.badServerResponse) }
             sets[index]["deleted_at"] = revision

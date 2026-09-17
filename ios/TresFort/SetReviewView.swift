@@ -7,6 +7,7 @@ struct SetReviewList: View {
     @ObservedObject var sync: SyncModel
     let sets: [SetLog]
     let pending: [PendingSetIntent]
+    var lastSetShortcut = false
     @State private var editing: ReviewItem?
     @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = "lb"
 
@@ -73,7 +74,7 @@ struct SetReviewList: View {
                 ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout())
             layout {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(sync.exerciseName(item.exerciseID)).font(Theme.mono(11))
+                    Text((lastSetShortcut ? "Last set · " : "") + sync.exerciseName(item.exerciseID)).font(Theme.mono(11))
                     Text(SetValueFormatter.value(
                         weight: storedUnit.convert(item.values.weight, to: unit), reps: item.values.reps,
                         durationSeconds: item.values.durationSeconds, timed: timed,
@@ -88,10 +89,10 @@ struct SetReviewList: View {
                 }
                 if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                 Button { editing = item } label: {
-                    Text("Edit").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    Text(lastSetShortcut ? "Edit last set" : "Edit").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
                 }
-                .accessibilityLabel("Edit set \(item.setIndex) of \(sync.exerciseName(item.exerciseID))")
-                .accessibilityIdentifier("edit-set-\(item.id)")
+                .accessibilityLabel(lastSetShortcut ? "Edit last set of \(sync.exerciseName(item.exerciseID))" : "Edit set \(item.setIndex) of \(sync.exerciseName(item.exerciseID))")
+                .accessibilityIdentifier(lastSetShortcut ? "rest.editLastSet" : "edit-set-\(item.id)")
                 .disabled(correction != nil || sync.hasPendingTerminalIntentForCurrentWorkout)
             }
             if let correction {
@@ -131,6 +132,26 @@ struct SetReviewList: View {
         .foregroundStyle(Theme.text)
         .padding(12).background(Theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+/// Reuse the correction editor and queued-write rules for the actual committed
+/// set. The runner may already point at a different circuit member or exercise.
+struct LastRunnerSetReview: View {
+    @ObservedObject var sync: SyncModel
+
+    var body: some View {
+        if let id = sync.lastRunnerSetID {
+            let sets = sync.sets.filter {
+                $0.id == id && $0.deleted_at == nil && $0.session_id == sync.todaySession?.id
+            }
+            let pending = sync.setOutbox.pending.filter {
+                $0.id == id && $0.date == sync.todayString && sets.isEmpty
+            }
+            if !sets.isEmpty || !pending.isEmpty {
+                SetReviewList(sync: sync, sets: sets, pending: pending, lastSetShortcut: true)
+            }
+        }
     }
 }
 

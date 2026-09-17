@@ -60,7 +60,7 @@ final class PlanChangeJourneyTests: XCTestCase {
         app.buttons["planChanges.review"].tap()
         XCTAssertTrue(app.buttons["planHistory.correct"].waitForExistence(timeout: 10))
         app.buttons["planHistory.correct"].tap()
-        XCTAssertTrue(app.navigationBars["Choose a workout"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
         let workout = app.buttons["library.workout.synthetic-day"]
         for _ in 0..<5 where !workout.isHittable { app.swipeDown() }
         workout.tap()

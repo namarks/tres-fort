@@ -5,7 +5,7 @@ import SwiftUI
 struct WorkoutExercisePreview: View {
     @ObservedObject var sync: SyncModel
     let exercises: [TemplateExercise]
-    @State private var demoFor: TemplateExercise?
+    @State private var informationFor: TemplateExercise?
     @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = "lb"
     private var weightUnit: WeightUnit { WeightUnit(rawValue: weightUnitRaw) ?? .lb }
 
@@ -50,7 +50,7 @@ struct WorkoutExercisePreview: View {
                                 }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            DemoInfoButton(exerciseName: exercise.exercise_name) { demoFor = exercise }
+                            ExerciseInfoButton(exerciseName: exercise.exercise_name) { informationFor = exercise }
                         }
                         .accessibilityElement(children: .contain)
                         .accessibilityIdentifier("workoutPreview.exercise.\(exercise.id)")
@@ -64,14 +64,9 @@ struct WorkoutExercisePreview: View {
                 .accessibilityIdentifier("workoutPreview.\(block.id)")
             }
         }
-        .sheet(item: $demoFor) { exercise in
-            ExerciseDemoSheet(
-                exerciseID: exercise.exercise_id, name: exercise.exercise_name,
-                primaryMuscle: sync.catalogRow(exercise.exercise_id)?.primary_muscle ?? exercise.exercise_modality,
-                secondaryMuscles: [], modality: exercise.exercise_modality,
-                laterality: exercise.exercise_laterality ?? "bilateral",
-                loadMode: exercise.exercise_load_mode ?? "total",
-                demoSlug: exercise.exercise_demo_slug, jwt: sync.exerciseDemoJWT)
+        .sheet(item: $informationFor) { exercise in
+            ExerciseInformationSheet(sync: sync, information: ExerciseInformation(
+                prescription: exercise, catalog: sync.catalogRow(exercise.exercise_id)))
         }
     }
 }

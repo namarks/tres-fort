@@ -193,15 +193,10 @@ final class TodayNavigationJourneyTests: XCTestCase {
 
         assertGroupedPreview()
         capture("calendar-grouped-workout")
-        tap(app.buttons["Show demo for Push-Up"], in: app)
+        tap(app.buttons["Exercise information for Push-Up"], in: app)
         let demoTitle = app.staticTexts["PUSH-UP"]
         XCTAssertTrue(demoTitle.waitForExistence(timeout: 5))
-        // Drag the presented sheet's top padding. An application-wide swipe
-        // can scroll its content while leaving the modal over the agenda.
-        let sheetTop = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0))
-            .withOffset(CGVector(dx: 0, dy: demoTitle.frame.minY - 12))
-        sheetTop.press(forDuration: 0.1,
-            thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9)))
+        tap(app.buttons["exerciseInfo.done"], in: app)
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: demoTitle)
         waitForExpectations(timeout: 5)
         XCTAssertTrue(actions.waitForExistence(timeout: 5))

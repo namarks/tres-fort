@@ -66,10 +66,12 @@ struct ExerciseCatalogLabel: View {
 /// Shared lookup for creation and adding a saved prescription. Search and
 /// region selection compose; selecting an exercise never resets either.
 struct ExercisePickerList<Row: View>: View {
-    let catalog: [ExerciseCatalog]
-    let reload: () async -> Void
+    @ObservedObject var sync: SyncModel
+    private var catalog: [ExerciseCatalog] { sync.catalog }
+    @State private var informationFor: ExerciseCatalog?
     @ViewBuilder var row: (ExerciseCatalog) -> Row
     @State private var query = ""
+    @FocusState private var searchFocused: Bool
     @State private var region: ExerciseRegion = .all
     @State private var refreshing = false
 
@@ -84,6 +86,8 @@ struct ExercisePickerList<Row: View>: View {
                 TextField("Search exercises", text: $query)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .submitLabel(.search)
+                    .focused($searchFocused)
+                    .onSubmit { searchFocused = false }
                     .accessibilityIdentifier("exercisePicker.search")
                 if !query.isEmpty {
                     Button { query = "" } label: {
@@ -116,7 +120,7 @@ struct ExercisePickerList<Row: View>: View {
                         Text("Connect to load the exercise library.").foregroundStyle(Theme.muted)
                         Button(refreshing ? "Loading…" : "Reload exercises") {
                             refreshing = true
-                            Task { await reload(); refreshing = false }
+                            Task { await sync.load(); refreshing = false }
                         }.disabled(refreshing)
                     }
                 } else if matches.isEmpty {
@@ -129,7 +133,15 @@ struct ExercisePickerList<Row: View>: View {
                 } else {
                     Section("\(matches.count) exercise\(matches.count == 1 ? "" : "s")") {
                         ForEach(matches) { exercise in
-                            row(exercise).listRowBackground(Theme.surface)
+                            HStack(spacing: 8) {
+                                row(exercise).frame(maxWidth: .infinity, alignment: .leading)
+                                    .buttonStyle(.plain)
+                                ExerciseInfoButton(exerciseName: exercise.name) {
+                                    searchFocused = false
+                                    informationFor = exercise
+                                }
+                            }
+                            .listRowBackground(Theme.surface)
                         }
                     }
                 }
@@ -138,5 +150,8 @@ struct ExercisePickerList<Row: View>: View {
             .scrollContentBackground(.hidden)
         }
         .background(Theme.background).tint(Theme.accent)
+        .sheet(item: $informationFor) { exercise in
+            ExerciseInformationSheet(sync: sync, information: ExerciseInformation(exercise: exercise))
+        }
     }
 }

@@ -37,7 +37,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertTrue(start.isHittable); start.tap()
         let title = app.staticTexts["runner.exerciseTitle"]
         XCTAssertTrue(title.waitForExistence(timeout: 5))
-        let demo = app.buttons["Show demo for Barbell Squat"]
+        let demo = app.buttons["Exercise information for Barbell Squat"]
         XCTAssertTrue(demo.exists)
         XCTAssertGreaterThanOrEqual(demo.frame.minY, title.frame.maxY)
         capture("runner-accessibility-title-and-demo")

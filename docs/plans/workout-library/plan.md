@@ -222,9 +222,11 @@ No second editor, no per-session template copies, no weeks table.
 
 - [ ] **P0.5 — Connect exercise guidance and discovery**
   - Planning approved after the [September 18 SensAI inspection](../../reviews/2026-09-sensai/report.md).
-    Implementation remains unactivated. Prioritize (a), then (b), then (c)
-    within this follow-up; current release gates and execution frontiers remain.
-  - [ ] **(a) One exercise sheet for technique and history**
+    The owner activated (a) on 2026-09-18, ahead of P1 tags/archive.
+    Deliver the shared Technique / History sheet through verification, independent
+    review and merge. Slices (b)/(c) remain planned and require activation;
+    client distribution remains separately authorized.
+  - [x] **(a) One exercise sheet for technique and history**
     - Reuse the existing demo and exercise-history data in a shared Technique /
       History sheet opened from workout preview, runner and catalog pickers.
       History starts with the last comparable performance and offers the full
@@ -237,6 +239,19 @@ No second editor, no per-session template copies, no weeks table.
       exercise's own history, normal/large text and return during rest or a timed
       set. Reuse existing data paths; no new analytics store or mandatory runner
       animation is needed.
+    - Repository implementation reuses the demo, cached history cohorts and full
+      exercise-history view. Comparable summaries use completed sessions with
+      the same rep/hold mode and prescribed load; current, discarded, deleted
+      and warm-up records cannot become a prior comparable performance.
+    - Local verification passed six focused unit tests and ten UI journeys,
+      covering preview, runner, create, add, warm-up and swap entry points,
+      preserved selection/query/filter state, draft values, rest and active
+      timers. Existing creation and swap smoke journeys also passed. Largest
+      system-text journeys cover the sheet and return to selection; search
+      submission dismisses the keyboard so information remains reachable. The
+      pull request from `codex/exercise-guidance-history` carries the independent
+      current-head review and required CI evidence. Client distribution remains
+      separate from this repository slice.
   - [ ] **(b) Consistent search and filters for creation, addition and swaps**
     - Share alias-aware search and All / Upper body / Lower body / Core filters
       across create, add, warm-up and session-swap pickers. Retain search/filter
@@ -365,6 +380,7 @@ No second editor, no per-session template copies, no weeks table.
 
 - P0.3(b)
 - P0.4(b)
+- P0.5(b)
 - P1
 
 ## Dependencies
@@ -382,7 +398,8 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 | P0.3(a) | coordinates_with | plan:member-activation-and-adherence#P0 | Both use first-workout entry and the shared exercise catalog. |
 | P0.3(b) | gated_by | external:exercise-first-release-approval | Owner authority is needed for the compatible Worker and later iOS distribution. |
 | P0.4(b) | gated_by | external:observed-ui-client-release-approval | Repository implementation approval does not authorize client distribution. |
-| P0.5 | gated_by | external:owner-sensai-followup-implementation | The owner requested planning on September 18; implementation of these new slices needs activation. |
+| P0.5(b) | gated_by | external:owner-sensai-followup-implementation | Only P0.5(a) is activated; shared search/filter implementation requires its own activation. |
+| P0.5(c) | gated_by | external:owner-sensai-followup-implementation | Preview thumbnails remain planned pending activation. |
 | P0.5 | coordinates_with | plan:member-activation-and-adherence#P3 | Preview and upcoming-session entry share Today and workout detail routes. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
 
@@ -392,7 +409,14 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@owner):** Authorize P0.4(b) client distribution when ready.
+**Now (@owner):** Choose whether to activate P0.5(b), consistent search and
+filters across creation, addition and swaps, as the next SensAI follow-up.
+P0.5(a) is implemented and verified in the repository delivery; its pull request
+must pass independent current-head review and required CI before merge.
+P1 tags/archive remains the next eligible repository slice if (b) is not activated.
+
+**Client distribution (@owner):** Authorize P0.4(b) client distribution when ready,
+including the merged P0.5(a) exercise sheet in the selected source.
 [PR #209](https://github.com/namarks/tres-fort/pull/209) merged on 2026-09-17
 with exact-head review and CI, and [PR #210](https://github.com/namarks/tres-fort/pull/210)
 followed on 2026-09-18 with the accessible-control refinements from the same
@@ -403,7 +427,7 @@ outside this slice.
 
 **Exercise-first release (@owner):** Authorize P0.3(b) when ready to release the exercise-first
 creation flow: deploy the compatible Worker before distributing its iOS build.
-There is no new migration. P1 tags/archive is the next repository slice; P2
+There is no new migration. P1 tags/archive follows the delivered P0.5(a) sheet; P2
 freestyle remains separate. This implementation request does not authorize
 production deployment, TestFlight, or App Review changes.
 
@@ -469,9 +493,9 @@ the completed goal's scope.
 ## Notes / open questions
 
 - The September 18 follow-up selects P0.5(a)/(b) as the first SensAI-inspired
-  implementation candidates, followed by P0.5(c). Activating them should update
-  the exact frontier and sequencing against P1; this planning change does not
-  silently start that work or change existing release authority. The evidence
+  implementation candidates, followed by P0.5(c). The owner subsequently
+  activated only P0.5(a), ahead of P1; P0.5(b)/(c) and existing release
+  authority remain separate decisions. The evidence
   note distinguishes observed competitor behavior from untested coaching quality.
 
 - Source: owner observation (2026-09-05) that everything in the app is framed

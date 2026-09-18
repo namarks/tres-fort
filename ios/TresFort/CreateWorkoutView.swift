@@ -33,7 +33,7 @@ struct CreateWorkoutView: View {
                 WorkoutDetailsView(sync: sync, workoutID: createdID, onStart: onStart)
             } else {
                 NavigationStack {
-                    ExercisePickerList(catalog: sync.catalog, reload: { await sync.load() }) { exercise in
+                    ExercisePickerList(sync: sync) { exercise in
                         let selectedIndex = selectedExercises.firstIndex { $0.id == exercise.id }
                         Button {
                             if let selectedIndex { selectedExercises.remove(at: selectedIndex) }
@@ -49,7 +49,7 @@ struct CreateWorkoutView: View {
                                 } else {
                                     Image(systemName: "plus.circle").foregroundStyle(Theme.accent)
                                 }
-                            }.frame(minHeight: 44)
+                            }.frame(minHeight: 44).contentShape(Rectangle())
                         }
                         .disabled(selectedIndex == nil && selectedExercises.count >= 50)
                         .accessibilityAddTraits(selectedIndex == nil ? [] : [.isSelected])

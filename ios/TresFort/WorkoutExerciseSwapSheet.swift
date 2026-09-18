@@ -5,6 +5,7 @@ struct WorkoutExerciseSwapSheet: View {
     let target: WorkoutSwapTarget
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    @State private var informationFor: ExerciseCatalog?
     @State private var selection: ExerciseCatalog?
     @State private var saving = false
     @State private var error: String?
@@ -37,21 +38,27 @@ struct WorkoutExerciseSwapSheet: View {
                 .listRowBackground(Theme.surface)
                 Section(target.exercise.isTimed ? "Timed exercises" : "Exercises · matching muscle first") {
                     ForEach(choices) { exercise in
-                        Button {
-                            selection = exercise
-                            error = nil
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(exercise.name).foregroundStyle(Theme.text)
-                                    Text("\(exercise.primary_muscle) · \(exercise.modality)")
-                                        .font(.caption).foregroundStyle(Theme.muted)
+                        HStack(spacing: 8) {
+                            Button {
+                                selection = exercise
+                                error = nil
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(exercise.name).foregroundStyle(Theme.text)
+                                        Text("\(exercise.primary_muscle) · \(exercise.modality)")
+                                            .font(.caption).foregroundStyle(Theme.muted)
+                                    }
+                                    Spacer()
+                                    if selection?.id == exercise.id {
+                                        Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.accent)
+                                    }
                                 }
-                                Spacer()
-                                if selection?.id == exercise.id {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.accent)
-                                }
+                                .frame(minHeight: 44).contentShape(Rectangle())
                             }
+                            .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            ExerciseInfoButton(exerciseName: exercise.name) { informationFor = exercise }
                         }
                         .listRowBackground(Theme.surface)
                     }
@@ -91,6 +98,9 @@ struct WorkoutExerciseSwapSheet: View {
                     Button("Cancel") { dismiss() }.disabled(saving)
                 }
             }
+        }
+        .sheet(item: $informationFor) { exercise in
+            ExerciseInformationSheet(sync: sync, information: ExerciseInformation(exercise: exercise))
         }
         .interactiveDismissDisabled(saving)
         .preferredColorScheme(.dark)

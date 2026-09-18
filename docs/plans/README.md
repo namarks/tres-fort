@@ -119,8 +119,8 @@ AI coaching.
   reusable workouts as the primary object, let a member drop one onto any
   date, add tags and archive, and support a freestyle session that can be
   saved as a workout. The weekly routine becomes one optional use of the
-  library. P0.5 plans unified exercise guidance/history, consistent swap filters
-  and lightweight preview thumbnails.
+  library. P0.5(a) implements unified exercise guidance/history; client distribution
+  is separate. Consistent swap filters and preview thumbnails remain planned.
 - [Workouts and multi-session days](workouts-and-multi-session/plan.md) —
   **gated**; the `day_templates` to `workouts` rename is live server-side with
   a compatibility window, and every shipped client still writes the legacy
@@ -184,8 +184,11 @@ consider P0.5(c) preview thumbnails and member-activation P3 upcoming sessions,
 then P4 progress empty states. Evaluate BYO-coach P5(a)'s contextual request
 prototype separately before choosing P5(b)'s delivery architecture.
 
-This is planning approval. Existing plan statuses, frontiers and release gates
-remain authoritative; the new slices require implementation activation. Already
+The owner subsequently activated library P0.5(a), the shared Technique / History
+sheet, ahead of tags/archive. That repository slice is implemented and verified;
+its pull request carries independent review and CI. The other new slices remain
+planning approval only;
+canonical frontiers and release gates remain authoritative. Already
 delivered runner, swap, catalog, starter and progress capabilities are reused.
 
 ## Completed foundations

@@ -754,9 +754,9 @@ private struct RunnerView: View {
     @State private var weightDraft = WeightEntryDraft(weight: 0, storedUnit: .lb, unit: .lb)
     @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = "lb"
     private var weightUnit: WeightUnit { WeightUnit(rawValue: weightUnitRaw) ?? .lb }
-    /// Exercise demo sheet, openable mid-workout — not just from the
+    /// Exercise information sheet, openable mid-workout — not just from the
     /// pre-start preview (#54).
-    @State private var demoFor: TemplateExercise?
+    @State private var informationFor: TemplateExercise?
     @State private var swapTarget: WorkoutSwapTarget?
     private struct SetValueDraft: Identifiable {
         let id = UUID()
@@ -817,11 +817,11 @@ private struct RunnerView: View {
                                 .accessibilityIdentifier("runner.exerciseTitle")
                             HStack(spacing: 10) {
                                 if dynamicTypeSize.isAccessibilitySize {
-                                    Button("Exercise demo", systemImage: "info.circle") { demoFor = ex }
+                                    Button("Technique & history", systemImage: "info.circle") { informationFor = ex }
                                         .font(.subheadline).frame(minHeight: 44)
-                                        .accessibilityLabel("Show demo for " + ex.exercise_name)
+                                        .accessibilityLabel("Exercise information for " + ex.exercise_name)
                                 } else {
-                                    DemoInfoButton(exerciseName: ex.exercise_name) { demoFor = ex }
+                                    ExerciseInfoButton(exerciseName: ex.exercise_name) { informationFor = ex }
                                 }
                                 if ex.isWarmup { WarmupTag() }
                             }
@@ -994,19 +994,9 @@ private struct RunnerView: View {
                         sync.setRunnerValues(values, expected: draft.input.prescription)
                     })
             }
-            .sheet(item: $demoFor) { ex in
-                ExerciseDemoSheet(
-                    exerciseID: ex.exercise_id,
-                    name: ex.exercise_name,
-                    primaryMuscle: sync.catalogRow(ex.exercise_id)?.primary_muscle
-                        ?? ex.exercise_modality,
-                    secondaryMuscles: [],
-                    modality: ex.exercise_modality,
-                    laterality: ex.exercise_laterality ?? "bilateral",
-                    loadMode: ex.exercise_load_mode ?? "total",
-                    demoSlug: ex.exercise_demo_slug,
-                    jwt: auth.featureJWT
-                )
+            .sheet(item: $informationFor) { ex in
+                ExerciseInformationSheet(sync: sync, information: ExerciseInformation(
+                    prescription: ex, catalog: sync.catalogRow(ex.exercise_id)))
             }
         }
     }

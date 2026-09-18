@@ -76,7 +76,8 @@ enum UIFixtureModel {
             }
             auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
         }
-        if UIFixtureScenario.selected == .activationInvite {
+        if UIFixtureScenario.selected == .activationInvite
+            || ProcessInfo.processInfo.environment["TRESFORT_UI_PENDING_INVITE"] == "1" {
             auth.handleDeepLink(Config.apiBaseURL.appendingPathComponent("join/ABC234"))
         }
         if let scenario = UIFixtureScenario.selected, [.cachedEmpty, .cachedPlan].contains(scenario) {

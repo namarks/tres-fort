@@ -2685,3 +2685,88 @@ extension AuthModelTests {
 
 
 }
+
+
+extension AuthModelTests {
+    func testAcknowledgedStarterCompletesOnboardingAtItsExactWorkout() throws {
+        let local = defaults()
+        let tokens = MemoryTokenStore(sessionToken(for: "user-a"))
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: tokens, defaults: local)
+        auth.onboardingComplete = false
+        let flow = OnboardingFlow(auth: auth)
+        let receipt = StarterWorkoutReceipt(acknowledged: true, plan_id: "plan-a", workout_id: "starter-a", version: 2)
+        XCTAssertTrue(flow.finishWithStarter(receipt, from: flow.checkpoint))
+        XCTAssertTrue(auth.onboardingComplete)
+        XCTAssertEqual(auth.nextEntryIntent?.destination, .workout("starter-a"))
+        XCTAssertEqual(auth.nextEntryIntent?.accountID, "user-a")
+        let restored = AuthModel(api: AuthAPIStub(), tokenStore: tokens, defaults: local)
+        XCTAssertEqual(restored.nextEntryIntent, auth.nextEntryIntent)
+        // The old completion callback cannot enqueue another delivery.
+        XCTAssertFalse(flow.finishWithStarter(receipt, from: flow.checkpoint))
+        XCTAssertEqual(auth.pendingEntryIntents.count, 1)
+    }
+
+    func testStarterHandoffPreservesExplicitInviteAndCoachInOrder() {
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults())
+        auth.onboardingComplete = false
+        auth.requestEntry(.invite("ABC234"))
+        auth.requestEntry(.coach)
+        let flow = OnboardingFlow(auth: auth)
+        let receipt = StarterWorkoutReceipt(acknowledged: true, plan_id: "plan-a", workout_id: "starter-a", version: 2)
+        XCTAssertTrue(flow.finishWithStarter(receipt, from: flow.checkpoint))
+        XCTAssertEqual(auth.pendingEntryIntents.map(\.destination), [.invite("ABC234"), .coach, .workout("starter-a")])
+        for destination in [MemberEntryIntent.Destination.invite("ABC234"), .coach, .workout("starter-a")] {
+            XCTAssertEqual(auth.nextEntryIntent?.destination, destination)
+            XCTAssertTrue(auth.finishEntry(auth.nextEntryIntent!, epoch: auth.featureSessionEpoch))
+        }
+        XCTAssertNil(auth.nextEntryIntent)
+    }
+
+    func testUnconfirmedOrSkippedStarterCannotFinishOnboarding() {
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults())
+        auth.onboardingComplete = false
+        let flow = OnboardingFlow(auth: auth), checkpoint = flow.checkpoint
+        let unconfirmed = StarterWorkoutReceipt(acknowledged: false, plan_id: "plan-a", workout_id: "starter-a", version: 2)
+        XCTAssertFalse(flow.finishWithStarter(unconfirmed, from: checkpoint))
+        XCTAssertFalse(auth.onboardingComplete)
+        let receipt = StarterWorkoutReceipt(acknowledged: true, plan_id: "plan-a", workout_id: "starter-a", version: 2)
+        flow.advance(from: checkpoint)
+        XCTAssertFalse(flow.finishWithStarter(receipt, from: checkpoint))
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+    }
+
+    func testStarterHandoffWaitsForDurableNavigationAndCanRetry() {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: local)
+        auth.onboardingComplete = false
+        let flow = OnboardingFlow(auth: auth)
+        let receipt = StarterWorkoutReceipt(acknowledged: true, plan_id: "plan-a", workout_id: "starter-a", version: 2)
+        h.faults.failWrites = true
+        XCTAssertFalse(flow.finishWithStarter(receipt, from: flow.checkpoint))
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+        h.faults.failWrites = false
+        XCTAssertTrue(local.retry(userID: "user-a"))
+        auth.recoverEntryIntents()
+        XCTAssertTrue(flow.finishWithStarter(receipt, from: flow.checkpoint))
+        XCTAssertEqual(auth.nextEntryIntent?.destination, .workout("starter-a"))
+    }
+
+    func testStarterHandoffCannotCrossSameUserReauthentication() async {
+        let api = AuthAPIStub()
+        api.authResult = .success(AuthResponse(jwt: sessionToken(for: "user-a"),
+            user: UserDTO(id: "user-a", display_name: nil, email: nil)))
+        let auth = AuthModel(api: api, tokenStore: MemoryTokenStore(), defaults: defaults())
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        let flow = OnboardingFlow(auth: auth), checkpoint = flow.checkpoint
+        auth.requireReauthentication()
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        let receipt = StarterWorkoutReceipt(acknowledged: true, plan_id: "plan-a", workout_id: "starter-a", version: 2)
+        XCTAssertFalse(flow.finishWithStarter(receipt, from: checkpoint))
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+    }
+}

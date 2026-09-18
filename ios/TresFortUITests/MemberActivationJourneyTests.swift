@@ -11,9 +11,10 @@ final class MemberActivationJourneyTests: XCTestCase {
         }
     }
 
-    private func launch(_ fixture: String, retry: Bool = false, pendingSetup: Bool = false, starterUsed: Bool = false, pendingStage: String? = nil, captureLinks: Bool = false, returnWithSetupOpen: Bool = false, pendingCoachSetup: Bool = false) -> XCUIApplication {
+    private func launch(_ fixture: String, retry: Bool = false, pendingSetup: Bool = false, starterUsed: Bool = false, pendingStage: String? = nil, captureLinks: Bool = false, returnWithSetupOpen: Bool = false, pendingCoachSetup: Bool = false, pendingInvite: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = fixture
+        if pendingInvite { app.launchEnvironment["TRESFORT_UI_PENDING_INVITE"] = "1" }
         if captureLinks { app.launchEnvironment["TRESFORT_UI_CAPTURE_LINKS"] = "1" }
         if returnWithSetupOpen { app.launchEnvironment["TRESFORT_UI_RETURN_WITH_SETUP_OPEN"] = "1" }
         if pendingCoachSetup { app.launchEnvironment["TRESFORT_UI_PENDING_COACH_SETUP"] = "1" }
@@ -85,7 +86,9 @@ final class MemberActivationJourneyTests: XCTestCase {
     }
 
     private func completeFirstWorkout(_ app: XCUIApplication) {
-        if app.buttons["today.startWorkout"].exists {
+        if app.buttons["workoutDetails.start"].exists {
+            tap(app.buttons["workoutDetails.start"], in: app)
+        } else if app.buttons["today.startWorkout"].exists {
             tap(app.buttons["today.startWorkout"], in: app)
         } else {
             tap(app.buttons["today.chooseWorkout"], in: app)
@@ -145,10 +148,11 @@ final class MemberActivationJourneyTests: XCTestCase {
         for _ in 0..<8 where !starterName.exists || !starterName.isHittable { app.swipeUp() }
         XCTAssertTrue(starterName.waitForExistence(timeout: 10))
         tap(app.buttons["trainingSetup.accept"], in: app)
-        tap(app.buttons["trainingSetup.done"], in: app)
-        tap(app.buttons["I don't have a code"], in: app)
-        tap(app.buttons["Skip for now"], in: app)
-        tap(app.buttons["Enter Très Fort"], in: app)
+        XCTAssertTrue(app.navigationBars["Start moving"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["workoutDetails.start"].isHittable)
+        XCTAssertFalse(app.buttons["Join group"].exists)
+        XCTAssertFalse(app.staticTexts["Choose your first step"].exists)
+        XCTAssertFalse(app.buttons["LOG SET 1"].exists, "Saving a starter must not auto-start it")
         completeFirstWorkout(app)
         tap(app.tabBars.buttons["Profile"], in: app)
         tap(app.buttons["profile.trainingProfile"], in: app)
@@ -161,6 +165,40 @@ final class MemberActivationJourneyTests: XCTestCase {
         XCTAssertEqual(savedSwimming.value as? String, "1")
         let image = XCTAttachment(screenshot: app.screenshot())
         image.name = "multisport-training-profile"; image.lifetime = .keepAlways; add(image)
+    }
+
+    func testSavedStarterKeepsPendingInviteAndCoachBeforeWorkout() {
+        let app = launch("activation-manual", pendingInvite: true)
+        tap(app.buttons["Set up my coach"], in: app)
+        tap(app.buttons["Sign in with Apple"], in: app)
+        tap(app.buttons["Get started"], in: app)
+        tap(app.buttons["trainingSetup.next"], in: app)
+        tap(app.buttons["trainingSetup.next"], in: app)
+        tap(app.buttons["trainingSetup.next"], in: app)
+        tap(app.buttons["trainingSetup.accept"], in: app)
+        tap(app.buttons["Join Synthetic Crew"], in: app)
+        XCTAssertTrue(app.navigationBars["Connect your coach"].waitForExistence(timeout: 10))
+        tap(app.navigationBars["Connect your coach"].buttons["Done"], in: app)
+        XCTAssertTrue(app.navigationBars["Start moving"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["workoutDetails.start"].isHittable)
+        XCTAssertFalse(app.buttons["LOG SET 1"].exists)
+        completeFirstWorkout(app)
+    }
+
+    func testExistingMemberStarterOpensItsSavedWorkoutDirectly() {
+        let app = launch("activation-manual")
+        tap(app.buttons["Sign in with Apple"], in: app)
+        onboard(app)
+        tap(app.buttons["Enter Très Fort"], in: app)
+        tap(app.buttons["today.starterWorkout"], in: app)
+        tap(app.buttons["trainingSetup.next"], in: app)
+        tap(app.buttons["trainingSetup.next"], in: app)
+        tap(app.buttons["trainingSetup.next"], in: app)
+        tap(app.buttons["trainingSetup.accept"], in: app)
+        XCTAssertTrue(app.navigationBars["Start moving"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["workoutDetails.start"].isHittable)
+        XCTAssertFalse(app.buttons["LOG SET 1"].exists)
+        completeFirstWorkout(app)
     }
 
     func testExistingMemberCanFindStarterFromEmptyTodayAndSkipWithoutCreating() {
@@ -289,7 +327,7 @@ final class MemberActivationJourneyTests: XCTestCase {
         let app = launch("activation-manual")
         tap(app.buttons["Sign in with Apple"], in: app)
         onboard(app)
-        tap(app.buttons["Build my first workout"], in: app)
+        tap(app.buttons["Create a workout"], in: app)
         XCTAssertTrue(app.navigationBars["Add exercises"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.textFields["createWorkout.name"].exists)
         tap(app.buttons["exercisePicker.exercise.synthetic-exercise"], in: app)

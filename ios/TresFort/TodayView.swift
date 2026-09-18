@@ -200,6 +200,9 @@ struct TodayView: View {
     /// Direct creation of a named saved workout.
     @State private var showRoutine = false
     @State private var showTrainingSetup = false
+    @State private var trainingSetupAccountID: String?
+    @State private var trainingSetupEpoch: UInt64 = 0
+    @State private var starterWorkoutToOpen: String?
     @State private var starterAvailable: Bool?
     @State private var starterAvailabilityFailed = false
     /// The day whose workout the editor sheet is editing.
@@ -227,6 +230,11 @@ struct TodayView: View {
                     }
                     if sync.restEndDate != nil && restMinimized && !dynamicTypeSize.isAccessibilitySize {
                         RestPill(sync: sync) { restMinimized = false }
+                    }
+                    if starterWorkoutToOpen != nil && !showTrainingSetup {
+                        Button("View saved workout", action: openSavedStarter)
+                            .frame(minHeight: 44)
+                            .accessibilityIdentifier("today.openSavedStarter")
                     }
                     content
                     if let onLogActivity, !sync.running, !sync.finished {
@@ -320,14 +328,30 @@ struct TodayView: View {
             .sheet(isPresented: $showRoutine) {
                 CreateWorkoutView(sync: sync, onStart: sync.todayIsCompleted ? nil : startChosenWorkout)
             }
-            .sheet(isPresented: $showTrainingSetup) {
-                TrainingSetupView(auth: auth) {
+            .sheet(isPresented: $showTrainingSetup, onDismiss: openSavedStarter) {
+                TrainingSetupView(auth: auth, onStarterSaved: { receipt in
+                    guard receipt.acknowledged,
+                          auth.isCurrentFeatureSession(accountID: trainingSetupAccountID, epoch: trainingSetupEpoch) else { return }
+                    starterWorkoutToOpen = receipt.workout_id
+                    showTrainingSetup = false
+                }) {
                     showTrainingSetup = false
                 }
             }
         }
         .preferredColorScheme(.dark)
         .task(id: sync.canChooseStarterWorkout) { await loadStarterAvailability() }
+    }
+
+    /// Queue only after the setup sheet has dismissed. The member-entry route
+    /// refreshes the acknowledged workout before exposing its Start action.
+    private func openSavedStarter() {
+        guard let workoutID = starterWorkoutToOpen else { return }
+        guard auth.isCurrentFeatureSession(accountID: trainingSetupAccountID, epoch: trainingSetupEpoch) else {
+            starterWorkoutToOpen = nil
+            return
+        }
+        if auth.requestEntry(.workout(workoutID)) { starterWorkoutToOpen = nil }
     }
 
     /// A verified empty library alone cannot prove this account has an unused
@@ -365,7 +389,11 @@ struct TodayView: View {
                 Text(starterAvailable == false ? "YOUR NEXT WORKOUT" : "YOUR FIRST WORKOUT")
                     .font(Theme.display(28)).foregroundStyle(Theme.text)
                 if starterAvailable == true {
-                    Button("Find a starting workout") { showTrainingSetup = true }
+                    Button("Find a starting workout") {
+                        trainingSetupAccountID = auth.userID
+                        trainingSetupEpoch = auth.featureSessionEpoch
+                        showTrainingSetup = true
+                    }
                         .buttonStyle(WorkoutPrimaryButtonStyle())
                         .accessibilityIdentifier("today.starterWorkout")
                 } else if starterAvailabilityFailed {
@@ -416,14 +444,19 @@ struct TodayView: View {
                             Text(sync.hasResumableWorkout ? "In progress" : "Scheduled for today")
                                 .font(Theme.mono(12)).foregroundStyle(Theme.muted)
                             Text(workout.name).font(Theme.display(30)).foregroundStyle(Theme.text)
-                            Text("\(workout.exercises.count) exercises")
+                            Text("\(workout.exercises.count) \(workout.exercises.count == 1 ? "exercise" : "exercises")")
                                 .font(.subheadline).foregroundStyle(Theme.muted)
-                            HStack {
+                            let actionsLayout = dynamicTypeSize.isAccessibilitySize
+                                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+                                : AnyLayout(HStackLayout())
+                            actionsLayout {
                                 Button("View workout", systemImage: "chevron.right") { previewTarget = IdentifiedString(id: workout.id) }
+                                    .fixedSize(horizontal: false, vertical: true)
                                     .frame(minHeight: 44).accessibilityIdentifier("today.viewWorkout")
-                                Spacer()
+                                if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                                 if !sync.hasResumableWorkout && !sync.blocksNewWorkoutStart {
                                     Button("Change today") { showOverridePicker = true }
+                                        .fixedSize(horizontal: false, vertical: true)
                                         .frame(minHeight: 44).accessibilityIdentifier("today.changeWorkout")
                                 }
                             }
@@ -616,8 +649,10 @@ private struct WorkoutDoneView: View {
                     Text(doneTemplateTitle)
                         .font(Theme.mono(13, .bold)).tracking(1)
                         .foregroundStyle(Theme.accent)
-                    Text("\(sets.count) working sets · \(Set(sets.map(\.exercise_id)).count) exercises")
+                    let exerciseCount = Set(sets.map(\.exercise_id)).count
+                    Text("\(sets.count) working \(sets.count == 1 ? "set" : "sets") · \(exerciseCount) \(exerciseCount == 1 ? "exercise" : "exercises")")
                         .font(.subheadline).foregroundStyle(Theme.muted)
+                        .accessibilityIdentifier("today.completedSummary")
                     Button("View workout", systemImage: "chevron.right") {
                         recordDate = IdentifiedString(id: sync.todayString)
                     }
@@ -767,17 +802,29 @@ private struct RunnerView: View {
                                 .font(.subheadline).foregroundStyle(Theme.accent).padding(.bottom, 8)
                         }
 
-                        // Keep the compact scoreboard at ordinary sizes; allow
-                        // the full exercise name to wrap at accessibility sizes.
-                        HStack(alignment: .center, spacing: 10) {
+                        // Let the name use the entire line at accessibility
+                        // sizes; the demo remains a separate, labelled action.
+                        let titleLayout = dynamicTypeSize.isAccessibilitySize
+                            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+                            : AnyLayout(HStackLayout(alignment: .center, spacing: 10))
+                        titleLayout {
                             Text(ex.exercise_name.uppercased())
                                 .font(Theme.display(40)).foregroundStyle(Theme.text)
                                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                                 .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.4)
                                 .fixedSize(horizontal: false, vertical: true)
-                            DemoInfoButton(exerciseName: ex.exercise_name) { demoFor = ex }
-                            if ex.isWarmup { WarmupTag() }
-                            Spacer(minLength: 0)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .accessibilityIdentifier("runner.exerciseTitle")
+                            HStack(spacing: 10) {
+                                if dynamicTypeSize.isAccessibilitySize {
+                                    Button("Exercise demo", systemImage: "info.circle") { demoFor = ex }
+                                        .font(.subheadline).frame(minHeight: 44)
+                                        .accessibilityLabel("Show demo for " + ex.exercise_name)
+                                } else {
+                                    DemoInfoButton(exerciseName: ex.exercise_name) { demoFor = ex }
+                                }
+                                if ex.isWarmup { WarmupTag() }
+                            }
                         }
                         .frame(minHeight: 56)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1592,11 +1639,10 @@ private struct RestPill: View {
                     .accessibilityIdentifier("rest.done")
                 }
             }
-            if !sync.finished, let exercise = sync.currentExercise {
-                Text("Next · " + exercise.exercise_name).font(.subheadline)
-            }
             RestNextSetValues(sync: sync)
-            LastRunnerSetReview(sync: sync)
+            // The runner title and fixed action already name the next exercise.
+            // Keep the prior set distinct without repeating another full card.
+            LastRunnerSetReview(sync: sync, compact: true)
         }
         .foregroundStyle(Theme.text).tint(Theme.accent)
         .padding(.horizontal, horizontalPadding).padding(.bottom, 8)

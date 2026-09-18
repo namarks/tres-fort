@@ -177,13 +177,17 @@ No second editor, no per-session template copies, no weeks table.
   - Verify search/filter composition, cancellation without writes, unnamed
     creation, slot order, rejected/concurrent requests, lost responses and
     acknowledged-save/failed-refresh recovery on the real model and D1.
-- [ ] **P0.3(b) — Release exercise-first creation**
+- [x] **P0.3(b) — Release exercise-first creation**
   - After repository review and CI pass, obtain owner release authority for the
     compatible Worker, then an iOS build containing P0.3(a). No migration is
     introduced here. The server must accept `exercise_ids` before distributing
     this client; do not fall back to sequential or empty-workout writes.
   - Retain exact deployed source and client distribution evidence separately.
-    This UX request does not authorize deployment, TestFlight or App Review.
+    The later owner-authorized [build 42 release](../app-store-submission/release-42.md)
+    includes PR #198 in both Worker and client source `5df9208`. The September 18
+    readback confirms that same Worker at 100% traffic and build 42 VALID in
+    internal Testers. This reconciles the stale release checkbox; it does not
+    establish physical-device acceptance or new App Review authority.
 - [ ] **P0.4 — Streamline observed iOS workflows**
   - [x] **(a) Implement and verify the observed usability fixes**
     - Owner-approved after a hands-on simulator audit of `12dd49c`: put load
@@ -216,16 +220,20 @@ No second editor, no per-session template copies, no weeks table.
       keeps next-set values and exact last-set correction at accessibility text
       sizes. Manual physical-device and VoiceOver behavior remain unverified.
   - [ ] **(b) Distribute the verified client changes**
-    - Owner-authorized release is separate from repository completion. Carry
-      the exact merged source into the App Store release record; this request
-      does not authorize a Worker deployment, TestFlight upload or App Review.
+    - The September 18 follow-up authorizes internal TestFlight distribution
+      after P0.5(b) merges, including the recent UI fixes and P0.5(a) sheet.
+      Carry the exact reviewed source and Apple processing/beta evidence into
+      the App Store release record. Worker deployment and App Review/public
+      release remain separately authorized.
 
 - [ ] **P0.5 — Connect exercise guidance and discovery**
   - Planning approved after the [September 18 SensAI inspection](../../reviews/2026-09-sensai/report.md).
     The owner activated (a) on 2026-09-18, ahead of P1 tags/archive.
-    Deliver the shared Technique / History sheet through verification, independent
-    review and merge. Slices (b)/(c) remain planned and require activation;
-    client distribution remains separately authorized.
+    P0.5(a) merged in [PR #213](https://github.com/namarks/tres-fort/pull/213).
+    The owner activated (b) on 2026-09-18, then authorized a combined internal
+    TestFlight build with (a) and the recent UI fixes after review and merge.
+    Slice (c) remains planned and requires activation; App Review and public
+    release remain outside this approval.
   - [x] **(a) One exercise sheet for technique and history**
     - Reuse the existing demo and exercise-history data in a shared Technique /
       History sheet opened from workout preview, runner and catalog pickers.
@@ -252,7 +260,7 @@ No second editor, no per-session template copies, no weeks table.
       pull request from `codex/exercise-guidance-history` carries the independent
       current-head review and required CI evidence. Client distribution remains
       separate from this repository slice.
-  - [ ] **(b) Consistent search and filters for creation, addition and swaps**
+  - [x] **(b) Consistent search and filters for creation, addition and swaps**
     - Share alias-aware search and All / Upper body / Lower body / Core filters
       across create, add, warm-up and session-swap pickers. Retain search/filter
       state when opening details or returning from a selection review.
@@ -267,6 +275,22 @@ No second editor, no per-session template copies, no weeks table.
       session only; the library editor separately names its reusable-workout scope.
       Completed sets, group membership, replacement load, attempt/version checks
       and swap recovery retain the delivered P0.2(a) contract.
+    - The session picker now uses the same search/filter component as create,
+      add and warm-up. Selected replacement and information-sheet state survive
+      filtering; confirmation names both exercises and states the session scope.
+      Add/warm-up configuration names the saved workout. The catalog has names,
+      aliases, muscle and modality but no separate equipment taxonomy; equipment
+      remains searchable through those fields without an inferred exclusion filter.
+    - Seven search-policy tests and nine targeted UI journeys passed, including
+      alias/filter composition, empty-result reset, info and review returns,
+      cancellation without writes, and logging after a swap with prior sets and
+      plan version preserved. The four new journeys passed a repeat at normal
+      text size. Largest-system-text creation/review and complete swap journeys
+      also passed; normal and largest-text swap screenshots were inspected.
+      Local independent review found no actionable issue.
+      The pull request from `codex/consistent-exercise-discovery` carries the
+      required current-head review and full CI evidence. Distribution follows
+      P0.4(b), which is authorized but not yet completed.
   - [ ] **(c) Small exercise visuals in workout previews**
     - Reuse Très Fort's own demonstration assets as lightweight thumbnails in
       the shared workout preview. Keep exercise names, targets and circuit or
@@ -378,9 +402,7 @@ No second editor, no per-session template copies, no weeks table.
 
 ## Execution frontier
 
-- P0.3(b)
 - P0.4(b)
-- P0.5(b)
 - P1
 
 ## Dependencies
@@ -396,9 +418,6 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 | P0 | blocked_by | plan:workouts-and-multi-session#P0(a) | The selected goal establishes canonical workout terminology and compatible clients before the library UI. Production rollout and compatibility cleanup do not block this repository slice. |
 | P0 | coordinates_with | plan:member-activation-and-adherence#P0 | Both edit the no-plan and Today entry surfaces; do not run concurrently on the same iOS files. |
 | P0.3(a) | coordinates_with | plan:member-activation-and-adherence#P0 | Both use first-workout entry and the shared exercise catalog. |
-| P0.3(b) | gated_by | external:exercise-first-release-approval | Owner authority is needed for the compatible Worker and later iOS distribution. |
-| P0.4(b) | gated_by | external:observed-ui-client-release-approval | Repository implementation approval does not authorize client distribution. |
-| P0.5(b) | gated_by | external:owner-sensai-followup-implementation | Only P0.5(a) is activated; shared search/filter implementation requires its own activation. |
 | P0.5(c) | gated_by | external:owner-sensai-followup-implementation | Preview thumbnails remain planned pending activation. |
 | P0.5 | coordinates_with | plan:member-activation-and-adherence#P3 | Preview and upcoming-session entry share Today and workout detail routes. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
@@ -409,14 +428,15 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@owner):** Choose whether to activate P0.5(b), consistent search and
-filters across creation, addition and swaps, as the next SensAI follow-up.
-P0.5(a) is implemented and verified in the repository delivery; its pull request
-must pass independent current-head review and required CI before merge.
-P1 tags/archive remains the next eligible repository slice if (b) is not activated.
+**Now (@agent):** Complete current-head review and required CI for P0.5(b),
+merge, then execute the authorized combined internal TestFlight distribution
+under P0.4(b). P0.5(a) is merged in PR #213. P1 tags/archive follows the beta;
+preview thumbnails still require separate activation.
 
-**Client distribution (@owner):** Authorize P0.4(b) client distribution when ready,
-including the merged P0.5(a) exercise sheet in the selected source.
+**Client distribution (@agent):** The owner authorized a combined internal
+TestFlight build after P0.5(b) lands, including P0.4(a), P0.5(a) and P0.5(b).
+Pin the reviewed merged source, choose an available build number from Apple,
+and verify VALID processing and internal Testers assignment.
 [PR #209](https://github.com/namarks/tres-fort/pull/209) merged on 2026-09-17
 with exact-head review and CI, and [PR #210](https://github.com/namarks/tres-fort/pull/210)
 followed on 2026-09-18 with the accessible-control refinements from the same
@@ -425,11 +445,12 @@ audit. Neither source is in an installed build: TestFlight 1.0 (42) was cut from
 Store release record. The wider onboarding redesign and RPE semantics remain
 outside this slice.
 
-**Exercise-first release (@owner):** Authorize P0.3(b) when ready to release the exercise-first
-creation flow: deploy the compatible Worker before distributing its iOS build.
-There is no new migration. P1 tags/archive follows the delivered P0.5(a) sheet; P2
-freestyle remains separate. This implementation request does not authorize
-production deployment, TestFlight, or App Review changes.
+**Exercise-first release:** P0.3(b) shipped in the owner-authorized build 42
+release. The September 18 production readback and source ancestry confirm its
+compatible Worker and internal client distribution. No Worker, migration,
+runtime configuration or backend dependency differs between that release and
+this client slice, so the combined beta needs no production deployment.
+App Review changes remain separate.
 
 P0.3(a) implementation and local verification are complete. All 1,101 backend
 tests passed across the repository's three CI shards (78 files); the focused
@@ -494,8 +515,9 @@ the completed goal's scope.
 
 - The September 18 follow-up selects P0.5(a)/(b) as the first SensAI-inspired
   implementation candidates, followed by P0.5(c). The owner subsequently
-  activated only P0.5(a), ahead of P1; P0.5(b)/(c) and existing release
-  authority remain separate decisions. The evidence
+  activated P0.5(a), then P0.5(b), ahead of P1, and authorized their combined
+  internal TestFlight distribution with the recent UI fixes. P0.5(c), production
+  deployment and App Review/public-release authority remain separate decisions. The evidence
   note distinguishes observed competitor behavior from untested coaching quality.
 
 - Source: owner observation (2026-09-05) that everything in the app is framed

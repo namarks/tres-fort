@@ -672,7 +672,10 @@ private struct UIFixtureServer {
             }
         case ("GET", "/api/exercises") where scenario == .workoutSwap:
             response = [["id": "synthetic-exercise", "name": "Barbell Squat", "modality": "barbell", "unit": "lb", "primary_muscle": "legs"],
-                        ["id": "synthetic-replacement", "name": "Dumbbell Goblet Squat", "modality": "dumbbell", "unit": "lb", "primary_muscle": "legs"]]
+                        ["id": "synthetic-replacement", "name": "Dumbbell Goblet Squat", "modality": "dumbbell", "unit": "lb", "primary_muscle": "legs", "aliases": "[\"front loaded squat\"]"],
+                        ["id": "synthetic-upper", "name": "Arnold Press", "modality": "dumbbell", "unit": "lb", "primary_muscle": "shoulders", "aliases": "[\"rotating press\"]"],
+                        ["id": "synthetic-hold", "name": "Goblet Hold", "modality": "timed", "unit": "lb", "primary_muscle": "legs", "aliases": "[\"front loaded hold\"]"],
+                        ["id": "synthetic-cardio", "name": "Bike", "modality": "cardio", "unit": "lb", "primary_muscle": "legs"]]
         case ("GET", "/api/exercises"):
             if let fixture = workoutSummaryFixture { response = fixture["catalog"]!; break }
             if let fixture = coachingFixture { response = fixture["catalog"]!; break }

@@ -655,6 +655,11 @@ private struct ConfigureExerciseView: View {
             Section {
                 Toggle("Warm-up", isOn: $isWarmup)
                     .tint(Theme.accent)
+            } header: {
+                if let workout = sync.plan?.workouts.first(where: { $0.id == dayID }) {
+                    Text("Saved workout · \(workout.name)")
+                        .textCase(nil).accessibilityIdentifier("exercisePicker.savedWorkout")
+                }
             } footer: {
                 Text("Warm-up sets stay out of your working-set totals and session intensity.")
             }

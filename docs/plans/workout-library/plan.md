@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: active · Updated: 2026-09-17 · Theme: gym-floor
+Slug: workout-library · Status: active · Updated: 2026-09-18 · Theme: gym-floor
 
 ## Goal
 
@@ -8,7 +8,8 @@ Let a member keep a library of reusable workouts that exist independently of
 any weekly routine, drop one onto any date (today or future) in one gesture,
 and run a genuinely unplanned session when life or travel breaks the pattern.
 The recurring weekly schedule becomes one optional way to use the library, not
-the frame every workout must fit into.
+the frame every workout must fit into. Exercise guidance, history and replacement
+discovery should remain close to the workout without interrupting set entry.
 
 ## Library model
 
@@ -216,6 +217,47 @@ No second editor, no per-session template copies, no weeks table.
       the exact merged source into the App Store release record; this request
       does not authorize a Worker deployment, TestFlight upload or App Review.
 
+- [ ] **P0.5 — Connect exercise guidance and discovery**
+  - Planning approved after the [September 18 SensAI inspection](../../reviews/2026-09-sensai/report.md).
+    Implementation remains unactivated. Prioritize (a), then (b), then (c)
+    within this follow-up; current release gates and execution frontiers remain.
+  - [ ] **(a) One exercise sheet for technique and history**
+    - Reuse the existing demo and exercise-history data in a shared Technique /
+      History sheet opened from workout preview, runner and catalog pickers.
+      History starts with the last comparable performance and offers the full
+      history; empty, unavailable and loading states stay distinct.
+    - Preserve per-hand/per-side explanations, signed assistance and rep/timed
+      semantics. Opening/dismissing the sheet must retain the current exercise,
+      set, unsaved input, rest deadline and active timed-set state. Picker info
+      must not accidentally select or swap an exercise.
+    - Verify unfamiliar and familiar exercises from all entry points, a swapped
+      exercise's own history, normal/large text and return during rest or a timed
+      set. Reuse existing data paths; no new analytics store or mandatory runner
+      animation is needed.
+  - [ ] **(b) Consistent search and filters for creation, addition and swaps**
+    - Share alias-aware search and All / Upper body / Lower body / Core filters
+      across create, add, warm-up and session-swap pickers. Retain search/filter
+      state when opening details or returning from a selection review.
+    - Keep matching-muscle ordering and the swap path's rep/timed compatibility
+      restriction. Offer equipment filtering only after checking catalog
+      coverage and defining unknown/mixed-equipment behavior; never silently
+      hide unknown entries. Force/difficulty filters require a separate trusted
+      metadata contract and are outside this slice.
+    - Verify finding an unavailable-machine replacement without its exact name,
+      composing alias search with filters, clearing an empty result and canceling
+      without writes. Confirmation names the affected exercise and says this
+      session only; the library editor separately names its reusable-workout scope.
+      Completed sets, group membership, replacement load, attempt/version checks
+      and swap recovery retain the delivered P0.2(a) contract.
+  - [ ] **(c) Small exercise visuals in workout previews**
+    - Reuse Très Fort's own demonstration assets as lightweight thumbnails in
+      the shared workout preview. Keep exercise names, targets and circuit or
+      superset membership readable; missing art gets a stable fallback.
+    - Verify recognition and equipment discovery with unfamiliar movements,
+      long names, large text, Reduce Motion and a long grouped workout. Keep
+      scrolling responsive and preserve text accessibility; visuals must not
+      push the prescription or primary workout action out of reach.
+
 - [ ] **P1 — Library metadata: tags and archive**
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work
@@ -337,6 +379,8 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 | P0.3(a) | coordinates_with | plan:member-activation-and-adherence#P0 | Both use first-workout entry and the shared exercise catalog. |
 | P0.3(b) | gated_by | external:exercise-first-release-approval | Owner authority is needed for the compatible Worker and later iOS distribution. |
 | P0.4(b) | gated_by | external:observed-ui-client-release-approval | Repository implementation approval does not authorize client distribution. |
+| P0.5 | gated_by | external:owner-sensai-followup-implementation | The owner requested planning on September 18; implementation of these new slices needs activation. |
+| P0.5 | coordinates_with | plan:member-activation-and-adherence#P3 | Preview and upcoming-session entry share Today and workout detail routes. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
 
 
@@ -417,6 +461,12 @@ freestyle (P2), and multiple sessions per date remain unimplemented and outside
 the completed goal's scope.
 
 ## Notes / open questions
+
+- The September 18 follow-up selects P0.5(a)/(b) as the first SensAI-inspired
+  implementation candidates, followed by P0.5(c). Activating them should update
+  the exact frontier and sequencing against P1; this planning change does not
+  silently start that work or change existing release authority. The evidence
+  note distinguishes observed competitor behavior from untested coaching quality.
 
 - Source: owner observation (2026-09-05) that everything in the app is framed
   around the routine or block day, which is too rigid for travel and ad-hoc

@@ -102,19 +102,25 @@ provides private feedback, visible/correctable plan changes and accurate trainin
 context. [Physical iPhone feedback verification](completed/coaching-feedback-loop/device-verification.md)
 remains a separately authorized release follow-up.
 
+- [Bring your own AI coach](bring-your-own-ai-coach/plan.md) — **gated**;
+  complete real-provider verification and consumer linking. P5 plans contextual
+  workout/exercise requests, with delivery chosen after a measured prototype.
+
 ### Gym floor (`gym-floor`)
 
 Let a person create and execute a workout confidently, whether or not they use
 AI coaching.
 
 - [Member activation and adherence](member-activation-and-adherence/plan.md) —
-  **planned**; make onboarding, coach connection, invite continuation, and
-  lightweight reminders coherent.
+  **paused**; first-workout entry and starters are delivered. Reminders/widgets,
+  compact upcoming sessions and actionable progress empty states remain future
+  slices.
 - [Workout library](workout-library/plan.md) — **active**; present
   reusable workouts as the primary object, let a member drop one onto any
   date, add tags and archive, and support a freestyle session that can be
   saved as a workout. The weekly routine becomes one optional use of the
-  library.
+  library. P0.5 plans unified exercise guidance/history, consistent swap filters
+  and lightweight preview thumbnails.
 - [Workouts and multi-session days](workouts-and-multi-session/plan.md) —
   **active**; rename `day_templates` to `workouts` end to end with a
   compatibility window, then allow an ordered list of sessions per date so a
@@ -158,6 +164,19 @@ and repeatable iOS checks complete that foundation. Library P0 remains a small
 independent presentation improvement; storage/wire rename, multiple sessions
 and engagement features follow their existing decisions and demonstrated need.
 This order does not activate planned work or replace canonical phase readiness.
+
+### SensAI follow-up ordering
+
+The [September 18 hands-on comparison](../reviews/2026-09-sensai/report.md)
+selects six improvements within existing plans. Start with library P0.5(a)/(b):
+shared exercise technique/history and consistent exercise/swap filtering. Next
+consider P0.5(c) preview thumbnails and member-activation P3 upcoming sessions,
+then P4 progress empty states. Evaluate BYO-coach P5(a)'s contextual request
+prototype separately before choosing P5(b)'s delivery architecture.
+
+This is planning approval. Existing plan statuses, frontiers and release gates
+remain authoritative; the new slices require implementation activation. Already
+delivered runner, swap, catalog, starter and progress capabilities are reused.
 
 ## Completed foundations
 

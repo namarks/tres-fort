@@ -1,6 +1,6 @@
 # Bring Your Own AI Coach
 
-Slug: bring-your-own-ai-coach · Status: gated · Updated: 2026-09-14 · Theme: coaching
+Slug: bring-your-own-ai-coach · Status: gated · Updated: 2026-09-18 · Theme: coaching
 
 ## Goal
 
@@ -89,12 +89,63 @@ Repository delivery and actual provider connection/release evidence remain disti
     that URL into the app and verify install, approval, coaching read/write,
     iOS sync and disconnect on iPhone. No placeholder install URL is shipped.
 
+- [ ] **P5 — Request a coaching change from its workout context**
+  - [ ] **(a) Prototype the request, proposal and return journey**
+    - Planning approved after the [SensAI inspection](../../reviews/2026-09-sensai/report.md).
+      Prototype Adjust today from the workout and a coach request from a specific
+      exercise; keep the deterministic Swap exercise path directly available.
+      Use a few concrete jobs: 20 minutes available, equipment busy, explain this
+      exercise, and an easier session before a ride. Preserve the selected
+      workout/exercise identity so the member need not re-explain it.
+    - Start with a synthetic prototype and the supported external-coach handoff
+      where available. Measure navigation steps, re-entry of context, mistakes
+      and lost context on the same tasks; report unsupported handoff or return
+      behavior honestly. Do not imply external coaching is equivalent to an
+      embedded assistant or that a mobile Codex install URL already exists.
+    - Show request → concrete proposed exercises/sets/loads with reasons →
+      explicit Apply/Cancel and return. Clearly distinguish today's session from
+      the saved workout/recurring routine before any mutation. A proposal is not
+      a write, and the prototype must not send a live write request.
+  - [ ] **(b) Deliver the selected contextual coaching path**
+    - After prototype evaluation and an explicit delivery decision, implement
+      only the selected path. Before writes, define the proposal payload, scope,
+      account, plan ID/version, session ID/attempt and relevant swap revision.
+      Read-only explanations can use the current coach brief without new AI
+      execution in the Worker.
+    - Resolve the one-session adjustment contract before labeling an action
+      Adjust today: the existing MCP `adjust_today` changes reusable template
+      targets (and without a workout selector may affect the whole plan).
+      It must not masquerade as a session-only change. Reuse the delivered
+      session-swap contract for supported swaps; broader one-session set/target
+      changes require an explicit shared REST/MCP service contract, not a
+      client-only workout copy or a silently edited recurring prescription.
+    - Require reviewed proposal identity/version at Apply, atomic writes and
+      audit, completed-set preservation, compatible group/rep/timed semantics,
+      uncertain-response recovery and safe stale-proposal rejection. Cancel or
+      rejected requests make no change; a deliberate recurring edit uses the
+      existing plan-version/snapshot path. Session edits retain attempt-scoped
+      recovery and never rewrite historical sets.
+    - Verify a shorter-session request through proposal, explicit application
+      and return to the intended workout, plus equipment replacement and an
+      explanation requiring no write. Cover completed work, concurrent plan or
+      swap changes, account switches, retries and cancellation. Real-provider
+      and physical-device handoff evidence stays separate from synthetic tests.
+      If a supported provider cannot honor review-before-write, keep that action
+      read-only until a suitable delivery path exists.
+    - Embedded coaching remains a separate owner decision covering provider,
+      model, health-data disclosure/retention, per-user usage limits, measured
+      cost and any paid entitlement. This plan adds no API key storage, token
+      spend, background inference, model selection or billing authorization.
+
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P2 | gated_by | external:owner-byo-coach-device-verification | Production and internal TestFlight release are complete; the real-provider connection requires the owner's signed-in iPhone and AI account. |
 | P4 | gated_by | external:owner-coach-plugin-publication | Publisher identity, public listing and provider submission require owner authority; provider approval must produce a real install URL. |
+| P5(a) | gated_by | external:owner-sensai-followup-implementation | September 18 approval adds this prototype to the plan; it does not activate implementation. |
+| P5(b) | gated_by | external:owner-contextual-coach-delivery-choice | Choose the supported handoff or separately scoped embedded service after reviewing evidence, write contracts and cost/privacy implications. |
+| P5 | coordinates_with | plan:workout-library#P0.5 | Exercise sheets, swap discovery and contextual coach entry share workout surfaces. |
 
 ## Next step
 
@@ -120,6 +171,12 @@ Codex install still does. P3 landed in [PR #191](https://github.com/namarks/tres
 P3.1 landed in [PR #207](https://github.com/namarks/tres-fort/pull/207).
 
 ## Notes / open questions
+
+- P5 is a planned follow-up, separate from P2 device verification and P4 plugin
+  publication. The highest-priority non-AI work is library P0.5(a)/(b); evaluate
+  the contextual prototype separately before committing to an in-app AI service.
+  SensAI's visible request forms do not establish its model, inference location,
+  cost, response quality or approval/rollback behavior.
 
 - Approved 2026-09-12: conversations remain in users' external AI apps. A future
   paid package may bundle in-app coaching and API usage if costs justify it.

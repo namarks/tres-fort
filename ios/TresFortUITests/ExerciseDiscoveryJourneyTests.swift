@@ -16,7 +16,7 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
 
     private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
         _ = element.waitForExistence(timeout: 2)
-        for _ in 0..<20 where !element.isHittable {
+        for _ in 0..<20 {
             let results = app.collectionViews["exercisePicker.results"]
             let surface = results.exists ? results : (app.scrollViews.firstMatch.exists ? app.scrollViews.firstMatch : app)
             // A List's accessibility frame includes its bottom safe-area inset.
@@ -24,15 +24,19 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
             let selection = app.staticTexts["runner.swap-selection"]
             let confirm = app.buttons["runner.confirm-swap"]
             let bottom = selection.exists ? selection.frame.minY : (confirm.exists ? confirm.frame.minY : surface.frame.maxY)
-            let top = surface.frame.minY
-            let height = min(surface.frame.maxY, bottom) - top
-            let down = element.exists && element.frame.midY < top + height / 2
+            let top = max(surface.frame.minY, app.navigationBars.firstMatch.frame.maxY) + 8
+            let visibleBottom = min(surface.frame.maxY, bottom) - 12
+            let height = visibleBottom - top
+            if element.exists && element.isHittable,
+               element.frame.minY >= top, element.frame.maxY <= visibleBottom { return }
+            let down = element.exists && element.frame.minY < top
             let origin = app.coordinate(withNormalizedOffset: .zero)
             let start = origin.withOffset(CGVector(dx: surface.frame.midX, dy: top + height * (down ? 0.3 : 0.8)))
             let end = origin.withOffset(CGVector(dx: surface.frame.midX, dy: top + height * (down ? 0.8 : 0.3)))
-            start.press(forDuration: 0.1, thenDragTo: end)
+            start.press(forDuration: 0.1, thenDragTo: end,
+                        withVelocity: .slow, thenHoldForDuration: 0.5)
         }
-        XCTAssertTrue(element.isHittable)
+        XCTFail("Control did not become fully visible above pinned actions")
     }
 
     private func tap(_ element: XCUIElement, in app: XCUIApplication) {
@@ -113,7 +117,7 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
         capture("swap-filtered-confirmation")
         app.buttons["runner.confirm-swap"].tap()
         XCTAssertTrue(app.staticTexts["DUMBBELL GOBLET SQUAT"].waitForExistence(timeout: 5))
-        tap(app.buttons["LOG SET 2"], in: app)
+        app.buttons["LOG SET 2"].tap()
         expectation(for: NSPredicate(format: "value == %@", "original:1;replacement:1;plan:1"),
                     evaluatedWith: app.staticTexts["fixture.scenario"])
         waitForExpectations(timeout: 5)

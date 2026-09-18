@@ -8,7 +8,8 @@ Help a newly signed-in or invited member reach a real first workout and return
 for the next one without requiring Claude. Done means entry intent survives
 authentication, the no-plan state offers honest manual and coach-assisted
 paths, and lightweight schedule-based reminders bring the member back to the
-correct workout.
+correct workout. A member can also see the next few sessions and understand
+how to populate an empty progress view without needing another setup flow.
 
 ## Phases
 
@@ -62,11 +63,52 @@ correct workout.
       layouts. Consistency is the guiding message; starters do not prescribe or
       schedule endurance sessions from activity selections alone.
 
+- [ ] **P3 — See the next few sessions in context**
+  - Planning approved from the [SensAI inspection](../../reviews/2026-09-sensai/report.md);
+    this paused plan is not reactivated. Prototype a compact next-few-sessions
+    section in Today with a route to Calendar, preserving Start/Continue as the
+    primary action. Adopt it only if task walkthroughs show easier orientation
+    without obscuring today's workout or duplicating the full calendar.
+  - Reuse the existing calendar projection and available planned endurance
+    context. Distinguish strength, endurance and rest, as well as scheduled
+    versus completed/imported activity. Missing endurance data stays unknown;
+    past imported activity must not be invented as a future ride/run.
+  - Preserve local civil dates, dated overrides, skips, trips and completed or
+    in-progress sessions. Use one projection, not a new schedule store. Reminders
+    and widgets (P1) are independent; multiple sessions per day are not required.
+  - Verify a member can identify the next strength session and its relationship
+    to a known ride/run from this view. Cover no schedule, stale/offline data,
+    mixed activity, date boundaries and large text; open the intended date and
+    session. If multi-session P1 lands first, show all relevant slots using its
+    contract rather than silently displaying only the primary session.
+- [ ] **P4 — Make empty progress views actionable**
+  - Keep first-use copy compact: explain what strength/consistency data will
+    appear and offer a relevant route to the scheduled workout, existing library
+    or starter entry. Navigating there must not start or log a workout itself.
+  - Distinguish verified empty history from loading, failure and stale data.
+    Imported endurance activity remains separate from completed Très Fort
+    strength sessions; optional Health weight has its own permission/availability
+    state and must not suggest lifting will populate weight measurements.
+  - Verify new, imported-activity-only and returning members understand why the
+    view is empty and how to populate it. Cover retry and account changes with
+    the existing progress/read models. Avoid new streak infrastructure, analytics
+    storage or large motivational cards.
+
+## Dependencies
+
+| Local phase | Relationship | Target | Reason |
+|---|---|---|---|
+| P3 | gated_by | external:owner-sensai-followup-implementation | Planning approval does not reactivate implementation in this paused workstream. |
+| P4 | gated_by | external:owner-sensai-followup-implementation | Planning approval does not reactivate implementation in this paused workstream. |
+| P3 | coordinates_with | plan:workouts-and-multi-session#P1 | Whichever lands second must consume the same date/session projection contract. |
+
 ## Next step
 
 **Now (@owner):** P2(a) is implemented and locally verified; its implementation
 PR carries exact-head review and CI evidence for repository delivery. Choose
-whether to activate P1 reminders/widgets. Migration, production deployment and
+whether to activate P1 reminders/widgets or the newly planned P3/P4 usability
+follow-ups. Among the SensAI follow-ups, prioritize library P0.5 guidance and
+filters first, then previews and P3 orientation, then P4 empty states. Migration, production deployment and
 iOS distribution remain separately authorized.
 
 ## Notes / open questions

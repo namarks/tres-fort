@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-09-14 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-09-18 · Theme: release
 
 ## Goal
 
@@ -10,8 +10,8 @@ candidate, compatible production backend, documented verification and owner
 exceptions, accurate privacy disclosures, listing and reviewer access. The owner
 requested expedited shipment on 2026-09-10. Complete the prepared App Store
 package and submission requirements while retaining the existing submission.
-The current Apple release setting is AFTER_APPROVAL, as read back on 2026-09-14
-Pacific. Resolve that automatic-publication setting with the owner before review
+The current Apple release setting is AFTER_APPROVAL, as read back on 2026-09-18
+Pacific, with build 40 IN_REVIEW. Resolve that automatic-publication setting with the owner before review
 finishes; it is not evidence of separate public-release authority. Preparation
 and TestFlight availability do not mean public release.
 
@@ -88,6 +88,19 @@ gates. The 2026-09-14 deployment request authorized the latest backend and
 TestFlight release; it did not establish that those App Store gates were closed.
 The agent has asked whether to switch build 40 to manual release. Do not infer
 approval from silence or change the Apple setting without the owner's decision.
+
+**Internal beta follow-up (2026-09-18):** The owner approved workout-library
+P0.5(b), then a combined internal TestFlight build including P0.4(a), P0.5(a)
+and P0.5(b). Finish review/CI and merge, pin the exact source, then upload and
+verify VALID processing plus internal Testers assignment. Apple readback at
+`2026-09-18T23:05:10.858Z` found build 42 still the latest uploaded build and
+43 available; recheck before uploading. This approval does not replace build
+40 in App Review or authorize public release, metadata changes, or deployment.
+
+**Current Apple readback (2026-09-18):** Version 1.0 now has build 40
+**IN_REVIEW** with **AFTER_APPROVAL**. Build 42 remains VALID and available to
+internal Testers. The read-only preflight did not change either assignment or
+release mode. The owner decision below remains open.
 
 **Agent follow-through:** Finish the runnable P1/P2 audit against pinned source
 `9373d6f0acad9a9ef444e54fe9c9d8a8b7ad24c8`: reconcile privacy/account and group

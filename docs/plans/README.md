@@ -119,8 +119,9 @@ AI coaching.
   reusable workouts as the primary object, let a member drop one onto any
   date, add tags and archive, and support a freestyle session that can be
   saved as a workout. The weekly routine becomes one optional use of the
-  library. P0.5(a) implements unified exercise guidance/history; client distribution
-  is separate. Consistent swap filters and preview thumbnails remain planned.
+  library. P0.5(a)/(b) implement unified exercise guidance/history and shared
+  search/filter behavior. An internal TestFlight build is authorized after
+  current-head review, CI and merge. Preview thumbnails remain planned.
 - [Workouts and multi-session days](workouts-and-multi-session/plan.md) —
   **gated**; the `day_templates` to `workouts` rename is live server-side with
   a compatibility window, and every shipped client still writes the legacy
@@ -185,10 +186,10 @@ then P4 progress empty states. Evaluate BYO-coach P5(a)'s contextual request
 prototype separately before choosing P5(b)'s delivery architecture.
 
 The owner subsequently activated library P0.5(a), the shared Technique / History
-sheet, ahead of tags/archive. That repository slice is implemented and verified;
-its pull request carries independent review and CI. The other new slices remain
-planning approval only;
-canonical frontiers and release gates remain authoritative. Already
+sheet, ahead of tags/archive, and then P0.5(b) shared search/filter behavior.
+P0.5(a) is merged; a combined internal TestFlight build is authorized after
+P0.5(b) passes review and CI and merges. The other new slices remain planning
+approval only; canonical frontiers and release gates remain authoritative. Already
 delivered runner, swap, catalog, starter and progress capabilities are reused.
 
 ## Completed foundations

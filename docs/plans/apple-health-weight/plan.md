@@ -1,6 +1,6 @@
 # Progress and Apple Health Weight
 
-Slug: apple-health-weight · Status: gated · Updated: 2026-09-13 · Theme: member-experience
+Slug: apple-health-weight · Status: gated · Updated: 2026-09-18 · Theme: member-experience
 
 ## Goal
 
@@ -41,13 +41,24 @@ upload permission.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P2 | gated_by | external:owner-ios-distribution | A merged feature is not an installed device build; distribution and personal Health access need their own authority. |
+| P2 | gated_by | external:owner-apple-health-device-verification | Build 42 carries the merged feature to internal TestFlight testers; enabling personal Health access and observing real readings on the owner's iPhone need their own authority. |
 
 ## Next step
 
-**Now (@owner):** After the P3 implementation passes exact-head independent
-PR review and CI and merges, authorize an iOS distribution containing it and
-complete P2 on an iPhone.
+**Now (@owner):** Complete P2 on an iPhone running TestFlight 1.0 (42) or a
+later build: enable Read weight in Profile → Connections → Apple Health, open
+Progress → Weight, and record the permission sheet, a real dated measurement
+and its source, relaunch/foreground refresh, revocation/reconnect and a
+Withings-sourced reading.
+
+P1 merged in [PR #196](https://github.com/namarks/tres-fort/pull/196) on
+2026-09-12 and P3 in [PR #197](https://github.com/namarks/tres-fort/pull/197) on
+2026-09-13, both Pacific dates. Both are
+ancestors of build 42's source `5df9208fc01219f298866ee4528cda533b86d33d`, which
+the [release 42 receipt](../app-store-submission/release-42.md) records as VALID
+and assigned to internal Testers on 2026-09-14 Pacific. That distribution
+satisfies only the installed-build precondition; Health permissions, readings
+and Withings delivery on a real device remain unverified.
 
 ## Verification evidence
 
@@ -66,7 +77,7 @@ complete P2 on an iPhone.
   opt-out. The final source manifest and exact-head review/CI evidence are
   retained with the implementation PR and local verification artifacts.
 
-- `npm run plans:check` passes: 8 current plans, 16 edges, 2 initiatives.
+- `npm run plans:check` passed on 2026-09-18: 8 current plans, 23 edges, 2 initiatives.
 - Disposable iPhone 17 / iOS 26.2 build and focused tests passed on 2026-09-12:
   78 account/auth tests, 13 weight calculation/lifecycle tests, and 2 weight UI
   journeys (93 total, zero failures). The UI journeys exercise connection,

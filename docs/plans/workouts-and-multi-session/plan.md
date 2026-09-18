@@ -1,6 +1,6 @@
 # Workouts and Multi-Session Days
 
-Slug: workouts-and-multi-session · Status: active · Updated: 2026-09-10 · Theme: gym-floor
+Slug: workouts-and-multi-session · Status: gated · Updated: 2026-09-18 · Theme: gym-floor
 
 ## Goal
 
@@ -220,17 +220,30 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 
 ## Next step
 
-**Now (@owner):** Authorize a later canonical-writing client rollout when that
-workstream resumes. Legacy-writing **1.0 (35)** was uploaded at 23:54:09 UTC on
-2026-09-10 after the owner explicitly deferred the live REST workout canary and
-its five-minute observation. At 23:56:53 UTC, Apple reported VALID /
-IN_BETA_TESTING and internal Testers membership. Those live checks are not claimed
-as passed. No production training records were modified. Do not repeat the upload
-or reinstate its waived canary gate.
+**Now (@owner):** Authorize the canonical-writing client rollout when ready;
+until then this plan is gated on that authority and the deferred canonical-route
+checks. Every client shipped since the rename still writes the legacy
+vocabulary: every internal TestFlight build with a recorded source (36, 37,
+38, 40 and 42) carries `APIClient.workoutWireFormat = .legacy`, and no commit in
+repository history has ever set `.canonical`, both verified on 2026-09-18 at
+those sources and at main `8a0b660`. No canonical-writing build exists, so
+P0(b)'s client step and P0(c) cleanup remain open.
 
-The matching adaptive Worker is version
-`722fbf91-4b13-48e2-b233-747b1d437ca6` at 100%, from source
-`361cf2ba9d40ef6572de700b65cf649c665559ba`. Additive migrations 0046–0048 are applied,
+Legacy-writing **1.0 (35)** was uploaded at 23:54:09 UTC on 2026-09-10 after the
+owner explicitly deferred the live REST workout canary and its five-minute
+observation. At 23:56:53 UTC, Apple reported VALID / IN_BETA_TESTING and internal
+Testers membership. Those live checks are not claimed as passed. No production
+training records were modified. Do not repeat the upload or reinstate its waived
+canary gate. Later builds are recorded in the
+[App Store release record](../app-store-submission/plan.md#next-step).
+
+The rename-compatible adaptive Worker version
+`722fbf91-4b13-48e2-b233-747b1d437ca6` was deployed from source
+`361cf2ba9d40ef6572de700b65cf649c665559ba`. Production has since advanced to
+version `92adb0e0-28bd-4952-81ad-b09029f75ac9` per the
+[build 42 receipt](../app-store-submission/release-42.md); that source still
+carries the schema-adaptive layer and the legacy `/api/days` routes. Additive
+migrations 0046–0048 are applied,
 with no foreign-key violations; do not repeat 0045 or earlier rollout stages.
 See [the candidate release record](../app-store-submission/plan.md#next-step).
 Keep the adaptive Worker, old routes and legacy outgoing fields. Canonical-route

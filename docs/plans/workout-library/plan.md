@@ -210,8 +210,11 @@ No second editor, no per-session template copies, no weeks table.
       Intervals connections. Runner, pinned workout actions, early finish and
       calendar screenshots were inspected. Independent local review found no
       remaining blocking issue. [PR #209](https://github.com/namarks/tres-fort/pull/209)
-      carries current-head hosted review and required CI as merge gates.
-      Manual physical-device and VoiceOver behavior remain unverified.
+      merged on 2026-09-17 after current-head hosted review and required CI.
+      [PR #210](https://github.com/namarks/tres-fort/pull/210) followed with
+      stacked Today actions, full-width exercise names and a compact rest that
+      keeps next-set values and exact last-set correction at accessibility text
+      sizes. Manual physical-device and VoiceOver behavior remain unverified.
   - [ ] **(b) Distribute the verified client changes**
     - Owner-authorized release is separate from repository completion. Carry
       the exact merged source into the App Store release record; this request
@@ -389,11 +392,14 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@owner):** Authorize P0.4(b) client distribution when ready, after
-PR #209 passes exact-head review/CI and merges. P0.4(a) implementation and local
-verification are complete; the repository delivery does not update an installed
-phone build. Carry the merged source through the App Store release record.
-The wider onboarding redesign and RPE semantics remain outside this slice.
+**Now (@owner):** Authorize P0.4(b) client distribution when ready.
+[PR #209](https://github.com/namarks/tres-fort/pull/209) merged on 2026-09-17
+with exact-head review and CI, and [PR #210](https://github.com/namarks/tres-fort/pull/210)
+followed on 2026-09-18 with the accessible-control refinements from the same
+audit. Neither source is in an installed build: TestFlight 1.0 (42) was cut from
+`5df9208`, before both merges. Carry the latest merged source through the App
+Store release record. The wider onboarding redesign and RPE semantics remain
+outside this slice.
 
 **Exercise-first release (@owner):** Authorize P0.3(b) when ready to release the exercise-first
 creation flow: deploy the compatible Worker before distributing its iOS build.
@@ -407,8 +413,8 @@ D1 creation suite covers nine cases. Four focused iOS unit tests and twelve
 distinct UI journeys passed, including unnamed multi-selection and onboarding
 through first-workout completion. Final picker/review screenshots were visually
 checked on iPhone 17 / iOS 26.2. Local independent review found no remaining
-actionable regressions. Hosted exact-head review and all required CI checks
-remain merge gates for this implementation PR.
+actionable regressions. [PR #198](https://github.com/namarks/tres-fort/pull/198)
+merged on 2026-09-13 after exact-head review and required CI.
 
 The combined local backend process timed out in a multi-case validation test
 and later in an unchanged swap test. The new independent validation cases were

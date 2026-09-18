@@ -121,8 +121,9 @@ iOS distribution remain separately authorized.
   refreshes before enabling Start, and never chooses a different workout when
   the saved identity is unavailable. Setup copy is shorter while equipment,
   exclusions, optional baselines and privacy information remain available.
-  This refines P2(a); it does not activate P1 or authorize distribution. The
-  implementation PR carries the focused verification and exact-head review.
+  This refines P2(a); it does not activate P1 or authorize distribution.
+  [PR #210](https://github.com/namarks/tres-fort/pull/210) merged on 2026-09-18
+  with the focused verification and exact-head review.
 - On 2026-09-12 Nick approved the questionnaire plus editable starter approach
   and explicitly requested an overall-fitness activity question. This resolves
   `external:starter-plan-policy` for P2(a). The initial scope emphasizes new and

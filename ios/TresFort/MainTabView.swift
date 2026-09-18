@@ -160,6 +160,7 @@ struct MainTabView: View {
         }
         .modifier(MemberEntryPresentation(auth: auth, sync: sync, groupModel: groupModel,
                                           onJoined: { selectedTab = .group },
-                                          onCoach: { selectedTab = .profile }))
+                                          onCoach: { selectedTab = .profile },
+                                          onWorkout: { selectedTab = .today }))
     }
 }

@@ -1,6 +1,6 @@
 # Member Activation and Adherence
 
-Slug: member-activation-and-adherence · Status: paused · Updated: 2026-09-12 · Theme: gym-floor
+Slug: member-activation-and-adherence · Status: paused · Updated: 2026-09-18 · Theme: gym-floor
 
 ## Goal
 
@@ -71,6 +71,16 @@ iOS distribution remain separately authorized.
 
 ## Notes / open questions
 
+- The September 18 usability follow-up routes an acknowledged starter directly
+  to that saved workout's details, with an explicit Start action. It applies to
+  first-run setup and starter selection from empty Today. Existing invite and
+  coach destinations retain their order; optional group, integration and coach
+  setup remain available in Group/Profile. The route stays account-bound,
+  refreshes before enabling Start, and never chooses a different workout when
+  the saved identity is unavailable. Setup copy is shorter while equipment,
+  exclusions, optional baselines and privacy information remain available.
+  This refines P2(a); it does not activate P1 or authorize distribution. The
+  implementation PR carries the focused verification and exact-head review.
 - On 2026-09-12 Nick approved the questionnaire plus editable starter approach
   and explicitly requested an overall-fitness activity question. This resolves
   `external:starter-plan-policy` for P2(a). The initial scope emphasizes new and

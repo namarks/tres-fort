@@ -8,6 +8,7 @@ struct MemberEntryPresentation: ViewModifier {
     @ObservedObject var groupModel: GroupModel
     var onJoined: () -> Void
     var onCoach: () -> Void
+    var onWorkout: () -> Void
 
     private struct Presentation: Identifiable {
         let intent: MemberEntryIntent
@@ -16,13 +17,14 @@ struct MemberEntryPresentation: ViewModifier {
     }
     @State private var presented: Presentation?
     @State private var sheet: Presentation?
+    @State private var startingWorkout = false
 
     func body(content: Content) -> some View {
         content
             .task(id: auth.nextEntryIntent?.id) { presentNext() }
             .onChange(of: auth.pendingEntryIntents) { _, _ in presentNext() }
             .sheet(item: $sheet, onDismiss: finishPresented) { presentation in
-                if auth.isReviewAccount && presentation.intent.destination != .workouts {
+                if auth.isReviewAccount && presentation.intent.destination.requiresPersonalAccount {
                     ContentUnavailableView("Personal sign-in required", systemImage: "person.crop.circle",
                         description: Text("Sign out in Profile > Account and use Sign in with Apple for personal connections and groups."))
                 } else {
@@ -47,9 +49,32 @@ struct MemberEntryPresentation: ViewModifier {
                             accountName: groupModel.me?.display_name ?? "Your signed-in Très Fort account") { sheet = nil }
                     case .workouts:
                         CreateWorkoutView(sync: sync)
+                    case let .workout(id):
+                        MemberWorkoutEntryView(sync: sync, workoutID: id) { id in
+                            startWorkout(id, from: presentation)
+                        }
+                        .disabled(startingWorkout)
                     }
                 }
             }
+    }
+
+    private func startWorkout(_ id: String, from presentation: Presentation) {
+        guard !startingWorkout,
+              auth.isCurrentFeatureSession(accountID: presentation.intent.accountID, epoch: presentation.epoch),
+              sync.workout(id: id) != nil else { return }
+        startingWorkout = true
+        Task { @MainActor in
+            await RestCue.requestNotificationPermissionIfNeeded()
+            defer { startingWorkout = false }
+            guard !Task.isCancelled,
+                  auth.isCurrentFeatureSession(accountID: presentation.intent.accountID, epoch: presentation.epoch),
+                  sheet?.id == presentation.id, sync.workout(id: id) != nil else { return }
+            onWorkout()
+            if sync.hasResumableWorkout && sync.resumableCheckpoint?.selectedDayID == id { sync.resumeWorkout() }
+            else { sync.startOverride(dayID: id) }
+            sheet = nil
+        }
     }
 
     private func finishPresented() {
@@ -88,5 +113,57 @@ struct MemberEntryPresentation: ViewModifier {
             if case .coachApproval = intent.destination { return intent.accountID == accountID }
             return false
         }
+    }
+}
+
+/// Load after the acknowledged creation rather than showing a cached library
+/// from before setup. An unavailable or deleted identity never selects another
+/// workout, and a failed pull offers retry before enabling Start.
+private struct MemberWorkoutEntryView: View {
+    @ObservedObject var sync: SyncModel
+    let workoutID: String
+    let onStart: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var loaded = false
+    @State private var loading = true
+
+    var body: some View {
+        Group {
+            if loaded {
+                WorkoutDetailsView(sync: sync, workoutID: workoutID, onStart: onStart)
+            } else {
+                NavigationStack {
+                    VStack(spacing: 16) {
+                        if loading {
+                            ProgressView("Loading your workout…")
+                        } else {
+                            Text("Couldn’t load your saved workout.").font(.headline)
+                            Text("Your workout is saved. Try again when connected.")
+                                .foregroundStyle(Theme.muted)
+                            Button("Try again") { Task { await load() } }
+                                .buttonStyle(WorkoutPrimaryButtonStyle())
+                                .accessibilityIdentifier("memberWorkout.retry")
+                        }
+                    }
+                    .padding(24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Theme.background)
+                    .foregroundStyle(Theme.text)
+                    .navigationTitle("Your workout")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+        .task { await load() }
+    }
+
+    private func load() async {
+        loading = true
+        await sync.loadAfterMutation()
+        guard !Task.isCancelled else { return }
+        loaded = sync.hasVerifiedPlanState && !sync.isUsingCachedState && sync.loadError == nil
+        loading = false
     }
 }

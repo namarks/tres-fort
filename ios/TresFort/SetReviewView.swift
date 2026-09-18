@@ -8,6 +8,7 @@ struct SetReviewList: View {
     let sets: [SetLog]
     let pending: [PendingSetIntent]
     var lastSetShortcut = false
+    var compact = false
     @State private var editing: ReviewItem?
     @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = "lb"
 
@@ -64,29 +65,53 @@ struct SetReviewList: View {
         .accessibilityIdentifier("reload-correction-\(correction.setID)")
     }
 
+    private func recordedValues(_ item: ReviewItem, unit: WeightUnit, timed: Bool, formattedValues: String) -> some View {
+        let warmup = (item.set?.is_warmup == 1) || item.pending?.body.is_warmup == true
+        let showPreviousExercise = sync.finished || sync.currentExercise?.exercise_id != item.exerciseID
+        var compactParts = [formattedValues]
+        if !showPreviousExercise { compactParts.insert("Last set", at: 0) }
+        let timedValueIncludesUnit = timed && (item.values.durationSeconds ?? item.values.reps) > 0
+        if item.values.weight != 0 && !timedValueIncludesUnit { compactParts.append(unit.rawValue) }
+        if let rpe = item.values.rpe { compactParts.append("RPE \(SetValueFormatter.number(rpe))") }
+        if warmup { compactParts.append("Warm-up") }
+        let compactLabel = compactParts.joined(separator: " · ")
+        return VStack(alignment: .leading, spacing: 4) {
+            if compact {
+                if showPreviousExercise {
+                    Text("Last set · " + sync.exerciseName(item.exerciseID))
+                        .font(.caption).foregroundStyle(Theme.muted)
+                }
+                Text(compactLabel)
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("rest.lastValues")
+            } else {
+                Text((lastSetShortcut ? "Last set · " : "") + sync.exerciseName(item.exerciseID)).font(Theme.mono(11))
+                Text(formattedValues).font(Theme.mono(14, .bold))
+                if item.values.weight != 0 { Text("Load in \(unit.rawValue)").font(.caption).foregroundStyle(Theme.muted) }
+                if let rpe = item.values.rpe { Text("RPE \(SetValueFormatter.number(rpe))").font(.caption) }
+                if warmup {
+                    Text("Warm-up").font(.caption).foregroundStyle(Theme.muted)
+                }
+            }
+        }
+    }
+
     private func row(_ item: ReviewItem) -> some View {
         let unit = WeightUnit(rawValue: weightUnitRaw) ?? .lb
         let storedUnit = WeightUnit(rawValue: sync.catalogRow(item.exerciseID)?.unit ?? "lb") ?? .lb
         let correction = sync.correction(for: item.id)
         let timed = item.set.map { sync.isTimedSet($0) } ?? item.pending!.body.is_timed
+        let values = SetValueFormatter.value(
+            weight: storedUnit.convert(item.values.weight, to: unit), reps: item.values.reps,
+            durationSeconds: item.values.durationSeconds, timed: timed,
+            bodyweight: sync.isBodyweightExercise(item.exerciseID), unit: unit.rawValue,
+            unilateral: sync.sides(for: item.exerciseID) == 2)
         return VStack(alignment: .leading, spacing: 6) {
             let layout = dynamicTypeSize.isAccessibilitySize
                 ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout())
             layout {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text((lastSetShortcut ? "Last set · " : "") + sync.exerciseName(item.exerciseID)).font(Theme.mono(11))
-                    Text(SetValueFormatter.value(
-                        weight: storedUnit.convert(item.values.weight, to: unit), reps: item.values.reps,
-                        durationSeconds: item.values.durationSeconds, timed: timed,
-                        bodyweight: sync.isBodyweightExercise(item.exerciseID), unit: unit.rawValue,
-                        unilateral: sync.sides(for: item.exerciseID) == 2))
-                        .font(Theme.mono(14, .bold))
-                    if item.values.weight != 0 { Text("Load in \(unit.rawValue)").font(.caption).foregroundStyle(Theme.muted) }
-                    if let rpe = item.values.rpe { Text("RPE \(SetValueFormatter.number(rpe))").font(.caption) }
-                    if (item.set?.is_warmup == 1) || item.pending?.body.is_warmup == true {
-                        Text("Warm-up").font(.caption).foregroundStyle(Theme.muted)
-                    }
-                }
+                recordedValues(item, unit: unit, timed: timed, formattedValues: values)
                 if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                 Button { editing = item } label: {
                     Text(lastSetShortcut ? "Edit last set" : "Edit").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
@@ -130,7 +155,7 @@ struct SetReviewList: View {
             }
         }
         .foregroundStyle(Theme.text)
-        .padding(12).background(Theme.surface)
+        .padding(compact ? 0 : 12).background(Theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }
@@ -139,6 +164,7 @@ struct SetReviewList: View {
 /// set. The runner may already point at a different circuit member or exercise.
 struct LastRunnerSetReview: View {
     @ObservedObject var sync: SyncModel
+    var compact = false
 
     var body: some View {
         if let id = sync.lastRunnerSetID {
@@ -149,7 +175,7 @@ struct LastRunnerSetReview: View {
                 $0.id == id && $0.date == sync.todayString && sets.isEmpty
             }
             if !sets.isEmpty || !pending.isEmpty {
-                SetReviewList(sync: sync, sets: sets, pending: pending, lastSetShortcut: true)
+                SetReviewList(sync: sync, sets: sets, pending: pending, lastSetShortcut: true, compact: compact)
             }
         }
     }

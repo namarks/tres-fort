@@ -122,10 +122,10 @@ AI coaching.
   library. P0.5 plans unified exercise guidance/history, consistent swap filters
   and lightweight preview thumbnails.
 - [Workouts and multi-session days](workouts-and-multi-session/plan.md) —
-  **active**; rename `day_templates` to `workouts` end to end with a
-  compatibility window, then allow an ordered list of sessions per date so a
-  member can record two strength workouts in one day without changing any
-  single-session guarantee.
+  **gated**; the `day_templates` to `workouts` rename is live server-side with
+  a compatibility window, and every shipped client still writes the legacy
+  vocabulary. The canonical-writing client rollout waits on owner authority and
+  the deferred canonical-route checks; ordered sessions per date follow.
 [Supersets and circuits](completed/supersets-and-circuits/plan.md) are retained
 as completed repository history: shared coach/member authoring, alternating
 round execution and recovery, separate transition/round rests, and compatible
@@ -154,6 +154,16 @@ integration or social breadth.
 - [Group experience and governance](group-experience-and-governance/plan.md) —
   **planned**; deliver a correct feed, durable invites, lightweight reactions
   and notifications, and essential group controls.
+
+### Member experience (`member-experience`)
+
+Give a member honest, private views of their own body and training trends
+without adding provider accounts, server collection or new data stores.
+
+- [Progress and Apple Health weight](apple-health-weight/plan.md) — **gated**;
+  the private weight view and Progress tab are merged and included in internal
+  TestFlight build 42. Owner verification on a real iPhone with Health readings
+  remains.
 
 ### Review-driven ordering
 

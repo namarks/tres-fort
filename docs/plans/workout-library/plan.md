@@ -284,7 +284,10 @@ No second editor, no per-session template copies, no weeks table.
     - Seven search-policy tests and nine targeted UI journeys passed, including
       alias/filter composition, empty-result reset, info and review returns,
       cancellation without writes, and logging after a swap with prior sets and
-      plan version preserved. Local independent review found no actionable issue.
+      plan version preserved. The four new journeys passed a repeat at normal
+      text size. Largest-system-text creation/review and complete swap journeys
+      also passed; normal and largest-text swap screenshots were inspected.
+      Local independent review found no actionable issue.
       The pull request from `codex/consistent-exercise-discovery` carries the
       required current-head review and full CI evidence. Distribution follows
       P0.4(b), which is authorized but not yet completed.

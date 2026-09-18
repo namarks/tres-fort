@@ -45,7 +45,16 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
 
     private func region(_ name: String, in app: XCUIApplication) {
         let button = app.buttons[name]
-        for _ in 0..<3 where !button.isHittable { app.scrollViews["exercisePicker.regions"].swipeLeft() }
+        let filters = app.scrollViews["exercisePicker.regions"]
+        for _ in 0..<4 {
+            if button.frame.minX >= filters.frame.minX,
+               button.frame.maxX <= filters.frame.maxX { break }
+            let right = button.frame.minX < filters.frame.minX
+            let start = filters.coordinate(withNormalizedOffset: CGVector(dx: right ? 0.25 : 0.75, dy: 0.5))
+            let end = filters.coordinate(withNormalizedOffset: CGVector(dx: right ? 0.75 : 0.25, dy: 0.5))
+            start.press(forDuration: 0.1, thenDragTo: end,
+                        withVelocity: .slow, thenHoldForDuration: 0.5)
+        }
         XCTAssertTrue(button.isHittable); button.tap()
     }
 

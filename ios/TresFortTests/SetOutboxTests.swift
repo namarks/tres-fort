@@ -13814,6 +13814,44 @@ private final class FreestyleAPIStub: FreestyleAPI {
 
 @MainActor
 extension SetOutboxTests {
+    func testFreestyleStartBootstrapsVerifiedEmptyAccount() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub(), freestyle = FreestyleAPIStub()
+        let routine = SetRoutineEditingAPIStub(), auth = retainedAuth(defaults: defaults)
+        let catalog = ExerciseCatalog(id: "exercise-a", name: "Bench", primary_muscle: "chest", modality: "barbell",
+            unit: "lb", laterality: "bilateral", load_mode: "total", demo_slug: nil)
+        var current = StateResponse(plan: nil, plan_version: 0, sessions: [], sets: [],
+            external_events: [], external_activities: [], activities: [], server_time: 2_000_000_000_000)
+        api.stateHandler = { _ in current }
+        var ensured = false
+        routine.ensureHandler = { name, _ in
+            XCTAssertEqual(name, "Workouts")
+            ensured = true
+            current = StateResponse(plan: PlanTree(id: "new-plan", name: name, version: 1, workouts: [], meta: nil),
+                plan_version: 1, sessions: [], sets: [], external_events: [], external_activities: [],
+                activities: [], server_time: 2_000_000_000_001)
+            return .init(plan: .init(id: "new-plan", name: name, version: 1), created: true)
+        }
+        freestyle.startHandler = { date, attempt in
+            XCTAssertTrue(ensured)
+            XCTAssertEqual(attempt, 0)
+            return SessionRow(kind: "freestyle", id: "first-session", date: date, status: "in_progress",
+                workout_id: nil, updated_at: 2_000_000_000_002, attempt: 0, write_protocol: "attempt-v1")
+        }
+        let model = SyncModel(auth: auth, setWriteAPI: api, freestyleAPI: freestyle,
+            routineEditingAPI: routine, defaults: defaults, now: { self.fixedDate })
+        XCTAssertFalse(model.canStartFreestyle)
+        await model.load()
+        XCTAssertNil(model.plan)
+        XCTAssertTrue(model.canStartFreestyle)
+        let started = await model.startFreestyleWorkout(with: catalog)
+        XCTAssertTrue(started)
+        XCTAssertTrue(model.running)
+        XCTAssertTrue(model.isFreestyle)
+        XCTAssertEqual(model.plan?.id, "new-plan")
+        XCTAssertEqual(model.plan?.workouts.isEmpty, true)
+        XCTAssertEqual(model.currentExercise?.exercise_id, catalog.id)
+    }
+
     func testFreestyleStartAndColdRecoveryKeepLibraryUnchanged() async throws {
         let defaults = defaults(), api = SetWriteAPIStub(), freestyle = FreestyleAPIStub()
         let auth = retainedAuth(defaults: defaults)

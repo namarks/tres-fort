@@ -8193,7 +8193,7 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
     'SELECT * FROM sessions WHERE user_id=?1 AND date IN (?2,?3)')
     .bind(userId, input.from_date, input.to_date).all<SessionRow>()).results;
   if (rows.some(row => row.kind === 'freestyle' && row.status !== 'discarded')) {
-    throw new Error('session_kind_conflict');
+    return { error: 'calendar_move_conflict' };
   }
   const from = rows.find((row) => row.date === input.from_date);
   const to = rows.find((row) => row.date === input.to_date);

@@ -358,8 +358,8 @@ No second editor, no per-session template copies, no weeks table.
       new workouts remain unscheduled. REST and iOS use one current freestyle
       contract; MCP logging on unscheduled or explicitly skipped dates creates
       freestyle sessions.
-    - Verification: 1,177 backend tests across three shards, including 25
-      freestyle cases; 635 iOS unit tests with one existing skip; rep and timed
+    - Verification: 1,178 backend tests across three shards, including 25
+      freestyle cases; 636 iOS unit tests with one existing skip; rep and timed
       start/add/finish/save UI journeys, including largest system text. Query
       plans, TypeScript, plan graph and same-Worker rename/rollback rehearsal
       pass. PR review and CI retain exact-head delivery evidence.

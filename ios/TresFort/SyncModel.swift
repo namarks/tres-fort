@@ -4131,7 +4131,7 @@ final class SyncModel: ObservableObject {
 
     var isFreestyle: Bool { todaySession?.isFreestyle == true && todaySession?.status != "discarded" }
     var canStartFreestyle: Bool {
-        canInitiateBoundFeatureAction && hasVerifiedPlanState && plan != nil && loadError == nil
+        canInitiateBoundFeatureAction && hasVerifiedPlanState
             && !isUsingCachedState && !isLoading && !running && !todayIsCompleted
             && !isStartingFreestyle && !hasResumableWorkout && !hasRunnerAwaitingSetRecovery
             && !hasPendingTerminalIntentForCurrentWorkout

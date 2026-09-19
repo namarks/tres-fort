@@ -91,16 +91,19 @@ approval from silence or change the Apple setting without the owner's decision.
 
 **Internal beta follow-up (2026-09-18):** The owner approved workout-library
 P0.5(b), then a combined internal TestFlight build including P0.4(a), P0.5(a)
-and P0.5(b). Finish review/CI and merge, pin the exact source, then upload and
-verify VALID processing plus internal Testers assignment. Apple readback at
-`2026-09-18T23:05:10.858Z` found build 42 still the latest uploaded build and
-43 available; recheck before uploading. This approval does not replace build
-40 in App Review or authorize public release, metadata changes, or deployment.
+and P0.5(b). [Build 43's release receipt](release-43.md) records completion from
+reviewed merged source `28dd647b5746e9459dad7ada68c0a961eaf8c86b`, successful
+archive/export/upload and verified distribution signatures. At
+`2026-09-19T00:00:16.241Z` (September 18 Pacific), Apple confirmed VALID,
+IN_BETA_TESTING and internal Testers assignment. The Worker is unchanged from
+build 42 and needed no deployment. This beta does not replace build 40 in App
+Review or authorize public release or metadata changes.
 
 **Current Apple readback (2026-09-18):** Version 1.0 now has build 40
-**IN_REVIEW** with **AFTER_APPROVAL**. Build 42 remains VALID and available to
-internal Testers. The read-only preflight did not change either assignment or
-release mode. The owner decision below remains open.
+**IN_REVIEW** with **AFTER_APPROVAL**. Build 43 is the latest internal beta,
+VALID and available to Testers; external Alpha Testers do not have it. This run
+did not change the App Review build or release mode. The owner decision above
+remains open.
 
 **Agent follow-through:** Finish the runnable P1/P2 audit against pinned source
 `9373d6f0acad9a9ef444e54fe9c9d8a8b7ad24c8`: reconcile privacy/account and group
@@ -119,12 +122,12 @@ submission for Apple review responses, carry out the owner's release-mode
 decision when supplied, and read the result back. Do not resubmit or change the
 selected build from a TestFlight upload.
 
-**Latest production/TestFlight release (2026-09-14 Pacific):** The owner
+**Production baseline and preceding beta (2026-09-14 Pacific):** The owner
 requested the latest version. [Build 42's release receipt](release-42.md) records
 source `5df9208fc01219f298866ee4528cda533b86d33d`, terminal-green checks,
 production at 100% traffic, public health/discovery and app-link verification,
-and iOS 1.0 (42) VALID in internal Testers. No migration was needed. This latest
-beta does not replace the App Review candidate. Apple readback at
+and iOS 1.0 (42) VALID in internal Testers. No migration was needed. That
+beta did not replace the App Review candidate. Apple readback at
 2026-09-15T03:02:09.514Z still selects **build 40**, WAITING_FOR_REVIEW, with
 **AFTER_APPROVAL** release. That live setting supersedes the older MANUAL
 receipts below; this run did not change it or make a public App Store release.

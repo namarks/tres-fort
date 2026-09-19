@@ -1,3 +1,4 @@
+import { validWorkoutTags, normalizeWorkoutTags, validArchivedAt } from './workoutMetadata';
 import { addDays, weekdayOf, projectCalendar, projectCalendarWindow, projectRideConflicts } from './calendarProjection';
 import type { CalendarCell, CalendarInputs, ProjectionEvent, ProjectionActivity, StrengthCalendarInputs } from './calendarProjection';
 export { addDays, weekdayOf, projectCalendar, detectConflicts } from './calendarProjection';
@@ -3118,6 +3119,32 @@ export interface PlanWriteAttribution {
   result?: unknown;
 }
 
+/** Includes legacy null-workout runners and durable logged-slot evidence. */
+function workoutSessionReferenceSQL(alias: string, workout: string, plan: string): string {
+  return `(( ${alias}.plan_id=${plan} AND (${alias}.workout_id=${workout}
+    OR (${alias}.workout_id IS NULL AND EXISTS (
+      SELECT 1 FROM plans p WHERE p.id=${plan}
+        AND json_extract(p.meta, '$.schedule.week.' || CASE strftime('%w',${alias}.date)
+          WHEN '0' THEN 'sun' WHEN '1' THEN 'mon' WHEN '2' THEN 'tue' WHEN '3' THEN 'wed'
+          WHEN '4' THEN 'thu' WHEN '5' THEN 'fri' ELSE 'sat' END)=${workout}
+    )))) OR EXISTS (SELECT 1 FROM set_logs l JOIN template_exercises te ON te.id=l.template_exercise_id
+      WHERE l.session_id=${alias}.id AND l.deleted_at IS NULL AND te.workout_id=${workout}))`;
+}
+
+function prepareArchiveAssignments(db: D1Database, plan: PlanRow, workoutId: string, ts: number, nonce: string) {
+  return workoutDB(db).prepare(`UPDATE sessions SET workout_id=NULL,status='skipped',
+      attempt=attempt+1,updated_at=MAX(updated_at+1,?4)
+    WHERE user_id=?2 AND status='planned' AND ${workoutSessionReferenceSQL('sessions', '?3', '?1')}
+      AND EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND version=-?5 AND plan_write_nonce=?6)`)
+    .bind(plan.id, plan.user_id, workoutId, ts, plan.version, nonce);
+}
+
+async function workoutIsActive(db: D1Database, plan: PlanRow, workoutId: string): Promise<boolean> {
+  return !!await workoutDB(db).prepare(`SELECT 1 FROM sessions s WHERE s.user_id=?2
+    AND s.status='in_progress' AND ${workoutSessionReferenceSQL('s', '?3', '?1')} LIMIT 1`)
+    .bind(plan.id, plan.user_id, workoutId).first();
+}
+
 /**
  * SQL serializer for the writable plan document. Keeping this as an INSERT
  * statement lets a plan writer append it to the same D1 batch as its CAS,
@@ -3150,7 +3177,7 @@ export function preparePlanSnapshotInsert(
            SELECT json_group_array(json(day_document)) FROM (
              SELECT json_object(
                'id',d.id,'name',d.name,'day_label',d.day_label,
-               'order_index',d.order_index,'notes',d.notes,
+               'order_index',d.order_index,'notes',d.notes,'tags',d.tags,'archived_at',d.archived_at,
                'exercises',json(COALESCE((
                  SELECT json_group_array(json(slot_document)) FROM (
                    SELECT json_object(
@@ -3191,6 +3218,7 @@ export function preparePlanWriteStart(
   ts: number,
   nonce: string,
   rejectActiveWorkout = false,
+  rejectWorkoutId: string | null = null,
 ): D1PreparedStatement[] {
   return [
     workoutDB(db).prepare(
@@ -3200,10 +3228,14 @@ export function preparePlanWriteStart(
           AND EXISTS (SELECT 1 FROM users u WHERE u.id=?2)
           AND NOT EXISTS (SELECT 1 FROM account_deletion_intents i WHERE i.user_id=?2)
           AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts r WHERE r.user_id=?2)
+          AND (?6 IS NULL OR NOT EXISTS (
+            SELECT 1 FROM sessions s WHERE s.user_id=?2 AND s.status='in_progress'
+              AND ${workoutSessionReferenceSQL('s', '?6', '?1')}
+          ))
           AND (?5=0 OR NOT EXISTS (
             SELECT 1 FROM sessions s WHERE s.user_id=?2 AND s.plan_id=?1 AND s.status='in_progress'
           ))`,
-    ).bind(plan.id, plan.user_id, plan.version, nonce, rejectActiveWorkout ? 1 : 0),
+    ).bind(plan.id, plan.user_id, plan.version, nonce, rejectActiveWorkout ? 1 : 0, rejectWorkoutId),
     preparePlanSnapshotInsert(db, {
       userId: plan.user_id, planId: plan.id, version: plan.version,
       actor: 'system', operation: 'baseline', reason: 'First captured version',
@@ -3485,6 +3517,7 @@ export async function restorePlanSnapshot(
     }, ts, nonce, true),
   ];
   for (const day of target.workouts) {
+    if (day.archived_at != null) statements.push(prepareArchiveAssignments(db, plan, day.id, ts, nonce));
     statements.push(workoutDB(db).prepare(
       `INSERT OR IGNORE INTO workouts
        (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
@@ -3497,6 +3530,9 @@ export async function restorePlanSnapshot(
     ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
       day.order_index, day.notes, ts, nonce));
   }
+  for (const day of target.workouts) statements.push(workoutDB(db).prepare(
+    `UPDATE workouts SET tags=?4,archived_at=?5 WHERE id=?6 AND plan_id=?1 AND ${guarded(7)}`,
+  ).bind(plan.id, userId, -plan.version, day.tags ?? '[]', day.archived_at ?? null, day.id, nonce));
   for (const slot of targetSlots) {
     statements.push(workoutDB(db).prepare(
       `INSERT OR IGNORE INTO template_exercises
@@ -3535,6 +3571,7 @@ export async function restorePlanSnapshot(
     }
     if (!targetDayIds.has(day.id)) {
       statements.push(
+        prepareArchiveAssignments(db, plan, day.id, ts, nonce),
         workoutDB(db).prepare(`UPDATE sessions SET workout_id=NULL,updated_at=?4 WHERE workout_id=?5 AND user_id=?2 AND ${guarded(6)}`)
           .bind(plan.id, userId, -plan.version, ts, day.id, nonce),
         workoutDB(db).prepare(`DELETE FROM workouts WHERE id=?4 AND plan_id=?1 AND ${guarded(5)}`)
@@ -3542,10 +3579,15 @@ export async function restorePlanSnapshot(
       );
     }
   }
+  const restoreMeta = parsePlanMeta(target.plan.meta);
+  const restoreSchedule = scrubSchedule(restoreMeta.schedule,
+    new Set(target.workouts.filter(day => day.archived_at == null).map(day => day.id)));
+  const restoredMeta = restoreSchedule == null
+    ? target.plan.meta : serializePlanMeta(restoreMeta, restoreSchedule);
   statements.push(workoutDB(db).prepare(
     `UPDATE plans SET name=?4,meta=?5,updated_at=?6
      WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce=?7`,
-  ).bind(plan.id, userId, -plan.version, target.plan.name, target.plan.meta, ts, nonce));
+  ).bind(plan.id, userId, -plan.version, target.plan.name, restoredMeta, ts, nonce));
   const documentUpdateIndex = statements.length - 1;
   const versionResultIndex = statements.length;
   statements.push(...preparePlanWriteFinish(db, plan, {
@@ -3689,12 +3731,13 @@ export async function findWorkoutByRef(
   db: D1Database,
   planId: string,
   ref: string,
+  includeArchived = false,
 ): Promise<string | null> {
   const row = await workoutDB(db)
     .prepare(
-      'SELECT id FROM workouts WHERE plan_id = ?1 AND (day_label = ?2 OR name = ?2) LIMIT 1',
+      'SELECT id FROM workouts WHERE plan_id = ?1 AND (day_label = ?2 OR name = ?2) AND (?3=1 OR archived_at IS NULL) LIMIT 1',
     )
-    .bind(planId, ref)
+    .bind(planId, ref, includeArchived ? 1 : 0)
     .first<{ id: string }>();
   return row?.id ?? null;
 }
@@ -3704,10 +3747,11 @@ export async function getWorkoutInPlan(
   db: D1Database,
   planId: string,
   dayId: string,
+  includeArchived = false,
 ): Promise<WorkoutRow | null> {
   return workoutDB(db)
-    .prepare('SELECT * FROM workouts WHERE id = ?1 AND plan_id = ?2')
-    .bind(dayId, planId)
+    .prepare('SELECT * FROM workouts WHERE id = ?1 AND plan_id = ?2 AND (?3=1 OR archived_at IS NULL)')
+    .bind(dayId, planId, includeArchived ? 1 : 0)
     .first<WorkoutRow>();
 }
 
@@ -3715,6 +3759,7 @@ export async function getWorkoutInPlan(
  *  surface as `{ error: 'unknown_fields', fields }` — same diagnosability
  *  contract as updateExercise. */
 const DAY_TEMPLATE_PATCH_KEYS = new Set<string>([
+  'tags', 'archived_at',
   'name',
   'day_label',
   'order_index',
@@ -3757,7 +3802,12 @@ export async function addWorkoutAtVersion(
   orderIndex: number,
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_day' },
   exerciseIds: string[] = [],
-): Promise<WorkoutRow | PlanVersionConflict | { error: 'invalid_exercises' }> {
+  metadata: { tags?: string[]; archived_at?: number | null } = {},
+): Promise<WorkoutRow | PlanVersionConflict | { error: 'invalid_exercises' } | PrescriptionValidationError> {
+  if ((metadata.tags !== undefined && !validWorkoutTags(metadata.tags)) ||
+      (metadata.archived_at !== undefined && !validArchivedAt(metadata.archived_at))) {
+    return { error: 'invalid_fields', fields: ['tags', 'archived_at'] };
+  }
   // Resolve every selection before opening the versioned write. The complete
   // workout, slots, audit and snapshot then share one CAS transaction.
   if (exerciseIds.length > 50 || new Set(exerciseIds).size !== exerciseIds.length) {
@@ -3770,6 +3820,8 @@ export async function addWorkoutAtVersion(
   const modalities = new Map(catalog.results.map((exercise) => [exercise.id, exercise.modality]));
   const ts = now();
   const row: WorkoutRow = {
+    tags: normalizeWorkoutTags(metadata.tags ?? []),
+    archived_at: metadata.archived_at ?? null,
     id: uuid(),
     plan_id: plan.id,
     name,
@@ -3816,6 +3868,9 @@ export async function addWorkoutAtVersion(
         .bind(day.id, index, ts, plan.id, userId, -plan.version),
     ),
   ];
+  statements.push(workoutDB(db).prepare(`UPDATE workouts SET tags=?1,archived_at=?2 WHERE id=?3
+    AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
+    .bind(row.tags, row.archived_at, row.id, plan.id, userId, plan.version, nonce));
   for (const [index, exerciseId] of exerciseIds.entries()) {
     const modality = modalities.get(exerciseId);
     const cardio = modality === 'cardio';
@@ -3853,15 +3908,25 @@ export async function patchWorkoutAtVersion(
     day_label?: string | null;
     order_index?: number;
     notes?: string | null;
+    tags?: string[];
+    archived_at?: number | null;
   },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_day' },
-): Promise<WorkoutRow | { error: 'unknown_fields'; fields: string[] } | PlanVersionConflict | null> {
-  const existing = await getWorkoutInPlan(db, plan.id, dayId);
+): Promise<WorkoutRow | { error: 'unknown_fields'; fields: string[] } | { error: 'active_workout' } | PrescriptionValidationError | PlanVersionConflict | null> {
+  const existing = await getWorkoutInPlan(db, plan.id, dayId, true);
   if (!existing) return null;
   const unknown = Object.keys(patch).filter((key) => !DAY_TEMPLATE_PATCH_KEYS.has(key));
   if (unknown.length > 0) return { error: 'unknown_fields', fields: unknown };
+  const invalid: string[] = [];
+  if (patch.tags !== undefined && !validWorkoutTags(patch.tags)) invalid.push('tags');
+  if (patch.archived_at !== undefined && !validArchivedAt(patch.archived_at)) invalid.push('archived_at');
+  if (invalid.length) return { error: 'invalid_fields', fields: invalid };
+  const archiving = existing.archived_at == null && patch.archived_at != null;
+  if (archiving && await workoutIsActive(db, plan, dayId)) return { error: 'active_workout' };
   const merged: WorkoutRow = {
     ...existing,
+    tags: patch.tags === undefined ? existing.tags ?? '[]' : normalizeWorkoutTags(patch.tags),
+    archived_at: patch.archived_at === undefined ? existing.archived_at ?? null : patch.archived_at,
     name: patch.name ?? existing.name,
     day_label: patch.day_label === undefined ? existing.day_label : patch.day_label,
     order_index: patch.order_index ?? existing.order_index,
@@ -3882,11 +3947,11 @@ export async function patchWorkoutAtVersion(
     : orderDayRows(withMove, dayId);
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
-    ...preparePlanWriteStart(db, plan, attribution, merged.updated_at, nonce),
+    ...preparePlanWriteStart(db, plan, attribution, merged.updated_at, nonce, false, archiving ? dayId : null),
     workoutDB(db)
       .prepare(
         `UPDATE workouts
-            SET name=?2, day_label=?3, order_index=?4, notes=?5, updated_at=?6
+            SET name=?2, day_label=?3, order_index=?4, notes=?5, updated_at=?6, tags=?10, archived_at=?11
           WHERE id=?1 AND plan_id=?7
             AND EXISTS (
               SELECT 1 FROM plans
@@ -3895,7 +3960,7 @@ export async function patchWorkoutAtVersion(
       )
       .bind(
         dayId, merged.name, merged.day_label, merged.order_index, merged.notes,
-        merged.updated_at, plan.id, userId, -plan.version,
+        merged.updated_at, plan.id, userId, -plan.version, merged.tags, merged.archived_at,
       ),
     ...(patch.order_index === undefined
       ? []
@@ -3912,12 +3977,22 @@ export async function patchWorkoutAtVersion(
             .bind(day.id, index, merged.updated_at, plan.id, userId, -plan.version),
         )),
   ];
+  if (archiving) {
+    const meta = parsePlanMeta(plan.meta);
+    const liveIds = new Set(currentDays.results.filter(day => day.id !== dayId).map(day => day.id));
+    const schedule = scrubSchedule(meta.schedule, liveIds);
+    statements.push(prepareArchiveAssignments(db, plan, dayId, merged.updated_at, nonce));
+    statements.push(workoutDB(db).prepare(`UPDATE plans SET meta=?1 WHERE id=?2 AND user_id=?3
+      AND version=-?4 AND plan_write_nonce=?5`)
+      .bind(serializePlanMeta(meta, schedule ?? meta.schedule), plan.id, userId, plan.version, nonce));
+  }
   const versionResultIndex = statements.length;
   statements.push(...preparePlanWriteFinish(db, plan, attribution, merged.updated_at, nonce));
   const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
   const patched = results[2];
   const updatedPlan = results[versionResultIndex]?.results[0];
   if ((results[0]?.meta.changes ?? 0) !== 1 || (patched?.meta.changes ?? 0) !== 1 || !updatedPlan) {
+    if (archiving && await workoutIsActive(db, plan, dayId)) return { error: 'active_workout' };
     return currentPlanVersion(db, userId, plan.version);
   }
   if (patch.order_index !== undefined) {
@@ -6247,6 +6322,8 @@ export async function updatePlanTree(
       name: string;
       order_index?: number;
       notes?: string | null;
+      tags?: string[];
+      archived_at?: number | null;
       exercises?: ExerciseInput[];
     }[];
   },
@@ -6257,6 +6334,7 @@ export async function updatePlanTree(
   | { conflict: false; plan: PlanTree }
   | { conflict: false; acknowledged: true; refresh_required: true; plan_id: string; version: number }
   | { error: 'unknown_exercise'; queries: string[]; query: string }
+  | { error: 'active_workout' }
   | PrescriptionValidationError | GroupConflict
 > {
   if (!input || !Array.isArray(input.workouts)) {
@@ -6336,6 +6414,8 @@ export async function updatePlanTree(
     if (day.order_index !== undefined && (!Number.isInteger(day.order_index) || day.order_index < 0)) invalidFields.add(`workouts.${dayIndex}.order_index`);
     if (day.day_label !== undefined && day.day_label !== null && typeof day.day_label !== 'string') invalidFields.add(`workouts.${dayIndex}.day_label`);
     if (day.notes !== undefined && day.notes !== null && typeof day.notes !== 'string') invalidFields.add(`workouts.${dayIndex}.notes`);
+    if (day.tags !== undefined && !validWorkoutTags(day.tags)) invalidFields.add(`workouts.${dayIndex}.tags`);
+    if (day.archived_at !== undefined && !validArchivedAt(day.archived_at)) invalidFields.add(`workouts.${dayIndex}.archived_at`);
     (day.exercises ?? []).forEach((exercise, exerciseIndex) => {
       const invalid = validateExercisePrescription(exercise as unknown as Record<string, unknown>, {
         modality: resolvedModality.get(exercise.exercise),
@@ -6365,9 +6445,9 @@ export async function updatePlanTree(
   // deadlift day") would silently wipe the entire weekly schedule because
   // rebuilt days get fresh UUIDs.
   const oldDays = await workoutDB(db)
-    .prepare('SELECT id, name, day_label FROM workouts WHERE plan_id = ?1')
+    .prepare('SELECT * FROM workouts WHERE plan_id = ?1')
     .bind(plan.id)
-    .all<{ id: string; name: string; day_label: string | null }>();
+    .all<WorkoutRow>();
   const oldById = new Map<string, { name: string; day_label: string | null }>();
   for (const od of oldDays.results) {
     oldById.set(od.id, { name: od.name, day_label: od.day_label });
@@ -6408,6 +6488,18 @@ export async function updatePlanTree(
     const nk = od.name.toLowerCase();
     const newId = (lk != null ? newIdByLabel.get(lk) : undefined) ?? newIdByName.get(nk) ?? null;
     oldToNewDay.set(od.id, newId);
+  }
+  const metadataByNewId = new Map(newDayIds.map((id, index) => {
+    const day = input.workouts[index]!;
+    const old = oldDays.results.find(old => oldToNewDay.get(old.id) === id);
+    return [id, { tags: day.tags === undefined ? old?.tags ?? '[]' : normalizeWorkoutTags(day.tags),
+      archived_at: day.archived_at === undefined ? old?.archived_at ?? null : day.archived_at }];
+  }));
+  const newlyArchived = oldDays.results.filter(old => old.archived_at == null &&
+    metadataByNewId.get(oldToNewDay.get(old.id) ?? '')?.archived_at != null);
+  // The full document replaces every slot; an archive transition must not race a runner.
+  for (const old of newlyArchived) if (await workoutIsActive(db, plan, old.id)) {
+    return { error: 'active_workout' };
   }
   const oldTeRows = await workoutDB(db)
     .prepare(
@@ -6562,7 +6654,8 @@ export async function updatePlanTree(
          ON CONFLICT DO NOTHING
          RETURNING id`,
       ).bind(plan.id, userId, plan.name, -plan.version, ts, nonce)]
-    : [...preparePlanWriteStart(db, plan, attribution, ts, nonce)];
+    : [...preparePlanWriteStart(db, plan, attribution, ts, nonce, newlyArchived.length > 0)];
+  for (const old of newlyArchived) stmts.push(prepareArchiveAssignments(db, plan, old.id, ts, nonce));
   // 1) INSERT new workouts (parents) — coexist with old by id.
   input.workouts.forEach((d, di) => {
     const dayId = newDayIds[di]!;
@@ -6592,6 +6685,11 @@ export async function updatePlanTree(
         ),
     );
   });
+  for (const [id, metadata] of metadataByNewId) {
+    stmts.push(workoutDB(db).prepare(`UPDATE workouts SET tags=?1,archived_at=?2 WHERE id=?3
+      AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
+      .bind(metadata.tags, metadata.archived_at, id, plan.id, userId, plan.version, nonce));
+  }
   // 2) INSERT new template_exercises (children of step 1's parents). is_warmup
   // was resolved above (explicit wins; else inherit the matched old slot's flag)
   // into isWarmupPerOccurrence so the inserted flag and the remap's class keys
@@ -6764,7 +6862,7 @@ export async function updatePlanTree(
       if (old.day_label != null) newId = newIdByLabel.get(old.day_label.toLowerCase());
       if (!newId) newId = newIdByName.get(old.name.toLowerCase());
     }
-    remappedWeek[wd] = newId ?? null;
+    remappedWeek[wd] = newId && metadataByNewId.get(newId)?.archived_at == null ? newId : null;
   }
   const remappedSchedule: WeeklySchedule = {
     version: baseMeta.schedule.version,
@@ -7523,7 +7621,7 @@ export async function setPlanSchedule(
     };
   }
   const days = await workoutDB(db)
-    .prepare('SELECT id, name, day_label FROM workouts WHERE plan_id = ?1')
+    .prepare('SELECT id, name, day_label FROM workouts WHERE plan_id = ?1 AND archived_at IS NULL')
     .bind(plan.id)
     .all<{ id: string; name: string; day_label: string | null }>();
   // Build resolution maps; id wins, then exact day_label, then exact name.
@@ -8069,7 +8167,7 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
   }
   const plan = await getPlanTree(db, userId);
   if (!plan || plan.id !== input.expected_plan_id || plan.version !== input.expected_version
-      || !plan.workouts.some((workout) => workout.id === input.workout_id)) {
+      || !plan.workouts.some((workout) => workout.id === input.workout_id && workout.archived_at == null)) {
     return { error: 'calendar_move_conflict' };
   }
   const rows = (await workoutDB(db).prepare(
@@ -8083,7 +8181,7 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
   }
   const meta = parsePlanMeta(plan.meta);
   const project = (date: string) => projectCalendar(plan, meta.schedule, rows, date, date,
-    input.today, plan.workouts.map((workout) => workout.id), meta.trips)[0];
+    input.today, plan.workouts.filter(workout => workout.archived_at == null).map((workout) => workout.id), meta.trips)[0];
   const origin = project(input.from_date);
   const destination = project(input.to_date);
   const resolvedWorkout = (cell: CalendarCell | undefined) => {
@@ -8173,7 +8271,7 @@ export async function setPlannedSession(
   if (!plan) return { error: 'no_active_plan' };
   const d = await workoutDB(db)
     .prepare(
-      "SELECT id FROM workouts WHERE plan_id = ?1 AND (id = ?2 OR lower(day_label) = lower(?2) OR lower(name) = lower(?2)) LIMIT 1",
+      "SELECT id FROM workouts WHERE plan_id = ?1 AND archived_at IS NULL AND (id = ?2 OR lower(day_label) = lower(?2) OR lower(name) = lower(?2)) LIMIT 1",
     )
     .bind(plan.id, day)
     .first<{ id: string }>();
@@ -8582,7 +8680,7 @@ async function readCalendarPlan(
   const schedule = meta.schedule;
   const trips = meta.trips ?? [];
   const liveDays = await workoutDB(db)
-    .prepare('SELECT id FROM workouts WHERE plan_id = ?1')
+    .prepare('SELECT id FROM workouts WHERE plan_id = ?1 AND archived_at IS NULL')
     .bind(plan.id)
     .all<{ id: string }>();
   return { plan, schedule, trips, liveDayIds: liveDays.results.map((r) => r.id) };

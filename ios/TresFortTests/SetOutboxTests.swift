@@ -4737,7 +4737,7 @@ final class SetOutboxTests: XCTestCase {
 
         XCTAssertEqual(
             model.loadError,
-            "Finish or discard the active workout before removing this workout day.")
+            "Finish or discard the active workout before removing or archiving this workout.")
     }
 
     func testDeletingLocallyRunningWorkoutDayIsBlockedBeforeServerSessionStarts() async {
@@ -4767,7 +4767,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertTrue(model.running)
         XCTAssertEqual(
             model.loadError,
-            "Finish or discard the active workout before removing this workout day.")
+            "Finish or discard the active workout before removing or archiving this workout.")
     }
 
     func testManualCalendarOverrideUsesAttemptAndDoesNotChangePlanVersion() async {
@@ -9414,7 +9414,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(routineAPI.deleteDayCalls, 0)
         XCTAssertEqual(
             relaunched.loadError,
-            "Finish or discard the active workout before removing this workout day.")
+            "Finish or discard the active workout before removing or archiving this workout.")
 
         await relaunched.setCalendarOverride(
             date: fixedCivilDate, dayID: nil)
@@ -12710,6 +12710,43 @@ extension SetOutboxTests {
 
 @MainActor
 extension SetOutboxTests {
+    func testRemoteArchiveInvalidatesUnstartedRunnerInsteadOfResumingAnotherWorkout() throws {
+        for recovery in ["cold", "mounted", "resume"] {
+            for hasAlternative in [false, true] {
+                let suite = "ArchivedRunner.\(UUID().uuidString)"
+                let defaults = LocalPersistence(suiteName: suite)!, ex = exercise()
+                defer { defaults.removePersistentDomain(forName: suite) }
+                let model = SyncModel(auth: retainedAuth(defaults: defaults), defaults: defaults, now: { self.fixedDate })
+                prepare(model, exercise: ex, running: true)
+                XCTAssertTrue(model.saveWorkoutFeedback(.init(notes: "Before the first set", perceivedFatigue: nil),
+                    expected: try XCTUnwrap(model.terminalActionTarget), previous: nil))
+                var archived = day(with: [ex])
+                archived.archived_at = 2_000_000_000_000
+                let alternative = Workout(id: "other", name: "Other", day_label: nil, order_index: 1, exercises: [exercise(id: "other-slot")])
+                let plan = PlanTree(id: "plan-a", name: "Plan A", version: 2,
+                    workouts: hasAlternative ? [archived, alternative] : [archived], meta: nil)
+                let coldDefaults = LocalPersistence(suiteName: suite)!
+                let target = recovery == "mounted" ? model : SyncModel(auth: retainedAuth(defaults: coldDefaults), defaults: coldDefaults, now: { self.fixedDate })
+                if recovery == "resume" {
+                    target.replaceState(with: StateResponse(plan: model.plan, plan_version: 1,
+                        sessions: [], sets: [], external_events: [], external_activities: [], activities: [],
+                        server_time: 2_000_000_000_000, planGroupsVersion: 1))
+                    XCTAssertTrue(target.hasResumableWorkout)
+                    target.plan = plan
+                } else {
+                    target.replaceState(with: StateResponse(plan: plan, plan_version: 2,
+                        sessions: [], sets: [], external_events: [], external_activities: [], activities: [],
+                        server_time: 2_000_000_000_000, planGroupsVersion: 1))
+                }
+                target.resumeWorkout()
+                XCTAssertFalse(target.running, recovery)
+                XCTAssertFalse(target.hasResumableWorkout, recovery)
+                XCTAssertNil(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults), recovery)
+                XCTAssertEqual(target.plan?.workouts.first?.id, archived.id, "History retains the archived workout")
+            }
+        }
+    }
+
     func testApprovedFeedbackWithoutSetsSurvivesRelaunchAndRemoteTerminalStillWins() async throws {
         for status in ["absent", "planned", "skipped", "discarded", "completed"] {
             let suite = "FeedbackBeforeFirstSet.\(UUID().uuidString)"

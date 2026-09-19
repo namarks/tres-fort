@@ -11,7 +11,7 @@ import type { PlanTree, Weekday } from './types';
  */
 export function resolvedScheduleNames(tree: PlanTree): Record<Weekday, string | null> {
   const week = parsePlanMeta(tree.meta).schedule.week;
-  const nameById = new Map(tree.workouts.map((workout) => [workout.id, workout.name]));
+  const nameById = new Map(tree.workouts.filter(workout => workout.archived_at == null).map((workout) => [workout.id, workout.name]));
   const out = {} as Record<Weekday, string | null>;
   for (const weekday of WEEKDAYS) {
     const id = week[weekday];

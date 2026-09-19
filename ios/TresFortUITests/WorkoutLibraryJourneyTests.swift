@@ -14,6 +14,51 @@ final class WorkoutLibraryJourneyTests: XCTestCase {
         return app
     }
 
+    func testTagsArchiveCancelAndRestore() {
+        let app = launch()
+        app.buttons["Actions for Gym"].tap()
+        app.buttons["Edit tags"].tap()
+        let input = app.textViews["workoutTags.input"]
+        if input.waitForExistence(timeout: 3) { input.tap(); input.typeText("quick, travel") }
+        else {
+            let field = app.textFields["workoutTags.input"]
+            XCTAssertTrue(field.waitForExistence(timeout: 3)); field.tap(); field.typeText("quick, travel")
+        }
+        app.buttons["workoutTags.save"].tap()
+        XCTAssertTrue(app.staticTexts["workoutTags-synthetic-day"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["workoutTags-synthetic-day"].label, "quick · travel")
+        app.buttons["library.tagFilter"].tap()
+        app.buttons["quick"].tap()
+        XCTAssertTrue(app.buttons["library.workout.synthetic-day"].exists)
+        XCTAssertFalse(app.buttons["library.workout.hotel"].exists)
+        app.buttons["library.tagFilter"].tap()
+        app.buttons["All tags"].tap()
+        XCTAssertTrue(app.buttons["library.workout.hotel"].exists)
+        app.buttons["Actions for Gym"].tap(); app.buttons["Archive workout"].tap()
+        let confirm = app.alerts["Archive Gym?"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.buttons["Cancel"].tap()
+        XCTAssertTrue(app.buttons["library.workout.synthetic-day"].exists)
+        app.buttons["Actions for Gym"].tap(); app.buttons["Archive workout"].tap()
+        confirm.buttons["Archive workout"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons["library.workout.synthetic-day"])
+        waitForExpectations(timeout: 5)
+        app.segmentedControls.buttons["Archived"].tap()
+        XCTAssertTrue(app.buttons["library.workout.synthetic-day"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["library.workout.hotel"].exists)
+        let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        image.name = "workout-archive"; image.lifetime = .keepAlways; add(image)
+        app.buttons["Actions for Gym"].tap()
+        XCTAssertFalse(app.buttons["Use on a date"].exists)
+        app.buttons["Restore workout"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons["library.workout.synthetic-day"])
+        waitForExpectations(timeout: 5)
+        app.segmentedControls.buttons["Active"].tap()
+        XCTAssertTrue(app.buttons["library.workout.synthetic-day"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["workoutSchedule-synthetic-day"].label, "On demand")
+        XCTAssertEqual(app.staticTexts["workoutTags-synthetic-day"].label, "quick · travel")
+    }
+
     func testLibraryBadgesUnscheduleAndDateAssignment() {
         let app = launch()
         XCTAssertEqual(app.staticTexts["workoutSchedule-synthetic-day"].label, "Tue")

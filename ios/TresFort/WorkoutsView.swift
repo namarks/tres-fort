@@ -27,7 +27,7 @@ enum RoutineScheduleDraftPolicy {
         guard identity == loadedIdentity else {
             return (persistedDraft(for: plan), identity)
         }
-        let liveDayIDs = Set(plan?.workouts.map(\.id) ?? [])
+        let liveDayIDs = Set(plan?.availableWorkouts.map(\.id) ?? [])
         var draft = currentDraft
         for key in PlanSchedule.weekdayKeys {
             let dayID = draft[key] ?? ""
@@ -64,6 +64,17 @@ struct WorkoutsView: View {
     var date: String? = nil
     @Environment(\.dismiss) private var dismiss
 
+    @State private var showArchived = false
+    @State private var selectedTag = ""
+    @State private var taggingDay: Workout?
+    @State private var archivingDay: Workout?
+    private var visibleWorkouts: [Workout] {
+        let days = showArchived && date == nil ? (sync.plan?.workouts.filter(\.isArchived) ?? [])
+            : WorkoutLibraryPolicy.choices(plan: sync.plan, date: date ?? sync.todayString)
+        return selectedTag.isEmpty ? days : days.filter { $0.workoutTags.contains(selectedTag) }
+    }
+    private var canReorder: Bool { !showArchived && selectedTag.isEmpty && date == nil
+        && !(sync.plan?.trips.contains(where: { sync.todayString >= $0.start && sync.todayString <= $0.end }) ?? false) }
     @State private var renameDayName = ""
     @State private var addingDay = false
     @State private var renamingDay: Workout?
@@ -89,7 +100,7 @@ struct WorkoutsView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Done") { dismiss() }.foregroundStyle(Theme.accent)
                 }
-                if (sync.plan?.workouts.count ?? 0) > 1 {
+                if canReorder && visibleWorkouts.count > 1 {
                     ToolbarItem(placement: .topBarTrailing) {
                         EditButton().disabled(sync.isRoutineMutationInFlight)
                     }
@@ -127,6 +138,21 @@ struct WorkoutsView: View {
             } message: {
                 Text("Past sessions and logged sets stay in your history. Recurring weekdays using this workout become rest days.")
             }
+            .sheet(item: $taggingDay) { workout in
+                WorkoutTagsSheet(sync: sync, workout: workout)
+            }
+            .alert("Archive \(archivingDay?.name ?? "this workout")?", isPresented: Binding(
+                get: { archivingDay != nil }, set: { if !$0 { archivingDay = nil } }
+            )) {
+                Button("Archive workout", role: .destructive) {
+                    guard let day = archivingDay else { return }
+                    archivingDay = nil
+                    Task { await sync.setWorkoutArchived(dayID: day.id, archived: true) }
+                }
+                Button("Cancel", role: .cancel) { archivingDay = nil }
+            } message: {
+                Text("Completed workouts and logged sets stay in your history. Weekly and planned date assignments become rest. You can restore this workout later.")
+            }
             .sheet(item: $detailTarget) { target in
                 WorkoutDetailsView(sync: sync, workoutID: target.id, date: date,
                                    onStart: onStart.map { start in
@@ -152,11 +178,29 @@ struct WorkoutsView: View {
     private var routineList: some View {
         List {
             Section {
-                if let days = sync.plan?.workouts, days.isEmpty {
-                    Text("Choose exercises to build your first workout.")
+                if date == nil {
+                    Picker("Library", selection: $showArchived) {
+                        Text("Active").tag(false)
+                        Text("Archived").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("library.scope")
+                }
+                let tags = Array(Set((sync.plan?.workouts ?? []).flatMap(\.workoutTags))).sorted()
+                if !tags.isEmpty {
+                    Picker("Tag", selection: $selectedTag) {
+                        Text("All tags").tag("")
+                        ForEach(tags, id: \.self) { Text($0).tag($0) }
+                    }
+                    .accessibilityIdentifier("library.tagFilter")
+                }
+            }
+            Section {
+                if visibleWorkouts.isEmpty {
+                    Text(showArchived ? "No archived workouts." : selectedTag.isEmpty ? "Choose exercises to build a workout." : "No workouts with this tag.")
                         .font(Theme.mono(12)).foregroundStyle(Theme.muted)
                 } else {
-                    ForEach(sync.plan?.workouts ?? []) { day in
+                    ForEach(visibleWorkouts) { day in
                         HStack(spacing: 0) {
                             Button {
                                 detailTarget = IdentifiedString(id: day.id)
@@ -166,9 +210,14 @@ struct WorkoutsView: View {
                                         Text(day.name)
                                             .font(Theme.mono(15, .bold))
                                             .foregroundStyle(Theme.text)
-                                        Text(WorkoutLibraryPolicy.scheduleBadge(workoutID: day.id, plan: sync.plan))
+                                        Text(day.isArchived ? "Archived" : WorkoutLibraryPolicy.scheduleBadge(workoutID: day.id, plan: sync.plan))
                                             .font(Theme.mono(10, .bold)).foregroundStyle(Theme.accent)
                                             .accessibilityIdentifier("workoutSchedule-\(day.id)")
+                                        if !day.workoutTags.isEmpty {
+                                            Text(day.workoutTags.joined(separator: " · "))
+                                                .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                                                .accessibilityIdentifier("workoutTags-\(day.id)")
+                                        }
                                         Text(day.exercises.isEmpty
                                              ? "No exercises yet"
                                              : "\(day.exercises.count) exercise\(day.exercises.count == 1 ? "" : "s")")
@@ -191,6 +240,12 @@ struct WorkoutsView: View {
                             .disabled(sync.isRoutineMutationInFlight)
 
                             Menu {
+                                Button("Edit tags", systemImage: "tag") { taggingDay = day }
+                                if day.isArchived {
+                                    Button("Restore workout", systemImage: "arrow.uturn.backward") {
+                                        Task { await sync.setWorkoutArchived(dayID: day.id, archived: false) }
+                                    }
+                                } else {
                                 Button("Use on a date", systemImage: "calendar.badge.plus") {
                                     assignmentTarget = day
                                 }
@@ -198,8 +253,13 @@ struct WorkoutsView: View {
                                     Task { await sync.unscheduleWorkout(workoutID: day.id) }
                                 }
                                 .disabled(!WorkoutLibraryPolicy.isScheduled(workoutID: day.id, plan: sync.plan))
-                                Button("Edit exercises") {
-                                    editTarget = IdentifiedString(id: day.id)
+                                Button("Archive workout", systemImage: "archivebox") { archivingDay = day }
+                                    .disabled(sync.running && sync.selectedDayID == day.id)
+                                }
+                                if !day.isArchived {
+                                    Button("Edit exercises") {
+                                        editTarget = IdentifiedString(id: day.id)
+                                    }
                                 }
                                 Button("Rename") {
                                     renameDayName = day.name
@@ -234,11 +294,12 @@ struct WorkoutsView: View {
                             .disabled(sync.isRoutineMutationInFlight
                                 || (sync.running && sync.selectedDayID == day.id))
                         }
-                        .moveDisabled(sync.isRoutineMutationInFlight)
+                        .moveDisabled(sync.isRoutineMutationInFlight || !canReorder)
                     }
                     .onMove(perform: moveDays)
                 }
 
+                if !showArchived {
                 Button {
                     addingDay = true
                 } label: {
@@ -247,10 +308,12 @@ struct WorkoutsView: View {
                         .foregroundStyle(Theme.accent)
                 }
                 .disabled(sync.isRoutineMutationInFlight)
+                }
             } header: {
-                Text("Workouts")
+                Text(showArchived ? "Archived workouts" : "Workouts")
             } footer: {
-                Text("Open a workout to view its exercises, start it, or edit the saved workout.")
+                Text(showArchived ? "Restore a workout to use it again. Completed workouts and logged sets stay in your history."
+                    : "Open a workout to view its exercises, start it, or edit the saved workout.")
             }
 
             Section("Changes") {
@@ -286,13 +349,17 @@ struct WorkoutsView: View {
     private func moveDays(from offsets: IndexSet, to destination: Int) {
         guard !sync.isRoutineMutationInFlight,
               let source = offsets.first,
-              let days = sync.plan?.workouts,
+              canReorder,
+              let days = sync.plan?.availableWorkouts,
               days.indices.contains(source)
         else { return }
         var reordered = days
         let movedID = days[source].id
         reordered.move(fromOffsets: offsets, toOffset: destination)
         guard let target = reordered.firstIndex(where: { $0.id == movedID }) else { return }
-        Task { await sync.moveWorkoutDay(dayID: movedID, toIndex: target) }
+        let remaining = (sync.plan?.workouts ?? []).filter { $0.id != movedID }
+        let following = reordered.dropFirst(target + 1).first
+        let fullIndex = following.flatMap { next in remaining.firstIndex { $0.id == next.id } } ?? remaining.count
+        Task { await sync.moveWorkoutDay(dayID: movedID, toIndex: fullIndex) }
     }
 }

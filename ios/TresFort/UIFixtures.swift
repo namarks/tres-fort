@@ -753,6 +753,32 @@ private struct UIFixtureServer {
             let to: [String: Any] = ["id": "move-to", "date": "2026-09-09", "status": "planned", "day_template_id": dayID, "attempt": 1, "updated_at": revision]
             sessions += [from, to]
             response = ["ok": true, "from": from, "to": to]
+        case ("PATCH", let path) where scenario == .library && path.hasPrefix("/api/days/") && path.split(separator: "/").count == 3:
+            guard body["expected_version"] as? Int == plan?["version"] as? Int else {
+                status = 409; response = ["conflict": true]; break
+            }
+            let id = String(path.split(separator: "/").last!)
+            var days = plan?["days"] as? [[String: Any]] ?? []
+            guard let index = days.firstIndex(where: { $0["id"] as? String == id }) else { throw URLError(.badServerResponse) }
+            if let tags = body["tags"] as? [String] {
+                days[index]["tags"] = String(data: try JSONSerialization.data(withJSONObject: tags), encoding: .utf8)!
+            }
+            if let archived = body["archived_at"] {
+                days[index]["archived_at"] = archived
+                if !(archived is NSNull) {
+                    let metaText = plan?["meta"] as? String ?? "{}"
+                    var meta = try JSONSerialization.jsonObject(with: Data(metaText.utf8)) as? [String: Any] ?? [:]
+                    var schedule = meta["schedule"] as? [String: Any] ?? [:]
+                    var week = schedule["week"] as? [String: Any] ?? [:]
+                    for key in Array(week.keys) where week[key] as? String == id { week[key] = NSNull() }
+                    schedule["week"] = week; meta["schedule"] = schedule
+                    plan?["meta"] = String(data: try JSONSerialization.data(withJSONObject: meta), encoding: .utf8)!
+                }
+            }
+            plan?["days"] = days
+            let nextVersion = (plan?["version"] as? Int ?? 1) + 1
+            plan?["version"] = nextVersion
+            response = ["id": id]
         case ("DELETE", "/api/days/hotel") where scenario == .library:
             let remaining = (plan?["days"] as? [[String: Any]] ?? []).filter { $0["id"] as? String != "hotel" }
             let version = (plan?["version"] as? Int ?? 1) + 1

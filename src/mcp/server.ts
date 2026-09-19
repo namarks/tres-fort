@@ -1,3 +1,4 @@
+import { validWorkoutTags, validArchivedAt } from '../workoutMetadata';
 import { ATTRIBUTION_INSTRUCTIONS } from '../dataAttribution';
 import { coachingSession, coachingPlanMeta } from '../coachingContext';
 import { TRAINING_PROFILE_COACH_GUIDANCE } from '../trainingProfile';
@@ -207,6 +208,8 @@ function addWorkoutTool(operation: 'add_day' | 'add_workout'): Tool {
     inputSchema: obj(
       {
         name: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' }, maxItems: 12 },
+        archived_at: { type: ['integer', 'null'] },
         day_label: { type: 'string' },
         order_index: { type: 'integer' },
       },
@@ -216,6 +219,10 @@ function addWorkoutTool(operation: 'add_day' | 'add_workout'): Tool {
     // Inserting at an occupied index rewrites existing workout order values.
     atomicWrite: true,
     handler: async (a, env, userId) => {
+      if ((a.tags !== undefined && !validWorkoutTags(a.tags)) ||
+          (a.archived_at !== undefined && !validArchivedAt(a.archived_at))) {
+        return { error: 'invalid_fields', fields: ['tags', 'archived_at'] };
+      }
       let plan = await getActivePlan(env.DB, userId);
       if (!plan) {
         plan = (await ensureActivePlan(env.DB, userId, 'My Plan', {
@@ -236,6 +243,7 @@ function addWorkoutTool(operation: 'add_day' | 'add_workout'): Tool {
         typeof a.day_label === 'string' ? a.day_label : null,
         orderIndex,
         { actor: 'mcp', operation, args: a, note: `Added workout "${a.name}".` },
+        [], { tags: a.tags as string[] | undefined, archived_at: a.archived_at as number | null | undefined },
       );
     },
   };
@@ -246,7 +254,7 @@ function addWorkoutTool(operation: 'add_day' | 'add_workout'): Tool {
 function updateWorkoutTool(operation: 'update_day' | 'update_workout'): Tool {
   const tool: Tool = {
     description:
-      "Patch a reusable workout's metadata in the active plan: `name`, `day_label`, `order_index`, `notes`. Identify the workout by `workout_id` OR by `day` (label/name). Bumps the plan version. Unknown patch keys → `{error:'unknown_fields', fields}`. To change exercises within a workout, use add_exercise / update_exercise / delete_exercise / swap_exercise.",
+      "Patch a reusable workout's metadata in the active plan: `name`, `day_label`, `order_index`, `notes`, `tags` (up to 12 short labels), `archived_at` (epoch-ms to archive, null to restore). Archiving clears scheduling and keeps history; active workouts cannot be archived. Identify the workout by `workout_id` OR by `day` (label/name). Bumps the plan version. Unknown patch keys → `{error:'unknown_fields', fields}`. To change exercises within a workout, use add_exercise / update_exercise / delete_exercise / swap_exercise.",
     inputSchema: obj(
       {
         workout_id: { type: 'string' },
@@ -265,7 +273,7 @@ function updateWorkoutTool(operation: 'update_day' | 'update_workout'): Tool {
       if (typeof a.workout_id === 'string') {
         dayId = a.workout_id;
       } else if (typeof a.day === 'string') {
-        dayId = await findWorkoutByRef(env.DB, plan.id, a.day);
+        dayId = await findWorkoutByRef(env.DB, plan.id, a.day, true);
       }
       if (!dayId) return { error: 'day_not_found' };
       const r = await patchWorkoutAtVersion(
@@ -416,7 +424,7 @@ const TOOLS: Record<string, Tool> = {
         date,
         session,
         sets: session ? await getSetsForSession(env.DB, session.id) : [],
-        plan_workouts: tree ? coachWorkouts(tree) : [],
+        plan_workouts: tree ? coachWorkouts(tree).filter(workout => workout.archived_at == null) : [],
         schedule,
         last_session: last,
         last_session_sets: last ? await getSetsForSession(env.DB, last.id) : [],
@@ -994,6 +1002,8 @@ const TOOLS: Record<string, Tool> = {
             properties: {
               day_label: { type: 'string' },
               name: { type: 'string' },
+                  tags: { type: 'array', items: { type: 'string' }, maxItems: 12 },
+                  archived_at: { type: ['integer', 'null'] },
               order_index: { type: 'integer' },
               notes: { type: 'string' },
               exercises: { type: 'array', items: { type: 'object' } },
@@ -1719,9 +1729,11 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
           version: tree.version,
           authored_context: authoredContext,
           weekly_schedule: schedule,
-          workouts: tree.workouts.map((d) => ({
+          workouts: tree.workouts.filter(d => d.archived_at == null).map((d) => ({
             label: d.day_label,
             name: d.name,
+            tags: JSON.parse(d.tags ?? '[]'),
+            archived_at: d.archived_at ?? null,
             exercises: d.exercises.length,
             groups: coachGroupSummary(d.exercises),
           })),

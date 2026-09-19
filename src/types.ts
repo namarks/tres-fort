@@ -148,6 +148,8 @@ export interface PlanRow {
 }
 
 export interface WorkoutRow {
+  tags?: string;
+  archived_at?: number | null;
   id: string;
   plan_id: string;
   name: string;

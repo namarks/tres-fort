@@ -121,8 +121,9 @@ AI coaching.
   saved as a workout. The weekly routine becomes one optional use of the
   library. P0.5(a)/(b) implement unified exercise guidance/history and shared
   search/filter behavior; both shipped with the recent usability fixes in
-  internal TestFlight 1.0 (43). P1 tags/archive is next; preview thumbnails
-  remain planned pending activation.
+  internal TestFlight 1.0 (43). P1 tags/archive is implemented; migration, Worker
+  deployment and client distribution await separate release authority. P2
+  freestyle is next; preview thumbnails remain planned pending activation.
 - [Workouts and multi-session days](workouts-and-multi-session/plan.md) —
   **gated**; the `day_templates` to `workouts` rename is live server-side with
   a compatibility window, and every shipped client still writes the legacy

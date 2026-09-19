@@ -39,7 +39,7 @@ it('normalizes tags and snapshots every metadata field in the same atomic write'
   expect((await env.DB.prepare("SELECT body FROM notes WHERE user_id=? AND author='coach'").bind(userId).all()).results).toContainEqual({body:'Archived workout.'});
 });
 
-it.each([{tags:['']},{tags:['a'.repeat(33)]},{tags:['İ'.repeat(17)]},{tags:Array(13).fill('x')},{tags:'travel'},{archived_at:-1},{archived_at:1.5}])('rejects invalid metadata before writing: %j', async patch => {
+it.each([{tags:['']},{tags:['a'.repeat(33)]},{tags:['İ'.repeat(17)]},{tags:['travel, quick']},{tags:Array(13).fill('x')},{tags:'travel'},{archived_at:-1},{archived_at:1.5}])('rejects invalid metadata before writing: %j', async patch => {
   const {userId,plan,gym}=await fixture();
   expect(await patchWorkoutAtVersion(env.DB,userId,plan,gym.id,patch as never)).toHaveProperty('error','invalid_fields');
   expect((await getPlanTree(env.DB,userId))?.version).toBe(plan.version);
@@ -161,6 +161,33 @@ it('rejects a runner that starts between archive validation and its atomic claim
   expect(injected).toBe(true);
   expect((await getPlanTree(env.DB,userId))?.version).toBe(plan.version);
   expect((await env.DB.prepare("SELECT id FROM audit_log WHERE user_id=? AND tool='update_workout'").bind(userId).all()).results).toEqual([]);
+});
+
+it.each(['unrelated', 'target'])('scopes the rebuild archive fence when an %s workout starts during the write', async active => {
+  const {userId,plan,gym,hotel}=await fixture();
+  let injected=false;
+  const db=new Proxy(env.DB,{get(target,key){
+    if(key==='batch') return async (statements:D1PreparedStatement[])=>{
+      if(!injected){injected=true;await session(userId,plan.id,active==='target'?hotel.id:gym.id,'2026-09-21','in_progress');}
+      return target.batch(statements);
+    };
+    const value=Reflect.get(target,key,target);
+    return typeof value==='function'?value.bind(target):value;
+  }});
+  const result=await updatePlanTree(db,userId,{expected_version:plan.version,workouts:[
+    {name:'Gym',day_label:'A',exercises:[{exercise:'bench',target_sets:3,target_reps:5}]},
+    {name:'Hotel',day_label:'B',archived_at:123,exercises:[]},
+  ]});
+  expect(injected).toBe(true);
+  if(active==='target') {
+    expect(result).toEqual({error:'active_workout'});
+    expect(await getPlanTree(env.DB,userId)).toEqual(plan);
+  } else {
+    if(!('plan' in result)) throw Error('unrelated runner must not prevent archive');
+    expect(result.plan.workouts[1]).toMatchObject({archived_at:123});
+    expect(await env.DB.prepare("SELECT status,workout_id FROM sessions WHERE user_id=?").bind(userId).first())
+      .toEqual({status:'in_progress',workout_id:result.plan.workouts[0]!.id});
+  }
 });
 
 it('rolls archive and schedule cleanup back if its audit cannot commit',async()=>{

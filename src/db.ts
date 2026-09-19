@@ -3230,7 +3230,7 @@ export function preparePlanWriteStart(
   ts: number,
   nonce: string,
   rejectActiveWorkout = false,
-  rejectWorkoutId: string | null = null,
+  rejectWorkoutIds: readonly string[] = [],
 ): D1PreparedStatement[] {
   return [
     workoutDB(db).prepare(
@@ -3240,15 +3240,16 @@ export function preparePlanWriteStart(
           AND EXISTS (SELECT 1 FROM users u WHERE u.id=?2)
           AND NOT EXISTS (SELECT 1 FROM account_deletion_intents i WHERE i.user_id=?2)
           AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts r WHERE r.user_id=?2)
-          AND (?6 IS NULL OR NOT EXISTS (
+          AND (?6='[]' OR NOT EXISTS (
             SELECT 1 FROM sessions s WHERE s.user_id=?2 AND s.status='in_progress'
-              AND ${workoutSessionReferenceSQL('s', '?6', '?1')}
+              AND EXISTS (SELECT 1 FROM json_each(?6) archive_target
+                WHERE ${workoutSessionReferenceSQL('s', 'archive_target.value', '?1')})
           ))
           AND (?5=0 OR NOT EXISTS (
             SELECT 1 FROM sessions s WHERE s.user_id=?2 AND s.status='in_progress'
               AND ${sessionReferencesPlanSQL('s', '?1')}
           ))`,
-    ).bind(plan.id, plan.user_id, plan.version, nonce, rejectActiveWorkout ? 1 : 0, rejectWorkoutId),
+    ).bind(plan.id, plan.user_id, plan.version, nonce, rejectActiveWorkout ? 1 : 0, JSON.stringify(rejectWorkoutIds)),
     preparePlanSnapshotInsert(db, {
       userId: plan.user_id, planId: plan.id, version: plan.version,
       actor: 'system', operation: 'baseline', reason: 'First captured version',
@@ -3961,7 +3962,7 @@ export async function patchWorkoutAtVersion(
     : orderDayRows(withMove, dayId);
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
-    ...preparePlanWriteStart(db, plan, attribution, merged.updated_at, nonce, false, archiving ? dayId : null),
+    ...preparePlanWriteStart(db, plan, attribution, merged.updated_at, nonce, false, archiving ? [dayId] : []),
     workoutDB(db)
       .prepare(
         `UPDATE workouts
@@ -6511,7 +6512,7 @@ export async function updatePlanTree(
   }));
   const newlyArchived = oldDays.results.filter(old => old.archived_at == null &&
     metadataByNewId.get(oldToNewDay.get(old.id) ?? '')?.archived_at != null);
-  // The full document replaces every slot; an archive transition must not race a runner.
+  // Fence only archive targets; unrelated active workouts keep the existing remap contract.
   for (const old of newlyArchived) if (await workoutIsActive(db, plan, old.id)) {
     return { error: 'active_workout' };
   }
@@ -6668,7 +6669,7 @@ export async function updatePlanTree(
          ON CONFLICT DO NOTHING
          RETURNING id`,
       ).bind(plan.id, userId, plan.name, -plan.version, ts, nonce)]
-    : [...preparePlanWriteStart(db, plan, attribution, ts, nonce, newlyArchived.length > 0)];
+    : [...preparePlanWriteStart(db, plan, attribution, ts, nonce, false, newlyArchived.map(day => day.id))];
   for (const old of newlyArchived) stmts.push(prepareArchiveAssignments(db, plan, old.id, ts, nonce));
   // 1) INSERT new workouts (parents) — coexist with old by id.
   input.workouts.forEach((d, di) => {
@@ -6916,6 +6917,9 @@ export async function updatePlanTree(
   if ((claimed?.meta.changes ?? 0) !== 1 || (documentUpdate?.meta.changes ?? 0) !== 1 || !versionUpdate?.results[0]) {
     if (createsPlan && retryConcurrentBootstrap) {
       return updatePlanTree(db, userId, input, attribution, false);
+    }
+    for (const old of newlyArchived) if (await workoutIsActive(db, plan, old.id)) {
+      return { error: 'active_workout' };
     }
     const current = await getActivePlan(db, userId);
     return { conflict: true, current_version: current?.version ?? plan.version };

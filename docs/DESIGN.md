@@ -299,7 +299,9 @@ a conflict for the caller to review. See the
 [prescription contract](plans/completed/prescription-integrity/decisions.md).
 
 Migration `0053` adds workout tags and archiving. REST/MCP writes accept up to
-12 tags of 1–32 characters, trimmed, lowercased and deduplicated. Plan reads
+12 comma-free tags of 1–32 characters, trimmed, lowercased and deduplicated.
+Commas separate labels in the iOS editor; shared validation rejects them inside
+an API tag so opening and saving cannot silently split an accepted label. Plan reads
 carry `tags` as a JSON-encoded string, like other stored JSON fields. The
 atomic writer, both snapshot serializers, comparisons, restores and coach
 rebuilds retain tags and `archived_at`; a rebuild that omits metadata inherits

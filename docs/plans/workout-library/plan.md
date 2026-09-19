@@ -355,11 +355,11 @@ No second editor, no per-session template copies, no weeks table.
     - Migration 0054, durable freestyle starts, slotless set logging, account-
       scoped runner recovery and reviewed atomic save are implemented. The
       save receipt, plan/source CAS and attempt advance make retries safe;
-      new workouts remain unscheduled. REST compatibility preserves old-client
-      deletion invalidations and completed history; MCP unscheduled logging
-      creates freestyle sessions.
-    - Verification: 1,179 backend tests across three shards, including 28
-      freestyle cases; 636 iOS unit tests with one existing skip; rep and timed
+      new workouts remain unscheduled. REST and iOS use one current freestyle
+      contract; MCP logging on unscheduled or explicitly skipped dates creates
+      freestyle sessions.
+    - Verification: 1,177 backend tests across three shards, including 25
+      freestyle cases; 635 iOS unit tests with one existing skip; rep and timed
       start/add/finish/save UI journeys, including largest system text. Query
       plans, TypeScript, plan graph and same-Worker rename/rollback rehearsal
       pass. PR review and CI retain exact-head delivery evidence.
@@ -373,19 +373,12 @@ No second editor, no per-session template copies, no weeks table.
     `deleteWorkout`, the runner's template inference, and
     `projectCalendar` (a freestyle session is a real session and wins for its
     date; it renders with its logged exercises rather than a template name).
-    Released-client compatibility: the current runner infers a template from
-    the schedule for any null-template session, so a client without the
-    `freestyle` capability receives freestyle sessions only once they are
-    completed (as history with their sets) and never as Today's session;
-    an in-progress freestyle session is represented only by a redacted discarded
-    row plus prior-set tombstones to invalidate cached planned attempts. Per the shared
-    rule, invisible means fenced: while a date holds a live (`planned` or
-    `in_progress`) freestyle session, `POST /api/sessions`,
-    `PUT /api/calendar/{date}`, `PATCH /api/sessions/{id}` status changes,
-    and the MCP session-by-date resolvers return `session_kind_conflict`
-    (409) to a non-`freestyle` client rather than reusing the null-template
-    row and pinning it to a workout, which the current date-scoped
-    `getOrCreateSession` would otherwise do.
+    Owner decision (September 19, 2026): there are no legacy clients to
+    support for this feature. Use one current client/server contract, without
+    capability negotiation, hidden-session projections or upgrade-only cache
+    reloads. All authenticated clients receive actual session kinds and ordinary
+    set deltas, including tombstones. Attempt guards still prevent stale writes
+    and live freestyle sessions cannot be pinned to scheduled workouts.
   - The runner starts a freestyle session from the rest-day CTA and from the
     calendar for today. Exercises are added from the catalog as you go; the
     prescription shown is the member's last comparable actuals for that

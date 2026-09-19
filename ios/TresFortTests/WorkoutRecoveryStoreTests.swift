@@ -22,7 +22,6 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
         planGroupsVersion: Int? = 1
     ) throws -> StateResponse {
         var object: [String: Any] = [
-            "freestyle_version": 1,
             "plan": [
                 "id": "plan-a",
                 "name": planName,

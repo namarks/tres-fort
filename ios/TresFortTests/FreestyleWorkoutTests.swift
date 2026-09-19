@@ -2,27 +2,6 @@ import XCTest
 @testable import TresFort
 
 final class FreestyleWorkoutTests: XCTestCase {
-    @MainActor func testCapabilityUpgradeReloadsHiddenHistoryOnlyUntilCertified() throws {
-        let suite = "freestyle-upgrade-" + UUID().uuidString
-        let defaults = try XCTUnwrap(LocalPersistence(suiteName: suite))
-        defer {
-            defaults.removePersistentDomain(forName: suite)
-            try? FileManager.default.removeItem(at: defaults.trainingStore.directory)
-        }
-        let old = StateResponse(plan: nil, plan_version: 0, sessions: [], sets: [],
-            external_events: [], external_activities: [], activities: [], server_time: 100_000,
-            freestyleVersion: nil)
-        StateSnapshotStore.save(old, userID: "member", defaults: defaults)
-        let upgrade = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(userID: "member", defaults: defaults))
-        XCTAssertEqual(upgrade.watermarks.setsSince, 0)
-        var fresh = old
-        fresh.freestyleVersion = 1
-        XCTAssertNotNil(StateSnapshotStore.commitStateResponse(fresh, ticket: upgrade, defaults: defaults))
-        let next = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(userID: "member", defaults: defaults))
-        XCTAssertGreaterThan(next.watermarks.setsSince, 0)
-        XCTAssertEqual(StateSnapshotStore.load(userID: "member", defaults: defaults)?.state.freestyleVersion, 1)
-    }
-
     func testRepPrescriptionEncodesExplicitNullDuration() throws {
         let slot = FreestyleSlot(exercise_id: "bench", target_sets: 2, target_reps: 8,
                                  target_duration_s: nil, target_weight: 100, rest_seconds: 120)

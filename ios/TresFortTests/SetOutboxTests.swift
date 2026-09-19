@@ -13824,15 +13824,14 @@ extension SetOutboxTests {
                               workout_id: nil, updated_at: 2_000_000_000_001, attempt: 0, write_protocol: "attempt-v1")
         var current = StateResponse(plan: PlanTree(id: "plan-a", name: "Plan A", version: 1, workouts: [original], meta: nil),
             plan_version: 1, sessions: [], sets: [], external_events: [], external_activities: [], activities: [], server_time: 2_000_000_000_000)
-        current.freestyleVersion = 1
         api.stateHandler = { _ in current }
         freestyle.startHandler = { date, attempt in
             XCTAssertEqual(date, live.date); XCTAssertEqual(attempt,0)
             current = self.state(session: live, sets: [], workouts: [original], serverTime: 2_000_000_000_002)
-            current.freestyleVersion = 1
             return live
         }
         let model = SyncModel(auth: auth, setWriteAPI: api, freestyleAPI: freestyle, defaults: defaults, now: { self.fixedDate })
+        XCTAssertFalse(model.canStartFreestyle)
         await model.load()
         XCTAssertTrue(model.canStartFreestyle)
         let started = await model.startFreestyleWorkout(with: catalog)
@@ -13907,7 +13906,7 @@ extension SetOutboxTests {
 
 @MainActor
 extension SetOutboxTests {
-    func testFreestyleCapabilityUpgradeCannotRetargetAnOlderDiscardBarrier() async throws {
+    func testFreestyleSyncCannotRetargetAnOlderDiscardBarrier() async throws {
         let defaults = defaults(), api = SetWriteAPIStub(), terminalAPI = SetTerminalAPIStub()
         let auth = retainedAuth(defaults: defaults)
         let old = session(status: "discarded", updatedAt: 2_000_000_000_001, attempt: 0)
@@ -13917,7 +13916,6 @@ extension SetOutboxTests {
             failedHTTPStatus: nil, expectedAttempt: 0))
         WorkoutTerminalOutboxStore.save(terminal, userID: "user-a", defaults: defaults)
         var response = state(session: old, sets: [], workouts: [day(with: [exercise()])], serverTime: 2_000_000_000_002)
-        response.freestyleVersion = nil
         api.stateHandler = { _ in response }
         let model = SyncModel(auth: auth, setWriteAPI: api, terminalAPI: terminalAPI, defaults: defaults, now: { self.fixedDate })
         await model.load()
@@ -13925,7 +13923,6 @@ extension SetOutboxTests {
         let live = SessionRow(kind: "freestyle", id: old.id, date: old.date, status: "in_progress",
             workout_id: nil, updated_at: 2_000_000_000_003, attempt: 1, write_protocol: "attempt-v1")
         response = state(session: live, sets: [], workouts: [day(with: [exercise()])], serverTime: 2_000_000_000_004)
-        response.freestyleVersion = 1
         await model.load()
         await model.drainWorkoutWriteOutboxes()
         XCTAssertTrue(model.terminalOutbox.isEmpty)

@@ -13,17 +13,17 @@ release, TestFlight upload, App Review submission or public release.
    sessions default to `planned`; the new receipt table starts empty. Verify
    both additions and triggers. The existing workout-write fence must be active
    before the attempt-aware iOS start endpoint is used.
-3. Deploy the pinned compatible Worker with separate release authority. Verify
+3. Deploy the pinned Worker with separate release authority. Verify
    public source identity, then authorized test-account REST/MCP behavior:
    explicit freestyle start persists before a first set; logging uses null slot
-   IDs; scheduled workouts remain unchanged; non-capable clients cannot mutate
-   hidden live sessions; a redacted discarded row for the previous attempt and prior-set tombstones clear
-   old cached attempts; completed history and its sets replay through sync.
+   IDs; scheduled workouts remain unchanged; active and completed freestyle
+   sessions sync with their actual kind and ordinary set deltas/tombstones.
    Verify reviewed save, lost-response retry, plan/source conflict and old-attempt
-   rejection. MCP unscheduled `log_set` also creates freestyle immediately.
-4. Distribute a matching iOS build only after Worker verification. The client
-   declares `freestyle` and shows starts only after a live `freestyle_version:1`
-   response. Exercise additions and inputs use account-scoped runner checkpoints;
+   rejection. MCP logging on unscheduled or explicitly skipped dates creates
+   freestyle immediately.
+4. Distribute a matching iOS build only after Worker verification. Freestyle uses
+   one current client/server contract with no legacy-client negotiation.
+   Exercise additions and inputs use account-scoped runner checkpoints;
    ordinary outboxes own set/terminal delivery. Test start, add, timers, offline
    recovery, finish and reviewed save on a physical device, including large text
    and VoiceOver. App Review and public release remain separate gates.
@@ -31,8 +31,8 @@ release, TestFlight upload, App Review submission or public release.
 ## Recovery
 
 Before any freestyle writes, the additive migration leaves existing sessions
-planned. Once freestyle rows or save receipts exist, retain a freestyle-capable
-Worker and fix forward. A pre-0054 Worker can infer scheduled templates for null
+planned. Once freestyle rows or save receipts exist, retain a Worker that
+supports freestyle and fix forward. A pre-0054 Worker can infer scheduled templates for null
 pins and lacks source/attempt save guards. Withholding a new iOS build does not
 prevent MCP from writing freestyle after Worker deployment. Do not drop the
 kind column, receipts or guard triggers as routine rollback.

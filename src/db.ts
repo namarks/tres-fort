@@ -1,5 +1,5 @@
 import { validWorkoutTags, normalizeWorkoutTags, validArchivedAt } from './workoutMetadata';
-import { setDeltaSQL, deriveFreestylePrescriptions, type FreestylePrescription } from './freestyle';
+import { deriveFreestylePrescriptions, type FreestylePrescription } from './freestyle';
 import { addDays, weekdayOf, projectCalendar, projectCalendarWindow, projectRideConflicts } from './calendarProjection';
 import type { CalendarCell, CalendarInputs, ProjectionEvent, ProjectionActivity, StrengthCalendarInputs } from './calendarProjection';
 export { addDays, weekdayOf, projectCalendar, detectConflicts } from './calendarProjection';
@@ -4261,7 +4261,6 @@ export async function getOrCreateSession(
      * Internal/MCP callers still carry an attempt CAS but preserve the row's
      * current protocol so the released tokenless app remains compatible. */
     claimAttemptProtocol?: boolean;
-    freestyleCapable?: boolean;
   } = {},
 ): Promise<SessionRow> {
   const claimAttemptProtocol = options.claimAttemptProtocol === true;
@@ -4283,7 +4282,7 @@ export async function getOrCreateSession(
   // (first writer wins), and it may revive a discarded session.
   const useExisting = async (existing: SessionRow): Promise<SessionRow> => {
     if (existing.kind === 'freestyle') {
-      if (!options.freestyleCapable || workoutId !== null) throw new Error('session_kind_conflict');
+      if (workoutId !== null) throw new Error('session_kind_conflict');
       if (existing.status === 'discarded' && options.reviveDiscarded !== false
           && !attemptScoped && existing.write_protocol === 'legacy') {
         const restarted = await startFreestyleSession(db, userId, date, existing.attempt, 'mcp');
@@ -5253,7 +5252,6 @@ export async function logSet(
     /** Capability declaration is separate from generation CAS. MCP supplies
      * an observed attempt but never claims the client protocol. */
     claim_attempt_protocol?: boolean;
-    freestyle_capable?: boolean;
     prescription?: SetPrescriptionContext;
     source: 'ios' | 'mcp';
   },
@@ -5295,9 +5293,6 @@ export async function logSet(
   const existing = initialSetState!.results[0] as SetLogRow | undefined;
   if (existing) {
     return { set: existing, deduped: true, session: targetSession };
-  }
-  if (targetSession.kind === 'freestyle' && input.source === 'ios' && !input.freestyle_capable) {
-    throw new Error('session_kind_conflict');
   }
   if (targetSession.kind === 'freestyle' && (input.template_exercise_id || input.prescription)) {
     throw new Error('session_kind_conflict');
@@ -5680,20 +5675,18 @@ export async function patchSet(
     deleted?: boolean;
   },
   expected?: { session_id: string; attempt: number; updated_at: number },
-  freestyleCapable = true,
 ): Promise<(SetLogRow & { session?: SessionRow }) | null> {
   if (patch.deleted === false) {
     throw new Error('set_undelete_unsupported');
   }
   const row = await workoutDB(db)
     .prepare(
-      `SELECT sl.*, s.attempt AS session_attempt, s.kind AS session_kind
+      `SELECT sl.*, s.attempt AS session_attempt
          FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
        WHERE sl.id = ?1 AND s.user_id = ?2`,
     )
     .bind(setId, userId)
-    .first<SetLogRow & { session_attempt: number; session_kind: string }>();
-  if (row?.session_kind === 'freestyle' && !freestyleCapable) throw new Error('session_kind_conflict');
+    .first<SetLogRow & { session_attempt: number }>();
   if (!row) return null;
   const has = (field: keyof typeof patch) =>
     Object.prototype.hasOwnProperty.call(patch, field);
@@ -5782,15 +5775,14 @@ export async function patchSet(
   // replay the desired state without reopening or retargeting a workout.
   if (statements.length) await runWorkoutWriteBatch(db, statements);
   const fresh = await workoutDB(db).prepare(
-    `SELECT sl.*, s.attempt AS session_attempt, s.kind AS session_kind FROM set_logs sl
+    `SELECT sl.*, s.attempt AS session_attempt FROM set_logs sl
        JOIN sessions s ON s.id=sl.session_id WHERE sl.id=?1 AND s.user_id=?2`)
-    .bind(setId, userId).first<SetLogRow & { session_attempt: number; session_kind: string }>();
-  if (row?.session_kind === 'freestyle' && !freestyleCapable) throw new Error('session_kind_conflict');
+    .bind(setId, userId).first<SetLogRow & { session_attempt: number }>();
   if (expected && (!fresh || fresh.session_attempt !== expected.attempt || !matches(fresh))) {
     throw new Error('set_correction_conflict');
   }
   if (!fresh) return null;
-  const { session_attempt, session_kind, ...set } = fresh;
+  const { session_attempt, ...set } = fresh;
   if (!expected) return set;
   const session = await workoutDB(db).prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
     .bind(set.session_id, userId).first<SessionRow>();
@@ -5861,7 +5853,6 @@ export async function getState(
   eventsSince = 0,
   activitiesSince = 0,
   logSince = 0,
-  freestyleCapable = true,
 ) {
   // Capture the response watermark before any collection read. A write that
   // commits after its collection was read will then have updated_at greater
@@ -5899,16 +5890,12 @@ export async function getState(
   // (migration 0034: backfilled, asserted, and trigger-maintained for legacy
   // inserts) so neither needs to join sessions for ownership.
   const sets = setsSince > 0
-    ? await workoutDB(db).prepare(setDeltaSQL(freestyleCapable))
+    ? await workoutDB(db).prepare(
+        'SELECT * FROM set_logs WHERE user_id=?1 AND updated_at > ?2 ORDER BY updated_at,id')
         .bind(userId, setsSince).all<SetLogRow>()
-    : await workoutDB(db)
-        .prepare(
-          `SELECT sl.* FROM set_logs sl
-            WHERE sl.user_id = ?1 AND (?2=1 OR sl.deleted_at IS NOT NULL OR EXISTS (SELECT 1 FROM sessions s WHERE s.id=sl.session_id
-              AND (s.kind!='freestyle' OR s.status IN ('completed','discarded')))) ORDER BY sl.logged_at`,
-        )
-        .bind(userId, freestyleCapable ? 1 : 0)
-        .all<SetLogRow>();
+    : await workoutDB(db).prepare(
+        'SELECT * FROM set_logs WHERE user_id=?1 ORDER BY logged_at')
+        .bind(userId).all<SetLogRow>();
   // external_events ride a SEPARATE watermark (synced_at epoch-ms). This is
   // a server-owned reconciled cache: NOT gated on plans.version and a ride
   // sync NEVER bumps it. TWO explicit modes (iOS must match):
@@ -5983,19 +5970,7 @@ export async function getState(
     // alone cannot tell iOS that a nonzero cursor is safe. P2 lands the event
     // and activity semantics together; one version gates both collections.
     external_sync_cursors_version: 2 as const,
-    // A discarded projection invalidates any previously cached planned attempt
-    // while withholding the unsupported live freestyle session from old apps.
-    sessions: sessions.results.map((session): SessionRow =>
-      !freestyleCapable && session.kind === 'freestyle'
-        && !['completed', 'discarded'].includes(session.status)
-        ? { ...session, kind: 'planned', status: 'discarded', workout_id: null,
-            // This invalidates the previous generation, never acknowledges
-            // a discard of the hidden live attempt. Upgrading can then clear
-            // an old client's durable discard barrier on the greater attempt.
-            attempt: Math.max(0, session.attempt - 1),
-            started_at: null, completed_at: null, perceived_fatigue: null,
-            notes: null, runner_targets: null, exercise_swaps: null }
-        : session),
+    sessions: sessions.results,
     sets: sets.results,
     external_events: events.results,
     external_activities: activities.results.map(withActivityAttribution),
@@ -7317,7 +7292,7 @@ export async function logWorkoutComplete(
     plan.id,
     date,
     null,
-    { reviveDiscarded: false, freestyleCapable: true },
+    { reviveDiscarded: false },
   );
   if (session.status === 'discarded') {
     return { error: 'session_discarded', status: 'discarded' };

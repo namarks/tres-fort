@@ -723,7 +723,7 @@ struct APIClient {
         var req = req
         // Covers every plan-bearing read, including restore responses, so a
         // grouped slot always retains its ordinary rest alongside group rests.
-        req.setValue("groups,freestyle", forHTTPHeaderField: "X-TresFort-Capabilities")
+        req.setValue("groups", forHTTPHeaderField: "X-TresFort-Capabilities")
         let (data, resp) = try await Self.session.data(for: req)
         let http = resp as? HTTPURLResponse
         let code = http?.statusCode ?? -1

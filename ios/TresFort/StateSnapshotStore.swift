@@ -128,15 +128,6 @@ enum StateSnapshotStore {
             : current.watermarks ?? .fullReload
         var watermarks = groupAwareWatermarks(
             storedWatermarks, certifiedVersion: current.planGroupsVersion)
-        // A released app hid active freestyle sessions and their sets. A new
-        // capability needs one complete session/set baseline, not a delta that
-        // skips hidden rows behind the old cursor. Only a live response certifies it.
-        if (current.state?.freestyleVersion ?? 0) < 1 {
-            watermarks = StateSyncWatermarks(
-                planVersion: watermarks.planVersion, setsSince: 0,
-                eventsSince: watermarks.eventsSince, activitiesSince: watermarks.activitiesSince,
-                logSince: watermarks.logSince)
-        }
         // Older snapshots predate source attribution. Re-fetch this collection
         // once even when unchanged provider rows sit behind the delta cursor.
         if current.state?.external_activities.contains(where: { ($0.attribution_version ?? 0) < 1 }) == true {
@@ -493,7 +484,7 @@ enum StateSnapshotStore {
                 response.manualActivityCursorCapable,
             externalSyncCursorsVersion:
                 response.externalSyncCursorsVersion,
-            planGroupsVersion: response.planGroupsVersion, freestyleVersion: response.freestyleVersion)
+            planGroupsVersion: response.planGroupsVersion)
     }
 
     /// A representation upgrade resets only the plan cursor. Other collections

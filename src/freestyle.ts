@@ -38,17 +38,3 @@ export function deriveFreestylePrescriptions(sets: SetLogRow[]): FreestyleCohort
       source_set_ids: rows.map(row=>row.id) };
   });
 }
-
-/** Keep the normal pull on the member/timestamp range index. Released clients
- * also need previously hidden sets when a freestyle completion becomes visible.
- * UNION deduplicates rows that are both newly changed and newly visible. */
-export function setDeltaSQL(freestyleCapable: boolean): string {
-  const delta = `SELECT sl.* FROM set_logs sl WHERE sl.user_id=?1 AND sl.updated_at > ?2`;
-  return freestyleCapable ? `${delta} ORDER BY updated_at,id` : `${delta}
-    AND (sl.deleted_at IS NOT NULL OR EXISTS (SELECT 1 FROM sessions s WHERE s.id=sl.session_id
-      AND (s.kind!='freestyle' OR s.status IN ('completed','discarded'))))
-    UNION
-    SELECT sl.* FROM sessions s JOIN set_logs sl ON sl.session_id=s.id
-    WHERE s.user_id=?1 AND s.updated_at > ?2 AND s.kind='freestyle' AND s.status='completed'
-    ORDER BY updated_at,id`;
-}

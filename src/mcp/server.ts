@@ -680,7 +680,7 @@ const TOOLS: Record<string, Tool> = {
       const previous = await getOwnedSessionByDate(env.DB,userId,date);
       const meta = parsePlanMeta(plan.meta);
       const scheduledId = meta.schedule.week[weekdayOf(date)];
-      const scheduled = !(meta.trips ?? []).some(t => t.start <= date && date <= t.end)
+      const scheduled = previous?.status !== 'skipped' && !(meta.trips ?? []).some(t => t.start <= date && date <= t.end)
         && scheduledId && await getWorkoutInPlan(env.DB, plan.id, scheduledId);
       const emptyGeneration = !previous || previous.status === 'discarded'
         || (previous.workout_id === null && ['planned', 'skipped'].includes(previous.status));
@@ -688,7 +688,7 @@ const TOOLS: Record<string, Tool> = {
         ? await startFreestyleSession(env.DB,userId,date,previous?.attempt ?? 0,'mcp') : null;
       if (started && 'error' in started) return started;
       const session = started && 'session' in started ? started.session
-        : await getOrCreateSession(env.DB, userId, plan.id, date, null, {freestyleCapable:true});
+        : await getOrCreateSession(env.DB, userId, plan.id, date, null);
       const existing = await getSetsForSession(env.DB, session.id);
       const setIndex =
         requestedSetIndex != null

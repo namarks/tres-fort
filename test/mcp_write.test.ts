@@ -78,6 +78,16 @@ describe('mcp write tools', () => {
       expect((current as {attempt:number}).attempt).toBeGreaterThan(previous.attempt);
     });
 
+    it('log_set honors a skipped date over its recurring workout',async()=>{
+      const date='2026-09-22';
+      expect(await call('set_schedule',{expected_version:v,week:{tue:built.plan.workouts[0].id}})).not.toHaveProperty('error');
+      expect(await call('skip_planned_session',{date})).not.toHaveProperty('error');
+      expect(await call('log_set',{session_date:date,exercise:'bench',weight:100,reps:5})).not.toHaveProperty('error');
+      const owner=await env.DB.prepare('SELECT user_id FROM plans WHERE id=?').bind(built.plan.id).first<{user_id:string}>();
+      const current=await env.DB.prepare('SELECT kind,status,workout_id FROM sessions WHERE user_id=? AND date=?').bind(owner!.user_id,date).first();
+      expect(current).toEqual({kind:'freestyle',status:'in_progress',workout_id:null});
+    });
+
     it('log_set preserves a one-off workout assignment without a recurring schedule',async()=>{
       const date='2026-09-22';
       const owner=await env.DB.prepare('SELECT user_id FROM plans WHERE id=?').bind(built.plan.id).first<{user_id:string}>();
@@ -227,7 +237,7 @@ describe('mcp write tools', () => {
     });
     const date = '2038-01-01';
     // This compatibility case is a scheduled workout; unscheduled MCP starts
-    // are freestyle and deliberately fence clients without that capability.
+    // are freestyle and intentionally do not infer a scheduled template.
     await call('set_schedule', { week: { fri: 'P' } });
     const mcpSet = await call('log_set', {
       exercise: 'bench',

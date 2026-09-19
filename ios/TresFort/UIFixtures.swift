@@ -636,7 +636,6 @@ private struct UIFixtureServer {
             }
             response = ["plan": plan as Any? ?? NSNull(), "plan_version": plan?["version"] ?? 0,
                 "sessions": sessions, "sets": sets, "server_time": revision, "plan_groups_version": 1,
-                "freestyle_version": scenario == .freestyle ? 1 : 0,
                 "activities": [], "external_events": [], "external_activities": importedActivities]
         case ("GET", "/api/plan/history"):
             let version = plan?["version"] as? Int ?? 1

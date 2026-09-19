@@ -9,7 +9,7 @@ struct WorkoutSummaryView: View {
     var body: some View {
         let current = sync.sessions.first { $0.id == session.id } ?? session
         VStack(alignment: .leading, spacing: 16) {
-            if current.isFreestyle && current.status == "completed" && current.workout_id == nil && sync.freestyleAvailable {
+            if current.isFreestyle && current.status == "completed" && current.workout_id == nil {
                 Button("Save as workout", systemImage: "square.and.arrow.down") { saveFreestyle = true }
                     .frame(minHeight: 44).accessibilityIdentifier("freestyle.saveAsWorkout")
             }

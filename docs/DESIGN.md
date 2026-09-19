@@ -886,11 +886,10 @@ the unscheduled workout and validated slots, advances/repoints the session,
 and retains its audit, snapshot and idempotent receipt. Receipts participate
 in account export and deletion. Historical set slot links stay null.
 
-REST clients declare `freestyle` in `X-TresFort-Capabilities`; only a live
-`freestyle_version:1` response enables native starts. Older clients receive
-completed freestyle history and its sets, with completion-triggered set replay,
-while hidden live sessions are fenced from date and ID mutations. A redacted
-discarded projection of the previous attempt and deleted-set tombstones invalidate any planned attempt
-previously cached by an older client. See the
+Freestyle uses one current client/server contract. Every authenticated client
+receives actual session kinds and ordinary incremental set updates/tombstones;
+there is no freestyle capability header, hidden-session view or upgrade-only
+cache reload. MCP logging honors explicit skipped dates before recurring
+schedule inference. See the
 [release procedure](plans/workout-library/freestyle-release.md) for the ordered
 migration, Worker, client and recovery boundaries.

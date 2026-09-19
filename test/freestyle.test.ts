@@ -18,7 +18,7 @@ async function fixture(){
 }
 async function log(f:Awaited<ReturnType<typeof fixture>>,weight=100,reps=5,extra={}){
  return logSet(env.DB,f.userId,{id:crypto.randomUUID(),session_id:f.session.id,exercise_id:'ex_bench',
-  set_index:1,weight,reps,source:'ios',expected_attempt:f.session.attempt,freestyle_capable:true,...extra});
+  set_index:1,weight,reps,source:'ios',expected_attempt:f.session.attempt,...extra});
 }
 async function draft(f:Awaited<ReturnType<typeof fixture>>){
  await patchSession(env.DB,f.userId,f.session.id,{status:'completed'},f.session.attempt);
@@ -31,7 +31,7 @@ it('starts an explicit, immediately durable freestyle session without a library 
  const f=await fixture();expect(f.session).toMatchObject({kind:'freestyle',workout_id:null,status:'in_progress',attempt:0});
  expect((await getPlanTree(env.DB,f.userId))?.version).toBe(f.plan.version);
  expect(await startFreestyleSession(env.DB,f.userId,f.session.date,0)).toEqual({session:f.session});
- await expect(getOrCreateSession(env.DB,f.userId,f.plan.id,f.session.date,null)).rejects.toThrow('session_kind_conflict');
+ expect(await getOrCreateSession(env.DB,f.userId,f.plan.id,f.session.date,null)).toEqual(f.session);
 });
 it('saves reviewed cohorts once, advances attempt, snapshots, and preserves logs',async()=>{
  const f=await fixture();await log(f,100,5);await log(f,100,8);await log(f,135,3);await log(f,45,12,{is_warmup:true});
@@ -52,16 +52,6 @@ it('invalidates source review after a late set and commits nothing',async()=>{
  const f=await fixture();await log(f);const input=await draft(f);await log(f,125,4);
  expect(await saveFreestyleWorkout(env.DB,f.userId,f.session.id,input)).toEqual({error:'session_state_conflict'});
  expect((await getPlanTree(env.DB,f.userId))?.version).toBe(f.plan.version);
-});
-it('hides live freestyle sets from old sync, then backfills all sets on completion',async()=>{
- const f=await fixture();await log(f);
- const cursor=Date.now();
- expect(await getState(env.DB,f.userId,0,0,0,0,0,false)).toMatchObject({sessions:[{id:f.session.id,kind:'planned',status:'discarded',workout_id:null}],sets:[]});
- await patchSession(env.DB,f.userId,f.session.id,{status:'completed'},0);
- // Force a strict server cursor boundary to exercise the hidden-set replay.
- await runWorkoutWriteStatement(env.DB,env.DB.prepare('UPDATE sessions SET updated_at=? WHERE id=?').bind(cursor+10,f.session.id));
- const state=await getState(env.DB,f.userId,0,cursor,0,0,0,false);
- expect(state.sessions).toHaveLength(1);expect(state.sets).toHaveLength(1);
 });
 it('converts an explicit rest date only through a new generation',async()=>{
  const f=await fixture();await runWorkoutWriteStatement(env.DB,env.DB.prepare("UPDATE sessions SET status='discarded' WHERE id=?").bind(f.session.id));
@@ -115,27 +105,29 @@ it('rolls back the complete save when a statement fails',async()=>{
  expect(await getOwnedSessionByDate(env.DB,f.userId,f.session.date)).toMatchObject({attempt:0,workout_id:null});
 });
 
-it('fences non-capable REST clients and accepts a reviewed rep save with explicit null duration',async()=>{
+it('uses one REST contract for freestyle start, sync, completed correction and reviewed save',async()=>{
  const {issueAppJwt}=await import('../src/auth');
  const f=await fixture();const jwt=await issueAppJwt(f.userId,env.APP_JWT_SECRET);
  const headers={'Content-Type':'application/json',Authorization:`Bearer ${jwt}`};
- const request=(path:string,method:string,body?:unknown,capable=false)=>SELF.fetch(`https://test/api/${path}`,{
-  method,headers:{...headers,...(capable?{'X-TresFort-Capabilities':'freestyle'}:{})},
-  ...(body===undefined?{}:{body:JSON.stringify(body)}),
+ const request=(path:string,method:string,body?:unknown)=>SELF.fetch(`https://test/api/${path}`,{
+  method,headers,...(body===undefined?{}:{body:JSON.stringify(body)}),
  });
- for(const [path,method,body] of [
-  ['sessions','POST',{date:f.session.date}],
-  [`calendar/${f.session.date}`,'PUT',{workout_id:null}],
-  [`sessions/${f.session.id}`,'PATCH',{status:'completed',expected_attempt:0}],
- ] as const){
-  const r=await request(path,method,body);expect(r.status).toBe(409);expect(await r.json()).toMatchObject({error:'session_kind_conflict'});
- }
+ const started=await request('sessions','POST',{date:f.session.date,kind:'freestyle',expected_attempt:0});
+ expect(started.status).toBe(201);
+ expect(await started.json()).toMatchObject({id:f.session.id,kind:'freestyle',status:'in_progress'});
  const set=await log(f);
- const correction=await request(`sets/${set.set.id}`,'PATCH',{reps:10});expect(correction.status).toBe(409);
+ const synced=await request('state','GET');
+ expect(await synced.json()).toMatchObject({sessions:[{id:f.session.id,kind:'freestyle',status:'in_progress'}],sets:[{id:set.set.id}]});
+ const complete=await request(`sessions/${f.session.id}?expected_attempt=0`,'PATCH',{status:'completed'});
+ expect(complete.status).toBe(200);
+ const correction=await request(`sets/${set.set.id}`,'PATCH',{reps:10});
+ expect(correction.status).toBe(200);
+ expect(await correction.json()).toMatchObject({id:set.set.id,reps:10});
  const input=await draft(f);
- const saved=await request(`sessions/${f.session.id}/save-workout`,'POST',input,true);
+ expect(input.slots[0]?.target_reps).toBe(10);
+ const saved=await request(`sessions/${f.session.id}/save-workout`,'POST',input);
  expect(saved.status).toBe(201);expect(await saved.json()).toMatchObject({workout_id:input.workout_id,session:{kind:'freestyle',attempt:1}});
- const retry=await request(`sessions/${f.session.id}/save-workout`,'POST',input,true);
+ const retry=await request(`sessions/${f.session.id}/save-workout`,'POST',input);
  expect(retry.status).toBe(201);
 });
 
@@ -174,7 +166,7 @@ it('settles an old planned set UUID after the date restarts as freestyle',async(
  await logSet(env.DB,f.userId,input);
  await discardSession(env.DB,f.userId,planned.id,1);
  await startFreestyleSession(env.DB,f.userId,planned.date,1);
- const retry=await logSet(env.DB,f.userId,{...input,freestyle_capable:true});
+ const retry=await logSet(env.DB,f.userId,{...input});
  expect(retry).toMatchObject({deduped:true,session:{kind:'freestyle',attempt:2}});
  expect(retry.set.deleted_at).not.toBeNull();
 });
@@ -193,7 +185,7 @@ it('lets explicit legacy MCP logging restart its discarded freestyle generation'
  const first=await startFreestyleSession(env.DB,f.userId,date,0,'mcp');
  if(!first.session)throw Error('start');
  await discardSession(env.DB,f.userId,first.session.id,0);
- const restarted=await getOrCreateSession(env.DB,f.userId,f.plan.id,date,null,{freestyleCapable:true});
+ const restarted=await getOrCreateSession(env.DB,f.userId,f.plan.id,date,null);
  expect(restarted).toMatchObject({kind:'freestyle',status:'in_progress',attempt:1,write_protocol:'legacy'});
 });
 
@@ -209,14 +201,7 @@ it('exports and deletes the account after saving a freestyle workout',async()=>{
  expect((await env.DB.prepare('SELECT * FROM freestyle_workout_receipts WHERE user_id=?').bind(f.userId).all()).results).toHaveLength(0);
 });
 
-it.each([true,false])('keeps the actual incremental set query on a timestamp range (capable=%s)',async capable=>{
- const {setDeltaSQL}=await import('../src/freestyle');
- const rows=await env.DB.prepare('EXPLAIN QUERY PLAN '+setDeltaSQL(capable)).bind('member',100).all<{detail:string}>();
- const detail=rows.results.map(r=>r.detail).join('\n');
- expect(detail).toContain('ix_sets_user_updated (user_id=? AND updated_at>?)');
-});
-
-it('old-client deltas invalidate a cached planned attempt after freestyle replacement',async()=>{
+it('sync deltas carry the real freestyle generation and old set tombstones',async()=>{
  const f=await fixture();
  const planned=await getOrCreateSession(env.DB,f.userId,f.plan.id,'2026-09-22',null);
  const oldSet=await logSet(env.DB,f.userId,{id:crypto.randomUUID(),session_id:planned.id,
@@ -225,15 +210,20 @@ it('old-client deltas invalidate a cached planned attempt after freestyle replac
  await discardSession(env.DB,f.userId,planned.id,planned.attempt);
  const fresh=await startFreestyleSession(env.DB,f.userId,planned.date,planned.attempt);
  if(!('session' in fresh))throw Error(JSON.stringify(fresh));
- await log({...f,session:fresh.session!});
+ const liveSet=await log({...f,session:fresh.session!});
  await runWorkoutWriteStatement(env.DB,env.DB.prepare('UPDATE sessions SET updated_at=? WHERE id=?').bind(cursor+10,planned.id));
  await runWorkoutWriteStatement(env.DB,env.DB.prepare('UPDATE set_logs SET updated_at=? WHERE id=?').bind(cursor+10,oldSet.set.id));
- const delta=await getState(env.DB,f.userId,0,cursor,0,0,0,false);
- expect(delta.sessions).toEqual([expect.objectContaining({id:planned.id,kind:'planned',status:'discarded',attempt:0,workout_id:null})]);
- expect(delta.sets).toEqual([expect.objectContaining({id:oldSet.set.id,deleted_at:expect.any(Number)})]);
- const capable=await getState(env.DB,f.userId,0,0);
- expect(capable.sessions.find(s=>s.id===planned.id)).toMatchObject({kind:'freestyle',status:'in_progress'});
- expect(capable.sets.filter(s=>s.session_id===planned.id&&s.deleted_at===null)).toHaveLength(1);
+ await runWorkoutWriteStatement(env.DB,env.DB.prepare('UPDATE set_logs SET updated_at=? WHERE id=?').bind(cursor+10,liveSet.set.id));
+ const delta=await getState(env.DB,f.userId,0,cursor);
+ expect(delta.sessions).toEqual([expect.objectContaining({id:planned.id,kind:'freestyle',status:'in_progress',attempt:1,workout_id:null})]);
+ expect(delta.sets).toHaveLength(2);
+ expect(delta.sets).toEqual(expect.arrayContaining([
+  expect.objectContaining({id:oldSet.set.id,deleted_at:expect.any(Number)}),
+  expect.objectContaining({id:liveSet.set.id,deleted_at:null}),
+ ]));
+ const full=await getState(env.DB,f.userId,0,0);
+ expect(full.sessions.find(s=>s.id===planned.id)).toMatchObject({kind:'freestyle',status:'in_progress'});
+ expect(full.sets.filter(s=>s.session_id===planned.id&&s.deleted_at===null)).toHaveLength(1);
 });
 
 it('plan rebuilds preserve tombstones when a planned date later becomes freestyle',async()=>{

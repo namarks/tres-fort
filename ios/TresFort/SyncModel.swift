@@ -229,7 +229,6 @@ final class SyncModel: ObservableObject {
     @Published var timedStartDate: Date?    // wall-clock start of the hold
 
     private let freestyleAPI: any FreestyleAPI
-    @Published private(set) var freestyleAvailable = false
     @Published private(set) var isStartingFreestyle = false
     @Published private var freestyleExercises: [TemplateExercise] = []
 
@@ -792,7 +791,6 @@ final class SyncModel: ObservableObject {
             preferredTodaySessionID: preferredTodaySessionID,
             isLiveResponse: true,
             provenDeletedSetIDs: provenDeletedSetIDs)
-        freestyleAvailable = (state.freestyleVersion ?? 0) >= 1
         workoutEditorRefreshNeeded = false
         hasVerifiedPlanState = true
         return true
@@ -987,7 +985,7 @@ final class SyncModel: ObservableObject {
             manualActivityCursorCapable:
                 stateManualActivityCursorCapable,
             externalSyncCursorsVersion:
-                stateExternalSyncCursorsVersion, freestyleVersion: freestyleAvailable ? 1 : nil)
+                stateExternalSyncCursorsVersion)
     }
 
     /// Another same-account model removes an intent only after merging its ACK
@@ -1308,7 +1306,7 @@ final class SyncModel: ObservableObject {
             manualActivityCursorCapable:
                 state.manualActivityCursorCapable,
             externalSyncCursorsVersion:
-                state.externalSyncCursorsVersion, freestyleVersion: state.freestyleVersion)
+                state.externalSyncCursorsVersion)
     }
 
     private struct SetAcknowledgementMergeDecision {
@@ -1411,7 +1409,7 @@ final class SyncModel: ObservableObject {
             manualActivityCursorCapable:
                 state.manualActivityCursorCapable,
             externalSyncCursorsVersion:
-                state.externalSyncCursorsVersion, freestyleVersion: state.freestyleVersion)
+                state.externalSyncCursorsVersion)
     }
 
     /// Merge a date-level create/revive response without allowing its
@@ -1486,7 +1484,7 @@ final class SyncModel: ObservableObject {
             manualActivityCursorCapable:
                 state.manualActivityCursorCapable,
             externalSyncCursorsVersion:
-                state.externalSyncCursorsVersion, freestyleVersion: state.freestyleVersion)
+                state.externalSyncCursorsVersion)
     }
 
     /// Apply a terminal response to the mounted model using the same alias and
@@ -4133,7 +4131,8 @@ final class SyncModel: ObservableObject {
 
     var isFreestyle: Bool { todaySession?.isFreestyle == true && todaySession?.status != "discarded" }
     var canStartFreestyle: Bool {
-        freestyleAvailable && !isUsingCachedState && !isLoading && !running && !todayIsCompleted
+        canInitiateBoundFeatureAction && hasVerifiedPlanState && plan != nil && loadError == nil
+            && !isUsingCachedState && !isLoading && !running && !todayIsCompleted
             && !isStartingFreestyle && !hasResumableWorkout && !hasRunnerAwaitingSetRecovery
             && !hasPendingTerminalIntentForCurrentWorkout
             && (todaySession == nil || ["planned", "skipped", "discarded"].contains(todaySession?.status ?? "")

@@ -58,6 +58,7 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
     /// An acknowledged repair waiting for the active physical hold's boundary.
     let deferredGroupRepair: RunnerGroupRepair?
     let feedback: WorkoutFeedback?
+    let freestyleExercises: [TemplateExercise]?
 
     init(
         date: String,
@@ -74,7 +75,8 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
         groupProgress: GroupRunnerProgress? = nil,
         focus: RunnerFocusState? = nil,
         deferredGroupRepair: RunnerGroupRepair? = nil,
-        feedback: WorkoutFeedback? = nil
+        feedback: WorkoutFeedback? = nil,
+        freestyleExercises: [TemplateExercise]? = nil
     ) {
         self.date = date
         self.sessionID = sessionID
@@ -91,6 +93,7 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
         self.focus = focus
         self.deferredGroupRepair = deferredGroupRepair
         self.feedback = feedback
+        self.freestyleExercises = freestyleExercises
     }
 }
 

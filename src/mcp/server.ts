@@ -1,3 +1,4 @@
+import { weekdayOf } from '../calendarProjection';
 import { validWorkoutTags, validArchivedAt } from '../workoutMetadata';
 import { ATTRIBUTION_INSTRUCTIONS } from '../dataAttribution';
 import { coachingSession, coachingPlanMeta } from '../coachingContext';
@@ -22,6 +23,9 @@ import {
 import { isGroupId } from '../exerciseGroups';
 import {
   getTrainingProfile,
+  getOwnedSessionByDate,
+  getWorkoutInPlan,
+  startFreestyleSession,
   addWorkoutAtVersion,
   addTemplateExercise,
   addTrip,
@@ -673,7 +677,16 @@ const TOOLS: Record<string, Tool> = {
       // All rejection-only validation must finish before touching the date
       // row. In particular, a recent cross-channel duplicate must not revive
       // a discarded target session when no set will be written.
-      const session = await getOrCreateSession(env.DB, userId, plan.id, date, null);
+      const previous = await getOwnedSessionByDate(env.DB,userId,date);
+      const meta = parsePlanMeta(plan.meta);
+      const scheduledId = meta.schedule.week[weekdayOf(date)];
+      const scheduled = !(meta.trips ?? []).some(t => t.start <= date && date <= t.end)
+        && scheduledId && await getWorkoutInPlan(env.DB, plan.id, scheduledId);
+      const started = !previous && !scheduled
+        ? await startFreestyleSession(env.DB,userId,date,0,'mcp') : null;
+      if (started && 'error' in started) return started;
+      const session = started && 'session' in started ? started.session
+        : await getOrCreateSession(env.DB, userId, plan.id, date, null, {freestyleCapable:true});
       const existing = await getSetsForSession(env.DB, session.id);
       const setIndex =
         requestedSetIndex != null

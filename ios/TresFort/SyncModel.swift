@@ -228,6 +228,11 @@ final class SyncModel: ObservableObject {
     @Published var timedEndDate: Date?
     @Published var timedStartDate: Date?    // wall-clock start of the hold
 
+    private let freestyleAPI: any FreestyleAPI
+    @Published private(set) var freestyleAvailable = false
+    @Published private(set) var isStartingFreestyle = false
+    @Published private var freestyleExercises: [TemplateExercise] = []
+
     private let setWriteAPI: any SetWriteAPI
     private let terminalAPI: any WorkoutTerminalAPI
     private let catalogAPI: any ExerciseCatalogAPI
@@ -346,6 +351,7 @@ final class SyncModel: ObservableObject {
     init(
         auth: AuthModel,
         setWriteAPI: any SetWriteAPI = APIClient(),
+        freestyleAPI: any FreestyleAPI = APIClient(),
         terminalAPI: any WorkoutTerminalAPI = APIClient(),
         catalogAPI: any ExerciseCatalogAPI = APIClient(),
         sessionSwapAPI: any SessionExerciseSwapAPI = APIClient(),
@@ -391,6 +397,7 @@ final class SyncModel: ObservableObject {
         self.timedNotificationCanceller = timedNotificationCanceller
         self.accountID = auth.userID
         self.featureSessionEpoch = auth.featureSessionEpoch
+        self.freestyleAPI = freestyleAPI
         self.setWriteAPI = setWriteAPI
         self.terminalAPI = terminalAPI
         self.catalogAPI = catalogAPI
@@ -411,6 +418,7 @@ final class SyncModel: ObservableObject {
         let persistedCheckpoint = WorkoutRunnerCheckpointStore.load(
             userID: auth.userID, defaults: defaults)
         self.persistedRunnerCheckpoint = persistedCheckpoint
+        self.freestyleExercises = persistedCheckpoint?.freestyleExercises ?? []
         self.workoutFeedback = persistedCheckpoint?.feedback
         self.runnerFocus = persistedCheckpoint?.focus ?? RunnerFocusState()
         self.deferredGroupRepair = persistedCheckpoint?.deferredGroupRepair
@@ -554,6 +562,7 @@ final class SyncModel: ObservableObject {
     }
 
     var selectedDay: Workout? {
+        if isFreestyle { return freestyleDay }
         guard let plan else { return nil }
         guard let day = plan.availableWorkouts.first(where: { $0.id == selectedDayID }) ?? plan.availableWorkouts.first else { return nil }
         return runnerDay(id: day.id)
@@ -783,6 +792,7 @@ final class SyncModel: ObservableObject {
             preferredTodaySessionID: preferredTodaySessionID,
             isLiveResponse: true,
             provenDeletedSetIDs: provenDeletedSetIDs)
+        freestyleAvailable = (state.freestyleVersion ?? 0) >= 1
         workoutEditorRefreshNeeded = false
         hasVerifiedPlanState = true
         return true
@@ -977,7 +987,7 @@ final class SyncModel: ObservableObject {
             manualActivityCursorCapable:
                 stateManualActivityCursorCapable,
             externalSyncCursorsVersion:
-                stateExternalSyncCursorsVersion)
+                stateExternalSyncCursorsVersion, freestyleVersion: freestyleAvailable ? 1 : nil)
     }
 
     /// Another same-account model removes an intent only after merging its ACK
@@ -1056,7 +1066,7 @@ final class SyncModel: ObservableObject {
     /// the shared snapshot before any later await or durable intent binding so
     /// a state request that started before the create cannot overwrite the
     /// new generation. Returns the newest same-attempt session from that merge.
-    private func acceptSessionResolution(_ response: SessionRow) -> SessionRow? {
+    private func acceptSessionResolution(_ response: SessionRow, reconcileDiscardBarrier: Bool = false) -> SessionRow? {
         guard canMutateBoundSetAccount,
               let merged = StateSnapshotStore.mergeAcknowledgement(
                 userID: accountID,
@@ -1074,6 +1084,10 @@ final class SyncModel: ObservableObject {
                 || authoritative.attempt == nil
                 || authoritative.attempt == response.attempt
         else { return nil }
+        if reconcileDiscardBarrier {
+            adoptDurableWorkoutWriteOutboxes()
+            reconcileTerminalOutbox(with: [authoritative])
+        }
         applyState(
             merged.state,
             preferredTodaySessionID: authoritative.id,
@@ -1187,7 +1201,7 @@ final class SyncModel: ObservableObject {
             return submittedSession
         }
         return SessionRow(
-            exercise_swaps: submittedSession.exercise_swaps,
+            kind: submittedSession.kind, exercise_swaps: submittedSession.exercise_swaps,
             notes: submittedSession.notes, perceived_fatigue: submittedSession.perceived_fatigue,
             started_at: submittedSession.started_at, completed_at: submittedSession.completed_at,
             id: result.set.session_id,
@@ -1233,7 +1247,7 @@ final class SyncModel: ObservableObject {
         aliasIDs.insert(acknowledgedSession.id)
         aliasIDs.insert(acceptedSet.session_id)
         let canonical = SessionRow(
-            exercise_swaps: source.exercise_swaps,
+            kind: source.kind, exercise_swaps: source.exercise_swaps,
             notes: source.notes, perceived_fatigue: source.perceived_fatigue,
             started_at: source.started_at, completed_at: source.completed_at,
             id: acceptedSet.session_id,
@@ -1294,7 +1308,7 @@ final class SyncModel: ObservableObject {
             manualActivityCursorCapable:
                 state.manualActivityCursorCapable,
             externalSyncCursorsVersion:
-                state.externalSyncCursorsVersion)
+                state.externalSyncCursorsVersion, freestyleVersion: state.freestyleVersion)
     }
 
     private struct SetAcknowledgementMergeDecision {
@@ -1397,7 +1411,7 @@ final class SyncModel: ObservableObject {
             manualActivityCursorCapable:
                 state.manualActivityCursorCapable,
             externalSyncCursorsVersion:
-                state.externalSyncCursorsVersion)
+                state.externalSyncCursorsVersion, freestyleVersion: state.freestyleVersion)
     }
 
     /// Merge a date-level create/revive response without allowing its
@@ -1436,7 +1450,7 @@ final class SyncModel: ObservableObject {
                 current!, with: response, kind: .resolution)
         let source = advancesAttempt || responseWins ? response : current!
         let canonical = SessionRow(
-            exercise_swaps: source.exercise_swaps,
+            kind: source.kind, exercise_swaps: source.exercise_swaps,
             notes: source.notes, perceived_fatigue: source.perceived_fatigue,
             started_at: source.started_at, completed_at: source.completed_at,
             id: response.id,
@@ -1472,7 +1486,7 @@ final class SyncModel: ObservableObject {
             manualActivityCursorCapable:
                 state.manualActivityCursorCapable,
             externalSyncCursorsVersion:
-                state.externalSyncCursorsVersion)
+                state.externalSyncCursorsVersion, freestyleVersion: state.freestyleVersion)
     }
 
     /// Apply a terminal response to the mounted model using the same alias and
@@ -1761,7 +1775,7 @@ final class SyncModel: ObservableObject {
         }
         let unresolvedIndices = Set(day.exercises.indices.filter { index in
             let slot = day.exercises[index]
-            return !skippedIDs.contains(slot.id) && checkpointSetIDs(slot).count < slot.target_sets
+            return !skippedIDs.contains(slot.id) && (serverSession?.isFreestyle == true || checkpointSetIDs(slot).count < slot.target_sets)
         })
         let normalizedFinished = unresolvedIndices.isEmpty
         let normalizedCurrentSlotID: String
@@ -1805,7 +1819,7 @@ final class SyncModel: ObservableObject {
             sessionAttempt: serverSession?.attempt ?? checkpoint.sessionAttempt,
             restartDiscardedAttempt: serverSession == nil ? checkpoint.restartDiscardedAttempt : nil,
             input: checkpoint.input, inputsBySlot: checkpoint.inputsBySlot, groupProgress: day.exercises.first(where: { $0.id == normalizedCurrentSlotID }).flatMap(checkpointGroup),
-            focus: normalizedFocus, feedback: checkpoint.feedback)
+            focus: normalizedFocus, feedback: checkpoint.feedback, freestyleExercises: checkpoint.freestyleExercises)
         if normalized != checkpoint {
             guard replaceRunnerCheckpoint(
                 normalized, ifCurrent: checkpoint)
@@ -1860,7 +1874,7 @@ final class SyncModel: ObservableObject {
             finished: finished,
             sessionAttempt: todaySession?.attempt,
             restartDiscardedAttempt: runnerRestartDiscardedAttempt,
-            input: currentInputState, inputsBySlot: runnerInputsForCheckpoint(), groupProgress: currentExercise.flatMap { groupProgress(for: $0) }, focus: runnerFocus, deferredGroupRepair: deferredGroupRepair, feedback: workoutFeedback)
+            input: currentInputState, inputsBySlot: runnerInputsForCheckpoint(), groupProgress: currentExercise.flatMap { groupProgress(for: $0) }, focus: runnerFocus, deferredGroupRepair: deferredGroupRepair, feedback: workoutFeedback, freestyleExercises: isFreestyle ? exercises : nil)
         let expected = persistedRunnerCheckpoint
         guard replaceRunnerCheckpoint(checkpoint, ifCurrent: expected) else {
             relinquishStaleRunnerCheckpoint()
@@ -1899,7 +1913,7 @@ final class SyncModel: ObservableObject {
             finished: checkpoint.finished,
             sessionAttempt: session.attempt ?? checkpoint.sessionAttempt,
             restartDiscardedAttempt: nil,
-            input: checkpoint.input, inputsBySlot: checkpoint.inputsBySlot, groupProgress: checkpoint.groupProgress, focus: checkpoint.focus, deferredGroupRepair: checkpoint.deferredGroupRepair, feedback: checkpoint.feedback)
+            input: checkpoint.input, inputsBySlot: checkpoint.inputsBySlot, groupProgress: checkpoint.groupProgress, focus: checkpoint.focus, deferredGroupRepair: checkpoint.deferredGroupRepair, feedback: checkpoint.feedback, freestyleExercises: checkpoint.freestyleExercises)
         guard replaceRunnerCheckpoint(bound, ifCurrent: checkpoint) else {
             relinquishStaleRunnerCheckpoint()
             return
@@ -2092,7 +2106,7 @@ final class SyncModel: ObservableObject {
     private func activeRunnerSlotID() -> String? {
         guard running,
               let selectedDayID,
-              let day = plan?.workouts.first(where: { $0.id == selectedDayID }),
+              let day = runnerDay(id: selectedDayID),
               day.exercises.indices.contains(exerciseIndex)
         else { return nil }
         return day.exercises[exerciseIndex].id
@@ -2113,6 +2127,11 @@ final class SyncModel: ObservableObject {
     /// before a live plan replacement. Slot UUID alone is insufficient: an
     /// editor can replace the movement in place, and the new work must not
     /// inherit the old movement's user choice.
+    private var skipReconciliationExercises: [TemplateExercise] {
+        (plan?.workouts.flatMap(\.exercises) ?? [])
+            + (freestyleDay?.exercises ?? persistedRunnerCheckpoint?.freestyleExercises ?? [])
+    }
+
     private func skippedExecutionStateForCurrentPlan()
         -> (
             identities: [String: RunnerExecutionIdentity],
@@ -2124,7 +2143,7 @@ final class SyncModel: ObservableObject {
             skippedSlotIDs.formUnion(checkpoint.skippedSlotIDs)
         }
         var identities: [String: RunnerExecutionIdentity] = [:]
-        for ex in plan?.workouts.flatMap(\.exercises) ?? []
+        for ex in skipReconciliationExercises
         where skippedSlotIDs.contains(ex.id) {
             identities[ex.id] = executionIdentity(for: ex)
         }
@@ -2140,7 +2159,7 @@ final class SyncModel: ObservableObject {
         unverifiedSlotIDs: Set<String>
     ) {
         var currentIdentities: [String: RunnerExecutionIdentity] = [:]
-        for ex in plan?.workouts.flatMap(\.exercises) ?? [] {
+        for ex in skipReconciliationExercises {
             currentIdentities[ex.id] = executionIdentity(for: ex)
         }
         let changedSlotIDs = unverifiedSlotIDs.union(
@@ -2166,7 +2185,7 @@ final class SyncModel: ObservableObject {
             finished: checkpoint.finished,
             sessionAttempt: checkpoint.sessionAttempt,
             restartDiscardedAttempt: checkpoint.restartDiscardedAttempt,
-            input: checkpoint.input, inputsBySlot: checkpoint.inputsBySlot, groupProgress: checkpoint.groupProgress, focus: checkpoint.focus, deferredGroupRepair: checkpoint.deferredGroupRepair, feedback: checkpoint.feedback)
+            input: checkpoint.input, inputsBySlot: checkpoint.inputsBySlot, groupProgress: checkpoint.groupProgress, focus: checkpoint.focus, deferredGroupRepair: checkpoint.deferredGroupRepair, feedback: checkpoint.feedback, freestyleExercises: checkpoint.freestyleExercises)
         guard replaceRunnerCheckpoint(normalized, ifCurrent: checkpoint) else {
             relinquishStaleRunnerCheckpoint()
             return
@@ -2195,7 +2214,7 @@ final class SyncModel: ObservableObject {
     /// still exists on the resolved day.
     private func reconcileSelection(previousSelectedDayID: String?, activeSlotID: String?,
                                     runnerWasActive: Bool) {
-        let days = plan?.availableWorkouts ?? []
+        let days = isFreestyle ? [freestyleDay].compactMap { $0 } : plan?.availableWorkouts ?? []
         let sessionDayID = todaySession?.workout_id
         let resolvedSessionDayID = sessionDayID.flatMap { id in
             days.contains(where: { $0.id == id }) ? id : nil
@@ -2264,7 +2283,7 @@ final class SyncModel: ObservableObject {
             sessions.filter { $0.date == staleSession.date }.map(\.id))
         aliasedSessionIDs.insert(staleSession.id)
         let canonicalSession = SessionRow(
-            exercise_swaps: staleSession.exercise_swaps,
+            kind: staleSession.kind, exercise_swaps: staleSession.exercise_swaps,
             notes: staleSession.notes, perceived_fatigue: staleSession.perceived_fatigue,
             started_at: staleSession.started_at, completed_at: staleSession.completed_at,
             id: committedSet.session_id,
@@ -2784,7 +2803,7 @@ final class SyncModel: ObservableObject {
         let body = SetRequestBody(
             id: uuidFactory().uuidString,
             exercise_id: ex.exercise_id,
-            template_exercise_id: ex.id,
+            template_exercise_id: isFreestyle ? nil : ex.id,
             set_index: nextIndex,
             weight: weight,
             reps: reps,
@@ -2792,13 +2811,13 @@ final class SyncModel: ObservableObject {
             logged_at: Int((now().timeIntervalSince1970 * 1_000).rounded(.down)),
             duration_s: durationOverride,
             is_timed: ex.isTimed, rpe: rpe,
-            prescription: selectedDayID.flatMap { dayID in
+            prescription: isFreestyle ? nil : selectedDayID.flatMap { dayID in
                 plan.map { SetPrescriptionContext(plan_id: $0.id, version: $0.version, day_id: dayID) }
             })
         let intent = PendingSetIntent(
             body: body,
             date: workoutDate,
-            workoutID: selectedDay?.id,
+            workoutID: isFreestyle ? nil : selectedDay?.id,
             resolvedSessionID: todaySession?.id,
             deliveryState: .queued,
             failedHTTPStatus: nil,
@@ -4047,6 +4066,7 @@ final class SyncModel: ObservableObject {
         defer { rememberGroupProgress() }
         // An ACK may remove a previous set while another physical hold is in
         // progress. Its selection repair waits for that hold's local commit.
+        if isFreestyle { return }
         if timedActive && !reseedCurrent { return }
         let group = currentExercise.flatMap { groupProgress(for: $0) }
         let groupChanged = group.map { !groups.contains($0.id) && observedGroupProgress[$0.id] != $0 } ?? false
@@ -4109,9 +4129,112 @@ final class SyncModel: ObservableObject {
             && (expected.group_id == nil || expected.target_sets == current.target_sets)
     }
 
+    // MARK: freestyle
+
+    var isFreestyle: Bool { todaySession?.isFreestyle == true && todaySession?.status != "discarded" }
+    var canStartFreestyle: Bool {
+        freestyleAvailable && !isUsingCachedState && !isLoading && !running && !todayIsCompleted
+            && !isStartingFreestyle && !hasResumableWorkout && !hasRunnerAwaitingSetRecovery
+            && !hasPendingTerminalIntentForCurrentWorkout
+            && (todaySession == nil || ["planned", "skipped", "discarded"].contains(todaySession?.status ?? "")
+                || todaySession?.isFreestyle == true)
+            && !todayProjection.suppressesScheduleAndEndurance
+    }
+
+    private var freestyleDay: Workout? {
+        guard let session = todaySession, session.isFreestyle, session.status != "discarded" else { return nil }
+        let checkpoint = persistedRunnerCheckpoint
+        let ownsCheckpoint = checkpoint?.sessionID == session.id && checkpoint?.sessionAttempt == session.attempt
+        var slots = ownsCheckpoint ? checkpoint?.freestyleExercises ?? [] : []
+        if running && selectedDayID == "freestyle:\(session.id)" { slots = freestyleExercises }
+        let logged = setsForSession(session.id).sorted { $0.logged_at < $1.logged_at }
+        for set in logged where !slots.contains(where: { $0.exercise_id == set.exercise_id }) {
+            if let exercise = catalogRow(set.exercise_id) {
+                slots.append(FreestyleRunner.exercise(exercise, previous: set, order: slots.count))
+            }
+        }
+        return Workout(id: "freestyle:\(session.id)", name: "Freestyle", day_label: nil,
+                       order_index: 0, exercises: slots)
+    }
+
+    private func freestyleSlot(_ exercise: ExerciseCatalog, order: Int) -> TemplateExercise {
+        let completed = Set(sessions.filter { $0.status == "completed" && $0.id != todaySession?.id }.map(\.id))
+        let timed = exercise.modality == "timed" || exercise.modality == "cardio"
+        let previous = sets.filter { $0.exercise_id == exercise.id && $0.deleted_at == nil && $0.is_warmup == 0
+            && completed.contains($0.session_id) && isTimedSet($0) == timed }.max { $0.logged_at < $1.logged_at }
+        return FreestyleRunner.exercise(exercise, previous: previous, order: order)
+    }
+
+    func startFreestyleWorkout(with exercise: ExerciseCatalog) async -> Bool {
+        adoptDurableWorkoutWriteOutboxes()
+        guard canInitiateBoundFeatureAction, canStartFreestyle, let jwt = currentJWT else { return false }
+        isStartingFreestyle = true
+        defer { isStartingFreestyle = false }
+        let date = todayString
+        let attempt = sessions.first { $0.date == date }?.attempt
+            ?? terminalOutbox.intent(for: date)?.expectedAttempt ?? 0
+        if plan == nil {
+            guard await ensureRoutinePlan(name: "Workouts") != nil, canInitiateBoundFeatureAction else { return false }
+        }
+        do {
+            let session = try await freestyleAPI.startFreestyle(date: date, expectedAttempt: attempt, jwt: jwt)
+            guard canInitiateBoundFeatureAction, todayString == date else { return false }
+            guard let accepted = acceptSessionResolution(session, reconcileDiscardBarrier: true), accepted.isFreestyle,
+                  accepted.status == "in_progress" else { return false }
+            todaySession = accepted
+            // Starting from another device recovers its already logged exercises.
+            freestyleExercises = freestyleDay?.exercises ?? []
+            if !freestyleExercises.contains(where: { $0.exercise_id == exercise.id }) {
+                freestyleExercises.append(freestyleSlot(exercise, order: freestyleExercises.count))
+            }
+            selectedDayID = "freestyle:\(session.id)"
+            startWorkout()
+            if let index = exercises.firstIndex(where: { $0.exercise_id == exercise.id }) { jump(to: index) }
+            return running
+        } catch { handle(error, jwt: jwt); return false }
+    }
+
+    func addFreestyleExercise(_ exercise: ExerciseCatalog) -> Bool {
+        guard canInitiateBoundFeatureAction, running, isFreestyle, !timedActive,
+              !hasPendingTerminalIntentForCurrentWorkout else { return false }
+        freestyleExercises = exercises
+        if !freestyleExercises.contains(where: { $0.exercise_id == exercise.id }) {
+            guard freestyleExercises.count < 50 else { return false }
+            freestyleExercises.append(freestyleSlot(exercise, order: freestyleExercises.count))
+        }
+        if let index = freestyleExercises.firstIndex(where: { $0.exercise_id == exercise.id }) { jump(to: index) }
+        return persistRunnerCheckpoint()
+    }
+
+    func loadFreestyleDraft(sessionID: String) async -> FreestyleWorkoutDraft? {
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return nil }
+        do {
+            let draft = try await freestyleAPI.freestyleDraft(sessionID: sessionID, jwt: jwt)
+            return canInitiateBoundFeatureAction ? draft : nil
+        } catch { handle(error, jwt: jwt); return nil }
+    }
+
+    @Published private(set) var freestyleSaveNeedsReview = false
+
+    func saveFreestyleWorkout(sessionID: String, request: SaveFreestyleRequest) async -> Bool {
+        freestyleSaveNeedsReview = false
+        let result: SaveFreestyleResult? = await performRoutineMutation { [freestyleAPI] _, jwt in
+            do {
+                return try await freestyleAPI.saveFreestyle(sessionID: sessionID, request: request, jwt: jwt)
+            } catch {
+                if case let APIError.http(code, _) = error, [400, 404, 409, 422].contains(code) {
+                    self.freestyleSaveNeedsReview = true
+                }
+                throw error
+            }
+        }
+        return result != nil
+    }
+
     // MARK: runner
 
     private func runnerDay(id: String) -> Workout? {
+        if let day = freestyleDay, day.id == id { return day }
         guard let day = plan?.availableWorkouts.first(where: { $0.id == id }) else { return nil }
         let session = todaySession ?? sessions.first { $0.date == todayString }
         return session?.applyingExerciseSwaps(to: day) ?? day
@@ -4248,7 +4371,7 @@ final class SyncModel: ObservableObject {
     }
 
     private func isRunnerComplete(_ ex: TemplateExercise) -> Bool {
-        runnerSetsDone(ex) >= ex.target_sets
+        !isFreestyle && runnerSetsDone(ex) >= ex.target_sets
     }
 
     private func isRunnerResolved(_ ex: TemplateExercise) -> Bool {
@@ -4326,7 +4449,7 @@ final class SyncModel: ObservableObject {
             skippedSlotIDs: checkpoint.skippedSlotIDs, workoutStartedAtMS: checkpoint.workoutStartedAtMS,
             finished: slotID == nil ? checkpoint.finished : false, sessionAttempt: checkpoint.sessionAttempt,
             restartDiscardedAttempt: checkpoint.restartDiscardedAttempt,
-            input: checkpoint.input, inputsBySlot: checkpoint.inputsBySlot, groupProgress: progress, focus: runnerFocus, deferredGroupRepair: deferredGroupRepair, feedback: checkpoint.feedback)
+            input: checkpoint.input, inputsBySlot: checkpoint.inputsBySlot, groupProgress: progress, focus: runnerFocus, deferredGroupRepair: deferredGroupRepair, feedback: checkpoint.feedback, freestyleExercises: checkpoint.freestyleExercises)
         guard replaceRunnerCheckpoint(replacement, ifCurrent: checkpoint) else { return false }
         persistedRunnerCheckpoint = replacement
         if resumableCheckpoint == checkpoint { resumableCheckpoint = replacement }
@@ -4617,6 +4740,7 @@ final class SyncModel: ObservableObject {
         }
 
         let liveSlotIDs = Set(day.exercises.map(\.id))
+        freestyleExercises = day.exercises
         todaySession = candidate?.status == "discarded" ? nil : candidate
         runnerRestartDiscardedAttempt = checkpoint.restartDiscardedAttempt
         selectedDayID = day.id
@@ -5001,7 +5125,7 @@ final class SyncModel: ObservableObject {
     }
 
     func setsDone(_ ex: TemplateExercise) -> Int { todaySlotSets(ex).count }
-    func isComplete(_ ex: TemplateExercise) -> Bool { setsDone(ex) >= ex.target_sets }
+    func isComplete(_ ex: TemplateExercise) -> Bool { !isFreestyle && setsDone(ex) >= ex.target_sets }
     func isSkipped(_ ex: TemplateExercise) -> Bool { skipped.contains(ex.id) }
     /// "Resolved" = nothing left to do here: either completed or skipped.
     /// Drives requeue/finish so a skipped exercise is never auto-represented.
@@ -5174,7 +5298,7 @@ final class SyncModel: ObservableObject {
                 id: uuidFactory().uuidString,
                 action: .finish,
                 date: date,
-                workoutID: todaySession?.workout_id ?? selectedDay?.id,
+                workoutID: isFreestyle ? nil : todaySession?.workout_id ?? selectedDay?.id,
                 resolvedSessionID: todaySession?.id,
                 deliveryState: .queued,
                 failedHTTPStatus: nil,
@@ -5203,7 +5327,8 @@ final class SyncModel: ObservableObject {
     /// the completion state at action time; the overflow menu intentionally
     /// keeps `finishWorkout()` as its explicit early-end path.
     var canFinishResolvedWorkout: Bool {
-        running && finished && !exercises.isEmpty
+        if isFreestyle { return running && finished }
+        return running && finished && !exercises.isEmpty
             && exercises.allSatisfy { isRunnerResolved($0) }
     }
 
@@ -5233,7 +5358,7 @@ final class SyncModel: ObservableObject {
             id: uuidFactory().uuidString,
             action: .discard,
             date: date,
-            workoutID: todaySession?.workout_id ?? selectedDay?.id,
+            workoutID: isFreestyle ? nil : todaySession?.workout_id ?? selectedDay?.id,
             resolvedSessionID: todaySession?.id,
             deliveryState: .queued,
             failedHTTPStatus: nil,
@@ -6267,6 +6392,7 @@ final class SyncModel: ObservableObject {
     ///   4. the first plan day.
     /// Returns nil ONLY when today is genuinely not a workout.
     var todayResolvedDay: Workout? {
+        if isFreestyle { return freestyleDay }
         // Single-clock: capture `todayString` ONCE and derive the
         // projection ONCE from it, instead of touching the computed clock
         // multiple times (workout test + template switch +
@@ -6319,6 +6445,7 @@ final class SyncModel: ObservableObject {
     /// Identity for preview/edit navigation. Display fallbacks used by legacy
     /// runners are not authority to open an unrelated saved workout's editor.
     var todayPreviewWorkout: Workout? {
+        if isFreestyle { return nil }
         let today = todayString
         if let checkpoint = resumableCheckpoint, checkpoint.date == today {
             return workout(id: checkpoint.selectedDayID)
@@ -6383,7 +6510,7 @@ final class SyncModel: ObservableObject {
         if let day = workout(id: sessionsByDate[ymd]?.workout_id) {
             return day
         }
-        guard allowScheduleInference else { return nil }
+        guard allowScheduleInference, sessionsByDate[ymd]?.isFreestyle != true else { return nil }
         return scheduledTemplate(forDateString: ymd)
     }
 

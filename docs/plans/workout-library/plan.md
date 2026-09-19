@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: active · Updated: 2026-09-19 · Theme: gym-floor
+Slug: workout-library · Status: gated · Updated: 2026-09-19 · Theme: gym-floor
 
 ## Goal
 
@@ -351,6 +351,22 @@ No second editor, no per-session template copies, no weeks table.
     (`CalendarProjection.swift` already treats a dangling id as rest; make
     the archived case explicit and keep the two in parity).
 - [ ] **P2 — Freestyle session and "save as workout"**
+  - [x] **(a) Implement and verify repository delivery**
+    - Migration 0054, durable freestyle starts, slotless set logging, account-
+      scoped runner recovery and reviewed atomic save are implemented. The
+      save receipt, plan/source CAS and attempt advance make retries safe;
+      new workouts remain unscheduled. REST compatibility preserves old-client
+      deletion invalidations and completed history; MCP unscheduled logging
+      creates freestyle sessions.
+    - Verification: 1,171 backend tests across three shards, including 24
+      freestyle cases; 635 iOS unit tests with one existing skip; rep and timed
+      start/add/finish/save UI journeys, including largest system text. Query
+      plans, TypeScript, plan graph and same-Worker rename/rollback rehearsal
+      pass. PR review and CI retain exact-head delivery evidence.
+  - [ ] **(b) Release migration, Worker and matching client**
+    - Follow [freestyle release ordering](freestyle-release.md) after separate
+      owner authorization. Include the pending P1 metadata migration/release;
+      repository delivery does not establish production or TestFlight state.
   - Add an explicit `sessions.kind` (`'planned' | 'freestyle'`, default
     `'planned'`) so a freestyle session with `workout_id = NULL` never
     resolves through the weekly schedule. Update the scope predicate in
@@ -361,7 +377,8 @@ No second editor, no per-session template copies, no weeks table.
     the schedule for any null-template session, so a client without the
     `freestyle` capability receives freestyle sessions only once they are
     completed (as history with their sets) and never as Today's session;
-    an in-progress freestyle session is invisible to it. Per the shared
+    an in-progress freestyle session is represented only by a redacted discarded
+    row plus prior-set tombstones to invalidate cached planned attempts. Per the shared
     rule, invisible means fenced: while a date holds a live (`planned` or
     `in_progress`) freestyle session, `POST /api/sessions`,
     `PUT /api/calendar/{date}`, `PATCH /api/sessions/{id}` status changes,
@@ -376,7 +393,8 @@ No second editor, no per-session template copies, no weeks table.
     the same idempotent `POST /api/sessions/{id}/sets` with
     `template_exercise_id = NULL`.
   - **Save as workout** converts a completed freestyle session into a library
-    workout: one `add_day` call with member-reviewed slots derived from
+    workout: one atomic `POST /api/sessions/{id}/save-workout` call through
+    the shared versioned plan writer, with member-reviewed slots derived from
     compatible exercise, execution-mode and external-load cohorts in
     first-logged order. `target_sets` is the cohort's working-set count.
     A timed cohort defaults duration to its median observed duration, rounded
@@ -408,7 +426,7 @@ No second editor, no per-session template copies, no weeks table.
 
 ## Execution frontier
 
-- P2
+- P2(b)
 
 ## Dependencies
 
@@ -425,6 +443,7 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 | P0.3(a) | coordinates_with | plan:member-activation-and-adherence#P0 | Both use first-workout entry and the shared exercise catalog. |
 | P0.5(c) | gated_by | external:owner-sensai-followup-implementation | Preview thumbnails remain planned pending activation. |
 | P0.5 | coordinates_with | plan:member-activation-and-adherence#P3 | Preview and upcoming-session entry share Today and workout detail routes. |
+| P2(b) | gated_by | external:owner-freestyle-production-release | Migration, Worker deployment and matching client distribution need owner release authority. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
 
 
@@ -433,10 +452,13 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@agent):** P1 tags/archive implementation is complete. P2 freestyle and
-save-as-workout is the next planned implementation slice. Preview thumbnails
-still require separate activation; the wider onboarding redesign and RPE
-semantics remain separate.
+**Now (@owner):** P2(a) repository implementation is complete. Authorize the
+ordered P1/P2 migration, Worker and matching-client release in
+[freestyle-release.md](freestyle-release.md) when ready. Verify the live migration
+ledger and Worker identity before choosing the exact release bundle; repository
+merge does not establish production or TestFlight delivery. Preview thumbnails
+still require separate activation; wider onboarding and RPE semantics remain
+separate.
 
 **P1 repository evidence (September 19):** Migration 0053, atomic REST/MCP
 metadata writes, snapshot/rebuild preservation and archive assignment fences
@@ -563,6 +585,13 @@ remain unimplemented and outside the completed goal's scope.
   [Workouts and multi-session days](../workouts-and-multi-session/plan.md);
   The coordinated P0 delivery uses canonical workout terms while retaining
   the released aliases for the server-first rollout and compatibility cycle.
-- `sessions.kind` is the one new session-log column. It is set at creation
-  and never changes, so it does not disturb the attempt CAS or the
-  `(user_id, date)` uniqueness rule.
+- `sessions.kind` is fixed within an attempt. The existing one-row-per-date
+  model reuses empty planned/skipped dates and discarded sessions; an explicit
+  start may change kind only while advancing the observed attempt and only
+  when no live sets remain. Live/completed sessions cannot change kind. This
+  preserves the `(user_id, date)` rule and rejects old queued set intents.
+- Saving uses a dedicated transaction endpoint because ordinary `add_day`
+  cannot atomically validate the reviewed source, repoint the session and
+  advance its attempt. It reuses the same plan version claim, prescription
+  validation, audit and snapshot writer. Migration 0054 retains an account-
+  scoped save receipt for exact retries, export and account deletion.

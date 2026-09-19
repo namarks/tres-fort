@@ -64,6 +64,7 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
 struct CalendarMonthView: View {
     @ObservedObject var sync: SyncModel
     var onWeeklySchedule: (() -> Void)? = nil
+    var onStartWorkout: (() -> Void)? = nil
 
     /// First day of the displayed month (anchored to its 1st). Self-owned now
     /// — the in-calendar "Today" button resets it; prev/next arrows shift it.
@@ -97,7 +98,10 @@ struct CalendarMonthView: View {
             set: { selectedDate = $0?.id })
         ) { wrapped in
             NavigationStack {
-                DayAgendaView(sync: sync, dateString: wrapped.id)
+                DayAgendaView(sync: sync, dateString: wrapped.id, onStartWorkout: {
+                    selectedDate = nil
+                    onStartWorkout?()
+                })
                     .navigationTitle("Workout date")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {

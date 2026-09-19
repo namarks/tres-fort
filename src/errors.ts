@@ -10,6 +10,7 @@ export function diagnosticErrorType(error: unknown): string {
 // These service failures describe caller-actionable conditions. Return only
 // their fixed codes; unexpected database/provider errors stay internal.
 const PUBLIC_TOOL_ERRORS = new Set([
+  'session_kind_conflict',
   'no_active_plan',
   'plan_write_conflict',
   'session_not_found',

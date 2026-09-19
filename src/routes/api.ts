@@ -11,6 +11,11 @@ import { isGroupId } from '../exerciseGroups';
 import { appleProviderConfig } from '../apple';
 import { validActivitySourceTime } from '../activityTime';
 import {
+  getOwnedSession,
+  startFreestyleSession,
+  getFreestyleWorkoutDraft,
+  saveFreestyleWorkout,
+  type SaveFreestyleInput,
   getTrainingProfile,
   saveTrainingProfile,
   getStarterWorkouts,
@@ -105,6 +110,18 @@ import type { Weekday } from '../types';
 
 export const apiRoutes = new Hono<HonoEnv>();
 apiRoutes.use('*', requireAppJwt);
+apiRoutes.use('*', async (c, next) => {
+  if (!readCapabilities(c.req.header('X-TresFort-Capabilities')).has('freestyle')) {
+    const match = c.req.path.match(/\/sessions\/([^/]+)/);
+    const date = c.req.method !== 'GET' ? c.req.path.match(/\/calendar\/(\d{4}-\d{2}-\d{2})/)?.[1] : undefined;
+    const session = match ? await getOwnedSession(c.env.DB,c.get('userId'),match[1]!)
+      : date ? await getOwnedSessionByDate(c.env.DB,c.get('userId'),date) : null;
+    if (session?.kind === 'freestyle' && (c.req.method !== 'GET' || session.status !== 'completed')) {
+      return c.json({error:'session_kind_conflict'},409);
+    }
+  }
+  await next();
+});
 for (const path of ['/groups', '/groups/*', '/me/group-safety', '/me/group-blocks/*', '/group-safety/*']) {
   apiRoutes.use(path, async (c, next) => {
     c.header('Cache-Control', 'no-store');
@@ -224,12 +241,13 @@ apiRoutes.get('/state', async (c) => {
   // `activities_since` is already taken by the intervals.icu external
   // actuals cache, see migration 0015 / getState).
   const logSince = Number(c.req.query('log_since') ?? 0);
-  const state = await getState(c.env.DB, userId, since, setsSince, eventsSince, activitiesSince, logSince);
   const capabilities = readCapabilities(c.req.header('X-TresFort-Capabilities'));
+  const state = await getState(c.env.DB, userId, since, setsSince, eventsSince, activitiesSince, logSince, capabilities.has('freestyle'));
   return c.json(workoutWire({ ...state, plan: state.plan
     ? planForCapabilities(state.plan, capabilities)
     : state.plan,
-    ...(capabilities.has('groups') ? { plan_groups_version: 1 } : {}) }));
+    ...(capabilities.has('groups') ? { plan_groups_version: 1 } : {}),
+    ...(capabilities.has('freestyle') ? { freestyle_version: 1 } : {}) }));
 });
 
 // ---- plan tree -----------------------------------------------------------
@@ -730,6 +748,29 @@ apiRoutes.on('DELETE', ['/workouts/:id/exercises/:teId', '/days/:id/exercises/:t
 });
 
 // ---- sessions + sets -----------------------------------------------------
+apiRoutes.get('/sessions/:id/workout-draft', async (c) => {
+  const draft = await getFreestyleWorkoutDraft(c.env.DB,c.get('userId'),c.req.param('id'));
+  return 'error' in draft ? c.json(draft,draft.error==='not_found'?404:409) : c.json(workoutWire(draft));
+});
+
+apiRoutes.post('/sessions/:id/save-workout', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({error:parsed.error},400);
+  const b=parsed.body;
+  const invalid=invalidMutationFields(b, {
+    workout_id:(v)=>typeof v==='string' && UUID_RE.test(v), name:isNonEmptyString,
+    expected_plan_id:isNonEmptyString,expected_version:isPositiveInteger,expected_attempt:isNonNegativeInteger,
+    source_signature:(v)=>typeof v==='string',slots:(v)=>Array.isArray(v) && v.length>0 && v.length<=50
+      && v.every(s=>s!==null && typeof s==='object' && !Array.isArray(s)
+        && isNonEmptyString(s.exercise_id) && isPositiveInteger(s.target_sets)
+        && isPositiveInteger(s.target_reps) && (s.target_duration_s===null || isPositiveInteger(s.target_duration_s))
+        && isFiniteNumber(s.target_weight) && isNonNegativeInteger(s.rest_seconds)),
+  });
+  if (invalid.length) return c.json({error:'invalid_fields',fields:invalid},400);
+  const result=await saveFreestyleWorkout(c.env.DB,c.get('userId'),c.req.param('id'),b as unknown as SaveFreestyleInput);
+  return 'error' in result || 'conflict' in result ? c.json(result,409) : c.json(workoutWire(result),201);
+});
+
 apiRoutes.get('/today', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
@@ -744,7 +785,7 @@ apiRoutes.get('/today', async (c) => {
     // Compatibility read/start: the released app's date resolver had implicit
     // restart semantics. It may revive only a legacy generation; the DB helper
     // leaves an attempt-v1 tombstone untouched.
-    { reviveDiscarded: true },
+    { reviveDiscarded: true, freestyleCapable: readCapabilities(c.req.header('X-TresFort-Capabilities')).has('freestyle') },
   );
   const sets = await getSetsForSession(c.env.DB, session.id);
   return c.json(workoutWire({ session, sets }));
@@ -764,6 +805,7 @@ apiRoutes.post('/sessions', async (c) => {
     workout_id: (value) => value === null || isNonEmptyString(value),
     restart_discarded: (value) => typeof value === 'boolean',
     expected_attempt: isNonNegativeInteger,
+    kind: (value) => value === 'planned' || value === 'freestyle',
   });
   if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
   const carriesAttemptProtocol =
@@ -788,6 +830,17 @@ apiRoutes.post('/sessions', async (c) => {
     protocolHeader.declared,
   );
   if (inactiveProtocol) return inactiveProtocol;
+  if (b.kind === 'freestyle') {
+    if (!readCapabilities(c.req.header('X-TresFort-Capabilities')).has('freestyle')) {
+      return c.json({error:'session_kind_conflict'},409);
+    }
+    if (!hasOwn(b,'expected_attempt') || b.workout_id != null) {
+      return c.json({error:'invalid_fields',fields:['expected_attempt','workout_id']},400);
+    }
+    const result = await startFreestyleSession(c.env.DB,userId,
+      typeof b.date==='string' ? b.date : await todayForUser(c.env.DB,userId), Number(b.expected_attempt));
+    return 'error' in result ? c.json(result,409) : c.json(workoutWire(result.session),201);
+  }
   const date =
     typeof b.date === 'string'
       ? b.date
@@ -813,6 +866,9 @@ apiRoutes.post('/sessions', async (c) => {
         workoutWire({ error: 'restart_target_missing', expected_attempt: expectedAttempt }),
         409,
       );
+    }
+    if (existing.kind === 'freestyle' && !readCapabilities(c.req.header('X-TresFort-Capabilities')).has('freestyle')) {
+      return c.json({error: 'session_kind_conflict'}, 409);
     }
     // The helper also handles a commit-then-timeout retry whose next
     // generation is already live. That matters during migration-first
@@ -858,6 +914,7 @@ apiRoutes.post('/sessions', async (c) => {
           reviveDiscarded: !carriesAttemptProtocol,
           expectedAttempt,
           claimAttemptProtocol: protocolHeader.declared,
+          freestyleCapable: readCapabilities(c.req.header('X-TresFort-Capabilities')).has('freestyle'),
         },
       );
     } catch (error) {
@@ -1065,6 +1122,7 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
       is_timed: b.is_timed as boolean | undefined,
       expected_attempt: b.expected_attempt as number | undefined,
       claim_attempt_protocol: protocolHeader.declared,
+      freestyle_capable: readCapabilities(c.req.header('X-TresFort-Capabilities')).has('freestyle'),
       prescription: b.prescription as { plan_id: string; version: number; day_id: string } | undefined,
       source: 'ios',
     });
@@ -1113,7 +1171,7 @@ apiRoutes.patch('/sets/:id', async (c) => {
       session_id: expected_session_id as string,
       attempt: expected_attempt as number,
       updated_at: expected_updated_at as number,
-    } : undefined);
+    } : undefined, readCapabilities(c.req.header('X-TresFort-Capabilities')).has('freestyle'));
     return row ? c.json(workoutWire(row)) : c.json(workoutWire({ error: 'not_found' }), 404);
   } catch (error) {
     if ((error as Error).message === 'set_correction_conflict') {

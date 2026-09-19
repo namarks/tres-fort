@@ -865,3 +865,30 @@ After each: summary of what changed / what's testable / what's next / what's ope
 | Cloudflare Workers + D1 | $5/month + usage (Workers Paid; active 2026-09-05) |
 | Domain | already owned |
 | **New spend** | **$5/month + usage** |
+
+
+### Freestyle sessions
+
+Migration 0054 adds `sessions.kind` (planned by default). A freestyle session
+never inherits a scheduled template through a null workout pin. Kind is fixed
+within an attempt; explicit starts can change an empty planned/skipped or
+discarded date only with an attempt advance. Existing live/completed work is
+never replaced. The native runner persists its exercise list in its account-
+scoped checkpoint and logs ordinary idempotent sets with null template slots.
+
+`GET /api/sessions/{id}/workout-draft` derives working-set cohorts by exercise,
+rep/timed mode and exact load, in first-performed order. The reviewed
+`POST /api/sessions/{id}/save-workout` request binds plan ID/version, session
+attempt and the source revision signature. One versioned transaction creates
+the unscheduled workout and validated slots, advances/repoints the session,
+and retains its audit, snapshot and idempotent receipt. Receipts participate
+in account export and deletion. Historical set slot links stay null.
+
+REST clients declare `freestyle` in `X-TresFort-Capabilities`; only a live
+`freestyle_version:1` response enables native starts. Older clients receive
+completed freestyle history and its sets, with completion-triggered set replay,
+while hidden live sessions are fenced from date and ID mutations. A redacted
+discarded session and deleted-set tombstones invalidate any planned attempt
+previously cached by an older client. See the
+[release procedure](plans/workout-library/freestyle-release.md) for the ordered
+migration, Worker, client and recovery boundaries.

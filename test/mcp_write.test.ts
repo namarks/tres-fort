@@ -204,6 +204,9 @@ describe('mcp write tools', () => {
       ],
     });
     const date = '2038-01-01';
+    // This compatibility case is a scheduled workout; unscheduled MCP starts
+    // are freestyle and deliberately fence clients without that capability.
+    await call('set_schedule', { week: { fri: 'P' } });
     const mcpSet = await call('log_set', {
       exercise: 'bench',
       weight: 176.25,

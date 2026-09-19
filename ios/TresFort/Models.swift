@@ -344,6 +344,8 @@ struct PlanComparisonResponse: Codable, Equatable {
 }
 
 struct SessionRow: Codable, Identifiable {
+    var kind: String? = nil
+    var isFreestyle: Bool { kind == "freestyle" }
     var exercise_swaps: String? = nil
     var notes: String? = nil
     var perceived_fatigue: Int? = nil
@@ -688,6 +690,7 @@ struct ExternalActivity: Codable, Identifiable, Equatable {
 }
 
 struct StateResponse: Codable {
+    var freestyleVersion: Int? = nil
     static let externalSyncCursorsCapabilityVersion = 2
     static let planGroupsCapabilityVersion = 1
 
@@ -725,6 +728,7 @@ struct StateResponse: Codable {
     let server_time: Int
 
     private enum CodingKeys: String, CodingKey {
+        case freestyleVersion = "freestyle_version"
         case plan, plan_version, sessions, sets
         case external_events, external_activities, activities, server_time
         case externalSyncCursorsVersion = "external_sync_cursors_version"
@@ -743,8 +747,10 @@ struct StateResponse: Codable {
         server_time: Int,
         manualActivityCursorCapable: Bool = true,
         externalSyncCursorsVersion: Int? = nil,
-        planGroupsVersion: Int? = nil
+        planGroupsVersion: Int? = nil,
+        freestyleVersion: Int? = 1
     ) {
+        self.freestyleVersion = freestyleVersion
         self.planGroupsVersion = planGroupsVersion
         self.externalSyncCursorsVersion = externalSyncCursorsVersion
         self.plan = plan
@@ -760,6 +766,7 @@ struct StateResponse: Codable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        freestyleVersion = try c.decodeIfPresent(Int.self, forKey: .freestyleVersion)
         planGroupsVersion = try c.decodeIfPresent(
             Int.self, forKey: .planGroupsVersion)
         externalSyncCursorsVersion = try c.decodeIfPresent(
@@ -809,6 +816,7 @@ struct StateResponse: Codable {
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(freestyleVersion, forKey: .freestyleVersion)
         try c.encodeIfPresent(planGroupsVersion, forKey: .planGroupsVersion)
         try c.encodeIfPresent(
             externalSyncCursorsVersion,
@@ -861,12 +869,14 @@ extension PlanTree {
 
 extension SessionRow {
     private enum CodingKeys: String, CodingKey {
+        case kind
         case notes, perceived_fatigue, exercise_swaps, started_at, completed_at
         case id, date, status, workout_id, day_template_id, summary, updated_at, attempt, write_protocol
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind)
         exercise_swaps = try c.decodeIfPresent(String.self, forKey: .exercise_swaps)
         notes = try c.decodeIfPresent(String.self, forKey: .notes)
         perceived_fatigue = try c.decodeIfPresent(Int.self, forKey: .perceived_fatigue)
@@ -891,6 +901,7 @@ extension SessionRow {
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(kind, forKey: .kind)
         try c.encodeIfPresent(exercise_swaps, forKey: .exercise_swaps)
         try c.encodeIfPresent(notes, forKey: .notes)
         try c.encodeIfPresent(perceived_fatigue, forKey: .perceived_fatigue)

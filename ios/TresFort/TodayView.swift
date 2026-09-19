@@ -211,6 +211,7 @@ struct TodayView: View {
     /// Keeps a double tap from starting twice while iOS is presenting the
     /// one-time notification permission prompt before a new workout.
     @State private var isPreparingWorkoutStart = false
+    @State private var showFreestyle = false
 
     var body: some View {
         let fullRestOverlayVisible = sync.restEndDate != nil && !restMinimized
@@ -237,6 +238,12 @@ struct TodayView: View {
                             .accessibilityIdentifier("today.openSavedStarter")
                     }
                     content
+                    if sync.canStartFreestyle {
+                        Button { showFreestyle = true } label: {
+                            Label(sync.isFreestyle ? "Continue freestyle" : "Start freestyle", systemImage: "figure.strengthtraining.traditional")
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }.padding(.horizontal, 20).accessibilityIdentifier("today.startFreestyle")
+                    }
                     if let onLogActivity, !sync.running, !sync.finished {
                         Button(action: onLogActivity) {
                             Label("Log an activity", systemImage: "figure.walk")
@@ -325,6 +332,7 @@ struct TodayView: View {
             .sheet(isPresented: $showOverridePicker) {
                 WorkoutsView(sync: sync, onStart: sync.todayIsCompleted ? nil : startChosenWorkout)
             }
+            .sheet(isPresented: $showFreestyle) { FreestyleExercisePicker(sync: sync, starting: true) }
             .sheet(isPresented: $showRoutine) {
                 CreateWorkoutView(sync: sync, onStart: sync.todayIsCompleted ? nil : startChosenWorkout)
             }
@@ -439,7 +447,14 @@ struct TodayView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     Text(sync.todayString).font(Theme.mono(12)).foregroundStyle(Theme.muted)
-                    if let workout = sync.todayPreviewWorkout {
+                    if sync.isFreestyle {
+                        Text("Freestyle").font(Theme.display(30)).foregroundStyle(Theme.text)
+                        Text("Add exercises as you go. Your weekly schedule stays unchanged.").foregroundStyle(Theme.muted)
+                        if sync.hasResumableWorkout {
+                            Button("Continue freestyle") { sync.resumeWorkout() }
+                                .buttonStyle(WorkoutPrimaryButtonStyle()).accessibilityIdentifier("today.resumeFreestyle")
+                        }
+                    } else if let workout = sync.todayPreviewWorkout {
                         VStack(alignment: .leading, spacing: 14) {
                             Text(sync.hasResumableWorkout ? "In progress" : "Scheduled for today")
                                 .font(Theme.mono(12)).foregroundStyle(Theme.muted)
@@ -763,6 +778,7 @@ private struct RunnerView: View {
         let input: RunnerInputState
         let exercise: TemplateExercise
     }
+    @State private var showFreestyleExercise = false
     @State private var valueDraft: SetValueDraft?
     @State private var weightPrescription: RunnerPrescription?
     @State private var loadingTarget: Double?
@@ -793,9 +809,9 @@ private struct RunnerView: View {
                             .padding(.bottom, 12)
                         }
 
-                        ProgressBar(exercises: sync.exercises,
+                        if !sync.isFreestyle { ProgressBar(exercises: sync.exercises,
                                     currentIndex: sync.exerciseIndex, sync: sync)
-                            .padding(.bottom, 12)
+                            .padding(.bottom, 12) }
 
                         if let block = blocks.first(where: { $0.members.contains(where: { $0.id == ex.id }) }), block.isGroup {
                             Text(block.title + " · Round \(min(displayedSetNumber, block.rounds)) of \(block.rounds)")
@@ -834,15 +850,15 @@ private struct RunnerView: View {
                             : AnyLayout(HStackLayout())
                         metadataLayout {
                             let complete = sync.isComplete(ex)
-                            meta(ex.group_id == nil ? "SET" : "ROUND", "\(min(displayedSetNumber, ex.target_sets))",
-                                 complete ? "OF \(ex.target_sets) ✓" : "OF \(ex.target_sets)")
+                            meta(ex.group_id == nil ? "SET" : "ROUND", "\(sync.isFreestyle ? displayedSetNumber : min(displayedSetNumber, ex.target_sets))",
+                                 sync.isFreestyle ? "FREESTYLE" : complete ? "OF \(ex.target_sets) ✓" : "OF \(ex.target_sets)")
                             if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                             meta(ex.group_id == nil ? "REST" : "ROUND REST",
                                  "\(ex.group_rest_seconds ?? ex.rest_seconds)s", "")
                         }
                         .padding(.top, 12)
 
-                        Text(ex.prescriptionLabel(in: weightUnit))
+                        Text(sync.isFreestyle ? "Choose your load and reps or time. Previous recorded values are a starting point." : ex.prescriptionLabel(in: weightUnit))
                             .font(.subheadline).foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                             .padding(.top, 8)
@@ -902,7 +918,11 @@ private struct RunnerView: View {
                             prescriptionContext(ex: ex)
                         }
                         .font(.subheadline).padding(.top, 12)
-                        Button {
+                        if sync.isFreestyle {
+                            Button("Add an exercise", systemImage: "plus.circle") { showFreestyleExercise = true }
+                                .frame(minHeight: 44).disabled(sync.timedActive)
+                                .accessibilityIdentifier("runner.addFreestyleExercise")
+                        } else { Button {
                             swapTarget = sync.workoutSwapTarget
                         } label: {
                             Label("Swap exercise", systemImage: "arrow.triangle.swap")
@@ -911,7 +931,7 @@ private struct RunnerView: View {
                         }
                         .foregroundStyle(Theme.accent)
                         .disabled(sync.workoutSwapTarget == nil)
-                        .accessibilityIdentifier("runner.swap-exercise")
+                        .accessibilityIdentifier("runner.swap-exercise") }
                         if sync.timedActive {
                             Text("Finish or stop the timer to swap exercises.")
                                 .font(.caption).foregroundStyle(Theme.muted)
@@ -983,6 +1003,7 @@ private struct RunnerView: View {
             .onChange(of: sync.timedActive) {
                 if !sync.timedActive { previewFor = nil }
             }
+            .sheet(isPresented: $showFreestyleExercise) { FreestyleExercisePicker(sync: sync) }
             .sheet(item: $valueDraft) { draft in
                 SetValuesEditor(title: "Next set", values: SetCorrectionValues(
                     weight: draft.input.weight, reps: draft.input.reps, rpe: draft.input.rpe,
@@ -1434,7 +1455,7 @@ private struct RunnerSetAction: View {
                 .disabled(
                     sync.isTerminalMutationInFlight
                         || sync.hasPendingTerminalIntentForCurrentWorkout)
-            } else if sync.runnerSetsDone(ex) >= ex.target_sets {
+            } else if !sync.isFreestyle && sync.runnerSetsDone(ex) >= ex.target_sets {
                 Text("EXERCISE COMPLETE")
                     .font(Theme.display(24)).tracking(1.2)
                     .frame(maxWidth: .infinity).padding(.vertical, 16)
@@ -1653,7 +1674,7 @@ private struct RestNextSetValues: View {
                 durationSeconds: exercise.isTimed ? sync.holdDurationSeconds : nil,
                 timed: exercise.isTimed, bodyweight: exercise.isBodyweight,
                 unit: unit.rawValue, unilateral: exercise.isUnilateral)
-            Text("Set \(sync.currentPhysicalSetNumber) of \(exercise.target_sets) · " + values
+            Text("Set \(sync.currentPhysicalSetNumber)" + (sync.isFreestyle ? " · " : " of \(exercise.target_sets) · ") + values
                  + (sync.weight != 0 && !exercise.isTimed ? " · \(unit.rawValue)" : "")
                  + (exercise.isPerHand ? " each hand" : ""))
                 .font(.caption).foregroundStyle(Theme.muted)

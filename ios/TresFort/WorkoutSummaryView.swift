@@ -3,10 +3,16 @@ import SwiftUI
 struct WorkoutSummaryView: View {
     @ObservedObject var sync: SyncModel
     let session: SessionRow
+    @State private var saveFreestyle = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
+        let current = sync.sessions.first { $0.id == session.id } ?? session
         VStack(alignment: .leading, spacing: 16) {
+            if current.isFreestyle && current.status == "completed" && current.workout_id == nil && sync.freestyleAvailable {
+                Button("Save as workout", systemImage: "square.and.arrow.down") { saveFreestyle = true }
+                    .frame(minHeight: 44).accessibilityIdentifier("freestyle.saveAsWorkout")
+            }
             if let summary = sync.completionSummary(for: session.id) {
                 let stats = WorkoutSummaryStats.make(summary: summary, session: session,
                     timedWorkSeconds: WorkoutSummaryStats.timedWorkSeconds(
@@ -60,6 +66,7 @@ struct WorkoutSummaryView: View {
                 }
             }
         }
+        .sheet(isPresented: $saveFreestyle) { SaveFreestyleWorkoutView(sync: sync, session: session) }
         .task(id: "\(session.id):\(sync.summaryRevision)") {
             await sync.loadCompletionSummary(sessionID: session.id)
         }

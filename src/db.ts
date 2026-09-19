@@ -3145,6 +3145,18 @@ async function workoutIsActive(db: D1Database, plan: PlanRow, workoutId: string)
     .bind(plan.id, plan.user_id, workoutId).first();
 }
 
+/** A reused date may keep its original plan_id while targeting newer slots. */
+function sessionReferencesPlanSQL(alias: string, plan: string): string {
+  return `(${alias}.plan_id=${plan} OR EXISTS (
+    SELECT 1 FROM workouts w WHERE w.plan_id=${plan} AND (
+      ${alias}.workout_id=w.id OR EXISTS (
+        SELECT 1 FROM set_logs l JOIN template_exercises te ON te.id=l.template_exercise_id
+        WHERE l.session_id=${alias}.id AND l.deleted_at IS NULL AND te.workout_id=w.id
+      )
+    )
+  ))`;
+}
+
 /**
  * SQL serializer for the writable plan document. Keeping this as an INSERT
  * statement lets a plan writer append it to the same D1 batch as its CAS,
@@ -3233,7 +3245,8 @@ export function preparePlanWriteStart(
               AND ${workoutSessionReferenceSQL('s', '?6', '?1')}
           ))
           AND (?5=0 OR NOT EXISTS (
-            SELECT 1 FROM sessions s WHERE s.user_id=?2 AND s.plan_id=?1 AND s.status='in_progress'
+            SELECT 1 FROM sessions s WHERE s.user_id=?2 AND s.status='in_progress'
+              AND ${sessionReferencesPlanSQL('s', '?1')}
           ))`,
     ).bind(plan.id, plan.user_id, plan.version, nonce, rejectActiveWorkout ? 1 : 0, rejectWorkoutId),
     preparePlanSnapshotInsert(db, {
@@ -3490,8 +3503,8 @@ export async function restorePlanSnapshot(
   const groupInvalid = validatePlanExerciseGroups(snapshot.parsed.workouts);
   if (groupInvalid) return groupInvalid;
   const active = await workoutDB(db).prepare(
-    `SELECT 1 FROM sessions
-      WHERE user_id=?1 AND plan_id=?2 AND status='in_progress' LIMIT 1`,
+    `SELECT 1 FROM sessions s
+      WHERE s.user_id=?1 AND s.status='in_progress' AND ${sessionReferencesPlanSQL('s', '?2')} LIMIT 1`,
   ).bind(userId, plan.id).first();
   if (active) return { error: 'active_workout' };
 
@@ -3598,7 +3611,8 @@ export async function restorePlanSnapshot(
   const results = await runWorkoutWriteBatch(db, statements);
   if ((results[0]?.meta.changes ?? 0) !== 1 || (results[documentUpdateIndex]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
     const nowActive = await workoutDB(db).prepare(
-      `SELECT 1 FROM sessions WHERE user_id=?1 AND plan_id=?2 AND status='in_progress' LIMIT 1`,
+      `SELECT 1 FROM sessions s WHERE s.user_id=?1 AND s.status='in_progress'
+        AND ${sessionReferencesPlanSQL('s', '?2')} LIMIT 1`,
     ).bind(userId, plan.id).first();
     if (nowActive) return { error: 'active_workout' };
     const latest = await getActivePlan(db, userId);

@@ -1,7 +1,7 @@
 /** Bounded member-authored labels, shared by REST, MCP and document writes. */
 export function validWorkoutTags(value: unknown): value is string[] {
   return Array.isArray(value) && value.length <= 12 && value.every(tag =>
-    typeof tag === 'string' && tag.trim().length > 0 && tag.trim().length <= 32
+    typeof tag === 'string' && tag.trim().length > 0 && tag.trim().toLowerCase().length <= 32
       && !/[\u0000-\u001f\u007f]/.test(tag));
 }
 export function normalizeWorkoutTags(tags: string[]): string {

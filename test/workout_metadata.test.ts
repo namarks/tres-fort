@@ -39,7 +39,7 @@ it('normalizes tags and snapshots every metadata field in the same atomic write'
   expect((await env.DB.prepare("SELECT body FROM notes WHERE user_id=? AND author='coach'").bind(userId).all()).results).toContainEqual({body:'Archived workout.'});
 });
 
-it.each([{tags:['']},{tags:['a'.repeat(33)]},{tags:Array(13).fill('x')},{tags:'travel'},{archived_at:-1},{archived_at:1.5}])('rejects invalid metadata before writing: %j', async patch => {
+it.each([{tags:['']},{tags:['a'.repeat(33)]},{tags:['İ'.repeat(17)]},{tags:Array(13).fill('x')},{tags:'travel'},{archived_at:-1},{archived_at:1.5}])('rejects invalid metadata before writing: %j', async patch => {
   const {userId,plan,gym}=await fixture();
   expect(await patchWorkoutAtVersion(env.DB,userId,plan,gym.id,patch as never)).toHaveProperty('error','invalid_fields');
   expect((await getPlanTree(env.DB,userId))?.version).toBe(plan.version);
@@ -228,4 +228,35 @@ it('restoring an archived snapshot after a rebuild turns dated assignments into 
   expect(await restorePlanSnapshot(env.DB,userId,{plan_id:plan.id,snapshot_version:archived.version,expected_version:rebuilt.plan.version,actor:'ios'})).toHaveProperty('ok',true);
   expect(await env.DB.prepare('SELECT status,workout_id,attempt FROM sessions WHERE id=?').bind(assignment.session.id).first())
     .toEqual({status:'skipped',workout_id:null,attempt:assignment.session.attempt+1});
+});
+
+it.each(['before', 'during'])('fences a cross-plan runner starting %s snapshot restore', async timing => {
+  const {userId,plan:oldPlan}=await fixture();
+  const original=await getOrCreateSession(env.DB,userId,oldPlan.id,'2026-09-21',null);
+  await createPlan(env.DB,userId,'Replacement');
+  const result=await updatePlanTree(env.DB,userId,{workouts:[{name:'New Gym',exercises:[]}]});
+  if(!('plan' in result)) throw Error('replacement');
+  const workout=result.plan.workouts[0]!;
+  await patchWorkoutAtVersion(env.DB,userId,result.plan,workout.id,{archived_at:123});
+  const archived=(await getPlanTree(env.DB,userId))!;
+  await patchWorkoutAtVersion(env.DB,userId,archived,workout.id,{archived_at:null});
+  const plan=(await getPlanTree(env.DB,userId))!;
+  const pinned=await getOrCreateSession(env.DB,userId,plan.id,'2026-09-21',workout.id);
+  expect(pinned).toMatchObject({id:original.id,plan_id:oldPlan.id,workout_id:workout.id});
+  if(timing==='before') await patchSession(env.DB,userId,pinned.id,{status:'in_progress'});
+  let injected=false;
+  const db=timing==='before' ? env.DB : new Proxy(env.DB,{get(target,key){
+    if(key==='batch') return async (statements:D1PreparedStatement[])=>{
+      if(!injected){injected=true;await patchSession(env.DB,userId,pinned.id,{status:'in_progress'});}
+      return target.batch(statements);
+    };
+    const value=Reflect.get(target,key,target);
+    return typeof value==='function'?value.bind(target):value;
+  }});
+  expect(await restorePlanSnapshot(db,userId,{plan_id:plan.id,snapshot_version:archived.version,expected_version:plan.version,actor:'ios'}))
+    .toEqual({error:'active_workout'});
+  if(timing==='during') expect(injected).toBe(true);
+  expect(await getPlanTree(env.DB,userId)).toEqual(plan);
+  expect(await env.DB.prepare('SELECT workout_id,status FROM sessions WHERE id=?').bind(pinned.id).first())
+    .toEqual({workout_id:workout.id,status:'in_progress'});
 });

@@ -81,6 +81,28 @@ final class WorkoutLibraryJourneyTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Hotel"].waitForExistence(timeout: 5))
     }
 
+    func testDeletingLastTaggedWorkoutClearsFilter() {
+        let app = launch()
+        app.buttons["Actions for Hotel"].tap()
+        app.buttons["Edit tags"].tap()
+        let input = app.textViews["workoutTags.input"]
+        if input.waitForExistence(timeout: 3) { input.tap(); input.typeText("quick") }
+        else {
+            let field = app.textFields["workoutTags.input"]
+            XCTAssertTrue(field.waitForExistence(timeout: 3)); field.tap(); field.typeText("quick")
+        }
+        app.buttons["workoutTags.save"].tap()
+        XCTAssertTrue(app.buttons["library.tagFilter"].waitForExistence(timeout: 5))
+        app.buttons["library.tagFilter"].tap(); app.buttons["quick"].tap()
+        XCTAssertFalse(app.buttons["library.workout.synthetic-day"].exists)
+        app.buttons["Actions for Hotel"].tap(); app.buttons["Delete workout"].tap()
+        let confirmation = app.alerts["Delete Hotel?"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        confirmation.buttons["Delete workout"].tap()
+        XCTAssertTrue(app.buttons["library.workout.synthetic-day"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["library.tagFilter"].exists)
+    }
+
     func testDeleteIsExplicitAndSeparateFromUnschedule() {
         let app = launch()
         app.buttons["Actions for Hotel"].tap()

@@ -4062,7 +4062,7 @@ export async function dedupeDayOrderIndexes(
 ): Promise<boolean | GroupConflict> {
   const plan = await workoutDB(db).prepare(
     `SELECT p.* FROM plans p JOIN workouts d ON d.plan_id=p.id
-     WHERE d.id=?1 AND p.status='active'`,
+     WHERE d.id=?1 AND d.archived_at IS NULL AND p.status='active'`,
   ).bind(workoutId).first<PlanRow>();
   if (!plan) return false;
   const list = await exerciseGroupDayRows(db, workoutId);
@@ -4112,6 +4112,9 @@ export async function addTemplateExercise(
   const plan = await workoutDB(db).prepare("SELECT * FROM plans WHERE id=?1 AND status='active'")
     .bind(planId).first<PlanRow>();
   if (!plan) throw new Error('no_active_plan');
+  if (!await getWorkoutInPlan(db, plan.id, input.workout_id)) {
+    throw new Error('workout_archived_assignment');
+  }
   const exercise = await workoutDB(db).prepare('SELECT modality FROM exercises WHERE id=?1')
     .bind(input.exercise_id).first<{ modality: string }>();
   const validationInput: Record<string, unknown> = {
@@ -6944,7 +6947,7 @@ async function findSlot(
         `SELECT te.* FROM template_exercises te
          JOIN workouts d ON d.id = te.workout_id
          JOIN plans p ON p.id = d.plan_id
-         WHERE te.id = ?1 AND p.user_id = ?2
+         WHERE te.id = ?1 AND p.user_id = ?2 AND d.archived_at IS NULL
            AND (?3 IS NULL OR te.workout_id = ?3)`,
       )
       .bind(ref.template_exercise_id, userId, ref.workout_id ?? null)
@@ -6957,7 +6960,7 @@ async function findSlot(
       `SELECT te.* FROM template_exercises te
        JOIN workouts d ON d.id = te.workout_id
        JOIN plans p ON p.id = d.plan_id
-       WHERE p.user_id = ?1 AND te.exercise_id = ?2 AND p.status = 'active'
+       WHERE p.user_id = ?1 AND te.exercise_id = ?2 AND p.status = 'active' AND d.archived_at IS NULL
          AND (d.day_label = ?3 OR d.name = ?3)`,
     )
     .bind(userId, exId, ref.day)
@@ -7329,9 +7332,8 @@ export async function adjustToday(
   if (!tree) return { plan: null, changes: [], recurring: true, affected_workouts: [], no_op: true };
   const setF = { light: 0.8, moderate: 0.65, heavy: 0.5 }[magnitude];
   const wtF = { light: 0.95, moderate: 0.9, heavy: 0.85 }[magnitude];
-  const days = dayLabel
-    ? tree.workouts.filter((d) => d.day_label === dayLabel || d.name === dayLabel)
-    : tree.workouts;
+  const days = tree.workouts.filter(d => d.archived_at == null
+    && (!dayLabel || d.day_label === dayLabel || d.name === dayLabel));
   const invalidFields = new Set<string>();
   for (const day of days) for (const slot of day.exercises) {
     let progression: unknown = null;
@@ -12289,7 +12291,7 @@ export async function setGroup(
   if (!tree || tree.id !== plan.id || tree.version !== plan.version) {
     return { conflict: true, current_version: tree?.version ?? plan.version };
   }
-  const day = tree.workouts.find((day) => day.id === dayId);
+  const day = tree.workouts.find((day) => day.id === dayId && day.archived_at == null);
   if (!day) return { error: 'day_not_found' };
   if (tree.workouts.some((day) => day.id !== dayId && day.exercises.some((slot) => slot.group_id === groupId))) {
     return { error: 'group_conflict', fields: ['group_id'] };
@@ -12356,7 +12358,10 @@ export async function clearGroup(
   if (plan.version !== expectedVersion) return { conflict: true, current_version: plan.version };
   const tree = await getPlanTree(db, userId);
   if (!tree || tree.id !== plan.id || tree.version !== plan.version) return { conflict: true, current_version: tree?.version ?? plan.version };
-  if (scopeDayId !== undefined && !tree.workouts.some((day) => day.id === scopeDayId)) return { error: 'day_not_found' };
+  if (scopeDayId !== undefined && !tree.workouts.some((day) => day.id === scopeDayId && day.archived_at == null)) return { error: 'day_not_found' };
+  if (tree.workouts.some(day => day.archived_at != null && day.exercises.some(slot => slot.group_id === groupId))) {
+    return { error: 'day_not_found' };
+  }
   const members = tree.workouts.flatMap((day) => day.exercises.filter((slot) => slot.group_id === groupId));
   if (scopeDayId !== undefined && members.some((slot) => slot.workout_id !== scopeDayId)) {
     return { error: 'group_conflict', fields: ['group_id'] };

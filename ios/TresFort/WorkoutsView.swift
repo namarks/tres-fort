@@ -68,6 +68,9 @@ struct WorkoutsView: View {
     @State private var selectedTag = ""
     @State private var taggingDay: Workout?
     @State private var archivingDay: Workout?
+    private var availableTags: [String] {
+        Array(Set((sync.plan?.workouts ?? []).flatMap(\.workoutTags))).sorted()
+    }
     private var visibleWorkouts: [Workout] {
         let days = showArchived && date == nil ? (sync.plan?.workouts.filter(\.isArchived) ?? [])
             : WorkoutLibraryPolicy.choices(plan: sync.plan, date: date ?? sync.todayString)
@@ -85,7 +88,14 @@ struct WorkoutsView: View {
     @State private var showHistory = false
 
     var body: some View {
-        NavigationStack {
+        NavigationStack { libraryContent }
+            .preferredColorScheme(.dark)
+            .onChange(of: availableTags) { _, tags in
+                if !tags.contains(selectedTag) { selectedTag = "" }
+            }
+    }
+
+    private var libraryContent: some View {
             Group {
                 if sync.plan == nil && !sync.canCreateRoutine {
                     PlanLoadRecoveryView(sync: sync)
@@ -171,8 +181,6 @@ struct WorkoutsView: View {
             .task(id: [sync.plan?.id ?? "", String(sync.plan?.version ?? 0)]) {
                 await sync.refreshRecentPlanChanges()
             }
-        }
-        .preferredColorScheme(.dark)
     }
 
     private var routineList: some View {
@@ -186,11 +194,10 @@ struct WorkoutsView: View {
                     .pickerStyle(.segmented)
                     .accessibilityIdentifier("library.scope")
                 }
-                let tags = Array(Set((sync.plan?.workouts ?? []).flatMap(\.workoutTags))).sorted()
-                if !tags.isEmpty {
+                if !availableTags.isEmpty {
                     Picker("Tag", selection: $selectedTag) {
                         Text("All tags").tag("")
-                        ForEach(tags, id: \.self) { Text($0).tag($0) }
+                        ForEach(availableTags, id: \.self) { Text($0).tag($0) }
                     }
                     .accessibilityIdentifier("library.tagFilter")
                 }

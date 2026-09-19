@@ -2,7 +2,8 @@ import { applyD1Migrations, env, SELF } from 'cloudflare:test';
 import { beforeAll, expect, it } from 'vitest';
 import { createPlan, getPlanTree, getPlanSnapshot, patchWorkoutAtVersion, updatePlanTree,
   setPlanSchedule, setPlannedSession, getWorkoutInPlan, findWorkoutByRef,
-  getProjectedCalendar, getOrCreateSession, logSet, patchSession, restorePlanSnapshot } from '../src/db';
+  getProjectedCalendar, getOrCreateSession, logSet, patchSession, restorePlanSnapshot,
+  updateExercise, deleteTemplateExercise, addTemplateExercise, adjustToday, setGroup, clearGroup } from '../src/db';
 import { serializePlanSnapshot } from '../src/planSnapshots';
 import { parsePlanMeta } from '../src/types';
 
@@ -222,6 +223,8 @@ it.each(['workouts','days'])('keeps %s REST aliases, sync metadata and permanent
   const created=await api(path,'POST',{name:'Hotel',tags:['travel']});
   expect(created.status).toBe(201);
   const id=created.body.id;
+  const slot=await api(`${path}/${id}/exercises`,'POST',{exercise:'bench',target_sets:3,target_reps:5});
+  expect(slot.status).toBe(201);
   const tree=(await api('plan/active')).body;
   expect((await api(`${path}/${id}`,'PATCH',{archived_at:123})).status).toBe(400);
   expect((await api(`${path}/${id}`,'PATCH',{archived_at:123,expected_version:tree.version})).status).toBe(200);
@@ -230,6 +233,9 @@ it.each(['workouts','days'])('keeps %s REST aliases, sync metadata and permanent
   expect(synced.plan.days).toEqual(synced.plan.workouts);
   expect(await api('sessions','POST',{date:'2026-09-21',day_template_id:id})).toMatchObject({status:422,body:{error:'unknown_day'}});
   expect(await api('calendar/2026-09-21','PUT',{day_template_id:id,expected_attempt:0})).toMatchObject({status:400,body:{error:'unknown_day_ref'}});
+  expect((await api(`${path}/${id}/exercises/${slot.body.id}`,'PATCH',{target_reps:10})).status).toBe(404);
+  expect((await api(`${path}/${id}/exercises/${slot.body.id}`,'DELETE')).status).toBe(404);
+  expect((await api('plan/active')).body.workouts[0].exercises[0]).toMatchObject({id:slot.body.id,target_reps:5});
 });
 
 it.each(['day','workout'])('exposes tags and archive through add_%s and update_%s with atomic coach notes',async suffix=>{
@@ -338,6 +344,29 @@ it('rejects moving or reviving an archived slot reference in an active session',
   await expect(env.DB.prepare('UPDATE set_logs SET deleted_at=NULL WHERE id=?')
     .bind(logged.set.id).run()).rejects.toThrow('workout_archived_assignment');
   expect(await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?').bind(logged.set.id).first('deleted_at')).toBe(1);
+});
+
+it('keeps archived prescriptions and their completed set references unchanged through targeted writers',async()=>{
+  const {userId,plan,gym}=await fixture();
+  const done=await session(userId,plan.id,gym.id,'2026-09-07','completed');
+  const logged=await logSet(env.DB,userId,{id:crypto.randomUUID(),session_id:done,
+    exercise_id:gym.exercises[0]!.exercise_id,template_exercise_id:gym.exercises[0]!.id,
+    set_index:1,weight:100,reps:5,source:'ios'});
+  await patchWorkoutAtVersion(env.DB,userId,plan,gym.id,{archived_at:123});
+  const archived=(await getPlanTree(env.DB,userId))!;
+  for(const ref of [{template_exercise_id:gym.exercises[0]!.id},{day:'Gym',exercise:'bench'}]) {
+    expect(await updateExercise(env.DB,userId,ref,{target_reps:10})).toBeNull();
+    expect(await deleteTemplateExercise(env.DB,userId,ref)).toBeNull();
+  }
+  await expect(addTemplateExercise(env.DB,plan.id,{...gym.exercises[0]!,is_warmup:0}))
+    .rejects.toThrow('workout_archived_assignment');
+  expect(await adjustToday(env.DB,userId,'deload')).toMatchObject({no_op:true,affected_workouts:['B']});
+  const groupId=crypto.randomUUID();
+  expect(await setGroup(env.DB,userId,gym.id,groupId,[gym.exercises[0]!.id,'other'],{expected_version:archived.version,round_rest:60}))
+    .toMatchObject({error:'day_not_found'});
+  expect(await clearGroup(env.DB,userId,groupId,archived.version,undefined,gym.id)).toMatchObject({error:'day_not_found'});
+  expect(await getPlanTree(env.DB,userId)).toEqual(archived);
+  expect(await env.DB.prepare('SELECT template_exercise_id FROM set_logs WHERE id=?').bind(logged.set.id).first('template_exercise_id')).toBe(gym.exercises[0]!.id);
 });
 
 it.each([null,'A'])('pairs duplicate %s identities once when an older coach omits metadata',async label=>{

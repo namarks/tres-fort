@@ -322,6 +322,9 @@ Completed-history set writes remain supported. Restoring the library
 entry leaves those assignments cleared. A saved pre-first-set runner is
 invalidated when a live pull finds its workout archived. During a trip, active
 `travel`-tagged choices appear first without changing blackout rules.
+Targeted prescription edits, slot deletion and grouping require an active
+workout; bulk recurring adjustments skip archived entries. Restore the workout
+before editing its prescription through those paths.
 See the [metadata release boundary](plans/workout-library/metadata-release.md).
 
 Supersets and circuits have at least two contiguous members in one day, sharing

@@ -1,6 +1,6 @@
 import { env, applyD1Migrations, fetchMock, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { logSet } from '../src/db';
+import { logSet, getOrCreateSession } from '../src/db';
 
 const BASE = 'https://tres-fort.test';
 const TOKEN = 'test-mcp-token';
@@ -63,6 +63,38 @@ describe('mcp write tools', () => {
       expect(built.plan.workouts).toHaveLength(2);
       v = built.plan.version;
       expect(v).toBeGreaterThan(1);
+    });
+
+    it.each(['planned','skipped','discarded'])('log_set converts an unscheduled empty %s generation to freestyle',async status=>{
+      const date='2026-09-22';
+      const owner=await env.DB.prepare('SELECT user_id FROM plans WHERE id=?').bind(built.plan.id).first<{user_id:string}>();
+      const previous=await getOrCreateSession(env.DB,owner!.user_id,built.plan.id,date,null);
+      if(status==='skipped')expect(await call('skip_planned_session',{date})).not.toHaveProperty('error');
+      if(status==='discarded')expect(await call('discard_workout',{session_id:previous.id,expected_attempt:previous.attempt})).not.toHaveProperty('error');
+      const result=await call('log_set',{session_date:date,exercise:'bench',weight:100,reps:5});
+      expect(result).not.toHaveProperty('error');
+      const current=await env.DB.prepare('SELECT kind,status,attempt,workout_id FROM sessions WHERE id=?').bind(previous.id).first();
+      expect(current).toMatchObject({kind:'freestyle',status:'in_progress',workout_id:null});
+      expect((current as {attempt:number}).attempt).toBeGreaterThan(previous.attempt);
+    });
+
+    it('log_set honors a skipped date over its recurring workout',async()=>{
+      const date='2026-09-22';
+      expect(await call('set_schedule',{expected_version:v,week:{tue:built.plan.workouts[0].id}})).not.toHaveProperty('error');
+      expect(await call('skip_planned_session',{date})).not.toHaveProperty('error');
+      expect(await call('log_set',{session_date:date,exercise:'bench',weight:100,reps:5})).not.toHaveProperty('error');
+      const owner=await env.DB.prepare('SELECT user_id FROM plans WHERE id=?').bind(built.plan.id).first<{user_id:string}>();
+      const current=await env.DB.prepare('SELECT kind,status,workout_id FROM sessions WHERE user_id=? AND date=?').bind(owner!.user_id,date).first();
+      expect(current).toEqual({kind:'freestyle',status:'in_progress',workout_id:null});
+    });
+
+    it('log_set preserves a one-off workout assignment without a recurring schedule',async()=>{
+      const date='2026-09-22';
+      const owner=await env.DB.prepare('SELECT user_id FROM plans WHERE id=?').bind(built.plan.id).first<{user_id:string}>();
+      const previous=await getOrCreateSession(env.DB,owner!.user_id,built.plan.id,date,built.plan.workouts[0].id);
+      expect(await call('log_set',{session_date:date,exercise:'bench',weight:100,reps:5})).not.toHaveProperty('error');
+      expect(await env.DB.prepare('SELECT kind,workout_id FROM sessions WHERE id=?').bind(previous.id).first())
+        .toEqual({kind:'planned',workout_id:built.plan.workouts[0].id});
     });
 
     it('update_plan: a stale expected_version conflicts; the current one rebuilds, audited + noted', async () => {
@@ -204,6 +236,9 @@ describe('mcp write tools', () => {
       ],
     });
     const date = '2038-01-01';
+    // This compatibility case is a scheduled workout; unscheduled MCP starts
+    // are freestyle and intentionally do not infer a scheduled template.
+    await call('set_schedule', { week: { fri: 'P' } });
     const mcpSet = await call('log_set', {
       exercise: 'bench',
       weight: 176.25,

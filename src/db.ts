@@ -1,4 +1,5 @@
 import { validWorkoutTags, normalizeWorkoutTags, validArchivedAt } from './workoutMetadata';
+import { deriveFreestylePrescriptions, type FreestylePrescription } from './freestyle';
 import { addDays, weekdayOf, projectCalendar, projectCalendarWindow, projectRideConflicts } from './calendarProjection';
 import type { CalendarCell, CalendarInputs, ProjectionEvent, ProjectionActivity, StrengthCalendarInputs } from './calendarProjection';
 export { addDays, weekdayOf, projectCalendar, detectConflicts } from './calendarProjection';
@@ -1250,6 +1251,7 @@ export async function deleteUserAccount(
           WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?1)`,
       )
       .bind(userId),
+    workoutDB(db).prepare('DELETE FROM freestyle_workout_receipts WHERE user_id = ?1').bind(userId),
     workoutDB(db).prepare('DELETE FROM sessions WHERE user_id = ?1').bind(userId),
     workoutDB(db).prepare('DELETE FROM plan_snapshots WHERE user_id = ?1').bind(userId),
     workoutDB(db)
@@ -2440,6 +2442,7 @@ export async function exportUserData(
       .bind(userId),
     workoutDB(db).prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1').bind(userId),
     workoutDB(db).prepare('SELECT starter_id,profile_version,plan_id,starter_workout_id AS workout_id,version,created_at FROM starter_workout_receipts WHERE user_id=?1').bind(userId),
+    workoutDB(db).prepare('SELECT * FROM freestyle_workout_receipts WHERE user_id=?1').bind(userId),
   ]);
   const rowsAt = (index: number): Record<string, unknown>[] =>
     projection[index]?.results ?? [];
@@ -2502,6 +2505,7 @@ export async function exportUserData(
       plan_snapshots: planSnapshots,
       training_profile: rowsAt(18)[0] ?? null,
       starter_workout_receipts: rowsAt(19),
+      freestyle_workout_receipts: rowsAt(20),
     },
     group_memberships: memberships,
     group_safety: {
@@ -3122,7 +3126,7 @@ export interface PlanWriteAttribution {
 /** Includes legacy null-workout runners and durable logged-slot evidence. */
 function workoutSessionReferenceSQL(alias: string, workout: string, plan: string): string {
   return `(${alias}.workout_id=${workout}
-    OR (${alias}.plan_id=${plan} AND ${alias}.workout_id IS NULL AND EXISTS (
+    OR (${alias}.kind='planned' AND ${alias}.plan_id=${plan} AND ${alias}.workout_id IS NULL AND EXISTS (
       SELECT 1 FROM plans p WHERE p.id=${plan}
         AND json_extract(p.meta, '$.schedule.week.' || CASE strftime('%w',${alias}.date)
           WHEN '0' THEN 'sun' WHEN '1' THEN 'mon' WHEN '2' THEN 'tue' WHEN '3' THEN 'wed'
@@ -3231,12 +3235,13 @@ export function preparePlanWriteStart(
   nonce: string,
   rejectActiveWorkout = false,
   rejectWorkoutIds: readonly string[] = [],
+  guard?: { sql: string; json: string },
 ): D1PreparedStatement[] {
   return [
     workoutDB(db).prepare(
       `UPDATE plans SET plan_write_nonce=?4,version=-version
         WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3
-          AND plan_write_nonce IS NULL
+          AND plan_write_nonce IS NULL AND (${guard?.sql ?? '?7 IS NULL'})
           AND EXISTS (SELECT 1 FROM users u WHERE u.id=?2)
           AND NOT EXISTS (SELECT 1 FROM account_deletion_intents i WHERE i.user_id=?2)
           AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts r WHERE r.user_id=?2)
@@ -3249,7 +3254,7 @@ export function preparePlanWriteStart(
             SELECT 1 FROM sessions s WHERE s.user_id=?2 AND s.status='in_progress'
               AND ${sessionReferencesPlanSQL('s', '?1')}
           ))`,
-    ).bind(plan.id, plan.user_id, plan.version, nonce, rejectActiveWorkout ? 1 : 0, JSON.stringify(rejectWorkoutIds)),
+    ).bind(plan.id, plan.user_id, plan.version, nonce, rejectActiveWorkout ? 1 : 0, JSON.stringify(rejectWorkoutIds), guard?.json ?? null),
     preparePlanSnapshotInsert(db, {
       userId: plan.user_id, planId: plan.id, version: plan.version,
       actor: 'system', operation: 'baseline', reason: 'First captured version',
@@ -4276,6 +4281,16 @@ export async function getOrCreateSession(
   // the winning row on its initial read: it may fill an unpinned explicit day
   // (first writer wins), and it may revive a discarded session.
   const useExisting = async (existing: SessionRow): Promise<SessionRow> => {
+    if (existing.kind === 'freestyle') {
+      if (workoutId !== null) throw new Error('session_kind_conflict');
+      if (existing.status === 'discarded' && options.reviveDiscarded !== false
+          && !attemptScoped && existing.write_protocol === 'legacy') {
+        const restarted = await startFreestyleSession(db, userId, date, existing.attempt, 'mcp');
+        if ('session' in restarted && restarted.session) return restarted.session;
+        throw new SessionWriteConflictError('session_state_conflict', await selectExisting() ?? existing);
+      }
+      return existing;
+    }
     // A tokenless legacy resolver may operate only until an attempt-aware
     // writer claims this generation. Returning the row unchanged lets the
     // route surface a stable protocol conflict without reviving or pinning it.
@@ -4535,7 +4550,7 @@ export async function reviveDiscardedSession(
   ): Promise<SessionRow | SessionAttemptConflict | null> => {
     const revivedAttempt = expectedAttempt + 1;
     if (
-      candidate.status === 'discarded' ||
+      candidate.status === 'discarded' || candidate.kind === 'freestyle' ||
       candidate.attempt !== revivedAttempt
     ) {
       return sessionAttemptConflict(expectedAttempt, candidate);
@@ -4593,6 +4608,7 @@ export async function reviveDiscardedSession(
     workoutDB(db).prepare(
       `UPDATE sessions
           SET workout_id = ?2,
+              kind = 'planned',
               status = 'planned',
               runner_targets = NULL,
               started_at = NULL,
@@ -4807,6 +4823,7 @@ export async function patchSession(
     .bind(canonicalSessionId, userId)
     .first<SessionRow>();
   if (!s) return null;
+  if (s.kind === 'freestyle' && patch.workout_id != null) throw new Error('session_kind_conflict');
   const attemptScoped = expectedAttempt !== undefined;
   if (claimAttemptProtocol && !attemptScoped) {
     throw new Error('session_expected_attempt_missing');
@@ -5277,6 +5294,9 @@ export async function logSet(
   if (existing) {
     return { set: existing, deduped: true, session: targetSession };
   }
+  if (targetSession.kind === 'freestyle' && (input.template_exercise_id || input.prescription)) {
+    throw new Error('session_kind_conflict');
+  }
   const attemptScoped = input.expected_attempt !== undefined;
   const claimAttemptProtocol = input.claim_attempt_protocol === true;
   if (claimAttemptProtocol && !attemptScoped) {
@@ -5742,7 +5762,7 @@ export async function patchSet(
         `UPDATE sessions
             SET status = 'planned', started_at = NULL, updated_at = MAX(updated_at + 1, ?2)
           WHERE id = ?1
-            AND status = 'in_progress'
+            AND status = 'in_progress' AND kind = 'planned'
             AND attempt = ?3
             AND NOT EXISTS (
               SELECT 1 FROM set_logs
@@ -5861,7 +5881,7 @@ export async function getState(
         }
       : null;
   const sessions = await workoutDB(db)
-    .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND updated_at > ?2 ORDER BY date')
+    .prepare("SELECT * FROM sessions WHERE user_id = ?1 AND updated_at > ?2 ORDER BY date")
     .bind(userId, setsSince)
     .all<SessionRow>();
   // Full reload preserves the existing complete shape. Incremental pulls use
@@ -5870,21 +5890,12 @@ export async function getState(
   // (migration 0034: backfilled, asserted, and trigger-maintained for legacy
   // inserts) so neither needs to join sessions for ownership.
   const sets = setsSince > 0
-    ? await workoutDB(db)
-        .prepare(
-          `SELECT * FROM set_logs
-            WHERE user_id = ?1 AND updated_at > ?2
-            ORDER BY updated_at, id`,
-        )
-        .bind(userId, setsSince)
-        .all<SetLogRow>()
-    : await workoutDB(db)
-        .prepare(
-          `SELECT sl.* FROM set_logs sl
-            WHERE sl.user_id = ?1 ORDER BY sl.logged_at`,
-        )
-        .bind(userId)
-        .all<SetLogRow>();
+    ? await workoutDB(db).prepare(
+        'SELECT * FROM set_logs WHERE user_id=?1 AND updated_at > ?2 ORDER BY updated_at,id')
+        .bind(userId, setsSince).all<SetLogRow>()
+    : await workoutDB(db).prepare(
+        'SELECT * FROM set_logs WHERE user_id=?1 ORDER BY logged_at')
+        .bind(userId).all<SetLogRow>();
   // external_events ride a SEPARATE watermark (synced_at epoch-ms). This is
   // a server-owned reconciled cache: NOT gated on plans.version and a ride
   // sync NEVER bumps it. TWO explicit modes (iOS must match):
@@ -7969,7 +7980,7 @@ export async function deleteWorkoutAtVersion(
     // contract stable when the deleted day is no longer in the schedule.
     const explicit = `(${alias}.workout_id = ${dayParameter} AND ${alias}.plan_id = ${planParameter})`;
     if (scheduledWeekdayNumbers.length === 0) return explicit;
-    return `(${explicit} OR (${alias}.workout_id IS NULL AND ${alias}.plan_id = ${planParameter} AND CAST(strftime('%w', ${alias}.date) AS INTEGER) IN (${scheduledWeekdayNumbers.join(',')})))`;
+    return `(${explicit} OR (${alias}.kind='planned' AND ${alias}.workout_id IS NULL AND ${alias}.plan_id = ${planParameter} AND CAST(strftime('%w', ${alias}.date) AS INTEGER) IN (${scheduledWeekdayNumbers.join(',')})))`;
   };
   // Once a null-template session has started, its live set links are durable
   // evidence of which template it is executing. The recurring schedule can be
@@ -8181,6 +8192,9 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
   const rows = (await workoutDB(db).prepare(
     'SELECT * FROM sessions WHERE user_id=?1 AND date IN (?2,?3)')
     .bind(userId, input.from_date, input.to_date).all<SessionRow>()).results;
+  if (rows.some(row => row.kind === 'freestyle' && row.status !== 'discarded')) {
+    return { error: 'calendar_move_conflict' };
+  }
   const from = rows.find((row) => row.date === input.from_date);
   const to = rows.find((row) => row.date === input.to_date);
   if ((from?.attempt ?? 0) !== input.expected_from_attempt || (to?.attempt ?? 0) !== input.expected_to_attempt
@@ -8208,7 +8222,7 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
 
   const ts = Math.max(now(), (from?.updated_at ?? 0) + 1, (to?.updated_at ?? 0) + 1);
   const newRow = (date: string, old: SessionRow | undefined, workoutId: string | null): SessionRow => ({
-    id: old?.id ?? uuid(), user_id: userId, plan_id: plan.id, date,
+    kind: 'planned', id: old?.id ?? uuid(), user_id: userId, plan_id: plan.id, date,
     workout_id: workoutId, status: workoutId ? 'planned' : 'skipped',
     started_at: null, completed_at: null,
     perceived_fatigue: old?.perceived_fatigue ?? null, notes: old?.notes ?? null,
@@ -8242,7 +8256,7 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
        SELECT ?1,?2,?3,?4,?5,?6,NULL,NULL,?13,?14,NULL,?7,?8,?9,?10
        WHERE EXISTS (SELECT 1 FROM audit_log WHERE id=?11 AND user_id=?2 AND json_extract(result,'$.nonce')=?12)
        ON CONFLICT(user_id,date) DO UPDATE SET
-         plan_id=excluded.plan_id,workout_id=excluded.workout_id,status=excluded.status,
+         plan_id=excluded.plan_id,workout_id=excluded.workout_id,status=excluded.status,kind='planned',
          started_at=NULL,completed_at=NULL,runner_targets=NULL,
          updated_at=excluded.updated_at,attempt=excluded.attempt`)
       .bind(row.id, row.user_id, row.plan_id, row.workout_id, row.date, row.status,
@@ -8300,6 +8314,7 @@ export async function setPlannedSession(
     | SessionStateConflict
     | PlanVersionConflict
   > => {
+    if (existing.kind === 'freestyle' && existing.status !== 'discarded') throw new Error('session_kind_conflict');
     if (existing.status === 'in_progress' || existing.status === 'completed') {
       return {
         error: 'session_already_started',
@@ -8346,7 +8361,7 @@ export async function setPlannedSession(
       db,
       workoutDB(db).prepare(
         `UPDATE sessions
-            SET plan_id = ?13,
+            SET plan_id = ?13, kind = 'planned',
                 workout_id = ?2,
                 status = ?3,
                 started_at = ?4,
@@ -8402,6 +8417,7 @@ export async function setPlannedSession(
     }
     const session: SessionRow = {
       ...existing,
+      kind: 'planned',
       plan_id: plan.id,
       workout_id: d.id,
       status: newStatus,
@@ -8530,6 +8546,7 @@ export async function skipPlannedSession(
     // sets and destroy visible history for a mis-dated skip. Reject and
     // leave the row untouched — Claude must explicitly intend something
     // else. The MCP wrapper still audits this rejection (audit-on-write).
+    if (existing.kind === 'freestyle' && existing.status !== 'discarded') throw new Error('session_kind_conflict');
     if (existing.status === 'in_progress' || existing.status === 'completed') {
       return {
         error: 'session_already_started',
@@ -8551,7 +8568,7 @@ export async function skipPlannedSession(
       db,
       workoutDB(db).prepare(
         `UPDATE sessions
-            SET plan_id = ?6,
+            SET plan_id = ?6, kind = 'planned',
                 workout_id = NULL,
                 status = 'skipped',
                 updated_at = ?2,
@@ -8601,6 +8618,7 @@ export async function skipPlannedSession(
       ok: true,
       session: {
         ...existing,
+        kind: 'planned',
         plan_id: plan.id,
         workout_id: null,
         status: 'skipped',
@@ -12459,4 +12477,174 @@ export async function decideMobileCoachRequest(
 
 export async function purgeExpiredMobileCoachRequests(db: D1Database): Promise<void> {
   await db.prepare('DELETE FROM oauth_mobile_requests WHERE expires_at <= ?1').bind(Date.now()).run();
+}
+
+// ---- freestyle sessions -------------------------------------------------
+
+export async function getOwnedSession(db: D1Database, userId: string, id: string) {
+  const canonical = await resolveOwnedSessionId(db, userId, id);
+  return canonical ? workoutDB(db).prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
+    .bind(canonical, userId).first<SessionRow>() : null;
+}
+
+/** An explicit start owns the date immediately, including before its first set.
+ * Existing live/completed work is never replaced. Empty rest/planned dates and
+ * discarded attempts may change kind only with an observed generation CAS. */
+export async function startFreestyleSession(db: D1Database, userId: string, date: string,
+  expectedAttempt: number, actor: 'ios' | 'mcp' = 'ios') {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return { error: 'no_active_plan' as const };
+  const existing = await getOwnedSessionByDate(db, userId, date);
+  if (existing?.kind === 'freestyle' && existing.status === 'in_progress'
+      && (existing.attempt === expectedAttempt || existing.attempt === expectedAttempt + 1)) {
+    return { session: existing };
+  }
+  if ((!existing && expectedAttempt !== 0) || (existing && existing.attempt !== expectedAttempt)) {
+    return { error: 'session_attempt_conflict' as const };
+  }
+  if (existing && !['planned', 'skipped', 'discarded'].includes(existing.status)) {
+    return { error: 'session_already_started' as const };
+  }
+  const ts = now(), id = existing?.id ?? uuid();
+  const statements = existing ? [workoutDB(db).prepare(`UPDATE sessions SET kind='freestyle',
+    plan_id=?3,workout_id=NULL,status='in_progress',attempt=attempt+1,write_protocol=?6,
+    started_at=?4,completed_at=NULL,notes=NULL,perceived_fatigue=NULL,runner_targets=NULL,exercise_swaps=NULL,
+    updated_at=MAX(updated_at+1,?4)
+    WHERE id=?1 AND user_id=?2 AND attempt=?5 AND status IN ('planned','skipped','discarded')
+      AND NOT EXISTS (SELECT 1 FROM set_logs WHERE session_id=?1 AND deleted_at IS NULL)
+      AND EXISTS (SELECT 1 FROM plans WHERE id=?3 AND user_id=?2 AND status='active')`)
+    .bind(id,userId,plan.id,ts,expectedAttempt,actor==='ios'?'attempt-v1':'legacy')] : [workoutDB(db).prepare(`INSERT INTO sessions
+    (id,user_id,plan_id,date,kind,status,attempt,write_protocol,started_at,created_at,updated_at)
+    SELECT ?1,?2,?3,?4,'freestyle','in_progress',0,?6,?5,?5,?5
+    WHERE EXISTS (SELECT 1 FROM plans WHERE id=?3 AND user_id=?2 AND status='active')
+    ON CONFLICT(user_id,date) DO NOTHING`).bind(id,userId,plan.id,date,ts,actor==='ios'?'attempt-v1':'legacy')];
+  statements.push(workoutDB(db).prepare(`INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+    SELECT ?1,?2,?3,'start_freestyle',?4,?5,?6 WHERE changes()=1`)
+    .bind(uuid(),userId,actor,JSON.stringify({date,expected_attempt:expectedAttempt}),id,ts));
+  const results = await runWorkoutWriteBatch(db, statements);
+  const winner = await getOwnedSessionByDate(db,userId,date);
+  if (!results[0]?.meta.changes || !winner) return { error: 'session_state_conflict' as const };
+  return { session: winner };
+}
+
+// Include tombstones in the signature: corrections/deletions between review and
+// save invalidate the reviewed source. The SQL and JS order is shared by reads
+// and the atomic plan claim; a set arriving after the claim is a later event.
+const freestyleSourceSQL = (session: string) => `(SELECT COALESCE(json_group_array(json_array(id,updated_at)), '[]')
+  FROM (SELECT id,updated_at FROM set_logs WHERE session_id=${session} ORDER BY id))`;
+
+export async function getFreestyleWorkoutDraft(db: D1Database,userId: string,sessionId: string) {
+  const session = await getOwnedSession(db,userId,sessionId);
+  if (!session) return { error: 'not_found' as const };
+  if (session.kind !== 'freestyle' || session.status !== 'completed' || session.workout_id !== null) {
+    return { error: 'session_state_conflict' as const };
+  }
+  const results = await workoutDB(db).batch<Record<string,unknown>>([
+    workoutDB(db).prepare('SELECT * FROM set_logs WHERE session_id=?1 ORDER BY id').bind(session.id),
+    workoutDB(db).prepare(`SELECT ${freestyleSourceSQL('?1')} AS signature`).bind(session.id),
+  ]);
+  const slots = deriveFreestylePrescriptions(results[0]!.results as unknown as SetLogRow[]);
+  return { session, source_signature: String((results[1]!.results[0] as {signature:string}).signature), slots };
+}
+
+export interface SaveFreestyleInput {
+  workout_id: string;
+  name: string;
+  expected_plan_id: string;
+  expected_version: number;
+  expected_attempt: number;
+  source_signature: string;
+  slots: (FreestylePrescription & { source_set_ids: string[] })[];
+}
+
+/** Creates the complete reviewed prescription, reassigns history, advances the
+ * attempt and records the ACK in the same versioned, audited D1 transaction. */
+export async function saveFreestyleWorkout(db: D1Database,userId: string,sessionId: string,
+  input: SaveFreestyleInput, actor: 'ios' | 'mcp' = 'ios') {
+  // Wire object-key order and source ID order are not identity.
+  // Re-encode the accepted request in one stable field order for every retry.
+  const request = JSON.stringify({session_id: sessionId, workout_id: input.workout_id,
+    name: input.name, expected_plan_id: input.expected_plan_id, expected_version: input.expected_version,
+    expected_attempt: input.expected_attempt, source_signature: input.source_signature,
+    slots: input.slots.map(s => ({exercise_id: s.exercise_id, target_sets: s.target_sets,
+      target_reps: s.target_reps, target_duration_s: s.target_duration_s,
+      target_weight: s.target_weight, rest_seconds: s.rest_seconds,
+      source_set_ids: [...(s.source_set_ids ?? [])].sort()}))});
+  const readReceipt = async () => {
+    const receipt = await workoutDB(db).prepare('SELECT request,response FROM freestyle_workout_receipts WHERE user_id=?1 AND new_workout_id=?2')
+      .bind(userId,input.workout_id).first<{request:string;response:string}>();
+    return !receipt ? null : receipt.request === request ? JSON.parse(receipt.response) as {
+      workout_id:string;plan_id:string;version:number;session:SessionRow;
+    } : {error:'idempotency_conflict' as const};
+  };
+  const receipt = await readReceipt();
+  if (receipt) return receipt;
+  const draft = await getFreestyleWorkoutDraft(db,userId,sessionId);
+  if ('error' in draft) return await readReceipt() ?? draft;
+  const plan = await getActivePlan(db,userId);
+  if (!plan || plan.id !== input.expected_plan_id || plan.version !== input.expected_version) {
+    return await readReceipt() ?? {conflict:true as const,current_version:plan?.version ?? 0};
+  }
+  if (draft.session.attempt !== input.expected_attempt || draft.source_signature !== input.source_signature) {
+    return await readReceipt() ?? {error:'session_state_conflict' as const};
+  }
+  if (!input.name.trim() || !input.slots.length || input.slots.length>50) {
+    return {error:'invalid_fields' as const,fields:['name','slots']};
+  }
+  const catalog = await getExercises(db);
+  const sourceKey = (ids: string[]) => JSON.stringify([...ids].sort());
+  const cohorts = new Map(draft.slots.map(slot => [sourceKey(slot.source_set_ids), slot]));
+  const reviewed = new Set<string>();
+  if (input.slots.length !== cohorts.size) return {error:'invalid_fields' as const,fields:['slots']};
+  for (const slot of input.slots) {
+    const key = sourceKey(slot.source_set_ids ?? []);
+    const source = cohorts.get(key);
+    if (!source || reviewed.has(key) || source.exercise_id !== slot.exercise_id
+      || source.is_timed !== (slot.target_duration_s !== null)) {
+      return {error:'invalid_fields' as const,fields:['source_set_ids']};
+    }
+    reviewed.add(key);
+    const ex = catalog.find(e=>e.id===slot.exercise_id);
+    if (!ex) return {error:'invalid_exercises' as const};
+    if (['timed','cardio'].includes(ex.modality) && slot.target_duration_s === null) {
+      return {error:'invalid_fields' as const,fields:['target_duration_s']};
+    }
+    const invalid = validateExercisePrescription({...slot}, {modality:ex.modality});
+    if (invalid) return invalid;
+  }
+  const ts=now(), nonce=uuid();
+  const response = {workout_id:input.workout_id,plan_id:plan.id,version:plan.version+1,
+    session:{...draft.session,plan_id:plan.id,workout_id:input.workout_id,attempt:draft.session.attempt+1,
+      updated_at:Math.max(draft.session.updated_at+1,ts)}};
+  const attribution: PlanWriteAttribution = {actor,operation:'save_freestyle_workout',args:input,
+    result:response,note:actor==='mcp'?'Saved the reviewed freestyle session as a reusable workout.':null};
+  const guard = {json:JSON.stringify({id:draft.session.id,attempt:input.expected_attempt,signature:input.source_signature}),
+    sql:`EXISTS (SELECT 1 FROM sessions s WHERE s.id=json_extract(?7,'$.id') AND s.user_id=?2
+      AND s.kind='freestyle' AND s.status='completed' AND s.workout_id IS NULL
+      AND s.attempt=json_extract(?7,'$.attempt')
+      AND ${freestyleSourceSQL('s.id')}=json_extract(?7,'$.signature'))`};
+  const claim = 'EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND version=-?3 AND plan_write_nonce=?4)';
+  const bindings = [plan.id,userId,plan.version,nonce] as const;
+  const statements = [
+    ...preparePlanWriteStart(db,plan,attribution,ts,nonce,false,[],guard),
+    workoutDB(db).prepare(`INSERT INTO workouts (id,plan_id,name,order_index,created_at,updated_at)
+      SELECT ?5,?1,?6,(SELECT COALESCE(MAX(order_index)+1,0) FROM workouts WHERE plan_id=?1),?7,?7 WHERE ${claim}`)
+      .bind(...bindings,input.workout_id,input.name.trim(),ts),
+    ...input.slots.map((slot,index)=>workoutDB(db).prepare(`INSERT INTO template_exercises
+      (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_duration_s,target_weight,rest_seconds,progression,is_warmup,created_at,updated_at)
+      SELECT ?5,?6,?7,?8,?9,?10,?11,?12,?13,'{"type":"manual"}',0,?14,?14 WHERE ${claim}`)
+      .bind(...bindings,uuid(),input.workout_id,slot.exercise_id,index,slot.target_sets,slot.target_reps,
+        slot.target_duration_s,slot.target_weight,slot.rest_seconds,ts)),
+    workoutDB(db).prepare(`UPDATE sessions SET plan_id=?1,workout_id=?5,attempt=attempt+1,updated_at=?6 WHERE id=?7 AND ${claim}`)
+      .bind(...bindings,input.workout_id,response.session.updated_at,draft.session.id),
+    workoutDB(db).prepare(`INSERT INTO freestyle_workout_receipts (user_id,new_workout_id,session_id,source_attempt,request,response,created_at)
+      SELECT ?2,?5,?6,?7,?8,?9,?10 WHERE ${claim}`)
+      .bind(...bindings,input.workout_id,draft.session.id,draft.session.attempt,request,JSON.stringify(response),ts),
+    ...preparePlanWriteFinish(db,plan,attribution,ts,nonce),
+  ];
+  const result = await runWorkoutWriteBatch(db,statements);
+  if (!result[0]?.meta.changes) {
+    return await readReceipt() ?? {error:'session_state_conflict' as const};
+  }
+  return response;
 }

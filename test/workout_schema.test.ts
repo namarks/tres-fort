@@ -6,7 +6,7 @@ import { workoutDB, workoutSchemaSQL } from '../src/workoutSchema';
 const rename = env.TEST_MIGRATIONS.filter((migration) => migration.name === '0045_workouts.sql');
 beforeAll(async () => {
   expect(rename).toHaveLength(1);
-  await applyD1Migrations(env.DB, env.TEST_MIGRATIONS.filter((migration) => migration.name !== '0045_workouts.sql').map(m => m.name === '0053_workout_metadata.sql' ? { ...m, queries: m.queries.map(q => workoutSchemaSQL(q, 'legacy')) } : m));
+  await applyD1Migrations(env.DB, env.TEST_MIGRATIONS.filter((migration) => migration.name !== '0045_workouts.sql').map(m => ['0053_workout_metadata.sql', '0054_freestyle_sessions.sql'].includes(m.name) ? { ...m, queries: m.queries.map(q => workoutSchemaSQL(q, 'legacy')) } : m));
 });
 
 async function fixture() {

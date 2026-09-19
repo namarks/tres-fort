@@ -18,7 +18,9 @@ import SwiftUI
 struct DayAgendaView: View {
     @ObservedObject var sync: SyncModel
     let dateString: String
+    var onStartWorkout: (() -> Void)? = nil
     @State private var showDateEditor = false
+    @State private var showFreestyle = false
     @State private var confirmRemoval = false
     @State private var movingWorkout: Workout?
 
@@ -55,6 +57,13 @@ struct DayAgendaView: View {
                             .accessibilityIdentifier("calendarOverrideError")
                     }
                     content(proj, today: today)
+                    if dateString == today, sync.canStartFreestyle {
+                        Button("Start freestyle", systemImage: "figure.strengthtraining.traditional") { showFreestyle = true }
+                            .frame(minHeight: 44).accessibilityIdentifier("calendar.startFreestyle")
+                    }
+                    if dateString == today, sync.running, sync.isFreestyle {
+                        Text("Your freestyle session is running. Open Today to continue.").foregroundStyle(Theme.accent)
+                    }
                     // On a can_train_light=false blackout the backend projects
                     // items: [] — so suppress the endurance cards here too, or a
                     // blackout day would still show training to do (Codex #61 P2).
@@ -71,6 +80,7 @@ struct DayAgendaView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showFreestyle) { FreestyleExercisePicker(sync: sync, starting: true, onStarted: onStartWorkout) }
         .sheet(item: $movingWorkout) { workout in
             MoveWorkoutDateSheet(sync: sync, workout: workout, fromDate: dateString)
         }
@@ -149,6 +159,9 @@ struct DayAgendaView: View {
     }
 
     private func title(_ proj: DayProjection, today: String) -> String {
+        if case .session = proj, realSession?.isFreestyle == true, realSession?.workout_id == nil {
+            return realSession?.status == "completed" ? "FREESTYLE COMPLETE" : "FREESTYLE"
+        }
         switch proj {
         case .session(let s, let hardBlackoutTripType):
             let compositeTitle: (String) -> String = { title in
@@ -267,7 +280,9 @@ struct DayAgendaView: View {
     @ViewBuilder private func content(_ proj: DayProjection, today: String) -> some View {
         switch proj {
         case .session(let status, let hardBlackoutTripType):
-            if status == "in_progress" && liveSetCount == 0 {
+            if realSession?.isFreestyle == true && liveSetCount == 0 {
+                note("Add exercises as you go. Your saved workouts stay unchanged.")
+            } else if status == "in_progress" && liveSetCount == 0 {
                 // Phantom in-progress (sets logged then all deleted): nothing
                 // was recorded, so show the planned workout's targets — not a
                 // bare "no sets logged" under an "in progress" header.

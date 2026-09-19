@@ -6,7 +6,7 @@ import SwiftUI
 /// of this code. An unknown fixture fails closed before constructing real auth.
 enum UIFixtureScenario: String, CaseIterable {
     case signIn = "sign-in", empty, emptyPlan = "empty-plan", loadFailure = "load-failure"
-    case ordinary, bodyweight, timed, pending, onboarding, groups, library
+    case ordinary, bodyweight, timed, pending, onboarding, groups, library, freestyle
     case workoutSummary = "workout-summary"
     case weight = "weight", progress = "progress"
     case unilateralRow = "unilateral-row", unilateralPress = "unilateral-press"
@@ -179,7 +179,10 @@ private struct UIFixtureTrainingView: View {
         self.scenario = scenario
         _sync = StateObject(wrappedValue: SyncModel(
             auth: auth, defaults: UIFixtureModel.defaults,
-            now: { scenario.isTimerNavigation ? Date() : CalendarProjection.date(from: "2026-09-08")! },
+            now: {
+                if scenario.isTimerNavigation || scenario == .freestyle { return Date() }
+                return CalendarProjection.date(from: "2026-09-08")!
+            },
             restActivityUpdater: { _, _ in }, restActivityEnder: {},
             restNotificationCanceller: {}))
     }
@@ -211,7 +214,7 @@ private struct UIFixtureTrainingView: View {
             await sync.load()
             if scenario == .workoutSummary { return }
             if ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_FEEDBACK"] == "1" { return }
-            if ![.empty, .emptyPlan, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .groups, .library, .planChanges].contains(scenario) {
+            if ![.empty, .emptyPlan, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .groups, .library, .planChanges, .freestyle].contains(scenario) {
                 sync.startWorkout()
                 if scenario.isTimerNavigation {
                     sync.jump(to: 1)
@@ -343,7 +346,7 @@ private struct UIFixtureServer {
         coachConnected = [.activationOwner, .activationCoach, .activationInvite].contains(scenario)
         if ![.signIn, .empty, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .activationManual].contains(scenario) {
             plan = makePlan()
-            sessions = [.groups, .library, .planChanges].contains(scenario) ? [] : [makeSession()]
+            sessions = [.groups, .library, .planChanges, .freestyle].contains(scenario) ? [] : [makeSession()]
             if scenario == .planChanges { plan?["version"] = 3 }
             if [.readyToFinish, .correctionFailure, .workoutSwap].contains(scenario) {
                 sets = [["id": "synthetic-set", "session_id": sessionID,
@@ -429,7 +432,7 @@ private struct UIFixtureServer {
     }
 
     func makeSession(status: String = "in_progress", attempt: Int = 1) -> [String: Any] {
-        ["id": sessionID, "date": scenario.isTimerNavigation ? CalendarProjection.dateString(Date()) : "2026-09-08", "status": status,
+        ["id": sessionID, "date": (scenario.isTimerNavigation || scenario == .freestyle) ? CalendarProjection.dateString(Date()) : "2026-09-08", "status": status,
          "workout_id": dayID, "updated_at": revision,
          "attempt": attempt, "write_protocol": "attempt-v1"]
     }
@@ -670,7 +673,7 @@ private struct UIFixtureServer {
                 ["id": slot["exercise_id"]!, "name": slot["exercise_name"]!,
                  "modality": slot["exercise_modality"]!, "unit": "lb", "primary_muscle": "full body"]
             }
-        case ("GET", "/api/exercises") where scenario == .workoutSwap:
+        case ("GET", "/api/exercises") where scenario == .workoutSwap || scenario == .freestyle:
             response = [["id": "synthetic-exercise", "name": "Barbell Squat", "modality": "barbell", "unit": "lb", "primary_muscle": "legs"],
                         ["id": "synthetic-replacement", "name": "Dumbbell Goblet Squat", "modality": "dumbbell", "unit": "lb", "primary_muscle": "legs", "aliases": "[\"front loaded squat\"]"],
                         ["id": "synthetic-upper", "name": "Arnold Press", "modality": "dumbbell", "unit": "lb", "primary_muscle": "shoulders", "aliases": "[\"rotating press\"]"],
@@ -884,6 +887,44 @@ private struct UIFixtureServer {
                 "target_sets": body["target_sets"] ?? NSNull(), "cleared": ids.isEmpty]
             groupReceipts[receiptKey] = ack
             response = ack
+        case ("POST", "/api/sessions") where scenario == .freestyle:
+            if sessions.isEmpty {
+                guard body["kind"] as? String == "freestyle" else { throw URLError(.badServerResponse) }
+                var session = makeSession(attempt: 0)
+                session["kind"] = "freestyle"; session["workout_id"] = NSNull()
+                sessions = [session]
+            }
+            response = sessions[0]
+        case ("GET", "/api/sessions/\(sessionID)/workout-draft") where scenario == .freestyle:
+            let live = sets.filter { $0["is_warmup"] as? Int == 0 }
+            var slots: [[String:Any]] = []
+            for set in live {
+                if let index = slots.firstIndex(where: { $0["exercise_id"] as? String == set["exercise_id"] as? String }) {
+                    slots[index]["target_sets"] = (slots[index]["target_sets"] as! Int) + 1
+                } else {
+                    slots.append(["exercise_id":set["exercise_id"]!,"target_sets":1,"target_reps":set["reps"]!,
+                        "target_weight":set["weight"]!,"target_duration_s":set["duration_s"] ?? NSNull(),
+                        "rest_seconds":120,"source_set_ids":[set["id"]!]])
+                }
+            }
+            response = ["session":sessions[0],"source_signature":"synthetic-source","slots":slots]
+        case ("POST", "/api/sessions/\(sessionID)/save-workout") where scenario == .freestyle:
+            guard sessions[0]["status"] as? String == "completed",
+                  body["source_signature"] as? String == "synthetic-source" else { throw URLError(.badServerResponse) }
+            let id = body["workout_id"] as! String
+            var days = plan!["days"] as! [[String:Any]]
+            let slots = (body["slots"] as! [[String:Any]]).enumerated().map { index, slot -> [String:Any] in
+                var row = slot
+                row["id"] = "saved-\(index)"; row["order_index"] = index
+                row["exercise_name"] = "Barbell Squat"; row["exercise_unit"] = "lb"
+                row["exercise_modality"] = "barbell"
+                return row
+            }
+            days.append(["id":id,"name":body["name"]!,"order_index":days.count,"exercises":slots])
+            let nextVersion = (plan?["version"] as? Int ?? 1) + 1
+            plan?["days"] = days; plan?["version"] = nextVersion
+            sessions[0]["workout_id"] = id; sessions[0]["attempt"] = 1; sessions[0]["updated_at"] = revision
+            response = ["workout_id":id,"plan_id":"synthetic-plan","version":plan!["version"]!,"session":sessions[0]]
         case ("POST", "/api/sessions") where scenario == .appStore:
             // The screenshot fixture includes earlier sessions. Starting today
             // must bind today's session, never the first historical record.
@@ -931,6 +972,9 @@ private struct UIFixtureServer {
                     status = 422; response = ["error": "Synthetic member sequence mismatch"]; break
                 }
             }
+            if scenario == .freestyle {
+                guard body["template_exercise_id"] == nil && body["prescription"] == nil else { throw URLError(.badServerResponse) }
+            }
             var set = body
             set["is_warmup"] = (body["is_warmup"] as? Bool == true) ? 1 : 0
             set["is_timed"] = (body["is_timed"] as? Bool == true) ? 1 : 0
@@ -939,6 +983,7 @@ private struct UIFixtureServer {
             sets.removeAll { ($0["id"] as? String) == (set["id"] as? String) }
             sets.append(set)
             var current = makeSession(attempt: sessions.first(where: { $0["id"] as? String == sessionID })?["attempt"] as? Int ?? 0)
+            if scenario == .freestyle { current["kind"] = "freestyle"; current["workout_id"] = NSNull() }
             current["exercise_swaps"] = sessions.first { $0["id"] as? String == sessionID }?["exercise_swaps"]
             sessions.removeAll { $0["id"] as? String == sessionID }
             sessions.append(current)
@@ -1008,6 +1053,7 @@ private struct UIFixtureServer {
             }
             let current = sessions.first { $0["id"] as? String == sessionID }
             var completed = makeSession(status: "completed", attempt: current?["attempt"] as? Int ?? 0)
+            if scenario == .freestyle { completed["kind"] = "freestyle"; completed["workout_id"] = NSNull() }
             completed["notes"] = body["notes"] ?? current?["notes"]
             completed["perceived_fatigue"] = body["perceived_fatigue"] ?? current?["perceived_fatigue"]
             sessions.removeAll { $0["id"] as? String == sessionID }

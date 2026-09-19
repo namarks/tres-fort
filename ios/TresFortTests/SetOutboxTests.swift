@@ -13800,3 +13800,173 @@ extension SetOutboxTests {
         XCTAssertEqual(model.setOutbox.pending.count, 2)
     }
 }
+
+@MainActor
+private final class FreestyleAPIStub: FreestyleAPI {
+    var startHandler: ((String,Int) async throws -> SessionRow)?
+    func startFreestyle(date: String, expectedAttempt: Int, jwt: String) async throws -> SessionRow {
+        guard let startHandler else { throw URLError(.badServerResponse) }
+        return try await startHandler(date,expectedAttempt)
+    }
+    func freestyleDraft(sessionID: String, jwt: String) async throws -> FreestyleWorkoutDraft { throw URLError(.badServerResponse) }
+    func saveFreestyle(sessionID: String, request: SaveFreestyleRequest, jwt: String) async throws -> SaveFreestyleResult { throw URLError(.badServerResponse) }
+}
+
+@MainActor
+extension SetOutboxTests {
+    func testFreestyleStartBootstrapsVerifiedEmptyAccount() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub(), freestyle = FreestyleAPIStub()
+        let routine = SetRoutineEditingAPIStub(), auth = retainedAuth(defaults: defaults)
+        let catalog = ExerciseCatalog(id: "exercise-a", name: "Bench", primary_muscle: "chest", modality: "barbell",
+            unit: "lb", laterality: "bilateral", load_mode: "total", demo_slug: nil)
+        var current = StateResponse(plan: nil, plan_version: 0, sessions: [], sets: [],
+            external_events: [], external_activities: [], activities: [], server_time: 2_000_000_000_000)
+        api.stateHandler = { _ in current }
+        var ensured = false
+        routine.ensureHandler = { name, _ in
+            XCTAssertEqual(name, "Workouts")
+            ensured = true
+            current = StateResponse(plan: PlanTree(id: "new-plan", name: name, version: 1, workouts: [], meta: nil),
+                plan_version: 1, sessions: [], sets: [], external_events: [], external_activities: [],
+                activities: [], server_time: 2_000_000_000_001)
+            return .init(plan: .init(id: "new-plan", name: name, version: 1), created: true)
+        }
+        freestyle.startHandler = { date, attempt in
+            XCTAssertTrue(ensured)
+            XCTAssertEqual(attempt, 0)
+            return SessionRow(kind: "freestyle", id: "first-session", date: date, status: "in_progress",
+                workout_id: nil, updated_at: 2_000_000_000_002, attempt: 0, write_protocol: "attempt-v1")
+        }
+        let model = SyncModel(auth: auth, setWriteAPI: api, freestyleAPI: freestyle,
+            routineEditingAPI: routine, defaults: defaults, now: { self.fixedDate })
+        XCTAssertFalse(model.canStartFreestyle)
+        await model.load()
+        XCTAssertNil(model.plan)
+        XCTAssertTrue(model.canStartFreestyle)
+        let started = await model.startFreestyleWorkout(with: catalog)
+        XCTAssertTrue(started)
+        XCTAssertTrue(model.running)
+        XCTAssertTrue(model.isFreestyle)
+        XCTAssertEqual(model.plan?.id, "new-plan")
+        XCTAssertEqual(model.plan?.workouts.isEmpty, true)
+        XCTAssertEqual(model.currentExercise?.exercise_id, catalog.id)
+    }
+
+    func testFreestyleStartAndColdRecoveryKeepLibraryUnchanged() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub(), freestyle = FreestyleAPIStub()
+        let auth = retainedAuth(defaults: defaults)
+        let original = day(with: [exercise()])
+        let catalog = ExerciseCatalog(id: "exercise-a", name: "Bench", primary_muscle: "chest", modality: "barbell",
+            unit: "lb", laterality: "bilateral", load_mode: "total", demo_slug: nil)
+        let live = SessionRow(kind: "freestyle", id: "freestyle", date: CalendarProjection.dateString(fixedDate), status: "in_progress",
+                              workout_id: nil, updated_at: 2_000_000_000_001, attempt: 0, write_protocol: "attempt-v1")
+        var current = StateResponse(plan: PlanTree(id: "plan-a", name: "Plan A", version: 1, workouts: [original], meta: nil),
+            plan_version: 1, sessions: [], sets: [], external_events: [], external_activities: [], activities: [], server_time: 2_000_000_000_000)
+        api.stateHandler = { _ in current }
+        freestyle.startHandler = { date, attempt in
+            XCTAssertEqual(date, live.date); XCTAssertEqual(attempt,0)
+            current = self.state(session: live, sets: [], workouts: [original], serverTime: 2_000_000_000_002)
+            return live
+        }
+        let model = SyncModel(auth: auth, setWriteAPI: api, freestyleAPI: freestyle, defaults: defaults, now: { self.fixedDate })
+        XCTAssertFalse(model.canStartFreestyle)
+        await model.load()
+        XCTAssertTrue(model.canStartFreestyle)
+        let started = await model.startFreestyleWorkout(with: catalog)
+        XCTAssertTrue(started)
+        XCTAssertEqual(model.plan?.workouts, [original])
+        XCTAssertEqual(model.currentExercise?.exercise_id, catalog.id)
+        XCTAssertTrue(model.isFreestyle)
+        XCTAssertNil(model.sessionDisplayTemplate(forDateString: live.date))
+        let checkpoint = try XCTUnwrap(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults))
+        XCTAssertEqual(checkpoint.freestyleExercises?.map(\.exercise_id), [catalog.id])
+        XCTAssertEqual(checkpoint.sessionID, live.id)
+        let recovered = SyncModel(auth: auth, setWriteAPI: api, freestyleAPI: freestyle, defaults: defaults, now: { self.fixedDate })
+        await recovered.load()
+        XCTAssertTrue(recovered.hasResumableWorkout)
+        recovered.resumeWorkout()
+        XCTAssertTrue(recovered.running)
+        XCTAssertEqual(recovered.currentExercise?.exercise_id,catalog.id)
+        XCTAssertFalse(recovered.finished)
+        XCTAssertEqual(recovered.plan?.workouts,[original])
+        recovered.skip()
+        XCTAssertTrue(recovered.finished)
+        await recovered.load()
+        XCTAssertTrue(recovered.skipped.contains(catalog.id))
+        let skippedRecovery = SyncModel(auth: auth, setWriteAPI: api, freestyleAPI: freestyle, defaults: defaults, now: { self.fixedDate })
+        await skippedRecovery.load()
+        XCTAssertTrue(skippedRecovery.hasResumableWorkout)
+        skippedRecovery.resumeWorkout()
+        XCTAssertTrue(skippedRecovery.finished)
+        XCTAssertTrue(skippedRecovery.skipped.contains(catalog.id))
+    }
+}
+
+@MainActor
+extension SetOutboxTests {
+    func testFreestyleRestartUsesColdPersistedDiscardGeneration() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub(), freestyle = FreestyleAPIStub()
+        let auth = retainedAuth(defaults: defaults)
+        let discarded = session(status: "discarded", updatedAt: 2_000_000_000_001, attempt: 3)
+        var terminal = WorkoutTerminalOutbox()
+        terminal.enqueue(.init(id: fixedUUID.uuidString, action: .discard, date: discarded.date,
+            workoutID: "day-a", resolvedSessionID: discarded.id, deliveryState: .acknowledged,
+            failedHTTPStatus: nil, expectedAttempt: 3))
+        WorkoutTerminalOutboxStore.save(terminal, userID: "user-a", defaults: defaults)
+        api.stateHandler = { _ in self.state(session: discarded, sets: [], workouts: [self.day(with: [self.exercise()])], serverTime: 2_000_000_000_002) }
+        let model = SyncModel(auth: auth, setWriteAPI: api, freestyleAPI: freestyle, defaults: defaults, now: { self.fixedDate })
+        await model.load()
+        XCTAssertNil(model.todaySession)
+        XCTAssertTrue(model.sessions.isEmpty)
+        XCTAssertTrue(model.canStartFreestyle)
+        let catalog = ExerciseCatalog(id: "exercise-a", name: "Bench", primary_muscle: "chest", modality: "barbell",
+            unit: "lb", laterality: "bilateral", load_mode: "total", demo_slug: nil)
+        freestyle.startHandler = { _, attempt in
+            XCTAssertEqual(attempt,3)
+            throw URLError(.notConnectedToInternet)
+        }
+        let failed = await model.startFreestyleWorkout(with: catalog)
+        XCTAssertFalse(failed)
+        XCTAssertEqual(WorkoutTerminalOutboxStore.load(userID: "user-a", defaults: defaults).intents.first?.expectedAttempt, 3)
+        freestyle.startHandler = { date, attempt in
+            XCTAssertEqual(attempt,3)
+            return SessionRow(kind: "freestyle", id: discarded.id, date: date, status: "in_progress",
+                workout_id: nil, updated_at: 2_000_000_000_003, attempt: 4, write_protocol: "attempt-v1")
+        }
+        let restarted = await model.startFreestyleWorkout(with: catalog)
+        XCTAssertTrue(restarted)
+        XCTAssertEqual(model.todaySession?.attempt,4)
+        XCTAssertTrue(model.isFreestyle)
+        XCTAssertTrue(WorkoutTerminalOutboxStore.load(userID: "user-a", defaults: defaults).isEmpty)
+        XCTAssertNil(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.restartDiscardedAttempt)
+    }
+}
+
+@MainActor
+extension SetOutboxTests {
+    func testFreestyleSyncCannotRetargetAnOlderDiscardBarrier() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub(), terminalAPI = SetTerminalAPIStub()
+        let auth = retainedAuth(defaults: defaults)
+        let old = session(status: "discarded", updatedAt: 2_000_000_000_001, attempt: 0)
+        var terminal = WorkoutTerminalOutbox()
+        terminal.enqueue(.init(id: fixedUUID.uuidString, action: .discard, date: old.date,
+            workoutID: nil, resolvedSessionID: old.id, deliveryState: .acknowledged,
+            failedHTTPStatus: nil, expectedAttempt: 0))
+        WorkoutTerminalOutboxStore.save(terminal, userID: "user-a", defaults: defaults)
+        var response = state(session: old, sets: [], workouts: [day(with: [exercise()])], serverTime: 2_000_000_000_002)
+        api.stateHandler = { _ in response }
+        let model = SyncModel(auth: auth, setWriteAPI: api, terminalAPI: terminalAPI, defaults: defaults, now: { self.fixedDate })
+        await model.load()
+        XCTAssertEqual(model.currentTerminalIntent?.expectedAttempt,0)
+        let live = SessionRow(kind: "freestyle", id: old.id, date: old.date, status: "in_progress",
+            workout_id: nil, updated_at: 2_000_000_000_003, attempt: 1, write_protocol: "attempt-v1")
+        response = state(session: live, sets: [], workouts: [day(with: [exercise()])], serverTime: 2_000_000_000_004)
+        await model.load()
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertTrue(model.terminalOutbox.isEmpty)
+        XCTAssertEqual(model.todaySession?.attempt,1)
+        XCTAssertTrue(model.isFreestyle)
+        XCTAssertTrue(terminalAPI.discardCalls.isEmpty)
+        XCTAssertTrue(WorkoutTerminalOutboxStore.load(userID: "user-a", defaults: defaults).isEmpty)
+    }
+}

@@ -28,7 +28,7 @@ function cli(args) {
 try {
   await mkdir(migrations);
   for (const name of await readdir(join(root, 'migrations'))) {
-    if (name === '0053_workout_metadata.sql') {
+    if (['0053_workout_metadata.sql', '0054_freestyle_sessions.sql'].includes(name)) {
       // Synthetic pre-rename fixture; production applies this only after 0045.
       const sql = await readFile(join(root, 'migrations', name), 'utf8');
       await writeFile(join(migrations, name), sql.replace(/\bworkouts\b/g, 'day_templates').replace(/\bworkout_id\b/g, 'day_template_id'));

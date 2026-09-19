@@ -1,6 +1,7 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { moveCalendarWorkout, type CalendarMoveInput } from '../src/db';
+import { moveCalendarWorkout, startFreestyleSession, patchSession, type CalendarMoveInput } from '../src/db';
+import { issueAppJwt } from '../src/auth';
 import type { SessionRow } from '../src/types';
 
 beforeAll(async () => { await applyD1Migrations(env.DB, env.TEST_MIGRATIONS); });
@@ -56,6 +57,29 @@ describe('atomic one-date workout moves', () => {
       expect(await moveCalendarWorkout(env.DB, f.user, { ...f.input, expected_to_attempt: 1 }))
         .toEqual({ error: 'calendar_move_conflict' });
       expect(await f.rows()).toEqual(before);
+    }
+  });
+
+  it('returns the normal move conflict when either date has live or completed freestyle', async () => {
+    await env.DB.prepare('UPDATE workout_write_fence SET enabled=1,activated_at=1 WHERE id=1').run();
+    for (const side of ['from_date', 'to_date'] as const) {
+      for (const completed of [false, true]) {
+        const f = await fixture();
+        const started = await startFreestyleSession(env.DB, f.user, f.input[side], 0);
+        if (!started.session) throw Error('freestyle start failed');
+        if (completed) await patchSession(env.DB, f.user, started.session.id, { status: 'completed' }, 0);
+        const before = await f.rows();
+        expect(await moveCalendarWorkout(env.DB, f.user, f.input)).toEqual({ error: 'calendar_move_conflict' });
+        const jwt = await issueAppJwt(f.user, env.APP_JWT_SECRET);
+        const { from_date, ...body } = f.input;
+        const response = await SELF.fetch(`https://test/api/calendar/${from_date}/move`, {
+          method: 'POST', headers: { Authorization: `Bearer ${jwt}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(409);
+        expect(await response.json()).toEqual({ error: 'calendar_move_conflict' });
+        expect(await f.rows()).toEqual(before);
+      }
     }
   });
 

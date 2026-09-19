@@ -25,7 +25,7 @@ async function draft(f:Awaited<ReturnType<typeof fixture>>){
  const d=await getFreestyleWorkoutDraft(env.DB,f.userId,f.session.id);
  if('error' in d)throw Error(d.error);
  return {workout_id:crypto.randomUUID(),name:'Hotel',expected_plan_id:f.plan.id,expected_version:f.plan.version,
-  expected_attempt:f.session.attempt,source_signature:d.source_signature,slots:d.slots.map(({source_set_ids,is_timed,...s})=>s)};
+  expected_attempt:f.session.attempt,source_signature:d.source_signature,slots:d.slots.map(({is_timed,...s})=>s)};
 }
 it('starts an explicit, immediately durable freestyle session without a library write',async()=>{
  const f=await fixture();expect(f.session).toMatchObject({kind:'freestyle',workout_id:null,status:'in_progress',attempt:0});
@@ -229,7 +229,7 @@ it('old-client deltas invalidate a cached planned attempt after freestyle replac
  await runWorkoutWriteStatement(env.DB,env.DB.prepare('UPDATE sessions SET updated_at=? WHERE id=?').bind(cursor+10,planned.id));
  await runWorkoutWriteStatement(env.DB,env.DB.prepare('UPDATE set_logs SET updated_at=? WHERE id=?').bind(cursor+10,oldSet.set.id));
  const delta=await getState(env.DB,f.userId,0,cursor,0,0,0,false);
- expect(delta.sessions).toEqual([expect.objectContaining({id:planned.id,kind:'planned',status:'discarded',attempt:1,workout_id:null})]);
+ expect(delta.sessions).toEqual([expect.objectContaining({id:planned.id,kind:'planned',status:'discarded',attempt:0,workout_id:null})]);
  expect(delta.sets).toEqual([expect.objectContaining({id:oldSet.set.id,deleted_at:expect.any(Number)})]);
  const capable=await getState(env.DB,f.userId,0,0);
  expect(capable.sessions.find(s=>s.id===planned.id)).toMatchObject({kind:'freestyle',status:'in_progress'});
@@ -307,4 +307,23 @@ it.each(['draft','plan'])('returns a concurrently committed retry receipt before
  expect(injected).toBe(true);expect(result).toEqual(acknowledgement);
  expect(result).toHaveProperty('workout_id',input.workout_id);
  expect((await getPlanTree(env.DB,f.userId))?.workouts).toHaveLength(1);
+});
+
+it.each(['omitted','duplicated','wrong source'])('rejects %s reviewed cohorts while allowing explicit target edits',async mode=>{
+ const f=await fixture();await log(f,100,5);await log(f,120,3);const input=await draft(f);
+ const slots=mode==='omitted'?[input.slots[0]!]:mode==='duplicated'?[input.slots[0]!,input.slots[0]!]
+  :[{...input.slots[0]!,source_set_ids:[crypto.randomUUID()]},input.slots[1]!];
+ expect(await saveFreestyleWorkout(env.DB,f.userId,f.session.id,{...input,slots})).toHaveProperty('error','invalid_fields');
+ expect((await getPlanTree(env.DB,f.userId))?.version).toBe(f.plan.version);
+ const edited={...input,slots:input.slots.map(s=>({...s,target_weight:90,target_sets:3,target_reps:8}))};
+ expect(await saveFreestyleWorkout(env.DB,f.userId,f.session.id,edited)).toHaveProperty('workout_id',input.workout_id);
+ expect((await getPlanTree(env.DB,f.userId))?.workouts[0]?.exercises).toHaveLength(2);
+});
+
+it('does not convert a rep-mode timed catalog log into an implicit timed prescription',async()=>{
+ const f=await fixture();await log(f,0,12,{exercise_id:'ex_plank',is_timed:false});
+ const input=await draft(f);expect(input.slots[0]!.target_duration_s).toBeNull();
+ expect(await saveFreestyleWorkout(env.DB,f.userId,f.session.id,input))
+  .toEqual({error:'invalid_fields',fields:['target_duration_s']});
+ expect((await getPlanTree(env.DB,f.userId))?.version).toBe(f.plan.version);
 });

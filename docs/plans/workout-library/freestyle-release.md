@@ -17,7 +17,7 @@ release, TestFlight upload, App Review submission or public release.
    public source identity, then authorized test-account REST/MCP behavior:
    explicit freestyle start persists before a first set; logging uses null slot
    IDs; scheduled workouts remain unchanged; non-capable clients cannot mutate
-   hidden live sessions; a redacted discarded row and prior-set tombstones clear
+   hidden live sessions; a redacted discarded row for the previous attempt and prior-set tombstones clear
    old cached attempts; completed history and its sets replay through sync.
    Verify reviewed save, lost-response retry, plan/source conflict and old-attempt
    rejection. MCP unscheduled `log_set` also creates freestyle immediately.
@@ -41,4 +41,5 @@ Saved workouts remain unscheduled. Saving preserves historical null slot IDs,
 advances the session attempt once and commits workout slots, plan version,
 audit, snapshot and retry receipt in the same D1 batch. The completed session
 keeps its freestyle origin, with the new workout pin supplying its library
-association. Request field order and optional provenance are not retry identity.
+association. Source-set IDs bind each edited target to one distinct reviewed cohort. Request
+field order and source-ID order are not retry identity.

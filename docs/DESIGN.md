@@ -879,7 +879,9 @@ scoped checkpoint and logs ordinary idempotent sets with null template slots.
 `GET /api/sessions/{id}/workout-draft` derives working-set cohorts by exercise,
 rep/timed mode and exact load, in first-performed order. The reviewed
 `POST /api/sessions/{id}/save-workout` request binds plan ID/version, session
-attempt and the source revision signature. One versioned transaction creates
+attempt and the source revision signature. Each edited target keeps the source
+set IDs of one distinct draft cohort, so no cohort can be omitted or duplicated.
+One versioned transaction creates
 the unscheduled workout and validated slots, advances/repoints the session,
 and retains its audit, snapshot and idempotent receipt. Receipts participate
 in account export and deletion. Historical set slot links stay null.
@@ -888,7 +890,7 @@ REST clients declare `freestyle` in `X-TresFort-Capabilities`; only a live
 `freestyle_version:1` response enables native starts. Older clients receive
 completed freestyle history and its sets, with completion-triggered set replay,
 while hidden live sessions are fenced from date and ID mutations. A redacted
-discarded session and deleted-set tombstones invalidate any planned attempt
+discarded projection of the previous attempt and deleted-set tombstones invalidate any planned attempt
 previously cached by an older client. See the
 [release procedure](plans/workout-library/freestyle-release.md) for the ordered
 migration, Worker, client and recovery boundaries.

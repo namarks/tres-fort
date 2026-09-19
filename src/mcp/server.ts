@@ -682,8 +682,10 @@ const TOOLS: Record<string, Tool> = {
       const scheduledId = meta.schedule.week[weekdayOf(date)];
       const scheduled = !(meta.trips ?? []).some(t => t.start <= date && date <= t.end)
         && scheduledId && await getWorkoutInPlan(env.DB, plan.id, scheduledId);
-      const started = !previous && !scheduled
-        ? await startFreestyleSession(env.DB,userId,date,0,'mcp') : null;
+      const emptyGeneration = !previous || previous.status === 'discarded'
+        || (previous.workout_id === null && ['planned', 'skipped'].includes(previous.status));
+      const started = !scheduled && emptyGeneration
+        ? await startFreestyleSession(env.DB,userId,date,previous?.attempt ?? 0,'mcp') : null;
       if (started && 'error' in started) return started;
       const session = started && 'session' in started ? started.session
         : await getOrCreateSession(env.DB, userId, plan.id, date, null, {freestyleCapable:true});

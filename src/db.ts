@@ -5989,6 +5989,10 @@ export async function getState(
       !freestyleCapable && session.kind === 'freestyle'
         && !['completed', 'discarded'].includes(session.status)
         ? { ...session, kind: 'planned', status: 'discarded', workout_id: null,
+            // This invalidates the previous generation, never acknowledges
+            // a discard of the hidden live attempt. Upgrading can then clear
+            // an old client's durable discard barrier on the greater attempt.
+            attempt: Math.max(0, session.attempt - 1),
             started_at: null, completed_at: null, perceived_fatigue: null,
             notes: null, runner_targets: null, exercise_swaps: null }
         : session),
@@ -12575,21 +12579,22 @@ export interface SaveFreestyleInput {
   expected_version: number;
   expected_attempt: number;
   source_signature: string;
-  slots: FreestylePrescription[];
+  slots: (FreestylePrescription & { source_set_ids: string[] })[];
 }
 
 /** Creates the complete reviewed prescription, reassigns history, advances the
  * attempt and records the ACK in the same versioned, audited D1 transaction. */
 export async function saveFreestyleWorkout(db: D1Database,userId: string,sessionId: string,
   input: SaveFreestyleInput, actor: 'ios' | 'mcp' = 'ios') {
-  // Wire object-key order and optional provenance fields are not identity.
+  // Wire object-key order and source ID order are not identity.
   // Re-encode the accepted request in one stable field order for every retry.
   const request = JSON.stringify({session_id: sessionId, workout_id: input.workout_id,
     name: input.name, expected_plan_id: input.expected_plan_id, expected_version: input.expected_version,
     expected_attempt: input.expected_attempt, source_signature: input.source_signature,
     slots: input.slots.map(s => ({exercise_id: s.exercise_id, target_sets: s.target_sets,
       target_reps: s.target_reps, target_duration_s: s.target_duration_s,
-      target_weight: s.target_weight, rest_seconds: s.rest_seconds}))});
+      target_weight: s.target_weight, rest_seconds: s.rest_seconds,
+      source_set_ids: [...(s.source_set_ids ?? [])].sort()}))});
   const readReceipt = async () => {
     const receipt = await workoutDB(db).prepare('SELECT request,response FROM freestyle_workout_receipts WHERE user_id=?1 AND new_workout_id=?2')
       .bind(userId,input.workout_id).first<{request:string;response:string}>();
@@ -12612,16 +12617,25 @@ export async function saveFreestyleWorkout(db: D1Database,userId: string,session
     return {error:'invalid_fields' as const,fields:['name','slots']};
   }
   const catalog = await getExercises(db);
+  const sourceKey = (ids: string[]) => JSON.stringify([...ids].sort());
+  const cohorts = new Map(draft.slots.map(slot => [sourceKey(slot.source_set_ids), slot]));
+  const reviewed = new Set<string>();
+  if (input.slots.length !== cohorts.size) return {error:'invalid_fields' as const,fields:['slots']};
   for (const slot of input.slots) {
+    const key = sourceKey(slot.source_set_ids ?? []);
+    const source = cohorts.get(key);
+    if (!source || reviewed.has(key) || source.exercise_id !== slot.exercise_id
+      || source.is_timed !== (slot.target_duration_s !== null)) {
+      return {error:'invalid_fields' as const,fields:['source_set_ids']};
+    }
+    reviewed.add(key);
     const ex = catalog.find(e=>e.id===slot.exercise_id);
-    if (!ex || !draft.slots.some(s=>s.exercise_id===slot.exercise_id)) return {error:'invalid_exercises' as const};
-    const invalid = validateExercisePrescription({...slot}, {modality:ex.modality});
-    if (invalid) return invalid;
-    // Mixed-mode source cohorts stay distinct. An explicit reviewed target may
-    // change load/reps, but may not invent a measure absent from this session.
-    if (!draft.slots.some(s=>s.exercise_id===slot.exercise_id && s.is_timed===(slot.target_duration_s!==null))) {
+    if (!ex) return {error:'invalid_exercises' as const};
+    if (['timed','cardio'].includes(ex.modality) && slot.target_duration_s === null) {
       return {error:'invalid_fields' as const,fields:['target_duration_s']};
     }
+    const invalid = validateExercisePrescription({...slot}, {modality:ex.modality});
+    if (invalid) return invalid;
   }
   const ts=now(), nonce=uuid();
   const response = {workout_id:input.workout_id,plan_id:plan.id,version:plan.version+1,

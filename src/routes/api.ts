@@ -764,7 +764,8 @@ apiRoutes.post('/sessions/:id/save-workout', async (c) => {
       && v.every(s=>s!==null && typeof s==='object' && !Array.isArray(s)
         && isNonEmptyString(s.exercise_id) && isPositiveInteger(s.target_sets)
         && isPositiveInteger(s.target_reps) && (s.target_duration_s===null || isPositiveInteger(s.target_duration_s))
-        && isFiniteNumber(s.target_weight) && isNonNegativeInteger(s.rest_seconds)),
+        && isFiniteNumber(s.target_weight) && isNonNegativeInteger(s.rest_seconds)
+        && Array.isArray(s.source_set_ids) && s.source_set_ids.length>0 && s.source_set_ids.every(isNonEmptyString)),
   });
   if (invalid.length) return c.json({error:'invalid_fields',fields:invalid},400);
   const result=await saveFreestyleWorkout(c.env.DB,c.get('userId'),c.req.param('id'),b as unknown as SaveFreestyleInput);

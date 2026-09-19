@@ -13904,3 +13904,34 @@ extension SetOutboxTests {
         XCTAssertNil(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.restartDiscardedAttempt)
     }
 }
+
+@MainActor
+extension SetOutboxTests {
+    func testFreestyleCapabilityUpgradeCannotRetargetAnOlderDiscardBarrier() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub(), terminalAPI = SetTerminalAPIStub()
+        let auth = retainedAuth(defaults: defaults)
+        let old = session(status: "discarded", updatedAt: 2_000_000_000_001, attempt: 0)
+        var terminal = WorkoutTerminalOutbox()
+        terminal.enqueue(.init(id: fixedUUID.uuidString, action: .discard, date: old.date,
+            workoutID: nil, resolvedSessionID: old.id, deliveryState: .acknowledged,
+            failedHTTPStatus: nil, expectedAttempt: 0))
+        WorkoutTerminalOutboxStore.save(terminal, userID: "user-a", defaults: defaults)
+        var response = state(session: old, sets: [], workouts: [day(with: [exercise()])], serverTime: 2_000_000_000_002)
+        response.freestyleVersion = nil
+        api.stateHandler = { _ in response }
+        let model = SyncModel(auth: auth, setWriteAPI: api, terminalAPI: terminalAPI, defaults: defaults, now: { self.fixedDate })
+        await model.load()
+        XCTAssertEqual(model.currentTerminalIntent?.expectedAttempt,0)
+        let live = SessionRow(kind: "freestyle", id: old.id, date: old.date, status: "in_progress",
+            workout_id: nil, updated_at: 2_000_000_000_003, attempt: 1, write_protocol: "attempt-v1")
+        response = state(session: live, sets: [], workouts: [day(with: [exercise()])], serverTime: 2_000_000_000_004)
+        response.freestyleVersion = 1
+        await model.load()
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertTrue(model.terminalOutbox.isEmpty)
+        XCTAssertEqual(model.todaySession?.attempt,1)
+        XCTAssertTrue(model.isFreestyle)
+        XCTAssertTrue(terminalAPI.discardCalls.isEmpty)
+        XCTAssertTrue(WorkoutTerminalOutboxStore.load(userID: "user-a", defaults: defaults).isEmpty)
+    }
+}

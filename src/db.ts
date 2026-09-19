@@ -3121,13 +3121,13 @@ export interface PlanWriteAttribution {
 
 /** Includes legacy null-workout runners and durable logged-slot evidence. */
 function workoutSessionReferenceSQL(alias: string, workout: string, plan: string): string {
-  return `(( ${alias}.plan_id=${plan} AND (${alias}.workout_id=${workout}
-    OR (${alias}.workout_id IS NULL AND EXISTS (
+  return `(${alias}.workout_id=${workout}
+    OR (${alias}.plan_id=${plan} AND ${alias}.workout_id IS NULL AND EXISTS (
       SELECT 1 FROM plans p WHERE p.id=${plan}
         AND json_extract(p.meta, '$.schedule.week.' || CASE strftime('%w',${alias}.date)
           WHEN '0' THEN 'sun' WHEN '1' THEN 'mon' WHEN '2' THEN 'tue' WHEN '3' THEN 'wed'
           WHEN '4' THEN 'thu' WHEN '5' THEN 'fri' ELSE 'sat' END)=${workout}
-    )))) OR EXISTS (SELECT 1 FROM set_logs l JOIN template_exercises te ON te.id=l.template_exercise_id
+    )) OR EXISTS (SELECT 1 FROM set_logs l JOIN template_exercises te ON te.id=l.template_exercise_id
       WHERE l.session_id=${alias}.id AND l.deleted_at IS NULL AND te.workout_id=${workout}))`;
 }
 

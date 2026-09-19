@@ -2,7 +2,7 @@ import { applyD1Migrations, env, SELF } from 'cloudflare:test';
 import { beforeAll, expect, it } from 'vitest';
 import { createPlan, getPlanTree, getPlanSnapshot, patchWorkoutAtVersion, updatePlanTree,
   setPlanSchedule, setPlannedSession, getWorkoutInPlan, findWorkoutByRef,
-  getProjectedCalendar, getOrCreateSession, restorePlanSnapshot } from '../src/db';
+  getProjectedCalendar, getOrCreateSession, patchSession, restorePlanSnapshot } from '../src/db';
 import { serializePlanSnapshot } from '../src/planSnapshots';
 import { parsePlanMeta } from '../src/types';
 
@@ -96,6 +96,27 @@ it('fences every resolver and the write-time session race, while restore does no
   expect(parsePlanMeta((await getPlanTree(env.DB,userId))!.meta).schedule.week.mon).toBeNull();
 });
 
+it.each(['planned', 'in_progress'])('follows explicit workout references when a %s session retains its older plan id', async status => {
+  const {userId,plan:oldPlan}=await fixture();
+  const original=await getOrCreateSession(env.DB,userId,oldPlan.id,'2026-09-21',null);
+  await createPlan(env.DB,userId,'Replacement');
+  const result=await updatePlanTree(env.DB,userId,{workouts:[{name:'New Gym',exercises:[]}]});
+  if(!('plan' in result)) throw Error('replacement');
+  const plan=result.plan, workout=plan.workouts[0]!;
+  const pinned=await getOrCreateSession(env.DB,userId,plan.id,'2026-09-21',workout.id);
+  expect(pinned).toMatchObject({id:original.id,plan_id:oldPlan.id,workout_id:workout.id});
+  if(status==='in_progress') await patchSession(env.DB,userId,pinned.id,{status});
+  const archived=await patchWorkoutAtVersion(env.DB,userId,plan,workout.id,{archived_at:123});
+  if(status==='in_progress') {
+    expect(archived).toEqual({error:'active_workout'});
+    expect((await getPlanTree(env.DB,userId))?.version).toBe(plan.version);
+  } else {
+    expect(archived).toMatchObject({archived_at:123});
+    expect(await env.DB.prepare('SELECT status,workout_id,attempt FROM sessions WHERE id=?').bind(pinned.id).first())
+      .toEqual({status:'skipped',workout_id:null,attempt:pinned.attempt+1});
+  }
+});
+
 it('preserves omitted metadata across an older coach rebuild and allows reviewed restore',async()=>{
   const {userId,plan,gym}=await fixture();
   await patchWorkoutAtVersion(env.DB,userId,plan,gym.id,{tags:['quick'],archived_at:123});
@@ -181,7 +202,7 @@ it.each(['workouts','days'])('keeps %s REST aliases, sync metadata and permanent
   expect(synced.plan.workouts[0]).toMatchObject({id,tags:'["travel"]',archived_at:123});
   expect(synced.plan.days).toEqual(synced.plan.workouts);
   expect(await api('sessions','POST',{date:'2026-09-21',day_template_id:id})).toMatchObject({status:422,body:{error:'unknown_day'}});
-  expect((await api('calendar/2026-09-21','PUT',{day_template_id:id,expected_attempt:0})).status).not.toBe(200);
+  expect(await api('calendar/2026-09-21','PUT',{day_template_id:id,expected_attempt:0})).toMatchObject({status:400,body:{error:'unknown_day_ref'}});
 });
 
 it.each(['day','workout'])('exposes tags and archive through add_%s and update_%s with atomic coach notes',async suffix=>{

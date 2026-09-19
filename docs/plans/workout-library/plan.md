@@ -188,7 +188,7 @@ No second editor, no per-session template copies, no weeks table.
     readback confirms that same Worker at 100% traffic and build 42 VALID in
     internal Testers. This reconciles the stale release checkbox; it does not
     establish physical-device acceptance or new App Review authority.
-- [ ] **P0.4 — Streamline observed iOS workflows**
+- [x] **P0.4 — Streamline observed iOS workflows**
   - [x] **(a) Implement and verify the observed usability fixes**
     - Owner-approved after a hands-on simulator audit of `12dd49c`: put load
       and reps ahead of secondary controls, retain visible circuit membership,
@@ -219,12 +219,17 @@ No second editor, no per-session template copies, no weeks table.
       stacked Today actions, full-width exercise names and a compact rest that
       keeps next-set values and exact last-set correction at accessibility text
       sizes. Manual physical-device and VoiceOver behavior remain unverified.
-  - [ ] **(b) Distribute the verified client changes**
+  - [x] **(b) Distribute the verified client changes**
     - The September 18 follow-up authorizes internal TestFlight distribution
       after P0.5(b) merges, including the recent UI fixes and P0.5(a) sheet.
       Carry the exact reviewed source and Apple processing/beta evidence into
       the App Store release record. Worker deployment and App Review/public
       release remain separately authorized.
+    - Distribution: [TestFlight 1.0 (43)](../app-store-submission/release-43.md) shipped from
+      reviewed merged source `28dd647`, containing PRs #209, #210, #213 and #214.
+      Apple confirmed VALID, IN_BETA_TESTING and internal Testers assignment on
+      September 18 Pacific. No backend deployment was needed; App Review still
+      selects build 40. Physical-device and VoiceOver acceptance remain open.
 
 - [ ] **P0.5 — Connect exercise guidance and discovery**
   - Planning approved after the [September 18 SensAI inspection](../../reviews/2026-09-sensai/report.md).
@@ -288,9 +293,10 @@ No second editor, no per-session template copies, no weeks table.
       text size. Largest-system-text creation/review and complete swap journeys
       also passed; normal and largest-text swap screenshots were inspected.
       Local independent review found no actionable issue.
-      The pull request from `codex/consistent-exercise-discovery` carries the
-      required current-head review and full CI evidence. Distribution follows
-      P0.4(b), which is authorized but not yet completed.
+      [PR #214](https://github.com/namarks/tres-fort/pull/214) merged after
+      current-head review and all eight CI checks passed, including 625 iOS unit
+      tests (one existing skip) and all 12 smoke journeys. P0.4(b) records its
+      completed internal TestFlight distribution.
   - [ ] **(c) Small exercise visuals in workout previews**
     - Reuse Très Fort's own demonstration assets as lightweight thumbnails in
       the shared workout preview. Keep exercise names, targets and circuit or
@@ -402,7 +408,6 @@ No second editor, no per-session template copies, no weeks table.
 
 ## Execution frontier
 
-- P0.4(b)
 - P1
 
 ## Dependencies
@@ -428,22 +433,18 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@agent):** Complete current-head review and required CI for P0.5(b),
-merge, then execute the authorized combined internal TestFlight distribution
-under P0.4(b). P0.5(a) is merged in PR #213. P1 tags/archive follows the beta;
-preview thumbnails still require separate activation.
+**Now (@agent):** P1 tags/archive is the next planned implementation slice.
+P0.5(a)/(b) merged in PRs #213/#214 and the authorized combined internal beta
+is complete. Preview thumbnails still require separate activation; the wider
+onboarding redesign, RPE semantics and P2 freestyle remain separate.
 
-**Client distribution (@agent):** The owner authorized a combined internal
-TestFlight build after P0.5(b) lands, including P0.4(a), P0.5(a) and P0.5(b).
-Pin the reviewed merged source, choose an available build number from Apple,
-and verify VALID processing and internal Testers assignment.
-[PR #209](https://github.com/namarks/tres-fort/pull/209) merged on 2026-09-17
-with exact-head review and CI, and [PR #210](https://github.com/namarks/tres-fort/pull/210)
-followed on 2026-09-18 with the accessible-control refinements from the same
-audit. Neither source is in an installed build: TestFlight 1.0 (42) was cut from
-`5df9208`, before both merges. Carry the latest merged source through the App
-Store release record. The wider onboarding redesign and RPE semantics remain
-outside this slice.
+**Client distribution:** [TestFlight 1.0 (43)](../app-store-submission/release-43.md)
+contains the usability and accessibility fixes in PRs #209/#210 plus the shared
+exercise information and discovery in PRs #213/#214. The exact reviewed merged
+source is `28dd647`; Apple confirmed VALID processing and internal Testers
+assignment on September 18 Pacific. App Review still selects build 40. Device
+installation, physical acceptance and VoiceOver behavior are not established by
+beta availability.
 
 **Exercise-first release:** P0.3(b) shipped in the owner-authorized build 42
 release. The September 18 production readback and source ancestry confirm its

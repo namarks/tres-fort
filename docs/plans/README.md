@@ -120,8 +120,9 @@ AI coaching.
   date, add tags and archive, and support a freestyle session that can be
   saved as a workout. The weekly routine becomes one optional use of the
   library. P0.5(a)/(b) implement unified exercise guidance/history and shared
-  search/filter behavior. An internal TestFlight build is authorized after
-  current-head review, CI and merge. Preview thumbnails remain planned.
+  search/filter behavior; both shipped with the recent usability fixes in
+  internal TestFlight 1.0 (43). P1 tags/archive is next; preview thumbnails
+  remain planned pending activation.
 - [Workouts and multi-session days](workouts-and-multi-session/plan.md) —
   **gated**; the `day_templates` to `workouts` rename is live server-side with
   a compatibility window, and every shipped client still writes the legacy
@@ -187,8 +188,8 @@ prototype separately before choosing P5(b)'s delivery architecture.
 
 The owner subsequently activated library P0.5(a), the shared Technique / History
 sheet, ahead of tags/archive, and then P0.5(b) shared search/filter behavior.
-P0.5(a) is merged; a combined internal TestFlight build is authorized after
-P0.5(b) passes review and CI and merges. The other new slices remain planning
+P0.5(a)/(b) are merged and shipped in internal TestFlight 1.0 (43), with exact
+source and Apple evidence in the release record. The other new slices remain planning
 approval only; canonical frontiers and release gates remain authoritative. Already
 delivered runner, swap, catalog, starter and progress capabilities are reused.
 

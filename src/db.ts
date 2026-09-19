@@ -3750,7 +3750,9 @@ export async function findWorkoutByRef(
 ): Promise<string | null> {
   const row = await workoutDB(db)
     .prepare(
-      'SELECT id FROM workouts WHERE plan_id = ?1 AND (day_label = ?2 OR name = ?2) AND (?3=1 OR archived_at IS NULL) LIMIT 1',
+      `SELECT id FROM workouts WHERE plan_id = ?1 AND (day_label = ?2 OR name = ?2)
+        AND (?3=1 OR archived_at IS NULL)
+        ORDER BY archived_at IS NOT NULL, order_index, created_at, id LIMIT 1`,
     )
     .bind(planId, ref, includeArchived ? 1 : 0)
     .first<{ id: string }>();
@@ -6460,30 +6462,29 @@ export async function updatePlanTree(
   // deadlift day") would silently wipe the entire weekly schedule because
   // rebuilt days get fresh UUIDs.
   const oldDays = await workoutDB(db)
-    .prepare('SELECT * FROM workouts WHERE plan_id = ?1')
+    .prepare('SELECT * FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id')
     .bind(plan.id)
     .all<WorkoutRow>();
-  const oldById = new Map<string, { name: string; day_label: string | null }>();
-  for (const od of oldDays.results) {
-    oldById.set(od.id, { name: od.name, day_label: od.day_label });
-  }
-
   const ts = now();
-  // Generate new day ids up-front so the schedule remap can reference them.
   const newDayIds = input.workouts.map(() => uuid());
-  // Match old→new day identity by day_label first (the stable handle), then
-  // by name. First writer wins on a duplicate (schedule holds one id/slot).
-  const newIdByLabel = new Map<string, string>();
-  const newIdByName = new Map<string, string>();
-  input.workouts.forEach((d, i) => {
-    const id = newDayIds[i]!;
-    if (d.day_label != null) {
-      const lk = d.day_label.toLowerCase();
-      if (!newIdByLabel.has(lk)) newIdByLabel.set(lk, id);
+  // Pair each occurrence once. Match stable labels before fallback names so
+  // a label-less duplicate cannot steal another workout's labeled identity.
+  const candidates = input.workouts.map((day, index) => ({ day, index }))
+    .sort((a, b) => (a.day.order_index ?? a.index) - (b.day.order_index ?? b.index) || a.index - b.index);
+  const unmatched = new Set(newDayIds);
+  const oldToNewDay = new Map<string, string | null>(oldDays.results.map(day => [day.id, null]));
+  for (const field of ['day_label', 'name'] as const) {
+    for (const old of oldDays.results) {
+      if (oldToNewDay.get(old.id) != null || old[field] == null) continue;
+      const match = candidates.find(({ day, index }) => unmatched.has(newDayIds[index]!)
+        && day[field]?.toLowerCase() === old[field]!.toLowerCase());
+      if (match) {
+        const id = newDayIds[match.index]!;
+        oldToNewDay.set(old.id, id);
+        unmatched.delete(id);
+      }
     }
-    const nk = d.name.toLowerCase();
-    if (!newIdByName.has(nk)) newIdByName.set(nk, id);
-  });
+  }
 
   // FK-safe rebuild: sessions.workout_id and set_logs.template_exercise_id
   // reference rows we're about to DELETE. With no ON DELETE clause on those
@@ -6496,14 +6497,6 @@ export async function updatePlanTree(
   // (history preserved, plan-tree pointer detached). All in the same D1
   // batch so it's atomic with the rebuild.
 
-  // Build old → new day map first (matched by day_label, then name).
-  const oldToNewDay = new Map<string, string | null>();
-  for (const od of oldDays.results) {
-    const lk = od.day_label?.toLowerCase();
-    const nk = od.name.toLowerCase();
-    const newId = (lk != null ? newIdByLabel.get(lk) : undefined) ?? newIdByName.get(nk) ?? null;
-    oldToNewDay.set(od.id, newId);
-  }
   const metadataByNewId = new Map(newDayIds.map((id, index) => {
     const day = input.workouts[index]!;
     const old = oldDays.results.find(old => oldToNewDay.get(old.id) === id);
@@ -6871,12 +6864,7 @@ export async function updatePlanTree(
   for (const wd of WEEKDAYS) {
     const oldId = remappedWeek[wd];
     if (oldId == null) continue;
-    const old = oldById.get(oldId);
-    let newId: string | undefined;
-    if (old) {
-      if (old.day_label != null) newId = newIdByLabel.get(old.day_label.toLowerCase());
-      if (!newId) newId = newIdByName.get(old.name.toLowerCase());
-    }
+    const newId = oldToNewDay.get(oldId);
     remappedWeek[wd] = newId && metadataByNewId.get(newId)?.archived_at == null ? newId : null;
   }
   const remappedSchedule: WeeklySchedule = {

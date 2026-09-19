@@ -305,7 +305,10 @@ an API tag so opening and saving cannot silently split an accepted label. Plan r
 carry `tags` as a JSON-encoded string, like other stored JSON fields. The
 atomic writer, both snapshot serializers, comparisons, restores and coach
 rebuilds retain tags and `archived_at`; a rebuild that omits metadata inherits
-it from the matched old workout. Immutable snapshots predating these fields
+it from the matched old workout. Rebuilds pair duplicate labels/names once in
+workout order, preserving each occurrence's metadata and history references;
+name-based metadata edits prefer active matches, with IDs available for an
+archived namesake. Immutable snapshots predating these fields
 decode with empty tags and no archive timestamp without rewriting history.
 
 Archived workouts remain in every client's plan tree to name completed history,
@@ -313,7 +316,9 @@ with workout and slot references intact. Active iOS choices and coach briefs
 exclude them; assignment resolvers reject their IDs, including legacy aliases.
 An archive rejects an in-progress workout and atomically clears recurring
 assignments and turns its planned sessions into explicit rest with an advanced
-attempt. Session-write triggers close assignment races. Restoring the library
+attempt. Session and set-write triggers close assignment races, including a
+local override whose slot belongs to a different workout than its session pin.
+Completed-history set writes remain supported. Restoring the library
 entry leaves those assignments cleared. A saved pre-first-set runner is
 invalidated when a live pull finds its workout archived. During a trip, active
 `travel`-tagged choices appear first without changing blackout rules.

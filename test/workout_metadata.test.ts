@@ -2,7 +2,7 @@ import { applyD1Migrations, env, SELF } from 'cloudflare:test';
 import { beforeAll, expect, it } from 'vitest';
 import { createPlan, getPlanTree, getPlanSnapshot, patchWorkoutAtVersion, updatePlanTree,
   setPlanSchedule, setPlannedSession, getWorkoutInPlan, findWorkoutByRef,
-  getProjectedCalendar, getOrCreateSession, patchSession, restorePlanSnapshot } from '../src/db';
+  getProjectedCalendar, getOrCreateSession, logSet, patchSession, restorePlanSnapshot } from '../src/db';
 import { serializePlanSnapshot } from '../src/planSnapshots';
 import { parsePlanMeta } from '../src/types';
 
@@ -286,4 +286,75 @@ it.each(['before', 'during'])('fences a cross-plan runner starting %s snapshot r
   expect(await getPlanTree(env.DB,userId)).toEqual(plan);
   expect(await env.DB.prepare('SELECT workout_id,status FROM sessions WHERE id=?').bind(pinned.id).first())
     .toEqual({workout_id:workout.id,status:'in_progress'});
+});
+
+it.each(['archive-first', 'set-first', 'completed'])('fences overridden slot references while preserving %s history', async order => {
+  const {userId,plan,gym,hotel}=await fixture();
+  const s=await getOrCreateSession(env.DB,userId,plan.id,'2026-09-21',hotel.id);
+  if(order==='completed') await patchSession(env.DB,userId,s.id,{status:'completed'});
+  const input={id:crypto.randomUUID(),session_id:s.id,exercise_id:gym.exercises[0]!.exercise_id,
+    template_exercise_id:gym.exercises[0]!.id,set_index:1,weight:100,reps:5,source:'ios' as const,
+    expected_attempt:s.attempt,prescription:{plan_id:plan.id,version:plan.version,day_id:gym.id}};
+  if(order==='set-first') {
+    await logSet(env.DB,userId,input);
+    expect(await patchWorkoutAtVersion(env.DB,userId,plan,gym.id,{archived_at:123})).toEqual({error:'active_workout'});
+  } else {
+    expect(await patchWorkoutAtVersion(env.DB,userId,plan,gym.id,{archived_at:123})).toMatchObject({archived_at:123});
+    if(order==='archive-first') {
+      await expect(logSet(env.DB,userId,input)).rejects.toThrow('workout_archived_assignment');
+      expect(await env.DB.prepare('SELECT COUNT(*) AS count FROM set_logs WHERE session_id=?').bind(s.id).first('count')).toBe(0);
+      expect(await env.DB.prepare('SELECT status,runner_targets FROM sessions WHERE id=?').bind(s.id).first())
+        .toEqual({status:'planned',runner_targets:null});
+    } else {
+      const result=await logSet(env.DB,userId,input);
+      expect(result.set.template_exercise_id).toBe(gym.exercises[0]!.id);
+      expect(result.session.status).toBe('completed');
+      expect(await patchSession(env.DB,userId,s.id,{status:'in_progress'})).toHaveProperty('error','session_state_conflict');
+      await expect(env.DB.prepare("UPDATE sessions SET status='in_progress' WHERE id=?").bind(s.id).run())
+        .rejects.toThrow('workout_archived_assignment');
+    }
+  }
+});
+
+it('prefers active name matches while an explicit id can still restore the archived namesake', async()=>{
+  const {api,tool}=await transportFixture();
+  const archived=await tool('add_workout',{name:'Gym',archived_at:123,tags:['old']});
+  const active=await tool('add_workout',{name:'Gym'});
+  expect(await tool('update_workout',{day:'Gym',patch:{tags:['current']}})).toMatchObject({id:active.id,tags:'["current"]'});
+  expect(await tool('update_workout',{workout_id:archived.id,patch:{archived_at:null}})).toMatchObject({id:archived.id,tags:'["old"]',archived_at:null});
+  expect((await api('plan/active')).body.workouts).toHaveLength(2);
+});
+
+it('rejects moving or reviving an archived slot reference in an active session',async()=>{
+  const {userId,plan,gym,hotel}=await fixture();
+  const s=await getOrCreateSession(env.DB,userId,plan.id,'2026-09-21',hotel.id);
+  const logged=await logSet(env.DB,userId,{id:crypto.randomUUID(),session_id:s.id,
+    exercise_id:gym.exercises[0]!.exercise_id,template_exercise_id:null,set_index:1,weight:100,reps:5,source:'ios'});
+  await patchWorkoutAtVersion(env.DB,userId,plan,gym.id,{archived_at:123});
+  await expect(env.DB.prepare('UPDATE set_logs SET template_exercise_id=? WHERE id=?')
+    .bind(gym.exercises[0]!.id,logged.set.id).run()).rejects.toThrow('workout_archived_assignment');
+  await env.DB.prepare('UPDATE set_logs SET deleted_at=1,template_exercise_id=? WHERE id=?')
+    .bind(gym.exercises[0]!.id,logged.set.id).run();
+  await expect(env.DB.prepare('UPDATE set_logs SET deleted_at=NULL WHERE id=?')
+    .bind(logged.set.id).run()).rejects.toThrow('workout_archived_assignment');
+  expect(await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?').bind(logged.set.id).first('deleted_at')).toBe(1);
+});
+
+it.each([null,'A'])('pairs duplicate %s identities once when an older coach omits metadata',async label=>{
+  const {userId}=await fixture();
+  const initial=await updatePlanTree(env.DB,userId,{workouts:[
+    {name:'Gym',day_label:label,tags:['current'],exercises:[]},
+    {name:'Gym',day_label:label,tags:['old'],archived_at:123,exercises:[]},
+  ]});
+  if(!('plan' in initial)) throw Error('duplicates');
+  const ids=initial.plan.workouts.map(w=>w.id);
+  await setPlanSchedule(env.DB,userId,{mon:ids[0]!});
+  const done=await session(userId,initial.plan.id,ids[1]!,'2026-09-07','completed');
+  const rebuilt=await updatePlanTree(env.DB,userId,{workouts:[
+    {name:'Gym',day_label:label,exercises:[]}, {name:'Gym',day_label:label,exercises:[]},
+  ]});
+  if(!('plan' in rebuilt)) throw Error('rebuild');
+  expect(rebuilt.plan.workouts.map(w=>[w.tags,w.archived_at])).toEqual([['["current"]',null],['["old"]',123]]);
+  expect(parsePlanMeta(rebuilt.plan.meta).schedule.week.mon).toBe(rebuilt.plan.workouts[0]!.id);
+  expect(await env.DB.prepare('SELECT workout_id FROM sessions WHERE id=?').bind(done).first('workout_id')).toBe(rebuilt.plan.workouts[1]!.id);
 });

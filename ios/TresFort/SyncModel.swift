@@ -555,7 +555,7 @@ final class SyncModel: ObservableObject {
 
     var selectedDay: Workout? {
         guard let plan else { return nil }
-        guard let day = plan.workouts.first(where: { $0.id == selectedDayID }) ?? plan.workouts.first else { return nil }
+        guard let day = plan.availableWorkouts.first(where: { $0.id == selectedDayID }) ?? plan.availableWorkouts.first else { return nil }
         return runnerDay(id: day.id)
     }
 
@@ -1624,6 +1624,13 @@ final class SyncModel: ObservableObject {
             resumableCheckpoint = nil
             return
         }
+        // A pre-first-set runner has no in-progress server row to fence a
+        // remote archive. Retain history, but never resume its saved inputs
+        // against selectedDay's next-active-workout fallback.
+        if plan?.workouts.first(where: { $0.id == checkpoint.selectedDayID })?.isArchived == true {
+            stopRunnerForStateChange()
+            return
+        }
         // The mounted runner already owns this checkpoint and must not expose
         // a second resume CTA. A live pull still owns terminal precedence:
         // once a bound server session is no longer planned/in progress, the
@@ -2188,7 +2195,7 @@ final class SyncModel: ObservableObject {
     /// still exists on the resolved day.
     private func reconcileSelection(previousSelectedDayID: String?, activeSlotID: String?,
                                     runnerWasActive: Bool) {
-        let days = plan?.workouts ?? []
+        let days = plan?.availableWorkouts ?? []
         let sessionDayID = todaySession?.workout_id
         let resolvedSessionDayID = sessionDayID.flatMap { id in
             days.contains(where: { $0.id == id }) ? id : nil
@@ -4105,7 +4112,7 @@ final class SyncModel: ObservableObject {
     // MARK: runner
 
     private func runnerDay(id: String) -> Workout? {
-        guard let day = plan?.workouts.first(where: { $0.id == id }) else { return nil }
+        guard let day = plan?.availableWorkouts.first(where: { $0.id == id }) else { return nil }
         let session = todaySession ?? sessions.first { $0.date == todayString }
         return session?.applyingExerciseSwaps(to: day) ?? day
     }
@@ -5680,8 +5687,8 @@ final class SyncModel: ObservableObject {
                 await loadAfterMutation()
                 guard loadError == nil else { return nil }
                 if canInitiateBoundFeatureAction {
-                    if body.contains("day_in_progress") {
-                        loadError = "Finish or discard the active workout before removing this workout day."
+                    if body.contains("day_in_progress") || body.contains("active_workout") {
+                        loadError = "Finish or discard the active workout before removing or archiving this workout."
                     } else if body.contains("session_already_started") {
                         loadError = "A started workout cannot be reassigned to another day or rest."
                     } else {
@@ -5702,7 +5709,8 @@ final class SyncModel: ObservableObject {
                 || body.contains("\"day_not_found\"")
         }
         if code == 400 {
-            return body.contains("\"unknown_day_ref\"")
+            return body.contains("\"active_workout\"")
+                || body.contains("\"unknown_day_ref\"")
                 || body.contains("\"no_active_plan\"")
         }
         return false
@@ -5757,6 +5765,28 @@ final class SyncModel: ObservableObject {
         return definitiveRejection ? .needsReview : .retrySameRequest
     }
 
+    @discardableResult
+    func saveWorkoutTags(dayID: String, tags: [String], expectedVersion: Int) async -> Bool {
+        let result: APIClient.WorkoutIDRow? = await performRoutineMutation { api, jwt in
+            try await api.updateWorkout(dayID: dayID, fields: ["tags": tags],
+                expectedVersion: expectedVersion, jwt: jwt)
+        }
+        return result != nil
+    }
+
+    func setWorkoutArchived(dayID: String, archived: Bool) async {
+        guard !archived || !runnerProtectsWorkoutDay(dayID) else {
+            loadError = "Finish or discard the active workout before archiving it."
+            return
+        }
+        guard let version = plan?.version else { return }
+        let value: Any = archived ? Int(now().timeIntervalSince1970 * 1000) : NSNull()
+        _ = await performRoutineMutation { api, jwt in
+            try await api.updateWorkout(dayID: dayID, fields: ["archived_at": value],
+                expectedVersion: version, jwt: jwt)
+        } as APIClient.WorkoutIDRow?
+    }
+
     func renameWorkoutDay(dayID: String, name: String) async {
         guard let version = plan?.version else { return }
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5789,7 +5819,7 @@ final class SyncModel: ObservableObject {
 
     func deleteWorkoutDay(dayID: String) async {
         guard !runnerProtectsWorkoutDay(dayID) else {
-            loadError = "Finish or discard the active workout before removing this workout day."
+            loadError = "Finish or discard the active workout before removing or archiving this workout."
             return
         }
         guard let version = plan?.version else { return }
@@ -5845,6 +5875,10 @@ final class SyncModel: ObservableObject {
 
     @discardableResult
     func setCalendarOverride(date: String, dayID: String?) async -> Bool {
+        if let dayID, workout(id: dayID)?.isArchived != false {
+            loadError = "This workout is unavailable. Choose another workout."
+            return false
+        }
         if let reason = calendarAssignmentUnavailableReason(date: date) {
             loadError = reason
             return false
@@ -6042,7 +6076,7 @@ final class SyncModel: ObservableObject {
 
     /// Plan day_template ids (for dangling-schedule detection).
     var planTemplateIDs: Set<String> {
-        Set(plan?.workouts.map(\.id) ?? [])
+        Set(plan?.availableWorkouts.map(\.id) ?? [])
     }
 
     /// Real cached sessions keyed by YYYY-MM-DD. If multiple sessions share
@@ -6464,6 +6498,10 @@ final class SyncModel: ObservableObject {
     /// one-off `sessions` write only — it never touches `plans.meta.schedule`.
     func startOverride(dayID: String) {
         guard allowNewWorkoutStart() else { return }
+        guard workout(id: dayID)?.isArchived == false else {
+            loadError = "This workout is unavailable. Choose another workout."
+            return
+        }
         selectedDayID = dayID
         if let skipped = todaySession, skipped.status == "skipped" {
             guard !isReopeningSkippedWorkout else { return }

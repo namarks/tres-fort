@@ -20,17 +20,19 @@ struct WorkoutDetailsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     if let workout {
-                        Text(date.map { "For \($0)" } ?? "Saved workout")
+                        Text(workout.isArchived ? "Archived workout" : date.map { "For \($0)" } ?? "Saved workout")
                             .font(Theme.mono(12)).foregroundStyle(Theme.muted)
                         WorkoutExercisePreview(sync: sync, exercises: workout.exercises)
                         if workout.exercises.isEmpty {
-                            Text("No exercises yet. Edit this workout to add exercises and targets.")
+                            Text(workout.isArchived ? "No exercises saved in this archived workout." : "No exercises yet. Edit this workout to add exercises and targets.")
                                 .foregroundStyle(Theme.muted)
                         }
+                        if !workout.isArchived {
                         Button("Edit \(workout.name)") { editing = true }
                             .frame(maxWidth: .infinity, minHeight: 44)
                             .accessibilityIdentifier("workoutDetails.edit")
-                        Text("Changes apply whenever you use this saved workout. Completed records stay unchanged.")
+                        }
+                        Text(workout.isArchived ? "Restore this workout from the library to use it again." : "Changes apply whenever you use this saved workout. Completed records stay unchanged.")
                             .font(.footnote).foregroundStyle(Theme.muted)
                     } else {
                         Text("This workout is not loaded. Refresh to check for it, or choose another workout from the library.")
@@ -49,7 +51,7 @@ struct WorkoutDetailsView: View {
                 .padding(20)
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if let workout, onStart != nil || date != nil {
+                if let workout, !workout.isArchived, onStart != nil || date != nil {
                     primaryAction(for: workout)
                         .padding(.horizontal, 20)
                         .padding(.vertical, 12)
@@ -135,7 +137,7 @@ struct WeeklyScheduleView: View {
                         Picker(names[key] ?? key, selection: Binding(
                             get: { draft[key] ?? "" }, set: { draft[key] = $0 })) {
                             Text("Rest").tag("")
-                            ForEach(sync.plan?.workouts ?? []) { workout in
+                            ForEach(sync.plan?.availableWorkouts ?? []) { workout in
                                 Text(workout.name).tag(workout.id)
                             }
                         }

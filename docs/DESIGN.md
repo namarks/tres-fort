@@ -115,6 +115,8 @@ CREATE TABLE workouts (
   day_label   TEXT,                             -- "A","Push","Wed"
   order_index INTEGER NOT NULL,
   notes       TEXT,
+  tags        TEXT NOT NULL DEFAULT '[]',        -- migration 0053; normalized short labels
+  archived_at INTEGER,                          -- migration 0053; nullable epoch-ms
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
@@ -257,7 +259,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `DELETE /api/me` | Permanently delete the signed caller after explicit in-app confirmation and recent Apple authentication. A UUID-bound intent serializes provider revocation and local deletion; a durable receipt makes a lost success response safe to acknowledge. The response reports `apple_revocation: revoked|manual_required`; provider failure, legacy accounts without a stored token, or an uncertain exchange never retain local data and instead trigger the manual Apple Account handoff. |
 | `PUT /api/plan/active` | Idempotently ensure an active plan for manual authoring. Returns the existing winner on retry/concurrent coach creation and never archives it; explicit plan replacement archives and inserts atomically so the two creation paths cannot violate the one-active-plan invariant. |
 | `POST /api/workouts` | Add a library workout; omitted `order_index` appends densely. Optional `exercise_ids` (1–50 unique catalog IDs) saves ordered initial slots in the same versioned transaction and requires `expected_plan_id` plus `expected_version`. Invalid selections create nothing. The first-day flow pins both `expected_plan_id` and `expected_version` to the plan returned by `PUT /api/plan/active`; app and MCP adds use the same atomic plan-version writer. |
-| `PATCH /api/workouts/{id}` | `{name?, day_label?, order_index?, notes?, expected_version?}` — rename/reorder a day through the same atomic plan-version writer as MCP. |
+| `PATCH /api/workouts/{id}` | `{name?, day_label?, order_index?, notes?, tags?, archived_at?, expected_version?}` — edit through the atomic plan-version writer. Metadata edits require `expected_version`; `tags` is a string array, `archived_at` is positive epoch-ms or null to restore. |
 | `DELETE /api/workouts/{id}?expected_version=` | Remove a day and scrub its recurring assignments. Completed history is detached, direct or same-plan schedule-resolved planned sessions become explicit rest, and removal is rejected while that day has a direct, same-plan schedule-resolved, or locally running workout. |
 | `POST /api/workouts/{id}/exercises` | Add an exercise slot (incl. `is_warmup`, `target_duration_s`). |
 | `PATCH /api/workouts/{id}/exercises/{teId}` | Edit one slot in place (targets / rest / warm-up flag / order). |
@@ -295,6 +297,35 @@ patches retain their existing input shape: they retry a bounded version
 conflict against fresh state and validate the merged prescription. Explicitly versioned edits return
 a conflict for the caller to review. See the
 [prescription contract](plans/completed/prescription-integrity/decisions.md).
+
+Migration `0053` adds workout tags and archiving. REST/MCP writes accept up to
+12 comma-free tags of 1–32 characters, trimmed, lowercased and deduplicated.
+Commas separate labels in the iOS editor; shared validation rejects them inside
+an API tag so opening and saving cannot silently split an accepted label. Plan reads
+carry `tags` as a JSON-encoded string, like other stored JSON fields. The
+atomic writer, both snapshot serializers, comparisons, restores and coach
+rebuilds retain tags and `archived_at`; a rebuild that omits metadata inherits
+it from the matched old workout. Rebuilds pair duplicate labels/names once in
+workout order, preserving each occurrence's metadata and history references;
+name-based metadata edits prefer active matches, with IDs available for an
+archived namesake. Immutable snapshots predating these fields
+decode with empty tags and no archive timestamp without rewriting history.
+
+Archived workouts remain in every client's plan tree to name completed history,
+with workout and slot references intact. Active iOS choices and coach briefs
+exclude them; assignment resolvers reject their IDs, including legacy aliases.
+An archive rejects an in-progress workout and atomically clears recurring
+assignments and turns its planned sessions into explicit rest with an advanced
+attempt. Session and set-write triggers close assignment races, including a
+local override whose slot belongs to a different workout than its session pin.
+Completed-history set writes remain supported. Restoring the library
+entry leaves those assignments cleared. A saved pre-first-set runner is
+invalidated when a live pull finds its workout archived. During a trip, active
+`travel`-tagged choices appear first without changing blackout rules.
+Targeted prescription edits, slot deletion and grouping require an active
+workout; bulk recurring adjustments skip archived entries. Restore the workout
+before editing its prescription through those paths.
+See the [metadata release boundary](plans/workout-library/metadata-release.md).
 
 Supersets and circuits have at least two contiguous members in one day, sharing
 one set count and both group rest values. Group fields, set count and ordering

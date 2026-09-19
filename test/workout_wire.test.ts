@@ -1,9 +1,10 @@
+import { workoutSchemaSQL } from '../src/workoutSchema';
 import { applyD1Migrations, env, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { workoutInput, workoutWire } from '../src/workoutWire';
 import { acceptStarterWorkout, getPlanTree, saveTrainingProfile, upsertUser } from '../src/db';
 
-beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS.filter(m => m.name !== '0045_workouts.sql')));
+beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS.filter(m => m.name !== '0045_workouts.sql').map(m => m.name === '0053_workout_metadata.sql' ? { ...m, queries: m.queries.map(q => workoutSchemaSQL(q, 'legacy')) } : m)));
 const base = 'https://tres-fort.test';
 async function tool(name: string, args: unknown = {}) {
   const response = await SELF.fetch(`${base}/mcp`, { method: 'POST',

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readdir, copyFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, copyFile, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
@@ -28,7 +28,11 @@ function cli(args) {
 try {
   await mkdir(migrations);
   for (const name of await readdir(join(root, 'migrations'))) {
-    if (name.endsWith('.sql') && name !== '0045_workouts.sql') await copyFile(join(root, 'migrations', name), join(migrations, name));
+    if (name === '0053_workout_metadata.sql') {
+      // Synthetic pre-rename fixture; production applies this only after 0045.
+      const sql = await readFile(join(root, 'migrations', name), 'utf8');
+      await writeFile(join(migrations, name), sql.replace(/\bworkouts\b/g, 'day_templates').replace(/\bworkout_id\b/g, 'day_template_id'));
+    } else if (name.endsWith('.sql') && name !== '0045_workouts.sql') await copyFile(join(root, 'migrations', name), join(migrations, name));
   }
   await writeFile(config, JSON.stringify({ name: 'workout-rollout-local',
     main: join(root, 'src/index.ts'), compatibility_date: '2024-12-30', compatibility_flags: ['nodejs_compat'],

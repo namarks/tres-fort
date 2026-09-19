@@ -136,6 +136,13 @@ struct TemplateExercise: Codable, Identifiable, Equatable {
 }
 
 struct Workout: Codable, Identifiable, Equatable {
+    var tags: String? = nil
+    var archived_at: Int? = nil
+    var isArchived: Bool { archived_at != nil }
+    var workoutTags: [String] {
+        guard let tags, let data = tags.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    }
     let id: String
     let name: String
     let day_label: String?
@@ -170,6 +177,7 @@ struct PlanSchedule: Decodable, Equatable {
 }
 
 struct PlanTree: Codable, Equatable {
+    var availableWorkouts: [Workout] { workouts.filter { !$0.isArchived } }
     let id: String
     let name: String
     let version: Int

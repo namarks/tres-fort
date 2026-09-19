@@ -743,6 +743,25 @@
       "trips": [],
       "expected_status": "rest",
       "expected_suppressed": false
+    },
+    {
+      "name": "archived scheduled workout projects as rest",
+      "date": "2026-09-21",
+      "today": "2026-09-21",
+      "week": {
+        "mon": "archived-workout",
+        "tue": null,
+        "wed": null,
+        "thu": null,
+        "fri": null,
+        "sat": null,
+        "sun": null
+      },
+      "live": [],
+      "sessions": [],
+      "trips": [],
+      "expected_status": "rest",
+      "expected_suppressed": false
     }
   ]
 }

@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: active · Updated: 2026-09-18 · Theme: gym-floor
+Slug: workout-library · Status: active · Updated: 2026-09-19 · Theme: gym-floor
 
 ## Goal
 
@@ -306,7 +306,7 @@ No second editor, no per-session template copies, no weeks table.
       scrolling responsive and preserve text accessibility; visuals must not
       push the prescription or primary workout action out of reach.
 
-- [ ] **P1 — Library metadata: tags and archive**
+- [x] **P1 — Library metadata: tags and archive**
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work
     remains independent of this backend prerequisite.
@@ -408,7 +408,7 @@ No second editor, no per-session template copies, no weeks table.
 
 ## Execution frontier
 
-- P1
+- P2
 
 ## Dependencies
 
@@ -416,7 +416,7 @@ No second editor, no per-session template copies, no weeks table.
 the shared prescription controls, durable corrections and runner presentation.
 Reuse that delivered path when changing the runner.
 
-P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer](../completed/prescription-integrity/decisions.md), including prescription creation and session reassignment. Extend [canonical snapshots](../completed/reversible-plan-management/decisions.md) to retain `tags` and `archived_at`.
+P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer](../completed/prescription-integrity/decisions.md), including prescription creation and session reassignment. P1 extended [canonical snapshots](../completed/reversible-plan-management/decisions.md) to retain `tags` and `archived_at`, including legacy snapshot reads and full-plan rebuilds.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
@@ -433,10 +433,27 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@agent):** P1 tags/archive is the next planned implementation slice.
-P0.5(a)/(b) merged in PRs #213/#214 and the authorized combined internal beta
-is complete. Preview thumbnails still require separate activation; the wider
-onboarding redesign, RPE semantics and P2 freestyle remain separate.
+**Now (@agent):** P1 tags/archive implementation is complete. P2 freestyle and
+save-as-workout is the next planned implementation slice. Preview thumbnails
+still require separate activation; the wider onboarding redesign and RPE
+semantics remain separate.
+
+**P1 repository evidence (September 19):** Migration 0053, atomic REST/MCP
+metadata writes, snapshot/rebuild preservation and archive assignment fences
+are implemented. The iOS library supports tag editing/filtering, Active and
+Archived views, confirmed archive and explicit restore; trip choices prioritize
+travel labels. Archived workouts remain available to history. Regression checks
+cover version conflicts, transaction rollback, archive/start races, legacy
+aliases, calendar parity, restoration after UUID rebuilds and saved runner
+invalidation. All three backend test shards passed; the local same-Worker
+rename/rollback compatibility rehearsal passed. The focused library UI journey
+covers tag filtering, cancel, archive and restore.
+
+**P1 release (@owner):** Follow the [metadata release order](metadata-release.md):
+migration 0053 after 0045, then compatible Worker, then iOS distribution.
+Repository completion does not establish production migration, deployment or
+TestFlight availability. A pre-metadata Worker is unsafe to restore after
+metadata writes because its rebuild/snapshots omit the fields.
 
 **Client distribution:** [TestFlight 1.0 (43)](../app-store-submission/release-43.md)
 contains the usability and accessibility fixes in PRs #209/#210 plus the shared
@@ -450,7 +467,7 @@ beta availability.
 release. The September 18 production readback and source ancestry confirm its
 compatible Worker and internal client distribution. No Worker, migration,
 runtime configuration or backend dependency differs between that release and
-this client slice, so the combined beta needs no production deployment.
+that build-43 client slice, so that combined beta needed no production deployment.
 App Review changes remain separate.
 
 P0.3(a) implementation and local verification are complete. All 1,101 backend
@@ -473,7 +490,7 @@ no checks or assertions were removed.
 Worker, Apple processing, signing and submission evidence must be reconciled
 there rather than inferred from repository completion here. The release task's
 build 40 handoff is separate from P0.3 and must not silently change source.
-P1 metadata and P2 freestyle remain separate planned work.
+P1 metadata repository delivery and P2 freestyle remain separate from that release.
 
 The navigation design was approved in task
 `01a08dee-930f-7763-9202-29872c440f26`. [PR #178](https://github.com/namarks/tres-fort/pull/178)
@@ -508,9 +525,8 @@ suite passed 897 tests, including both physical schemas and old/new wire
 contracts.
 Those tests verified that Unschedule retains the workout and dated session while clearing its recurring
 entries. The library-date assignment appears in Today and the coach's current
-workout response without changing the recurring plan. Tags/archive (P1),
-freestyle (P2), and multiple sessions per date remain unimplemented and outside
-the completed goal's scope.
+workout response without changing the recurring plan. P1 now supplies tags/archive. Freestyle (P2) and multiple sessions per date
+remain unimplemented and outside the completed goal's scope.
 
 ## Notes / open questions
 

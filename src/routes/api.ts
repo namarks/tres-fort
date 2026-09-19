@@ -1,3 +1,4 @@
+import { validWorkoutTags, validArchivedAt } from '../workoutMetadata';
 import { swapSessionExercise } from '../db';
 import { isGroupReportReason } from '../groupSafety';
 import { workoutExportWire, workoutInput, workoutWire } from '../workoutWire';
@@ -338,6 +339,8 @@ apiRoutes.on('POST', ['/workouts', '/days'], async (c) => {
     b,
     { name: isNonEmptyString },
     {
+      tags: validWorkoutTags,
+      archived_at: validArchivedAt,
       day_label: isNullableString,
       order_index: isNonNegativeInteger,
       expected_plan_id: isNonEmptyString,
@@ -368,6 +371,7 @@ apiRoutes.on('POST', ['/workouts', '/days'], async (c) => {
     orderIndex,
     { actor: 'ios', operation: c.req.path.startsWith('/api/workouts') ? 'add_workout' : 'add_day', args: b },
     b.exercise_ids as string[] | undefined,
+    { tags: b.tags as string[] | undefined, archived_at: b.archived_at as number | null | undefined },
   );
   if ('error' in row) return c.json(workoutWire(row), 400);
   if ('conflict' in row) return c.json(workoutWire(row), 409);
@@ -386,6 +390,8 @@ apiRoutes.on('PATCH', ['/workouts/:id', '/days/:id'], async (c) => {
     {},
     {
       name: isNonEmptyString,
+      tags: validWorkoutTags,
+      archived_at: validArchivedAt,
       day_label: isNullableString,
       order_index: isNonNegativeInteger,
       notes: isNullableString,
@@ -395,6 +401,9 @@ apiRoutes.on('PATCH', ['/workouts/:id', '/days/:id'], async (c) => {
   if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
   if (hasOwn(b, 'expected_version') && b.expected_version !== plan.version) {
     return c.json(workoutWire({ conflict: true, current_version: plan.version }), 409);
+  }
+  if ((hasOwn(b, 'tags') || hasOwn(b, 'archived_at')) && !hasOwn(b, 'expected_version')) {
+    return c.json(workoutWire({ error: 'invalid_fields', fields: ['expected_version'] }), 400);
   }
   const { expected_version: _expectedVersion, ...patch } = b;
   const row = await patchWorkoutAtVersion(

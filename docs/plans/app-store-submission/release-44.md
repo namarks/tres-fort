@@ -51,6 +51,14 @@ latest internal beta. Build 44 has **not been uploaded**, processed or assigned
 to testers. Version 1.0 still selected build 40, IN_REVIEW, AFTER_APPROVAL.
 No App Review, release-mode, listing or external-beta change was made.
 
+A fresh read at `2026-09-20T03:09:03.096Z` still reports build 40 IN_REVIEW /
+AFTER_APPROVAL. Its pinned client source `9373d6f` defaults to the retired
+`/api/days` and `day_template_id` contract, which the canonical Worker rejects.
+Build 40 is therefore known to be incompatible with the serving backend. The
+owner was asked to switch to MANUAL before approval can publish it; that change
+is pending. A compatible App Review candidate and public-release authority
+remain separate from this internal TestFlight request.
+
 ## Verification boundary
 
 This session has no connected authenticated Tres Fort client. The owner was

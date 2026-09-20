@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-09-18 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-09-19 · Theme: release
 
 ## Goal
 
@@ -10,9 +10,12 @@ candidate, compatible production backend, documented verification and owner
 exceptions, accurate privacy disclosures, listing and reviewer access. The owner
 requested expedited shipment on 2026-09-10. Complete the prepared App Store
 package and submission requirements while retaining the existing submission.
-The current Apple release setting is AFTER_APPROVAL, as read back on 2026-09-18
-Pacific, with build 40 IN_REVIEW. Resolve that automatic-publication setting with the owner before review
-finishes; it is not evidence of separate public-release authority. Preparation
+The current Apple release setting is AFTER_APPROVAL, as read back on 2026-09-19
+Pacific, with build 40 IN_REVIEW. Build 40 is now known to use retired workout
+routes/fields and is incompatible with the serving canonical Worker. Public
+release is blocked on a compatible candidate; the unchanged Apple setting can
+still publish automatically if review completes. Request an authorized change
+to MANUAL before that happens. Preparation
 and TestFlight availability do not mean public release.
 
 ## Phases
@@ -77,17 +80,19 @@ and TestFlight availability do not mean public release.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P4 | gated_by | external:app-store-owner-fields | Confirm account agreements and privacy publication before public release; Resolve automatic-publication authority or restore MANUAL under owner instruction, and confirm agreements/privacy before public release; review submission is already acknowledged. |
+| P4 | gated_by | external:app-store-owner-fields | Build 40 is incompatible with the serving canonical backend; request MANUAL to prevent automatic publication, then verify a compatible candidate and agreements/privacy before public release. |
 
 ## Next step
 
-**Now (@owner):** Resolve build 40's AFTER_APPROVAL setting before Apple finishes
-review. Choose an authorized change to MANUAL, or explicitly authorize automatic
-public release after addressing or specifically waiving the remaining readiness
-gates. The 2026-09-14 deployment request authorized the latest backend and
-TestFlight release; it did not establish that those App Store gates were closed.
-The agent has asked whether to switch build 40 to manual release. Do not infer
-approval from silence or change the Apple setting without the owner's decision.
+**Now (@owner):** Authorize changing build 40's AFTER_APPROVAL setting to MANUAL
+before Apple finishes review. The selected build is known to be incompatible
+with the current canonical backend: its default `.legacy` client writes to
+`/api/days` and sends `day_template_id`; the serving Worker rejects that route
+with 404 and those fields with 400. Do not publicly release this candidate.
+After preventing automatic publication, replace it with a verified compatible
+canonical build under separate App Review authority. The request to switch to
+MANUAL is pending; the Apple setting has not changed. TestFlight/backend
+approval does not authorize App Review changes or public release.
 
 **Internal beta follow-up (2026-09-18):** The owner approved workout-library
 P0.5(b), then a combined internal TestFlight build including P0.4(a), P0.5(a)
@@ -99,7 +104,15 @@ IN_BETA_TESTING and internal Testers assignment. The Worker is unchanged from
 build 42 and needed no deployment. This beta does not replace build 40 in App
 Review or authorize public release or metadata changes.
 
-**Current Apple readback (2026-09-18):** Version 1.0 now has build 40
+**Build 44 preparation and backend release (2026-09-19):** The owner requested
+TestFlight and separately approved migrations 0053/0054 and the matching
+canonical Worker. [The release receipt](release-44.md) records the applied
+migrations, verified production source at 100% traffic, and signed,
+Apple-validated 1.0 (44) package. Build 44 is not uploaded: authenticated live
+workout checks remain unperformed, and the requested specific deferral is
+pending. This does not change the App Review build or publication authority.
+
+**Current Apple readback (2026-09-19):** Version 1.0 now has build 40
 **IN_REVIEW** with **AFTER_APPROVAL**. Build 43 is the latest internal beta,
 VALID and available to Testers; external Alpha Testers do not have it. This run
 did not change the App Review build or release mode. The owner decision above
@@ -109,9 +122,13 @@ remains open.
 `9373d6f0acad9a9ef444e54fe9c9d8a8b7ad24c8`: reconcile privacy/account and group
 controls, public policy/support availability, listing and reviewer instructions,
 and the documented verification exceptions. Record evidence and identify any
-owner-only App Store fields before completing those phases. The pinned backend
-was released; production has since advanced to the source in the build 42
-receipt below. Authenticated session-swap and workout-name compatibility
+owner-only App Store fields before completing those phases. The App Review
+candidate remains pinned, but the serving backend is now canonical source
+`d801e9dbfdb402531ddae6266b9b16e3da46dece`, recorded in [release 44](release-44.md).
+The reviewed build-40 source defaults to the retired REST contract, so its
+workout mutations are known to be incompatible, not merely unverified. Keep
+public release blocked until a compatible candidate replaces it and required
+verification is satisfied. Authenticated session-swap and workout-name compatibility
 verification remains unperformed; public health and unauthenticated responses
 do not establish those behaviors. Build 40 was subsequently validated and uploaded
 with explicit owner approval. Do not mark the outstanding live checks passed or
@@ -122,7 +139,7 @@ submission for Apple review responses, carry out the owner's release-mode
 decision when supplied, and read the result back. Do not resubmit or change the
 selected build from a TestFlight upload.
 
-**Production baseline and preceding beta (2026-09-14 Pacific):** The owner
+**Historical production release and preceding beta (2026-09-14 Pacific):** The owner
 requested the latest version. [Build 42's release receipt](release-42.md) records
 source `5df9208fc01219f298866ee4528cda533b86d33d`, terminal-green checks,
 production at 100% traffic, public health/discovery and app-link verification,

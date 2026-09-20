@@ -34,6 +34,10 @@ Two model corrections that the workout library exposed:
       under separate authority. Verify current schema, pending migration
       requirements and canonical route behavior using the release runbook.
       No compatibility cycle or legacy-client support is required.
+      September 19: the owner approved production and TestFlight release.
+      Migrations 0053/0054 and the canonical Worker are live; the signed,
+      Apple-validated build 44 awaits authenticated checks or an explicit
+      verification exception before upload. See the [release receipt](../app-store-submission/release-44.md).
   - [x] **(c) Remove obsolete client and physical-schema compatibility**
     - Owner approved this repository slice on 2026-09-19: remove SQL probing,
       rewriting and schema-change retries, old REST routes, duplicate response
@@ -168,7 +172,7 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0(b) | gated_by | external:owner-workout-canonical-client-release | Canonical Worker and client release need separate authority and release verification. The owner removed the legacy-client compatibility-cycle requirement. |
+| P0(b) | gated_by | external:owner-workout-canonical-client-release | Release authority is granted and the canonical Worker is live; build 44 awaits authenticated verification or an explicit exception before upload. |
 | P1 | feeds | plan:workout-library#P2 | A freestyle session is the most common second session of a day; P2 should allocate a slot rather than fail on the primary. |
 
 ## Next step
@@ -176,8 +180,10 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 **Now (@agent):** Implement ordered sessions per date (P1), including session-scoped
 merge, recovery and outbox isolation, under the canonical client contract. P0(c)
 is implemented with 1,161 backend tests passing and 636 iOS unit tests passing
-(one existing skip). Production migration, Worker release and TestFlight
-distribution remain separate P0(b)/feature release gates.
+(one existing skip). The authorized production migrations and canonical Worker
+release are complete. P0(b) client distribution awaits authenticated live
+verification or the requested owner exception; build 44 is signed and
+Apple-validated but not uploaded.
 
 The owner's 2026-09-19 decision and explicit implementation approval supersede
 the earlier canonical-client minimum-build and observed-cycle dependency.
@@ -193,18 +199,20 @@ training records were modified. Do not repeat the upload or reinstate its waived
 canary gate. Later builds are recorded in the
 [App Store release record](../app-store-submission/plan.md#next-step).
 
-The rename-compatible adaptive Worker version
+Historically, the rename-compatible adaptive Worker version
 `722fbf91-4b13-48e2-b233-747b1d437ca6` was deployed from source
-`361cf2ba9d40ef6572de700b65cf649c665559ba`. Production has since advanced to
+`361cf2ba9d40ef6572de700b65cf649c665559ba`. The subsequent September 14 release used
 version `92adb0e0-28bd-4952-81ad-b09029f75ac9` per the
-[build 42 receipt](../app-store-submission/release-42.md); that source still
-carries the schema-adaptive layer and the legacy `/api/days` routes. Additive
-migrations 0046–0048 are applied,
-with no foreign-key violations; do not repeat 0045 or earlier rollout stages.
-See [the candidate release record](../app-store-submission/plan.md#next-step).
-Those recorded releases predate P0(c); they do not prove the canonical cleanup
-is serving or that a canonical-writing client has been distributed. Follow the
-current runbook for a separately authorized release; do not repeat A/B.
+[build 42 receipt](../app-store-submission/release-42.md); that historical source
+retained the adaptive layer and legacy routes. It is no longer serving.
+
+The September 19 [build 44 receipt](../app-store-submission/release-44.md) records
+the current canonical Worker `dcbcc2ba-09dd-4dfb-9d50-c860cc1553d3`, source
+`d801e9dbfdb402531ddae6266b9b16e3da46dece`, at 100% traffic. Migrations through
+0054 are applied, with no pending migrations or foreign-key violations. Do not
+repeat A/B or the completed metadata/freestyle migrations and Worker deployment.
+Canonical-client upload remains pending authenticated verification or the
+requested specific exception; the prepared build is not distribution evidence.
 
 Historical production release evidence (2026-09-09; later client exception above supersedes the pre-upload requirement):
 

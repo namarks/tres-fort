@@ -16,20 +16,20 @@ this implementation does not establish any of those release events.
    This adds default-empty tags, nullable archive timestamps and session-write
    triggers; it does not archive or retag existing workouts.
 3. Deploy the reviewed compatible Worker and verify its public health/release
-   identity. Verify authorized test-account reads through both REST vocabularies
+   identity. Verify authorized test-account reads through canonical REST
    and MCP, then a versioned tags/archive/restore round trip. Confirm that stale
    versions conflict, active workouts cannot archive, planned dates become rest,
    completed history retains its names and sets, and archived IDs cannot be
-   assigned through either REST vocabulary or MCP.
+   assigned through REST or MCP. The owner retired legacy clients and the old
+   REST vocabulary; do not require a removed alias as a release canary.
 4. Only after server verification, distribute the matching iOS build using the
    normal TestFlight release procedure. Check tag filters, archive cancellation,
    explicit restore, trip ordering and runner recovery on a physical device.
    App Review and public release remain separate gates.
 
-Older iOS clients continue receiving archived rows to render history. Their
-pickers may display them, but the Worker rejects attempts to assign them with
-the existing permanent not-found error. Outgoing iOS route aliases remain
-unchanged by this slice.
+Archived rows remain in the canonical plan tree to render completed history.
+The Worker rejects attempts to assign them with the permanent not-found error.
+The current iOS client uses canonical workout routes and fields.
 
 ## Recovery boundary
 

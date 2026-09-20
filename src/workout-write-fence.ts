@@ -1,4 +1,3 @@
-import { workoutDB } from './workoutSchema';
 /** Stable SQLite RAISE() reason emitted when a pre-fence writer reaches D1. */
 export const WORKOUT_WRITE_FENCE_ACTIVE = 'workout_write_fence_active';
 export const WORKOUT_WRITE_FENCE_NOT_ACTIVE = 'workout_write_fence_not_active';
@@ -25,7 +24,7 @@ export function isWorkoutWriteFenceError(error: unknown): boolean {
 export async function isWorkoutWriteFenceEnabled(
   db: D1Database,
 ): Promise<boolean> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare('SELECT enabled FROM workout_write_fence WHERE id = 1')
     .first<{ enabled: number }>();
   return row?.enabled === 1;
@@ -46,10 +45,10 @@ export async function runWorkoutWriteBatch<T = Record<string, unknown>>(
 ): Promise<D1Result<T>[]> {
   if (statements.length === 0) return [];
 
-  const results = await workoutDB(db).batch<T>([
-    workoutDB(db).prepare('INSERT INTO workout_write_permit (id) VALUES (1)'),
+  const results = await db.batch<T>([
+    db.prepare('INSERT INTO workout_write_permit (id) VALUES (1)'),
     ...statements,
-    workoutDB(db).prepare('DELETE FROM workout_write_permit WHERE id = 1'),
+    db.prepare('DELETE FROM workout_write_permit WHERE id = 1'),
   ]);
 
   return results.slice(1, -1);

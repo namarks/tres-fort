@@ -64,12 +64,12 @@ it.each([
   expect((await env.DB.prepare("SELECT id FROM audit_log WHERE tool='add_workout'").all()).results).toHaveLength(0);
 });
 
-it('lets one concurrent selection win and keeps legacy empty creation compatible', async () => {
+it('lets one concurrent selection win and supports empty canonical workout creation', async () => {
   const { plan, create } = await setup();
   const replies = await Promise.all([create({ exercise_ids: ['ex_bench'] }), create({ exercise_ids: ['ex_back_squat'] })]);
   expect(replies.map(r => r.status).sort()).toEqual([201, 409]);
   const workouts = await env.DB.prepare('SELECT id FROM workouts WHERE plan_id=?').bind(plan.id).all<{id:string}>();
   expect(workouts.results).toHaveLength(1);
   expect((await env.DB.prepare('SELECT id FROM template_exercises WHERE workout_id=?').bind(workouts.results[0]!.id).all()).results).toHaveLength(1);
-  expect((await create({ name: 'Legacy workout', expected_version: plan.version + 1 }, 'days')).status).toBe(201);
+  expect((await create({ name: 'Empty workout', expected_version: plan.version + 1 })).status).toBe(201);
 });

@@ -271,16 +271,16 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `POST /api/calendar/{date}/move` | Move one projected or unstarted workout to an empty date. The request pins the workout, active plan/version, both observed attempts and a caller UUID. Source rest, destination assignment and audit receipt commit atomically. Both attempts advance; an identical retry returns its original acknowledgement. A concurrent change to either date or the weekly schedule rejects the whole move. |
 | `PUT /api/calendar/{date}` | Assign one concrete date to a day (`workout_id`) or rest (`null`) without changing the recurring schedule or plan version. `expected_attempt=0` represents no observed assignment; the first assignment and every changed choice advance the session attempt, while an identical retry is idempotent. Started/completed sessions cannot be reassigned, and iOS also fences the mutation against a locally running workout before its first set creates the server session or a hard travel blackout. |
 
-Canonical routes use `/api/workouts`; `/api/days` remains an alias for one
-TestFlight compatibility cycle. Plan responses carry `workouts` plus deprecated
-`days`; workout references carry `workout_id` plus `day_template_id`. Requests
-accept either and reject conflicting dual fields. MCP registers `add_workout`,
-`update_workout` and `delete_workout`, retaining `add_day` and `update_day` during
-the cycle. Export schema v2 preserves `training.day_templates` alongside
-`training.workouts`. Snapshot schema v2 uses `workouts`; immutable v1 documents
-remain readable/restorable without rewriting history. The first iOS build reads
-both vocabularies and sends the old one. See the [server-first rollout](plans/workouts-and-multi-session/rollout.md)
-for the physical-schema transition and the later outgoing-client switch.
+Routes use `/api/workouts`; plan collections and references use `workouts` and
+`workout_id`. Retired `/api/days` routes and `add_day` / `update_day` MCP names
+are removed. Retired request fields fail before mutation. MCP registers
+`add_workout`, `update_workout` and `delete_workout`. Export schema v3 has only
+`training.workouts`; it still includes immutable historical snapshots and audit
+arguments verbatim. Snapshot schema v2 uses `workouts`; v1 documents remain
+readable/restorable without rewriting history. iOS writes and new caches use
+canonical names; old persisted snapshots and outbox intents remain readable.
+The Worker requires migration 0045, with no runtime SQL adaptation. See the
+[release boundary](plans/workouts-and-multi-session/rollout.md).
 
 In-app manual authoring uses the same `plans` / `workouts` /
 `template_exercises` tree and `plans.meta.schedule` that MCP uses. The Workouts
@@ -381,8 +381,7 @@ A saved substitution can resume even before the first set is logged.
 
 Release requires separate authority: apply migration 0050, deploy the reviewed
 Worker, verify its session-swap route and only then distribute the iOS build.
-Retain the existing workout rename compatibility gates. No production or app
-release is implied by repository delivery.
+No production or app release is implied by repository delivery.
 
 ## 5. MCP server — the product
 

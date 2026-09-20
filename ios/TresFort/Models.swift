@@ -829,9 +829,8 @@ struct StateResponse: Codable {
     }
 }
 
-// Workout vocabulary changes the domain, while decoding retains the released
-// wire/cache shapes. Encode the existing cache shape for this compatibility
-// cycle so a downgrade does not strand a persisted plan or session.
+// New snapshots use workout names. Read old persisted snapshots without
+// discarding their plan, session identity or attempt tokens.
 extension PlanTree {
     private enum CodingKeys: String, CodingKey { case id, name, version, workouts, days, meta }
 
@@ -856,7 +855,7 @@ extension PlanTree {
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
         try c.encode(version, forKey: .version)
-        try c.encode(workouts, forKey: .days)
+        try c.encode(workouts, forKey: .workouts)
         try c.encodeIfPresent(meta, forKey: .meta)
     }
 }
@@ -902,7 +901,7 @@ extension SessionRow {
         try c.encode(id, forKey: .id)
         try c.encode(date, forKey: .date)
         try c.encode(status, forKey: .status)
-        try c.encodeIfPresent(workout_id, forKey: .day_template_id)
+        try c.encodeIfPresent(workout_id, forKey: .workout_id)
         try c.encodeIfPresent(summary, forKey: .summary)
         try c.encodeIfPresent(started_at, forKey: .started_at)
         try c.encodeIfPresent(completed_at, forKey: .completed_at)

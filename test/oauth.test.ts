@@ -246,7 +246,7 @@ describe('oauth full PKCE flow', () => {
     });
     expect(mcp.status).toBe(200);
     const tools = (await mcp.json<any>()).result.tools as Array<{ name: string }>;
-    expect(tools).toHaveLength(44);
+    expect(tools).toHaveLength(42);
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
       'get_plan_history', 'compare_plan_versions', 'restore_plan', 'discard_workout', 'group_exercises', 'ungroup_exercises',
     ]));

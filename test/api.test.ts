@@ -103,7 +103,7 @@ describe('plan tree + versioned sync', () => {
 
     // add a day -> version bumps -> a stale client sees the tree again
     const day = await (
-      await SELF.fetch(`${BASE}/api/days`, {
+      await SELF.fetch(`${BASE}/api/workouts`, {
         method: 'POST',
         headers: H,
         body: JSON.stringify({ name: 'Upper A', day_label: 'A', order_index: 0 }),
@@ -117,7 +117,7 @@ describe('plan tree + versioned sync', () => {
     expect(state.plan_version).toBeGreaterThan(1);
 
     // add an exercise by natural name -> resolver maps "bench" -> Bench Press
-    const teRes = await SELF.fetch(`${BASE}/api/days/${day.id}/exercises`, {
+    const teRes = await SELF.fetch(`${BASE}/api/workouts/${day.id}/exercises`, {
       method: 'POST',
       headers: H,
       body: JSON.stringify({
@@ -140,7 +140,7 @@ describe('plan tree + versioned sync', () => {
     expect(tree.workouts[0]?.exercises ?? []).toHaveLength(1);
 
     // unknown exercise -> 400
-    const bad = await SELF.fetch(`${BASE}/api/days/${day.id}/exercises`, {
+    const bad = await SELF.fetch(`${BASE}/api/workouts/${day.id}/exercises`, {
       method: 'POST',
       headers: H,
       body: JSON.stringify({ exercise: 'zercher hack thruster', target_sets: 3, target_reps: 5 }),
@@ -159,7 +159,7 @@ describe('sessions, idempotent set logging, history, volume', () => {
       body: JSON.stringify({ name: 'Stale Day Contract' }),
     });
     const day = await (
-      await SELF.fetch(`${BASE}/api/days`, {
+      await SELF.fetch(`${BASE}/api/workouts`, {
         method: 'POST',
         headers: H,
         body: JSON.stringify({ name: 'Removed Day', order_index: 0 }),
@@ -803,7 +803,7 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
     const H = auth(await devJwt());
     const id = await freshSession(H, '2026-07-11');
     const overrideDay = await (
-      await SELF.fetch(`${BASE}/api/days`, {
+      await SELF.fetch(`${BASE}/api/workouts`, {
         method: 'POST',
         headers: H,
         body: JSON.stringify({ name: 'Override Day', day_label: 'B', order_index: 0 }),
@@ -1048,7 +1048,7 @@ describe('/api/state carries the weekly schedule, gated on version', () => {
       body: JSON.stringify({ name: 'Sched Sync' }),
     });
     const day = await (
-      await SELF.fetch(`${BASE}/api/days`, {
+      await SELF.fetch(`${BASE}/api/workouts`, {
         method: 'POST',
         headers: H,
         body: JSON.stringify({ name: 'Push Day', day_label: 'A', order_index: 0 }),

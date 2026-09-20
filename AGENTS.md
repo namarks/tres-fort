@@ -34,10 +34,10 @@ npx vitest run -t "logs a set"             # single test by name
 npm run typecheck              # tsc --noEmit
 npm run dev                    # wrangler dev (local Worker + local D1)
 npm run db:migrate:local       # apply migrations/ to local D1
-npm run db:migrate:remote      # guarded during workout rename; see rollout.md
+npm run db:migrate:remote      # guarded; use the authorized migration runbook
 npm run deploy                 # deploy only, separate production authority required
-npm run release                # guarded: use the staged workout rollout below
-npm run test:workout-rollout    # local same-Worker rename and rollback rehearsal
+npm run release                # guarded; deployment needs separate authority
+npm run test:workout-rollout    # migration integrity and canonical contract tests
 npm run ios:testflight         # build, archive, export, upload to TestFlight
 npm run beta:feedback          # mirror TestFlight beta feedback into GitHub issues
 ```
@@ -52,16 +52,16 @@ open ios/TresFort.xcodeproj
 Build/run with the **TresFort** scheme, never the widget-extension scheme.
 The `.xcodeproj` is generated; treat `project.yml` as the source of truth.
 
-## Workout rename compatibility
+## Workout contract
 
-The logical model uses `workouts` / `workout_id`. During P0's compatibility
-window, `workoutSchema.ts` adapts service SQL to either physical schema and
-`workoutWire.ts` emits both new and deprecated fields. Old `/api/days` routes
-and `add_day` / `update_day` MCP names remain aliases. New tools are
-`add_workout`, `update_workout`, and `delete_workout`. The first compatible app
-reads both formats and sends the old one. Use the [staged rollout](docs/plans/workouts-and-multi-session/rollout.md)
-for production; never apply migration 0045 before the adaptive Worker is live.
-Repository delivery does not prove production migration or client rollout.
+Storage, REST, MCP and iOS writes use `workouts` / `workout_id` exclusively.
+Old `/api/days` routes and `add_day` / `update_day` MCP names are removed;
+retired request fields are rejected before mutation. Migration 0045 must already
+be applied before this Worker serves traffic. Keep historical audit names,
+immutable v1 snapshot restore, and old persisted cache/outbox readers intact.
+See the [release boundary](docs/plans/workouts-and-multi-session/rollout.md).
+Repository delivery does not authorize production migration, deployment or
+client distribution. No released-client compatibility cycle is required.
 
 ## Architecture
 
@@ -225,8 +225,8 @@ resolver (`resolveExercise`) before hitting the catalog. Current tools:
 `get_upcoming_rides`, `get_recent_activities`, `get_group_feed`, `log_set`,
 `correct_set`, `delete_set`, `log_activity`, `log_workout_complete`,
 `discard_workout`, `add_note`,
-`update_plan`, `update_exercise`, `swap_exercise`, `add_exercise`, `add_day`,
-`update_day`, `delete_exercise`, `adjust_today`, `set_schedule`,
+`update_plan`, `update_exercise`, `swap_exercise`, `add_exercise`, `add_workout`,
+`update_workout`, `delete_workout`, `delete_exercise`, `adjust_today`, `set_schedule`,
 `set_planned_session`, `skip_planned_session`, `set_race`,
 `set_periodization`, `add_trip`, `update_trip`, `remove_trip`,
 `set_stress_model`, `refresh_rides`. Also exposes a

@@ -3,7 +3,6 @@ import { validWorkoutTags, validArchivedAt } from '../workoutMetadata';
 import { ATTRIBUTION_INSTRUCTIONS } from '../dataAttribution';
 import { coachingSession, coachingPlanMeta } from '../coachingContext';
 import { TRAINING_PROFILE_COACH_GUIDANCE } from '../trainingProfile';
-import { workoutInput, workoutWire } from '../workoutWire';
 // Minimal, spec-correct MCP server over Streamable HTTP (JSON-RPC 2.0,
 // single application/json responses — no server-initiated streams needed
 // for read tools). Stateless: no Mcp-Session-Id required. All data access
@@ -14,6 +13,7 @@ import { resolvedScheduleNames } from '../planViews';
 import { positiveSetTonnage } from '../metrics';
 import type { MetricExercise } from '../metrics';
 import {
+  hasRetiredWorkoutFields,
   hasField,
   invalidFields,
   isNonEmptyString,
@@ -206,7 +206,7 @@ const obj = (props: Json, required: string[] = []): Json => ({
   additionalProperties: false,
 });
 
-function addWorkoutTool(operation: 'add_day' | 'add_workout'): Tool {
+function addWorkoutTool(): Tool {
   const tool: Tool = {
     description: 'Create a reusable workout in the active plan. Scheduling is optional; the workout can stay on demand. Creates a plan if none exists.',
     inputSchema: obj(
@@ -246,23 +246,21 @@ function addWorkoutTool(operation: 'add_day' | 'add_workout'): Tool {
         String(a.name),
         typeof a.day_label === 'string' ? a.day_label : null,
         orderIndex,
-        { actor: 'mcp', operation, args: a, note: `Added workout "${a.name}".` },
+        { actor: 'mcp', operation: 'add_workout', args: a, note: `Added workout "${a.name}".` },
         [], { tags: a.tags as string[] | undefined, archived_at: a.archived_at as number | null | undefined },
       );
     },
   };
-  if (operation === 'add_day') tool.description += ' Deprecated name: use add_workout. Supported for one TestFlight compatibility cycle.';
   return tool;
 }
 
-function updateWorkoutTool(operation: 'update_day' | 'update_workout'): Tool {
+function updateWorkoutTool(): Tool {
   const tool: Tool = {
     description:
       "Patch a reusable workout's metadata in the active plan: `name`, `day_label`, `order_index`, `notes`, `tags` (up to 12 short labels), `archived_at` (epoch-ms to archive, null to restore). Archiving clears scheduling and keeps history; active workouts cannot be archived. Identify the workout by `workout_id` OR by `day` (label/name). Bumps the plan version. Unknown patch keys → `{error:'unknown_fields', fields}`. To change exercises within a workout, use add_exercise / update_exercise / delete_exercise / swap_exercise.",
     inputSchema: obj(
       {
         workout_id: { type: 'string' },
-        day_template_id: { type: 'string', description: 'Deprecated alias for workout_id.' },
         day: { type: 'string', description: 'day label or name (used when workout_id is omitted)' },
         patch: { type: 'object' },
       },
@@ -286,12 +284,11 @@ function updateWorkoutTool(operation: 'update_day' | 'update_workout'): Tool {
         plan,
         dayId,
         (a.patch as Json) ?? {},
-        { actor: 'mcp', operation, args: a, note: 'Updated workout.' },
+        { actor: 'mcp', operation: 'update_workout', args: a, note: 'Updated workout.' },
       );
       return r ?? { error: 'day_not_found' };
     },
   };
-  if (operation === 'update_day') tool.description += ' Deprecated name: use update_workout. Supported for one TestFlight compatibility cycle.';
   return tool;
 }
 
@@ -1003,13 +1000,12 @@ const TOOLS: Record<string, Tool> = {
   },
   update_plan: {
     description:
-      'Replace the plan tree (reusable workouts + exercises) transactionally. Exercise names must match the closed catalog — call list_exercises first to discover valid names (a single unknown name surfaces ALL unknowns at once in `queries: string[]`, not just the first). Pass expected_version for optimistic concurrency; it is required whenever the existing or supplied tree has group fields. A mismatch returns a conflict — refetch get_current_plan and reapply. Workouts are matched by day_label/name across the rebuild, so the weekly schedule follows surviving workouts; schedule entries for removed workouts are cleared. Workouts need not be scheduled. The legacy days input is accepted for one compatibility cycle.',
+      'Replace the plan tree (reusable workouts + exercises) transactionally. Exercise names must match the closed catalog — call list_exercises first to discover valid names (a single unknown name surfaces ALL unknowns at once in `queries: string[]`, not just the first). Pass expected_version for optimistic concurrency; it is required whenever the existing or supplied tree has group fields. A mismatch returns a conflict — refetch get_current_plan and reapply. Workouts are matched by day_label/name across the rebuild, so the weekly schedule follows surviving workouts; schedule entries for removed workouts are cleared. Workouts need not be scheduled.',
     inputSchema: obj(
       {
         name: { type: 'string' },
         meta: { type: 'object' },
         expected_version: { type: 'integer' },
-        days: { type: 'array', description: 'Deprecated alias for workouts.', items: { type: 'object' } },
         workouts: {
           type: 'array',
           items: {
@@ -1234,10 +1230,8 @@ const TOOLS: Record<string, Tool> = {
       });
     },
   },
-  add_workout: addWorkoutTool('add_workout'),
-  add_day: addWorkoutTool('add_day'),
-  update_workout: updateWorkoutTool('update_workout'),
-  update_day: updateWorkoutTool('update_day'),
+  add_workout: addWorkoutTool(),
+  update_workout: updateWorkoutTool(),
   delete_workout: {
     description: 'Delete a reusable workout from the active plan, clearing its recurring schedule entries and preserving completed workout history. Requires the workout ID and current plan version. Rejected while the workout is in progress. To keep the workout but remove its weekdays, use set_schedule instead.',
     inputSchema: obj({ workout_id: { type: 'string' }, expected_version: { type: 'integer', minimum: 1 } }, ['workout_id', 'expected_version']),
@@ -1803,7 +1797,7 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
     '# tres-fort — current state',
     'Current training context. Use the tools for anything deeper.',
     '```json',
-    JSON.stringify(workoutWire(brief), null, 2),
+    JSON.stringify(brief, null, 2),
     '```',
   ].join('\n');
 }
@@ -1850,7 +1844,10 @@ async function dispatch(
       const tool = TOOLS[name];
       if (!tool) return err(req.id, -32602, `unknown tool: ${name}`);
       try {
-        const args = workoutInput((req.params?.arguments as Json) ?? {}) as Json;
+        const args = (req.params?.arguments as Json) ?? {};
+        if (typeof args !== 'object' || Array.isArray(args) || hasRetiredWorkoutFields(args)) {
+          return err(req.id, -32602, 'Invalid arguments. Use workouts and workout_id for workout fields.');
+        }
         const result = await tool.handler(args, env, userId, bg);
         if (tool.write && !tool.atomicWrite && !tool.handlerAudited) {
           await writeAudit(env.DB, userId, name, args, JSON.stringify(result));
@@ -1858,11 +1855,11 @@ async function dispatch(
           if (noteBody) await writeNote(env.DB, userId, 'plan', null, 'coach', noteBody);
         }
         // Compact JSON reduces formatting overhead while preserving parsed
-        // values and deprecated keys. Raw text changes; token savings depend
+        // values. Raw text changes; token savings depend
         // on the payload and client. Strings (including the Markdown brief)
         // retain their own whitespace.
         return ok(req.id, {
-          content: [{ type: 'text', text: JSON.stringify(workoutWire(result)) }],
+          content: [{ type: 'text', text: JSON.stringify(result) }],
         });
       } catch (e) {
         const code = publicToolErrorCode(e);

@@ -1,179 +1,99 @@
-# Workout rename rollout
+# Canonical workout contract release
 
-This runbook describes P0's three-stage procedure; it is not the current
-execution frontier. **The 2026-09-09 release has already deployed A and applied
-B. Do not repeat either stage.** Read the [canonical release record and next
-step](plan.md#next-step) before running any command below; it holds the exact
-source, deployment/version IDs, migration result and approved verification
-exception. The A/B commands are retained for historical reproducibility and
-must not be treated as pending work.
+Read [the canonical plan](plan.md) for status and authorization. The owner
+retired legacy-client support on 2026-09-19. No observed compatibility cycle,
+minimum legacy build or old-route canary is a prerequisite for repository cleanup.
+Production deployment, migration and TestFlight distribution still require
+separate authority. Repository merge is not release evidence.
 
-Repository approval authorizes code, local verification, review and merge.
-It does **not** itself authorize further production changes, rollback, or
-TestFlight distribution. Record separately authorized release evidence and
-the supported-client compatibility cycle in `plan.md`.
+## Runtime requirement
 
-## Local rehearsal
+The current Worker issues SQL against `workouts` and `workout_id` directly.
+Migration 0045 must already be applied; it cannot run against the old physical
+schema. REST uses `/api/workouts`, responses use `workouts` / `workout_id`, and
+MCP uses `add_workout`, `update_workout` and `delete_workout`. Retired routes and
+tool names are absent; retired request fields fail before mutation. iOS sends
+only canonical paths and fields.
+
+A/B (adaptive Worker then migration 0045) completed on 2026-09-09. Their exact
+historical evidence and verification exceptions are retained in `plan.md`.
+Do not repeat those stages. The old same-Worker rename/rollback harness depended
+on the removed SQL adapter. `npm run test:workout-rollout` now exercises the
+actual migration with existing history and the canonical REST/MCP contract.
+The prior harness remains reproducible from its reviewed historical source.
+
+## Local verification
 
 ```sh
 npm ci
 npm run typecheck
+npm run plans:check
 npm test
 npm run test:workout-rollout
 npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPhone-17
 ```
 
-`test:workout-rollout` creates a temporary config/database with synthetic local
-credentials, applies migrations through 0044, starts a local Worker, creates a
-workout through the released route, applies 0045 with that Worker still running,
-edits through the new route, runs the down-migration, and edits through the old
-route. The identity survives and each successful edit advances the plan version
-once. It shuts down its Worker and removes its temporary database on exit.
-`test/workout_schema.test.ts` additionally covers foreign keys, retained set and
-session-alias references, the attempt trigger, atomic-batch rollback, cache
-expiry, and non-retryable failures. `test/workout_wire.test.ts` exercises both
-client vocabularies against both schemas; snapshot tests restore immutable v1
-history without rewriting its bytes.
+Migration tests retain workout/slot/session/set identities and values, session
+aliases, historical audit arguments, foreign-key integrity, version counts,
+attempt triggers and D1 batch rollback. Contract tests cover canonical authoring,
+date assignment/move, export, and rejection of retired inputs without mutation.
+Snapshot tests restore immutable v1 documents without rewriting their bytes.
+iOS tests cover canonical requests plus reading old caches and queued intents.
 
-## A — deploy the adaptive Worker before renaming storage
+## Authorized release
 
-Executed for the 2026-09-09 release; see the canonical record above. Its live
-REST authoring checks were deferred under the owner's explicit exception.
-The following is the historical deployment procedure, not an instruction to
-redeploy the already serving Worker.
-
-After release authorization, work from the exact reviewed and verified source.
-Inspect current deployment and pending migrations first:
+Work from the exact reviewed and verified source. Inspect the current deployment,
+pending migrations and physical schema under the release's authority:
 
 ```sh
 npx wrangler deployments list
 npx wrangler d1 migrations list tres-fort-db --remote
-npx wrangler d1 execute tres-fort-db --remote --command 'PRAGMA table_info(sessions)'
+npx wrangler d1 execute tres-fort-db --remote --command 'PRAGMA table_info(sessions); PRAGMA table_info(template_exercises); PRAGMA foreign_key_check; SELECT name FROM sqlite_master WHERE name IN ("workouts","day_templates","ix_te_workout","ix_te_day")'
 ```
 
-The existing database must already contain migrations through 0044. If earlier
-migrations are pending, stop and resolve their separate release requirements;
-this runbook is not permission to apply them. Save the current deployment ID.
-Run the preflight and then deploy **without applying 0045**:
+Require both `workout_id` columns, `workouts`, `ix_te_workout`, no old table/index
+and no foreign-key violations. A ledger entry alone does not prove the physical
+schema: the historical down-migration did not edit `d1_migrations`. If the old
+schema is present, stop; recovery needs a separately reviewed migration plan.
 
-```sh
-npm run release:preflight
-npm run deploy
-npx wrangler deployments list
-```
+Account for every pending migration and release gate at the chosen source,
+including [workout metadata](../workout-library/metadata-release.md) and
+[freestyle sessions](../workout-library/freestyle-release.md). This rename cleanup
+adds no migration and does not authorize those feature releases. The generic
+`npm run release` and `npm run db:migrate:remote` remain fail-closed and point to
+these procedures. Use each approved feature runbook's ordered steps; do not
+infer permission to apply the entire pending migration set.
 
-Prove the approved source is serving all traffic; no older non-adaptive version
-may retain a traffic allocation. Using the owner's existing authenticated
-clients, confirm active-plan/state reads, legacy `/api/days` authoring and new
-`/api/workouts` authoring on an owner-approved disposable workout, plus both MCP
-names. Do not print bearer tokens, copy credentials or use real history as test
-data. Save value-free results. A deployment acknowledgement alone is insufficient
-proof of the serving version or client behavior.
+After the reviewed source's migration requirements are satisfied, run its
+release preflight and separately authorized Worker deployment. Record serving
+version/source and traffic allocation. Verify canonical plan/state reads,
+workout create/edit/delete, date assignment and set/finish/discard behavior on
+owner-approved disposable data using existing authenticated clients. Do not
+print bearer tokens or copy secrets. During the canary and for five minutes
+afterward, record value-free request success/failure. A reproducible write error,
+missing-table/column error or foreign-key violation stops distribution.
 
-The first iOS build in this branch reads either vocabulary but deliberately
-sends `/api/days` and `day_template_id`. Its Workouts UI can be distributed after
-separate TestFlight authorization while the legacy wire contract remains live.
+Distribute the canonical-writing iOS build only after the serving backend
+supports its full feature contract. Record its exact source, build, Apple
+processing status and intended tester assignment separately. Older clients are
+unsupported; no legacy-client observation period is required. The prior build35
+canary waiver remains historical and does not claim these new checks passed.
 
-## B — rename the database under the adaptive Worker
+## Data and rollback boundaries
 
-Applied for the 2026-09-09 release; see the canonical record above. Live REST
-authoring, date assignment and set/finish/discard checks were deferred to the
-client rollout under the owner's explicit exception. Do not reapply 0045.
+Historical `audit_log.tool` values, serialized audit arguments and immutable v1
+plan snapshots are retained. New exports use schema v3 with one
+`training.workouts` collection. New plan/session caches encode canonical names;
+old caches remain readable. Durable set/terminal intent keys and attempt tokens
+keep their persisted contract so queued history is not discarded.
 
-Only after A is verified, the production migration is separately authorized,
-and the pending migration list contains **only 0045**, record a D1 Time Travel
-bookmark using `npx wrangler d1 time-travel info tres-fort-db --json` in a private
-release receipt. Then apply the rename directly:
+Keep migration 0045 applied when rolling back application behavior. Select a
+reviewed Worker compatible with every currently applied migration, snapshot
+schema and session kind. Do not select an arbitrary old adaptive build merely
+because it supports the rename. Production rollback itself requires authority.
 
-```sh
-npx wrangler d1 migrations apply tres-fort-db --remote
-npx wrangler d1 execute tres-fort-db --remote --command 'PRAGMA table_info(sessions); PRAGMA foreign_key_check; SELECT name FROM sqlite_master WHERE name IN ("workouts","day_templates","ix_te_workout","ix_te_day")'
-```
-
-Expect `workout_id`, the `workouts` table and `ix_te_workout`, no old table/index,
-and no foreign-key violations. Verify reads, new/legacy authoring, schedule
-membership, a one-date assignment, and set/finish/discard attempt behavior through
-approved client checks. Existing workout/slot/session IDs and all logged values
-must remain intact. No schedule or plan version changes come from the migration.
-The same adaptive Worker remains the supported rollback target.
-
-After the dual-key Worker is proven live, prepare a **later** app build changing
-`APIClient.workoutWireFormat`'s default from `.legacy` to `.canonical`, with the
-request and UI suites rerun. That reviewed change and its TestFlight distribution
-need their own recorded evidence. Never switch an app's outgoing shape merely
-because its decoder accepts new fields.
-
-For the deferred client-rollout verification, complete legacy-route checks on
-an owner-approved disposable workout before distributing the first compatible
-TestFlight build. Complete canonical-route checks before distributing the later
-canonical-writing build. During each canary and for five minutes afterward,
-observe request success/failure using value-free results; record the window and
-findings in `plan.md`. A reproducible write failure, unhandled missing-table or
-missing-column error, or foreign-key violation stops client distribution.
-Keep the adaptive Worker serving while diagnosing; any production rollback
-still requires the authority and procedure below. Do not infer a continuously
-observed production cutover from local test coverage or point-in-time reads.
-
-## C — remove compatibility only after the observed client cycle
-
-Keep old routes, request/response keys and `add_day`/`update_day` for at least one
-TestFlight compatibility cycle after the canonical-writing build becomes the
-minimum supported build. Record that build, minimum-client decision, cycle
-start/end and evidence of supported-client use in `plan.md`. Elapsed time alone
-is not proof that clients have upgraded.
-
-Then prepare a reviewed cleanup change removing `workoutSchema.ts`, the temporary
-release guard, deprecated wire aliases and old MCP registrations. Restore the
-normal release commands only once the migrated schema and supported clients are
-proven. Keep immutable v1 snapshot readers and old cache/outbox decoders as long
-as their persisted data can be encountered. Never rewrite historical audit tool
-names. This repository delivery leaves P0(b) and P0(c) open.
-
-## Rollback
-
-Before B, retain the adaptive Worker when rolling back application behavior:
-it writes snapshot schema v2, which a pre-A Worker cannot restore. After B,
-rolling back to a pre-A Worker also breaks all old physical SQL references.
-Choose an approved adaptive source; do not select an arbitrary previous version.
-
-If the schema rename itself must be reverted, obtain explicit production rollback
-authority and keep the adaptive Worker serving while running:
-
-```sh
-npx wrangler d1 execute tres-fort-db --remote --file docs/plans/workouts-and-multi-session/rollback/0045_workouts.sql
-npx wrangler d1 execute tres-fort-db --remote --command 'PRAGMA table_info(sessions); PRAGMA foreign_key_check'
-```
-
-The down-migration restores identifiers and the index, leaving identities,
-versions, snapshots and history unchanged. Verify both client vocabularies again.
-It deliberately does not edit `d1_migrations`; 0045 remains recorded as applied.
-For a later reattempt, verify the legacy physical schema and apply the reviewed
-forward SQL explicitly with `wrangler d1 execute ... --file
-migrations/0045_workouts.sql` under separate authority, or add a reviewed recovery
-migration. Do not blindly delete the migration ledger row or rerun the entire
-migration history. A Time Travel restore can discard intervening writes and is
-an independent destructive decision, not the routine rename rollback.
-
-## Compatibility boundaries
-
-- Service types, SQL and new snapshots use `workouts` / `workout_id`.
-- The SQL adapter rewrites identifiers only, caches schema metadata for 60 seconds,
-  and retries only a failed statement or failed atomic batch once after a proven
-  schema change. It never retries network uncertainty or a whole service write.
-- REST/MCP add deprecated aliases at the serialization boundary. Export schema v2
-  also retains its historical `training.day_templates` collection. Opaque user
-  text, metadata, audit arguments and snapshot documents are unchanged.
-- Plan and session caches continue encoding the old vocabulary; durable set and
-  terminal intents retain their original `dayTemplateID` key and attempt tokens.
-- `template_exercises`, `template_exercise_id`, legacy error codes, `day_label`,
-  and historical comparison kind/summary fields remain compatible. A civil
-  calendar day and a reusable workout remain separate concepts.
-- The schedule is still a weekday-to-workout-ID map. Unschedule clears only that
-  workout's recurring entries; dated sessions and the workout remain. Delete
-  uses the existing atomic deletion/history rules. Date assignment uses the
-  existing attempt-CAS path and rejects past, active/completed and hard-blackout
-  dates in the app. There is still one strength session per civil date.
-
-The ordinary `npm run release` and `npm run db:migrate:remote` fail locally during
-this window and point here. Their replacement is this explicit, authorized
-sequence; neither command performs a remote operation while guarded.
+`rollback/0045_workouts.sql` is retained as historical recovery material, **not
+a supported rollback with the current Worker**. Never run it while this Worker
+serves traffic. Reverting the physical schema would require a separately reviewed
+recovery plan and a compatible adaptive Worker first. A D1 Time Travel restore
+can discard intervening writes and is an independent destructive decision.

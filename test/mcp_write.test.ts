@@ -131,7 +131,7 @@ describe('mcp write tools', () => {
       expect(notes!.c).toBe(2); // seed build + fresh
     });
 
-    it('swap_exercise / add_day / add_exercise / update_exercise edit the tree in place, each audited + noted', async () => {
+    it('swap_exercise / add_workout / add_exercise / update_exercise edit the tree in place, each audited + noted', async () => {
       // swap RDL -> front squat on day B
       const swap = await call('swap_exercise', {
         day: 'B',
@@ -141,7 +141,7 @@ describe('mcp write tools', () => {
       expect(swap.exercise_id).toBe('ex_front_squat');
 
       // add a deadlift day, then an exercise to it
-      const day = await call('add_day', { name: 'Deadlift Day', day_label: 'D' });
+      const day = await call('add_workout', { name: 'Deadlift Day', day_label: 'D' });
       expect(day.day_label).toBe('D');
       const added = await call('add_exercise', {
         day: 'D',
@@ -162,7 +162,7 @@ describe('mcp write tools', () => {
 
       // audit trail + coach notes were written, one of each per mutation
       const audits = await env.DB.prepare(
-        "SELECT COUNT(*) AS c FROM audit_log WHERE actor='mcp' AND tool IN ('swap_exercise','add_day','add_exercise','update_exercise')",
+        "SELECT COUNT(*) AS c FROM audit_log WHERE actor='mcp' AND tool IN ('swap_exercise','add_workout','add_exercise','update_exercise')",
       ).first<{ c: number }>();
       expect(audits!.c).toBe(4);
       const notes = await env.DB.prepare(
@@ -990,7 +990,7 @@ describe('mcp order_index — settable on add and update; rejects unknown patch 
     expect(r.order_index).toBe(7);
   });
 
-  it('add_day appends densely (max+1), not the old 99 sentinel', async () => {
+  it('add_workout appends densely (max+1), not the old 99 sentinel', async () => {
     await call('update_plan', {
       name: 'Day order',
       workouts: [
@@ -999,7 +999,7 @@ describe('mcp order_index — settable on add and update; rejects unknown patch 
         ] },
       ],
     });
-    const r = await call('add_day', { name: 'Day 2', day_label: 'B' });
+    const r = await call('add_workout', { name: 'Day 2', day_label: 'B' });
     expect(r.order_index).toBe(1);
   });
 
@@ -1019,7 +1019,7 @@ describe('mcp order_index — settable on add and update; rejects unknown patch 
   });
 });
 
-describe('mcp update_day — patch a day in place (no full plan rebuild)', () => {
+describe('mcp update_workout — patch a day in place (no full plan rebuild)', () => {
   it('updates notes/name/day_label/order_index via day label; densifies and bumps version', async () => {
     const built = await call('update_plan', {
       name: 'Day patch',
@@ -1029,7 +1029,7 @@ describe('mcp update_day — patch a day in place (no full plan rebuild)', () =>
     });
     const v0 = built.plan.version;
 
-    const r = await call('update_day', {
+    const r = await call('update_workout', {
       day: 'A',
       patch: { name: 'New A', notes: 'warmup first', order_index: 7 },
     });
@@ -1050,7 +1050,7 @@ describe('mcp update_day — patch a day in place (no full plan rebuild)', () =>
         { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
       ] }],
     });
-    const r = await call('update_day', {
+    const r = await call('update_workout', {
       day: 'A',
       patch: { dayName: 'oops' }, // wrong key
     });
@@ -1065,7 +1065,7 @@ describe('mcp update_day — patch a day in place (no full plan rebuild)', () =>
         { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
       ] }],
     });
-    const r = await call('update_day', { day: 'Z', patch: { notes: 'x' } });
+    const r = await call('update_workout', { day: 'Z', patch: { notes: 'x' } });
     expect(r.error).toBe('day_not_found');
   });
 });

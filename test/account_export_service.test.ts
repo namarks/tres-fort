@@ -183,7 +183,7 @@ describe('account export projection', () => {
       audit_log: Array<{ id: string; tool: string; args: string }>;
     };
 
-    expect(exported.schema_version).toBe(2);
+    expect(exported.schema_version).toBe(3);
     expect((exported.account as { id: string }).id).toBe(caller.id);
     expect(training.plans.map((row) => row.id)).toEqual([planId]);
     expect(training.workouts.map((row) => row.id)).toEqual([dayId]);
@@ -266,7 +266,7 @@ describe('GET /api/me/export', () => {
       schema_version: number;
       account: { id: string; email: string };
     }>();
-    expect(exported.schema_version).toBe(2);
+    expect(exported.schema_version).toBe(3);
     expect(exported.account.id).toBe(caller.id);
     expect(exported.account.email).toBe(caller.email);
     expect(JSON.stringify(exported)).not.toContain(other.id);

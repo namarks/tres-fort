@@ -45,17 +45,9 @@ struct AccountExportFile: Equatable {
     let filename: String
 }
 
-enum WorkoutWireFormat {
-    case legacy, canonical
-    var idKey: String { self == .legacy ? "day_template_id" : "workout_id" }
-    var collectionPath: String { self == .legacy ? "api/days" : "api/workouts" }
-}
-
 struct APIClient {
     var baseURL = Config.apiBaseURL
-    // First compatibility build stays legacy. Switch the default only in the
-    // later build after the dual-key Worker has been verified in production.
-    var workoutWireFormat: WorkoutWireFormat = .legacy
+    var transport: URLSession? = nil
 
     private static var session: URLSession {
 #if DEBUG && targetEnvironment(simulator)
@@ -204,7 +196,7 @@ struct APIClient {
         jwt: String
     ) async throws -> SessionRow {
         var body: [String: Any] = ["date": date]
-        if let workoutID { body[workoutWireFormat.idKey] = workoutID }
+        if let workoutID { body["workout_id"] = workoutID }
         if let restartDiscardedAttempt {
             body["restart_discarded"] = true
             body["expected_attempt"] = restartDiscardedAttempt
@@ -273,7 +265,7 @@ struct APIClient {
         jwt: String
     ) async throws -> SessionRow {
         var body: [String: Any] = ["status": "planned"]
-        if let workoutID { body[workoutWireFormat.idKey] = workoutID }
+        if let workoutID { body["workout_id"] = workoutID }
         return try await patch(
             attemptScopedPath(
                 "api/sessions/\(sessionId)", expectedAttempt: expectedAttempt),
@@ -355,7 +347,7 @@ struct APIClient {
     //
     // Add / edit / remove an exercise slot in the active plan's day template.
     // Thin wrappers over the REST editor endpoints (POST/PATCH/DELETE
-    // /api/days/:dayId/exercises[/:teId]) — the app-side counterpart to the
+    // /api/workouts/:dayId/exercises[/:teId]) — the app-side counterpart to the
     // MCP add_exercise / update_exercise / delete_exercise tools. The caller
     // reloads /api/state afterwards, so these return just the slot id.
 
@@ -436,13 +428,13 @@ struct APIClient {
             "transition_rest": transitionRest, "target_sets": targetSets,
         ]
         if let orderIndex { body["order_index"] = orderIndex }
-        return try await put("\(workoutWireFormat.collectionPath)/\(dayID)/groups", body: body, jwt: jwt)
+        return try await put("api/workouts/\(dayID)/groups", body: body, jwt: jwt)
     }
 
     func clearExerciseGroup(
         dayID: String, groupID: String, expectedVersion: Int, jwt: String
     ) async throws -> ExerciseGroupAcknowledgement {
-        try await put("\(workoutWireFormat.collectionPath)/\(dayID)/groups", body: [
+        try await put("api/workouts/\(dayID)/groups", body: [
             "group_id": groupID, "exercises": [String](),
             "expected_version": expectedVersion,
         ], jwt: jwt)
@@ -496,7 +488,7 @@ struct APIClient {
         ]
         if !exerciseIDs.isEmpty { body["exercise_ids"] = exerciseIDs }
         return try await post(
-            "\(workoutWireFormat.collectionPath)",
+            "api/workouts",
             body: body,
             jwt: jwt)
     }
@@ -510,14 +502,14 @@ struct APIClient {
     ) async throws -> WorkoutIDRow {
         var body = fields
         body["expected_version"] = expectedVersion
-        return try await patch("\(workoutWireFormat.collectionPath)/\(dayID)", body: body, jwt: jwt)
+        return try await patch("api/workouts/\(dayID)", body: body, jwt: jwt)
     }
 
     func deleteWorkout(dayID: String, expectedVersion: Int, jwt: String) async throws
         -> DeleteWorkoutResult
     {
         try await delete(
-            "\(workoutWireFormat.collectionPath)/\(dayID)?expected_version=\(expectedVersion)", jwt: jwt)
+            "api/workouts/\(dayID)?expected_version=\(expectedVersion)", jwt: jwt)
     }
 
     func setSchedule(
@@ -553,9 +545,9 @@ struct APIClient {
     ) async throws -> CalendarWriteResult {
         var body: [String: Any] = [:]
         if let dayID {
-            body[workoutWireFormat.idKey] = dayID
+            body["workout_id"] = dayID
         } else {
-            body[workoutWireFormat.idKey] = NSNull()
+            body["workout_id"] = NSNull()
         }
         if let expectedAttempt { body["expected_attempt"] = expectedAttempt }
         return try await put("api/calendar/\(date)", body: body, jwt: jwt)
@@ -564,7 +556,7 @@ struct APIClient {
     func moveCalendarWorkout(_ request: CalendarMoveRequest, jwt: String) async throws -> CalendarMoveResult {
         try await post("api/calendar/\(request.fromDate)/move", body: [
             "id": request.id, "to_date": request.toDate, "today": request.today,
-            workoutWireFormat.idKey: request.workoutID, "expected_plan_id": request.planID,
+            "workout_id": request.workoutID, "expected_plan_id": request.planID,
             "expected_version": request.planVersion, "expected_from_attempt": request.fromAttempt,
             "expected_to_attempt": request.toAttempt,
         ], jwt: jwt)
@@ -584,22 +576,22 @@ struct APIClient {
         ]
         if let targetRepsMax { body["target_reps_max"] = targetRepsMax }
         if let targetDurationS { body["target_duration_s"] = targetDurationS }
-        return try await post("\(workoutWireFormat.collectionPath)/\(dayID)/exercises", body: body, jwt: jwt)
+        return try await post("api/workouts/\(dayID)/exercises", body: body, jwt: jwt)
     }
 
     @discardableResult
     func updateExerciseSlot(dayID: String, teID: String,
                             fields: [String: Any], jwt: String) async throws -> SlotIDRow {
-        try await patch("\(workoutWireFormat.collectionPath)/\(dayID)/exercises/\(teID)", body: fields, jwt: jwt)
+        try await patch("api/workouts/\(dayID)/exercises/\(teID)", body: fields, jwt: jwt)
     }
 
     func deleteExerciseSlot(dayID: String, teID: String, jwt: String) async throws {
-        let _: SlotIDRow = try await delete("\(workoutWireFormat.collectionPath)/\(dayID)/exercises/\(teID)", jwt: jwt)
+        let _: SlotIDRow = try await delete("api/workouts/\(dayID)/exercises/\(teID)", jwt: jwt)
     }
 
     func replaceExerciseSlot(dayID: String, teID: String, exercise: String,
                              expectedVersion: Int, jwt: String) async throws -> SlotIDRow {
-        try await post("\(workoutWireFormat.collectionPath)/\(dayID)/exercises/\(teID)/swap", body: [
+        try await post("api/workouts/\(dayID)/exercises/\(teID)/swap", body: [
             "to_exercise": exercise, "expected_version": expectedVersion,
         ], jwt: jwt)
     }
@@ -724,7 +716,7 @@ struct APIClient {
         // Covers every plan-bearing read, including restore responses, so a
         // grouped slot always retains its ordinary rest alongside group rests.
         req.setValue("groups", forHTTPHeaderField: "X-TresFort-Capabilities")
-        let (data, resp) = try await Self.session.data(for: req)
+        let (data, resp) = try await (transport ?? Self.session).data(for: req)
         let http = resp as? HTTPURLResponse
         let code = http?.statusCode ?? -1
         guard (200..<300).contains(code) else {

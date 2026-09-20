@@ -284,7 +284,7 @@ The Worker requires migration 0045, with no runtime SQL adaptation. See the
 
 In-app manual authoring uses the same `plans` / `workouts` /
 `template_exercises` tree and `plans.meta.schedule` that MCP uses. The Workouts
-screen creates and orders days, edits exercise prescriptions, and maps weekdays;
+screen creates and orders workouts, edits exercise prescriptions, and maps weekdays;
 the calendar writes only concrete `sessions` exceptions. These REST endpoints
 are thin wrappers over the shared service layer and audit as `actor='ios'`.
 Every recurring plan-tree write bumps `plans.version`; one-date exceptions do
@@ -415,7 +415,7 @@ Claude context-aware with zero tool calls.
   to today, creates a session, or substitutes completion. A stale attempt is
   rejected, and an identical retry adds no second discard audit.
 - `add_note({scope, ref_id?, body})`
-- `update_plan({name?, meta?, days, expected_version?})` → transactional upsert; a version mismatch returns structured `{conflict:true,current_version}` data in a normal JSON-RPC HTTP 200 response (Claude refetches + reapplies). The version is required when the current tree contains groups or the request explicitly supplies group fields, including nulls.
+- `update_plan({name?, meta?, workouts, expected_version?})` → transactional plan-tree replacement; a version mismatch returns structured `{conflict:true,current_version}` data in a normal JSON-RPC HTTP 200 response (Claude refetches + reapplies). The version is required when the current tree contains groups or the request explicitly supplies group fields, including nulls.
 - `update_exercise({target, patch})` → one slot (`target` = template_exercise_id or {day, exercise}).
 - `group_exercises({day, group_id, expected_version, exercises, round_rest, transition_rest?, target_sets?, order_index?})` → create/rewrite or move a group atomically. Use a caller-generated UUID and slot IDs for durable retries; unambiguous exercise names/aliases are also accepted.
 - `ungroup_exercises({group_id, expected_version})` → clear every member's group fields while preserving ordinary rests, through the same version and exact-retry boundary.

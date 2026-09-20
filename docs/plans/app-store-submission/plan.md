@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-09-18 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-09-19 · Theme: release
 
 ## Goal
 
@@ -98,6 +98,14 @@ archive/export/upload and verified distribution signatures. At
 IN_BETA_TESTING and internal Testers assignment. The Worker is unchanged from
 build 42 and needed no deployment. This beta does not replace build 40 in App
 Review or authorize public release or metadata changes.
+
+**Build 44 preparation and backend release (2026-09-19):** The owner requested
+TestFlight and separately approved migrations 0053/0054 and the matching
+canonical Worker. [The release receipt](release-44.md) records the applied
+migrations, verified production source at 100% traffic, and signed,
+Apple-validated 1.0 (44) package. Build 44 is not uploaded: authenticated live
+workout checks remain unperformed, and the requested specific deferral is
+pending. This does not change the App Review build or publication authority.
 
 **Current Apple readback (2026-09-18):** Version 1.0 now has build 40
 **IN_REVIEW** with **AFTER_APPROVAL**. Build 43 is the latest internal beta,

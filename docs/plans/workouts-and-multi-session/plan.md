@@ -34,6 +34,10 @@ Two model corrections that the workout library exposed:
       under separate authority. Verify current schema, pending migration
       requirements and canonical route behavior using the release runbook.
       No compatibility cycle or legacy-client support is required.
+      September 19: the owner approved production and TestFlight release.
+      Migrations 0053/0054 and the canonical Worker are live; the signed,
+      Apple-validated build 44 awaits authenticated checks or an explicit
+      verification exception before upload. See the [release receipt](../app-store-submission/release-44.md).
   - [x] **(c) Remove obsolete client and physical-schema compatibility**
     - Owner approved this repository slice on 2026-09-19: remove SQL probing,
       rewriting and schema-change retries, old REST routes, duplicate response
@@ -168,7 +172,7 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0(b) | gated_by | external:owner-workout-canonical-client-release | Canonical Worker and client release need separate authority and release verification. The owner removed the legacy-client compatibility-cycle requirement. |
+| P0(b) | gated_by | external:owner-workout-canonical-client-release | Release authority is granted and the canonical Worker is live; build 44 awaits authenticated verification or an explicit exception before upload. |
 | P1 | feeds | plan:workout-library#P2 | A freestyle session is the most common second session of a day; P2 should allocate a slot rather than fail on the primary. |
 
 ## Next step
@@ -176,8 +180,10 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 **Now (@agent):** Implement ordered sessions per date (P1), including session-scoped
 merge, recovery and outbox isolation, under the canonical client contract. P0(c)
 is implemented with 1,161 backend tests passing and 636 iOS unit tests passing
-(one existing skip). Production migration, Worker release and TestFlight
-distribution remain separate P0(b)/feature release gates.
+(one existing skip). The authorized production migrations and canonical Worker
+release are complete. P0(b) client distribution awaits authenticated live
+verification or the requested owner exception; build 44 is signed and
+Apple-validated but not uploaded.
 
 The owner's 2026-09-19 decision and explicit implementation approval supersede
 the earlier canonical-client minimum-build and observed-cycle dependency.

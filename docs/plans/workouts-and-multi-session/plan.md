@@ -21,23 +21,24 @@ Two model corrections that the workout library exposed:
 
 ## Phases
 
-- [ ] **P0 — Rename `day_templates` to `workouts` end to end**
+- [x] **P0 — Rename `day_templates` to `workouts` end to end**
   - [x] **(a) Repository implementation and rollout verification**
     - Migration 0045 renames the table and both referencing columns while
       preserving workout, slot, session and set identities. The original
       adaptive Worker and dual wire contract enabled the 2026-09-09 A/B
       rollout. That completed rollout is historical evidence below.
-  - [ ] **(b) Authorized canonical Worker and client release**
+  - [x] **(b) Authorized canonical Worker and client release**
     - [x] Release A deployed and migration 0045 applied on 2026-09-09;
       completed and deferred checks are recorded below.
-    - [ ] Release the reviewed canonical Worker and canonical-writing iOS app
+    - [x] Release the reviewed canonical Worker and canonical-writing iOS app
       under separate authority. Verify current schema, pending migration
       requirements and canonical route behavior using the release runbook.
       No compatibility cycle or legacy-client support is required.
       September 19: the owner approved production and TestFlight release.
-      Migrations 0053/0054 and the canonical Worker are live; the signed,
-      Apple-validated build 44 awaits authenticated checks or an explicit
-      verification exception before upload. See the [release receipt](../app-store-submission/release-44.md).
+      Migrations 0053/0054 and the canonical Worker are live; build 44 is VALID,
+      IN_BETA_TESTING and assigned to internal Testers. The owner explicitly
+      deferred authenticated live workout checks to device testing for this
+      beta. Those checks remain unperformed, not passed. See the [release receipt](../app-store-submission/release-44.md).
   - [x] **(c) Remove obsolete client and physical-schema compatibility**
     - Owner approved this repository slice on 2026-09-19: remove SQL probing,
       rewriting and schema-change retries, old REST routes, duplicate response
@@ -160,7 +161,6 @@ Two model corrections that the workout library exposed:
 ## Execution frontier
 
 - P1
-- P0(b)
 
 ## Dependencies
 
@@ -172,7 +172,6 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0(b) | gated_by | external:owner-workout-canonical-client-release | Release authority is granted and the canonical Worker is live; build 44 awaits authenticated verification or an explicit exception before upload. |
 | P1 | feeds | plan:workout-library#P2 | A freestyle session is the most common second session of a day; P2 should allocate a slot rather than fail on the primary. |
 
 ## Next step
@@ -181,9 +180,10 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 merge, recovery and outbox isolation, under the canonical client contract. P0(c)
 is implemented with 1,161 backend tests passing and 636 iOS unit tests passing
 (one existing skip). The authorized production migrations and canonical Worker
-release are complete. P0(b) client distribution awaits authenticated live
-verification or the requested owner exception; build 44 is signed and
-Apple-validated but not uploaded.
+release and P0(b) internal TestFlight distribution are complete. Build 44 is
+available to Testers under the specific owner-approved deferral of live
+authenticated workout checks to device testing. Do not repeat this release or
+claim those checks passed; App Review/public-release gates remain separate.
 
 The owner's 2026-09-19 decision and explicit implementation approval supersede
 the earlier canonical-client minimum-build and observed-cycle dependency.
@@ -211,8 +211,10 @@ the current canonical Worker `dcbcc2ba-09dd-4dfb-9d50-c860cc1553d3`, source
 `d801e9dbfdb402531ddae6266b9b16e3da46dece`, at 100% traffic. Migrations through
 0054 are applied, with no pending migrations or foreign-key violations. Do not
 repeat A/B or the completed metadata/freestyle migrations and Worker deployment.
-Canonical-client upload remains pending authenticated verification or the
-requested specific exception; the prepared build is not distribution evidence.
+Canonical build 44 is VALID / IN_BETA_TESTING in internal Testers. The owner
+explicitly approved deferring authenticated live workout checks to device
+testing; that exception completes this internal release without claiming the
+checks passed. No App Review candidate replacement or public release occurred.
 
 Historical production release evidence (2026-09-09; later client exception above supersedes the pre-upload requirement):
 

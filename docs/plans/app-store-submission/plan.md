@@ -10,12 +10,11 @@ candidate, compatible production backend, documented verification and owner
 exceptions, accurate privacy disclosures, listing and reviewer access. The owner
 requested expedited shipment on 2026-09-10. Complete the prepared App Store
 package and submission requirements while retaining the existing submission.
-The current Apple release setting is AFTER_APPROVAL, as read back on 2026-09-19
-Pacific, with build 40 IN_REVIEW. Build 40 is now known to use retired workout
+The owner-authorized change to MANUAL release was read back on 2026-09-19
+Pacific, with build 40 still IN_REVIEW. Build 40 is known to use retired workout
 routes/fields and is incompatible with the serving canonical Worker. Public
-release is blocked on a compatible candidate; the unchanged Apple setting can
-still publish automatically if review completes. Request an authorized change
-to MANUAL before that happens. Preparation
+release remains blocked on a compatible candidate; the manual setting prevents
+automatic publication. Preparation
 and TestFlight availability do not mean public release.
 
 ## Phases
@@ -58,6 +57,9 @@ and TestFlight availability do not mean public release.
       pre-upload workout canary and its observation on 2026-09-10. Other physical
       coverage remains unverified; reuse the [device procedure](../completed/coaching-feedback-loop/device-verification.md)
       when that follow-up resumes.
+      The separate September 19 build-44 exception defers authenticated live
+      workout checks to device testing for internal TestFlight only; it does
+      not establish App Review or public-readiness acceptance.
   - [x] **(b) Signed candidate and Apple processing**
     - The owner separately approved Xcode signing and then explicitly approved
       validation and upload of 1.0 (40). Xcode validation/upload succeeded;
@@ -80,19 +82,19 @@ and TestFlight availability do not mean public release.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P4 | gated_by | external:app-store-owner-fields | Build 40 is incompatible with the serving canonical backend; request MANUAL to prevent automatic publication, then verify a compatible candidate and agreements/privacy before public release. |
+| P4 | gated_by | external:app-store-owner-fields | MANUAL is verified; build 40 remains incompatible. A compatible App Review candidate, agreements/privacy and separate public-release authority are still required. |
 
 ## Next step
 
-**Now (@owner):** Authorize changing build 40's AFTER_APPROVAL setting to MANUAL
-before Apple finishes review. The selected build is known to be incompatible
+**Now (@agent):** Finish P1/P2 review-package preparation against the canonical
+build-44 source and retain the owner's device-verification follow-up. The
+owner-approved switch to MANUAL is complete. The selected build 40 is incompatible
 with the current canonical backend: its default `.legacy` client writes to
 `/api/days` and sends `day_template_id`; the serving Worker rejects that route
 with 404 and those fields with 400. Do not publicly release this candidate.
-After preventing automatic publication, replace it with a verified compatible
-canonical build under separate App Review authority. The request to switch to
-MANUAL is pending; the Apple setting has not changed. TestFlight/backend
-approval does not authorize App Review changes or public release.
+Replacing or resubmitting the candidate requires separate App Review authority;
+neither the TestFlight release nor the MANUAL change supplies it. Public release
+remains separately gated after a compatible candidate and readiness evidence.
 
 **Internal beta follow-up (2026-09-18):** The owner approved workout-library
 P0.5(b), then a combined internal TestFlight build including P0.4(a), P0.5(a)
@@ -104,22 +106,24 @@ IN_BETA_TESTING and internal Testers assignment. The Worker is unchanged from
 build 42 and needed no deployment. This beta does not replace build 40 in App
 Review or authorize public release or metadata changes.
 
-**Build 44 preparation and backend release (2026-09-19):** The owner requested
+**Build 44 release (2026-09-19):** The owner requested
 TestFlight and separately approved migrations 0053/0054 and the matching
 canonical Worker. [The release receipt](release-44.md) records the applied
-migrations, verified production source at 100% traffic, and signed,
-Apple-validated 1.0 (44) package. Build 44 is not uploaded: authenticated live
-workout checks remain unperformed, and the requested specific deferral is
-pending. This does not change the App Review build or publication authority.
+migrations, verified production source at 100% traffic, signed package and
+successful upload. Apple confirmed 1.0 (44) VALID / IN_BETA_TESTING and internal
+Testers assignment at `2026-09-20T03:35:57.022Z`. The owner explicitly approved
+deferring authenticated live workout checks to device testing for this internal
+release. Those checks remain unperformed; do not reinstate the upload gate or
+treat the exception as public-readiness acceptance.
 
 **Current Apple readback (2026-09-19):** Version 1.0 now has build 40
-**IN_REVIEW** with **AFTER_APPROVAL**. Build 43 is the latest internal beta,
-VALID and available to Testers; external Alpha Testers do not have it. This run
-did not change the App Review build or release mode. The owner decision above
-remains open.
+**IN_REVIEW** with **MANUAL** release after the explicitly approved setting
+change. Build 44 is the latest internal beta, VALID and available to Testers;
+external Alpha Testers do not have it. The App Review candidate was not replaced
+or resubmitted; no public release was performed.
 
-**Agent follow-through:** Finish the runnable P1/P2 audit against pinned source
-`9373d6f0acad9a9ef444e54fe9c9d8a8b7ad24c8`: reconcile privacy/account and group
+**Agent follow-through:** Finish the runnable P1/P2 audit against canonical source
+`d801e9dbfdb402531ddae6266b9b16e3da46dece`: reconcile privacy/account and group
 controls, public policy/support availability, listing and reviewer instructions,
 and the documented verification exceptions. Record evidence and identify any
 owner-only App Store fields before completing those phases. The App Review
@@ -135,8 +139,8 @@ with explicit owner approval. Do not mark the outstanding live checks passed or
 waived from that upload approval or Apple's submission acceptance. The owner
 has now submitted build 40; finish P1/P2 and retain the P3(a) evidence or a specific
 verification exception before the public-release decision. Inspect the existing
-submission for Apple review responses, carry out the owner's release-mode
-decision when supplied, and read the result back. Do not resubmit or change the
+submission for Apple review responses; the requested MANUAL setting is now
+verified. Do not resubmit or change the
 selected build from a TestFlight upload.
 
 **Historical production release and preceding beta (2026-09-14 Pacific):** The owner
@@ -146,8 +150,9 @@ production at 100% traffic, public health/discovery and app-link verification,
 and iOS 1.0 (42) VALID in internal Testers. No migration was needed. That
 beta did not replace the App Review candidate. Apple readback at
 2026-09-15T03:02:09.514Z still selects **build 40**, WAITING_FOR_REVIEW, with
-**AFTER_APPROVAL** release. That live setting supersedes the older MANUAL
-receipts below; this run did not change it or make a public App Store release.
+**AFTER_APPROVAL** release. That September 14 setting superseded the earlier
+MANUAL receipts below; the September 19 approved MANUAL readback above is now
+current. The build-42 release did not make a public App Store release.
 External Alpha Testers do not have build 42. Physical-device and authenticated
 training verification remain open; no new waiver is inferred from this release.
 

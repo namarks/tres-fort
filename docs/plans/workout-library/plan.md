@@ -350,7 +350,7 @@ No second editor, no per-session template copies, no weeks table.
     schedule projects as rest on both backend and iOS
     (`CalendarProjection.swift` already treats a dangling id as rest; make
     the archived case explicit and keep the two in parity).
-- [ ] **P2 — Freestyle session and "save as workout"**
+- [x] **P2 — Freestyle session and "save as workout"**
   - [x] **(a) Implement and verify repository delivery**
     - Migration 0054, durable freestyle starts, slotless set logging, account-
       scoped runner recovery and reviewed atomic save are implemented. The
@@ -363,13 +363,15 @@ No second editor, no per-session template copies, no weeks table.
       start/add/finish/save UI journeys, including largest system text. Query
       plans, TypeScript, plan graph and same-Worker rename/rollback rehearsal
       pass. PR review and CI retain exact-head delivery evidence.
-  - [ ] **(b) Release migration, Worker and matching client**
+  - [x] **(b) Release migration, Worker and matching client**
     - The owner approved the P1/P2 production release on September 19.
       Migrations 0053/0054 are applied, and the reviewed canonical Worker is
       serving at 100% traffic. [Build 44's receipt](../app-store-submission/release-44.md)
-      records exact source, integrity checks and the signed Apple-validated IPA.
-      Authenticated live checks or a specific owner deferral remain required
-      before upload; build 44 has not been distributed.
+      records exact source, integrity checks and the successful client release.
+      Apple reports build 44 VALID / IN_BETA_TESTING in internal Testers.
+      The owner explicitly deferred authenticated live workout checks to device
+      testing for this beta; they remain unperformed, not passed. Physical
+      acceptance and public-readiness gates remain separate.
   - Add an explicit `sessions.kind` (`'planned' | 'freestyle'`, default
     `'planned'`) so a freestyle session with `workout_id = NULL` never
     resolves through the weekly schedule. Update the scope predicate in
@@ -422,7 +424,8 @@ No second editor, no per-session template copies, no weeks table.
 
 ## Execution frontier
 
-- P2(b)
+- P0.2(b)
+- P0.5(c)
 
 ## Dependencies
 
@@ -439,7 +442,7 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 | P0.3(a) | coordinates_with | plan:member-activation-and-adherence#P0 | Both use first-workout entry and the shared exercise catalog. |
 | P0.5(c) | gated_by | external:owner-sensai-followup-implementation | Preview thumbnails remain planned pending activation. |
 | P0.5 | coordinates_with | plan:member-activation-and-adherence#P3 | Preview and upcoming-session entry share Today and workout detail routes. |
-| P2(b) | gated_by | external:owner-freestyle-production-release | Release authority is granted and migrations/Worker are live; authenticated verification or a specific owner deferral remains before TestFlight. |
+| P0.2(b) | gated_by | external:owner-live-workout-verification | Authenticated session-swap and workout behavior still need a connected client/device; the build-44 internal-release exception does not claim these checks passed. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
 
 
@@ -448,13 +451,14 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@owner):** Complete the authenticated live workout checks through a
-connected client, or explicitly defer them to device testing for build 44.
-Production migrations 0053/0054 and Worker release are authorized and complete;
-the signed Apple-validated client awaits this verification decision before
-upload. See the [release receipt](../app-store-submission/release-44.md).
-Preview thumbnails still require separate activation; wider onboarding and
-RPE semantics remain separate.
+**Now (@owner):** Test the deferred authenticated workout paths on a device
+using internal TestFlight 1.0 (44), including metadata, freestyle recovery/save
+and session swaps. P1/P2 backend and internal client delivery are complete under
+the explicit build-44 verification exception; do not reinstate its upload gate.
+P0.2(b) live verification and physical/VoiceOver acceptance remain open. See the
+[release receipt](../app-store-submission/release-44.md). Preview thumbnails
+P0.5(c) still require activation. Ordered multi-session work proceeds in the
+workouts-and-multi-session plan; wider onboarding and RPE semantics remain separate.
 
 **P1 repository evidence (September 19):** Migration 0053, atomic REST/MCP
 metadata writes, snapshot/rebuild preservation and archive assignment fences
@@ -470,11 +474,18 @@ covers tag filtering, cancel, archive and restore.
 **P1 production release (September 19):** Migration 0053 is applied after 0045,
 and the compatible canonical Worker is live alongside the P2 backend. Do not
 repeat those completed stages. [The build 44 receipt](../app-store-submission/release-44.md)
-records production evidence; the remaining authenticated-verification and client
-upload gate is stated above. A pre-metadata Worker is unsafe to restore after
+records production and internal-client delivery evidence, with the approved
+live-verification deferral stated above. A pre-metadata Worker is unsafe to restore after
 metadata writes because its rebuild/snapshots omit the fields.
 
-**Client distribution:** [TestFlight 1.0 (43)](../app-store-submission/release-43.md)
+**Current client distribution:** [TestFlight 1.0 (44)](../app-store-submission/release-44.md)
+includes P1 tags/archive, P2 freestyle/save and the canonical workout contract.
+Apple confirmed VALID / IN_BETA_TESTING and internal Testers assignment on
+September 19 Pacific. Build 40 remains IN_REVIEW with MANUAL release and is
+incompatible with the canonical backend; replacing it is a separate App Review
+action. No public release is authorized by this beta.
+
+**Previous client distribution:** [TestFlight 1.0 (43)](../app-store-submission/release-43.md)
 contains the usability and accessibility fixes in PRs #209/#210 plus the shared
 exercise information and discovery in PRs #213/#214. The exact reviewed merged
 source is `28dd647`; Apple confirmed VALID processing and internal Testers

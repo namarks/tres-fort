@@ -2,7 +2,6 @@ import { applyD1Migrations, env } from 'cloudflare:test';
 import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { addDays, createD1UsageObserver, createPlan, getRideConflicts, updatePlanTree } from '../src/db';
 import { handleMcp } from '../src/mcp/server';
-import { workoutDB } from '../src/workoutSchema';
 
 const TODAY = '2026-09-14';
 const NOTES = 'Member words: "keep this"\n  indented line — très fort';
@@ -11,7 +10,7 @@ let completedId: string;
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
-  const db = workoutDB(env.DB);
+  const db = env.DB;
   userId = crypto.randomUUID();
   await db.prepare('INSERT INTO users (id, apple_sub, created_at) VALUES (?, ?, 1)').bind(userId, userId).run();
   await createPlan(env.DB, userId, 'Performance fixture');
@@ -45,8 +44,6 @@ beforeAll(async () => {
     (id,user_id,source,external_id,date,kind,title,training_load,planned_duration_sec,synced_at)
     VALUES ('performance-ride',?,'intervals','performance-ride',?,'ride','Long ride',160,10000,1)`)
     .bind(userId, TODAY).run();
-  // Prime only the physical-schema metadata. It is not a per-request query.
-  await db.prepare('SELECT id FROM workouts LIMIT 1').all();
 });
 
 afterEach(() => {
@@ -82,7 +79,8 @@ it('bounds the eight-session coaching brief and retains text, tombstones and old
   expect(brief.last_completed_session).toMatchObject({ id: completedId, notes: NOTES,
     logged_working_sets: 1 });
   for (const session of brief.recent_sessions) expect(session.logged_working_sets).toBe(1);
-  expect(brief.active_plan.days).toEqual(brief.active_plan.workouts);
+  expect(brief.active_plan).not.toHaveProperty('days');
+  expect(brief.active_plan.workouts).toHaveLength(1);
   expect(brief.ride_conflicts).toEqual([{ date: TODAY, conflicts: ['performance-ride'], severity: 'clash' }]);
   expect(observer.usage.rows_written).toBe(0);
   console.log('code-health brief reads', observer.usage);

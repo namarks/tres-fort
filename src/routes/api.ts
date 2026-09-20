@@ -1,7 +1,6 @@
 import { validWorkoutTags, validArchivedAt } from '../workoutMetadata';
 import { swapSessionExercise } from '../db';
 import { isGroupReportReason } from '../groupSafety';
-import { workoutExportWire, workoutInput, workoutWire } from '../workoutWire';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { HonoEnv } from '../types';
@@ -98,6 +97,7 @@ import {
 } from '../db';
 import { isWorkoutWriteFenceEnabled } from '../workout-write-fence';
 import {
+  hasRetiredWorkoutFields,
   hasField as hasOwn,
   invalidFields as invalidMutationFields,
   isNonEmptyString,
@@ -150,7 +150,7 @@ async function readMutationBody(
   c: Context<HonoEnv>,
 ): Promise<
   | { ok: true; body: JsonObject }
-  | { ok: false; error: 'invalid_json' | 'invalid_body' | 'conflicting_workout_fields' }
+  | { ok: false; error: 'invalid_json' | 'invalid_body' | 'unsupported_workout_fields' }
 > {
   let value: unknown;
   try {
@@ -161,8 +161,10 @@ async function readMutationBody(
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     return { ok: false, error: 'invalid_body' };
   }
-  try { return { ok: true, body: workoutInput(value as JsonObject) }; }
-  catch { return { ok: false, error: 'conflicting_workout_fields' }; }
+  if (hasRetiredWorkoutFields(value as JsonObject)) {
+    return { ok: false, error: 'unsupported_workout_fields' };
+  }
+  return { ok: true, body: value as JsonObject };
 }
 
 function readExpectedAttemptQuery(
@@ -206,11 +208,11 @@ async function inactiveAttemptProtocolResponse(
   // the temporary admission boundary explicit instead of surfacing a D1 500.
   c.header('Retry-After', '5');
   return c.json(
-    workoutWire({
+    {
       error: 'write_protocol_not_active',
       protocol: 'attempt-v1',
       retryable: true,
-    }),
+    },
     503,
   );
 }
@@ -231,17 +233,17 @@ apiRoutes.get('/state', async (c) => {
   const logSince = Number(c.req.query('log_since') ?? 0);
   const capabilities = readCapabilities(c.req.header('X-TresFort-Capabilities'));
   const state = await getState(c.env.DB, userId, since, setsSince, eventsSince, activitiesSince, logSince);
-  return c.json(workoutWire({ ...state, plan: state.plan
+  return c.json({ ...state, plan: state.plan
     ? planForCapabilities(state.plan, capabilities)
     : state.plan,
-    ...(capabilities.has('groups') ? { plan_groups_version: 1 } : {}) }));
+    ...(capabilities.has('groups') ? { plan_groups_version: 1 } : {}) });
 });
 
 // ---- plan tree -----------------------------------------------------------
 apiRoutes.get('/plan/active', async (c) => {
   const tree = await getPlanTree(c.env.DB, c.get('userId'));
-  return tree ? c.json(workoutWire(planForCapabilities(tree, readCapabilities(c.req.header('X-TresFort-Capabilities')))))
-    : c.json(workoutWire({ error: 'no_active_plan' }), 404);
+  return tree ? c.json(planForCapabilities(tree, readCapabilities(c.req.header('X-TresFort-Capabilities'))))
+    : c.json({ error: 'no_active_plan' }, 404);
 });
 
 apiRoutes.get('/plan/history', async (c) => {
@@ -251,16 +253,16 @@ apiRoutes.get('/plan/history', async (c) => {
   const before = parsePositiveIntegerText(rawBefore);
   if (limit === undefined || limit > 100 ||
       (rawBefore !== undefined && before === undefined)) {
-    return c.json(workoutWire({ error: 'invalid_fields', fields: [
+    return c.json({ error: 'invalid_fields', fields: [
       ...(limit === undefined || limit > 100 ? ['limit'] : []),
       ...(rawBefore !== undefined && before === undefined ? ['before_version'] : []),
-    ] }), 400);
+    ] }, 400);
   }
   const result = await listPlanHistory(
     c.env.DB, c.get('userId'), limit,
     before,
   );
-  return 'error' in result ? c.json(workoutWire(result), 404) : c.json(workoutWire(result));
+  return 'error' in result ? c.json(result, 404) : c.json(result);
 });
 
 apiRoutes.get('/plan/history/:version/compare', async (c) => {
@@ -268,18 +270,18 @@ apiRoutes.get('/plan/history/:version/compare', async (c) => {
   const rawTo = c.req.query('to_version');
   const to = rawTo === undefined || rawTo === 'current' ? undefined : parsePositiveIntegerText(rawTo);
   if (from === undefined || (rawTo !== undefined && rawTo !== 'current' && to === undefined)) {
-    return c.json(workoutWire({ error: 'invalid_version' }), 400);
+    return c.json({ error: 'invalid_version' }, 400);
   }
   const result = await comparePlanVersions(
     c.env.DB, c.get('userId'), from,
     to,
   );
-  return 'error' in result ? c.json(workoutWire(result), 404) : c.json(workoutWire(result));
+  return 'error' in result ? c.json(result, 404) : c.json(result);
 });
 
 apiRoutes.post('/plan/history/:version/restore', async (c) => {
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json(workoutWire({ error: parsed.error }), 400);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
   const version = parsePositiveIntegerText(c.req.param('version'));
   const invalid = invalidMutationFields(b, {
@@ -287,22 +289,22 @@ apiRoutes.post('/plan/history/:version/restore', async (c) => {
     expected_version: isPositiveInteger,
   }, { reason: isNullableString });
   if (version === undefined) invalid.push('snapshot_version');
-  if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const result = await restorePlanSnapshot(c.env.DB, c.get('userId'), {
     plan_id: String(b.expected_plan_id), snapshot_version: version!,
     expected_version: Number(b.expected_version), actor: 'ios',
     reason: typeof b.reason === 'string' ? b.reason : null,
   });
   if ('conflict' in result || ('error' in result && result.error === 'active_workout')) {
-    return c.json(workoutWire(result), 409);
+    return c.json(result, 409);
   }
-  if ('error' in result && result.error === 'invalid_fields') return c.json(workoutWire(result), 400);
-  if ('error' in result) return c.json(workoutWire(result), 404);
+  if ('error' in result && result.error === 'invalid_fields') return c.json(result, 400);
+  if ('error' in result) return c.json(result, 404);
   if ('plan' in result) {
-    return c.json(workoutWire({ ...result, plan: planForCapabilities(result.plan,
-      readCapabilities(c.req.header('X-TresFort-Capabilities'))) }));
+    return c.json({ ...result, plan: planForCapabilities(result.plan,
+      readCapabilities(c.req.header('X-TresFort-Capabilities'))) });
   }
-  return c.json(workoutWire(result));
+  return c.json(result);
 });
 
 // Idempotent manual-authoring bootstrap. This route deliberately does not use
@@ -310,35 +312,35 @@ apiRoutes.post('/plan/history/:version/restore', async (c) => {
 // never archive it.
 apiRoutes.put('/plan/active', async (c) => {
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json(workoutWire({ error: parsed.error }), 400);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const invalid = invalidMutationFields(parsed.body, { name: isNonEmptyString });
-  if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const userId = c.get('userId');
   const result = await ensureActivePlan(c.env.DB, userId, String(parsed.body.name).trim(), {
     actor: 'ios', operation: 'ensure_active_plan', args: parsed.body,
   });
-  return c.json(workoutWire(result), result.created ? 201 : 200);
+  return c.json(result, result.created ? 201 : 200);
 });
 
 apiRoutes.post('/plan', async (c) => {
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json(workoutWire({ error: parsed.error }), 400);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
   const invalid = invalidMutationFields(b, { name: isNonEmptyString }, {
     meta: (value) => value === null || (typeof value === 'object' && !Array.isArray(value)),
   });
-  if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
-  return c.json(workoutWire(await createPlan(c.env.DB, c.get('userId'), String(b.name).trim(), b.meta ?? null, {
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  return c.json(await createPlan(c.env.DB, c.get('userId'), String(b.name).trim(), b.meta ?? null, {
     actor: 'ios', operation: 'create_plan', args: b,
-  })), 201);
+  }), 201);
 });
 
-apiRoutes.on('POST', ['/workouts', '/days'], async (c) => {
+apiRoutes.post('/workouts', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
-  if (!plan) return c.json(workoutWire({ error: 'no_active_plan' }), 400);
+  if (!plan) return c.json({ error: 'no_active_plan' }, 400);
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json(workoutWire({ error: parsed.error }), 400);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
   const invalid = invalidMutationFields(
     b,
@@ -354,15 +356,15 @@ apiRoutes.on('POST', ['/workouts', '/days'], async (c) => {
         && value.every(isNonEmptyString) && new Set(value).size === value.length,
     },
   );
-  if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   if (hasOwn(b, 'expected_plan_id') && b.expected_plan_id !== plan.id) {
-    return c.json(workoutWire({ conflict: true, current_plan_id: plan.id, current_version: plan.version }), 409);
+    return c.json({ conflict: true, current_plan_id: plan.id, current_version: plan.version }, 409);
   }
   if (hasOwn(b, 'expected_version') && b.expected_version !== plan.version) {
-    return c.json(workoutWire({ conflict: true, current_version: plan.version }), 409);
+    return c.json({ conflict: true, current_version: plan.version }, 409);
   }
   if (hasOwn(b, 'exercise_ids') && (!hasOwn(b, 'expected_plan_id') || !hasOwn(b, 'expected_version'))) {
-    return c.json(workoutWire({ error: 'invalid_fields', fields: ['expected_plan_id', 'expected_version'] }), 400);
+    return c.json({ error: 'invalid_fields', fields: ['expected_plan_id', 'expected_version'] }, 400);
   }
   const orderIndex = hasOwn(b, 'order_index')
     ? Number(b.order_index)
@@ -374,21 +376,21 @@ apiRoutes.on('POST', ['/workouts', '/days'], async (c) => {
     String(b.name).trim(),
     typeof b.day_label === 'string' ? b.day_label : null,
     orderIndex,
-    { actor: 'ios', operation: c.req.path.startsWith('/api/workouts') ? 'add_workout' : 'add_day', args: b },
+    { actor: 'ios', operation: 'add_workout', args: b },
     b.exercise_ids as string[] | undefined,
     { tags: b.tags as string[] | undefined, archived_at: b.archived_at as number | null | undefined },
   );
-  if ('error' in row) return c.json(workoutWire(row), 400);
-  if ('conflict' in row) return c.json(workoutWire(row), 409);
-  return c.json(workoutWire(row), 201);
+  if ('error' in row) return c.json(row, 400);
+  if ('conflict' in row) return c.json(row, 409);
+  return c.json(row, 201);
 });
 
-apiRoutes.on('PATCH', ['/workouts/:id', '/days/:id'], async (c) => {
+apiRoutes.patch('/workouts/:id', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
-  if (!plan) return c.json(workoutWire({ error: 'no_active_plan' }), 400);
+  if (!plan) return c.json({ error: 'no_active_plan' }, 400);
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json(workoutWire({ error: parsed.error }), 400);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
   const invalid = invalidMutationFields(
     b,
@@ -403,53 +405,53 @@ apiRoutes.on('PATCH', ['/workouts/:id', '/days/:id'], async (c) => {
       expected_version: isPositiveInteger,
     },
   );
-  if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   if (hasOwn(b, 'expected_version') && b.expected_version !== plan.version) {
-    return c.json(workoutWire({ conflict: true, current_version: plan.version }), 409);
+    return c.json({ conflict: true, current_version: plan.version }, 409);
   }
   if ((hasOwn(b, 'tags') || hasOwn(b, 'archived_at')) && !hasOwn(b, 'expected_version')) {
-    return c.json(workoutWire({ error: 'invalid_fields', fields: ['expected_version'] }), 400);
+    return c.json({ error: 'invalid_fields', fields: ['expected_version'] }, 400);
   }
   const { expected_version: _expectedVersion, ...patch } = b;
   const row = await patchWorkoutAtVersion(
     c.env.DB, userId, plan, c.req.param('id'), patch,
-    { actor: 'ios', operation: c.req.path.startsWith('/api/workouts') ? 'update_workout' : 'update_day', args: b },
+    { actor: 'ios', operation: 'update_workout', args: b },
   );
-  if (!row) return c.json(workoutWire({ error: 'not_found' }), 404);
-  if ('conflict' in row) return c.json(workoutWire(row), 409);
-  if ('error' in row) return c.json(workoutWire(row), 400);
-  return c.json(workoutWire(row));
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  if ('conflict' in row) return c.json(row, 409);
+  if ('error' in row) return c.json(row, 400);
+  return c.json(row);
 });
 
-apiRoutes.on('DELETE', ['/workouts/:id', '/days/:id'], async (c) => {
+apiRoutes.delete('/workouts/:id', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
-  if (!plan) return c.json(workoutWire({ error: 'no_active_plan' }), 400);
+  if (!plan) return c.json({ error: 'no_active_plan' }, 400);
   const rawExpected = c.req.query('expected_version');
   if (rawExpected !== undefined) {
     const expected = Number(rawExpected);
     if (!isPositiveInteger(expected)) {
-      return c.json(workoutWire({ error: 'invalid_fields', fields: ['expected_version'] }), 400);
+      return c.json({ error: 'invalid_fields', fields: ['expected_version'] }, 400);
     }
     if (expected !== plan.version) {
-      return c.json(workoutWire({ conflict: true, current_version: plan.version }), 409);
+      return c.json({ conflict: true, current_version: plan.version }, 409);
     }
   }
   const dayId = c.req.param('id');
   const result = await deleteWorkoutAtVersion(c.env.DB, userId, plan, dayId, {
     actor: 'ios', operation: c.req.path.startsWith('/api/workouts') ? 'delete_workout' : 'delete_day', args: { workout_id: dayId },
   });
-  if ('conflict' in result) return c.json(workoutWire(result), 409);
+  if ('conflict' in result) return c.json(result, 409);
   if ('error' in result && result.error === 'day_in_progress') {
-    return c.json(workoutWire(result), 409);
+    return c.json(result, 409);
   }
-  if ('error' in result) return c.json(workoutWire({ error: 'not_found' }), 404);
-  return c.json(workoutWire(result));
+  if ('error' in result) return c.json({ error: 'not_found' }, 404);
+  return c.json(result);
 });
 
 apiRoutes.put('/plan/schedule', async (c) => {
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json(workoutWire({ error: parsed.error }), 400);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
   const invalid = invalidMutationFields(
     b,
@@ -459,7 +461,7 @@ apiRoutes.put('/plan/schedule', async (c) => {
       expected_version: isPositiveInteger,
     },
   );
-  if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const week = b.week as Record<string, unknown>;
   const badKeys = Object.keys(week).filter(
     (key) => !(WEEKDAYS as readonly string[]).includes(key),
@@ -468,7 +470,7 @@ apiRoutes.put('/plan/schedule', async (c) => {
     .filter(([, value]) => value !== null && typeof value !== 'string')
     .map(([key]) => key);
   if (badKeys.length > 0 || badValues.length > 0) {
-    return c.json(workoutWire({ error: 'invalid_fields', fields: [...new Set([...badKeys, ...badValues])] }), 400);
+    return c.json({ error: 'invalid_fields', fields: [...new Set([...badKeys, ...badValues])] }, 400);
   }
   const userId = c.get('userId');
   const result = await setPlanSchedule(
@@ -479,9 +481,9 @@ apiRoutes.put('/plan/schedule', async (c) => {
     typeof b.expected_plan_id === 'string' ? b.expected_plan_id : null,
     { actor: 'ios', operation: 'set_schedule', args: b },
   );
-  if ('conflict' in result) return c.json(workoutWire(result), 409);
-  if ('error' in result) return c.json(workoutWire(result), 400);
-  return c.json(workoutWire(result));
+  if ('conflict' in result) return c.json(result, 409);
+  if ('error' in result) return c.json(result, 400);
+  return c.json(result);
 });
 
 // One concrete date only. `workout_id: null` means rest; either branch
@@ -489,16 +491,16 @@ apiRoutes.put('/plan/schedule', async (c) => {
 // untouched.
 apiRoutes.put('/calendar/:date', async (c) => {
   const date = c.req.param('date');
-  if (!ISO_DATE_RE.test(date)) return c.json(workoutWire({ error: 'invalid_date' }), 400);
+  if (!ISO_DATE_RE.test(date)) return c.json({ error: 'invalid_date' }, 400);
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json(workoutWire({ error: parsed.error }), 400);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
   const invalid = invalidMutationFields(
     b,
     { workout_id: (value) => value === null || isNonEmptyString(value) },
     { expected_attempt: isNonNegativeInteger },
   );
-  if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const userId = c.get('userId');
   // Attempt zero is the explicit absence token for released clients that did
   // not yet send the field. The first assignment persists as attempt one.
@@ -507,13 +509,13 @@ apiRoutes.put('/calendar/:date', async (c) => {
   const result = isRest
     ? await skipPlannedSession(c.env.DB, userId, date, expectedAttempt)
     : await setPlannedSession(c.env.DB, userId, date, String(b.workout_id), expectedAttempt);
-  if ('conflict' in result) return c.json(workoutWire(result), 409);
+  if ('conflict' in result) return c.json(result, 409);
   if ('error' in result) {
     const conflict = result.error === 'session_attempt_conflict'
       || result.error === 'session_attempt_missing'
       || result.error === 'session_state_conflict'
       || result.error === 'session_already_started';
-    return c.json(workoutWire(result), conflict ? 409 : 400);
+    return c.json(result, conflict ? 409 : 400);
   }
   await writeAudit(
     c.env.DB,
@@ -523,7 +525,7 @@ apiRoutes.put('/calendar/:date', async (c) => {
     result.session.id,
     'ios',
   );
-  return c.json(workoutWire(result));
+  return c.json(result);
 });
 
 apiRoutes.post('/calendar/:date/move', async (c) => {
@@ -547,24 +549,24 @@ apiRoutes.post('/calendar/:date/move', async (c) => {
     expected_version: Number(b.expected_version), expected_from_attempt: Number(b.expected_from_attempt),
     expected_to_attempt: Number(b.expected_to_attempt),
   });
-  return c.json(workoutWire(result), 'error' in result ? 409 : 200);
+  return c.json(result, 'error' in result ? 409 : 200);
 });
 
 // Group authoring always carries an observed plan version. Empty membership
 // explicitly clears a group; the service owns retry recognition and attribution.
-apiRoutes.on('PUT', ['/workouts/:id/groups', '/days/:id/groups'], async (c) => {
+apiRoutes.put('/workouts/:id/groups', async (c) => {
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json(workoutWire({ error: parsed.error }), 400);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
   const unknown = Object.keys(b).filter((key) =>
     !['group_id', 'exercises', 'expected_version', 'round_rest', 'transition_rest', 'target_sets', 'order_index'].includes(key));
-  if (unknown.length) return c.json(workoutWire({ error: 'unknown_fields', fields: unknown }), 400);
+  if (unknown.length) return c.json({ error: 'unknown_fields', fields: unknown }, 400);
   const invalid = invalidMutationFields(b, {
     group_id: isGroupId,
     exercises: (value) => Array.isArray(value) && value.every(isNonEmptyString),
     expected_version: isPositiveInteger,
   }, { round_rest: isNonNegativeInteger, transition_rest: isNonNegativeInteger, target_sets: isPositiveInteger, order_index: isNonNegativeInteger });
-  if (invalid.length) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
+  if (invalid.length) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const members = b.exercises as string[];
   const userId = c.get('userId');
   const dayId = c.req.param('id');
@@ -572,10 +574,10 @@ apiRoutes.on('PUT', ['/workouts/:id/groups', '/days/:id/groups'], async (c) => {
     args: b, note: members.length ? 'Grouped exercise slots.' : 'Ungrouped exercise slots.' };
   if (members.length === 0) {
     if (['round_rest', 'transition_rest', 'target_sets', 'order_index'].some((field) => hasOwn(b, field))) {
-      return c.json(workoutWire({ error: 'invalid_fields', fields: ['exercises'] }), 400);
+      return c.json({ error: 'invalid_fields', fields: ['exercises'] }, 400);
     }
   } else if (!hasOwn(b, 'round_rest')) {
-    return c.json(workoutWire({ error: 'invalid_fields', fields: ['round_rest'] }), 400);
+    return c.json({ error: 'invalid_fields', fields: ['round_rest'] }, 400);
   }
   const result = members.length === 0
     ? await clearGroup(c.env.DB, userId, b.group_id as string, b.expected_version as number, attribution, dayId)
@@ -585,23 +587,25 @@ apiRoutes.on('PUT', ['/workouts/:id/groups', '/days/:id/groups'], async (c) => {
         ...(hasOwn(b, 'target_sets') ? { target_sets: b.target_sets as number } : {}),
         ...(hasOwn(b, 'order_index') ? { order_index: b.order_index as number } : {}),
       }, attribution);
-  if ('conflict' in result || ('error' in result && result.error === 'group_conflict')) return c.json(workoutWire(result), 409);
-  if ('error' in result) return c.json(workoutWire(result), result.error === 'day_not_found' ? 404 : 400);
-  return c.json(workoutWire(result));
+  if ('conflict' in result || ('error' in result && result.error === 'group_conflict')) return c.json(result, 409);
+  if ('error' in result) return c.json(result, result.error === 'day_not_found' ? 404 : 400);
+  return c.json(result);
 });
 
-apiRoutes.on('POST', ['/workouts/:id/exercises', '/days/:id/exercises'], async (c) => {
+apiRoutes.post('/workouts/:id/exercises', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
-  if (!plan) return c.json(workoutWire({ error: 'no_active_plan' }), 400);
+  if (!plan) return c.json({ error: 'no_active_plan' }, 400);
   const dayId = c.req.param('id');
   // Resolve the nested day through THIS user's active plan before resolving
   // the exercise or computing order. A globally-valid day from another user
   // or one of this user's archived plans is intentionally indistinguishable
   // from a missing day and can never receive a slot or bump the active plan.
   const day = await getWorkoutInPlan(c.env.DB, plan.id, dayId);
-  if (!day) return c.json(workoutWire({ error: 'not_found' }), 404);
-  const b = await c.req.json<{
+  if (!day) return c.json({ error: 'not_found' }, 404);
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body as {
     exercise: string;
     order_index?: number;
     target_sets: number;
@@ -614,11 +618,11 @@ apiRoutes.on('POST', ['/workouts/:id/exercises', '/days/:id/exercises'], async (
     progression?: unknown;
     cues?: string | null;
     is_warmup?: boolean;
-  }>();
+  };
   const groupFields = Object.keys(b).filter((key) => ['group_id', 'group_rest_seconds', 'group_transition_seconds'].includes(key));
-  if (groupFields.length) return c.json(workoutWire({ error: 'unknown_fields', fields: groupFields }), 400);
+  if (groupFields.length) return c.json({ error: 'unknown_fields', fields: groupFields }, 400);
   const ex = await resolveExercise(c.env.DB, b.exercise);
-  if (!ex) return c.json(workoutWire({ error: 'unknown_exercise', query: b.exercise }), 400);
+  if (!ex) return c.json({ error: 'unknown_exercise', query: b.exercise }, 400);
   const orderIndex =
     b.order_index !== undefined
       ? b.order_index
@@ -638,8 +642,8 @@ apiRoutes.on('POST', ['/workouts/:id/exercises', '/days/:id/exercises'], async (
     cues: b.cues ?? null,
     is_warmup: b.is_warmup === undefined ? 0 : b.is_warmup as unknown as number | boolean,
   }, { actor: 'ios', operation: 'add_exercise', args: b });
-  if ('error' in row) return c.json(workoutWire(row), 400);
-  return c.json(workoutWire(row), 201);
+  if ('error' in row) return c.json(row, 400);
+  return c.json(row, 201);
 });
 
 // A workout-only substitution is an edit of the observed session attempt.
@@ -659,21 +663,21 @@ apiRoutes.post('/sessions/:id/exercises/:teId/swap', async (c) => {
   });
   if ('error' in result) return c.json(result, result.error === 'not_found' ? 404
     : ['exercise_not_found', 'incompatible_measure'].includes(result.error) ? 400 : 409);
-  return c.json(workoutWire(result));
+  return c.json(result);
 });
 
 // Replace the exact slot using its saved prescription. New callers pin the
 // plan version so a stale picker cannot replace a coach's intervening edit.
-apiRoutes.on('POST', ['/workouts/:id/exercises/:teId/swap', '/days/:id/exercises/:teId/swap'], async (c) => {
+apiRoutes.post('/workouts/:id/exercises/:teId/swap', async (c) => {
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json(workoutWire({ error: parsed.error }), 400);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
   const invalid = invalidMutationFields(b, {
     to_exercise: isNonEmptyString,
     expected_version: isPositiveInteger,
   }, {});
   invalid.push(...Object.keys(b).filter((key) => !['to_exercise', 'expected_version'].includes(key)));
-  if (invalid.length) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
+  if (invalid.length) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const ref = {
     template_exercise_id: c.req.param('teId'),
     workout_id: c.req.param('id'),
@@ -683,19 +687,21 @@ apiRoutes.on('POST', ['/workouts/:id/exercises/:teId/swap', '/days/:id/exercises
   const row = await swapExercise(c.env.DB, c.get('userId'), ref, {
     actor: 'ios', operation: 'swap_exercise', args: ref,
   });
-  if (!row) return c.json(workoutWire({ error: 'not_found' }), 404);
-  if ('conflict' in row) return c.json(workoutWire(row), 409);
-  if ('error' in row) return c.json(workoutWire(row), 400);
-  return c.json(workoutWire(row));
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  if ('conflict' in row) return c.json(row, 409);
+  if ('error' in row) return c.json(row, 400);
+  return c.json(row);
 });
 
 // Edit one exercise slot in place (targets / rest / warm-up flag / order).
 // Shared with MCP, audited as iOS, and scoped to the URL's day and caller.
-apiRoutes.on('PATCH', ['/workouts/:id/exercises/:teId', '/days/:id/exercises/:teId'], async (c) => {
+apiRoutes.patch('/workouts/:id/exercises/:teId', async (c) => {
   const userId = c.get('userId');
   const dayId = c.req.param('id');
   const teId = c.req.param('teId');
-  const b = await c.req.json<{
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body as {
     target_sets?: number;
     target_reps?: number;
     target_reps_max?: number | null;
@@ -707,37 +713,37 @@ apiRoutes.on('PATCH', ['/workouts/:id/exercises/:teId', '/days/:id/exercises/:te
     progression?: unknown;
     order_index?: number;
     is_warmup?: boolean;
-  }>();
+  };
   const patch: Record<string, unknown> = { ...b };
   if (typeof b.is_warmup === 'boolean') patch.is_warmup = b.is_warmup ? 1 : 0;
   const row = await updateExercise(c.env.DB, userId, { template_exercise_id: teId, workout_id: dayId }, patch, {
     actor: 'ios', operation: 'update_exercise', args: b,
   });
-  if (!row) return c.json(workoutWire({ error: 'not_found' }), 404);
-  if ('conflict' in row) return c.json(workoutWire(row), 409);
-  if ('error' in row) return c.json(workoutWire(row), 400);
-  return c.json(workoutWire(row));
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  if ('conflict' in row) return c.json(row, 409);
+  if ('error' in row) return c.json(row, 400);
+  return c.json(row);
 });
 
 // Remove one exercise slot from a day. Detaches (NULLs) any historical
 // set_logs.template_exercise_id rather than deleting logged work. Version-
 // bumped + audited. Scoped to the URL :id day (see the PATCH above): a slot
 // from another day resolves to null → 404, never deleting the wrong exercise.
-apiRoutes.on('DELETE', ['/workouts/:id/exercises/:teId', '/days/:id/exercises/:teId'], async (c) => {
+apiRoutes.delete('/workouts/:id/exercises/:teId', async (c) => {
   const userId = c.get('userId');
   const dayId = c.req.param('id');
   const teId = c.req.param('teId');
   const row = await deleteTemplateExercise(c.env.DB, userId, { template_exercise_id: teId, workout_id: dayId }, {
     actor: 'ios', operation: 'delete_exercise', args: { template_exercise_id: teId },
   });
-  if (!row) return c.json(workoutWire({ error: 'not_found' }), 404);
-  return c.json(workoutWire(row));
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  return c.json(row);
 });
 
 // ---- sessions + sets -----------------------------------------------------
 apiRoutes.get('/sessions/:id/workout-draft', async (c) => {
   const draft = await getFreestyleWorkoutDraft(c.env.DB,c.get('userId'),c.req.param('id'));
-  return 'error' in draft ? c.json(draft,draft.error==='not_found'?404:409) : c.json(workoutWire(draft));
+  return 'error' in draft ? c.json(draft,draft.error==='not_found'?404:409) : c.json(draft);
 });
 
 apiRoutes.post('/sessions/:id/save-workout', async (c) => {
@@ -756,13 +762,13 @@ apiRoutes.post('/sessions/:id/save-workout', async (c) => {
   });
   if (invalid.length) return c.json({error:'invalid_fields',fields:invalid},400);
   const result=await saveFreestyleWorkout(c.env.DB,c.get('userId'),c.req.param('id'),b as unknown as SaveFreestyleInput);
-  return 'error' in result || 'conflict' in result ? c.json(result,409) : c.json(workoutWire(result),201);
+  return 'error' in result || 'conflict' in result ? c.json(result,409) : c.json(result,201);
 });
 
 apiRoutes.get('/today', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
-  if (!plan) return c.json(workoutWire({ error: 'no_active_plan' }), 400);
+  if (!plan) return c.json({ error: 'no_active_plan' }, 400);
   const date = await todayForUser(c.env.DB, userId);
   const session = await getOrCreateSession(
     c.env.DB,
@@ -776,18 +782,18 @@ apiRoutes.get('/today', async (c) => {
     { reviveDiscarded: true },
   );
   const sets = await getSetsForSession(c.env.DB, session.id);
-  return c.json(workoutWire({ session, sets }));
+  return c.json({ session, sets });
 });
 
 apiRoutes.post('/sessions', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
-  if (!plan) return c.json(workoutWire({ error: 'no_active_plan' }), 400);
+  if (!plan) return c.json({ error: 'no_active_plan' }, 400);
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json(workoutWire({ error: parsed.error }), 400);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
   const protocolHeader = readAttemptProtocolHeader(c);
-  if (!protocolHeader.ok) return c.json(workoutWire({ error: 'invalid_write_protocol' }), 400);
+  if (!protocolHeader.ok) return c.json({ error: 'invalid_write_protocol' }, 400);
   const invalid = invalidMutationFields(b, {}, {
     date: (value) => typeof value === 'string' && ISO_DATE_RE.test(value),
     workout_id: (value) => value === null || isNonEmptyString(value),
@@ -795,21 +801,21 @@ apiRoutes.post('/sessions', async (c) => {
     expected_attempt: isNonNegativeInteger,
     kind: (value) => value === 'planned' || value === 'freestyle',
   });
-  if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const carriesAttemptProtocol =
     protocolHeader.declared ||
     hasOwn(b, 'expected_attempt') ||
     hasOwn(b, 'restart_discarded');
   if (carriesAttemptProtocol && !hasOwn(b, 'expected_attempt')) {
-    return c.json(workoutWire({ error: 'invalid_fields', fields: ['expected_attempt'] }), 400);
+    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
   const restartDiscarded = b.restart_discarded === true;
   if (restartDiscarded && !hasOwn(b, 'expected_attempt')) {
     return c.json(
-      workoutWire({
+      {
         error: 'invalid_fields',
         fields: ['expected_attempt'],
-      }),
+      },
       400,
     );
   }
@@ -824,7 +830,7 @@ apiRoutes.post('/sessions', async (c) => {
     }
     const result = await startFreestyleSession(c.env.DB,userId,
       typeof b.date==='string' ? b.date : await todayForUser(c.env.DB,userId), Number(b.expected_attempt));
-    return 'error' in result ? c.json(result,409) : c.json(workoutWire(result.session),201);
+    return 'error' in result ? c.json(result,409) : c.json(result.session,201);
   }
   const date =
     typeof b.date === 'string'
@@ -840,7 +846,7 @@ apiRoutes.post('/sessions', async (c) => {
     workoutId !== null &&
     !(await getWorkoutInPlan(c.env.DB, plan.id, workoutId))
   ) {
-    return c.json(workoutWire({ error: 'unknown_day' }), 422);
+    return c.json({ error: 'unknown_day' }, 422);
   }
   let s;
   if (restartDiscarded) {
@@ -848,7 +854,7 @@ apiRoutes.post('/sessions', async (c) => {
     const existing = await getOwnedSessionByDate(c.env.DB, userId, date);
     if (!existing) {
       return c.json(
-        workoutWire({ error: 'restart_target_missing', expected_attempt: expectedAttempt }),
+        { error: 'restart_target_missing', expected_attempt: expectedAttempt },
         409,
       );
     }
@@ -866,8 +872,8 @@ apiRoutes.post('/sessions', async (c) => {
       workoutId,
       protocolHeader.declared,
     );
-    if (!revived) return c.json(workoutWire({ error: 'not_found' }), 404);
-    if ('error' in revived) return c.json(workoutWire(revived), 409);
+    if (!revived) return c.json({ error: 'not_found' }, 404);
+    if ('error' in revived) return c.json(revived, 409);
     s = revived;
   } else {
     const expectedAttempt = carriesAttemptProtocol
@@ -877,10 +883,10 @@ apiRoutes.post('/sessions', async (c) => {
       const existing = await getOwnedSessionByDate(c.env.DB, userId, date);
       if (!existing) {
         return c.json(
-          workoutWire({
+          {
             error: 'session_attempt_missing',
             expected_attempt: expectedAttempt,
-          }),
+          },
           409,
         );
       }
@@ -901,10 +907,10 @@ apiRoutes.post('/sessions', async (c) => {
     } catch (error) {
       if ((error as Error).message === 'session_expected_attempt_missing') {
         return c.json(
-          workoutWire({
+          {
             error: 'session_attempt_missing',
             expected_attempt: expectedAttempt,
-          }),
+          },
           409,
         );
       }
@@ -912,11 +918,11 @@ apiRoutes.post('/sessions', async (c) => {
     }
   }
   if (!carriesAttemptProtocol && s.write_protocol !== 'legacy') {
-    return c.json(workoutWire(protocolConflictBody(s)), 409);
+    return c.json(protocolConflictBody(s), 409);
   }
   if (!restartDiscarded && s.status === 'discarded') {
     return c.json(
-      workoutWire({ error: 'session_discarded', status: 'discarded', current_session: s }),
+      { error: 'session_discarded', status: 'discarded', current_session: s },
       409,
     );
   } else if (
@@ -926,31 +932,31 @@ apiRoutes.post('/sessions', async (c) => {
   ) {
     const expectedAttempt = b.expected_attempt as number;
     return c.json(
-      workoutWire({
+      {
         error: 'session_attempt_conflict',
         status: s.status,
         expected_attempt: expectedAttempt,
         current_attempt: s.attempt,
         current_session: s,
-      }),
+      },
       409,
     );
   }
-  return c.json(workoutWire(s), 201);
+  return c.json(s, 201);
 });
 
 apiRoutes.patch('/sessions/:id', async (c) => {
   const protocolHeader = readAttemptProtocolHeader(c);
-  if (!protocolHeader.ok) return c.json(workoutWire({ error: 'invalid_write_protocol' }), 400);
+  if (!protocolHeader.ok) return c.json({ error: 'invalid_write_protocol' }, 400);
   const expected = readExpectedAttemptQuery(c);
   if (!expected.ok) {
-    return c.json(workoutWire({ error: 'invalid_fields', fields: ['expected_attempt'] }), 400);
+    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
   if (protocolHeader.declared && expected.value === undefined) {
-    return c.json(workoutWire({ error: 'invalid_fields', fields: ['expected_attempt'] }), 400);
+    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json(workoutWire({ error: parsed.error }), 400);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
   const invalid = invalidMutationFields(b, {}, {
     // status remains deliberately `unknown`: patchSession owns its closed
@@ -972,7 +978,7 @@ apiRoutes.patch('/sessions/:id', async (c) => {
   ) {
     invalid.push('workout_id');
   }
-  if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const inactiveProtocol = await inactiveAttemptProtocolResponse(
     c,
     protocolHeader.declared,
@@ -981,7 +987,7 @@ apiRoutes.patch('/sessions/:id', async (c) => {
   if (typeof b.workout_id === 'string') {
     const plan = await getActivePlan(c.env.DB, c.get('userId'));
     if (!plan || !(await getWorkoutInPlan(c.env.DB, plan.id, b.workout_id))) {
-      return c.json(workoutWire({ error: 'unknown_day' }), 422);
+      return c.json({ error: 'unknown_day' }, 422);
     }
   }
   const s = await patchSession(
@@ -992,23 +998,23 @@ apiRoutes.patch('/sessions/:id', async (c) => {
     expected.value,
     protocolHeader.declared,
   );
-  if (!s) return c.json(workoutWire({ error: 'not_found' }), 404);
+  if (!s) return c.json({ error: 'not_found' }, 404);
   if ('error' in s) {
     // Exhaustive: invalid_status → 400 (bad request, nothing persisted);
     // the history-integrity and discarded-terminal guards → 409.
-    if (s.error === 'invalid_status') return c.json(workoutWire(s), 400);
-    return c.json(workoutWire(s), 409);
+    if (s.error === 'invalid_status') return c.json(s, 400);
+    return c.json(s, 409);
   }
   if (s.status === 'completed') {
     const summary = await getWorkoutSummary(c.env.DB, c.get('userId'), s.id).catch(() => null);
-    return c.json(workoutWire({ ...s, summary: summary?.attempt === s.attempt && summary.final ? summary : null }));
+    return c.json({ ...s, summary: summary?.attempt === s.attempt && summary.final ? summary : null });
   }
-  return c.json(workoutWire(s));
+  return c.json(s);
 });
 
 apiRoutes.get('/sessions/:id/summary', async (c) => {
   const summary = await getWorkoutSummary(c.env.DB, c.get('userId'), c.req.param('id'));
-  return summary ? c.json(workoutWire(summary)) : c.json(workoutWire({ error: 'not_found' }), 404);
+  return summary ? c.json(summary) : c.json({ error: 'not_found' }, 404);
 });
 
 // Discard a session — "I didn't really do this." Soft-deletes its sets
@@ -1017,13 +1023,13 @@ apiRoutes.get('/sessions/:id/summary', async (c) => {
 // the explicit attempt-scoped POST /sessions restart protocol.
 apiRoutes.post('/sessions/:id/discard', async (c) => {
   const protocolHeader = readAttemptProtocolHeader(c);
-  if (!protocolHeader.ok) return c.json(workoutWire({ error: 'invalid_write_protocol' }), 400);
+  if (!protocolHeader.ok) return c.json({ error: 'invalid_write_protocol' }, 400);
   const expected = readExpectedAttemptQuery(c);
   if (!expected.ok) {
-    return c.json(workoutWire({ error: 'invalid_fields', fields: ['expected_attempt'] }), 400);
+    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
   if (protocolHeader.declared && expected.value === undefined) {
-    return c.json(workoutWire({ error: 'invalid_fields', fields: ['expected_attempt'] }), 400);
+    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
   const inactiveProtocol = await inactiveAttemptProtocolResponse(
     c,
@@ -1037,20 +1043,20 @@ apiRoutes.post('/sessions/:id/discard', async (c) => {
     expected.value,
     protocolHeader.declared,
   );
-  if (!s) return c.json(workoutWire({ error: 'not_found' }), 404);
-  if ('error' in s) return c.json(workoutWire(s), 409);
-  return c.json(workoutWire(s));
+  if (!s) return c.json({ error: 'not_found' }, 404);
+  if ('error' in s) return c.json(s, 409);
+  return c.json(s);
 });
 
 apiRoutes.post('/sessions/:id/sets', async (c) => {
   const protocolHeader = readAttemptProtocolHeader(c);
-  if (!protocolHeader.ok) return c.json(workoutWire({ error: 'invalid_write_protocol' }), 400);
+  if (!protocolHeader.ok) return c.json({ error: 'invalid_write_protocol' }, 400);
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json(workoutWire({ error: parsed.error }), 400);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
   // Preserve the established missing-id response while using invalid_fields
   // for a present id (or any other field) with the wrong runtime shape.
-  if (!hasOwn(b, 'id')) return c.json(workoutWire({ error: 'missing_set_id' }), 400);
+  if (!hasOwn(b, 'id')) return c.json({ error: 'missing_set_id' }, 400);
   const invalid = invalidMutationFields(
     b,
     {
@@ -1077,9 +1083,9 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
       },
     },
   );
-  if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   if (protocolHeader.declared && !hasOwn(b, 'expected_attempt')) {
-    return c.json(workoutWire({ error: 'invalid_fields', fields: ['expected_attempt'] }), 400);
+    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
   const inactiveProtocol = await inactiveAttemptProtocolResponse(
     c,
@@ -1106,14 +1112,14 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
       prescription: b.prescription as { plan_id: string; version: number; day_id: string } | undefined,
       source: 'ios',
     });
-    return c.json(workoutWire(result), result.deduped ? 200 : 201);
+    return c.json(result, result.deduped ? 200 : 201);
   } catch (e) {
     if (e instanceof SessionWriteConflictError) {
-      return c.json(workoutWire(e.response()), 409);
+      return c.json(e.response(), 409);
     }
     const error = (e as Error).message;
     return c.json(
-      workoutWire({ error }),
+      { error },
       error === 'session_discarded' || error === 'session_attempt_conflict'
         ? 409
         : 404,
@@ -1123,13 +1129,13 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
 
 apiRoutes.patch('/sets/:id', async (c) => {
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json(workoutWire({ error: parsed.error }), 400);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const { expected_session_id, expected_attempt, expected_updated_at, ...b } = parsed.body;
   const guarded = [expected_session_id, expected_attempt, expected_updated_at].some((v) => v !== undefined);
   if (guarded && (typeof expected_session_id !== 'string' || !expected_session_id
       || !Number.isSafeInteger(expected_attempt) || (expected_attempt as number) < 0
       || !Number.isSafeInteger(expected_updated_at) || (expected_updated_at as number) < 0)) {
-    return c.json(workoutWire({ error: 'invalid_correction_identity' }), 400);
+    return c.json({ error: 'invalid_correction_identity' }, 400);
   }
   const allowed = new Set(['weight', 'reps', 'rpe', 'notes', 'duration_s', 'deleted']);
   const invalid = invalidMutationFields(b, {}, {
@@ -1144,18 +1150,18 @@ apiRoutes.patch('/sets/:id', async (c) => {
     deleted: (value) => value === true,
   });
   invalid.push(...Object.keys(b).filter((field) => !allowed.has(field)));
-  if (invalid.length > 0) return c.json(workoutWire({ error: 'invalid_fields', fields: invalid }), 400);
-  if (Object.keys(b).length === 0) return c.json(workoutWire({ error: 'no_corrections' }), 400);
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  if (Object.keys(b).length === 0) return c.json({ error: 'no_corrections' }, 400);
   try {
     const row = await patchSet(c.env.DB, c.get('userId'), c.req.param('id'), b, guarded ? {
       session_id: expected_session_id as string,
       attempt: expected_attempt as number,
       updated_at: expected_updated_at as number,
     } : undefined);
-    return row ? c.json(workoutWire(row)) : c.json(workoutWire({ error: 'not_found' }), 404);
+    return row ? c.json(row) : c.json({ error: 'not_found' }, 404);
   } catch (error) {
     if ((error as Error).message === 'set_correction_conflict') {
-      return c.json(workoutWire({ error: 'set_correction_conflict' }), 409);
+      return c.json({ error: 'set_correction_conflict' }, 409);
     }
     throw error;
   }
@@ -1167,7 +1173,7 @@ apiRoutes.get('/exercises', async (c) => {
   // list_exercises — in particular, `laterality` rides along, which iOS
   // needs to compute per-side/per-hand rollups (two-DB Bulgarian split squat
   // 45×8 → 16 reps / 1,440 lb instead of 8 / 360).
-  return c.json(workoutWire(await getExercises(c.env.DB)));
+  return c.json(await getExercises(c.env.DB));
 });
 
 // Demo image proxy. iOS first checks its bundled asset catalog for the
@@ -1183,19 +1189,19 @@ apiRoutes.get('/exercises/:id/demo/:frame', async (c) => {
   const id = c.req.param('id');
   const frame = c.req.param('frame');
   if (frame !== '0' && frame !== '1') {
-    return c.json(workoutWire({ error: 'invalid_frame' }), 400);
+    return c.json({ error: 'invalid_frame' }, 400);
   }
   const row = await c.env.DB.prepare(
     'SELECT demo_slug FROM exercises WHERE id = ?1',
   )
     .bind(id)
     .first<{ demo_slug: string | null }>();
-  if (!row) return c.json(workoutWire({ error: 'unknown_exercise' }), 404);
-  if (!row.demo_slug) return c.json(workoutWire({ error: 'no_demo' }), 404);
-  if (!c.env.DEMOS) return c.json(workoutWire({ error: 'demos_unconfigured' }), 503);
+  if (!row) return c.json({ error: 'unknown_exercise' }, 404);
+  if (!row.demo_slug) return c.json({ error: 'no_demo' }, 404);
+  if (!c.env.DEMOS) return c.json({ error: 'demos_unconfigured' }, 503);
   const key = `demos/${row.demo_slug}/${frame}.webp`;
   const obj = await c.env.DEMOS.get(key);
-  if (!obj) return c.json(workoutWire({ error: 'demo_missing' }), 404);
+  if (!obj) return c.json({ error: 'demo_missing' }, 404);
   return new Response(obj.body, {
     headers: {
       'Content-Type': 'image/webp',
@@ -1214,20 +1220,20 @@ apiRoutes.get('/exercises/:id/demo/:frame', async (c) => {
 
 apiRoutes.get('/history', async (c) => {
   const exerciseId = c.req.query('exercise_id');
-  if (!exerciseId) return c.json(workoutWire({ error: 'missing_exercise_id' }), 400);
+  if (!exerciseId) return c.json({ error: 'missing_exercise_id' }, 400);
   const from = Number(c.req.query('from') ?? 0);
   const to = Number(c.req.query('to') ?? Date.now());
-  return c.json(workoutWire(await getHistory(c.env.DB, c.get('userId'), exerciseId, from, to)));
+  return c.json(await getHistory(c.env.DB, c.get('userId'), exerciseId, from, to));
 });
 
 apiRoutes.get('/volume', async (c) => {
   const muscle = c.req.query('muscle');
-  if (!muscle) return c.json(workoutWire({ error: 'missing_muscle' }), 400);
+  if (!muscle) return c.json({ error: 'missing_muscle' }, 400);
   const from = Number(c.req.query('from') ?? 0);
   const to = Number(c.req.query('to') ?? Date.now());
   const result = await getVolume(c.env.DB, c.get('userId'), muscle, from, to);
-  if ('error' in result) return c.json(workoutWire(result), 400);
-  return c.json(workoutWire(result));
+  if ('error' in result) return c.json(result, 400);
+  return c.json(result);
 });
 
 // ---- generic activities (M3 — pilates / cardio / yoga / walks / …) -------
@@ -1247,16 +1253,16 @@ apiRoutes.post('/activities', async (c) => {
     logged_at?: number;
   }>();
   if (!b.id || typeof b.id !== 'string' || !UUID_RE.test(b.id)) {
-    return c.json(workoutWire({ error: 'invalid_id' }), 400);
+    return c.json({ error: 'invalid_id' }, 400);
   }
   if (typeof b.date !== 'string' || !ISO_DATE_RE.test(b.date)) {
-    return c.json(workoutWire({ error: 'invalid_date' }), 400);
+    return c.json({ error: 'invalid_date' }, 400);
   }
   if (typeof b.type !== 'string' || b.type.length === 0 || b.type !== b.type.toLowerCase()) {
-    return c.json(workoutWire({ error: 'invalid_type' }), 400);
+    return c.json({ error: 'invalid_type' }, 400);
   }
   if (typeof b.logged_at !== 'number' || !Number.isFinite(b.logged_at)) {
-    return c.json(workoutWire({ error: 'invalid_logged_at' }), 400);
+    return c.json({ error: 'invalid_logged_at' }, 400);
   }
   const row = await logActivity(
     c.env.DB,
@@ -1273,13 +1279,13 @@ apiRoutes.post('/activities', async (c) => {
     },
     'ios',
   );
-  return c.json(workoutWire(row), 201);
+  return c.json(row, 201);
 });
 
 apiRoutes.delete('/activities/:id', async (c) => {
   const ok = await softDeleteActivity(c.env.DB, c.get('userId'), c.req.param('id'));
-  if (!ok) return c.json(workoutWire({ error: 'not_found' }), 404);
-  return c.json(workoutWire({ ok: true }));
+  if (!ok) return c.json({ error: 'not_found' }, 404);
+  return c.json({ ok: true });
 });
 
 // ---- Apple Health (HealthKit) workout push — iOS on-device → backend ------
@@ -1311,13 +1317,13 @@ apiRoutes.post('/activities/healthkit', async (c) => {
     raw?: string | null;
   }>();
   if (!b.id || typeof b.id !== 'string' || !UUID_RE.test(b.id)) {
-    return c.json(workoutWire({ error: 'invalid_id' }), 400);
+    return c.json({ error: 'invalid_id' }, 400);
   }
   if (typeof b.date !== 'string' || !ISO_DATE_RE.test(b.date)) {
-    return c.json(workoutWire({ error: 'invalid_date' }), 400);
+    return c.json({ error: 'invalid_date' }, 400);
   }
   if (typeof b.kind !== 'string' || b.kind.length === 0 || b.kind !== b.kind.toLowerCase()) {
-    return c.json(workoutWire({ error: 'invalid_kind' }), 400);
+    return c.json({ error: 'invalid_kind' }, 400);
   }
   // REAL (floating) columns: keep any finite value.
   const numOrNull = (v: unknown): number | null =>
@@ -1331,10 +1337,10 @@ apiRoutes.post('/activities/healthkit', async (c) => {
     typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : null;
   const startDateLocalMs = intOrNull(b.start_date_local_ms);
   if (!healthKitDateMatchesStart(b.date, startDateLocalMs)) {
-    return c.json(workoutWire({ error: 'invalid_start_date' }), 400);
+    return c.json({ error: 'invalid_start_date' }, 400);
   }
   if (!validActivitySourceTime(b.start_date_utc_ms, b.source_timezone, b.date, startDateLocalMs)) {
-    return c.json(workoutWire({ error: 'invalid_source_time' }), 400);
+    return c.json({ error: 'invalid_source_time' }, 400);
   }
   const row = await upsertHealthKitActivity(c.env.DB, c.get('userId'), {
     id: b.id,
@@ -1354,7 +1360,7 @@ apiRoutes.post('/activities/healthkit', async (c) => {
     elevation_gain_m: numOrNull(b.elevation_gain_m),
     raw: typeof b.raw === 'string' ? b.raw : null,
   });
-  return c.json(workoutWire(row), 201);
+  return c.json(row, 201);
 });
 
 // PATCH /api/me/health-sharing — flip the Apple Health group-feed opt-in
@@ -1362,8 +1368,8 @@ apiRoutes.post('/activities/healthkit', async (c) => {
 // this. When off, the group feed/stats/series exclude this user's HealthKit rows.
 apiRoutes.patch('/me/health-sharing', async (c) => {
   const b = await c.req.json<{ enabled?: unknown }>();
-  if (typeof b.enabled !== 'boolean') return c.json(workoutWire({ error: 'invalid_enabled' }), 400);
-  return c.json(workoutWire(await setHealthActivitySharing(c.env.DB, c.get('userId'), b.enabled)));
+  if (typeof b.enabled !== 'boolean') return c.json({ error: 'invalid_enabled' }, 400);
+  return c.json(await setHealthActivitySharing(c.env.DB, c.get('userId'), b.enabled));
 });
 
 // GET /api/me — account/setup snapshot for the iOS Profile tab. Read-only;
@@ -1401,12 +1407,12 @@ apiRoutes.post('/starter-workouts/:id', async (c) => {
   if (invalidMutationFields(parsed.body, { profile_version: isPositiveInteger }).length) return c.json({ error: 'invalid_fields' }, 400);
   const result = await acceptStarterWorkout(c.env.DB, c.get('userId'), c.req.param('id'), Number(parsed.body.profile_version));
   if ('error' in result) return c.json(result, result.error === 'starter_unavailable' ? 400 : 409);
-  return c.json(workoutWire(result));
+  return c.json(result);
 });
 
 apiRoutes.get('/me', async (c) => {
   const userId = c.get('userId');
-  return c.json(workoutWire(await getMeProfile(c.env.DB, userId, c.env.OWNER_APPLE_SUB)));
+  return c.json(await getMeProfile(c.env.DB, userId, c.env.OWNER_APPLE_SUB));
 });
 
 // GET /api/me/export — download the authenticated caller's portable account
@@ -1416,13 +1422,13 @@ apiRoutes.get('/me', async (c) => {
 // credentials, tokens, invite capabilities, and other members' private data.
 apiRoutes.get('/me/export', async (c) => {
   const exported = await exportUserData(c.env.DB, c.get('userId'));
-  if (!exported) return c.json(workoutWire({ error: 'not_found' }), 404);
+  if (!exported) return c.json({ error: 'not_found' }, 404);
   const exportedAt = exported.exported_at;
   const date =
     typeof exportedAt === 'number' && Number.isFinite(exportedAt)
       ? new Date(exportedAt).toISOString().slice(0, 10)
       : 'data';
-  return new Response(JSON.stringify(workoutExportWire(exported), null, 2), {
+  return new Response(JSON.stringify(exported, null, 2), {
     status: 200,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
@@ -1442,18 +1448,18 @@ apiRoutes.patch('/me/profile', async (c) => {
   try {
     body = await c.req.json<{ display_name?: unknown }>();
   } catch {
-    return c.json(workoutWire({ error: 'invalid_json' }), 400);
+    return c.json({ error: 'invalid_json' }, 400);
   }
   if (body === null || typeof body !== 'object' || typeof body.display_name !== 'string') {
-    return c.json(workoutWire({ error: 'invalid_display_name' }), 400);
+    return c.json({ error: 'invalid_display_name' }, 400);
   }
   const displayName = body.display_name.trim();
   if (displayName.length < 1 || displayName.length > 80) {
-    return c.json(workoutWire({ error: 'invalid_display_name' }), 400);
+    return c.json({ error: 'invalid_display_name' }, 400);
   }
   const userId = c.get('userId');
   if (!(await setUserDisplayName(c.env.DB, userId, displayName))) {
-    return c.json(workoutWire({ error: 'not_found' }), 404);
+    return c.json({ error: 'not_found' }, 404);
   }
   await writeAudit(
     c.env.DB,
@@ -1463,7 +1469,7 @@ apiRoutes.patch('/me/profile', async (c) => {
     'ok',
     'ios',
   );
-  return c.json(workoutWire(await getMeProfile(c.env.DB, userId, c.env.OWNER_APPLE_SUB)));
+  return c.json(await getMeProfile(c.env.DB, userId, c.env.OWNER_APPLE_SUB));
 });
 
 // DELETE /api/me — permanently delete the authenticated account.
@@ -1477,7 +1483,7 @@ apiRoutes.patch('/me/profile', async (c) => {
 apiRoutes.delete('/me', async (c) => {
   const idempotencyKey = c.req.header('X-Account-Deletion-Key') ?? '';
   if (!isAccountDeletionKey(idempotencyKey)) {
-    return c.json(workoutWire({ error: 'invalid_account_deletion_key' }), 400);
+    return c.json({ error: 'invalid_account_deletion_key' }, 400);
   }
   const userId = c.get('userId');
   const livePrincipal = await c.env.DB
@@ -1498,7 +1504,7 @@ apiRoutes.delete('/me', async (c) => {
     !continuingDeletion &&
     authAgeSeconds > ACCOUNT_DELETION_RECENT_AUTH_SECONDS
   ) {
-    return c.json(workoutWire({ error: 'reauthentication_required' }), 401);
+    return c.json({ error: 'reauthentication_required' }, 401);
   }
   const result = await deleteUserAccount(
     c.env.DB,
@@ -1509,14 +1515,14 @@ apiRoutes.delete('/me', async (c) => {
   );
   if ('error' in result) {
     return c.json(
-      workoutWire({
+      {
         error:
           result.error === 'not_found' ? 'account_not_found' : result.error,
-      }),
+      },
       result.error === 'conflict' ? 409 : 404,
     );
   }
-  return c.json(workoutWire(result));
+  return c.json(result);
 });
 
 // ---- integrations: intervals.icu credentials (M1 multi-user) ------------
@@ -1530,18 +1536,18 @@ apiRoutes.patch('/me/integrations/intervals', async (c) => {
   try {
     b = await c.req.json<{ api_key?: unknown; athlete_id?: unknown }>();
   } catch {
-    return c.json(workoutWire({ error: 'invalid_json' }), 400);
+    return c.json({ error: 'invalid_json' }, 400);
   }
   // Required keys (either value may be null = disconnect). Reject silently-
   // missing keys so a typo doesn't accidentally clear a working connection.
   if (!b || typeof b !== 'object' || Array.isArray(b) || !('api_key' in b) || !('athlete_id' in b)) {
-    return c.json(workoutWire({ error: 'missing_fields' }), 400);
+    return c.json({ error: 'missing_fields' }, 400);
   }
   const rawKey = b.api_key;
   const rawId = b.athlete_id;
   const okKey = rawKey === null || typeof rawKey === 'string';
   const okId = rawId === null || typeof rawId === 'string';
-  if (!okKey || !okId) return c.json(workoutWire({ error: 'invalid_field_type' }), 400);
+  if (!okKey || !okId) return c.json({ error: 'invalid_field_type' }, 400);
   // Empty strings are treated as null (disconnect) — defensive against
   // iOS form posting "" instead of null on the clear path.
   const apiKey = typeof rawKey === 'string' && rawKey.length > 0 ? rawKey : null;
@@ -1562,7 +1568,7 @@ apiRoutes.patch('/me/integrations/intervals', async (c) => {
       c.env.DB, c.env, userId, result.credential_generation,
     ));
   }
-  return c.json(workoutWire(result));
+  return c.json(result);
 });
 
 apiRoutes.post('/me/integrations/intervals/sync', async (c) => {
@@ -1588,19 +1594,19 @@ apiRoutes.post('/me/mcp-passphrase', async (c) => {
   try {
     b = await c.req.json<{ passphrase?: unknown }>();
   } catch {
-    return c.json(workoutWire({ error: 'invalid_json' }), 400);
+    return c.json({ error: 'invalid_json' }, 400);
   }
   const passphrase = typeof b.passphrase === 'string' ? b.passphrase : '';
-  if (passphrase.length < 8) return c.json(workoutWire({ error: 'passphrase_too_short' }), 400);
+  if (passphrase.length < 8) return c.json({ error: 'passphrase_too_short' }, 400);
   const res = await setUserMcpPassphrase(c.env.DB, c.get('userId'), passphrase, c.env.OWNER_AUTH_PASSPHRASE);
   if ('error' in res) {
     // Already in use by another user — accepting it would bind their MCP
     // session to that account (cross-user access). 409, no audit-as-ok.
     await writeAudit(c.env.DB, c.get('userId'), 'set_mcp_passphrase', {}, res.error, 'ios');
-    return c.json(workoutWire({ error: res.error }), 409);
+    return c.json({ error: res.error }, 409);
   }
   await writeAudit(c.env.DB, c.get('userId'), 'set_mcp_passphrase', {}, 'ok', 'ios');
-  return c.json(workoutWire({ ok: true }));
+  return c.json({ ok: true });
 });
 
 // Caller-scoped coach grants. Listing exposes only opaque family and client
@@ -1611,7 +1617,7 @@ apiRoutes.get('/me/coach-grants', async (c) => {
     c.get('userId'),
     c.env.OWNER_APPLE_SUB,
   );
-  return c.json(workoutWire({ grants }));
+  return c.json({ grants });
 });
 
 apiRoutes.delete('/me/coach-grants/:grantId', async (c) => {
@@ -1622,9 +1628,9 @@ apiRoutes.delete('/me/coach-grants/:grantId', async (c) => {
     grantId,
     c.env.OWNER_APPLE_SUB,
   ).catch(() => undefined);
-  if (revoked === undefined) return c.json(workoutWire({ error: 'server_error' }), 500);
-  if (!revoked) return c.json(workoutWire({ error: 'not_found' }), 404);
-  return c.json(workoutWire({ ok: true }));
+  if (revoked === undefined) return c.json({ error: 'server_error' }, 500);
+  if (!revoked) return c.json({ error: 'not_found' }, 404);
+  return c.json({ ok: true });
 });
 
 apiRoutes.delete('/me/coach-grants', async (c) => {
@@ -1633,8 +1639,8 @@ apiRoutes.delete('/me/coach-grants', async (c) => {
     c.get('userId'),
     c.env.OWNER_APPLE_SUB,
   ).catch(() => undefined);
-  if (revoked === undefined) return c.json(workoutWire({ error: 'server_error' }), 500);
-  return c.json(workoutWire({ ok: true, revoked }));
+  if (revoked === undefined) return c.json({ error: 'server_error' }, 500);
+  return c.json({ ok: true, revoked });
 });
 
 // ---- groups (M2 — friends/family invite-gated containers) ----------------
@@ -1680,21 +1686,21 @@ apiRoutes.post('/groups', async (c) => {
   try {
     b = await c.req.json<{ name?: unknown }>();
   } catch {
-    return c.json(workoutWire({ error: 'invalid_json' }), 400);
+    return c.json({ error: 'invalid_json' }, 400);
   }
   if (typeof b.name !== 'string' || b.name.trim().length === 0) {
-    return c.json(workoutWire({ error: 'invalid_name' }), 400);
+    return c.json({ error: 'invalid_name' }, 400);
   }
   const group = await createGroup(c.env.DB, userId, b.name.trim());
   // Hydrate so the iOS client gets the full shape (creator listed as the
   // sole member) without a second roundtrip.
   const full = await getGroupWithMembers(c.env.DB, group.id, userId);
-  return c.json(workoutWire(full), 201);
+  return c.json(full, 201);
 });
 
 apiRoutes.get('/groups', async (c) => {
   const userId = c.get('userId');
-  return c.json(workoutWire({ groups: await listGroupsForUser(c.env.DB, userId) }));
+  return c.json({ groups: await listGroupsForUser(c.env.DB, userId) });
 });
 
 // Preview an invite by code (group name + state) so the in-app join-confirm
@@ -1706,7 +1712,7 @@ apiRoutes.get('/groups', async (c) => {
 // unambiguous). `code` is normalized inside getInvitePreview's lookup.
 apiRoutes.get('/groups/invite/:code', async (c) => {
   const code = c.req.param('code').trim();
-  return c.json(workoutWire(await getInvitePreview(c.env.DB, code)));
+  return c.json(await getInvitePreview(c.env.DB, code));
 });
 
 apiRoutes.get('/groups/:id', async (c) => {
@@ -1718,7 +1724,7 @@ apiRoutes.get('/groups/:id', async (c) => {
   const guard = await requireGroupMembership(c, userId, groupId);
   if (guard) return guard;
   const full = await getGroupWithMembers(c.env.DB, groupId, userId);
-  return c.json(workoutWire(full));
+  return c.json(full);
 });
 
 apiRoutes.post('/groups/:id/invites', async (c) => {
@@ -1731,9 +1737,9 @@ apiRoutes.post('/groups/:id/invites', async (c) => {
     // difference and shouldn't, since the only way to know a group id is
     // membership).
     if (!(await groupExists(c.env.DB, groupId))) {
-      return c.json(workoutWire({ error: 'not_found' }), 404);
+      return c.json({ error: 'not_found' }, 404);
     }
-    return c.json(workoutWire({ error: 'forbidden' }), 403);
+    return c.json({ error: 'forbidden' }, 403);
   }
   let b: { expires_at?: unknown };
   try {
@@ -1749,11 +1755,11 @@ apiRoutes.post('/groups/:id/invites', async (c) => {
     const v = b.expires_at;
     if (v === null) expiresAt = null;
     else if (typeof v === 'number' && Number.isFinite(v)) expiresAt = v;
-    else return c.json(workoutWire({ error: 'invalid_expires_at' }), 400);
+    else return c.json({ error: 'invalid_expires_at' }, 400);
   }
   const invite = await createInvite(c.env.DB, userId, groupId, expiresAt);
   return c.json(
-    workoutWire({ code: invite.code, group_id: invite.group_id, expires_at: invite.expires_at }),
+    { code: invite.code, group_id: invite.group_id, expires_at: invite.expires_at },
     201,
   );
 });
@@ -1764,10 +1770,10 @@ apiRoutes.post('/groups/join', async (c) => {
   try {
     b = await c.req.json<{ code?: unknown }>();
   } catch {
-    return c.json(workoutWire({ error: 'invalid_json' }), 400);
+    return c.json({ error: 'invalid_json' }, 400);
   }
   if (typeof b.code !== 'string' || b.code.length === 0) {
-    return c.json(workoutWire({ error: 'invalid_code' }), 400);
+    return c.json({ error: 'invalid_code' }, 400);
   }
   const result = await redeemInvite(c.env.DB, b.code.trim(), userId);
   if ('error' in result) {
@@ -1776,14 +1782,14 @@ apiRoutes.post('/groups/join', async (c) => {
     //   used     -> 410 (code was consumed)
     //   expired  -> 410 (code timed out)
     //   already_member -> 409 (you're already in this group; code NOT consumed)
-    if (result.error === 'unknown') return c.json(workoutWire(result), 404);
-    if (result.error === 'already_member') return c.json(workoutWire(result), 409);
-    return c.json(workoutWire(result), 410);
+    if (result.error === 'unknown') return c.json(result, 404);
+    if (result.error === 'already_member') return c.json(result, 409);
+    return c.json(result, 410);
   }
   // On success, hand back the freshly-joined group with members hydrated
   // so the iOS client can render the group page without a follow-up GET.
   const group = await getGroupWithMembers(c.env.DB, result.group_id, userId);
-  return c.json(workoutWire({ ok: true, group }));
+  return c.json({ ok: true, group });
 });
 
 apiRoutes.delete('/groups/:id/members/me', async (c) => {
@@ -1793,7 +1799,7 @@ apiRoutes.delete('/groups/:id/members/me', async (c) => {
   // returns false when no rows changed (already gone / never joined),
   // but per spec we still return 200 — the postcondition holds either way.
   const removed = await leaveGroup(c.env.DB, userId, groupId);
-  return c.json(workoutWire({ ok: true, removed }));
+  return c.json({ ok: true, removed });
 });
 
 apiRoutes.patch('/groups/:id/members/me', async (c) => {
@@ -1803,24 +1809,24 @@ apiRoutes.patch('/groups/:id/members/me', async (c) => {
   try {
     b = await c.req.json<{ display_name?: unknown }>();
   } catch {
-    return c.json(workoutWire({ error: 'invalid_json' }), 400);
+    return c.json({ error: 'invalid_json' }, 400);
   }
   if (!('display_name' in b)) {
-    return c.json(workoutWire({ error: 'missing_display_name' }), 400);
+    return c.json({ error: 'missing_display_name' }, 400);
   }
   const raw = b.display_name;
   if (raw !== null && typeof raw !== 'string') {
-    return c.json(workoutWire({ error: 'invalid_display_name' }), 400);
+    return c.json({ error: 'invalid_display_name' }, 400);
   }
   // Empty string is treated as null (clear). Mirrors the intervals creds
   // route's empty-string-as-null convention so an iOS form posting "" on
   // clear doesn't end up with an empty nickname.
   const displayName = typeof raw === 'string' && raw.length > 0 ? raw : null;
   const ok = await setGroupDisplayName(c.env.DB, userId, groupId, displayName);
-  if (!ok) return c.json(workoutWire({ error: 'forbidden' }), 403);
+  if (!ok) return c.json({ error: 'forbidden' }, 403);
   // Return the hydrated group so the iOS client can update its model.
   const full = await getGroupWithMembers(c.env.DB, groupId, userId);
-  return c.json(workoutWire(full));
+  return c.json(full);
 });
 
 // ---- M4: group feed + stats ---------------------------------------------
@@ -1847,10 +1853,10 @@ async function requireGroupMembership(
   groupId: string,
 ): Promise<Response | null> {
   if (!(await groupExists(c.env.DB, groupId))) {
-    return c.json(workoutWire({ error: 'not_found' }), 404);
+    return c.json({ error: 'not_found' }, 404);
   }
   if (!(await isGroupMember(c.env.DB, userId, groupId))) {
-    return c.json(workoutWire({ error: 'forbidden' }), 403);
+    return c.json({ error: 'forbidden' }, 403);
   }
   return null;
 }
@@ -1871,7 +1877,7 @@ apiRoutes.get('/groups/:id/feed', async (c) => {
   let sinceMs: number | null = null;
   if (sinceRaw != null) {
     const n = Number(sinceRaw);
-    if (!Number.isFinite(n)) return c.json(workoutWire({ error: 'invalid_since' }), 400);
+    if (!Number.isFinite(n)) return c.json({ error: 'invalid_since' }, 400);
     sinceMs = n;
   }
   const sinceIdRaw = c.req.query('since_id');
@@ -1892,13 +1898,13 @@ apiRoutes.get('/groups/:id/feed', async (c) => {
   // (occurred_at, id) DESC). iOS passes both fields back as ?since= and
   // ?since_id= to load the next page. null both when empty → end of stream.
   const tail = items.length === 0 ? null : items[items.length - 1]!;
-  return c.json(workoutWire({
+  return c.json({
     group_id: groupId,
     items,
     next_since: tail?.occurred_at ?? null,
     next_since_id: tail?.id ?? null,
     server_time: Date.now(),
-  }));
+  });
 });
 
 apiRoutes.get('/groups/:id/stats', async (c) => {
@@ -1912,13 +1918,13 @@ apiRoutes.get('/groups/:id/stats', async (c) => {
   // accepts — 5d would silently round, etc.
   const rangeRaw = c.req.query('range') ?? '7d';
   const m = /^(\d+)d$/.exec(rangeRaw);
-  if (!m) return c.json(workoutWire({ error: 'invalid_range' }), 400);
+  if (!m) return c.json({ error: 'invalid_range' }, 400);
   const days = Number(m[1]);
   if (!Number.isFinite(days) || days < 1 || days > 365) {
-    return c.json(workoutWire({ error: 'invalid_range' }), 400);
+    return c.json({ error: 'invalid_range' }, 400);
   }
   const members = await getGroupStats(c.env.DB, groupId, days, userId);
-  return c.json(workoutWire({ group_id: groupId, range: rangeRaw, members }));
+  return c.json({ group_id: groupId, range: rangeRaw, members });
 });
 
 // GET /groups/:id/activity?days=N — per-member DAILY activity series for
@@ -1941,5 +1947,5 @@ apiRoutes.get('/groups/:id/activity', async (c) => {
     if (Number.isFinite(n) && n > 0) days = Math.floor(n);
   }
   const members = await getGroupActivitySeries(c.env.DB, groupId, days, userId);
-  return c.json(workoutWire({ group_id: groupId, days, server_time: Date.now(), members }));
+  return c.json({ group_id: groupId, days, server_time: Date.now(), members });
 });

@@ -271,20 +271,20 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `POST /api/calendar/{date}/move` | Move one projected or unstarted workout to an empty date. The request pins the workout, active plan/version, both observed attempts and a caller UUID. Source rest, destination assignment and audit receipt commit atomically. Both attempts advance; an identical retry returns its original acknowledgement. A concurrent change to either date or the weekly schedule rejects the whole move. |
 | `PUT /api/calendar/{date}` | Assign one concrete date to a day (`workout_id`) or rest (`null`) without changing the recurring schedule or plan version. `expected_attempt=0` represents no observed assignment; the first assignment and every changed choice advance the session attempt, while an identical retry is idempotent. Started/completed sessions cannot be reassigned, and iOS also fences the mutation against a locally running workout before its first set creates the server session or a hard travel blackout. |
 
-Canonical routes use `/api/workouts`; `/api/days` remains an alias for one
-TestFlight compatibility cycle. Plan responses carry `workouts` plus deprecated
-`days`; workout references carry `workout_id` plus `day_template_id`. Requests
-accept either and reject conflicting dual fields. MCP registers `add_workout`,
-`update_workout` and `delete_workout`, retaining `add_day` and `update_day` during
-the cycle. Export schema v2 preserves `training.day_templates` alongside
-`training.workouts`. Snapshot schema v2 uses `workouts`; immutable v1 documents
-remain readable/restorable without rewriting history. The first iOS build reads
-both vocabularies and sends the old one. See the [server-first rollout](plans/workouts-and-multi-session/rollout.md)
-for the physical-schema transition and the later outgoing-client switch.
+Routes use `/api/workouts`; plan collections and references use `workouts` and
+`workout_id`. Retired `/api/days` routes and `add_day` / `update_day` MCP names
+are removed. Retired request fields fail before mutation. MCP registers
+`add_workout`, `update_workout` and `delete_workout`. Export schema v3 has only
+`training.workouts`; it still includes immutable historical snapshots and audit
+arguments verbatim. Snapshot schema v2 uses `workouts`; v1 documents remain
+readable/restorable without rewriting history. iOS writes and new caches use
+canonical names; old persisted snapshots and outbox intents remain readable.
+The Worker requires migration 0045, with no runtime SQL adaptation. See the
+[release boundary](plans/workouts-and-multi-session/rollout.md).
 
 In-app manual authoring uses the same `plans` / `workouts` /
 `template_exercises` tree and `plans.meta.schedule` that MCP uses. The Workouts
-screen creates and orders days, edits exercise prescriptions, and maps weekdays;
+screen creates and orders workouts, edits exercise prescriptions, and maps weekdays;
 the calendar writes only concrete `sessions` exceptions. These REST endpoints
 are thin wrappers over the shared service layer and audit as `actor='ios'`.
 Every recurring plan-tree write bumps `plans.version`; one-date exceptions do
@@ -353,7 +353,7 @@ version with a pinned target. `POST /api/plan/history/:version/restore` requires
 `expected_plan_id` and `expected_version`, restores as a new version, and rejects
 stale/foreign history or an active workout. Logged set values remain history;
 restore does not resurrect detached historical references. Account export schema
-version 2 includes snapshots, and account deletion removes them. See the
+version 3 includes snapshots, and account deletion removes them. See the
 [snapshot contract and release boundary](plans/completed/reversible-plan-management/decisions.md).
 
 ---
@@ -381,8 +381,7 @@ A saved substitution can resume even before the first set is logged.
 
 Release requires separate authority: apply migration 0050, deploy the reviewed
 Worker, verify its session-swap route and only then distribute the iOS build.
-Retain the existing workout rename compatibility gates. No production or app
-release is implied by repository delivery.
+No production or app release is implied by repository delivery.
 
 ## 5. MCP server — the product
 
@@ -416,13 +415,15 @@ Claude context-aware with zero tool calls.
   to today, creates a session, or substitutes completion. A stale attempt is
   rejected, and an identical retry adds no second discard audit.
 - `add_note({scope, ref_id?, body})`
-- `update_plan({name?, meta?, days, expected_version?})` → transactional upsert; a version mismatch returns structured `{conflict:true,current_version}` data in a normal JSON-RPC HTTP 200 response (Claude refetches + reapplies). The version is required when the current tree contains groups or the request explicitly supplies group fields, including nulls.
+- `update_plan({name?, meta?, workouts, expected_version?})` → transactional plan-tree replacement; a version mismatch returns structured `{conflict:true,current_version}` data in a normal JSON-RPC HTTP 200 response (Claude refetches + reapplies). The version is required when the current tree contains groups or the request explicitly supplies group fields, including nulls.
 - `update_exercise({target, patch})` → one slot (`target` = template_exercise_id or {day, exercise}).
 - `group_exercises({day, group_id, expected_version, exercises, round_rest, transition_rest?, target_sets?, order_index?})` → create/rewrite or move a group atomically. Use a caller-generated UUID and slot IDs for durable retries; unambiguous exercise names/aliases are also accepted.
 - `ungroup_exercises({group_id, expected_version})` → clear every member's group fields while preserving ordinary rests, through the same version and exact-retry boundary.
 - `swap_exercise({day, from_exercise, to_exercise})` — always preserves saved targets; validates them against the destination modality. The formerly ignored `carry_targets` option is no longer advertised.
 - `add_exercise({day, exercise, target_sets, target_reps, target_reps_max?, rest_seconds?, target_rpe?, progression?, order_index?})`
-- `add_day({name, day_label, order_index?, exercises?})`  ← "add a deadlift day"
+- `add_workout({name, day_label?, order_index?, tags?, archived_at?})` — create a reusable workout.
+- `update_workout({workout_id?, day?, patch})` — edit workout metadata in place.
+- `delete_workout({workout_id, expected_version})` — delete a workout while retaining logged history.
 - `adjust_today({intent:"deload|reduce_volume|reduce_intensity", magnitude?, day_label?})`
   changes recurring workout targets persistently; omitting a day affects the
   whole plan. Results name affected workouts, before/after changes and no-ops.

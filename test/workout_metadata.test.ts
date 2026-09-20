@@ -218,7 +218,7 @@ async function transportFixture() {
   return {api,tool};
 }
 
-it.each(['workouts','days'])('keeps %s REST aliases, sync metadata and permanent archive rejection consistent',async path=>{
+it.each(['workouts'])('keeps %s REST, sync metadata and permanent archive rejection consistent',async path=>{
   const {api}=await transportFixture();
   const created=await api(path,'POST',{name:'Hotel',tags:['travel']});
   expect(created.status).toBe(201);
@@ -230,15 +230,15 @@ it.each(['workouts','days'])('keeps %s REST aliases, sync metadata and permanent
   expect((await api(`${path}/${id}`,'PATCH',{archived_at:123,expected_version:tree.version})).status).toBe(200);
   const synced=(await api('state')).body;
   expect(synced.plan.workouts[0]).toMatchObject({id,tags:'["travel"]',archived_at:123});
-  expect(synced.plan.days).toEqual(synced.plan.workouts);
-  expect(await api('sessions','POST',{date:'2026-09-21',day_template_id:id})).toMatchObject({status:422,body:{error:'unknown_day'}});
-  expect(await api('calendar/2026-09-21','PUT',{day_template_id:id,expected_attempt:0})).toMatchObject({status:400,body:{error:'unknown_day_ref'}});
+  expect(synced.plan).not.toHaveProperty('days');
+  expect(await api('sessions','POST',{date:'2026-09-21',workout_id:id})).toMatchObject({status:422,body:{error:'unknown_day'}});
+  expect(await api('calendar/2026-09-21','PUT',{workout_id:id,expected_attempt:0})).toMatchObject({status:400,body:{error:'unknown_day_ref'}});
   expect((await api(`${path}/${id}/exercises/${slot.body.id}`,'PATCH',{target_reps:10})).status).toBe(404);
   expect((await api(`${path}/${id}/exercises/${slot.body.id}`,'DELETE')).status).toBe(404);
   expect((await api('plan/active')).body.workouts[0].exercises[0]).toMatchObject({id:slot.body.id,target_reps:5});
 });
 
-it.each(['day','workout'])('exposes tags and archive through add_%s and update_%s with atomic coach notes',async suffix=>{
+it.each(['workout'])('exposes tags and archive through add_%s and update_%s with atomic coach notes',async suffix=>{
   const {api,tool}=await transportFixture();
   const created=await tool(`add_${suffix}`,{name:'Hotel',tags:['travel']});
   expect(created).toMatchObject({tags:'["travel"]',archived_at:null});

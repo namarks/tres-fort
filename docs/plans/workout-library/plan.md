@@ -169,7 +169,7 @@ No second editor, no per-session template copies, no weeks table.
     continue into the existing prescription editor after creation. Rep exercises
     start at 3 × 8, holds at 3 × 45 seconds, cardio at five minutes, with zero
     load pending member selection and manual progression.
-  - Extend `POST /api/workouts` and its released `/api/days` alias with optional
+  - Extend `POST /api/workouts` with optional
     `exercise_ids` (1–50 unique catalog IDs). Require observed plan ID/version
     for this path. Validate the complete list before one atomic workout/slot/
     version/audit/snapshot write; an uncertain retry keeps its captured request.
@@ -334,7 +334,7 @@ No second editor, no per-session template copies, no weeks table.
     Today. Add a test that each path returns the same not-found result for
     an archived id.
     `update_plan`'s rebuild must carry both fields through the day remap.
-  - Expose both fields through `get_current_plan`, `add_day`, `update_day`,
+  - Expose both fields through `get_current_plan`, `add_workout`, `update_workout`,
     and `PATCH /api/workouts/{id}`; `/api/state` carries them in the plan tree.
   - When a date falls inside a `plans.meta.trips` range, the calendar and
     Today pickers surface `travel`-tagged workouts first. This is ordering,
@@ -583,7 +583,7 @@ remain unimplemented and outside the completed goal's scope.
   start may change kind only while advancing the observed attempt and only
   when no live sets remain. Live/completed sessions cannot change kind. This
   preserves the `(user_id, date)` rule and rejects old queued set intents.
-- Saving uses a dedicated transaction endpoint because ordinary `add_day`
+- Saving uses a dedicated transaction endpoint because ordinary `add_workout`
   cannot atomically validate the reviewed source, repoint the session and
   advance its attempt. It reuses the same plan version claim, prescription
   validation, audit and snapshot writer. Migration 0054 retains an account-

@@ -115,7 +115,7 @@ AI coaching.
   **paused**; first-workout entry and starters are delivered. Reminders/widgets,
   compact upcoming sessions and actionable progress empty states remain future
   slices.
-- [Workout library](workout-library/plan.md) — **active**; present
+- [Workout library](workout-library/plan.md) — **gated**; present
   reusable workouts as the primary object, let a member drop one onto any
   date, add tags and archive, and support a freestyle session that can be
   saved as a workout. The weekly routine becomes one optional use of the
@@ -123,12 +123,13 @@ AI coaching.
   search/filter behavior; both shipped with the recent usability fixes in
   internal TestFlight 1.0 (43). P1 tags/archive is implemented; migration, Worker
   deployment and client distribution await separate release authority. P2
-  freestyle is next; preview thumbnails remain planned pending activation.
+  freestyle and Save as workout are implemented in PR #217, with release
+  awaiting separate authority; preview thumbnails remain planned pending activation.
 - [Workouts and multi-session days](workouts-and-multi-session/plan.md) —
-  **gated**; the `day_templates` to `workouts` rename is live server-side with
-  a compatibility window, and every shipped client still writes the legacy
-  vocabulary. The canonical-writing client rollout waits on owner authority and
-  the deferred canonical-route checks; ordered sessions per date follow.
+  **active**; the owner retired legacy-client support. P0(c) removed old wire
+  contracts and physical-schema adaptation, preserving historical data. Canonical
+  Worker/client release remains separately gated; ordered sessions per date
+  follow as the next repository feature slice.
 [Supersets and circuits](completed/supersets-and-circuits/plan.md) are retained
 as completed repository history: shared coach/member authoring, alternating
 round execution and recovery, separate transition/round rests, and compatible

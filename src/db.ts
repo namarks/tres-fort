@@ -9,7 +9,6 @@ import { applicableSessionSwap, parseSessionExerciseSwaps } from './sessionExerc
 import { parseTrainingProfile, starterWorkouts, type TrainingProfile } from './trainingProfile';
 import { sharedText, type GroupReportReason } from './groupSafety';
 import { APP_REVIEW_SUB } from './appReview';
-import { shareWorkoutSchemaCache, workoutDB } from './workoutSchema';
 import { validActivitySourceTime } from './activityTime';
 import { diagnosticErrorType } from './errors';
 // Service layer: all D1 access goes through here so REST (now) and MCP
@@ -95,7 +94,7 @@ interface SetPrescriptionContext { plan_id: string; version: number; day_id: str
 async function targetsForSetPrescription(
   db: D1Database, userId: string, context: SetPrescriptionContext, capturedAt: number,
 ): Promise<string | null> {
-  const stored = await workoutDB(db).prepare(
+  const stored = await db.prepare(
     'SELECT document FROM plan_snapshots WHERE user_id=?1 AND plan_id=?2 AND version=?3')
     .bind(userId, context.plan_id, context.version).first<{ document: string }>();
   if (!stored) return null;
@@ -216,7 +215,6 @@ export function createD1UsageObserver(db: D1Database): D1UsageObserver {
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
-  shareWorkoutSchemaCache(measuredDb, db);
   return { db: measuredDb, usage };
 }
 
@@ -277,7 +275,7 @@ export async function accountDeletionContinuationMatches(
   idempotencyKey: string,
 ): Promise<boolean> {
   if (!isAccountDeletionKey(idempotencyKey)) return false;
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(
       `SELECT idempotency_key_sha256
          FROM account_deletion_intents WHERE user_id = ?1
@@ -299,7 +297,7 @@ export async function isAccountDeletionInProgress(
   userId: string,
 ): Promise<boolean> {
   return (
-    (await workoutDB(db)
+    (await db
       .prepare(
         'SELECT 1 AS x FROM account_deletion_intents WHERE user_id = ?1',
       )
@@ -318,7 +316,7 @@ export async function storeAppleRefreshToken(
   refreshToken: string,
 ): Promise<boolean> {
   if (!refreshToken) return false;
-  const result = await workoutDB(db)
+  const result = await db
     .prepare(
       `INSERT INTO apple_refresh_tokens (user_id, refresh_token, updated_at)
        SELECT ?1, ?2, ?3
@@ -357,7 +355,7 @@ export async function beginAppleGrantExchange(
 ): Promise<boolean> {
   if (!isAccountDeletionKey(reservationId)) return false;
   const staleBefore = nowMs - APPLE_GRANT_EXCHANGE_FRESH_MS;
-  const result = await workoutDB(db)
+  const result = await db
     .prepare(
       `INSERT INTO apple_grant_exchange_state
          (user_id, reservation_id, active_since, revocation_uncertain)
@@ -405,7 +403,7 @@ export async function markAppleGrantExchangeUncertain(
   reservationId: string,
 ): Promise<boolean> {
   if (!isAccountDeletionKey(reservationId)) return false;
-  const result = await workoutDB(db)
+  const result = await db
     .prepare(
       `UPDATE apple_grant_exchange_state
           SET reservation_id = NULL,
@@ -433,8 +431,8 @@ export async function finishAppleGrantExchange(
 ): Promise<boolean> {
   if (!isAccountDeletionKey(reservationId) || !refreshToken) return false;
   const ts = now();
-  const [stored, retained] = await workoutDB(db).batch([
-    workoutDB(db)
+  const [stored, retained] = await db.batch([
+    db
       .prepare(
         `INSERT INTO apple_refresh_tokens (user_id, refresh_token, updated_at)
          SELECT s.user_id, ?3, ?4
@@ -453,7 +451,7 @@ export async function finishAppleGrantExchange(
            updated_at = excluded.updated_at`,
       )
       .bind(userId, reservationId, refreshToken, ts),
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE apple_grant_exchange_state
             SET active_since = ?3
@@ -483,15 +481,15 @@ export async function acknowledgeAppleGrantExchange(
   reservationId: string,
 ): Promise<boolean> {
   if (!isAccountDeletionKey(reservationId)) return false;
-  const [cleared, removed] = await workoutDB(db).batch([
-    workoutDB(db)
+  const [cleared, removed] = await db.batch([
+    db
       .prepare(
         `UPDATE apple_grant_exchange_state
             SET reservation_id = NULL, active_since = NULL
           WHERE user_id = ?1 AND reservation_id = ?2`,
       )
       .bind(userId, reservationId),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM apple_grant_exchange_state
           WHERE user_id = ?1
@@ -515,7 +513,7 @@ export async function acknowledgeAppleGrantExchange(
 export async function isOwnerDeletionTombstoned(
   db: D1Database,
 ): Promise<boolean> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare('SELECT 1 AS x FROM owner_deletion_tombstone WHERE singleton = 1')
     .first<{ x: number }>();
   return row !== null;
@@ -527,7 +525,7 @@ export async function isOwnerDeletionTombstoned(
  * from treating the earliest surviving member as the new distinguished owner.
  */
 async function hasOwnerDeletionReceipt(db: D1Database): Promise<boolean> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(
       `SELECT 1 AS x FROM account_deletion_receipts
         WHERE owner_tombstoned = 1 LIMIT 1`,
@@ -541,7 +539,7 @@ export async function isDeletedOwnerAppleSub(
   db: D1Database,
   appleSub: string,
 ): Promise<boolean> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(
       'SELECT apple_sub_sha256 FROM owner_deletion_tombstone WHERE singleton = 1',
     )
@@ -556,7 +554,7 @@ export async function findUserByAppleSub(
   db: D1Database,
   appleSub: string,
 ): Promise<User | null> {
-  return workoutDB(db)
+  return db
     .prepare('SELECT * FROM users WHERE apple_sub = ?1')
     .bind(appleSub)
     .first<User>();
@@ -571,7 +569,7 @@ export async function upsertUser(
   const existing = await findUserByAppleSub(db, appleSub);
   if (existing) {
     if (displayName && !existing.display_name) {
-      await workoutDB(db)
+      await db
         .prepare('UPDATE users SET display_name = ?2 WHERE id = ?1')
         .bind(existing.id, displayName)
         .run();
@@ -602,7 +600,7 @@ export async function upsertUser(
     mcp_passphrase_hash: null,
     mcp_passphrase_salt: null,
   };
-  await workoutDB(db)
+  await db
     .prepare(
       'INSERT INTO users (id, apple_sub, email, display_name, created_at) VALUES (?1,?2,?3,?4,?5)',
     )
@@ -626,7 +624,7 @@ export async function upsertUserUnlessDeletedOwner(
   const candidateId = uuid();
   const createdAt = now();
   const appleSubHash = await sha256Hex(appleSub);
-  await workoutDB(db)
+  await db
     .prepare(
       `INSERT INTO users (id, apple_sub, email, display_name, created_at)
        SELECT ?1, ?2, ?3, ?4, ?5
@@ -638,7 +636,7 @@ export async function upsertUserUnlessDeletedOwner(
     )
     .bind(candidateId, appleSub, email, displayName, createdAt, appleSubHash)
     .run();
-  return workoutDB(db)
+  return db
     .prepare(
       `SELECT u.* FROM users u
         WHERE u.apple_sub = ?1
@@ -688,7 +686,7 @@ async function insertOwnerUnlessTombstoned(
     mcp_passphrase_hash: null,
     mcp_passphrase_salt: null,
   };
-  await workoutDB(db)
+  await db
     .prepare(
       `INSERT INTO users (id, apple_sub, email, display_name, created_at)
        SELECT ?1, ?2, ?3, ?4, ?5
@@ -708,7 +706,7 @@ async function insertOwnerUnlessTombstoned(
       APP_REVIEW_SUB,
     )
     .run();
-  return workoutDB(db)
+  return db
     .prepare(
       `SELECT u.* FROM users u
         WHERE u.apple_sub = ?1
@@ -736,7 +734,7 @@ export async function claimOrCreateOwner(
   ownerSubLocked: boolean,
 ): Promise<User | null> {
   if (appleSub === APP_REVIEW_SUB) return null;
-  const byApple = await workoutDB(db)
+  const byApple = await db
     .prepare(
       `SELECT u.* FROM users u
         WHERE u.apple_sub = ?1
@@ -751,7 +749,7 @@ export async function claimOrCreateOwner(
   if (!ownerSubLocked) {
     const bootstrap = await findUserByAppleSub(db, BOOTSTRAP_APPLE_SUB);
     if (bootstrap) {
-      const claimed = await workoutDB(db)
+      const claimed = await db
         .prepare(
           `UPDATE users
               SET apple_sub = ?2, email = ?3, display_name = ?4
@@ -770,7 +768,7 @@ export async function claimOrCreateOwner(
         )
         .run();
       if ((claimed.meta.changes ?? 0) === 1) {
-        return workoutDB(db)
+        return db
           .prepare(
             `SELECT u.* FROM users u
               WHERE u.id = ?1 AND u.apple_sub = ?2
@@ -845,7 +843,7 @@ export async function findOwnerRow(
 ): Promise<User | null> {
   if (ownerAppleSub === APP_REVIEW_SUB) return null;
   if (ownerAppleSub) {
-    return await workoutDB(db)
+    return await db
       .prepare(
         `SELECT u.* FROM users u
           WHERE u.apple_sub = ?1
@@ -857,7 +855,7 @@ export async function findOwnerRow(
       .first<User>();
   }
   if (await hasOwnerDeletionReceipt(db)) {
-    return await workoutDB(db)
+    return await db
       .prepare(
         `SELECT u.* FROM users u
           WHERE u.apple_sub = ?1
@@ -869,7 +867,7 @@ export async function findOwnerRow(
       .bind(BOOTSTRAP_APPLE_SUB)
       .first<User>();
   }
-  return await workoutDB(db)
+  return await db
     .prepare(
       `SELECT u.* FROM users u
         WHERE u.apple_sub != ?1 AND NOT EXISTS (
@@ -895,7 +893,7 @@ export async function isBootstrapClaimEligible(db: D1Database): Promise<boolean>
   ) {
     return false;
   }
-  const rows = await workoutDB(db)
+  const rows = await db
     .prepare('SELECT apple_sub FROM users WHERE apple_sub != ?1')
     .bind(APP_REVIEW_SUB)
     .all<{ apple_sub: string }>();
@@ -935,7 +933,7 @@ async function getAccountDeletionReceipt(
   db: D1Database,
   userId: string,
 ): Promise<AccountDeletionReceiptRow | null> {
-  return workoutDB(db)
+  return db
     .prepare(
       `SELECT idempotency_key_sha256, owner_tombstoned, apple_revocation
          FROM account_deletion_receipts WHERE user_id = ?1`,
@@ -981,8 +979,8 @@ export async function deleteUserAccount(
   // Apple exchange reservation blocks the claim. Sticky uncertainty or a
   // stale active exchange is consumed into an immediately-sticky manual
   // outcome, so deletion can never report revocation of only an older grant.
-  await workoutDB(db).batch([
-    workoutDB(db)
+  await db.batch([
+    db
       .prepare(
         `INSERT OR IGNORE INTO account_deletion_intents
            (user_id, idempotency_key_sha256, apple_revocation, created_at)
@@ -1010,7 +1008,7 @@ export async function deleteUserAccount(
                 )`,
       )
       .bind(userId, idempotencyKeyHash, claimTime, staleExchangeBefore),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM apple_grant_exchange_state
           WHERE user_id = ?1
@@ -1030,7 +1028,7 @@ export async function deleteUserAccount(
       : { error: 'not_found' };
   }
 
-  let intent = await workoutDB(db)
+  let intent = await db
     .prepare(
       `SELECT idempotency_key_sha256, apple_revocation
          FROM account_deletion_intents WHERE user_id = ?1`,
@@ -1045,7 +1043,7 @@ export async function deleteUserAccount(
     // proof that the account disappeared. iOS reserves 404 for cross-device
     // completion and must not erase local state for this case.
     if (intent) return { error: 'conflict' };
-    const liveUser = await workoutDB(db)
+    const liveUser = await db
       .prepare('SELECT 1 AS x FROM users WHERE id = ?1')
       .bind(userId)
       .first<{ x: number }>();
@@ -1054,7 +1052,7 @@ export async function deleteUserAccount(
 
   let appleRevocation = intent.apple_revocation;
   if (appleRevocation === null) {
-    const credential = await workoutDB(db)
+    const credential = await db
       .prepare(
         'SELECT refresh_token FROM apple_refresh_tokens WHERE user_id = ?1',
       )
@@ -1082,7 +1080,7 @@ export async function deleteUserAccount(
     // Persist provider truth on the intent immediately. If local finalization
     // is interrupted, a matching retry skips provider I/O and carries this
     // exact outcome into the durable receipt.
-    await workoutDB(db)
+    await db
       .prepare(
         `UPDATE account_deletion_intents
             SET apple_revocation = ?3
@@ -1092,7 +1090,7 @@ export async function deleteUserAccount(
       )
       .bind(userId, idempotencyKeyHash, appleRevocation)
       .run();
-    intent = await workoutDB(db)
+    intent = await db
       .prepare(
         `SELECT idempotency_key_sha256, apple_revocation
            FROM account_deletion_intents WHERE user_id = ?1`,
@@ -1117,7 +1115,7 @@ export async function deleteUserAccount(
     appleRevocation = intent.apple_revocation;
   }
 
-  const user = await workoutDB(db)
+  const user = await db
     .prepare('SELECT * FROM users WHERE id = ?1')
     .bind(userId)
     .first<User>();
@@ -1132,7 +1130,7 @@ export async function deleteUserAccount(
   const deletingOwner = owner?.id === userId;
   const deletionTime = now();
   const statements: D1PreparedStatement[] = [
-    workoutDB(db)
+    db
       .prepare(
         `INSERT OR IGNORE INTO account_deletion_receipts
            (user_id, idempotency_key_sha256, owner_tombstoned, deleted_at,
@@ -1150,7 +1148,7 @@ export async function deleteUserAccount(
 
   if (deletingOwner) {
     statements.push(
-      workoutDB(db)
+      db
         .prepare(
           `INSERT INTO owner_deletion_tombstone
              (singleton, apple_sub_sha256, deleted_at)
@@ -1165,7 +1163,7 @@ export async function deleteUserAccount(
 
   // Empty groups owned by the caller have no shared state to preserve.
   statements.push(
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM group_invites
           WHERE group_id IN (
@@ -1178,7 +1176,7 @@ export async function deleteUserAccount(
           )`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM group_members
           WHERE group_id IN (
@@ -1191,7 +1189,7 @@ export async function deleteUserAccount(
           )`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM groups
           WHERE created_by = ?1
@@ -1204,7 +1202,7 @@ export async function deleteUserAccount(
 
     // Preserve a shared group by transferring its creator anchor before the
     // deleting user's membership and users row disappear.
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE groups
             SET created_by = (
@@ -1224,14 +1222,14 @@ export async function deleteUserAccount(
     // Invites created by the account are credentials and are revoked. Invites
     // another member created remain, but no longer retain used_by attribution
     // to the deleted account.
-    workoutDB(db).prepare('DELETE FROM group_invites WHERE created_by = ?1').bind(userId),
-    workoutDB(db).prepare('UPDATE group_invites SET used_by = NULL WHERE used_by = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM group_members WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM group_invites WHERE created_by = ?1').bind(userId),
+    db.prepare('UPDATE group_invites SET used_by = NULL WHERE used_by = ?1').bind(userId),
+    db.prepare('DELETE FROM group_members WHERE user_id = ?1').bind(userId),
 
     // Session-dependent ledgers and logs must go before their canonical
     // sessions; the plan tree follows sessions because those rows hold plan/day
     // references under strict foreign keys.
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM session_aliases
           WHERE canonical_session_id IN (
@@ -1239,22 +1237,22 @@ export async function deleteUserAccount(
           )`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM session_load_exports
           WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?1)`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM set_logs
           WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?1)`,
       )
       .bind(userId),
-    workoutDB(db).prepare('DELETE FROM freestyle_workout_receipts WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM sessions WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM plan_snapshots WHERE user_id = ?1').bind(userId),
-    workoutDB(db)
+    db.prepare('DELETE FROM freestyle_workout_receipts WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM sessions WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM plan_snapshots WHERE user_id = ?1').bind(userId),
+    db
       .prepare(
         `DELETE FROM template_exercises
           WHERE workout_id IN (
@@ -1264,39 +1262,39 @@ export async function deleteUserAccount(
           )`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM workouts
           WHERE plan_id IN (SELECT id FROM plans WHERE user_id = ?1)`,
       )
       .bind(userId),
-    workoutDB(db).prepare('DELETE FROM plans WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM plans WHERE user_id = ?1').bind(userId),
 
-    workoutDB(db).prepare('DELETE FROM training_profiles WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM starter_workout_receipts WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM activities WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM external_events WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM external_activities WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM notes WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM audit_log WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM intervals_oauth_states WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM oauth_codes WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM oauth_tokens WHERE user_id = ?1').bind(userId),
-    workoutDB(db).prepare('DELETE FROM oauth_grants WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM training_profiles WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM starter_workout_receipts WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM activities WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM external_events WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM external_activities WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM notes WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM audit_log WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM intervals_oauth_states WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM oauth_codes WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM oauth_tokens WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM oauth_grants WHERE user_id = ?1').bind(userId),
   );
 
   // Tokens issued before multi-user MCP have a NULL principal and resolve to
   // the owner. Revoke them only when the distinguished owner is deleted.
   if (deletingOwner) {
     statements.push(
-      workoutDB(db).prepare('DELETE FROM oauth_codes WHERE user_id IS NULL'),
-      workoutDB(db).prepare('DELETE FROM oauth_tokens WHERE user_id IS NULL'),
-      workoutDB(db).prepare('DELETE FROM oauth_grants WHERE user_id IS NULL'),
+      db.prepare('DELETE FROM oauth_codes WHERE user_id IS NULL'),
+      db.prepare('DELETE FROM oauth_tokens WHERE user_id IS NULL'),
+      db.prepare('DELETE FROM oauth_grants WHERE user_id IS NULL'),
     );
   }
 
-  statements.push(workoutDB(db).prepare('DELETE FROM users WHERE id = ?1').bind(userId));
-  await workoutDB(db).batch(statements);
+  statements.push(db.prepare('DELETE FROM users WHERE id = ?1').bind(userId));
+  await db.batch(statements);
   const receipt = await getAccountDeletionReceipt(db, userId);
   if (!receipt || receipt.idempotency_key_sha256 !== idempotencyKeyHash) {
     return { error: 'not_found' };
@@ -1359,7 +1357,7 @@ export async function setUserMcpPassphrase(
   const saltBytes = crypto.getRandomValues(new Uint8Array(16));
   const salt = btoa(String.fromCharCode(...saltBytes));
   const hash = await pbkdf2(passphrase, salt);
-  await workoutDB(db)
+  await db
     .prepare('UPDATE users SET mcp_passphrase_hash = ?2, mcp_passphrase_salt = ?3 WHERE id = ?1')
     .bind(userId, hash, salt)
     .run();
@@ -1376,7 +1374,7 @@ export async function findUserByMcpPassphrase(
   passphrase: string,
 ): Promise<string | null> {
   if (!passphrase) return null;
-  const rows = await workoutDB(db)
+  const rows = await db
     .prepare(
       'SELECT id, mcp_passphrase_hash, mcp_passphrase_salt FROM users WHERE mcp_passphrase_hash IS NOT NULL AND mcp_passphrase_salt IS NOT NULL',
     )
@@ -1443,7 +1441,7 @@ export async function getUserTimezone(
   db: D1Database,
   userId: string,
 ): Promise<string | null> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare('SELECT timezone FROM users WHERE id = ?1')
     .bind(userId)
     .first<{ timezone: string | null }>();
@@ -1464,7 +1462,7 @@ export async function setUserTimezoneIfChanged(
   if (!tz || !isValidTimezone(tz)) return;
   const current = await getUserTimezone(db, userId);
   if (current === tz) return;
-  await workoutDB(db).prepare('UPDATE users SET timezone = ?2 WHERE id = ?1').bind(userId, tz).run();
+  await db.prepare('UPDATE users SET timezone = ?2 WHERE id = ?1').bind(userId, tz).run();
 }
 
 // ---- intervals.icu credentials (per-user; M1 multi-user foundation) ------
@@ -1500,7 +1498,7 @@ export async function activateIntervalsSourceFence(
   if (!Number.isSafeInteger(activatedAt) || activatedAt < 0) {
     throw new Error('intervals_source_fence_invalid_activation_time');
   }
-  const activated = await workoutDB(db)
+  const activated = await db
     .prepare(
       `UPDATE intervals_source_fence
           SET enabled = 1,
@@ -1532,7 +1530,7 @@ export async function activateIntervalsSourceFence(
     };
   }
 
-  const current = await workoutDB(db)
+  const current = await db
     .prepare(
       `SELECT enabled, activated_at,
               activated_user_count, activated_connected_count
@@ -1581,7 +1579,7 @@ export interface IntervalsUserCreds {
 export async function listUsersWithIntervalsCreds(
   db: D1Database,
 ): Promise<IntervalsUserCreds[]> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       `SELECT id, intervals_api_key, intervals_oauth_access_token,
               intervals_oauth_refresh_token, intervals_oauth_expires_at,
@@ -1630,7 +1628,7 @@ export async function getUserIntervalsCreds(
   auth_error_at: number | null;
   credential_generation: number;
 }> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       `SELECT intervals_api_key AS api_key,
               intervals_oauth_access_token AS access_token,
@@ -1673,7 +1671,7 @@ export async function getUserByIntervalsAthleteId(
   db: D1Database,
   athleteId: string,
 ): Promise<User | null> {
-  return await workoutDB(db)
+  return await db
     .prepare(`SELECT * FROM users WHERE ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?1`)
     .bind(athleteId)
     .first<User>();
@@ -1691,7 +1689,7 @@ export async function userHasTouchedIntervalsCreds(
   db: D1Database,
   userId: string,
 ): Promise<boolean> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       "SELECT 1 FROM audit_log WHERE user_id = ?1 AND tool = 'set_intervals_creds' LIMIT 1",
     )
@@ -1759,7 +1757,7 @@ export async function seedOwnerIntervalsCredsFromEnv(
   }
   // No env values to seed from → dormant.
   if (!apiKey || !athleteId) return listUsersWithIntervalsCreds(db);
-  await workoutDB(db)
+  await db
     .prepare(
       `UPDATE users
           SET intervals_api_key = ?2,
@@ -1810,7 +1808,7 @@ export async function setUserIntervalsCreds(
   // The API-key and OAuth schemes are mutually exclusive: writing an API key
   // clears any OAuth token, and a disconnect (nulls) clears BOTH schemes'
   // columns so "not connected" is unambiguous across the codebase.
-  const { results: [row] } = await workoutDB(db)
+  const { results: [row] } = await db
     .prepare(
       `UPDATE users
           SET intervals_api_key = ?2,
@@ -1884,7 +1882,7 @@ async function writeUserIntervalsOAuth(
   athleteId: string,
   expectedGeneration?: number,
 ): Promise<{ credential_generation: number; activity_sync_after: number | null } | null> {
-  const { results: [row] } = await workoutDB(db)
+  const { results: [row] } = await db
     .prepare(
       `UPDATE users
           SET intervals_oauth_access_token = ?2,
@@ -1975,11 +1973,11 @@ export async function createIntervalsOAuthState(
   const state =
     crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
   const ts = now();
-  const account = await workoutDB(db).prepare(
+  const account = await db.prepare(
     'SELECT intervals_credential_generation AS generation FROM users WHERE id = ?1',
   ).bind(userId).first<{ generation: number }>();
   if (!account) throw new Error('intervals_user_not_found');
-  const inserted = await workoutDB(db)
+  const inserted = await db
     .prepare(
       `INSERT INTO intervals_oauth_states (state, user_id, created_at, expires_at, credential_generation)
        SELECT ?1, ?2, ?3, ?4, ?5 FROM users
@@ -2015,14 +2013,14 @@ export async function consumeIntervalsOAuthAttempt(
   // in one statement, so two concurrent callbacks (browser preload, double-tap,
   // replay) can't both observe the same valid state — only one DELETE returns
   // the row, the other gets nothing.
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(`DELETE FROM intervals_oauth_states WHERE state = ?1
       RETURNING user_id, expires_at, credential_generation`)
     .bind(state)
     .first<{ user_id: string; expires_at: number; credential_generation: number | null }>();
   // Best-effort sweep of any OTHER now-expired rows (kept out of the atomic
   // statement above so it never affects the single-use result).
-  await workoutDB(db).prepare('DELETE FROM intervals_oauth_states WHERE expires_at < ?1').bind(ts).run();
+  await db.prepare('DELETE FROM intervals_oauth_states WHERE expires_at < ?1').bind(ts).run();
   if (!row || row.expires_at < ts || row.credential_generation === null) return null;
   return { user_id: row.user_id, credential_generation: row.credential_generation };
 }
@@ -2116,7 +2114,7 @@ function intervalsStatus(row: IntervalsStatusRow | null): IntervalsConnectionSta
 }
 
 export async function getIntervalsConnectionStatus(db: D1Database, userId: string): Promise<IntervalsConnectionStatus> {
-  return intervalsStatus(await workoutDB(db).prepare(`SELECT
+  return intervalsStatus(await db.prepare(`SELECT
     ${INTERVALS_EFFECTIVE_ATHLETE_SQL} AS intervals_effective_athlete_id,
     intervals_auth_error_at, intervals_credential_generation, intervals_activities_synced_at
     FROM users WHERE id = ?1`).bind(userId).first<IntervalsStatusRow>());
@@ -2129,7 +2127,7 @@ export interface TrainingProfileState {
 }
 
 export async function getTrainingProfile(db: D1Database, userId: string): Promise<TrainingProfileState> {
-  const row = await workoutDB(db).prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1')
+  const row = await db.prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1')
     .bind(userId).first<{ document: string; version: number; updated_at: number }>();
   return row ? { profile: JSON.parse(row.document) as TrainingProfile, version: row.version, updated_at: row.updated_at }
     : { profile: null, version: 0, updated_at: null };
@@ -2141,18 +2139,18 @@ export async function saveTrainingProfile(db: D1Database, userId: string, input:
   if (!profile || !Number.isSafeInteger(expectedVersion) || expectedVersion < 0) return { error: 'invalid_fields' } as const;
   const document = JSON.stringify(profile);
   const ts = now();
-  const results = await workoutDB(db).batch<{ document: string; version: number; updated_at: number }>([
-    workoutDB(db).prepare(`INSERT INTO training_profiles (user_id,document,version,updated_at)
+  const results = await db.batch<{ document: string; version: number; updated_at: number }>([
+    db.prepare(`INSERT INTO training_profiles (user_id,document,version,updated_at)
       SELECT ?1,?2,1,?3 WHERE ?4=0
         AND EXISTS (SELECT 1 FROM users WHERE id=?1)
         AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id=?1)
         AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id=?1)
       ON CONFLICT(user_id) DO NOTHING`).bind(userId, document, ts, expectedVersion),
-    workoutDB(db).prepare(`UPDATE training_profiles SET document=?2,version=version+1,updated_at=MAX(updated_at+1,?3)
+    db.prepare(`UPDATE training_profiles SET document=?2,version=version+1,updated_at=MAX(updated_at+1,?3)
       WHERE user_id=?1 AND version=?4 AND document<>?2
         AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id=?1)
         AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id=?1)`).bind(userId, document, ts, expectedVersion),
-    workoutDB(db).prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1').bind(userId),
+    db.prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1').bind(userId),
   ]);
   const saved = results[2]?.results[0];
   if (!saved || saved.document !== document) return { conflict: true } as const;
@@ -2170,7 +2168,7 @@ export async function getStarterWorkouts(db: D1Database, userId: string) {
     }),
   })) : [];
   const tree = await getPlanTree(db, userId);
-  const accepted = await workoutDB(db).prepare('SELECT 1 AS accepted FROM starter_workout_receipts WHERE user_id=?1')
+  const accepted = await db.prepare('SELECT 1 AS accepted FROM starter_workout_receipts WHERE user_id=?1')
     .bind(userId).first();
   return { profile_version: state.version, can_accept: !accepted && (!tree || tree.workouts.length === 0), workouts };
 }
@@ -2181,7 +2179,7 @@ interface StarterReceipt {
 
 /** First-workout creation is atomic and never replaces or appends to an existing library. */
 export async function acceptStarterWorkout(db: D1Database, userId: string, starterId: string, profileVersion: number) {
-  const receipt = () => workoutDB(db).prepare(
+  const receipt = () => db.prepare(
     'SELECT starter_id,profile_version,plan_id,starter_workout_id AS workout_id,version FROM starter_workout_receipts WHERE user_id=?1',
   ).bind(userId).first<StarterReceipt>();
   const replay = await receipt();
@@ -2200,7 +2198,7 @@ export async function acceptStarterWorkout(db: D1Database, userId: string, start
     args: { starter_id: starterId, profile_version: profileVersion }, reason: 'Member accepted a starter workout.' };
   const guarded = `EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND version=?3 AND plan_write_nonce=?4)`;
   const statements = [
-    workoutDB(db).prepare(`UPDATE plans SET plan_write_nonce=?4,version=-version
+    db.prepare(`UPDATE plans SET plan_write_nonce=?4,version=-version
       WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce IS NULL
         AND EXISTS (SELECT 1 FROM training_profiles WHERE user_id=?2 AND version=?5)
         AND NOT EXISTS (SELECT 1 FROM starter_workout_receipts WHERE user_id=?2)
@@ -2211,16 +2209,16 @@ export async function acceptStarterWorkout(db: D1Database, userId: string, start
       .bind(plan.id, userId, plan.version, nonce, profileVersion),
     preparePlanSnapshotInsert(db, { userId, planId: plan.id, version: plan.version, actor: 'system',
       operation: 'baseline', createdAt: ts, ignoreExisting: true, writeNonce: nonce, databaseVersion: -plan.version }),
-    workoutDB(db).prepare(`INSERT INTO workouts (id,plan_id,name,order_index,notes,created_at,updated_at)
+    db.prepare(`INSERT INTO workouts (id,plan_id,name,order_index,notes,created_at,updated_at)
       SELECT ?5,?1,?6,0,?7,?8,?8 WHERE ${guarded}`)
       .bind(plan.id, userId, -plan.version, nonce, workoutId, starter.name, starter.explanation, ts),
-    ...starter.exercises.map((slot, index) => workoutDB(db).prepare(
+    ...starter.exercises.map((slot, index) => db.prepare(
       `INSERT INTO template_exercises (id,workout_id,exercise_id,order_index,target_sets,target_reps,
         target_weight,rest_seconds,cues,progression,created_at,updated_at)
        SELECT ?5,?6,?7,?8,?9,?10,0,90,?11,?12,?13,?13 WHERE ${guarded}`,
     ).bind(plan.id, userId, -plan.version, nonce, uuid(), workoutId, slot.exercise_id, index,
       slot.sets, slot.reps, slot.cues, JSON.stringify({ type: 'manual', starting_load: 'choose_comfortable_load' }), ts)),
-    workoutDB(db).prepare(`INSERT INTO starter_workout_receipts
+    db.prepare(`INSERT INTO starter_workout_receipts
       (user_id,starter_id,profile_version,plan_id,starter_workout_id,version,created_at)
       SELECT ?2,?5,?6,?1,?7,?8,?9 WHERE ${guarded}`)
       .bind(plan.id, userId, -plan.version, nonce, starterId, profileVersion, workoutId, plan.version + 1, ts),
@@ -2241,7 +2239,7 @@ export async function getMeProfile(
   userId: string,
   ownerAppleSub: string | undefined,
 ): Promise<MeProfile> {
-  const u = await workoutDB(db)
+  const u = await db
     .prepare(
       `SELECT display_name, email,
               ${INTERVALS_EFFECTIVE_ATHLETE_SQL} AS intervals_effective_athlete_id,
@@ -2265,7 +2263,7 @@ export async function getMeProfile(
   const owner = await findOwnerRow(db, ownerAppleSub);
   const isOwner = !!owner && owner.id === userId;
 
-  const grant = await workoutDB(db)
+  const grant = await db
     .prepare(
       'SELECT 1 AS x FROM oauth_tokens WHERE refresh_token IS NOT NULL AND (user_id = ?1' +
         (isOwner ? ' OR user_id IS NULL' : '') +
@@ -2274,7 +2272,7 @@ export async function getMeProfile(
     .bind(userId)
     .first<{ x: number }>();
   const coachConnected = !!grant;
-  const lastMcp = await workoutDB(db)
+  const lastMcp = await db
     .prepare("SELECT MAX(created_at) AS t FROM audit_log WHERE user_id = ?1 AND actor = 'mcp'")
     .bind(userId)
     .first<{ t: number | null }>();
@@ -2317,8 +2315,8 @@ export async function exportUserData(
   // D1 batches are transactional, including read-only batches. Reading the
   // complete projection through one batch keeps the account, plan tree, logs,
   // and memberships on one coherent database snapshot while writes continue.
-  const projection = await workoutDB(db).batch<Record<string, unknown>>([
-    workoutDB(db)
+  const projection = await db.batch<Record<string, unknown>>([
+    db
       .prepare(
         `SELECT id, apple_sub, email, display_name, created_at, timezone,
                 ${INTERVALS_EFFECTIVE_ATHLETE_SQL} AS intervals_athlete_id,
@@ -2327,10 +2325,10 @@ export async function exportUserData(
            FROM users WHERE id = ?1`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM plans WHERE user_id = ?1 ORDER BY created_at, id')
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT d.* FROM workouts d
          JOIN plans p ON p.id = d.plan_id
@@ -2338,7 +2336,7 @@ export async function exportUserData(
          ORDER BY d.plan_id, d.order_index, d.created_at, d.id`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT te.* FROM template_exercises te
          JOIN workouts d ON d.id = te.workout_id
@@ -2347,10 +2345,10 @@ export async function exportUserData(
          ORDER BY te.workout_id, te.order_index, te.created_at, te.id`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM sessions WHERE user_id = ?1 ORDER BY date, created_at, id')
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT sl.* FROM set_logs sl
          JOIN sessions s ON s.id = sl.session_id
@@ -2358,7 +2356,7 @@ export async function exportUserData(
          ORDER BY sl.logged_at, sl.id`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT e.* FROM exercises e
          WHERE e.id IN (
@@ -2374,7 +2372,7 @@ export async function exportUserData(
          ORDER BY e.name, e.id`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT sa.* FROM session_aliases sa
          JOIN sessions s ON s.id = sa.canonical_session_id
@@ -2382,7 +2380,7 @@ export async function exportUserData(
          ORDER BY sa.alias_session_id`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT sle.* FROM session_load_exports sle
          JOIN sessions s ON s.id = sle.session_id
@@ -2390,32 +2388,32 @@ export async function exportUserData(
          ORDER BY sle.updated_at, sle.session_id`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM notes WHERE user_id = ?1 ORDER BY created_at, id')
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM audit_log WHERE user_id = ?1 ORDER BY created_at, id')
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM external_events WHERE user_id = ?1 ORDER BY date, id')
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         'SELECT * FROM external_activities WHERE user_id = ?1 ORDER BY date, id',
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         'SELECT * FROM activities WHERE user_id = ?1 ORDER BY date, logged_at, id',
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT id,user_id,plan_id,version,document,actor,operation,reason,created_at
            FROM plan_snapshots WHERE user_id=?1 ORDER BY plan_id,version`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare(
         `SELECT gm.group_id, gm.display_name, gm.joined_at,
                 g.created_by = ?1 AS owns_group,
@@ -2434,15 +2432,15 @@ export async function exportUserData(
           ORDER BY gm.joined_at, gm.group_id`,
       )
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare('SELECT blocked_id AS user_id, created_at FROM group_member_blocks WHERE blocker_id = ?1 AND active = 1 ORDER BY created_at, blocked_id')
       .bind(userId),
-    workoutDB(db)
+    db
       .prepare('SELECT active, reason, updated_at FROM group_sharing_restrictions WHERE user_id = ?1')
       .bind(userId),
-    workoutDB(db).prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1').bind(userId),
-    workoutDB(db).prepare('SELECT starter_id,profile_version,plan_id,starter_workout_id AS workout_id,version,created_at FROM starter_workout_receipts WHERE user_id=?1').bind(userId),
-    workoutDB(db).prepare('SELECT * FROM freestyle_workout_receipts WHERE user_id=?1').bind(userId),
+    db.prepare('SELECT document,version,updated_at FROM training_profiles WHERE user_id=?1').bind(userId),
+    db.prepare('SELECT starter_id,profile_version,plan_id,starter_workout_id AS workout_id,version,created_at FROM starter_workout_receipts WHERE user_id=?1').bind(userId),
+    db.prepare('SELECT * FROM freestyle_workout_receipts WHERE user_id=?1').bind(userId),
   ]);
   const rowsAt = (index: number): Record<string, unknown>[] =>
     projection[index]?.results ?? [];
@@ -2485,7 +2483,7 @@ export async function exportUserData(
     }
   });
   return {
-    schema_version: 2,
+    schema_version: 3,
     exported_at: now(),
     account,
     training: {
@@ -2520,7 +2518,7 @@ export async function setUserDisplayName(
   userId: string,
   displayName: string,
 ): Promise<boolean> {
-  const result = await workoutDB(db)
+  const result = await db
     .prepare('UPDATE users SET display_name = ?2 WHERE id = ?1')
     .bind(userId, displayName)
     .run();
@@ -2538,7 +2536,7 @@ export async function setHealthActivitySharing(
   userId: string,
   enabled: boolean,
 ): Promise<{ sharing_in_group: boolean }> {
-  await workoutDB(db)
+  await db
     .prepare('UPDATE users SET share_health_activities = ?2 WHERE id = ?1')
     .bind(userId, enabled ? 1 : 0)
     .run();
@@ -2561,11 +2559,11 @@ export async function createGroup(
   // Use a batch so the membership row lands with the group row — D1 batches
   // run in a single transaction (an atomicity guarantee documented by
   // Cloudflare). If either statement fails the group is never visible.
-  await workoutDB(db).batch([
-    workoutDB(db)
+  await db.batch([
+    db
       .prepare('INSERT INTO groups (id,name,created_by,created_at) VALUES (?1,?2,?3,?4)')
       .bind(id, name, userId, ts),
-    workoutDB(db)
+    db
       .prepare(
         'INSERT INTO group_members (group_id,user_id,display_name,joined_at) VALUES (?1,?2,?3,?4)',
       )
@@ -2586,7 +2584,7 @@ export async function createGroup(
  *  group routes share: membership answers "may you see this", this answers
  *  "is there anything here at all". */
 export async function groupExists(db: D1Database, groupId: string): Promise<boolean> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare('SELECT 1 AS x FROM groups WHERE id = ?1')
     .bind(groupId)
     .first<{ x: number }>();
@@ -2599,7 +2597,7 @@ export async function isGroupMember(
   userId: string,
   groupId: string,
 ): Promise<boolean> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare('SELECT 1 AS x FROM group_members WHERE group_id = ?1 AND user_id = ?2')
     .bind(groupId, userId)
     .first<{ x: number }>();
@@ -2618,7 +2616,7 @@ interface VisibleGroupMember {
 // One visibility rule for rosters, REST/MCP feeds, stats and activity series.
 // Filtering before activity reads keeps pagination and totals consistent.
 async function visibleGroupMembers(db: D1Database, groupId: string, callerUserId: string): Promise<VisibleGroupMember[]> {
-  const rows = await workoutDB(db).prepare(`
+  const rows = await db.prepare(`
     SELECT gm.user_id, gm.display_name AS per_group_name, gm.joined_at,
            u.display_name AS global_name, u.email, u.timezone
       FROM group_members gm JOIN users u ON u.id = gm.user_id
@@ -2635,7 +2633,7 @@ async function visibleGroupMembers(db: D1Database, groupId: string, callerUserId
 }
 
 export async function listGroupBlocks(db: D1Database, userId: string) {
-  const rows = await workoutDB(db).prepare(`
+  const rows = await db.prepare(`
     SELECT blocked_id AS user_id, created_at FROM group_member_blocks
      WHERE blocker_id = ?1 AND active = 1 ORDER BY created_at, blocked_id
   `).bind(userId).all<{ user_id: string; created_at: number }>();
@@ -2646,11 +2644,11 @@ export async function setGroupMemberBlock(db: D1Database, userId: string, target
   if (userId === targetId) return false;
   if (!active) {
     // Only the block's owner can undo it; retry and leaving the group are safe.
-    await workoutDB(db).prepare('UPDATE group_member_blocks SET active = 0 WHERE blocker_id = ?1 AND blocked_id = ?2')
+    await db.prepare('UPDATE group_member_blocks SET active = 0 WHERE blocker_id = ?1 AND blocked_id = ?2')
       .bind(userId, targetId).run();
     return true;
   }
-  const result = await workoutDB(db).prepare(`
+  const result = await db.prepare(`
     INSERT INTO group_member_blocks (blocker_id, blocked_id, created_at, active)
     SELECT ?1, ?2, ?3, 1
      WHERE EXISTS (SELECT 1 FROM group_members a JOIN group_members b ON a.group_id = b.group_id
@@ -2665,7 +2663,7 @@ export async function setGroupMemberBlock(db: D1Database, userId: string, target
 // promote the earliest account or a group creator into platform moderation.
 export async function isGroupSafetyOperator(db: D1Database, userId: string, ownerAppleSub: string | undefined): Promise<boolean> {
   if (!ownerAppleSub) return false;
-  const row = await workoutDB(db).prepare(`SELECT 1 AS allowed FROM users
+  const row = await db.prepare(`SELECT 1 AS allowed FROM users
     WHERE id = ?1 AND apple_sub = ?2
       AND NOT EXISTS (SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1)
       AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?1)
@@ -2674,7 +2672,7 @@ export async function isGroupSafetyOperator(db: D1Database, userId: string, owne
 }
 
 export async function getGroupSharingRestriction(db: D1Database, userId: string) {
-  return workoutDB(db).prepare('SELECT active, reason, updated_at FROM group_sharing_restrictions WHERE user_id = ?1')
+  return db.prepare('SELECT active, reason, updated_at FROM group_sharing_restrictions WHERE user_id = ?1')
     .bind(userId).first<{ active: number; reason: GroupReportReason; updated_at: number }>();
 }
 
@@ -2686,15 +2684,15 @@ export async function setGroupSharingRestriction(
   const ts = now();
   // Restriction and audit commit together. Authority is rechecked at the write,
   // including account deletion; no report content is copied into the audit.
-  const [result] = await workoutDB(db).batch([
-    workoutDB(db).prepare(`INSERT INTO group_sharing_restrictions (user_id, active, reason, updated_at)
+  const [result] = await db.batch([
+    db.prepare(`INSERT INTO group_sharing_restrictions (user_id, active, reason, updated_at)
       SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM users WHERE id = ?1)
         AND EXISTS (SELECT 1 FROM users WHERE id = ?5 AND apple_sub = ?6)
         AND NOT EXISTS (SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1)
         AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id IN (?1, ?5))
       ON CONFLICT (user_id) DO UPDATE SET active = excluded.active, reason = excluded.reason, updated_at = excluded.updated_at
     `).bind(targetId, active ? 1 : 0, reason, ts, operatorId, ownerAppleSub),
-    workoutDB(db).prepare(`INSERT INTO audit_log (id, user_id, actor, tool, args, result, created_at)
+    db.prepare(`INSERT INTO audit_log (id, user_id, actor, tool, args, result, created_at)
       SELECT ?1, ?2, 'ios', 'set_group_sharing_restriction', ?3, ?4, ?5 WHERE changes() = 1
     `).bind(uuid(), operatorId, JSON.stringify({ user_id: targetId, reason }), active ? 'restricted' : 'restored', ts),
   ]);
@@ -2731,7 +2729,7 @@ export async function listGroupsForUser(
   db: D1Database,
   userId: string,
 ): Promise<Array<Group & { members: ResolvedGroupMember[] }>> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       `SELECT g.*, CASE WHEN EXISTS (SELECT 1 FROM group_sharing_restrictions r WHERE r.user_id = g.created_by AND r.active = 1) THEN 'Private group' ELSE g.name END AS name FROM groups g
          JOIN group_members gm ON gm.group_id = g.id
@@ -2753,7 +2751,7 @@ export async function getGroupWithMembers(
   groupId: string,
   callerUserId: string,
 ): Promise<(Group & { members: ResolvedGroupMember[] }) | null> {
-  const g = await workoutDB(db)
+  const g = await db
     .prepare("SELECT g.*, CASE WHEN EXISTS (SELECT 1 FROM group_sharing_restrictions r WHERE r.user_id = g.created_by AND r.active = 1) THEN 'Private group' ELSE g.name END AS name FROM groups g WHERE id = ?1")
     .bind(groupId)
     .first<Group>();
@@ -2785,7 +2783,7 @@ export async function createInvite(
   for (let attempt = 0; attempt < 5; attempt++) {
     code = newInviteCode();
     try {
-      await workoutDB(db)
+      await db
         .prepare(
           `INSERT INTO group_invites
              (code,group_id,created_by,created_at,expires_at,used_at,used_by)
@@ -2832,7 +2830,7 @@ export async function getInviteForRedemption(
   db: D1Database,
   code: string,
 ): Promise<GroupInvite | null> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare('SELECT * FROM group_invites WHERE code = ?1')
     .bind(code)
     .first<GroupInvite>();
@@ -2862,7 +2860,7 @@ export async function getInvitePreview(
   // landing page and the authenticated /api/groups/invite/:code route.
   const invite = await getInviteForRedemption(db, code.trim().toUpperCase());
   if (!invite) return { status: 'unknown', group_name: null };
-  const group = await workoutDB(db)
+  const group = await db
     .prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM group_sharing_restrictions r WHERE r.user_id = g.created_by AND r.active = 1) THEN 'Private group' ELSE g.name END AS name FROM groups g WHERE id = ?1")
     .bind(invite.group_id)
     .first<{ name: string }>();
@@ -2910,12 +2908,12 @@ export async function redeemInvite(
   const ts = now();
   const auditId = uuid();
   const auditArgs = JSON.stringify({ group_id: invite.group_id });
-  const [claim] = await workoutDB(db).batch([
+  const [claim] = await db.batch([
     // Repeat every mutable validation inside the transaction. In particular,
     // requiring a live principal with no deletion intent prevents a deletion
     // that won the database write lock first from consuming the invite, even
     // while provider revocation intentionally keeps the users row present.
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE group_invites
             SET used_at = ?2, used_by = ?3
@@ -2939,7 +2937,7 @@ export async function redeemInvite(
     // changes() observes the immediately preceding conditional UPDATE on this
     // SQLite connection. A losing batch creates neither an audit attempt nor a
     // membership; the unique audit id then gates the final INSERT.
-    workoutDB(db)
+    db
       .prepare(
         `INSERT INTO audit_log
            (id,user_id,actor,tool,args,result,created_at)
@@ -2947,7 +2945,7 @@ export async function redeemInvite(
           WHERE changes() = 1`,
       )
       .bind(auditId, userId, auditArgs, ts),
-    workoutDB(db)
+    db
       .prepare(
         `INSERT INTO group_members (group_id,user_id,display_name,joined_at)
          SELECT group_id,?2,NULL,?3 FROM group_invites
@@ -2985,7 +2983,7 @@ export async function leaveGroup(
   userId: string,
   groupId: string,
 ): Promise<boolean> {
-  const res = await workoutDB(db)
+  const res = await db
     .prepare('DELETE FROM group_members WHERE group_id = ?1 AND user_id = ?2')
     .bind(groupId, userId)
     .run();
@@ -3015,7 +3013,7 @@ export async function setGroupDisplayName(
   groupId: string,
   displayName: string | null,
 ): Promise<boolean> {
-  const res = await workoutDB(db)
+  const res = await db
     .prepare(
       'UPDATE group_members SET display_name = ?3 WHERE group_id = ?1 AND user_id = ?2',
     )
@@ -3037,7 +3035,7 @@ export async function setGroupDisplayName(
 
 /** Count rows in the users table. Used by /auth/apple to detect the fresh-install bootstrap path. */
 export async function countUsers(db: D1Database): Promise<number> {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare('SELECT COUNT(*) AS c FROM users')
     .first<{ c: number }>();
   return r?.c ?? 0;
@@ -3049,7 +3047,7 @@ export async function getActivePlan(
   db: D1Database,
   userId: string,
 ): Promise<PlanRow | null> {
-  return workoutDB(db)
+  return db
     .prepare("SELECT * FROM plans WHERE user_id = ?1 AND status = 'active'")
     .bind(userId)
     .first<PlanRow>();
@@ -3070,7 +3068,7 @@ export async function getPlanTree(
  * snapshot. Version claims still happen at the write boundary.
  */
 async function loadPlanTree(db: D1Database, plan: PlanRow): Promise<PlanTree> {
-  const days = await workoutDB(db)
+  const days = await db
     .prepare('SELECT * FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id')
     .bind(plan.id)
     .all<WorkoutRow>();
@@ -3078,7 +3076,7 @@ async function loadPlanTree(db: D1Database, plan: PlanRow): Promise<PlanTree> {
   let exercises: EnrichedTemplateExercise[] = [];
   if (dayIds.length) {
     const placeholders = dayIds.map((_, i) => `?${i + 1}`).join(',');
-    const res = await workoutDB(db)
+    const res = await db
       .prepare(
         `SELECT te.*, e.name AS exercise_name, e.unit AS exercise_unit,
                 e.primary_muscle AS exercise_muscle, e.modality AS exercise_modality,
@@ -3136,7 +3134,7 @@ function workoutSessionReferenceSQL(alias: string, workout: string, plan: string
 }
 
 function prepareArchiveAssignments(db: D1Database, plan: PlanRow, workoutId: string, ts: number, nonce: string) {
-  return workoutDB(db).prepare(`UPDATE sessions SET workout_id=NULL,status='skipped',
+  return db.prepare(`UPDATE sessions SET workout_id=NULL,status='skipped',
       attempt=attempt+1,updated_at=MAX(updated_at+1,?4)
     WHERE user_id=?2 AND status='planned' AND ${workoutSessionReferenceSQL('sessions', '?3', '?1')}
       AND EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND version=-?5 AND plan_write_nonce=?6)`)
@@ -3144,7 +3142,7 @@ function prepareArchiveAssignments(db: D1Database, plan: PlanRow, workoutId: str
 }
 
 async function workoutIsActive(db: D1Database, plan: PlanRow, workoutId: string): Promise<boolean> {
-  return !!await workoutDB(db).prepare(`SELECT 1 FROM sessions s WHERE s.user_id=?2
+  return !!await db.prepare(`SELECT 1 FROM sessions s WHERE s.user_id=?2
     AND s.status='in_progress' AND ${workoutSessionReferenceSQL('s', '?3', '?1')} LIMIT 1`)
     .bind(plan.id, plan.user_id, workoutId).first();
 }
@@ -3182,7 +3180,7 @@ export function preparePlanSnapshotInsert(
   },
 ): D1PreparedStatement {
   const insert = input.ignoreExisting ? 'INSERT OR IGNORE' : 'INSERT';
-  return workoutDB(db).prepare(
+  return db.prepare(
     `${insert} INTO plan_snapshots
        (id,user_id,plan_id,version,document,actor,operation,reason,created_at)
      SELECT ?1,p.user_id,p.id,COALESCE(?4,p.version),
@@ -3238,7 +3236,7 @@ export function preparePlanWriteStart(
   guard?: { sql: string; json: string },
 ): D1PreparedStatement[] {
   return [
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE plans SET plan_write_nonce=?4,version=-version
         WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3
           AND plan_write_nonce IS NULL AND (${guard?.sql ?? '?7 IS NULL'})
@@ -3273,12 +3271,12 @@ export function preparePlanWriteFinish(
 ): D1PreparedStatement[] {
   const nextVersion = plan.version + 1;
   const statements: D1PreparedStatement[] = [
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE plans SET version=?6,updated_at=?5
         WHERE id=?1 AND user_id=?2 AND version=-?3 AND plan_write_nonce=?4
         RETURNING version`,
     ).bind(plan.id, plan.user_id, plan.version, nonce, ts, nextVersion),
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
        SELECT ?5,p.user_id,?6,?7,?8,?9,?10 FROM plans p
         WHERE p.id=?1 AND p.user_id=?2 AND p.version=?3 AND p.plan_write_nonce=?4`,
@@ -3289,7 +3287,7 @@ export function preparePlanWriteFinish(
         : JSON.stringify(attribution.result ?? { plan_id: plan.id, version: nextVersion }), ts),
   ];
   if (attribution.note) {
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
       `INSERT INTO notes (id,user_id,scope,ref_id,author,body,created_at)
        SELECT ?5,p.user_id,'plan',p.id,?6,?7,?8 FROM plans p
         WHERE p.id=?1 AND p.user_id=?2 AND p.version=?3 AND p.plan_write_nonce=?4`,
@@ -3304,7 +3302,7 @@ export function preparePlanWriteFinish(
       reason: attribution.reason ?? attribution.note ?? null, createdAt: ts,
       writeNonce: nonce,
     }),
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE plans SET plan_write_nonce=NULL
         WHERE id=?1 AND user_id=?2 AND version=?3 AND plan_write_nonce=?4`,
     ).bind(plan.id, plan.user_id, nextVersion, nonce),
@@ -3318,7 +3316,7 @@ export async function getPlanSnapshot(
   planId: string,
   version: number,
 ): Promise<(PlanSnapshotRow & { parsed: PlanSnapshotDocument }) | null> {
-  const row = await workoutDB(db).prepare(
+  const row = await db.prepare(
     'SELECT * FROM plan_snapshots WHERE user_id=?1 AND plan_id=?2 AND version=?3',
   ).bind(userId, planId, version).first<PlanSnapshotRow>();
   return row ? { ...row, parsed: parsePlanSnapshot(row.document) } : null;
@@ -3378,7 +3376,7 @@ export async function listPlanHistory(
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' as const };
   const capped = Math.max(1, Math.min(100, Math.floor(limit)));
-  const rows = await workoutDB(db).prepare(
+  const rows = await db.prepare(
     `SELECT * FROM plan_snapshots
       WHERE user_id=?1 AND plan_id=?2 AND (?3 IS NULL OR version < ?3) AND version <= ?5
       ORDER BY version DESC LIMIT ?4`,
@@ -3386,7 +3384,7 @@ export async function listPlanHistory(
   const visible = rows.results.slice(0, capped);
   const exerciseNames = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise.name]));
   const items = await Promise.all(visible.map(async (row) => {
-    const prior = await workoutDB(db).prepare(
+    const prior = await db.prepare(
       `SELECT version, document FROM plan_snapshots
         WHERE user_id=?1 AND plan_id=?2 AND version < ?3
         ORDER BY version DESC LIMIT 1`,
@@ -3508,7 +3506,7 @@ export async function restorePlanSnapshot(
   }
   const groupInvalid = validatePlanExerciseGroups(snapshot.parsed.workouts);
   if (groupInvalid) return groupInvalid;
-  const active = await workoutDB(db).prepare(
+  const active = await db.prepare(
     `SELECT 1 FROM sessions s
       WHERE s.user_id=?1 AND s.status='in_progress' AND ${sessionReferencesPlanSQL('s', '?2')} LIMIT 1`,
   ).bind(userId, plan.id).first();
@@ -3537,23 +3535,23 @@ export async function restorePlanSnapshot(
   ];
   for (const day of target.workouts) {
     if (day.archived_at != null) statements.push(prepareArchiveAssignments(db, plan, day.id, ts, nonce));
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
       `INSERT OR IGNORE INTO workouts
        (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
        SELECT ?4,?1,?5,?6,?7,?8,?9,?9 WHERE ${guarded(10)}`,
     ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
       day.order_index, day.notes, ts, nonce));
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
       `UPDATE workouts SET name=?5,day_label=?6,order_index=?7,notes=?8,updated_at=?9
        WHERE id=?4 AND plan_id=?1 AND ${guarded(10)}`,
     ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
       day.order_index, day.notes, ts, nonce));
   }
-  for (const day of target.workouts) statements.push(workoutDB(db).prepare(
+  for (const day of target.workouts) statements.push(db.prepare(
     `UPDATE workouts SET tags=?4,archived_at=?5 WHERE id=?6 AND plan_id=?1 AND ${guarded(7)}`,
   ).bind(plan.id, userId, -plan.version, day.tags ?? '[]', day.archived_at ?? null, day.id, nonce));
   for (const slot of targetSlots) {
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
       `INSERT OR IGNORE INTO template_exercises
        (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,
         target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,
@@ -3566,7 +3564,7 @@ export async function restorePlanSnapshot(
       slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
       slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null,
       nonce));
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
       `UPDATE template_exercises SET workout_id=?5,exercise_id=?6,order_index=?7,
        target_sets=?8,target_reps=?9,target_reps_max=?10,target_rpe=?11,
        rest_seconds=?12,target_weight=?13,target_duration_s=?14,progression=?15,
@@ -3582,18 +3580,18 @@ export async function restorePlanSnapshot(
   for (const day of current.workouts) {
     for (const slot of day.exercises) if (!targetSlotIds.has(slot.id)) {
       statements.push(
-        workoutDB(db).prepare(`UPDATE set_logs SET template_exercise_id=NULL,updated_at=MAX(updated_at+1,?4) WHERE template_exercise_id=?5 AND ${guarded(6)}`)
+        db.prepare(`UPDATE set_logs SET template_exercise_id=NULL,updated_at=MAX(updated_at+1,?4) WHERE template_exercise_id=?5 AND ${guarded(6)}`)
           .bind(plan.id, userId, -plan.version, ts, slot.id, nonce),
-        workoutDB(db).prepare(`DELETE FROM template_exercises WHERE id=?4 AND ${guarded(5)}`)
+        db.prepare(`DELETE FROM template_exercises WHERE id=?4 AND ${guarded(5)}`)
           .bind(plan.id, userId, -plan.version, slot.id, nonce),
       );
     }
     if (!targetDayIds.has(day.id)) {
       statements.push(
         prepareArchiveAssignments(db, plan, day.id, ts, nonce),
-        workoutDB(db).prepare(`UPDATE sessions SET workout_id=NULL,updated_at=?4 WHERE workout_id=?5 AND user_id=?2 AND ${guarded(6)}`)
+        db.prepare(`UPDATE sessions SET workout_id=NULL,updated_at=?4 WHERE workout_id=?5 AND user_id=?2 AND ${guarded(6)}`)
           .bind(plan.id, userId, -plan.version, ts, day.id, nonce),
-        workoutDB(db).prepare(`DELETE FROM workouts WHERE id=?4 AND plan_id=?1 AND ${guarded(5)}`)
+        db.prepare(`DELETE FROM workouts WHERE id=?4 AND plan_id=?1 AND ${guarded(5)}`)
           .bind(plan.id, userId, -plan.version, day.id, nonce),
       );
     }
@@ -3603,7 +3601,7 @@ export async function restorePlanSnapshot(
     new Set(target.workouts.filter(day => day.archived_at == null).map(day => day.id)));
   const restoredMeta = restoreSchedule == null
     ? target.plan.meta : serializePlanMeta(restoreMeta, restoreSchedule);
-  statements.push(workoutDB(db).prepare(
+  statements.push(db.prepare(
     `UPDATE plans SET name=?4,meta=?5,updated_at=?6
      WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce=?7`,
   ).bind(plan.id, userId, -plan.version, target.plan.name, restoredMeta, ts, nonce));
@@ -3616,7 +3614,7 @@ export async function restorePlanSnapshot(
   }, ts, nonce));
   const results = await runWorkoutWriteBatch(db, statements);
   if ((results[0]?.meta.changes ?? 0) !== 1 || (results[documentUpdateIndex]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
-    const nowActive = await workoutDB(db).prepare(
+    const nowActive = await db.prepare(
       `SELECT 1 FROM sessions s WHERE s.user_id=?1 AND s.status='in_progress'
         AND ${sessionReferencesPlanSQL('s', '?2')} LIMIT 1`,
     ).bind(userId, plan.id).first();
@@ -3657,13 +3655,13 @@ export async function createPlan(
   // these statements and make the replacement violate ux_one_active_plan.
   // Allocate from every prior plan inside that transaction so replacement
   // never moves the per-user sync cursor backward or repeats it.
-  const results = await workoutDB(db).batch<PlanRow>([
-    workoutDB(db)
+  const results = await db.batch<PlanRow>([
+    db
       .prepare(
         "UPDATE plans SET status = 'archived', updated_at = ?2 WHERE user_id = ?1 AND status = 'active'",
       )
       .bind(userId, ts),
-    workoutDB(db)
+    db
       .prepare(
         `INSERT INTO plans
            (id,user_id,name,status,version,meta,created_at,updated_at)
@@ -3677,7 +3675,7 @@ export async function createPlan(
       userId, planId, actor: attribution.actor, operation: attribution.operation,
       reason: attribution.reason ?? attribution.note ?? null, createdAt: ts,
     }),
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
        SELECT ?1,?2,?3,?4,?5,?6,?7 WHERE EXISTS
        (SELECT 1 FROM plans WHERE id=?8 AND user_id=?2)`,
@@ -3706,7 +3704,7 @@ export async function ensureActivePlan(
 
   const ts = now();
   const candidateId = uuid();
-  const candidateInsert = workoutDB(db).prepare(
+  const candidateInsert = db.prepare(
       `INSERT INTO plans
          (id,user_id,name,status,version,meta,created_at,updated_at)
        SELECT ?1,?2,?3,'active',COALESCE(MAX(version),0)+1,NULL,?4,?4
@@ -3716,13 +3714,13 @@ export async function ensureActivePlan(
        RETURNING *`,
     )
     .bind(candidateId, userId, name, ts);
-  const results = await workoutDB(db).batch<PlanRow>([
+  const results = await db.batch<PlanRow>([
     candidateInsert,
     preparePlanSnapshotInsert(db, {
       userId, planId: candidateId, actor: attribution.actor,
       operation: attribution.operation, reason: attribution.reason ?? null, createdAt: ts,
     }),
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
        SELECT ?1,?2,?3,?4,?5,?6,?7 WHERE EXISTS
        (SELECT 1 FROM plans WHERE id=?8 AND user_id=?2)`,
@@ -3753,7 +3751,7 @@ export async function findWorkoutByRef(
   ref: string,
   includeArchived = false,
 ): Promise<string | null> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(
       `SELECT id FROM workouts WHERE plan_id = ?1 AND (day_label = ?2 OR name = ?2)
         AND (?3=1 OR archived_at IS NULL)
@@ -3771,7 +3769,7 @@ export async function getWorkoutInPlan(
   dayId: string,
   includeArchived = false,
 ): Promise<WorkoutRow | null> {
-  return workoutDB(db)
+  return db
     .prepare('SELECT * FROM workouts WHERE id = ?1 AND plan_id = ?2 AND (?3=1 OR archived_at IS NULL)')
     .bind(dayId, planId, includeArchived ? 1 : 0)
     .first<WorkoutRow>();
@@ -3822,7 +3820,7 @@ export async function addWorkoutAtVersion(
   name: string,
   dayLabel: string | null,
   orderIndex: number,
-  attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_day' },
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_workout' },
   exerciseIds: string[] = [],
   metadata: { tags?: string[]; archived_at?: number | null } = {},
 ): Promise<WorkoutRow | PlanVersionConflict | { error: 'invalid_exercises' } | PrescriptionValidationError> {
@@ -3835,7 +3833,7 @@ export async function addWorkoutAtVersion(
   if (exerciseIds.length > 50 || new Set(exerciseIds).size !== exerciseIds.length) {
     return { error: 'invalid_exercises' };
   }
-  const catalog = exerciseIds.length ? await workoutDB(db).prepare(
+  const catalog = exerciseIds.length ? await db.prepare(
     'SELECT id, modality FROM exercises WHERE id IN (SELECT value FROM json_each(?1))',
   ).bind(JSON.stringify(exerciseIds)).all<{ id: string; modality: string }>() : { results: [] };
   if (catalog.results.length !== exerciseIds.length) return { error: 'invalid_exercises' };
@@ -3853,7 +3851,7 @@ export async function addWorkoutAtVersion(
     created_at: ts,
     updated_at: ts,
   };
-  const currentDays = await workoutDB(db)
+  const currentDays = await db
     .prepare(
       'SELECT id, order_index FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
     )
@@ -3863,7 +3861,7 @@ export async function addWorkoutAtVersion(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-    workoutDB(db)
+    db
       .prepare(
         `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
@@ -3878,7 +3876,7 @@ export async function addWorkoutAtVersion(
         row.created_at, row.updated_at, userId, -plan.version,
       ),
     ...ordered.map((day, index) =>
-      workoutDB(db)
+      db
         .prepare(
           `UPDATE workouts SET order_index = ?2, updated_at = ?3
             WHERE id = ?1 AND plan_id = ?4
@@ -3890,14 +3888,14 @@ export async function addWorkoutAtVersion(
         .bind(day.id, index, ts, plan.id, userId, -plan.version),
     ),
   ];
-  statements.push(workoutDB(db).prepare(`UPDATE workouts SET tags=?1,archived_at=?2 WHERE id=?3
+  statements.push(db.prepare(`UPDATE workouts SET tags=?1,archived_at=?2 WHERE id=?3
     AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
     .bind(row.tags, row.archived_at, row.id, plan.id, userId, plan.version, nonce));
   for (const [index, exerciseId] of exerciseIds.entries()) {
     const modality = modalities.get(exerciseId);
     const cardio = modality === 'cardio';
     const timed = modality === 'timed';
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
       `INSERT INTO template_exercises
        (id,workout_id,exercise_id,order_index,target_sets,target_reps,rest_seconds,
         target_weight,target_duration_s,progression,is_warmup,created_at,updated_at)
@@ -3933,7 +3931,7 @@ export async function patchWorkoutAtVersion(
     tags?: string[];
     archived_at?: number | null;
   },
-  attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_day' },
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_workout' },
 ): Promise<WorkoutRow | { error: 'unknown_fields'; fields: string[] } | { error: 'active_workout' } | PrescriptionValidationError | PlanVersionConflict | null> {
   const existing = await getWorkoutInPlan(db, plan.id, dayId, true);
   if (!existing) return null;
@@ -3955,7 +3953,7 @@ export async function patchWorkoutAtVersion(
     notes: patch.notes === undefined ? existing.notes : patch.notes,
     updated_at: now(),
   };
-  const currentDays = await workoutDB(db)
+  const currentDays = await db
     .prepare(
       'SELECT id, order_index FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
     )
@@ -3970,7 +3968,7 @@ export async function patchWorkoutAtVersion(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, merged.updated_at, nonce, false, archiving ? [dayId] : []),
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE workouts
             SET name=?2, day_label=?3, order_index=?4, notes=?5, updated_at=?6, tags=?10, archived_at=?11
@@ -3987,7 +3985,7 @@ export async function patchWorkoutAtVersion(
     ...(patch.order_index === undefined
       ? []
       : ordered.map((day, index) =>
-          workoutDB(db)
+          db
             .prepare(
               `UPDATE workouts SET order_index=?2, updated_at=?3
                 WHERE id=?1 AND plan_id=?4
@@ -4004,7 +4002,7 @@ export async function patchWorkoutAtVersion(
     const liveIds = new Set(currentDays.results.filter(day => day.id !== dayId).map(day => day.id));
     const schedule = scrubSchedule(meta.schedule, liveIds);
     statements.push(prepareArchiveAssignments(db, plan, dayId, merged.updated_at, nonce));
-    statements.push(workoutDB(db).prepare(`UPDATE plans SET meta=?1 WHERE id=?2 AND user_id=?3
+    statements.push(db.prepare(`UPDATE plans SET meta=?1 WHERE id=?2 AND user_id=?3
       AND version=-?4 AND plan_write_nonce=?5`)
       .bind(serializePlanMeta(meta, schedule ?? meta.schedule), plan.id, userId, plan.version, nonce));
   }
@@ -4034,7 +4032,7 @@ export async function nextExerciseOrderIndex(
   db: D1Database,
   workoutId: string,
 ): Promise<number> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare('SELECT COALESCE(MAX(order_index), -1) AS m FROM template_exercises WHERE workout_id = ?1')
     .bind(workoutId)
     .first<{ m: number }>();
@@ -4042,7 +4040,7 @@ export async function nextExerciseOrderIndex(
 }
 
 async function exerciseGroupDayRows(db: D1Database, dayId: string): Promise<TemplateExerciseRow[]> {
-  return (await workoutDB(db).prepare(
+  return (await db.prepare(
     'SELECT * FROM template_exercises WHERE workout_id=?1 ORDER BY order_index,created_at,id',
   ).bind(dayId).all<TemplateExerciseRow>()).results;
 }
@@ -4065,7 +4063,7 @@ async function exerciseGroupDayRows(db: D1Database, dayId: string): Promise<Temp
 export async function dedupeDayOrderIndexes(
   db: D1Database, workoutId: string, preferId?: string,
 ): Promise<boolean | GroupConflict> {
-  const plan = await workoutDB(db).prepare(
+  const plan = await db.prepare(
     `SELECT p.* FROM plans p JOIN workouts d ON d.plan_id=p.id
      WHERE d.id=?1 AND d.archived_at IS NULL AND p.status='active'`,
   ).bind(workoutId).first<PlanRow>();
@@ -4083,7 +4081,7 @@ export async function dedupeDayOrderIndexes(
   const ts = now(); const nonce = uuid();
   const attribution: PlanWriteAttribution = { actor: 'system', operation: 'normalize_exercise_order' };
   const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
-  for (const row of ordered) statements.push(workoutDB(db).prepare(
+  for (const row of ordered) statements.push(db.prepare(
     `UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
      AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`,
   ).bind(row.id, row.order_index, ts, plan.id, plan.user_id, plan.version, nonce));
@@ -4099,7 +4097,7 @@ export async function nextWorkoutOrderIndex(
   db: D1Database,
   planId: string,
 ): Promise<number> {
-  const row = await workoutDB(db)
+  const row = await db
     .prepare('SELECT COALESCE(MAX(order_index), -1) AS m FROM workouts WHERE plan_id = ?1')
     .bind(planId)
     .first<{ m: number }>();
@@ -4114,13 +4112,13 @@ export async function addTemplateExercise(
   },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_exercise' },
 ): Promise<TemplateExerciseRow | PrescriptionValidationError | GroupConflict> {
-  const plan = await workoutDB(db).prepare("SELECT * FROM plans WHERE id=?1 AND status='active'")
+  const plan = await db.prepare("SELECT * FROM plans WHERE id=?1 AND status='active'")
     .bind(planId).first<PlanRow>();
   if (!plan) throw new Error('no_active_plan');
   if (!await getWorkoutInPlan(db, plan.id, input.workout_id)) {
     throw new Error('workout_archived_assignment');
   }
-  const exercise = await workoutDB(db).prepare('SELECT modality FROM exercises WHERE id=?1')
+  const exercise = await db.prepare('SELECT modality FROM exercises WHERE id=?1')
     .bind(input.exercise_id).first<{ modality: string }>();
   const validationInput: Record<string, unknown> = {
     ...input,
@@ -4149,7 +4147,7 @@ export async function addTemplateExercise(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO template_exercises
        (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at)
        SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16
@@ -4161,7 +4159,7 @@ export async function addTemplateExercise(
       row.target_weight, row.target_duration_s, row.progression, row.cues, row.is_warmup ? 1 : 0,
       row.created_at, row.updated_at, plan.id, plan.user_id, plan.version, nonce,
     ),
-    ...(collides ? ordered.map((slot, index) => workoutDB(db).prepare(
+    ...(collides ? ordered.map((slot, index) => db.prepare(
       `UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
        AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`,
     ).bind(slot.id, index, ts, plan.id, plan.user_id, plan.version, nonce)) : []),
@@ -4219,7 +4217,7 @@ export async function getExercises(
     'SELECT id, name, primary_muscle, modality, unit, laterality, load_mode, demo_slug, aliases FROM exercises' +
     (where.length ? ' WHERE ' + where.join(' AND ') : '') +
     ' ORDER BY name';
-  const stmt = workoutDB(db).prepare(sql);
+  const stmt = db.prepare(sql);
   const bound = binds.length === 0 ? stmt : stmt.bind(...binds);
   const r = await bound.all<{
     id: string;
@@ -4238,7 +4236,7 @@ export async function getExercises(
 /** Resolve an id, exact name, or alias to an exercise row. */
 export async function resolveExercise(db: D1Database, nameOrId: string) {
   const q = nameOrId.trim().toLowerCase();
-  return workoutDB(db)
+  return db
     .prepare(
       'SELECT * FROM exercises WHERE id = ?1 OR lower(name) = ?2 OR lower(aliases) LIKE ?3 LIMIT 1',
     )
@@ -4269,7 +4267,7 @@ export async function getOrCreateSession(
     throw new Error('session_expected_attempt_missing');
   }
   const selectExisting = () =>
-    workoutDB(db)
+    db
       .prepare(
         'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
       )
@@ -4332,7 +4330,7 @@ export async function getOrCreateSession(
       };
       const updated = await runWorkoutWriteStatement(
         db,
-        workoutDB(db).prepare(
+        db.prepare(
           `UPDATE sessions
               SET workout_id=?2,
                   runner_targets=NULL,
@@ -4372,7 +4370,7 @@ export async function getOrCreateSession(
       // A competing explicit restart or another resolver advanced the reused
       // row after our read. Adopt that winner without applying this stale
       // resolver's day pin or pristine-state reset to the newer generation.
-      const winner = await workoutDB(db)
+      const winner = await db
         .prepare('SELECT * FROM sessions WHERE id = ?1')
         .bind(existing.id)
         .first<SessionRow>();
@@ -4403,7 +4401,7 @@ export async function getOrCreateSession(
       // winning day. (Codex P2 on #58.)
       const res = await runWorkoutWriteStatement(
         db,
-        workoutDB(db).prepare(
+        db.prepare(
           `UPDATE sessions
               SET workout_id = CASE
                     WHEN ?5 = 1 AND workout_id IS NULL THEN ?2
@@ -4434,7 +4432,7 @@ export async function getOrCreateSession(
       // immediately after the guarded update; synthesizing from `existing`
       // would acknowledge stale planned/live state. A zero-change result is
       // likewise a normal CAS loss (pin, status, generation, or protocol).
-      const fresh = await workoutDB(db)
+      const fresh = await db
         .prepare('SELECT * FROM sessions WHERE id = ?1')
         .bind(existing.id)
         .first<SessionRow>();
@@ -4472,7 +4470,7 @@ export async function getOrCreateSession(
   };
   const inserted = await runWorkoutWriteStatement(
     db,
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO sessions
        (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
@@ -4512,7 +4510,7 @@ export async function getOwnedSessionByDate(
   userId: string,
   date: string,
 ): Promise<SessionRow | null> {
-  return workoutDB(db)
+  return db
     .prepare(
       'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
     )
@@ -4538,7 +4536,7 @@ export async function reviveDiscardedSession(
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
   if (!canonicalSessionId) return null;
   const readCurrent = () =>
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId)
       .first<SessionRow>();
@@ -4560,7 +4558,7 @@ export async function reviveDiscardedSession(
     }
     await runWorkoutWriteStatement(
       db,
-      workoutDB(db).prepare(
+      db.prepare(
         `UPDATE sessions
             SET write_protocol = 'attempt-v1'
           WHERE id = ?1
@@ -4605,7 +4603,7 @@ export async function reviveDiscardedSession(
   const revivedAttempt = expectedAttempt + 1;
   const updated = await runWorkoutWriteStatement(
     db,
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE sessions
           SET workout_id = ?2,
               kind = 'planned',
@@ -4659,7 +4657,7 @@ async function resolveOwnedSessionId(
   userId: string,
   requestedId: string,
 ): Promise<string | null> {
-  const resolved = await workoutDB(db)
+  const resolved = await db
     .prepare(
       `SELECT s.id
          FROM sessions AS s
@@ -4818,7 +4816,7 @@ export async function patchSession(
 > {
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
   if (!canonicalSessionId) return null;
-  const s = await workoutDB(db)
+  const s = await db
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
     .bind(canonicalSessionId, userId)
     .first<SessionRow>();
@@ -4919,7 +4917,7 @@ export async function patchSession(
   // concurrently installed started_at. Skip/planned transitions are stricter:
   // once a set promoted the row, they cannot hide or demote the live workout.
   const [updated] = await runWorkoutWriteBatch(db, [
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE sessions
           SET status = CASE WHEN ?8 = 1 THEN ?2 ELSE status END,
               perceived_fatigue = CASE
@@ -4995,7 +4993,7 @@ export async function patchSession(
     reconcileNativeHealthKitStatement(db, userId, ts, true),
   ]);
   if (updated!.meta.changes === 0) {
-    const current = await workoutDB(db)
+    const current = await db
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId)
       .first<SessionRow>();
@@ -5031,7 +5029,7 @@ export async function patchSession(
     if (current) return sessionStateConflict(s.status, current);
     return null;
   }
-  return workoutDB(db)
+  return db
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
     .bind(canonicalSessionId, userId)
     .first<SessionRow>();
@@ -5073,7 +5071,7 @@ export async function discardSession(
 > {
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
   if (!canonicalSessionId) return null;
-  const s = await workoutDB(db)
+  const s = await db
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
     .bind(canonicalSessionId, userId)
     .first<SessionRow>();
@@ -5100,7 +5098,7 @@ export async function discardSession(
     }
     await runWorkoutWriteStatement(
       db,
-      workoutDB(db).prepare(
+      db.prepare(
         `UPDATE sessions
             SET write_protocol = 'attempt-v1'
           WHERE id = ?1
@@ -5111,7 +5109,7 @@ export async function discardSession(
       )
       .bind(canonicalSessionId, userId, casAttempt),
     );
-    const authoritative = await workoutDB(db)
+    const authoritative = await db
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId)
       .first<SessionRow>();
@@ -5138,7 +5136,7 @@ export async function discardSession(
   // its new set is included in this tombstone; if discard wins first, its
   // status-guarded insert observes `discarded` and is rejected.
   const [transition, , tombstones, terminalState] = await runWorkoutWriteBatch(db, [
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE sessions
             SET status = 'discarded',
@@ -5160,7 +5158,7 @@ export async function discardSession(
         attemptScoped ? 1 : 0,
       ),
     reconcileNativeHealthKitStatement(db, userId, ts, true),
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE set_logs
             SET deleted_at = ?2,
@@ -5174,7 +5172,7 @@ export async function discardSession(
           RETURNING id`,
       )
       .bind(canonicalSessionId, ts, casAttempt),
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId),
   ]);
@@ -5266,7 +5264,7 @@ export async function logSet(
   // return a globally-matched row from another session/tenant, even if a
   // caller happens to know its UUID.
   const selectExisting = () =>
-    workoutDB(db)
+    db
       .prepare(
         `SELECT sl.*
            FROM set_logs AS sl
@@ -5275,12 +5273,12 @@ export async function logSet(
       )
       .bind(input.id, canonicalSessionId, userId);
   const selectSession = () =>
-    workoutDB(db)
+    db
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId);
   // Read the UUID winner and its authoritative session from one D1 snapshot.
   // A retry must never pair an old planned read with a set that won later.
-  const [initialSetState, initialSessionState] = await workoutDB(db).batch([
+  const [initialSetState, initialSessionState] = await db.batch([
     selectExisting(),
     selectSession(),
   ]);
@@ -5354,7 +5352,7 @@ export async function logSet(
   let templateExerciseId: string | null = input.template_exercise_id ?? null;
   let slotIsWarmup: number | null = null;
   if (templateExerciseId) {
-    const slot = await workoutDB(db)
+    const slot = await db
       .prepare(`SELECT te.is_warmup, te.exercise_id FROM template_exercises te
         JOIN workouts w ON w.id=te.workout_id JOIN plans p ON p.id=w.plan_id
         WHERE te.id=?1 AND p.user_id=?2`)
@@ -5385,7 +5383,7 @@ export async function logSet(
   // row already holds it, in which case bump to max+1. The partial unique
   // index ux_set_slot (migration 0013) is the hard backstop for races.
   let setIndex = input.set_index;
-  const clash = await workoutDB(db)
+  const clash = await db
     .prepare(
       `SELECT 1 FROM set_logs
        WHERE session_id = ?1 AND exercise_id = ?2 AND set_index = ?3
@@ -5394,7 +5392,7 @@ export async function logSet(
     .bind(canonicalSessionId, input.exercise_id, setIndex, isWarmupInt)
     .first();
   if (clash) {
-    const max = await workoutDB(db)
+    const max = await db
       .prepare(
         `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
          WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
@@ -5414,7 +5412,7 @@ export async function logSet(
   if (typeof input.is_timed === 'boolean') {
     isTimedInt = input.is_timed ? 1 : 0;
   } else {
-    const exRow = await workoutDB(db)
+    const exRow = await db
       .prepare('SELECT modality FROM exercises WHERE id = ?1')
       .bind(input.exercise_id)
       .first<{ modality: string | null }>();
@@ -5452,7 +5450,7 @@ export async function logSet(
   const insertAndStart = () => {
     const ts = now();
     return runWorkoutWriteBatch(db, [
-      workoutDB(db)
+      db
         .prepare(
           `INSERT INTO set_logs
            (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at,user_id,updated_at)
@@ -5476,7 +5474,7 @@ export async function logSet(
       // first avoids mutating the session for a globally-colliding UUID, while
       // the enclosing D1 batch remains one atomic linearization point: no
       // legacy writer can slip between insertion and the protocol fence.
-      workoutDB(db)
+      db
         .prepare(
           `UPDATE sessions
               SET status = CASE WHEN status = 'planned' THEN 'in_progress' ELSE status END,
@@ -5514,10 +5512,10 @@ export async function logSet(
       // Capture both the target generation and the canonical current row at
       // the same linearization point. The latter gives a stable conflict body
       // when discard/restart moved the generation during this request.
-      workoutDB(db)
+      db
         .prepare('SELECT * FROM sessions WHERE id = ?1 AND attempt = ?2')
         .bind(canonicalSessionId, casAttempt),
-      workoutDB(db)
+      db
         .prepare('SELECT * FROM sessions WHERE id = ?1')
         .bind(canonicalSessionId),
       selectExisting(),
@@ -5597,7 +5595,7 @@ export async function logSet(
       const msg = String((e as Error)?.message ?? '');
       const slotConflict = /unique constraint failed/i.test(msg) && /set_index/i.test(msg);
       if (!slotConflict || attempt >= 5) throw e;
-      const max = await workoutDB(db)
+      const max = await db
         .prepare(
           `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
            WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
@@ -5631,7 +5629,7 @@ export async function findRecentMatchingSet(
   },
 ): Promise<SetLogRow | null> {
   const since = now() - (args.within_ms ?? 120_000);
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(
       `SELECT sl.* FROM set_logs sl
        JOIN sessions s ON s.id = sl.session_id
@@ -5679,7 +5677,7 @@ export async function patchSet(
   if (patch.deleted === false) {
     throw new Error('set_undelete_unsupported');
   }
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(
       `SELECT sl.*, s.attempt AS session_attempt
          FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
@@ -5737,7 +5735,7 @@ export async function patchSet(
         AND EXISTS (SELECT 1 FROM sessions WHERE id=set_logs.session_id AND attempt=?${values.length})
         AND deleted_at IS NULL`;
     }
-    statements.push(workoutDB(db).prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1${condition}`)
+    statements.push(db.prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1${condition}`)
       .bind(...values));
   }
   // Phantom-session guard. Logging a set promotes a session 'planned' ->
@@ -5758,7 +5756,7 @@ export async function patchSet(
     // false; if this demotion wins first, logSet's ordered batch promotes the
     // same attempt back to in_progress. A discard/restart advances `attempt`,
     // so a stale deletion can never demote the newer workout.
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
         `UPDATE sessions
             SET status = 'planned', started_at = NULL, updated_at = MAX(updated_at + 1, ?2)
           WHERE id = ?1
@@ -5774,7 +5772,7 @@ export async function patchSet(
   // Keep deletion and last-set demotion atomic; a lost reply can safely
   // replay the desired state without reopening or retargeting a workout.
   if (statements.length) await runWorkoutWriteBatch(db, statements);
-  const fresh = await workoutDB(db).prepare(
+  const fresh = await db.prepare(
     `SELECT sl.*, s.attempt AS session_attempt FROM set_logs sl
        JOIN sessions s ON s.id=sl.session_id WHERE sl.id=?1 AND s.user_id=?2`)
     .bind(setId, userId).first<SetLogRow & { session_attempt: number }>();
@@ -5784,7 +5782,7 @@ export async function patchSet(
   if (!fresh) return null;
   const { session_attempt, ...set } = fresh;
   if (!expected) return set;
-  const session = await workoutDB(db).prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
+  const session = await db.prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
     .bind(set.session_id, userId).first<SessionRow>();
   if (!session || session.attempt !== expected.attempt) throw new Error('set_correction_conflict');
   return { ...set, session };
@@ -5797,7 +5795,7 @@ export async function patchSet(
 export async function swapSessionExercise(db: D1Database, userId: string, sessionId: string,
   slotId: string, input: { to_exercise: string; expected_attempt: number;
     expected_version: number; expected_revision: number }) {
-  const session = await workoutDB(db).prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
+  const session = await db.prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
     .bind(sessionId, userId).first<SessionRow>();
   if (!session) return { error: 'not_found' as const };
   if (session.attempt !== input.expected_attempt || !['planned', 'in_progress'].includes(session.status)) {
@@ -5811,7 +5809,7 @@ export async function swapSessionExercise(db: D1Database, userId: string, sessio
   if (swaps.revision !== input.expected_revision) return { error: 'swap_conflict' as const };
   const exercise = await resolveExercise(db, input.to_exercise);
   if (!exercise) return { error: 'exercise_not_found' as const };
-  const destination = await workoutDB(db).prepare('SELECT * FROM exercises WHERE id=?1')
+  const destination = await db.prepare('SELECT * FROM exercises WHERE id=?1')
     .bind(exercise.id).first<{ id: string; name: string; unit: string; primary_muscle: string;
       modality: string; laterality: string; load_mode: string; demo_slug: string | null }>();
   if (!destination) return { error: 'exercise_not_found' as const };
@@ -5831,13 +5829,13 @@ export async function swapSessionExercise(db: D1Database, userId: string, sessio
     entries: [...swaps.entries.filter((entry) => entry.original.id !== slotId), entry] });
   const auditID = uuid();
   const results = await runWorkoutWriteBatch(db, [
-    workoutDB(db).prepare(`UPDATE sessions SET exercise_swaps=?3, updated_at=MAX(updated_at+1,?4)
+    db.prepare(`UPDATE sessions SET exercise_swaps=?3, updated_at=MAX(updated_at+1,?4)
       WHERE id=?1 AND user_id=?2 AND attempt=?5 AND status IN ('planned','in_progress')
         AND exercise_swaps IS ?6
         AND EXISTS (SELECT 1 FROM plans WHERE id=?7 AND user_id=?2 AND status='active' AND version=?8)
       RETURNING *`).bind(sessionId, userId, next, now(), input.expected_attempt,
         session.exercise_swaps ?? null, plan.id, input.expected_version),
-    workoutDB(db).prepare(`INSERT INTO audit_log(id,user_id,actor,tool,args,result,created_at)
+    db.prepare(`INSERT INTO audit_log(id,user_id,actor,tool,args,result,created_at)
       SELECT ?1,?2,'ios','swap_session_exercise',?3,?4,?5 WHERE changes()>0`)
       .bind(auditID, userId, JSON.stringify({ session_id: sessionId, slot_id: slotId, ...input }), next, now()),
   ]);
@@ -5880,7 +5878,7 @@ export async function getState(
           stress_model: baseMeta.stress_model ?? null,
         }
       : null;
-  const sessions = await workoutDB(db)
+  const sessions = await db
     .prepare("SELECT * FROM sessions WHERE user_id = ?1 AND updated_at > ?2 ORDER BY date")
     .bind(userId, setsSince)
     .all<SessionRow>();
@@ -5890,10 +5888,10 @@ export async function getState(
   // (migration 0034: backfilled, asserted, and trigger-maintained for legacy
   // inserts) so neither needs to join sessions for ownership.
   const sets = setsSince > 0
-    ? await workoutDB(db).prepare(
+    ? await db.prepare(
         'SELECT * FROM set_logs WHERE user_id=?1 AND updated_at > ?2 ORDER BY updated_at,id')
         .bind(userId, setsSince).all<SetLogRow>()
-    : await workoutDB(db).prepare(
+    : await db.prepare(
         'SELECT * FROM set_logs WHERE user_id=?1 ORDER BY logged_at')
         .bind(userId).all<SetLogRow>();
   // external_events ride a SEPARATE watermark (synced_at epoch-ms). This is
@@ -5910,13 +5908,13 @@ export async function getState(
   //    delta+tombstone pattern.
   const events =
     eventsSince > 0
-      ? await workoutDB(db)
+      ? await db
           .prepare(
             'SELECT * FROM external_events WHERE user_id = ?1 AND synced_at > ?2 ORDER BY synced_at',
           )
           .bind(userId, eventsSince)
           .all<ExternalEventRow>()
-      : await workoutDB(db)
+      : await db
           .prepare(
             'SELECT * FROM external_events WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY synced_at',
           )
@@ -5931,13 +5929,13 @@ export async function getState(
   //    INCLUDING soft-deleted ones, so a syncing client learns about removals.
   const activities =
     activitiesSince > 0
-      ? await workoutDB(db)
+      ? await db
           .prepare(
             'SELECT * FROM external_activities WHERE user_id = ?1 AND synced_at > ?2 ORDER BY synced_at',
           )
           .bind(userId, activitiesSince)
           .all<ExternalActivityRow>()
-      : await workoutDB(db)
+      : await db
           .prepare(
             'SELECT * FROM external_activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY date',
           )
@@ -5955,7 +5953,7 @@ export async function getState(
     logSince > 0
       ? await listActivitiesForUser(db, userId, logSince)
       : (
-          await workoutDB(db)
+          await db
             .prepare(
               'SELECT * FROM activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY logged_at',
             )
@@ -5983,7 +5981,7 @@ export async function getInProgressSession(
   db: D1Database,
   userId: string,
 ): Promise<SessionRow | null> {
-  return workoutDB(db)
+  return db
     .prepare(
       "SELECT * FROM sessions WHERE user_id = ?1 AND status = 'in_progress' ORDER BY updated_at DESC LIMIT 1",
     )
@@ -5992,7 +5990,7 @@ export async function getInProgressSession(
 }
 
 export async function getSetsForSession(db: D1Database, sessionId: string) {
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       'SELECT * FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL ORDER BY logged_at',
     )
@@ -6017,7 +6015,7 @@ export async function getSetsForSessions(
 ): Promise<SetLogRow[]> {
   if (sessionIds.length === 0) return [];
   const placeholders = sessionIds.map((_, i) => `?${i + 2}`).join(',');
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       `SELECT * FROM set_logs
         WHERE user_id = ?1 AND session_id IN (${placeholders}) AND deleted_at IS NULL
@@ -6039,7 +6037,7 @@ export async function getRecentSessions(
   // context. (Visual calendar surfaces vanish it via the projection;
   // set-based reads via deleted_at. This is the one session-list read
   // that needs an explicit filter.)
-  const r = await workoutDB(db)
+  const r = await db
     .prepare("SELECT * FROM sessions WHERE user_id = ?1 AND status != 'discarded' AND date <= ?3 ORDER BY date DESC, id LIMIT ?2")
     .bind(userId, n, throughDate)
     .all<SessionRow>();
@@ -6059,7 +6057,7 @@ export async function getLastCompletedSession(
   excludeDate?: string,
   throughDate = '9999-12-31',
 ): Promise<SessionRow | null> {
-  return workoutDB(db)
+  return db
     .prepare(
       "SELECT * FROM sessions WHERE user_id = ?1 AND status = 'completed' AND date != ?2 AND date <= ?3 ORDER BY date DESC, id LIMIT 1",
     )
@@ -6078,7 +6076,7 @@ export async function getSessionByDate(
   // applies. Revival/discard never route through here (getOrCreateSession
   // has its own query; discardSession takes a session id), so filtering is
   // safe.
-  return workoutDB(db)
+  return db
     .prepare("SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 AND status != 'discarded' ORDER BY created_at LIMIT 1")
     .bind(userId, date)
     .first<SessionRow>();
@@ -6088,13 +6086,13 @@ export async function getWorkoutSummary(
   db: D1Database, userId: string, sessionId: string,
 ): Promise<WorkoutSummary | null> {
   const owned = `SELECT id FROM sessions WHERE id=?1 AND user_id=?2 AND status!='discarded'`;
-  const [sessionResult, setResult, exerciseResult, previousResult] = await workoutDB(db).batch([
-    workoutDB(db).prepare(`SELECT * FROM sessions WHERE id IN (${owned})`).bind(sessionId, userId),
-    workoutDB(db).prepare(`SELECT * FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL`).bind(sessionId, userId),
-    workoutDB(db).prepare(`SELECT e.* FROM exercises e WHERE e.id IN (
+  const [sessionResult, setResult, exerciseResult, previousResult] = await db.batch([
+    db.prepare(`SELECT * FROM sessions WHERE id IN (${owned})`).bind(sessionId, userId),
+    db.prepare(`SELECT * FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL`).bind(sessionId, userId),
+    db.prepare(`SELECT e.* FROM exercises e WHERE e.id IN (
       SELECT exercise_id FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL)`)
       .bind(sessionId, userId),
-    workoutDB(db).prepare(`SELECT sl.exercise_id,sl.weight,sl.is_timed,MAX(sl.reps) AS reps,
+    db.prepare(`SELECT sl.exercise_id,sl.weight,sl.is_timed,MAX(sl.reps) AS reps,
         MAX(COALESCE(sl.duration_s,sl.reps)) AS duration_s
       FROM set_logs sl JOIN sessions s ON s.id=sl.session_id
       WHERE s.user_id=?2 AND s.status='completed' AND sl.deleted_at IS NULL AND sl.is_warmup=0
@@ -6119,7 +6117,7 @@ export async function writeNote(
   author: 'coach' | 'nick',
   body: string,
 ): Promise<void> {
-  await workoutDB(db)
+  await db
     .prepare(
       'INSERT INTO notes (id,user_id,scope,ref_id,author,body,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)',
     )
@@ -6135,7 +6133,7 @@ export async function writeAudit(
   result: string,
   actor: string = 'mcp',
 ): Promise<void> {
-  await workoutDB(db)
+  await db
     .prepare(
       'INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)',
     )
@@ -6177,7 +6175,7 @@ export async function logActivity(
 ): Promise<ActivityRow> {
   const updatedAt = now();
   const loggedAt = input.logged_at ?? updatedAt;
-  await workoutDB(db)
+  await db
     .prepare(
       `INSERT INTO activities
          (id,user_id,date,type,title,duration_minutes,notes,logged_at,source,deleted_at,updated_at)
@@ -6199,7 +6197,7 @@ export async function logActivity(
     .run();
   // Re-select so retries return the *original* persisted row (preserving the
   // original logged_at/title/etc.), not the fresh-looking input.
-  const row = await workoutDB(db)
+  const row = await db
     .prepare('SELECT * FROM activities WHERE id = ?1 AND user_id = ?2')
     .bind(input.id, userId)
     .first<ActivityRow>();
@@ -6226,7 +6224,7 @@ export async function softDeleteActivity(
   activityId: string,
 ): Promise<boolean> {
   const ts = now();
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       `UPDATE activities
           SET deleted_at = ?3,
@@ -6251,7 +6249,7 @@ export async function listActivitiesForUser(
   userId: string,
   sinceMs: number,
 ): Promise<ActivityRow[]> {
-  const rows = await workoutDB(db)
+  const rows = await db
     .prepare(
       `SELECT * FROM activities
        WHERE user_id = ?1 AND updated_at > ?2
@@ -6459,7 +6457,7 @@ export async function updatePlanTree(
     // Build the candidate only after the complete proposed tree has passed
     // resolution and runtime validation. Its INSERT joins the tree rebuild's
     // transaction below, so a downstream failure cannot leave an empty plan.
-    const prior = await workoutDB(db).prepare(
+    const prior = await db.prepare(
       'SELECT COALESCE(MAX(version),0) AS version FROM plans WHERE user_id=?1',
     ).bind(userId).first<{ version: number }>();
     const ts = now();
@@ -6475,7 +6473,7 @@ export async function updatePlanTree(
   // name/label matches. Without this, every update_plan (e.g. "add a
   // deadlift day") would silently wipe the entire weekly schedule because
   // rebuilt days get fresh UUIDs.
-  const oldDays = await workoutDB(db)
+  const oldDays = await db
     .prepare('SELECT * FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id')
     .bind(plan.id)
     .all<WorkoutRow>();
@@ -6523,7 +6521,7 @@ export async function updatePlanTree(
   for (const old of newlyArchived) if (await workoutIsActive(db, plan, old.id)) {
     return { error: 'active_workout' };
   }
-  const oldTeRows = await workoutDB(db)
+  const oldTeRows = await db
     .prepare(
       `SELECT te.*
          FROM template_exercises te
@@ -6666,7 +6664,7 @@ export async function updatePlanTree(
   // referenced a row being deleted.
   const nonce = uuid();
   const stmts: D1PreparedStatement[] = createsPlan
-    ? [workoutDB(db).prepare(
+    ? [db.prepare(
         `INSERT INTO plans
            (id,user_id,name,status,version,meta,created_at,updated_at,plan_write_nonce)
          SELECT ?1,?2,?3,'active',?4,NULL,?5,?5,?6
@@ -6682,7 +6680,7 @@ export async function updatePlanTree(
   input.workouts.forEach((d, di) => {
     const dayId = newDayIds[di]!;
     stmts.push(
-      workoutDB(db)
+      db
         .prepare(
           `INSERT INTO workouts
            (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
@@ -6708,7 +6706,7 @@ export async function updatePlanTree(
     );
   });
   for (const [id, metadata] of metadataByNewId) {
-    stmts.push(workoutDB(db).prepare(`UPDATE workouts SET tags=?1,archived_at=?2 WHERE id=?3
+    stmts.push(db.prepare(`UPDATE workouts SET tags=?1,archived_at=?2 WHERE id=?3
       AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
       .bind(metadata.tags, metadata.archived_at, id, plan.id, userId, plan.version, nonce));
   }
@@ -6723,7 +6721,7 @@ export async function updatePlanTree(
       const isWarmup = isWarmupPerOccurrence[di]![ei]!;
       const group = groupCandidates[di]!.exercises[ei]!;
       stmts.push(
-        workoutDB(db)
+        db
           .prepare(
             `INSERT INTO template_exercises
              (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds)
@@ -6748,7 +6746,7 @@ export async function updatePlanTree(
   for (const [oldDayId, newDayId] of oldToNewDay.entries()) {
     if (newDayId != null) {
       stmts.push(
-        workoutDB(db)
+        db
           .prepare(
             `UPDATE sessions SET workout_id = ?2, updated_at = ?6
               WHERE workout_id = ?1
@@ -6761,7 +6759,7 @@ export async function updatePlanTree(
       );
     } else {
       stmts.push(
-        workoutDB(db)
+        db
           .prepare(
             `UPDATE sessions SET workout_id = NULL, updated_at = ?5
               WHERE workout_id = ?1
@@ -6778,7 +6776,7 @@ export async function updatePlanTree(
   for (const [oldTeId, newTeId] of oldToNewTe.entries()) {
     if (newTeId != null) {
       stmts.push(
-        workoutDB(db)
+        db
           .prepare(
             `UPDATE set_logs
                 SET template_exercise_id = ?2,
@@ -6793,7 +6791,7 @@ export async function updatePlanTree(
       );
     } else {
       stmts.push(
-        workoutDB(db)
+        db
           .prepare(
             `UPDATE set_logs
                 SET template_exercise_id = NULL,
@@ -6812,7 +6810,7 @@ export async function updatePlanTree(
   //    freshly-inserted new rows that now share plan_id). Children first.
   for (const ot of oldTeRows.results) {
     stmts.push(
-      workoutDB(db)
+      db
         .prepare(
           `DELETE FROM template_exercises
             WHERE id = ?1
@@ -6827,7 +6825,7 @@ export async function updatePlanTree(
   // 6) DELETE old workouts by EXPLICIT id. Parents last.
   for (const od of oldDays.results) {
     stmts.push(
-      workoutDB(db)
+      db
         .prepare(
           `DELETE FROM workouts
             WHERE id = ?1
@@ -6886,7 +6884,7 @@ export async function updatePlanTree(
     week: remappedWeek,
   };
   stmts.push(
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE plans
             SET name = ?2, meta = ?3, updated_at = ?4
@@ -6942,8 +6940,8 @@ export async function updatePlanTree(
 
 /** Find a template_exercise slot by id, or by (day + exercise name/id).
  *  When `workout_id` is supplied alongside `template_exercise_id`, the
- *  slot must live in THAT day: the nested REST route /days/:id/exercises/:teId
- *  claims a day in its path, so a /days/<dayA>/exercises/<slot-from-dayB>
+ *  slot must live in THAT day: the nested REST route /workouts/:id/exercises/:teId
+ *  claims a day in its path, so a /workouts/<dayA>/exercises/<slot-from-dayB>
  *  request must resolve to null (→ 404) rather than mutating day B's slot by
  *  the globally-unique teId alone. Day-less callers (the MCP tools, which have
  *  no URL day) omit it and resolve by teId + user as before. */
@@ -6953,7 +6951,7 @@ async function findSlot(
   ref: { template_exercise_id?: string; workout_id?: string; day?: string; exercise?: string },
 ): Promise<TemplateExerciseRow | null> {
   if (ref.template_exercise_id) {
-    return workoutDB(db)
+    return db
       .prepare(
         `SELECT te.* FROM template_exercises te
          JOIN workouts d ON d.id = te.workout_id
@@ -6966,7 +6964,7 @@ async function findSlot(
   }
   if (!ref.day || !ref.exercise) return null;
   const exId = await resolveOrThrow(db, ref.exercise);
-  return workoutDB(db)
+  return db
     .prepare(
       `SELECT te.* FROM template_exercises te
        JOIN workouts d ON d.id = te.workout_id
@@ -7031,7 +7029,7 @@ export async function updateExercise(
     const owned = ['order_index', 'target_sets'].filter((key) => Object.prototype.hasOwnProperty.call(patch, key));
     if (owned.length) return { error: 'group_conflict', fields: owned };
   }
-  const modality = await workoutDB(db).prepare('SELECT modality FROM exercises WHERE id=?1')
+  const modality = await db.prepare('SELECT modality FROM exercises WHERE id=?1')
     .bind(slot.exercise_id).first<{ modality: string }>();
   const merged = {
     target_sets: patch.target_sets === undefined ? slot.target_sets : patch.target_sets,
@@ -7099,7 +7097,7 @@ export async function updateExercise(
   const planParam = nonceParam - 2;
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE template_exercises SET ${assignments.join(',')}
         WHERE id=?1 AND EXISTS (
           SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
@@ -7112,7 +7110,7 @@ export async function updateExercise(
   ];
   let acknowledgedOrder = patch.order_index ?? slot.order_index;
   if (patch.order_index !== undefined) {
-    const siblings = await workoutDB(db).prepare(
+    const siblings = await db.prepare(
       'SELECT id,order_index FROM template_exercises WHERE workout_id=?1 ORDER BY order_index,created_at,id',
     ).bind(slot.workout_id).all<{ id: string; order_index: number }>();
     const moved = siblings.results.map((row) => row.id === slot.id ? { ...row, order_index: patch.order_index! } : row);
@@ -7121,7 +7119,7 @@ export async function updateExercise(
       const ordered = orderDayRows(moved, slot.id);
       acknowledgedOrder = ordered.findIndex((row) => row.id === slot.id);
       ordered.forEach((row, index) => statements.push(
-        workoutDB(db).prepare(`UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
+        db.prepare(`UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
           AND EXISTS (SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
             JOIN template_exercises te ON te.workout_id=d.id
             WHERE te.id=?4 AND p.id=?5 AND p.version=-?6
@@ -7183,7 +7181,7 @@ export async function deleteTemplateExercise(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
       ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-      workoutDB(db)
+      db
         .prepare(
           `UPDATE set_logs
               SET template_exercise_id = NULL,
@@ -7192,12 +7190,12 @@ export async function deleteTemplateExercise(
               AND EXISTS (SELECT 1 FROM plans WHERE id=?3 AND user_id=?4 AND version=-?5 AND plan_write_nonce=?6)`,
         )
         .bind(slot.id, ts, plan.id, userId, plan.version, nonce),
-      workoutDB(db).prepare(
+      db.prepare(
         `DELETE FROM template_exercises WHERE id=?1 AND EXISTS
          (SELECT 1 FROM plans WHERE id=?2 AND user_id=?3 AND version=-?4 AND plan_write_nonce=?5)`,
       ).bind(slot.id, plan.id, userId, plan.version, nonce),
   ];
-  for (const row of normalized) statements.push(workoutDB(db).prepare(
+  for (const row of normalized) statements.push(db.prepare(
     `UPDATE template_exercises SET group_id=NULL,group_rest_seconds=NULL,group_transition_seconds=NULL,
        updated_at=?2 WHERE id=?1 AND EXISTS
        (SELECT 1 FROM plans WHERE id=?3 AND user_id=?4 AND version=-?5 AND plan_write_nonce=?6)`,
@@ -7253,7 +7251,7 @@ export async function swapExercise(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE template_exercises SET exercise_id=?2,updated_at=?3 WHERE id=?1
         AND EXISTS (
           SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
@@ -7401,7 +7399,7 @@ export async function adjustToday(
           continue;
         }
         stmts.push(
-          workoutDB(db)
+          db
             .prepare(`UPDATE template_exercises SET target_weight=?2, updated_at=?3 WHERE id=?1
               AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
             .bind(te.id, w, ts, tree.id, userId, tree.version, nonce),
@@ -7421,7 +7419,7 @@ export async function adjustToday(
           continue;
         }
         stmts.push(
-          workoutDB(db)
+          db
             .prepare(`UPDATE template_exercises SET target_sets=?2, updated_at=?3 WHERE id=?1
               AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
             .bind(te.id, s, ts, tree.id, userId, tree.version, nonce),
@@ -7486,7 +7484,7 @@ export async function getHistory(
   to: number,
 ) {
   const exercise =
-    (await workoutDB(db)
+    (await db
       .prepare('SELECT modality, unit, laterality, load_mode FROM exercises WHERE id = ?1')
       .bind(exerciseId)
       .first<MetricExercise>()) ?? {
@@ -7495,7 +7493,7 @@ export async function getHistory(
       laterality: 'bilateral',
       load_mode: 'total',
     };
-  const sets = await workoutDB(db)
+  const sets = await db
     .prepare(
       `SELECT sl.*, s.date as session_date, s.notes AS session_notes,
          s.perceived_fatigue AS session_perceived_fatigue FROM set_logs sl
@@ -7553,11 +7551,11 @@ export async function getVolume(
   db: D1Database, userId: string, muscle: string, from: number, to: number,
 ) {
   const normalizedMuscle = muscle.trim().toLowerCase();
-  const known = await workoutDB(db)
+  const known = await db
     .prepare('SELECT 1 FROM exercises WHERE lower(primary_muscle) = ?1 LIMIT 1')
     .bind(normalizedMuscle).first();
   if (!known) return { error: 'unknown_muscle' as const, query: muscle };
-  const rows = await workoutDB(db).prepare(
+  const rows = await db.prepare(
     `SELECT strftime('%Y-%W', s.date) AS week, e.unit,
             COUNT(*) AS logged_working_sets, COUNT(sl.rpe) AS sets_with_effort,
             SUM(CASE WHEN sl.weight > 0 AND sl.is_timed = 0 AND e.unit != 'sec' AND e.modality != 'cardio'
@@ -7639,7 +7637,7 @@ export async function setPlanSchedule(
       current_version: plan.version,
     };
   }
-  const days = await workoutDB(db)
+  const days = await db
     .prepare('SELECT id, name, day_label FROM workouts WHERE plan_id = ?1 AND archived_at IS NULL')
     .bind(plan.id)
     .all<{ id: string; name: string; day_label: string | null }>();
@@ -7678,7 +7676,7 @@ export async function setPlanSchedule(
   // writePlanMeta; a concurrent plan write → no row updated → 409.
   const nonce = uuid();
   const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
-  statements.push(workoutDB(db).prepare(
+  statements.push(db.prepare(
     `UPDATE plans SET meta=?2,updated_at=?3
       WHERE id=?1 AND version=-?4 AND user_id=?5 AND status='active' AND plan_write_nonce=?6`,
   ).bind(plan.id, serializePlanMeta(meta, schedule), ts, plan.version, userId, nonce));
@@ -7745,7 +7743,7 @@ async function writePlanMeta(
   // changes. No row updated → another writer won → 409 (caller refetches).
   const nonce = uuid();
   const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
-  statements.push(workoutDB(db).prepare(
+  statements.push(db.prepare(
     `UPDATE plans SET meta=?2,updated_at=?3
       WHERE id=?1 AND version=-?4 AND user_id=?5 AND plan_write_nonce=?6`,
   ).bind(plan.id, serializePlanMeta(meta, meta.schedule), ts, plan.version, userId, nonce));
@@ -8007,7 +8005,7 @@ export async function deleteWorkoutAtVersion(
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
     // Preserve historical rows; only detach their pointers into the plan
     // document before deleting that document node.
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE sessions
             SET workout_id = NULL,
@@ -8031,7 +8029,7 @@ export async function deleteWorkoutAtVersion(
             )`,
       )
       .bind(userId, dayId, plan.id, -writeVersion, ts),
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE set_logs
             SET template_exercise_id = NULL,
@@ -8051,7 +8049,7 @@ export async function deleteWorkoutAtVersion(
             )`,
       )
       .bind(dayId, plan.id, userId, -writeVersion, ts),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM template_exercises WHERE workout_id = ?1
           AND EXISTS (
@@ -8066,7 +8064,7 @@ export async function deleteWorkoutAtVersion(
           )`,
       )
       .bind(dayId, plan.id, userId, -writeVersion),
-    workoutDB(db)
+    db
       .prepare(
         `DELETE FROM workouts WHERE id = ?1 AND plan_id = ?2
           AND EXISTS (
@@ -8082,7 +8080,7 @@ export async function deleteWorkoutAtVersion(
       )
       .bind(dayId, plan.id, userId, -writeVersion),
     ...remaining.map((row, index) =>
-      workoutDB(db)
+      db
         .prepare(
           `UPDATE workouts SET order_index = ?2, updated_at = ?3
             WHERE id = ?1 AND plan_id = ?4
@@ -8099,7 +8097,7 @@ export async function deleteWorkoutAtVersion(
         )
         .bind(row.id, index, ts, plan.id, userId, -writeVersion, dayId),
     ),
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE plans SET meta = ?2, updated_at = ?3
           WHERE id = ?1 AND user_id = ?4 AND status = 'active' AND version = ?5
@@ -8128,7 +8126,7 @@ export async function deleteWorkoutAtVersion(
   const results = await runWorkoutWriteBatch<{ version: number }>(db, stmts);
   const updatedPlan = results[versionResultIndex]?.results[0];
   if ((results[0]?.meta.changes ?? 0) !== 1 || (results[documentUpdateIndex]?.meta.changes ?? 0) !== 1 || !updatedPlan) {
-    const active = await workoutDB(db)
+    const active = await db
       .prepare(
         `SELECT 1 FROM sessions AS active_session
           WHERE active_session.user_id = ?1
@@ -8170,7 +8168,7 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
   const args = JSON.stringify(input);
   const receiptID = input.id;
   const readReceipt = async () => {
-    const row = await workoutDB(db).prepare(
+    const row = await db.prepare(
       'SELECT user_id,tool,args,result FROM audit_log WHERE id=?1').bind(receiptID)
       .first<{ user_id: string; tool: string; args: string; result: string }>();
     if (!row) return null;
@@ -8189,7 +8187,7 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
       || !plan.workouts.some((workout) => workout.id === input.workout_id && workout.archived_at == null)) {
     return { error: 'calendar_move_conflict' };
   }
-  const rows = (await workoutDB(db).prepare(
+  const rows = (await db.prepare(
     'SELECT * FROM sessions WHERE user_id=?1 AND date IN (?2,?3)')
     .bind(userId, input.from_date, input.to_date).all<SessionRow>()).results;
   if (rows.some(row => row.kind === 'freestyle' && row.status !== 'discarded')) {
@@ -8243,14 +8241,14 @@ export async function moveCalendarWorkout(db: D1Database, userId: string, input:
     conditions.push(`COALESCE((SELECT json_array(id,attempt,status,workout_id,updated_at,notes,perceived_fatigue)
       FROM sessions WHERE user_id=?2 AND date=?${index}), 'null')=?${index + 1}`);
   }
-  const statements = [workoutDB(db).prepare(
+  const statements = [db.prepare(
     `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
      SELECT ?1,?2,'ios','move_calendar_workout',?3,?4,?5
      WHERE EXISTS (SELECT 1 FROM plans WHERE id=?6 AND user_id=?2 AND status='active' AND version=?7)
        AND ${conditions.join(' AND ')}
      ON CONFLICT(id) DO NOTHING`).bind(...bindings)];
   for (const row of [acknowledgement.from, acknowledgement.to]) {
-    statements.push(workoutDB(db).prepare(
+    statements.push(db.prepare(
       `INSERT INTO sessions (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,
         perceived_fatigue,notes,runner_targets,created_at,updated_at,attempt,write_protocol)
        SELECT ?1,?2,?3,?4,?5,?6,NULL,NULL,?13,?14,NULL,?7,?8,?9,?10
@@ -8291,7 +8289,7 @@ export async function setPlannedSession(
 > {
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' };
-  const d = await workoutDB(db)
+  const d = await db
     .prepare(
       "SELECT id FROM workouts WHERE plan_id = ?1 AND archived_at IS NULL AND (id = ?2 OR lower(day_label) = lower(?2) OR lower(name) = lower(?2)) LIMIT 1",
     )
@@ -8299,7 +8297,7 @@ export async function setPlannedSession(
     .first<{ id: string }>();
   if (!d) return { error: 'unknown_day_ref', ref: day };
   const readExisting = () =>
-    workoutDB(db)
+    db
       .prepare(
         'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
       )
@@ -8359,7 +8357,7 @@ export async function setPlannedSession(
     const newAttempt = casAttempt + 1;
     const updated = await runWorkoutWriteStatement(
       db,
-      workoutDB(db).prepare(
+      db.prepare(
         `UPDATE sessions
             SET plan_id = ?13, kind = 'planned',
                 workout_id = ?2,
@@ -8459,7 +8457,7 @@ export async function setPlannedSession(
   };
   const inserted = await runWorkoutWriteStatement(
     db,
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO sessions
        (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
        SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14
@@ -8526,7 +8524,7 @@ export async function skipPlannedSession(
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' };
   const readExisting = () =>
-    workoutDB(db)
+    db
       .prepare(
         'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
       )
@@ -8566,7 +8564,7 @@ export async function skipPlannedSession(
     const newAttempt = casAttempt + 1;
     const updated = await runWorkoutWriteStatement(
       db,
-      workoutDB(db).prepare(
+      db.prepare(
         `UPDATE sessions
             SET plan_id = ?6, kind = 'planned',
                 workout_id = NULL,
@@ -8653,7 +8651,7 @@ export async function skipPlannedSession(
   };
   const inserted = await runWorkoutWriteStatement(
     db,
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO sessions
        (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
        SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14
@@ -8705,7 +8703,7 @@ async function readCalendarPlan(
   const meta = parsePlanMeta(plan.meta);
   const schedule = meta.schedule;
   const trips = meta.trips ?? [];
-  const liveDays = await workoutDB(db)
+  const liveDays = await db
     .prepare('SELECT id FROM workouts WHERE plan_id = ?1 AND archived_at IS NULL')
     .bind(plan.id)
     .all<{ id: string }>();
@@ -8715,7 +8713,7 @@ async function readCalendarPlan(
 async function readCalendarSessions(db: D1Database, userId: string, fromDate: string, toDate: string): Promise<SessionRow[]> {
   // Sessions use skipped/discarded statuses, not a deleted_at column. The
   // projection owns their visibility and includes past completed history.
-  const rows = await workoutDB(db)
+  const rows = await db
     .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND date >= ?2 AND date <= ?3 ORDER BY date')
     .bind(userId, fromDate, toDate)
     .all<SessionRow>();
@@ -8736,7 +8734,7 @@ async function readCalendarInputs(
   // today+ bricks/doubles; completed actuals drive past endurance items.
   // Both are soft-deleted caches — exclude tombstones. The window matches
   // the sessions window (the projection clamps the span itself).
-  const plannedEvents = await workoutDB(db)
+  const plannedEvents = await db
     .prepare(
       `SELECT id, date, kind, title, planned_duration_sec, training_load
          FROM external_events
@@ -8745,7 +8743,7 @@ async function readCalendarInputs(
     )
     .bind(userId, fromDate, toDate)
     .all<ProjectionEvent>();
-  const completedActivities = await workoutDB(db)
+  const completedActivities = await db
     .prepare(
       `SELECT id, date, kind, name, moving_time_sec, training_load
          FROM external_activities
@@ -8876,7 +8874,7 @@ async function claimIntervalsSyncAttempt(
                                intervals_activities_sync_attempt AS activitiesAttempt`;
   const statement =
     credential.kind === 'oauth'
-      ? workoutDB(db).prepare(
+      ? db.prepare(
           `UPDATE users
               SET ${column} = ${column} + 1,
                   intervals_protocol_write_seq = intervals_protocol_write_seq
@@ -8891,7 +8889,7 @@ async function claimIntervalsSyncAttempt(
               AND ${column} < ${MAX_INTERVALS_SYNC_ATTEMPT}
             ${returning}`,
         )
-      : workoutDB(db).prepare(
+      : db.prepare(
           `UPDATE users
               SET ${column} = ${column} + 1,
                   intervals_protocol_write_seq = intervals_protocol_write_seq
@@ -8924,7 +8922,7 @@ async function claimIntervalsSyncAttempt(
 
   const diagnostic =
     credential.kind === 'oauth'
-      ? await workoutDB(db)
+      ? await db
           .prepare(
             `SELECT ${column} AS attempt FROM users
               WHERE id = ?1
@@ -8944,7 +8942,7 @@ async function claimIntervalsSyncAttempt(
             credential.athleteId,
           )
           .first<{ attempt: number }>()
-      : await workoutDB(db)
+      : await db
           .prepare(
             `SELECT ${column} AS attempt FROM users
               WHERE id = ?1
@@ -8971,7 +8969,7 @@ async function isCurrentIntervalsSyncAttempt(
 ): Promise<boolean> {
   const column = intervalsSyncAttemptColumn(cache);
   const ownAttempt = cache === 'events' ? attempts.eventsAttempt : attempts.activitiesAttempt;
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(
       `SELECT EXISTS(
                 SELECT 1 FROM users
@@ -9012,7 +9010,7 @@ async function stampIntervalsSyncSuccess(
   const ownAttempt = cache === 'events' ? attempts.eventsAttempt : attempts.activitiesAttempt;
   const statement =
     credential.kind === 'oauth'
-      ? workoutDB(db).prepare(
+      ? db.prepare(
           `UPDATE users
           SET ${freshnessColumn} = CASE
                 WHEN ${freshnessColumn} IS NULL OR ${freshnessColumn} < ?2 THEN ?2
@@ -9029,7 +9027,7 @@ async function stampIntervalsSyncSuccess(
           AND intervals_api_key IS NULL
           AND ${attemptColumn} = ?8`,
         )
-      : workoutDB(db).prepare(
+      : db.prepare(
           `UPDATE users
           SET ${freshnessColumn} = CASE
                 WHEN ${freshnessColumn} IS NULL OR ${freshnessColumn} < ?2 THEN ?2
@@ -9129,7 +9127,7 @@ async function markIntervalsAuthError(
   const ts = now();
   const clearStatement =
     credential.kind === 'oauth'
-      ? workoutDB(db).prepare(
+      ? db.prepare(
           `UPDATE users
             SET intervals_api_key = NULL,
                 intervals_oauth_access_token = NULL,
@@ -9155,7 +9153,7 @@ async function markIntervalsAuthError(
             AND intervals_events_sync_attempt = ?8
             AND intervals_activities_sync_attempt = ?9`,
         )
-      : workoutDB(db).prepare(
+      : db.prepare(
           `UPDATE users
             SET intervals_api_key = NULL,
                 intervals_oauth_access_token = NULL,
@@ -9202,9 +9200,9 @@ async function markIntervalsAuthError(
         attempts.eventsAttempt,
         attempts.activitiesAttempt,
       );
-  const [cleared] = await workoutDB(db).batch([
+  const [cleared] = await db.batch([
     clear,
-    workoutDB(db)
+    db
       .prepare(
         `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
          SELECT ?1,?2,'system','intervals_auth_error',?3,'disconnected',?4
@@ -9251,7 +9249,7 @@ async function tryRefreshIntervalsOAuth(
   const clientSecret = env.INTERVALS_OAUTH_CLIENT_SECRET;
   if (!clientId || !clientSecret) return { status: 'unavailable' };
   if (!credential.refreshToken) return { status: 'unavailable' };
-  const row = await workoutDB(db)
+  const row = await db
     .prepare(
       `SELECT 1 AS current_credential
          FROM users
@@ -9310,7 +9308,7 @@ async function tryRefreshIntervalsOAuth(
     typeof body.expires_in === 'number' && Number.isFinite(body.expires_in)
       ? now() + body.expires_in * 1000
       : null;
-  const stored = await workoutDB(db)
+  const stored = await db
     .prepare(
       `UPDATE users
           SET intervals_oauth_access_token = ?9,
@@ -9631,7 +9629,7 @@ export async function syncExternalEvents(
     // reschedule (same external_id, new date) just updates `date` on the
     // same row and clears any prior soft-delete (the event came back).
     stmts.push(
-      workoutDB(db)
+      db
         .prepare(
           `INSERT INTO external_events
              (id,user_id,source,external_id,date,start_date_local_ms,kind,title,description,
@@ -9710,7 +9708,7 @@ export async function syncExternalEvents(
   // 100-bound-parameter ceiling for ordinary-sized calendars.
   const seenIds = [...seen];
   stmts.push(
-    workoutDB(db)
+    db
       .prepare(
         // Advance synced_at to the deletion time alongside deleted_at:
         // /api/state?events_since= filters `synced_at > cursor`, so a
@@ -9740,7 +9738,7 @@ export async function syncExternalEvents(
       ),
   );
   stmts.push(
-    workoutDB(db)
+    db
       .prepare(
         `SELECT EXISTS(
                   SELECT 1 FROM users
@@ -9751,7 +9749,7 @@ export async function syncExternalEvents(
       .bind(userId, effectiveCredential.generation, attempts.eventsAttempt),
   );
 
-  const reconcileResults = await workoutDB(db).batch(stmts);
+  const reconcileResults = await db.batch(stmts);
   const generationCheck = reconcileResults.at(-1)?.results[0] as
     | { current_identity: number }
     | undefined;
@@ -9759,7 +9757,7 @@ export async function syncExternalEvents(
     return { status: 'superseded', synced: 0, detail: 'superseded' };
   }
 
-  const cnt = await workoutDB(db)
+  const cnt = await db
     .prepare(
       `SELECT COUNT(*) AS c FROM external_events
         WHERE user_id = ?1 AND deleted_at IS NULL
@@ -9790,7 +9788,7 @@ export async function getUpcomingRides(
 ): Promise<ExternalEventRow[]> {
   const from = opts.from ?? new Date().toISOString().slice(0, 10);
   const to = addDays(from, opts.range ?? 90);
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       `SELECT * FROM external_events
         WHERE user_id = ?1 AND deleted_at IS NULL
@@ -10051,7 +10049,7 @@ export async function syncExternalActivities(
     const id = `intervals:activity:${userId}:${a.external_id}`;
     seen.add(id);
     stmts.push(
-      workoutDB(db)
+      db
         .prepare(
           `INSERT INTO external_activities
              (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
@@ -10174,7 +10172,7 @@ export async function syncExternalActivities(
   // is never in `seen`.
   const seenIds = [...seen];
   stmts.push(
-    workoutDB(db)
+    db
       .prepare(
         `UPDATE external_activities
             SET deleted_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
@@ -10201,7 +10199,7 @@ export async function syncExternalActivities(
       ),
   );
   stmts.push(
-    workoutDB(db)
+    db
       .prepare(
         `SELECT EXISTS(
                   SELECT 1 FROM users
@@ -10212,7 +10210,7 @@ export async function syncExternalActivities(
       .bind(userId, effectiveCredential.generation, attempts.activitiesAttempt),
   );
 
-  const reconcileResults = await workoutDB(db).batch(stmts);
+  const reconcileResults = await db.batch(stmts);
   const generationCheck = reconcileResults.at(-1)?.results[0] as
     | { current_identity: number }
     | undefined;
@@ -10245,7 +10243,7 @@ export async function syncExternalActivities(
     },
   );
 
-  const cnt = await workoutDB(db)
+  const cnt = await db
     .prepare(
       `SELECT COUNT(*) AS c FROM external_activities
         WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
@@ -10278,7 +10276,7 @@ export async function getRecentActivities(
   const to = opts.to ?? new Date().toISOString().slice(0, 10);
   const from = addDays(to, -(opts.range ?? 90));
   const limit = Math.max(1, Math.min(500, opts.limit ?? 50));
-  const r = await workoutDB(db)
+  const r = await db
     .prepare(
       `SELECT * FROM external_activities
         WHERE user_id = ?1 AND deleted_at IS NULL
@@ -10346,7 +10344,7 @@ function reconcileNativeHealthKitStatement(
   requirePriorChange = false,
 ): D1PreparedStatement {
   const native = nativeHealthKitWinnerSQL('h');
-  return workoutDB(db).prepare(`WITH desired AS MATERIALIZED (
+  return db.prepare(`WITH desired AS MATERIALIZED (
     SELECT h.id, COALESCE(${native}, (
       SELECT id FROM (
         SELECT i.id,
@@ -10409,8 +10407,8 @@ export async function upsertHealthKitActivity(
   }
   const id = `healthkit:activity:${userId}:${input.id}`;
   const ts = now();
-  await workoutDB(db).batch([
-    workoutDB(db)
+  await db.batch([
+    db
     .prepare(
       `INSERT INTO external_activities
          (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
@@ -10483,7 +10481,7 @@ export async function upsertHealthKitActivity(
   // and is immediately re-deduped. An identical retry does not update/reset the
   // row; this idempotent pass therefore preserves an already-retired duplicate.
   await dedupeHealthKitAgainstIntervals(db, userId);
-  const row = await workoutDB(db)
+  const row = await db
     .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
     .bind(id, userId)
     .first<ExternalActivityRow>();
@@ -10555,7 +10553,7 @@ export async function dedupeHealthKitAgainstIntervals(
   // HealthKit rows we manage: currently live (candidates to retire) OR
   // previously retired BY US as a dup (deleted_at + duplicate_of set →
   // candidates to RESTORE if their winner is gone).
-  const hkStatement = workoutDB(db).prepare(
+  const hkStatement = db.prepare(
     `SELECT id, kind, start_date_local_ms, start_date_utc_ms, deleted_at, duplicate_of
        FROM external_activities
       WHERE user_id = ?1 AND source = 'healthkit'
@@ -10579,7 +10577,7 @@ export async function dedupeHealthKitAgainstIntervals(
   if (hk.length === 0) return 0;
   // Live intervals winners (NOT early-returned on empty: with no live winner,
   // any retired dup must be RESTORED).
-  const ivStatement = workoutDB(db).prepare(
+  const ivStatement = db.prepare(
     `SELECT id, kind, start_date_local_ms, start_date_utc_ms FROM external_activities
       WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
         AND (start_date_local_ms IS NOT NULL OR start_date_utc_ms IS NOT NULL)${dateClause}`,
@@ -10654,7 +10652,7 @@ export async function dedupeHealthKitAgainstIntervals(
     const isRetiredDup = h.deleted_at != null && h.duplicate_of != null;
     if (best && !isRetiredDup) {
       // Live HealthKit row duplicating a live intervals activity → retire it.
-      const statement = workoutDB(db).prepare(
+      const statement = db.prepare(
             `UPDATE external_activities
                 SET deleted_at = CASE
                       WHEN ?2 > synced_at THEN ?2 ELSE synced_at + 1
@@ -10690,7 +10688,7 @@ export async function dedupeHealthKitAgainstIntervals(
       // The row is already retired, but the deterministic winner changed.
       // Advance the tombstone watermark so downstream clients receive the
       // corrected provenance instead of retaining a stale duplicate_of.
-      const statement = workoutDB(db).prepare(
+      const statement = db.prepare(
             `UPDATE external_activities
                 SET synced_at = CASE
                       WHEN ?2 > synced_at THEN ?2 ELSE synced_at + 1
@@ -10721,7 +10719,7 @@ export async function dedupeHealthKitAgainstIntervals(
     } else if (!best && isRetiredDup) {
       // We retired this as a dup but its intervals winner is gone → restore it
       // as the surviving copy so the workout doesn't vanish.
-      const statement = workoutDB(db).prepare(
+      const statement = db.prepare(
             `UPDATE external_activities
                 SET deleted_at = NULL,
                     synced_at = CASE
@@ -10755,7 +10753,7 @@ export async function dedupeHealthKitAgainstIntervals(
     // present) → no-op, so steady-state syncs don't churn synced_at.
   }
   if (stmts.length === 0) return 0;
-  const results = await workoutDB(db).batch(stmts);
+  const results = await db.batch(stmts);
   return results.reduce((total, result) => total + (result.meta.changes ?? 0), 0);
 }
 
@@ -10775,7 +10773,7 @@ export async function getRideConflicts(
   // Only real strength rows and planned-event load affect conflicts. Full
   // calendar reads still load both endurance feeds for presentation.
   const sessions = await readCalendarSessions(db, userId, fromDate, addDays(toDate, 1));
-  const events = await workoutDB(db)
+  const events = await db
     .prepare(
       `SELECT id, date, training_load, planned_duration_sec
          FROM external_events
@@ -11003,7 +11001,7 @@ export async function getGroupFeed(
   //     the session is completed, else created_at — sessions still
   //     in_progress show as "currently doing X" rows so groupmates see
   //     today's lift as it's happening. Discarded sessions are excluded.
-  const sessionRows = await workoutDB(db)
+  const sessionRows = await db
     .prepare(
       `SELECT s.id,
               s.user_id,
@@ -11060,7 +11058,7 @@ export async function getGroupFeed(
   const setCountBySession = new Map<string, number>();
   if (sessionIds.length > 0) {
     const setPlaceholders = sessionIds.map((_, i) => `?${i + 1}`).join(',');
-    const sets = await workoutDB(db)
+    const sets = await db
       .prepare(
         `SELECT sl.session_id,
                 sl.exercise_id,
@@ -11176,7 +11174,7 @@ export async function getGroupFeed(
   //     sync and broke pagination. COALESCE handles any legacy row that
   //     somehow escaped the migration backfill (defensive — should not
   //     happen on a freshly-migrated DB).
-  const rideRows = await workoutDB(db)
+  const rideRows = await db
     .prepare(
       `SELECT id, user_id, source, raw, date, kind, name, moving_time_sec, distance_m,
               average_watts, training_load, elevation_gain_m,
@@ -11241,7 +11239,7 @@ export async function getGroupFeed(
   //     `notes` field IS shared — per the privacy contract above, the
   //     user-authored notes on an activity are the description of what
   //     they did.
-  const actRows = await workoutDB(db)
+  const actRows = await db
     .prepare(
       `SELECT id, user_id, date, type, title, duration_minutes, notes, logged_at
          FROM activities
@@ -11342,7 +11340,7 @@ export async function getGroupStats(
     // just the civil-date column. epoch_ms-keyed rows (set_logs.logged_at,
     // external_activities.synced_at) use the SESSION.date / activity.date
     // strings to keep the bucketing tz-correct.
-    const sessionsRows = await workoutDB(db)
+    const sessionsRows = await db
       .prepare(
         // Same planned-session leak fix as the feed query: a session row
         // with status='planned' (auto-created by GET /api/today) is intent,
@@ -11355,7 +11353,7 @@ export async function getGroupStats(
       )
       .bind(m.user_id, streakStart, today)
       .all<{ date: string }>();
-    const ridesRows = await workoutDB(db)
+    const ridesRows = await db
       .prepare(
         // HealthKit rows are gated behind the per-user opt-in (0028) so an
         // un-shared member's private health activity never inflates the
@@ -11370,7 +11368,7 @@ export async function getGroupStats(
       )
       .bind(m.user_id, streakStart, today)
       .all<{ date: string; garmin: number }>();
-    const actRows = await workoutDB(db)
+    const actRows = await db
       .prepare(
         `SELECT DISTINCT date FROM activities
           WHERE user_id = ?1
@@ -11504,7 +11502,7 @@ export async function getGroupActivitySeries(
     // excluded; rides/activities honor soft-delete. COUNT(*) per date is
     // the cell intensity (two sessions on a day → 2), unlike stats which
     // collapses to DISTINCT dates.
-    const sessRows = await workoutDB(db)
+    const sessRows = await db
       .prepare(
         `SELECT date, COUNT(*) AS n FROM sessions
           WHERE user_id = ?1
@@ -11516,7 +11514,7 @@ export async function getGroupActivitySeries(
       .all<{ date: string; n: number }>();
     for (const r of sessRows.results) ensure(r.date).sessions = r.n;
 
-    const rideRows = await workoutDB(db)
+    const rideRows = await db
       .prepare(
         // HealthKit rows gated behind the opt-in (0028), same as the feed/stats.
         `SELECT date, COUNT(*) AS n, MAX(CASE WHEN ${GARMIN_ACTIVITY_SQL} THEN 1 ELSE 0 END) AS garmin FROM external_activities
@@ -11535,7 +11533,7 @@ export async function getGroupActivitySeries(
       if (r.garmin === 1) ensure(r.date).source_attribution = GARMIN_SUMMARY_ATTRIBUTION;
     }
 
-    const actRows = await workoutDB(db)
+    const actRows = await db
       .prepare(
         `SELECT date, type, COUNT(*) AS n FROM activities
           WHERE user_id = ?1
@@ -11620,7 +11618,7 @@ export async function activateOAuthGrantLifecyclePolicy(
   if (!Number.isSafeInteger(activatedAt) || activatedAt <= 0 || !nonce) {
     throw new Error('invalid OAuth grant lifecycle activation');
   }
-  const claimed = await workoutDB(db)
+  const claimed = await db
     .prepare(
       `UPDATE oauth_grant_lifecycle_policy
           SET activated_at = ?1, activation_nonce = ?2
@@ -11629,7 +11627,7 @@ export async function activateOAuthGrantLifecyclePolicy(
     )
     .bind(activatedAt, nonce)
     .run();
-  const policy = await workoutDB(db).prepare(
+  const policy = await db.prepare(
     'SELECT activated_at, activation_nonce FROM oauth_grant_lifecycle_policy WHERE id = 1',
   ).first<{ activated_at: number; activation_nonce: string }>();
   if (!policy) throw new Error('OAuth grant lifecycle policy row missing');
@@ -11652,15 +11650,15 @@ export async function redeemOAuthAuthorizationCode(
   // Legacy unscoped grants belong only to an existing distinguished owner.
   // Do not bootstrap a replacement identity while redeeming old credentials.
   const principal = redemption.user_id
-    ? await workoutDB(db).prepare('SELECT id FROM users WHERE id = ?1').bind(redemption.user_id).first<{ id: string }>()
+    ? await db.prepare('SELECT id FROM users WHERE id = ?1').bind(redemption.user_id).first<{ id: string }>()
     : await findOwnerRow(db, redemption.owner_apple_sub);
   if (!principal) return null;
 
   const nowMs = now();
   const tokenCreatedAt = Math.floor(nowMs / 1000);
   const legacy = redemption.user_id === null;
-  const [family, inserted, consumed, cleaned] = await workoutDB(db).batch([
-    workoutDB(db).prepare(
+  const [family, inserted, consumed, cleaned] = await db.batch([
+    db.prepare(
       `INSERT INTO oauth_grants
          (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy,
           inactivity_expires_at, absolute_expires_at)
@@ -11704,7 +11702,7 @@ export async function redeemOAuthAuthorizationCode(
       OAUTH_GRANT_INACTIVITY_MS,
       OAUTH_GRANT_ABSOLUTE_MS,
     ),
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO oauth_tokens
          (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id, grant_id)
        SELECT ?1, ?2, c.client_id, COALESCE(c.scope, 'mcp'),
@@ -11748,7 +11746,7 @@ export async function redeemOAuthAuthorizationCode(
       legacy ? 1 : 0,
       redemption.grant_id,
     ),
-    workoutDB(db).prepare(
+    db.prepare(
       `DELETE FROM oauth_codes
         WHERE code = ?1
           AND client_id = ?2
@@ -11774,7 +11772,7 @@ export async function redeemOAuthAuthorizationCode(
       redemption.user_id,
       legacy ? 1 : 0,
     ),
-    workoutDB(db).prepare(
+    db.prepare(
       `DELETE FROM oauth_grants
         WHERE id = ?1
           AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)`,
@@ -11804,7 +11802,7 @@ export async function rotateOAuthRefreshToken(
     return null;
   }
   const principal = rotation.user_id
-    ? await workoutDB(db).prepare('SELECT id FROM users WHERE id = ?1').bind(rotation.user_id).first<{ id: string }>()
+    ? await db.prepare('SELECT id FROM users WHERE id = ?1').bind(rotation.user_id).first<{ id: string }>()
     : await findOwnerRow(db, rotation.owner_apple_sub);
   if (!principal) return null;
 
@@ -11812,8 +11810,8 @@ export async function rotateOAuthRefreshToken(
   const tokenCreatedAt = Math.floor(refreshedAt / 1000);
   const legacy = rotation.user_id === null;
   const grantId = rotation.grant_id ?? crypto.randomUUID();
-  const [adopted, initialized, rotated, archived, touched, cleaned] = await workoutDB(db).batch([
-    workoutDB(db).prepare(
+  const [adopted, initialized, rotated, archived, touched, cleaned] = await db.batch([
+    db.prepare(
       `INSERT INTO oauth_grants
          (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy,
           inactivity_expires_at, absolute_expires_at)
@@ -11848,7 +11846,7 @@ export async function rotateOAuthRefreshToken(
       OAUTH_GRANT_INACTIVITY_MS,
       OAUTH_GRANT_ABSOLUTE_MS,
     ),
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE oauth_grants
           SET inactivity_expires_at = MAX(created_at, p.activated_at) + ?2,
               absolute_expires_at = MAX(created_at, p.activated_at) + ?3
@@ -11859,7 +11857,7 @@ export async function rotateOAuthRefreshToken(
           AND oauth_grants.inactivity_expires_at IS NULL
           AND oauth_grants.absolute_expires_at IS NULL`,
     ).bind(grantId, OAUTH_GRANT_INACTIVITY_MS, OAUTH_GRANT_ABSOLUTE_MS),
-    workoutDB(db).prepare(
+    db.prepare(
     `UPDATE oauth_tokens
         SET access_token = ?1,
             refresh_token = ?2,
@@ -11913,12 +11911,12 @@ export async function rotateOAuthRefreshToken(
     rotation.consumed_refresh_sha256,
     OAUTH_GRANT_INACTIVITY_MS,
   ),
-    workoutDB(db).prepare(
+    db.prepare(
       `INSERT INTO oauth_refresh_history (token_sha256, grant_id, client_id, consumed_at)
        SELECT ?1, ?2, ?3, ?4
         WHERE changes() = 1`,
     ).bind(rotation.consumed_refresh_sha256, grantId, rotation.client_id, refreshedAt),
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE oauth_grants
           SET last_refreshed_at = CAST(unixepoch('subsec') * 1000 AS INTEGER),
               inactivity_expires_at = CASE
@@ -11928,7 +11926,7 @@ export async function rotateOAuthRefreshToken(
               END
         WHERE id = ?1 AND revoked_at IS NULL AND changes() = 1`,
     ).bind(grantId, refreshedAt, OAUTH_GRANT_INACTIVITY_MS),
-    workoutDB(db).prepare(
+    db.prepare(
       `DELETE FROM oauth_grants
         WHERE id = ?1 AND ?2 = 1
           AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)
@@ -11989,7 +11987,7 @@ export async function revokeOAuthGrantOnRefreshReplay(
   clientId: string,
   ownerAppleSub: string | undefined,
 ): Promise<boolean> {
-  const replay = await workoutDB(db).prepare(
+  const replay = await db.prepare(
     `SELECT g.id, g.user_id FROM oauth_refresh_history h
        JOIN oauth_grants g ON g.id = h.grant_id
       WHERE h.token_sha256 = ?1
@@ -11998,17 +11996,17 @@ export async function revokeOAuthGrantOnRefreshReplay(
   ).bind(tokenSha256, clientId).first<{ id: string; user_id: string | null }>();
   if (!replay) return false;
   const principal = replay.user_id
-    ? await workoutDB(db).prepare('SELECT id FROM users WHERE id = ?1').bind(replay.user_id).first<{ id: string }>()
+    ? await db.prepare('SELECT id FROM users WHERE id = ?1').bind(replay.user_id).first<{ id: string }>()
     : await findOwnerRow(db, ownerAppleSub);
   if (!principal) return false;
   const revokedAt = now();
-  const [revoked, removed] = await workoutDB(db).batch([
-    workoutDB(db).prepare(
+  const [revoked, removed] = await db.batch([
+    db.prepare(
       `UPDATE oauth_grants SET revoked_at = ?2
         WHERE id = ?1 AND revoked_at IS NULL
           AND (user_id = ?3 OR (?4 = 1 AND user_id IS NULL))`,
     ).bind(replay.id, revokedAt, replay.user_id, replay.user_id === null ? 1 : 0),
-    workoutDB(db).prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1 AND changes() = 1')
+    db.prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1 AND changes() = 1')
       .bind(replay.id),
   ]);
   return revoked?.meta.changes === 1 && (removed?.meta.changes ?? 0) <= 1;
@@ -12019,7 +12017,7 @@ async function adoptUntrackedOAuthGrants(
   userId: string,
   includeLegacyOwner: boolean,
 ): Promise<void> {
-  const rows = await workoutDB(db).prepare(
+  const rows = await db.prepare(
     `SELECT access_token, user_id, client_id, scope, created_at
        FROM oauth_tokens
       WHERE grant_id IS NULL
@@ -12033,8 +12031,8 @@ async function adoptUntrackedOAuthGrants(
   }>();
   for (const row of rows.results) {
     const grantId = crypto.randomUUID();
-    await workoutDB(db).batch([
-      workoutDB(db).prepare(
+    await db.batch([
+      db.prepare(
         `INSERT INTO oauth_grants
            (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy,
             inactivity_expires_at, absolute_expires_at)
@@ -12058,11 +12056,11 @@ async function adoptUntrackedOAuthGrants(
         OAUTH_GRANT_INACTIVITY_MS,
         OAUTH_GRANT_ABSOLUTE_MS,
       ),
-      workoutDB(db).prepare(
+      db.prepare(
         `UPDATE oauth_tokens SET grant_id = ?2
           WHERE access_token = ?1 AND grant_id IS NULL AND changes() = 1`,
       ).bind(row.access_token, grantId),
-      workoutDB(db).prepare(
+      db.prepare(
         `DELETE FROM oauth_grants
           WHERE id = ?1
             AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)`,
@@ -12079,7 +12077,7 @@ export async function listOAuthGrants(
   const owner = await findOwnerRow(db, ownerAppleSub);
   const isOwner = owner?.id === userId;
   await adoptUntrackedOAuthGrants(db, userId, isOwner);
-  const rows = await workoutDB(db).prepare(
+  const rows = await db.prepare(
     `SELECT g.id, g.client_id, COALESCE(g.scope, 'mcp') AS scope, g.created_at,
             g.last_refreshed_at, g.legacy
        FROM oauth_grants g
@@ -12115,20 +12113,20 @@ export async function revokeOAuthGrant(
 ): Promise<boolean> {
   const owner = await findOwnerRow(db, ownerAppleSub);
   const isOwner = owner?.id === userId;
-  const grant = await workoutDB(db).prepare(
+  const grant = await db.prepare(
     `SELECT id FROM oauth_grants
       WHERE id = ?1 AND (user_id = ?2 OR (?3 = 1 AND user_id IS NULL))`,
   ).bind(grantId, userId, isOwner ? 1 : 0).first<{ id: string }>();
   if (!grant) return false;
-  await workoutDB(db).batch([
-    workoutDB(db).prepare(
+  await db.batch([
+    db.prepare(
       `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
        VALUES (?1,?2,'ios','revoke_coach_grant',?3,'revoked',?4)`,
     ).bind(uuid(), userId, JSON.stringify({ grant_id: grantId }), now()),
-    workoutDB(db).prepare(
+    db.prepare(
       'UPDATE oauth_grants SET revoked_at = COALESCE(revoked_at, ?2) WHERE id = ?1',
     ).bind(grantId, now()),
-    workoutDB(db).prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1').bind(grantId),
+    db.prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1').bind(grantId),
   ]);
   return true;
 }
@@ -12141,17 +12139,17 @@ export async function revokeAllOAuthGrants(
   const owner = await findOwnerRow(db, ownerAppleSub);
   const isOwner = owner?.id === userId;
   await adoptUntrackedOAuthGrants(db, userId, isOwner);
-  const [, revoked] = await workoutDB(db).batch([
-    workoutDB(db).prepare(
+  const [, revoked] = await db.batch([
+    db.prepare(
       `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
        VALUES (?1,?2,'ios','revoke_coach_grants',?3,'revoked',?4)`,
     ).bind(uuid(), userId, JSON.stringify({ scope: 'all' }), now()),
-    workoutDB(db).prepare(
+    db.prepare(
       `UPDATE oauth_grants SET revoked_at = COALESCE(revoked_at, ?3)
         WHERE revoked_at IS NULL
           AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))`,
     ).bind(userId, isOwner ? 1 : 0, now()),
-    workoutDB(db).prepare(
+    db.prepare(
       `DELETE FROM oauth_tokens
         WHERE grant_id IN (
           SELECT id FROM oauth_grants
@@ -12160,7 +12158,7 @@ export async function revokeAllOAuthGrants(
         )`,
     ).bind(userId, isOwner ? 1 : 0),
     // Stop approved-but-not-yet-exchanged connections as well as tokens.
-    workoutDB(db).prepare(`DELETE FROM oauth_codes
+    db.prepare(`DELETE FROM oauth_codes
       WHERE user_id = ?1 OR (?2 = 1 AND user_id IS NULL)`)
       .bind(userId, isOwner ? 1 : 0),
   ]);
@@ -12219,7 +12217,7 @@ export async function findMcpExerciseGroupAcknowledgement(
 ): Promise<ExerciseGroupAcknowledgement | null> {
   if (!isGroupId(args.group_id) || !Number.isSafeInteger(args.expected_version)
       || (args.expected_version as number) < 1) return null;
-  const rows = await workoutDB(db).prepare(
+  const rows = await db.prepare(
     `SELECT args,result FROM audit_log
       WHERE user_id=?1 AND actor='mcp' AND tool=?2
         AND json_extract(CASE WHEN json_valid(args) THEN args ELSE '{}' END,'$.group_id')=?3
@@ -12240,7 +12238,7 @@ export async function findMcpExerciseGroupAcknowledgement(
 }
 
 async function findExerciseGroupReceipt(db: D1Database, userId: string, actor: string, key: string): Promise<ExerciseGroupAcknowledgement | null> {
-  const row = await workoutDB(db).prepare(
+  const row = await db.prepare(
     `SELECT result FROM audit_log WHERE user_id=?1 AND actor=?2 AND json_valid(result)
       AND json_extract(CASE WHEN json_valid(result) THEN result ELSE '{}' END,'$.exercise_group_receipt')=?3 LIMIT 1`,
   ).bind(userId, actor, key).first<{ result: string }>();
@@ -12256,7 +12254,7 @@ async function commitExerciseGroup(
   const nonce = crypto.randomUUID();
   const ts = Date.now();
   const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
-  for (const slot of changed) statements.push(workoutDB(db).prepare(
+  for (const slot of changed) statements.push(db.prepare(
     `UPDATE template_exercises SET group_id=?2,group_rest_seconds=?3,group_transition_seconds=?4,
        target_sets=?5,order_index=?6,updated_at=?7 WHERE id=?1
        AND EXISTS (SELECT 1 FROM plans p JOIN workouts d ON d.plan_id=p.id
@@ -12483,7 +12481,7 @@ export async function purgeExpiredMobileCoachRequests(db: D1Database): Promise<v
 
 export async function getOwnedSession(db: D1Database, userId: string, id: string) {
   const canonical = await resolveOwnedSessionId(db, userId, id);
-  return canonical ? workoutDB(db).prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
+  return canonical ? db.prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
     .bind(canonical, userId).first<SessionRow>() : null;
 }
 
@@ -12506,19 +12504,19 @@ export async function startFreestyleSession(db: D1Database, userId: string, date
     return { error: 'session_already_started' as const };
   }
   const ts = now(), id = existing?.id ?? uuid();
-  const statements = existing ? [workoutDB(db).prepare(`UPDATE sessions SET kind='freestyle',
+  const statements = existing ? [db.prepare(`UPDATE sessions SET kind='freestyle',
     plan_id=?3,workout_id=NULL,status='in_progress',attempt=attempt+1,write_protocol=?6,
     started_at=?4,completed_at=NULL,notes=NULL,perceived_fatigue=NULL,runner_targets=NULL,exercise_swaps=NULL,
     updated_at=MAX(updated_at+1,?4)
     WHERE id=?1 AND user_id=?2 AND attempt=?5 AND status IN ('planned','skipped','discarded')
       AND NOT EXISTS (SELECT 1 FROM set_logs WHERE session_id=?1 AND deleted_at IS NULL)
       AND EXISTS (SELECT 1 FROM plans WHERE id=?3 AND user_id=?2 AND status='active')`)
-    .bind(id,userId,plan.id,ts,expectedAttempt,actor==='ios'?'attempt-v1':'legacy')] : [workoutDB(db).prepare(`INSERT INTO sessions
+    .bind(id,userId,plan.id,ts,expectedAttempt,actor==='ios'?'attempt-v1':'legacy')] : [db.prepare(`INSERT INTO sessions
     (id,user_id,plan_id,date,kind,status,attempt,write_protocol,started_at,created_at,updated_at)
     SELECT ?1,?2,?3,?4,'freestyle','in_progress',0,?6,?5,?5,?5
     WHERE EXISTS (SELECT 1 FROM plans WHERE id=?3 AND user_id=?2 AND status='active')
     ON CONFLICT(user_id,date) DO NOTHING`).bind(id,userId,plan.id,date,ts,actor==='ios'?'attempt-v1':'legacy')];
-  statements.push(workoutDB(db).prepare(`INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+  statements.push(db.prepare(`INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
     SELECT ?1,?2,?3,'start_freestyle',?4,?5,?6 WHERE changes()=1`)
     .bind(uuid(),userId,actor,JSON.stringify({date,expected_attempt:expectedAttempt}),id,ts));
   const results = await runWorkoutWriteBatch(db, statements);
@@ -12539,9 +12537,9 @@ export async function getFreestyleWorkoutDraft(db: D1Database,userId: string,ses
   if (session.kind !== 'freestyle' || session.status !== 'completed' || session.workout_id !== null) {
     return { error: 'session_state_conflict' as const };
   }
-  const results = await workoutDB(db).batch<Record<string,unknown>>([
-    workoutDB(db).prepare('SELECT * FROM set_logs WHERE session_id=?1 ORDER BY id').bind(session.id),
-    workoutDB(db).prepare(`SELECT ${freestyleSourceSQL('?1')} AS signature`).bind(session.id),
+  const results = await db.batch<Record<string,unknown>>([
+    db.prepare('SELECT * FROM set_logs WHERE session_id=?1 ORDER BY id').bind(session.id),
+    db.prepare(`SELECT ${freestyleSourceSQL('?1')} AS signature`).bind(session.id),
   ]);
   const slots = deriveFreestylePrescriptions(results[0]!.results as unknown as SetLogRow[]);
   return { session, source_signature: String((results[1]!.results[0] as {signature:string}).signature), slots };
@@ -12571,7 +12569,7 @@ export async function saveFreestyleWorkout(db: D1Database,userId: string,session
       target_weight: s.target_weight, rest_seconds: s.rest_seconds,
       source_set_ids: [...(s.source_set_ids ?? [])].sort()}))});
   const readReceipt = async () => {
-    const receipt = await workoutDB(db).prepare('SELECT request,response FROM freestyle_workout_receipts WHERE user_id=?1 AND new_workout_id=?2')
+    const receipt = await db.prepare('SELECT request,response FROM freestyle_workout_receipts WHERE user_id=?1 AND new_workout_id=?2')
       .bind(userId,input.workout_id).first<{request:string;response:string}>();
     return !receipt ? null : receipt.request === request ? JSON.parse(receipt.response) as {
       workout_id:string;plan_id:string;version:number;session:SessionRow;
@@ -12627,17 +12625,17 @@ export async function saveFreestyleWorkout(db: D1Database,userId: string,session
   const bindings = [plan.id,userId,plan.version,nonce] as const;
   const statements = [
     ...preparePlanWriteStart(db,plan,attribution,ts,nonce,false,[],guard),
-    workoutDB(db).prepare(`INSERT INTO workouts (id,plan_id,name,order_index,created_at,updated_at)
+    db.prepare(`INSERT INTO workouts (id,plan_id,name,order_index,created_at,updated_at)
       SELECT ?5,?1,?6,(SELECT COALESCE(MAX(order_index)+1,0) FROM workouts WHERE plan_id=?1),?7,?7 WHERE ${claim}`)
       .bind(...bindings,input.workout_id,input.name.trim(),ts),
-    ...input.slots.map((slot,index)=>workoutDB(db).prepare(`INSERT INTO template_exercises
+    ...input.slots.map((slot,index)=>db.prepare(`INSERT INTO template_exercises
       (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_duration_s,target_weight,rest_seconds,progression,is_warmup,created_at,updated_at)
       SELECT ?5,?6,?7,?8,?9,?10,?11,?12,?13,'{"type":"manual"}',0,?14,?14 WHERE ${claim}`)
       .bind(...bindings,uuid(),input.workout_id,slot.exercise_id,index,slot.target_sets,slot.target_reps,
         slot.target_duration_s,slot.target_weight,slot.rest_seconds,ts)),
-    workoutDB(db).prepare(`UPDATE sessions SET plan_id=?1,workout_id=?5,attempt=attempt+1,updated_at=?6 WHERE id=?7 AND ${claim}`)
+    db.prepare(`UPDATE sessions SET plan_id=?1,workout_id=?5,attempt=attempt+1,updated_at=?6 WHERE id=?7 AND ${claim}`)
       .bind(...bindings,input.workout_id,response.session.updated_at,draft.session.id),
-    workoutDB(db).prepare(`INSERT INTO freestyle_workout_receipts (user_id,new_workout_id,session_id,source_attempt,request,response,created_at)
+    db.prepare(`INSERT INTO freestyle_workout_receipts (user_id,new_workout_id,session_id,source_attempt,request,response,created_at)
       SELECT ?2,?5,?6,?7,?8,?9,?10 WHERE ${claim}`)
       .bind(...bindings,input.workout_id,draft.session.id,draft.session.attempt,request,JSON.stringify(response),ts),
     ...preparePlanWriteFinish(db,plan,attribution,ts,nonce),

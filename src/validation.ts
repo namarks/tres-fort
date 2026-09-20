@@ -12,6 +12,15 @@ export type FieldRule = (value: unknown) => boolean;
 export const hasField = (body: Record<string, unknown>, field: string) =>
   Object.prototype.hasOwnProperty.call(body, field);
 
+/** Reject removed workout inputs before an omitted pin or tree can be treated
+ * as rest/an empty plan. User metadata, notes and historical JSON are opaque. */
+export function hasRetiredWorkoutFields(body: Record<string, unknown>): boolean {
+  if (['day_template_id', 'days', 'plan_days'].some((key) => hasField(body, key))) return true;
+  const target = body.target;
+  return !!target && typeof target === 'object' && !Array.isArray(target)
+    && hasField(target as Record<string, unknown>, 'day_template_id');
+}
+
 export const isNonEmptyString: FieldRule = (value) =>
   typeof value === 'string' && value.trim().length > 0;
 export const isNonNegativeInteger: FieldRule = (value) =>

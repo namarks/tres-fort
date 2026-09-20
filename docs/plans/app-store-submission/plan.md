@@ -107,7 +107,7 @@ Apple-validated 1.0 (44) package. Build 44 is not uploaded: authenticated live
 workout checks remain unperformed, and the requested specific deferral is
 pending. This does not change the App Review build or publication authority.
 
-**Current Apple readback (2026-09-18):** Version 1.0 now has build 40
+**Current Apple readback (2026-09-19):** Version 1.0 now has build 40
 **IN_REVIEW** with **AFTER_APPROVAL**. Build 43 is the latest internal beta,
 VALID and available to Testers; external Alpha Testers do not have it. This run
 did not change the App Review build or release mode. The owner decision above
@@ -117,9 +117,12 @@ remains open.
 `9373d6f0acad9a9ef444e54fe9c9d8a8b7ad24c8`: reconcile privacy/account and group
 controls, public policy/support availability, listing and reviewer instructions,
 and the documented verification exceptions. Record evidence and identify any
-owner-only App Store fields before completing those phases. The pinned backend
-was released; production has since advanced to the source in the build 42
-receipt below. Authenticated session-swap and workout-name compatibility
+owner-only App Store fields before completing those phases. The App Review
+candidate remains pinned, but the serving backend is now canonical source
+`d801e9dbfdb402531ddae6266b9b16e3da46dece`, recorded in [release 44](release-44.md).
+Recheck candidate compatibility against that current contract; the old REST
+aliases are removed, and a historical release receipt does not prove current
+candidate/backend compatibility. Authenticated session-swap and workout-name compatibility
 verification remains unperformed; public health and unauthenticated responses
 do not establish those behaviors. Build 40 was subsequently validated and uploaded
 with explicit owner approval. Do not mark the outstanding live checks passed or
@@ -130,7 +133,7 @@ submission for Apple review responses, carry out the owner's release-mode
 decision when supplied, and read the result back. Do not resubmit or change the
 selected build from a TestFlight upload.
 
-**Production baseline and preceding beta (2026-09-14 Pacific):** The owner
+**Historical production release and preceding beta (2026-09-14 Pacific):** The owner
 requested the latest version. [Build 42's release receipt](release-42.md) records
 source `5df9208fc01219f298866ee4528cda533b86d33d`, terminal-green checks,
 production at 100% traffic, public health/discovery and app-link verification,

@@ -467,10 +467,11 @@ invalidation. All three backend test shards passed; the local same-Worker
 rename/rollback compatibility rehearsal passed. The focused library UI journey
 covers tag filtering, cancel, archive and restore.
 
-**P1 release (@owner):** Follow the [metadata release order](metadata-release.md):
-migration 0053 after 0045, then compatible Worker, then iOS distribution.
-Repository completion does not establish production migration, deployment or
-TestFlight availability. A pre-metadata Worker is unsafe to restore after
+**P1 production release (September 19):** Migration 0053 is applied after 0045,
+and the compatible canonical Worker is live alongside the P2 backend. Do not
+repeat those completed stages. [The build 44 receipt](../app-store-submission/release-44.md)
+records production evidence; the remaining authenticated-verification and client
+upload gate is stated above. A pre-metadata Worker is unsafe to restore after
 metadata writes because its rebuild/snapshots omit the fields.
 
 **Client distribution:** [TestFlight 1.0 (43)](../app-store-submission/release-43.md)

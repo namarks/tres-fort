@@ -199,18 +199,20 @@ training records were modified. Do not repeat the upload or reinstate its waived
 canary gate. Later builds are recorded in the
 [App Store release record](../app-store-submission/plan.md#next-step).
 
-The rename-compatible adaptive Worker version
+Historically, the rename-compatible adaptive Worker version
 `722fbf91-4b13-48e2-b233-747b1d437ca6` was deployed from source
-`361cf2ba9d40ef6572de700b65cf649c665559ba`. Production has since advanced to
+`361cf2ba9d40ef6572de700b65cf649c665559ba`. The subsequent September 14 release used
 version `92adb0e0-28bd-4952-81ad-b09029f75ac9` per the
-[build 42 receipt](../app-store-submission/release-42.md); that source still
-carries the schema-adaptive layer and the legacy `/api/days` routes. Additive
-migrations 0046–0048 are applied,
-with no foreign-key violations; do not repeat 0045 or earlier rollout stages.
-See [the candidate release record](../app-store-submission/plan.md#next-step).
-Those recorded releases predate P0(c); they do not prove the canonical cleanup
-is serving or that a canonical-writing client has been distributed. Follow the
-current runbook for a separately authorized release; do not repeat A/B.
+[build 42 receipt](../app-store-submission/release-42.md); that historical source
+retained the adaptive layer and legacy routes. It is no longer serving.
+
+The September 19 [build 44 receipt](../app-store-submission/release-44.md) records
+the current canonical Worker `dcbcc2ba-09dd-4dfb-9d50-c860cc1553d3`, source
+`d801e9dbfdb402531ddae6266b9b16e3da46dece`, at 100% traffic. Migrations through
+0054 are applied, with no pending migrations or foreign-key violations. Do not
+repeat A/B or the completed metadata/freestyle migrations and Worker deployment.
+Canonical-client upload remains pending authenticated verification or the
+requested specific exception; the prepared build is not distribution evidence.
 
 Historical production release evidence (2026-09-09; later client exception above supersedes the pre-upload requirement):
 

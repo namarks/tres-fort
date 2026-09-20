@@ -35,6 +35,9 @@ metadata records the exact source and tree above. Public health returns the
 expected service identity; unauthenticated state and MCP POST return 401.
 Health itself carries no source SHA, so the provider receipt supplies source
 attribution. These checks do not prove authenticated workout behavior.
+The five-minute public observation from `2026-09-20T02:53:08.867Z` through
+`02:58:09.279Z` passed all 33 health and unauthenticated boundary checks. It
+does not replace the unperformed authenticated workout canary.
 
 ## Prepared iOS package
 

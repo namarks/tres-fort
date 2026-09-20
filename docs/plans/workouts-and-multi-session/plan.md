@@ -175,7 +175,7 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 
 **Now (@agent):** Implement ordered sessions per date (P1), including session-scoped
 merge, recovery and outbox isolation, under the canonical client contract. P0(c)
-is implemented with 1,158 backend tests passing and 636 iOS unit tests passing
+is implemented with 1,161 backend tests passing and 636 iOS unit tests passing
 (one existing skip). Production migration, Worker release and TestFlight
 distribution remain separate P0(b)/feature release gates.
 

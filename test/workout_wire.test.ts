@@ -107,6 +107,23 @@ describe('canonical workout contract', () => {
       .not.toHaveProperty('days');
   });
 
+  it.each(['day_template_id', 'days', 'plan_days'])('rejects retired %s on slot writes before changing the tree or trail', async (field) => {
+    const before = (await api('plan/active')).body;
+    const trail = () => env.DB.prepare(`SELECT
+      (SELECT COUNT(*) FROM audit_log) AS audits,
+      (SELECT COUNT(*) FROM notes) AS notes,
+      (SELECT COUNT(*) FROM plan_snapshots) AS snapshots`).first();
+    const originalTrail = await trail();
+    expect(await api(`workouts/${gym.id}/exercises`, 'POST', {
+      exercise: 'bench', target_sets: 3, target_reps: 5, [field]: 'retired',
+    })).toMatchObject({ status: 400, body: { error: 'unsupported_workout_fields' } });
+    expect(await api(`workouts/${gym.id}/exercises/${gym.exercises[0].id}`, 'PATCH', {
+      target_reps: 9, [field]: 'retired',
+    })).toMatchObject({ status: 400, body: { error: 'unsupported_workout_fields' } });
+    expect((await api('plan/active')).body).toEqual(before);
+    expect(await trail()).toEqual(originalTrail);
+  });
+
   it.each(['add_workout'])('audits the called %s name', async (name) => {
     const added = await tool(name, { name: 'Coach workout' });
     expect(added.id).toBeTruthy();

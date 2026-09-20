@@ -353,7 +353,7 @@ version with a pinned target. `POST /api/plan/history/:version/restore` requires
 `expected_plan_id` and `expected_version`, restores as a new version, and rejects
 stale/foreign history or an active workout. Logged set values remain history;
 restore does not resurrect detached historical references. Account export schema
-version 2 includes snapshots, and account deletion removes them. See the
+version 3 includes snapshots, and account deletion removes them. See the
 [snapshot contract and release boundary](plans/completed/reversible-plan-management/decisions.md).
 
 ---
@@ -421,7 +421,9 @@ Claude context-aware with zero tool calls.
 - `ungroup_exercises({group_id, expected_version})` → clear every member's group fields while preserving ordinary rests, through the same version and exact-retry boundary.
 - `swap_exercise({day, from_exercise, to_exercise})` — always preserves saved targets; validates them against the destination modality. The formerly ignored `carry_targets` option is no longer advertised.
 - `add_exercise({day, exercise, target_sets, target_reps, target_reps_max?, rest_seconds?, target_rpe?, progression?, order_index?})`
-- `add_day({name, day_label, order_index?, exercises?})`  ← "add a deadlift day"
+- `add_workout({name, day_label?, order_index?, tags?, archived_at?})` — create a reusable workout.
+- `update_workout({workout_id?, day?, patch})` — edit workout metadata in place.
+- `delete_workout({workout_id, expected_version})` — delete a workout while retaining logged history.
 - `adjust_today({intent:"deload|reduce_volume|reduce_intensity", magnitude?, day_label?})`
   changes recurring workout targets persistently; omitting a day affects the
   whole plan. Results name affected workouts, before/after changes and no-ops.

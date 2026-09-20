@@ -603,7 +603,9 @@ apiRoutes.post('/workouts/:id/exercises', async (c) => {
   // from a missing day and can never receive a slot or bump the active plan.
   const day = await getWorkoutInPlan(c.env.DB, plan.id, dayId);
   if (!day) return c.json({ error: 'not_found' }, 404);
-  const b = await c.req.json<{
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body as {
     exercise: string;
     order_index?: number;
     target_sets: number;
@@ -616,7 +618,7 @@ apiRoutes.post('/workouts/:id/exercises', async (c) => {
     progression?: unknown;
     cues?: string | null;
     is_warmup?: boolean;
-  }>();
+  };
   const groupFields = Object.keys(b).filter((key) => ['group_id', 'group_rest_seconds', 'group_transition_seconds'].includes(key));
   if (groupFields.length) return c.json({ error: 'unknown_fields', fields: groupFields }, 400);
   const ex = await resolveExercise(c.env.DB, b.exercise);
@@ -697,7 +699,9 @@ apiRoutes.patch('/workouts/:id/exercises/:teId', async (c) => {
   const userId = c.get('userId');
   const dayId = c.req.param('id');
   const teId = c.req.param('teId');
-  const b = await c.req.json<{
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body as {
     target_sets?: number;
     target_reps?: number;
     target_reps_max?: number | null;
@@ -709,7 +713,7 @@ apiRoutes.patch('/workouts/:id/exercises/:teId', async (c) => {
     progression?: unknown;
     order_index?: number;
     is_warmup?: boolean;
-  }>();
+  };
   const patch: Record<string, unknown> = { ...b };
   if (typeof b.is_warmup === 'boolean') patch.is_warmup = b.is_warmup ? 1 : 0;
   const row = await updateExercise(c.env.DB, userId, { template_exercise_id: teId, workout_id: dayId }, patch, {

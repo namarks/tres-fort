@@ -11,6 +11,16 @@ def select_suite(event, paths=()):
     if event not in ('pull_request', 'push'):
         raise ValueError('Unsupported CI event: ' + event)
 
+    # Changes to the selection/partition machinery must prove full coverage on
+    # the PR itself; a passing smoke run cannot validate the nightly job budget.
+    verification_paths = {
+        '.github/workflows/ci.yml', 'scripts/verify-ios.sh',
+        'scripts/ci-ios-scope.py', 'test/verify-ios.test.py',
+        'test/ci-ios-scope.test.py',
+    }
+    if any(path in verification_paths for path in paths):
+        return 'full'
+
     def unrelated(path):
         return (
             path.startswith(('src/', 'migrations/', 'docs/'))

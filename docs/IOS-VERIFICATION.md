@@ -30,7 +30,10 @@ or `--only-testing TresFortUITests/TrainingJourneyTests`. A focused result does
 not substitute for the required CI unit and smoke coverage before merging an
 iOS change.
 
-CI uses `--ui-suite smoke` for iOS changes on pull requests and pushes to main.
+CI uses `--ui-suite smoke` for ordinary iOS changes on pull requests and pushes to main.
+Changes to the workflow, verifier, scope selector, or their contract tests select
+`full` on the PR and push, so changes to nightly coverage prove the full job budget
+before merging.
 The smoke suite includes every `TresFortTests` unit test and twelve UI journeys:
 sign-in through starter setup and first workout, provider setup, mobile AI
 approval/disconnect access, Today navigation, manual workout creation,
@@ -49,11 +52,24 @@ and the broader UI journeys. Schedules run only after the workflow lands on
 main and may be delayed by GitHub; inspect the Actions result for actual evidence.
 
 Smoke uses two standard runners with six UI journeys each; shard 1 also runs
-all unit tests. Full runs use three runners: shard 2 runs training and feedback;
-shard 3 runs Today navigation, UI actions, Intervals, history and exercise groups;
-shard 1 runs everything else, including unit tests. These are disjoint and cover
-the full suite, so newly added tests remain included automatically. Both modes
-retain the 30-minute job limit; no assertions or element-wait timeouts are relaxed.
+all unit tests. Full runs use six standard runners, partitioned using the hosted
+runner timings (including cold build time):
+
+| Shard | Coverage |
+| --- | --- |
+| 1 | All unit tests and remaining UI classes |
+| 2 | Training and workout feedback |
+| 3 | Today navigation, Intervals connection and exercise discovery |
+| 4 | Member activation and freestyle workouts |
+| 5 | UI actions, history, exercise groups and exercise information |
+| 6 | Workout library, weekly schedule and runner controls |
+
+The partitions are disjoint and cover every suite; newly added classes remain
+in shard 1 automatically. The partition contract rejects missing or overlapping
+selectors. Monitor full-run duration as journeys grow and rebalance before a
+shard approaches the 30-minute limit. The September 24 baseline had 124 UI
+methods: two of the previous three partitions still had unrun tests at timeout.
+Both modes retain the 30-minute job limit and existing assertions/element waits.
 Sharding or smoke mode cannot be combined with `--only-testing`. Without these
 arguments the command still runs the full suite locally.
 
@@ -75,8 +91,10 @@ results are written directly into the evidence directory while the run is active
 so a forced cancellation need not finish the cleanup trap to retain diagnostics.
 An uncatchable process kill cannot guarantee local simulator/scratch cleanup;
 CI's disposable runner owns that final cleanup. `IOS_EVIDENCE_DIR` may select a
-different durable output directory. These artifacts are ignored by Git. The
-log records the Git revision and local overlay; tests run on the copied working
+different durable output directory. On a test failure, assertion lines are also
+printed before the log tail, so an accessibility hierarchy dump cannot hide the
+error in Actions. These artifacts are ignored by Git. The log records the Git
+revision and local overlay; tests run on the copied working
 files, including any uncommitted changes.
 
 Open a result bundle in Xcode or export its UI attachments:

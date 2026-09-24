@@ -19,7 +19,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         let start = app.buttons["today.startWorkout"]
         XCTAssertTrue(start.waitForExistence(timeout: 10))
         guard startWorkout else { return app }
-        for _ in 0..<6 where !start.isHittable { app.swipeUp() }
+        for _ in 0..<6 where !start.isHittable { app.scrollViews.firstMatch.swipeUp() }
         start.tap()
         XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
         return app
@@ -33,7 +33,9 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(change.frame.minY, view.frame.maxY)
         capture("today-accessibility-actions-stacked")
         let start = app.buttons["today.startWorkout"]
-        for _ in 0..<8 where !start.isHittable { app.swipeUp() }
+        // At accessibility sizes the fixed activity actions occupy the lower
+        // screen. Start the gesture inside the actual scrolling content.
+        for _ in 0..<8 where !start.isHittable { app.scrollViews.firstMatch.swipeUp() }
         XCTAssertTrue(start.isHittable); start.tap()
         let title = app.staticTexts["runner.exerciseTitle"]
         XCTAssertTrue(title.waitForExistence(timeout: 5))

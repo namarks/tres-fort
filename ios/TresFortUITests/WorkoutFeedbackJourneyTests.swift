@@ -38,9 +38,13 @@ final class WorkoutFeedbackJourneyTests: XCTestCase {
         let note = app.textViews["feedback.note"]
         reveal(note, app: app); note.tap()
         if replacing {
-            // A missing selection menu must never fall back to deleting
-            // backward from an arbitrary cursor and leave old suffixes behind.
-            note.typeKey("a", modifierFlags: .command)
+            // Command-A was ignored intermittently by the simulator. Use the
+            // native editing menu, and require full deletion before typing.
+            XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+            note.press(forDuration: 1.2)
+            let selectAll = app.menuItems["Select All"]
+            XCTAssertTrue(selectAll.waitForExistence(timeout: 5))
+            selectAll.tap()
             note.typeText(XCUIKeyboardKey.delete.rawValue)
             XCTAssertEqual(note.value as? String, "", "Replacement must clear the entire transcript")
         }

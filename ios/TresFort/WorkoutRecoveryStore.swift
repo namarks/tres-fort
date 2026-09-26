@@ -30,9 +30,8 @@ struct RunnerGroupRepair: Codable, Equatable {
 }
 
 /// The smallest piece of runner UI state needed to recover after process
-/// death. Server state remains authoritative: SyncModel exposes this as a
-/// resume option only after a live pull confirms that this civil-date session
-/// is still `in_progress`.
+/// death. A certified account-local plan can support offline resume, with every
+/// write still bound to this attempt. Live server conflicts remain authoritative.
 struct WorkoutRunnerCheckpoint: Codable, Equatable {
     let date: String
     let sessionID: String?

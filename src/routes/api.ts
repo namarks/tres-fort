@@ -1,6 +1,8 @@
-import { validWorkoutTags, validArchivedAt } from '../workoutMetadata';
+import { measuredJson } from '../operationMetrics';
+import { slotEditResponse } from '../planEditResult';
 import { swapSessionExercise } from '../db';
 import { isGroupReportReason } from '../groupSafety';
+import { validWorkoutTags, validArchivedAt } from '../workoutMetadata';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { HonoEnv } from '../types';
@@ -233,7 +235,7 @@ apiRoutes.get('/state', async (c) => {
   const logSince = Number(c.req.query('log_since') ?? 0);
   const capabilities = readCapabilities(c.req.header('X-TresFort-Capabilities'));
   const state = await getState(c.env.DB, userId, since, setsSince, eventsSince, activitiesSince, logSince);
-  return c.json({ ...state, plan: state.plan
+  return measuredJson(c, { ...state, plan: state.plan
     ? planForCapabilities(state.plan, capabilities)
     : state.plan,
     ...(capabilities.has('groups') ? { plan_groups_version: 1 } : {}) });
@@ -597,15 +599,10 @@ apiRoutes.post('/workouts/:id/exercises', async (c) => {
   const plan = await getActivePlan(c.env.DB, userId);
   if (!plan) return c.json({ error: 'no_active_plan' }, 400);
   const dayId = c.req.param('id');
-  // Resolve the nested day through THIS user's active plan before resolving
-  // the exercise or computing order. A globally-valid day from another user
-  // or one of this user's archived plans is intentionally indistinguishable
-  // from a missing day and can never receive a slot or bump the active plan.
-  const day = await getWorkoutInPlan(c.env.DB, plan.id, dayId);
-  if (!day) return c.json({ error: 'not_found' }, 404);
   const parsed = await readMutationBody(c);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body as {
+    expected_version?: number;
     exercise: string;
     order_index?: number;
     target_sets: number;
@@ -619,8 +616,20 @@ apiRoutes.post('/workouts/:id/exercises', async (c) => {
     cues?: string | null;
     is_warmup?: boolean;
   };
+  const versionFields = invalidMutationFields(b, {}, { expected_version: isPositiveInteger });
+  if (versionFields.length) return c.json({ error: 'invalid_fields', fields: versionFields }, 400);
+  if (b.expected_version !== undefined && b.expected_version !== plan.version) {
+    return c.json({ conflict: true, current_version: plan.version }, 409);
+  }
+  // Resolve the nested day through THIS user's active plan before resolving
+  // the exercise or computing order. A globally-valid day from another user
+  // or one of this user's archived plans is intentionally indistinguishable
+  // from a missing day and can never receive a slot or bump the active plan.
+  const day = await getWorkoutInPlan(c.env.DB, plan.id, dayId);
+  if (!day) return c.json({ error: 'not_found' }, 404);
   const groupFields = Object.keys(b).filter((key) => ['group_id', 'group_rest_seconds', 'group_transition_seconds'].includes(key));
   if (groupFields.length) return c.json({ error: 'unknown_fields', fields: groupFields }, 400);
+  if (!isNonEmptyString(b.exercise)) return c.json({ error: 'invalid_fields', fields: ['exercise'] }, 400);
   const ex = await resolveExercise(c.env.DB, b.exercise);
   if (!ex) return c.json({ error: 'unknown_exercise', query: b.exercise }, 400);
   const orderIndex =
@@ -641,9 +650,9 @@ apiRoutes.post('/workouts/:id/exercises', async (c) => {
     progression: b.progression == null ? null : JSON.stringify(b.progression),
     cues: b.cues ?? null,
     is_warmup: b.is_warmup === undefined ? 0 : b.is_warmup as unknown as number | boolean,
-  }, { actor: 'ios', operation: 'add_exercise', args: b });
-  if ('error' in row) return c.json(row, 400);
-  return c.json(row, 201);
+  }, { actor: 'ios', operation: 'add_exercise', args: b }, { expectedVersion: b.expected_version });
+  const response = slotEditResponse(row, 201);
+  return c.json(response.body, response.status);
 });
 
 // A workout-only substitution is an edit of the observed session attempt.
@@ -702,6 +711,7 @@ apiRoutes.patch('/workouts/:id/exercises/:teId', async (c) => {
   const parsed = await readMutationBody(c);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body as {
+    expected_version?: number;
     target_sets?: number;
     target_reps?: number;
     target_reps_max?: number | null;
@@ -714,15 +724,16 @@ apiRoutes.patch('/workouts/:id/exercises/:teId', async (c) => {
     order_index?: number;
     is_warmup?: boolean;
   };
-  const patch: Record<string, unknown> = { ...b };
+  const versionFields = invalidMutationFields(b, {}, { expected_version: isPositiveInteger });
+  if (versionFields.length) return c.json({ error: 'invalid_fields', fields: versionFields }, 400);
+  const { expected_version, ...fields } = b;
+  const patch: Record<string, unknown> = { ...fields };
   if (typeof b.is_warmup === 'boolean') patch.is_warmup = b.is_warmup ? 1 : 0;
   const row = await updateExercise(c.env.DB, userId, { template_exercise_id: teId, workout_id: dayId }, patch, {
     actor: 'ios', operation: 'update_exercise', args: b,
-  });
-  if (!row) return c.json({ error: 'not_found' }, 404);
-  if ('conflict' in row) return c.json(row, 409);
-  if ('error' in row) return c.json(row, 400);
-  return c.json(row);
+  }, { expectedVersion: expected_version });
+  const response = slotEditResponse(row);
+  return c.json(response.body, response.status);
 });
 
 // Remove one exercise slot from a day. Detaches (NULLs) any historical
@@ -733,11 +744,16 @@ apiRoutes.delete('/workouts/:id/exercises/:teId', async (c) => {
   const userId = c.get('userId');
   const dayId = c.req.param('id');
   const teId = c.req.param('teId');
+  const rawVersion = c.req.query('expected_version');
+  const expectedVersion = parsePositiveIntegerText(rawVersion);
+  if (rawVersion !== undefined && expectedVersion === undefined) {
+    return c.json({ error: 'invalid_fields', fields: ['expected_version'] }, 400);
+  }
   const row = await deleteTemplateExercise(c.env.DB, userId, { template_exercise_id: teId, workout_id: dayId }, {
-    actor: 'ios', operation: 'delete_exercise', args: { template_exercise_id: teId },
-  });
-  if (!row) return c.json({ error: 'not_found' }, 404);
-  return c.json(row);
+    actor: 'ios', operation: 'delete_exercise', args: { template_exercise_id: teId, expected_version: expectedVersion },
+  }, { expectedVersion });
+  const response = slotEditResponse(row);
+  return c.json(response.body, response.status);
 });
 
 // ---- sessions + sets -----------------------------------------------------
@@ -788,12 +804,12 @@ apiRoutes.get('/today', async (c) => {
 apiRoutes.post('/sessions', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
-  if (!plan) return c.json({ error: 'no_active_plan' }, 400);
+  if (!plan) return measuredJson(c, { error: 'no_active_plan' }, 400);
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  if (!parsed.ok) return measuredJson(c, { error: parsed.error }, 400);
   const b = parsed.body;
   const protocolHeader = readAttemptProtocolHeader(c);
-  if (!protocolHeader.ok) return c.json({ error: 'invalid_write_protocol' }, 400);
+  if (!protocolHeader.ok) return measuredJson(c, { error: 'invalid_write_protocol' }, 400);
   const invalid = invalidMutationFields(b, {}, {
     date: (value) => typeof value === 'string' && ISO_DATE_RE.test(value),
     workout_id: (value) => value === null || isNonEmptyString(value),
@@ -801,17 +817,17 @@ apiRoutes.post('/sessions', async (c) => {
     expected_attempt: isNonNegativeInteger,
     kind: (value) => value === 'planned' || value === 'freestyle',
   });
-  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  if (invalid.length > 0) return measuredJson(c, { error: 'invalid_fields', fields: invalid }, 400);
   const carriesAttemptProtocol =
     protocolHeader.declared ||
     hasOwn(b, 'expected_attempt') ||
     hasOwn(b, 'restart_discarded');
   if (carriesAttemptProtocol && !hasOwn(b, 'expected_attempt')) {
-    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
+    return measuredJson(c, { error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
   const restartDiscarded = b.restart_discarded === true;
   if (restartDiscarded && !hasOwn(b, 'expected_attempt')) {
-    return c.json(
+    return measuredJson(c,
       {
         error: 'invalid_fields',
         fields: ['expected_attempt'],
@@ -846,14 +862,14 @@ apiRoutes.post('/sessions', async (c) => {
     workoutId !== null &&
     !(await getWorkoutInPlan(c.env.DB, plan.id, workoutId))
   ) {
-    return c.json({ error: 'unknown_day' }, 422);
+    return measuredJson(c, { error: 'unknown_day' }, 422);
   }
   let s;
   if (restartDiscarded) {
     const expectedAttempt = b.expected_attempt as number;
     const existing = await getOwnedSessionByDate(c.env.DB, userId, date);
     if (!existing) {
-      return c.json(
+      return measuredJson(c,
         { error: 'restart_target_missing', expected_attempt: expectedAttempt },
         409,
       );
@@ -872,8 +888,8 @@ apiRoutes.post('/sessions', async (c) => {
       workoutId,
       protocolHeader.declared,
     );
-    if (!revived) return c.json({ error: 'not_found' }, 404);
-    if ('error' in revived) return c.json(revived, 409);
+    if (!revived) return measuredJson(c, { error: 'not_found' }, 404);
+    if ('error' in revived) return measuredJson(c, revived, 409);
     s = revived;
   } else {
     const expectedAttempt = carriesAttemptProtocol
@@ -882,7 +898,7 @@ apiRoutes.post('/sessions', async (c) => {
     if (expectedAttempt !== undefined && expectedAttempt > 0) {
       const existing = await getOwnedSessionByDate(c.env.DB, userId, date);
       if (!existing) {
-        return c.json(
+        return measuredJson(c,
           {
             error: 'session_attempt_missing',
             expected_attempt: expectedAttempt,
@@ -906,7 +922,7 @@ apiRoutes.post('/sessions', async (c) => {
       );
     } catch (error) {
       if ((error as Error).message === 'session_expected_attempt_missing') {
-        return c.json(
+        return measuredJson(c,
           {
             error: 'session_attempt_missing',
             expected_attempt: expectedAttempt,
@@ -918,10 +934,10 @@ apiRoutes.post('/sessions', async (c) => {
     }
   }
   if (!carriesAttemptProtocol && s.write_protocol !== 'legacy') {
-    return c.json(protocolConflictBody(s), 409);
+    return measuredJson(c, protocolConflictBody(s), 409);
   }
   if (!restartDiscarded && s.status === 'discarded') {
-    return c.json(
+    return measuredJson(c,
       { error: 'session_discarded', status: 'discarded', current_session: s },
       409,
     );
@@ -931,7 +947,7 @@ apiRoutes.post('/sessions', async (c) => {
     s.attempt !== (b.expected_attempt as number)
   ) {
     const expectedAttempt = b.expected_attempt as number;
-    return c.json(
+    return measuredJson(c,
       {
         error: 'session_attempt_conflict',
         status: s.status,
@@ -942,21 +958,21 @@ apiRoutes.post('/sessions', async (c) => {
       409,
     );
   }
-  return c.json(s, 201);
+  return measuredJson(c, s, 201);
 });
 
 apiRoutes.patch('/sessions/:id', async (c) => {
   const protocolHeader = readAttemptProtocolHeader(c);
-  if (!protocolHeader.ok) return c.json({ error: 'invalid_write_protocol' }, 400);
+  if (!protocolHeader.ok) return measuredJson(c, { error: 'invalid_write_protocol' }, 400);
   const expected = readExpectedAttemptQuery(c);
   if (!expected.ok) {
-    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
+    return measuredJson(c, { error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
   if (protocolHeader.declared && expected.value === undefined) {
-    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
+    return measuredJson(c, { error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  if (!parsed.ok) return measuredJson(c, { error: parsed.error }, 400);
   const b = parsed.body;
   const invalid = invalidMutationFields(b, {}, {
     // status remains deliberately `unknown`: patchSession owns its closed
@@ -978,7 +994,7 @@ apiRoutes.patch('/sessions/:id', async (c) => {
   ) {
     invalid.push('workout_id');
   }
-  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  if (invalid.length > 0) return measuredJson(c, { error: 'invalid_fields', fields: invalid }, 400);
   const inactiveProtocol = await inactiveAttemptProtocolResponse(
     c,
     protocolHeader.declared,
@@ -987,7 +1003,7 @@ apiRoutes.patch('/sessions/:id', async (c) => {
   if (typeof b.workout_id === 'string') {
     const plan = await getActivePlan(c.env.DB, c.get('userId'));
     if (!plan || !(await getWorkoutInPlan(c.env.DB, plan.id, b.workout_id))) {
-      return c.json({ error: 'unknown_day' }, 422);
+      return measuredJson(c, { error: 'unknown_day' }, 422);
     }
   }
   const s = await patchSession(
@@ -998,18 +1014,18 @@ apiRoutes.patch('/sessions/:id', async (c) => {
     expected.value,
     protocolHeader.declared,
   );
-  if (!s) return c.json({ error: 'not_found' }, 404);
+  if (!s) return measuredJson(c, { error: 'not_found' }, 404);
   if ('error' in s) {
     // Exhaustive: invalid_status → 400 (bad request, nothing persisted);
     // the history-integrity and discarded-terminal guards → 409.
-    if (s.error === 'invalid_status') return c.json(s, 400);
-    return c.json(s, 409);
+    if (s.error === 'invalid_status') return measuredJson(c, s, 400);
+    return measuredJson(c, s, 409);
   }
   if (s.status === 'completed') {
     const summary = await getWorkoutSummary(c.env.DB, c.get('userId'), s.id).catch(() => null);
-    return c.json({ ...s, summary: summary?.attempt === s.attempt && summary.final ? summary : null });
+    return measuredJson(c, { ...s, summary: summary?.attempt === s.attempt && summary.final ? summary : null });
   }
-  return c.json(s);
+  return measuredJson(c, s);
 });
 
 apiRoutes.get('/sessions/:id/summary', async (c) => {
@@ -1023,13 +1039,13 @@ apiRoutes.get('/sessions/:id/summary', async (c) => {
 // the explicit attempt-scoped POST /sessions restart protocol.
 apiRoutes.post('/sessions/:id/discard', async (c) => {
   const protocolHeader = readAttemptProtocolHeader(c);
-  if (!protocolHeader.ok) return c.json({ error: 'invalid_write_protocol' }, 400);
+  if (!protocolHeader.ok) return measuredJson(c, { error: 'invalid_write_protocol' }, 400);
   const expected = readExpectedAttemptQuery(c);
   if (!expected.ok) {
-    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
+    return measuredJson(c, { error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
   if (protocolHeader.declared && expected.value === undefined) {
-    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
+    return measuredJson(c, { error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
   const inactiveProtocol = await inactiveAttemptProtocolResponse(
     c,
@@ -1043,20 +1059,20 @@ apiRoutes.post('/sessions/:id/discard', async (c) => {
     expected.value,
     protocolHeader.declared,
   );
-  if (!s) return c.json({ error: 'not_found' }, 404);
-  if ('error' in s) return c.json(s, 409);
-  return c.json(s);
+  if (!s) return measuredJson(c, { error: 'not_found' }, 404);
+  if ('error' in s) return measuredJson(c, s, 409);
+  return measuredJson(c, s);
 });
 
 apiRoutes.post('/sessions/:id/sets', async (c) => {
   const protocolHeader = readAttemptProtocolHeader(c);
-  if (!protocolHeader.ok) return c.json({ error: 'invalid_write_protocol' }, 400);
+  if (!protocolHeader.ok) return measuredJson(c, { error: 'invalid_write_protocol' }, 400);
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  if (!parsed.ok) return measuredJson(c, { error: parsed.error }, 400);
   const b = parsed.body;
   // Preserve the established missing-id response while using invalid_fields
   // for a present id (or any other field) with the wrong runtime shape.
-  if (!hasOwn(b, 'id')) return c.json({ error: 'missing_set_id' }, 400);
+  if (!hasOwn(b, 'id')) return measuredJson(c, { error: 'missing_set_id' }, 400);
   const invalid = invalidMutationFields(
     b,
     {
@@ -1083,9 +1099,9 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
       },
     },
   );
-  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  if (invalid.length > 0) return measuredJson(c, { error: 'invalid_fields', fields: invalid }, 400);
   if (protocolHeader.declared && !hasOwn(b, 'expected_attempt')) {
-    return c.json({ error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
+    return measuredJson(c, { error: 'invalid_fields', fields: ['expected_attempt'] }, 400);
   }
   const inactiveProtocol = await inactiveAttemptProtocolResponse(
     c,
@@ -1112,13 +1128,13 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
       prescription: b.prescription as { plan_id: string; version: number; day_id: string } | undefined,
       source: 'ios',
     });
-    return c.json(result, result.deduped ? 200 : 201);
+    return measuredJson(c, result, result.deduped ? 200 : 201);
   } catch (e) {
     if (e instanceof SessionWriteConflictError) {
-      return c.json(e.response(), 409);
+      return measuredJson(c, e.response(), 409);
     }
     const error = (e as Error).message;
-    return c.json(
+    return measuredJson(c,
       { error },
       error === 'session_discarded' || error === 'session_attempt_conflict'
         ? 409
@@ -1129,13 +1145,13 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
 
 apiRoutes.patch('/sets/:id', async (c) => {
   const parsed = await readMutationBody(c);
-  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  if (!parsed.ok) return measuredJson(c, { error: parsed.error }, 400);
   const { expected_session_id, expected_attempt, expected_updated_at, ...b } = parsed.body;
   const guarded = [expected_session_id, expected_attempt, expected_updated_at].some((v) => v !== undefined);
   if (guarded && (typeof expected_session_id !== 'string' || !expected_session_id
       || !Number.isSafeInteger(expected_attempt) || (expected_attempt as number) < 0
       || !Number.isSafeInteger(expected_updated_at) || (expected_updated_at as number) < 0)) {
-    return c.json({ error: 'invalid_correction_identity' }, 400);
+    return measuredJson(c, { error: 'invalid_correction_identity' }, 400);
   }
   const allowed = new Set(['weight', 'reps', 'rpe', 'notes', 'duration_s', 'deleted']);
   const invalid = invalidMutationFields(b, {}, {
@@ -1150,18 +1166,18 @@ apiRoutes.patch('/sets/:id', async (c) => {
     deleted: (value) => value === true,
   });
   invalid.push(...Object.keys(b).filter((field) => !allowed.has(field)));
-  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
-  if (Object.keys(b).length === 0) return c.json({ error: 'no_corrections' }, 400);
+  if (invalid.length > 0) return measuredJson(c, { error: 'invalid_fields', fields: invalid }, 400);
+  if (Object.keys(b).length === 0) return measuredJson(c, { error: 'no_corrections' }, 400);
   try {
     const row = await patchSet(c.env.DB, c.get('userId'), c.req.param('id'), b, guarded ? {
       session_id: expected_session_id as string,
       attempt: expected_attempt as number,
       updated_at: expected_updated_at as number,
     } : undefined);
-    return row ? c.json(row) : c.json({ error: 'not_found' }, 404);
+    return row ? measuredJson(c, row) : measuredJson(c, { error: 'not_found' }, 404);
   } catch (error) {
     if ((error as Error).message === 'set_correction_conflict') {
-      return c.json({ error: 'set_correction_conflict' }, 409);
+      return measuredJson(c, { error: 'set_correction_conflict' }, 409);
     }
     throw error;
   }
@@ -1412,7 +1428,7 @@ apiRoutes.post('/starter-workouts/:id', async (c) => {
 
 apiRoutes.get('/me', async (c) => {
   const userId = c.get('userId');
-  return c.json(await getMeProfile(c.env.DB, userId, c.env.OWNER_APPLE_SUB));
+  return measuredJson(c, await getMeProfile(c.env.DB, userId, c.env.OWNER_APPLE_SUB));
 });
 
 // GET /api/me/export — download the authenticated caller's portable account
@@ -1483,7 +1499,7 @@ apiRoutes.patch('/me/profile', async (c) => {
 apiRoutes.delete('/me', async (c) => {
   const idempotencyKey = c.req.header('X-Account-Deletion-Key') ?? '';
   if (!isAccountDeletionKey(idempotencyKey)) {
-    return c.json({ error: 'invalid_account_deletion_key' }, 400);
+    return measuredJson(c, { error: 'invalid_account_deletion_key' }, 400);
   }
   const userId = c.get('userId');
   const livePrincipal = await c.env.DB
@@ -1504,7 +1520,7 @@ apiRoutes.delete('/me', async (c) => {
     !continuingDeletion &&
     authAgeSeconds > ACCOUNT_DELETION_RECENT_AUTH_SECONDS
   ) {
-    return c.json({ error: 'reauthentication_required' }, 401);
+    return measuredJson(c, { error: 'reauthentication_required' }, 401);
   }
   const result = await deleteUserAccount(
     c.env.DB,
@@ -1514,7 +1530,7 @@ apiRoutes.delete('/me', async (c) => {
     { appleConfig: appleProviderConfig(c.env) },
   );
   if ('error' in result) {
-    return c.json(
+    return measuredJson(c,
       {
         error:
           result.error === 'not_found' ? 'account_not_found' : result.error,
@@ -1522,7 +1538,7 @@ apiRoutes.delete('/me', async (c) => {
       result.error === 'conflict' ? 409 : 404,
     );
   }
-  return c.json(result);
+  return measuredJson(c, result);
 });
 
 // ---- integrations: intervals.icu credentials (M1 multi-user) ------------

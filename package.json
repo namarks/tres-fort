@@ -7,7 +7,7 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "test": "npm run test:website && npm run test:upload-testflight && npm run test:query-plans && vitest run",
+    "test": "node scripts/test.mjs",
     "test:website": "npm --prefix website test",
     "test:oauth-browser": "node scripts/check-oauth-browser.mjs",
     "build:website": "npm --prefix website run build",

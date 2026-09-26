@@ -183,4 +183,29 @@ describe('canonical workout contract', () => {
     expect(exported.training).not.toHaveProperty('day_templates');
     expect(exported.training.workouts).toEqual(expect.arrayContaining([expect.objectContaining({ id: hotel })]));
   });
+  it('rejects retired routes, tool names and identity keys without changing the plan', async () => {
+    for (const [path, method, body] of [
+      ['days', 'POST', { name: 'Retired' }],
+      [`days/${hotel}`, 'PATCH', { name: 'Retired' }],
+      [`days/${hotel}`, 'DELETE', undefined],
+    ] as const) expect((await api(path, method, body)).status).toBe(404);
+    for (const [path, method, body] of [
+      [`calendar/${today}`, 'PUT', { day_template_id: hotel, expected_attempt: 0 }],
+      ['sessions', 'POST', { date: today, day_template_id: hotel, expected_attempt: 0 }],
+    ] as const) {
+      expect(await api(path, method, body)).toEqual({ status: 400, body: { error: 'unsupported_workout_fields' } });
+    }
+    expect(await rpc('tools/call', { name: 'update_plan', arguments: { days: [] } }))
+      .toMatchObject({ error: { code: -32602 } });
+    for (const name of ['add_day', 'update_day']) {
+      const response = await SELF.fetch(`${base}/mcp`, { method: 'POST',
+        headers: { Authorization: 'Bearer test-mcp-token', 'content-type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: { name: 'Retired' } } }) });
+      expect((await response.json<any>()).error.code).toBe(-32602);
+    }
+    const latest = (await api('plan/active')).body;
+    expect(latest.version).toBe(tree.version);
+    expect(latest.workouts.map((w: any) => w.id)).toEqual(tree.workouts.map((w: any) => w.id));
+  });
+
 });

@@ -282,6 +282,13 @@ canonical names; old persisted snapshots and outbox intents remain readable.
 The Worker requires migration 0045, with no runtime SQL adaptation. See the
 [release boundary](plans/workouts-and-multi-session/rollout.md).
 
+Slot add/update/delete and MCP swap accept a reviewed `expected_version`.
+A stale version or exhausted tokenless retry returns `{conflict:true,current_version}`;
+REST uses HTTP 409. The iOS editor carries the version from the opened form,
+refreshes a conflict, and requires review before retrying. Tokenless coaching
+patches retain one bounded fresh-state retry. Successful mutation, version,
+audit, note and snapshot remain one transaction.
+
 In-app manual authoring uses the same `plans` / `workouts` /
 `template_exercises` tree and `plans.meta.schedule` that MCP uses. The Workouts
 screen creates and orders workouts, edits exercise prescriptions, and maps weekdays;
@@ -550,13 +557,24 @@ certificate, and a durable oversized-cache invalidation marker cannot retain it.
 Grouped slots rotate by rounds using acknowledged plus durable queued set UUIDs,
 excluding failed intents. The displayed round is separate from the physical
 per-slot set number used to bind a tap or timed hold. A newly queued set cues
-round rest when it completes the derived round, including a repaired round with
+round rest when it completes the derived round and unresolved work remains, including a repaired round with
 uneven member counts; otherwise it cues transition rest, where zero skips the
 cue. Rest and Live Activity point to the resulting next member. Selection
 revisions preserve newer manual focus across older pending deletions and cold
 recovery. Repairs deferred by a timed hold survive process termination, and a
 later manual choice cancels them durably. Acknowledgements never restart a rest
-timer.
+timer. The final resolved set skips rest and exposes completion immediately.
+
+`RunnerRecovery` decides checkpoint validity and normalizes progress without
+network or persistence effects; `RunnerArtifactOwnership` protects same-account
+views across feature epochs. Cold offline start/resume requires an intact,
+previously live-certified plan plus a known matching attempt or an unbound
+checkpoint for a date with no observed session. Legacy/invalidated caches remain
+browse-only. Recheck eligibility when the action is taken. Persist queued set
+UUIDs, attempt tokens and prescription identity before advancing; cached set
+rows never clear the outbox. Live conflicts stop stale work and preserve its
+original intent identity for review. Account switching retains existing fences.
+
 The workout editor selects adjacent slots and moves each group as one card,
 with rounds, round rest and transition rest edited together. Ordinary slot rest
 stays intact and inactive until ungrouping.
@@ -866,6 +884,20 @@ After each: summary of what changed / what's testable / what's next / what's ope
 | Cloudflare Workers + D1 | $5/month + usage (Workers Paid; active 2026-09-05) |
 | Domain | already owned |
 | **New spend** | **$5/month + usage** |
+
+## Operational performance evidence
+
+`d1_usage` emits one fixed-label event for state/profile reads, selected MCP
+coaching reads and set/terminal writes, and each cron tick. Counters include
+query count, rows read/written, elapsed `duration_ms`, and uncompressed JSON
+`response_bytes` where the route serializes the response (null for cron and
+responses generated outside that boundary). Measured JSON is encoded once;
+measurement never clones or consumes the response stream. Request totals include
+authentication; best-effort work after response completion is outside the total.
+No member IDs, URLs with query strings, arguments, tokens or free text are logged.
+Aggregate duration percentiles and payload sizes by operation to find real hot
+paths. CI enforces query budgets and response/accounting correctness; wall-clock
+and synthetic benchmark timings are observations, not latency thresholds.
 
 
 ### Freestyle sessions

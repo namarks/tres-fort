@@ -566,9 +566,10 @@ struct APIClient {
     func addExercise(dayID: String, exercise: String, isWarmup: Bool,
                      targetSets: Int, targetReps: Int, targetRepsMax: Int?,
                      restSeconds: Int,
-                     targetDurationS: Int?, jwt: String) async throws -> SlotIDRow {
+                     targetDurationS: Int?, expectedVersion: Int, jwt: String) async throws -> SlotIDRow {
         var body: [String: Any] = [
             "exercise": exercise,
+            "expected_version": expectedVersion,
             "target_sets": targetSets,
             "target_reps": targetReps,
             "rest_seconds": restSeconds,
@@ -581,12 +582,14 @@ struct APIClient {
 
     @discardableResult
     func updateExerciseSlot(dayID: String, teID: String,
-                            fields: [String: Any], jwt: String) async throws -> SlotIDRow {
-        try await patch("api/workouts/\(dayID)/exercises/\(teID)", body: fields, jwt: jwt)
+                            fields: [String: Any], expectedVersion: Int, jwt: String) async throws -> SlotIDRow {
+        var body = fields
+        body["expected_version"] = expectedVersion
+        return try await patch("api/workouts/\(dayID)/exercises/\(teID)", body: body, jwt: jwt)
     }
 
-    func deleteExerciseSlot(dayID: String, teID: String, jwt: String) async throws {
-        let _: SlotIDRow = try await delete("api/workouts/\(dayID)/exercises/\(teID)", jwt: jwt)
+    func deleteExerciseSlot(dayID: String, teID: String, expectedVersion: Int, jwt: String) async throws {
+        let _: SlotIDRow = try await delete("api/workouts/\(dayID)/exercises/\(teID)?expected_version=\(expectedVersion)", jwt: jwt)
     }
 
     func replaceExerciseSlot(dayID: String, teID: String, exercise: String,
@@ -885,18 +888,18 @@ protocol PlanEditingAPI {
         targetRepsMax: Int?,
         restSeconds: Int,
         targetDurationS: Int?,
-        jwt: String
+        expectedVersion: Int, jwt: String
     ) async throws -> APIClient.SlotIDRow
     func updateExerciseSlot(
         dayID: String,
         teID: String,
         fields: [String: Any],
-        jwt: String
+        expectedVersion: Int, jwt: String
     ) async throws -> APIClient.SlotIDRow
     func deleteExerciseSlot(
         dayID: String,
         teID: String,
-        jwt: String
+        expectedVersion: Int, jwt: String
     ) async throws
 }
 

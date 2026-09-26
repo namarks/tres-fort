@@ -159,6 +159,11 @@ integration or social breadth.
   **planned**; deliver a correct feed, durable invites, lightweight reactions
   and notifications, and essential group controls.
 
+### Platform (`platform`)
+
+- [Reliability and service boundaries](reliability-and-service-boundaries/plan.md) —
+  **active**; complete the owner-approved performance/quality follow-up to #201,
+  including canonical-only clients, durable offline recovery and reproducible checks.
 ### Member experience (`member-experience`)
 
 Give a member honest, private views of their own body and training trends

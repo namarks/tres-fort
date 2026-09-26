@@ -27,7 +27,7 @@ initiative, index, or adapter.
 Backend (repo root):
 
 ```bash
-npm test                       # vitest: integration tests vs real D1 in the Workers runtime
+npm test                       # prerequisites + all three real-D1 Vitest shards
 npm run test:watch
 npx vitest run test/mcp.test.ts            # single file
 npx vitest run -t "logs a set"             # single test by name
@@ -72,10 +72,13 @@ receiver, `src/routes/webhooks.ts` — public, authenticated by a body
 `secret` rather than app-JWT/MCP bearer), `/privacy` (App Store Connect
 compliance page), and `/join/:code` + AASA (`src/routes/invites.ts` —
 Universal Link group invites) under one Hono app. **All D1 access goes
-through `src/db.ts`** — REST routes (`src/routes/`) and MCP tools
+through the public `src/db.ts` service facade** — REST routes (`src/routes/`) and MCP tools
 (`src/mcp/server.ts`) are thin wrappers over the same functions, so behavior
-stays identical across clients. Add data logic in `db.ts`, not in route/tool
-handlers. intervals.icu I/O is isolated in `src/intervals.ts` (injectable
+stays identical across clients. Cohesive internal services live in `src/services/`:
+OAuth grant transitions and Intervals reconciliation own their SQL and receive
+identity helpers through typed dependency injection. They must not import the
+facade at runtime. Keep data logic in these services or `db.ts`, and keep
+route/tool handlers thin. intervals.icu I/O is isolated in `src/intervals.ts` (injectable
 fetcher, dormant when no credentials are set); an hourly cron
 (`wrangler.jsonc` `triggers.crons`) re-syncs as a backstop for any
 undelivered webhook — the webhook is the primary sync path, not the cron.
@@ -100,8 +103,10 @@ design and dictates how you mutate things:
   /api/workouts/:id/exercises` (add), `PATCH /api/workouts/:id/exercises/:teId`
   (edit), and `DELETE /api/workouts/:id/exercises/:teId` (remove, detaching
   historical `set_logs.template_exercise_id`) each patch a single-field
-  allowlist or one slot through a write-time version claim. Legacy slot
-  APIs retain their existing inputs without requiring an expected version;
+  allowlist or one slot through a write-time version claim. Slot add/update/delete and MCP swap accept optional `expected_version`; the
+  current iOS editor sends the reviewed version. Stale or exhausted writes return
+  `{conflict:true,current_version}` (HTTP 409 on REST). Tokenless coaching calls
+  retain their existing inputs without requiring an expected version;
   bounded retries re-read and validate fresh state before applying only
   supplied fields. These give the iOS app direct, non-Claude
   write access to a day's exercises (audited as `actor='ios'`), reusing the
@@ -136,6 +141,12 @@ explicit invalidation or external replacement also discards that live value.
 `TrainingHistoryIndex` and requested summaries are disposable read models,
 invalidated on every published session/set/catalog mutation. Keep these caches
 out of write-authority decisions and preserve the calendar parity contract.
+`RunnerRecovery` owns pure checkpoint decisions and normalization; `SyncModel`
+applies effects through account/epoch ownership and persistence CAS. Offline
+start/resume requires a complete, intact, previously live-certified plan and
+known matching session attempt (or no observed session). Pending UUIDs and
+prescriptions stay fixed; cached rows never acknowledge them. Missing, legacy,
+invalidated or competing-attempt caches require live validation.
 
 **Weekly schedule & calendar projection.** The recurring weekly pattern
 (weekday → `workout_id`, `null` = rest) lives in `plans.meta.schedule`

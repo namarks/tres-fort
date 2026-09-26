@@ -17,8 +17,8 @@ struct StateSnapshotValue {
 /// Last authoritative account state: normally the merge of a `/api/state`
 /// response into the prior snapshot, and synchronously advanced by an accepted
 /// set/terminal response before its durable intent is removed. It renders
-/// useful read-only data while the first live pull is unavailable; outbox
-/// acknowledgement and runner resume still never trust this cache.
+/// useful data while a live pull is unavailable. A previously certified plan
+/// can support offline work; cached rows never acknowledge an outbox intent.
 /// Main-actor serialization is the cross-model ordering boundary. Multiple
 /// SyncModel instances for one signed-in account share this envelope, so an
 /// old model cannot overwrite a newer model's cache after reauthentication.
@@ -106,6 +106,24 @@ enum StateSnapshotStore {
             state: state,
             watermarks: stored.watermarks,
             setsCommittedThrough: stored.setsCommittedThrough)
+    }
+
+    /// A complete, previously live-certified plan is required for offline
+    /// execution. Legacy, invalidated and ACK-only caches remain browse-only.
+    /// This does not certify current server state or acknowledge queued writes.
+    static func supportsOfflineWorkout(
+        planID: String, planVersion: Int, userID: String?,
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        guard let userID, !defaults.hasFailure(userID: userID),
+              let stored = storedSnapshot(userID: userID, defaults: defaults),
+              stored.invalidated != true,
+              stored.watermarks != nil,
+              stored.planGroupsVersion == StateResponse.planGroupsCapabilityVersion,
+              stored.state?.plan?.id == planID,
+              stored.state?.plan?.version == planVersion
+        else { return false }
+        return true
     }
 
     /// Reserve ordering before a state request starts. Reserving retains

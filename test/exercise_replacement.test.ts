@@ -136,7 +136,11 @@ describe('exercise replacement', () => {
     await env.DB.prepare("UPDATE plans SET status='archived' WHERE id=?1").bind(f.plan.id).run();
     await updatePlanTree(env.DB, f.userId, { workouts: [{ name: 'New', exercises: [] }] });
     const archivedBefore = await footprint(f.userId);
-    expect((await replace(f, body)).status).toBe(404);
+    const staleResponse = await replace(f, body);
+    expect(staleResponse.status).toBe(409);
+    const currentPlan = await getPlanTree(env.DB, f.userId);
+    expect(await staleResponse.json()).toMatchObject({ conflict: true, current_version: currentPlan!.version });
+    expect((await replace(f, { ...body, expected_version: currentPlan!.version })).status).toBe(404);
     expect(await footprint(f.userId)).toEqual(archivedBefore);
     expect(await footprint(foreign.userId)).toEqual(foreignBefore);
   });

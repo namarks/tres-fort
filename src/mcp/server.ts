@@ -1118,6 +1118,7 @@ const TOOLS: Record<string, Tool> = {
       'Patch one plan slot. Identify it by template_exercise_id, or by day (label/name) + exercise. Patchable keys: target_sets, target_reps, target_reps_max, target_rpe, rest_seconds, target_weight, target_duration_s, cues, progression, order_index, is_warmup. Group columns are changed only through group_exercises/ungroup_exercises; grouped order and target_sets are group-owned. Unknown keys are rejected with {error:"unknown_fields", fields:[...]} — no silent drop.',
     inputSchema: obj(
       {
+        expected_version: { type: 'integer', minimum: 1, description: 'Reviewed plan version. A stale value returns conflict/current_version; omit only for a tokenless patch with one bounded retry.' },
         template_exercise_id: { type: 'string' },
         day: { type: 'string' },
         exercise: { type: 'string' },
@@ -1128,6 +1129,8 @@ const TOOLS: Record<string, Tool> = {
     write: true,
     atomicWrite: true,
     handler: async (a, env, userId) => {
+      const fields = invalidFields(a, {}, { expected_version: isPositiveInteger });
+      if (fields.length) return { error: 'invalid_fields', fields };
       const r = await updateExercise(
         env.DB,
         userId,
@@ -1139,6 +1142,7 @@ const TOOLS: Record<string, Tool> = {
         },
         (a.patch as Json) ?? {},
         { actor: 'mcp', operation: 'update_exercise', args: a, note: 'Updated exercise slot.' },
+        { expectedVersion: a.expected_version as number | undefined },
       );
       return r ?? { error: 'slot_not_found' };
     },
@@ -1147,6 +1151,7 @@ const TOOLS: Record<string, Tool> = {
     description: 'Replace an exercise in a day with another (e.g. RDL → good mornings on Wednesday), preserving its targets, order, warm-up flag, and slot identity. Carried targets must be valid for the destination modality. Historical sets keep their original exercise. Both names must match the closed catalog — use list_exercises to discover valid names.',
     inputSchema: obj(
       {
+        expected_version: { type: 'integer', minimum: 1, description: 'Reviewed plan version. A stale value returns conflict/current_version; omit only for a tokenless patch with one bounded retry.' },
         day: { type: 'string', description: 'day label or name' },
         from_exercise: { type: 'string' },
         to_exercise: { type: 'string' },
@@ -1156,7 +1161,10 @@ const TOOLS: Record<string, Tool> = {
     write: true,
     atomicWrite: true,
     handler: async (a, env, userId) => {
+      const fields = invalidFields(a, {}, { expected_version: isPositiveInteger });
+      if (fields.length) return { error: 'invalid_fields', fields };
       const r = await swapExercise(env.DB, userId, {
+        expected_version: a.expected_version as number | undefined,
         day: String(a.day),
         from_exercise: String(a.from_exercise),
         to_exercise: String(a.to_exercise),
@@ -1171,6 +1179,7 @@ const TOOLS: Record<string, Tool> = {
     description: 'Add an exercise to a day in the active plan. `exercise` must match the closed catalog — use list_exercises to discover valid names. order_index defaults to max(existing)+1 (append dense), not the old 99 sentinel. Set is_warmup:true for a prescribed warm-up (erg, mobility) — its logged sets stay out of working-set rollups / session RPE. For a duration-based warm-up (e.g. 5-min row), use a cardio exercise and set target_duration_s. For bodyweight or timed work, target_weight is external load relative to bodyweight: positive for added load, zero for strict bodyweight, and negative for assistance; never store body mass. For AMRAP, use target_reps as the minimum, leave target_reps_max unset, and put "AMRAP" in cues.',
     inputSchema: obj(
       {
+        expected_version: { type: 'integer', minimum: 1, description: 'Reviewed plan version. A stale value returns conflict/current_version; omit only for a tokenless patch with one bounded retry.' },
         day: { type: 'string', description: 'day label or name' },
         exercise: { type: 'string' },
         target_sets: { type: 'integer' },
@@ -1194,10 +1203,15 @@ const TOOLS: Record<string, Tool> = {
     // Inserting at an occupied index rewrites existing exercise order values.
     atomicWrite: true,
     handler: async (a, env, userId) => {
+      const fields = invalidFields(a, {}, { expected_version: isPositiveInteger });
+      if (fields.length) return { error: 'invalid_fields', fields };
       const groupFields = Object.keys(a).filter((key) => ['group_id', 'group_rest_seconds', 'group_transition_seconds'].includes(key));
       if (groupFields.length) return { error: 'unknown_fields', fields: groupFields };
       const plan = await getActivePlan(env.DB, userId);
       if (!plan) return { error: 'no_active_plan' };
+      if (a.expected_version !== undefined && a.expected_version !== plan.version) {
+        return { conflict: true, current_version: plan.version };
+      }
       const dayId = await findWorkoutByRef(env.DB, plan.id, String(a.day));
       if (!dayId) return { error: 'day_not_found', day: a.day };
       const ex = await resolveExercise(env.DB, String(a.exercise));
@@ -1227,7 +1241,7 @@ const TOOLS: Record<string, Tool> = {
       }, {
         actor: 'mcp', operation: 'add_exercise', args: a,
         note: `Added ${a.exercise} to ${a.day}.`,
-      });
+      }, { expectedVersion: a.expected_version as number | undefined });
     },
   },
   add_workout: addWorkoutTool(),
@@ -1250,6 +1264,7 @@ const TOOLS: Record<string, Tool> = {
       'Remove an exercise slot from a day in the active plan. Identify it by `template_exercise_id` OR by `day` (label/name) + `exercise`. NULLs any historical `set_logs.template_exercise_id` that pointed at this slot (sets are kept, queryable by exercise_id; the slot pointer is detached). Bumps the plan version. For substitution, use `swap_exercise` instead.',
     inputSchema: obj(
       {
+        expected_version: { type: 'integer', minimum: 1, description: 'Reviewed plan version. A stale value returns conflict/current_version; omit only for a tokenless patch with one bounded retry.' },
         template_exercise_id: { type: 'string' },
         day: { type: 'string' },
         exercise: { type: 'string' },
@@ -1259,6 +1274,8 @@ const TOOLS: Record<string, Tool> = {
     write: true,
     atomicWrite: true,
     handler: async (a, env, userId) => {
+      const fields = invalidFields(a, {}, { expected_version: isPositiveInteger });
+      if (fields.length) return { error: 'invalid_fields', fields };
       const r = await deleteTemplateExercise(env.DB, userId, {
         template_exercise_id:
           typeof a.template_exercise_id === 'string' ? a.template_exercise_id : undefined,
@@ -1267,7 +1284,7 @@ const TOOLS: Record<string, Tool> = {
       }, {
         actor: 'mcp', operation: 'delete_exercise', args: a,
         note: 'Deleted exercise slot.',
-      });
+      }, { expectedVersion: a.expected_version as number | undefined });
       return r ?? { error: 'slot_not_found' };
     },
   },

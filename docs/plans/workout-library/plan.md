@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: active · Updated: 2026-09-13 · Theme: gym-floor
+Slug: workout-library · Status: gated · Updated: 2026-09-19 · Theme: gym-floor
 
 ## Goal
 
@@ -8,7 +8,8 @@ Let a member keep a library of reusable workouts that exist independently of
 any weekly routine, drop one onto any date (today or future) in one gesture,
 and run a genuinely unplanned session when life or travel breaks the pattern.
 The recurring weekly schedule becomes one optional way to use the library, not
-the frame every workout must fit into.
+the frame every workout must fit into. Exercise guidance, history and replacement
+discovery should remain close to the workout without interrupting set entry.
 
 ## Library model
 
@@ -168,7 +169,7 @@ No second editor, no per-session template copies, no weeks table.
     continue into the existing prescription editor after creation. Rep exercises
     start at 3 × 8, holds at 3 × 45 seconds, cardio at five minutes, with zero
     load pending member selection and manual progression.
-  - Extend `POST /api/workouts` and its released `/api/days` alias with optional
+  - Extend `POST /api/workouts` with optional
     `exercise_ids` (1–50 unique catalog IDs). Require observed plan ID/version
     for this path. Validate the complete list before one atomic workout/slot/
     version/audit/snapshot write; an uncertain retry keeps its captured request.
@@ -176,14 +177,136 @@ No second editor, no per-session template copies, no weeks table.
   - Verify search/filter composition, cancellation without writes, unnamed
     creation, slot order, rejected/concurrent requests, lost responses and
     acknowledged-save/failed-refresh recovery on the real model and D1.
-- [ ] **P0.3(b) — Release exercise-first creation**
+- [x] **P0.3(b) — Release exercise-first creation**
   - After repository review and CI pass, obtain owner release authority for the
     compatible Worker, then an iOS build containing P0.3(a). No migration is
     introduced here. The server must accept `exercise_ids` before distributing
     this client; do not fall back to sequential or empty-workout writes.
   - Retain exact deployed source and client distribution evidence separately.
-    This UX request does not authorize deployment, TestFlight or App Review.
-- [ ] **P1 — Library metadata: tags and archive**
+    The later owner-authorized [build 42 release](../app-store-submission/release-42.md)
+    includes PR #198 in both Worker and client source `5df9208`. The September 18
+    readback confirms that same Worker at 100% traffic and build 42 VALID in
+    internal Testers. This reconciles the stale release checkbox; it does not
+    establish physical-device acceptance or new App Review authority.
+- [x] **P0.4 — Streamline observed iOS workflows**
+  - [x] **(a) Implement and verify the observed usability fixes**
+    - Owner-approved after a hands-on simulator audit of `12dd49c`: put load
+      and reps ahead of secondary controls, retain visible circuit membership,
+      remember compact rest, and correct the exact last logged set from rest.
+    - Use one Workouts entry for browsing and creation on scheduled/completed
+      Today; retain direct creation for an empty library. Keep date-specific
+      selection explicit and Start/Schedule pinned in workout details. Place
+      date actions beside the date heading with a verified 44-point touch target.
+    - Weekly scheduling uses explicit Cancel/Save, protects dirty drafts,
+      submits the loaded plan identity/version, and retains failed/conflicted
+      drafts for member-reviewed retry. Early finish starts with a summary;
+      voice, notes and fatigue appear on request. Existing saved feedback and
+      recorded sets keep their existing write and recovery paths.
+    - Connections lists available sources, moves device-routing help into a
+      disclosure, and distinguishes Apple Health opt-in from Intervals status.
+      RPE semantics, new onboarding behavior and additional providers remain
+      outside this observed-fix slice.
+    - Local verification: 610 iOS unit tests completed with one existing skip
+      and no failures. All 43 distinct targeted UI journeys passed after fixes,
+      covering timer/navigation, circuit/load and kg entry, exact last-set
+      correction, accessibility-size rest/logging, schedule conflicts/retry,
+      calendar moves/removal and the 44-point menu edge, finish feedback and
+      Intervals connections. Runner, pinned workout actions, early finish and
+      calendar screenshots were inspected. Independent local review found no
+      remaining blocking issue. [PR #209](https://github.com/namarks/tres-fort/pull/209)
+      merged on 2026-09-17 after current-head hosted review and required CI.
+      [PR #210](https://github.com/namarks/tres-fort/pull/210) followed with
+      stacked Today actions, full-width exercise names and a compact rest that
+      keeps next-set values and exact last-set correction at accessibility text
+      sizes. Manual physical-device and VoiceOver behavior remain unverified.
+  - [x] **(b) Distribute the verified client changes**
+    - The September 18 follow-up authorizes internal TestFlight distribution
+      after P0.5(b) merges, including the recent UI fixes and P0.5(a) sheet.
+      Carry the exact reviewed source and Apple processing/beta evidence into
+      the App Store release record. Worker deployment and App Review/public
+      release remain separately authorized.
+    - Distribution: [TestFlight 1.0 (43)](../app-store-submission/release-43.md) shipped from
+      reviewed merged source `28dd647`, containing PRs #209, #210, #213 and #214.
+      Apple confirmed VALID, IN_BETA_TESTING and internal Testers assignment on
+      September 18 Pacific. No backend deployment was needed; App Review still
+      selects build 40. Physical-device and VoiceOver acceptance remain open.
+
+- [ ] **P0.5 — Connect exercise guidance and discovery**
+  - Planning approved after the [September 18 SensAI inspection](../../reviews/2026-09-sensai/report.md).
+    The owner activated (a) on 2026-09-18, ahead of P1 tags/archive.
+    P0.5(a) merged in [PR #213](https://github.com/namarks/tres-fort/pull/213).
+    The owner activated (b) on 2026-09-18, then authorized a combined internal
+    TestFlight build with (a) and the recent UI fixes after review and merge.
+    Slice (c) remains planned and requires activation; App Review and public
+    release remain outside this approval.
+  - [x] **(a) One exercise sheet for technique and history**
+    - Reuse the existing demo and exercise-history data in a shared Technique /
+      History sheet opened from workout preview, runner and catalog pickers.
+      History starts with the last comparable performance and offers the full
+      history; empty, unavailable and loading states stay distinct.
+    - Preserve per-hand/per-side explanations, signed assistance and rep/timed
+      semantics. Opening/dismissing the sheet must retain the current exercise,
+      set, unsaved input, rest deadline and active timed-set state. Picker info
+      must not accidentally select or swap an exercise.
+    - Verify unfamiliar and familiar exercises from all entry points, a swapped
+      exercise's own history, normal/large text and return during rest or a timed
+      set. Reuse existing data paths; no new analytics store or mandatory runner
+      animation is needed.
+    - Repository implementation reuses the demo, cached history cohorts and full
+      exercise-history view. Comparable summaries use completed sessions with
+      the same rep/hold mode and prescribed load; current, discarded, deleted
+      and warm-up records cannot become a prior comparable performance.
+    - Local verification passed six focused unit tests and ten UI journeys,
+      covering preview, runner, create, add, warm-up and swap entry points,
+      preserved selection/query/filter state, draft values, rest and active
+      timers. Existing creation and swap smoke journeys also passed. Largest
+      system-text journeys cover the sheet and return to selection; search
+      submission dismisses the keyboard so information remains reachable. The
+      pull request from `codex/exercise-guidance-history` carries the independent
+      current-head review and required CI evidence. Client distribution remains
+      separate from this repository slice.
+  - [x] **(b) Consistent search and filters for creation, addition and swaps**
+    - Share alias-aware search and All / Upper body / Lower body / Core filters
+      across create, add, warm-up and session-swap pickers. Retain search/filter
+      state when opening details or returning from a selection review.
+    - Keep matching-muscle ordering and the swap path's rep/timed compatibility
+      restriction. Offer equipment filtering only after checking catalog
+      coverage and defining unknown/mixed-equipment behavior; never silently
+      hide unknown entries. Force/difficulty filters require a separate trusted
+      metadata contract and are outside this slice.
+    - Verify finding an unavailable-machine replacement without its exact name,
+      composing alias search with filters, clearing an empty result and canceling
+      without writes. Confirmation names the affected exercise and says this
+      session only; the library editor separately names its reusable-workout scope.
+      Completed sets, group membership, replacement load, attempt/version checks
+      and swap recovery retain the delivered P0.2(a) contract.
+    - The session picker now uses the same search/filter component as create,
+      add and warm-up. Selected replacement and information-sheet state survive
+      filtering; confirmation names both exercises and states the session scope.
+      Add/warm-up configuration names the saved workout. The catalog has names,
+      aliases, muscle and modality but no separate equipment taxonomy; equipment
+      remains searchable through those fields without an inferred exclusion filter.
+    - Seven search-policy tests and nine targeted UI journeys passed, including
+      alias/filter composition, empty-result reset, info and review returns,
+      cancellation without writes, and logging after a swap with prior sets and
+      plan version preserved. The four new journeys passed a repeat at normal
+      text size. Largest-system-text creation/review and complete swap journeys
+      also passed; normal and largest-text swap screenshots were inspected.
+      Local independent review found no actionable issue.
+      [PR #214](https://github.com/namarks/tres-fort/pull/214) merged after
+      current-head review and all eight CI checks passed, including 625 iOS unit
+      tests (one existing skip) and all 12 smoke journeys. P0.4(b) records its
+      completed internal TestFlight distribution.
+  - [ ] **(c) Small exercise visuals in workout previews**
+    - Reuse Très Fort's own demonstration assets as lightweight thumbnails in
+      the shared workout preview. Keep exercise names, targets and circuit or
+      superset membership readable; missing art gets a stable fallback.
+    - Verify recognition and equipment discovery with unfamiliar movements,
+      long names, large text, Reduce Motion and a long grouped workout. Keep
+      scrolling responsive and preserve text accessibility; visuals must not
+      push the prescription or primary workout action out of reach.
+
+- [x] **P1 — Library metadata: tags and archive**
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work
     remains independent of this backend prerequisite.
@@ -211,7 +334,7 @@ No second editor, no per-session template copies, no weeks table.
     Today. Add a test that each path returns the same not-found result for
     an archived id.
     `update_plan`'s rebuild must carry both fields through the day remap.
-  - Expose both fields through `get_current_plan`, `add_day`, `update_day`,
+  - Expose both fields through `get_current_plan`, `add_workout`, `update_workout`,
     and `PATCH /api/workouts/{id}`; `/api/state` carries them in the plan tree.
   - When a date falls inside a `plans.meta.trips` range, the calendar and
     Today pickers surface `travel`-tagged workouts first. This is ordering,
@@ -227,25 +350,40 @@ No second editor, no per-session template copies, no weeks table.
     schedule projects as rest on both backend and iOS
     (`CalendarProjection.swift` already treats a dangling id as rest; make
     the archived case explicit and keep the two in parity).
-- [ ] **P2 — Freestyle session and "save as workout"**
+- [x] **P2 — Freestyle session and "save as workout"**
+  - [x] **(a) Implement and verify repository delivery**
+    - Migration 0054, durable freestyle starts, slotless set logging, account-
+      scoped runner recovery and reviewed atomic save are implemented. The
+      save receipt, plan/source CAS and attempt advance make retries safe;
+      new workouts remain unscheduled. REST and iOS use one current freestyle
+      contract; MCP logging on unscheduled or explicitly skipped dates creates
+      freestyle sessions.
+    - Verification: 1,178 backend tests across three shards, including 25
+      freestyle cases; 636 iOS unit tests with one existing skip; rep and timed
+      start/add/finish/save UI journeys, including largest system text. Query
+      plans, TypeScript, plan graph and same-Worker rename/rollback rehearsal
+      pass. PR review and CI retain exact-head delivery evidence.
+  - [x] **(b) Release migration, Worker and matching client**
+    - The owner approved the P1/P2 production release on September 19.
+      Migrations 0053/0054 are applied, and the reviewed canonical Worker is
+      serving at 100% traffic. [Build 44's receipt](../app-store-submission/release-44.md)
+      records exact source, integrity checks and the successful client release.
+      Apple reports build 44 VALID / IN_BETA_TESTING in internal Testers.
+      The owner explicitly deferred authenticated live workout checks to device
+      testing for this beta; they remain unperformed, not passed. Physical
+      acceptance and public-readiness gates remain separate.
   - Add an explicit `sessions.kind` (`'planned' | 'freestyle'`, default
     `'planned'`) so a freestyle session with `workout_id = NULL` never
     resolves through the weekly schedule. Update the scope predicate in
     `deleteWorkout`, the runner's template inference, and
     `projectCalendar` (a freestyle session is a real session and wins for its
     date; it renders with its logged exercises rather than a template name).
-    Released-client compatibility: the current runner infers a template from
-    the schedule for any null-template session, so a client without the
-    `freestyle` capability receives freestyle sessions only once they are
-    completed (as history with their sets) and never as Today's session;
-    an in-progress freestyle session is invisible to it. Per the shared
-    rule, invisible means fenced: while a date holds a live (`planned` or
-    `in_progress`) freestyle session, `POST /api/sessions`,
-    `PUT /api/calendar/{date}`, `PATCH /api/sessions/{id}` status changes,
-    and the MCP session-by-date resolvers return `session_kind_conflict`
-    (409) to a non-`freestyle` client rather than reusing the null-template
-    row and pinning it to a workout, which the current date-scoped
-    `getOrCreateSession` would otherwise do.
+    Owner decision (September 19, 2026): there are no legacy clients to
+    support for this feature. Use one current client/server contract, without
+    capability negotiation, hidden-session projections or upgrade-only cache
+    reloads. All authenticated clients receive actual session kinds and ordinary
+    set deltas, including tombstones. Attempt guards still prevent stale writes
+    and live freestyle sessions cannot be pinned to scheduled workouts.
   - The runner starts a freestyle session from the rest-day CTA and from the
     calendar for today. Exercises are added from the catalog as you go; the
     prescription shown is the member's last comparable actuals for that
@@ -253,7 +391,8 @@ No second editor, no per-session template copies, no weeks table.
     the same idempotent `POST /api/sessions/{id}/sets` with
     `template_exercise_id = NULL`.
   - **Save as workout** converts a completed freestyle session into a library
-    workout: one `add_day` call with member-reviewed slots derived from
+    workout: one atomic `POST /api/sessions/{id}/save-workout` call through
+    the shared versioned plan writer, with member-reviewed slots derived from
     compatible exercise, execution-mode and external-load cohorts in
     first-logged order. `target_sets` is the cohort's working-set count.
     A timed cohort defaults duration to its median observed duration, rounded
@@ -285,8 +424,8 @@ No second editor, no per-session template copies, no weeks table.
 
 ## Execution frontier
 
-- P0.3(b)
-- P1
+- P0.2(b)
+- P0.5(c)
 
 ## Dependencies
 
@@ -294,14 +433,16 @@ No second editor, no per-session template copies, no weeks table.
 the shared prescription controls, durable corrections and runner presentation.
 Reuse that delivered path when changing the runner.
 
-P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer](../completed/prescription-integrity/decisions.md), including prescription creation and session reassignment. Extend [canonical snapshots](../completed/reversible-plan-management/decisions.md) to retain `tags` and `archived_at`.
+P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer](../completed/prescription-integrity/decisions.md), including prescription creation and session reassignment. P1 extended [canonical snapshots](../completed/reversible-plan-management/decisions.md) to retain `tags` and `archived_at`, including legacy snapshot reads and full-plan rebuilds.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P0 | blocked_by | plan:workouts-and-multi-session#P0(a) | The selected goal establishes canonical workout terminology and compatible clients before the library UI. Production rollout and compatibility cleanup do not block this repository slice. |
 | P0 | coordinates_with | plan:member-activation-and-adherence#P0 | Both edit the no-plan and Today entry surfaces; do not run concurrently on the same iOS files. |
 | P0.3(a) | coordinates_with | plan:member-activation-and-adherence#P0 | Both use first-workout entry and the shared exercise catalog. |
-| P0.3(b) | gated_by | external:exercise-first-release-approval | Owner authority is needed for the compatible Worker and later iOS distribution. |
+| P0.5(c) | gated_by | external:owner-sensai-followup-implementation | Preview thumbnails remain planned pending activation. |
+| P0.5 | coordinates_with | plan:member-activation-and-adherence#P3 | Preview and upcoming-session entry share Today and workout detail routes. |
+| P0.2(b) | gated_by | external:owner-live-workout-verification | Authenticated session-swap and workout behavior still need a connected client/device; the build-44 internal-release exception does not claim these checks passed. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
 
 
@@ -310,11 +451,54 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@owner):** Authorize P0.3(b) when ready to release the exercise-first
-creation flow: deploy the compatible Worker before distributing its iOS build.
-There is no new migration. P1 tags/archive is the next repository slice; P2
-freestyle remains separate. This implementation request does not authorize
-production deployment, TestFlight, or App Review changes.
+**Now (@owner):** Test the deferred authenticated workout paths on a device
+using internal TestFlight 1.0 (44), including metadata, freestyle recovery/save
+and session swaps. P1/P2 backend and internal client delivery are complete under
+the explicit build-44 verification exception; do not reinstate its upload gate.
+P0.2(b) live verification and physical/VoiceOver acceptance remain open. See the
+[release receipt](../app-store-submission/release-44.md). Preview thumbnails
+P0.5(c) still require activation. Ordered multi-session work proceeds in the
+workouts-and-multi-session plan; wider onboarding and RPE semantics remain separate.
+
+**P1 repository evidence (September 19):** Migration 0053, atomic REST/MCP
+metadata writes, snapshot/rebuild preservation and archive assignment fences
+are implemented. The iOS library supports tag editing/filtering, Active and
+Archived views, confirmed archive and explicit restore; trip choices prioritize
+travel labels. Archived workouts remain available to history. Regression checks
+cover version conflicts, transaction rollback, archive/start races, legacy
+aliases, calendar parity, restoration after UUID rebuilds and saved runner
+invalidation. All three backend test shards passed; the local same-Worker
+rename/rollback compatibility rehearsal passed. The focused library UI journey
+covers tag filtering, cancel, archive and restore.
+
+**P1 production release (September 19):** Migration 0053 is applied after 0045,
+and the compatible canonical Worker is live alongside the P2 backend. Do not
+repeat those completed stages. [The build 44 receipt](../app-store-submission/release-44.md)
+records production and internal-client delivery evidence, with the approved
+live-verification deferral stated above. A pre-metadata Worker is unsafe to restore after
+metadata writes because its rebuild/snapshots omit the fields.
+
+**Current client distribution:** [TestFlight 1.0 (44)](../app-store-submission/release-44.md)
+includes P1 tags/archive, P2 freestyle/save and the canonical workout contract.
+Apple confirmed VALID / IN_BETA_TESTING and internal Testers assignment on
+September 19 Pacific. Build 40 remains IN_REVIEW with MANUAL release and is
+incompatible with the canonical backend; replacing it is a separate App Review
+action. No public release is authorized by this beta.
+
+**Previous client distribution:** [TestFlight 1.0 (43)](../app-store-submission/release-43.md)
+contains the usability and accessibility fixes in PRs #209/#210 plus the shared
+exercise information and discovery in PRs #213/#214. The exact reviewed merged
+source is `28dd647`; Apple confirmed VALID processing and internal Testers
+assignment on September 18 Pacific. App Review still selects build 40. Device
+installation, physical acceptance and VoiceOver behavior are not established by
+beta availability.
+
+**Exercise-first release:** P0.3(b) shipped in the owner-authorized build 42
+release. The September 18 production readback and source ancestry confirm its
+compatible Worker and internal client distribution. No Worker, migration,
+runtime configuration or backend dependency differs between that release and
+that build-43 client slice, so that combined beta needed no production deployment.
+App Review changes remain separate.
 
 P0.3(a) implementation and local verification are complete. All 1,101 backend
 tests passed across the repository's three CI shards (78 files); the focused
@@ -322,8 +506,8 @@ D1 creation suite covers nine cases. Four focused iOS unit tests and twelve
 distinct UI journeys passed, including unnamed multi-selection and onboarding
 through first-workout completion. Final picker/review screenshots were visually
 checked on iPhone 17 / iOS 26.2. Local independent review found no remaining
-actionable regressions. Hosted exact-head review and all required CI checks
-remain merge gates for this implementation PR.
+actionable regressions. [PR #198](https://github.com/namarks/tres-fort/pull/198)
+merged on 2026-09-13 after exact-head review and required CI.
 
 The combined local backend process timed out in a multi-case validation test
 and later in an unchanged swap test. The new independent validation cases were
@@ -336,7 +520,7 @@ no checks or assertions were removed.
 Worker, Apple processing, signing and submission evidence must be reconciled
 there rather than inferred from repository completion here. The release task's
 build 40 handoff is separate from P0.3 and must not silently change source.
-P1 metadata and P2 freestyle remain separate planned work.
+P1 metadata repository delivery and P2 freestyle remain separate from that release.
 
 The navigation design was approved in task
 `01a08dee-930f-7763-9202-29872c440f26`. [PR #178](https://github.com/namarks/tres-fort/pull/178)
@@ -371,11 +555,17 @@ suite passed 897 tests, including both physical schemas and old/new wire
 contracts.
 Those tests verified that Unschedule retains the workout and dated session while clearing its recurring
 entries. The library-date assignment appears in Today and the coach's current
-workout response without changing the recurring plan. Tags/archive (P1),
-freestyle (P2), and multiple sessions per date remain unimplemented and outside
-the completed goal's scope.
+workout response without changing the recurring plan. P1 now supplies tags/archive. Freestyle (P2) and multiple sessions per date
+remain unimplemented and outside the completed goal's scope.
 
 ## Notes / open questions
+
+- The September 18 follow-up selects P0.5(a)/(b) as the first SensAI-inspired
+  implementation candidates, followed by P0.5(c). The owner subsequently
+  activated P0.5(a), then P0.5(b), ahead of P1, and authorized their combined
+  internal TestFlight distribution with the recent UI fixes. P0.5(c), production
+  deployment and App Review/public-release authority remain separate decisions. The evidence
+  note distinguishes observed competitor behavior from untested coaching quality.
 
 - Source: owner observation (2026-09-05) that everything in the app is framed
   around the routine or block day, which is too rigid for travel and ad-hoc
@@ -403,6 +593,13 @@ the completed goal's scope.
   [Workouts and multi-session days](../workouts-and-multi-session/plan.md);
   The coordinated P0 delivery uses canonical workout terms while retaining
   the released aliases for the server-first rollout and compatibility cycle.
-- `sessions.kind` is the one new session-log column. It is set at creation
-  and never changes, so it does not disturb the attempt CAS or the
-  `(user_id, date)` uniqueness rule.
+- `sessions.kind` is fixed within an attempt. The existing one-row-per-date
+  model reuses empty planned/skipped dates and discarded sessions; an explicit
+  start may change kind only while advancing the observed attempt and only
+  when no live sets remain. Live/completed sessions cannot change kind. This
+  preserves the `(user_id, date)` rule and rejects old queued set intents.
+- Saving uses a dedicated transaction endpoint because ordinary `add_workout`
+  cannot atomically validate the reviewed source, repoint the session and
+  advance its attempt. It reuses the same plan version claim, prescription
+  validation, audit and snapshot writer. Migration 0054 retains an account-
+  scoped save receipt for exact retries, export and account deletion.

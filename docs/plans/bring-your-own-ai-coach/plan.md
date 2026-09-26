@@ -1,6 +1,6 @@
 # Bring Your Own AI Coach
 
-Slug: bring-your-own-ai-coach · Status: active · Updated: 2026-09-12 · Theme: coaching
+Slug: bring-your-own-ai-coach · Status: gated · Updated: 2026-09-18 · Theme: coaching
 
 ## Goal
 
@@ -21,9 +21,11 @@ Repository delivery and actual provider connection/release evidence remain disti
   - Exercise synthetic OAuth client flows, coaching reads/writes, stale-version
     conflicts, refresh/disconnect, API rollout compatibility, and iOS setup.
   - Local Codex review completed after the callback and disclosure fixes.
-    Repository merge still requires the delivery gate below.
+    Repository delivery is complete; the merged PR and release evidence are below.
 - [ ] **P2 — Release and verify a real Codex connection**
-  - Release the Worker and updated iOS build under explicit release authority.
+  - Worker and iOS 1.0 (42) released under explicit owner authority on
+    2026-09-14 Pacific; [release receipt](../app-store-submission/release-42.md)
+    records exact source, production traffic and internal TestFlight availability.
   - Owner completes Codex sign-in using their own code, verifies a read and one
     reversible plan change in iOS, then disconnects/reconnects.
 - [x] **P3 — Prepare mobile account approval and the plugin**
@@ -42,7 +44,7 @@ Repository delivery and actual provider connection/release evidence remain disti
     a Chromium CSP redirect regression and an understated legacy logging hint;
     both are fixed with behavioral regression coverage. Unfinished approvals
     remain cancellable from Profile even before a token exists.
-    Final local review and exact-head GitHub review/CI remain merge gates.
+    PR #191 retains the completed foundation delivery checks.
   - CI scope correction: the former smoke list had expanded to 56 of 77 UI
     methods; one shard spent 18 minutes on UI tests and another hit the job
     timeout. Following the owner's cost/latency concern, PRs keep all unit tests
@@ -54,36 +56,127 @@ Repository delivery and actual provider connection/release evidence remain disti
     review uses an ordinary synthetic member, not the retired shared sample
     identity. Focused verification passed 111 backend tests, 14 iOS unit tests
     and two approval/sign-in UI journeys, plus the verifier/scope and plan checks.
+- [x] **P3.1 — Simplify linking for Claude and Codex**
+  - Approved 2026-09-14: present both provider choices with setup actions before
+    optional code generation. Default to Claude's available mobile web flow.
+  - Claude uses its documented prefilled install link; native account approval
+    remains explicit and the connect-code form remains a fallback. Successful
+    browser handoff dismisses setup so returned approval can present immediately.
+    Press and hold the connect button to copy the prefilled link for Safari.
+    Incoming approval also replaces open or restored setup after a copied link.
+    Profile, Today and onboarding share the same setup presentation.
+  - Codex receives a credential-free setup request with manual desktop/CLI
+    fallbacks. Explain its computer requirement and Remote support. A hosted
+    mobile install still requires the P4 provider-issued listing URL.
+  - Verification covers 26 backend protocol/approval tests, 14 iOS unit tests,
+    five focused UI journeys (provider handoff, open/restored setup return,
+    code fallback, approval and connected-member continuation), TypeScript and
+    plan validation.
+    Inspected synthetic Claude/Codex screenshots. Review follow-ups cover the
+    browser-return presentation, connected-status journey and family quickstart.
+    [PR #207](https://github.com/namarks/tres-fort/pull/207) merged as
+    `5df9208fc01219f298866ee4528cda533b86d33d` after exact-head independent
+    review and all eight checks passed. The merged-source CI also passed.
+    Real-device provider handoff remains P2/P4.
 - [ ] **P4 — Publish and verify the consumer Connect button**
-  - Obtain owner release/submission authority, verified publisher identity,
+  - Obtain owner plugin submission/publication authority, verified publisher identity,
     dedicated synthetic reviewer access and approved terms. Worldwide availability
     in provider-supported countries is selected; a terms draft is prepared for review.
-  - Release/verify the website association, iOS app and Worker; submit the
-    prepared remote MCP plugin and address provider review.
+  - Website association, iOS app and Worker release are recorded in the
+    build 42 receipt; submit the prepared remote MCP plugin after the named
+    owner inputs and address provider review.
   - After provider approval/publication produces an actual install URL, wire
     that URL into the app and verify install, approval, coaching read/write,
     iOS sync and disconnect on iPhone. No placeholder install URL is shipped.
+
+- [ ] **P5 — Request a coaching change from its workout context**
+  - [ ] **(a) Prototype the request, proposal and return journey**
+    - Planning approved after the [SensAI inspection](../../reviews/2026-09-sensai/report.md).
+      Prototype Adjust today from the workout and a coach request from a specific
+      exercise; keep the deterministic Swap exercise path directly available.
+      Use a few concrete jobs: 20 minutes available, equipment busy, explain this
+      exercise, and an easier session before a ride. Preserve the selected
+      workout/exercise identity so the member need not re-explain it.
+    - Start with a synthetic prototype and the supported external-coach handoff
+      where available. Measure navigation steps, re-entry of context, mistakes
+      and lost context on the same tasks; report unsupported handoff or return
+      behavior honestly. Do not imply external coaching is equivalent to an
+      embedded assistant or that a mobile Codex install URL already exists.
+    - Show request → concrete proposed exercises/sets/loads with reasons →
+      explicit Apply/Cancel and return. Clearly distinguish today's session from
+      the saved workout/recurring routine before any mutation. A proposal is not
+      a write, and the prototype must not send a live write request.
+  - [ ] **(b) Deliver the selected contextual coaching path**
+    - After prototype evaluation and an explicit delivery decision, implement
+      only the selected path. Before writes, define the proposal payload, scope,
+      account, plan ID/version, session ID/attempt and relevant swap revision.
+      Read-only explanations can use the current coach brief without new AI
+      execution in the Worker.
+    - Resolve the one-session adjustment contract before labeling an action
+      Adjust today: the existing MCP `adjust_today` changes reusable template
+      targets (and without a workout selector may affect the whole plan).
+      It must not masquerade as a session-only change. Reuse the delivered
+      session-swap contract for supported swaps; broader one-session set/target
+      changes require an explicit shared REST/MCP service contract, not a
+      client-only workout copy or a silently edited recurring prescription.
+    - Require reviewed proposal identity/version at Apply, atomic writes and
+      audit, completed-set preservation, compatible group/rep/timed semantics,
+      uncertain-response recovery and safe stale-proposal rejection. Cancel or
+      rejected requests make no change; a deliberate recurring edit uses the
+      existing plan-version/snapshot path. Session edits retain attempt-scoped
+      recovery and never rewrite historical sets.
+    - Verify a shorter-session request through proposal, explicit application
+      and return to the intended workout, plus equipment replacement and an
+      explanation requiring no write. Cover completed work, concurrent plan or
+      swap changes, account switches, retries and cancellation. Real-provider
+      and physical-device handoff evidence stays separate from synthetic tests.
+      If a supported provider cannot honor review-before-write, keep that action
+      read-only until a suitable delivery path exists.
+    - Embedded coaching remains a separate owner decision covering provider,
+      model, health-data disclosure/retention, per-user usage limits, measured
+      cost and any paid entitlement. This plan adds no API key storage, token
+      spend, background inference, model selection or billing authorization.
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P2 | gated_by | external:owner-byo-coach-release | Production, iOS distribution and a real account connection need their own authority and owner-side credentials. |
+| P2 | gated_by | external:owner-byo-coach-device-verification | Production and internal TestFlight release are complete; the real-provider connection requires the owner's signed-in iPhone and AI account. |
 | P4 | gated_by | external:owner-coach-plugin-publication | Publisher identity, public listing and provider submission require owner authority; provider approval must produce a real install URL. |
+| P5(a) | gated_by | external:owner-sensai-followup-implementation | September 18 approval adds this prototype to the plan; it does not activate implementation. |
+| P5(b) | gated_by | external:owner-contextual-coach-delivery-choice | Choose the supported handoff or separately scoped embedded service after reviewing evidence, write contracts and cost/privacy implications. |
+| P5 | coordinates_with | plan:workout-library#P0.5 | Exercise sheets, swap discovery and contextual coach entry share workout surfaces. |
 
 ## Next step
 
-**Now (@agent):** Deliver P3 through PR #191 using the exact-head review/CI
-gate below. Then proceed to P2/P4 only with the documented release/publication
-authority. The owner selected worldwide provider-supported availability and
-requested the service-terms draft; identity verification, synthetic reviewer
-access, terms approval and provider attestations remain owner-managed inputs.
+**Now (@owner):** Install TestFlight 1.0 (42) and complete the real-provider
+connection, coaching read, reversible edit, iOS sync and disconnect/reconnect
+checks. Claude's install link and native approval are released, but their full
+physical-iPhone round trip has not been verified. Codex's direct connection still
+uses the desktop setup; a phone-only hosted install requires P4 publication.
 
-**Repository delivery gate (@agent):** Before merging PR #191, require fresh
-independent review of its exact head, all relevant CI terminal-green, and no
-blocking findings or unresolved threads. PR merge is not a production release.
+**Release complete (2026-09-14 Pacific):** The owner authorized the latest
+production and TestFlight release. Worker version
+`92adb0e0-28bd-4952-81ad-b09029f75ac9` serves the reviewed source at 100% traffic;
+Apple reports build 42 VALID, IN_BETA_TESTING and assigned to internal Testers.
+The website already matched the release and all migrations were already applied.
+See the [exact release receipt](../app-store-submission/release-42.md). Public
+checks do not prove authenticated training behavior or a physical-device handoff.
+
+**Plugin publication remains gated:** Complete publisher identity, dedicated
+synthetic reviewer access, terms approval and explicit submission/publication
+authority. This release did not submit a plugin or publish the draft terms.
+Claude's documented install link does not require directory review; a phone-only
+Codex install still does. P3 landed in [PR #191](https://github.com/namarks/tres-fort/pull/191);
+P3.1 landed in [PR #207](https://github.com/namarks/tres-fort/pull/207).
 
 ## Notes / open questions
+
+- P5 is a planned follow-up, separate from P2 device verification and P4 plugin
+  publication. The highest-priority non-AI work is library P0.5(a)/(b); evaluate
+  the contextual prototype separately before committing to an in-app AI service.
+  SensAI's visible request forms do not establish its model, inference location,
+  cost, response quality or approval/rollback behavior.
 
 - Approved 2026-09-12: conversations remain in users' external AI apps. A future
   paid package may bundle in-app coaching and API usage if costs justify it.
@@ -100,13 +193,13 @@ blocking findings or unresolved threads. PR merge is not a production release.
   across the full run and the two corrected lazy-row navigation reruns; the
   Codex setup screenshots were inspected. Local Codex reviews, including review
   of the command-free setup, found no actionable regressions. The revised setup
-  UI journey also passed; fresh independent GitHub review and CI remain required
-  before merge. PR checks carry final evidence.
-- [PR #191](https://github.com/namarks/tres-fort/pull/191) carries this implementation;
-  exact-head independent review and all CI remain required before merge.
-- Start: verified remote main `90f968383629107bd7a95b37bd44da177f87305f`.
-  Concurrent onboarding and App Store sessions require isolated work; keep shared
-  entry-copy changes narrow and reconcile current main before merge.
+  UI journey also passed. The merged PR checks carry the final independent
+  review and CI evidence; no repository-delivery gate remains open.
+- [PR #191](https://github.com/namarks/tres-fort/pull/191) carries the merged P3
+  foundation. Its checks retain the final repository-delivery evidence.
+- Initial source was remote main `90f968383629107bd7a95b37bd44da177f87305f`.
+  Implementation used isolated worktrees and integrated the concurrent onboarding
+  and App Store changes before the recorded merges.
 - [Connection guide](../../COACH-CONNECTIONS.md) defines supported capabilities,
   rollout behavior and the real-account verification procedure. Synthetic protocol
   fixtures do not prove a specific installed Codex version or live model response.

@@ -64,7 +64,7 @@ it.each([
   expect((await env.DB.prepare("SELECT id FROM audit_log WHERE tool='add_workout'").all()).results).toHaveLength(0);
 });
 
-it('lets one concurrent selection win and supports an empty canonical workout', async () => {
+it('lets one concurrent selection win and supports empty canonical workout creation', async () => {
   const { plan, create } = await setup();
   const replies = await Promise.all([create({ exercise_ids: ['ex_bench'] }), create({ exercise_ids: ['ex_back_squat'] })]);
   expect(replies.map(r => r.status).sort()).toEqual([201, 409]);

@@ -4,13 +4,15 @@ struct TrainingSetupView: View {
     @StateObject private var model: TrainingSetupModel
     let showStarters: Bool
     let onDone: () -> Void
+    let onStarterSaved: ((StarterWorkoutReceipt) -> Void)?
     @State private var page = 0
     @State private var selectedStarterID: String?
     @State private var showBaseline = false
 
-    init(auth: AuthModel, showStarters: Bool = true, onDone: @escaping () -> Void) {
+    init(auth: AuthModel, showStarters: Bool = true,
+         onStarterSaved: ((StarterWorkoutReceipt) -> Void)? = nil, onDone: @escaping () -> Void) {
         _model = StateObject(wrappedValue: TrainingSetupModel(auth: auth, defaults: auth.trainingSetupPersistence))
-        self.showStarters = showStarters; self.onDone = onDone
+        self.showStarters = showStarters; self.onDone = onDone; self.onStarterSaved = onStarterSaved
     }
 
     var body: some View {
@@ -20,8 +22,7 @@ struct TrainingSetupView: View {
                     Section {
                         Label("Starter workout saved", systemImage: "checkmark.circle.fill")
                             .font(.title2.bold()).foregroundStyle(Theme.accent)
-                        Text("Continue to Today to see your current workout library. You can edit exercises, choose a date, or start a workout.")
-                        Text("Keep showing up. A routine you can repeat matters more than getting every detail perfect.")
+                        Text("Ready to review and start. You can edit it anytime in Workouts.")
                     }
                 } else if !model.ready {
                     Section {
@@ -29,12 +30,6 @@ struct TrainingSetupView: View {
                         else { Button("Try again") { Task { await model.load() } } }
                     }
                 } else {
-                    Section {
-                        Text(page == 3 ? "A place to start" : "Build a habit that fits your life")
-                            .font(.title2.bold())
-                        Text("Consistency matters more than a perfect plan. Your answers can change anytime.")
-                            .foregroundStyle(Theme.muted)
-                    }
                     if page == 0 { aboutYou }
                     if page == 1 { routine }
                     if page == 2 { workingWeights }
@@ -63,7 +58,10 @@ struct TrainingSetupView: View {
             .disabled(model.busy)
             .safeAreaInset(edge: .bottom) {
                 if model.receipt != nil {
-                    Button("Continue", action: onDone)
+                    Button(onStarterSaved == nil ? "Done" : "View workout") {
+                        if let receipt = model.receipt, let onStarterSaved { onStarterSaved(receipt) }
+                        else { onDone() }
+                    }
                         .buttonStyle(WorkoutPrimaryButtonStyle())
                         .accessibilityIdentifier("trainingSetup.done")
                         .padding().background(Theme.background)
@@ -100,7 +98,7 @@ struct TrainingSetupView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(showStarters ? "Skip setup" : "Close") { model.cancel(); onDone() }
+                    Button(model.receipt != nil ? "Close" : showStarters ? "Skip setup" : "Close") { model.cancel(); onDone() }
                         .accessibilityIdentifier("trainingSetup.skip")
                 }
                 if page > 0 && model.receipt == nil {
@@ -112,6 +110,9 @@ struct TrainingSetupView: View {
         }
         .preferredColorScheme(.dark)
         .task { await model.load() }
+        .onChange(of: model.receipt) { _, receipt in
+            if let receipt, let onStarterSaved { onStarterSaved(receipt) }
+        }
         .onDisappear { model.cancel() }
         .sheet(isPresented: $showBaseline) {
             BaselineEntryView { value in
@@ -132,8 +133,8 @@ struct TrainingSetupView: View {
                 }
             }
             Section {
-                Text("Only lifting, or a mix of activities?").font(.headline)
-                Text("Select everything you do or intend to do. Leave blank if you’re still figuring it out.")
+                Text("Your activities").font(.headline)
+                Text("Select all that apply. You can change these later.")
                     .font(.footnote).foregroundStyle(Theme.muted)
                 ForEach(Self.activities, id: \.0) { id, title in
                     selection(title, id: id, values: $model.profile.activities)
@@ -144,7 +145,7 @@ struct TrainingSetupView: View {
                         if value.count > 300 { model.profile.activity_context = String(value.prefix(300)) }
                     }
             } footer: {
-                Text("For example: two runs and a weekend swim, or preparing for a cycling event. Your coach can use this to consider your whole week.")
+                Text("For example: two runs and a weekend swim.")
             }
         }
     }
@@ -161,7 +162,7 @@ struct TrainingSetupView: View {
                 Picker("Time for a strength workout", selection: $model.profile.session_minutes) {
                     ForEach([15, 30, 45, 60], id: \.self) { Text("\($0) minutes").tag($0) }
                 }
-                Text("This is time for strength alongside your other activities. You can choose workout dates later.")
+                Text("Choose workout dates later in Calendar.")
                     .font(.footnote).foregroundStyle(Theme.muted)
                 Picker("Available equipment", selection: $model.profile.equipment) {
                     Text("Bodyweight & a stable raised surface").tag("bodyweight")
@@ -180,7 +181,7 @@ struct TrainingSetupView: View {
         Group {
             Section {
                 Text("Know a recent comfortable set?").font(.headline)
-                Text("Add a few working sets you remember. No maximum tests needed. It’s completely fine not to know yet.")
+                Text("Optional. Add working sets you remember; no maximum tests needed.")
                 ForEach(model.profile.baselines) { baseline in
                     VStack(alignment: .leading, spacing: 6) {
                         Text(TrainingProfile.baselineExercises.first { $0.id == baseline.exercise_id }?.name ?? baseline.exercise_id)
@@ -193,7 +194,7 @@ struct TrainingSetupView: View {
                     Button("Add a working set") { showBaseline = true }.accessibilityIdentifier("trainingSetup.addBaseline")
                 }
             } footer: {
-                Text("These are reported starting points for future coaching, not verified strength. Your starter leaves loads for you to choose; actual logged sets help your coach refine them.")
+                Text("These are self-reported starting points for your coach. You’ll choose your starter loads in the workout.")
             }
             Section {
                 Text("Private to you and the coach you connect. Your group does not see these answers. Edit them later in Profile → Training profile.")
@@ -228,7 +229,7 @@ struct TrainingSetupView: View {
                         }
                     }.disabled(model.hasUncertainAcceptance)
                 }
-                Text("The first option matches your equipment. Every option is editable, and this first session can be shorter than your available time.")
+                Text("Matched to your equipment. Every workout is editable.")
                     .font(.footnote).foregroundStyle(Theme.muted)
             }
             if let starter = options.workouts.first(where: { $0.id == selectedStarterID }) {
@@ -241,7 +242,7 @@ struct TrainingSetupView: View {
                             Text(slot.cues).font(.footnote).foregroundStyle(Theme.muted)
                         }.padding(.vertical, 4)
                     }
-                    Text("Start lighter than you think you need. Weighted exercises begin at 0 until you choose a load in the runner.")
+                    Text("Choose a comfortable load when you start. Weighted exercises begin at 0.")
                         .font(.footnote)
 
                 }

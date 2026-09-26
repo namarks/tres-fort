@@ -30,6 +30,7 @@ struct WorkoutFeedbackSheet: View {
     let finishAfterSave: Bool
     @StateObject private var editor: WorkoutFeedbackEditor
     @State private var saveFailed = false
+    @State private var feedbackExpanded = false
     @FocusState private var typing: Bool
 
     init(sync: SyncModel, target: WorkoutTerminalActionTarget, finishAfterSave: Bool = false) {
@@ -43,45 +44,28 @@ struct WorkoutFeedbackSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    Text("Optional. Saved feedback is shared with your coach and kept out of group feeds.")
-                    if editor.isFinalizing {
-                        Text("Finishing transcription…")
-                        Button("Use current text") { editor.stop() }
-                    } else if editor.isRecording || editor.isStarting {
-                        Button(editor.isStarting ? "Cancel recording" : "Stop recording") {
-                            if editor.isStarting { editor.cancelRecording() } else { editor.finishRecording() }
+                if finishAfterSave {
+                    finishSummary
+                    Section {
+                        Button {
+                            typing = false
+                            feedbackExpanded.toggle()
+                        } label: {
+                            HStack {
+                                Text(editor.initial?.isEmpty == false ? "Edit feedback" : "Add feedback")
+                                Spacer()
+                                Text("Optional").foregroundStyle(.secondary)
+                                Image(systemName: feedbackExpanded ? "chevron.up" : "chevron.down")
+                                    .font(.caption.weight(.semibold))
+                            }
                         }
-                        .accessibilityIdentifier("feedback.stop")
-                        if editor.isRecording {
-                            Button("Cancel recording", role: .cancel) { editor.cancelRecording() }
-                        }
-                    } else {
-                        Button { typing = false; Task { await editor.talk() } } label: {
-                            Label("Talk about your workout", systemImage: "mic.fill")
-                        }
-                        .accessibilityIdentifier("feedback.talk")
+                        .disabled(recordingActive)
+                        .accessibilityIdentifier("feedback.expand")
+                        .accessibilityValue(feedbackExpanded ? "Expanded" : "Collapsed")
                     }
-                    Button("Type instead") { editor.stop(); typing = true }
-                    if let message = editor.message { Text(message).foregroundStyle(.secondary) }
-                    Text("Recording stays on this iPhone and is discarded. Review the text before saving.")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
-                Section("Your words") {
-                    TextEditor(text: Binding(get: { editor.text }, set: { editor.edit($0) }))
-                        .frame(minHeight: 120).focused($typing)
-                        .accessibilityLabel("Workout note").accessibilityIdentifier("feedback.note")
-                }
-                Section("Perceived fatigue (optional)") {
-                    Picker("Fatigue", selection: $editor.fatigue) {
-                        Text("Not rated").tag(Int?.none)
-                        ForEach(1...10, id: \.self) { value in
-                            Text("\(value) / 10").tag(Int?.some(value))
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .accessibilityIdentifier("feedback.fatigue")
-                    Text("1 = fresh · 10 = exhausted").font(.caption).foregroundStyle(.secondary)
+                if !finishAfterSave || feedbackExpanded {
+                    feedbackFields
                 }
                 if saveFailed {
                     Section { Text("This workout changed. Close this sheet and review its current feedback before saving again.") }
@@ -92,21 +76,20 @@ struct WorkoutFeedbackSheet: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if finishAfterSave {
                     VStack(spacing: 8) {
-                        Button(action: saveFeedback) {
-                            Text("Save feedback & finish")
+                        Button(action: feedbackChanged ? saveFeedback : finishWithoutChanges) {
+                            Text(feedbackChanged ? "Save feedback & finish" : "Finish workout")
                                 .frame(maxWidth: .infinity, minHeight: 44)
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(Theme.accent).foregroundStyle(.black)
-                        .disabled(editor.isRecording || editor.isStarting || editor.isFinalizing)
-                        .accessibilityIdentifier("feedback.saveAndFinish")
-                        Button(editor.initial?.isEmpty == false ? "Finish with saved feedback" : "Finish without feedback") {
-                            editor.stop()
-                            dismiss()
-                            Task { await sync.finishWorkout(expected: target) }
+                        .disabled(recordingActive)
+                        .accessibilityIdentifier(feedbackChanged ? "feedback.saveAndFinish" : "feedback.finishWithoutChanges")
+                        if feedbackChanged {
+                            Button(editor.initial?.isEmpty == false ? "Finish with saved feedback" : "Finish without feedback",
+                                   action: finishWithoutChanges)
+                                .frame(minHeight: 44)
+                                .accessibilityIdentifier("feedback.finishWithoutChanges")
                         }
-                        .frame(minHeight: 44)
-                        .accessibilityIdentifier("feedback.finishWithoutChanges")
                     }
                     .padding(.horizontal, 20).padding(.vertical, 8)
                     .frame(maxWidth: .infinity)
@@ -136,6 +119,92 @@ struct WorkoutFeedbackSheet: View {
             if phase == .background { editor.interrupt() }
         }
         .onDisappear { editor.stop() }
+    }
+
+    private var recordingActive: Bool {
+        editor.isRecording || editor.isStarting || editor.isFinalizing
+    }
+
+    private var feedbackChanged: Bool {
+        editor.text != (editor.initial?.notes ?? "") || editor.fatigue != editor.initial?.perceivedFatigue
+    }
+
+    private var finishSummary: some View {
+        Section {
+            let savedSets = sync.todaySession.map { sync.setsForSession($0.id).filter { $0.is_warmup == 0 } } ?? []
+            let pendingSets = sync.setOutbox.pending.filter { $0.date == target.date }
+            let failed = pendingSets.filter { $0.deliveryState == .failed }.count
+            let sending = pendingSets.filter { sync.sendingSetIntentIDs.contains($0.id) }.count
+            let queued = pendingSets.filter {
+                $0.deliveryState == .queued && !sync.sendingSetIntentIDs.contains($0.id)
+            }.count
+            let exerciseCount = Set(savedSets.map(\.exercise_id)).count
+            Text(sync.selectedDay?.name ?? "Workout").font(.headline)
+            Text("\(savedSets.count) working \(savedSets.count == 1 ? "set" : "sets") saved · \(exerciseCount) \(exerciseCount == 1 ? "exercise" : "exercises")")
+                .accessibilityIdentifier("feedback.finishSummary")
+            if queued > 0 { Text("\(queued) \(queued == 1 ? "set" : "sets") queued on this device").foregroundStyle(.secondary) }
+            if sending > 0 { Text("\(sending) \(sending == 1 ? "set" : "sets") syncing").foregroundStyle(.secondary) }
+            if failed > 0 { Text("\(failed) \(failed == 1 ? "set needs" : "sets need") retry before finishing").foregroundStyle(.secondary) }
+            if sync.exercises.contains(where: { !sync.isSkipped($0) && sync.runnerSetsDone($0) < $0.target_sets }) {
+                Text("Unlogged sets won't be counted.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("feedback.earlyFinishNote")
+            }
+            if editor.initial?.isEmpty == false {
+                Text("Your saved feedback will be included.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var feedbackFields: some View {
+        Section {
+            Text("Optional. Saved feedback is shared with your coach and kept out of group feeds.")
+            if editor.isFinalizing {
+                Text("Finishing transcription…")
+                Button("Use current text") { editor.stop() }
+            } else if editor.isRecording || editor.isStarting {
+                Button(editor.isStarting ? "Cancel recording" : "Stop recording") {
+                    if editor.isStarting { editor.cancelRecording() } else { editor.finishRecording() }
+                }
+                .accessibilityIdentifier("feedback.stop")
+                if editor.isRecording {
+                    Button("Cancel recording", role: .cancel) { editor.cancelRecording() }
+                }
+            } else {
+                Button { typing = false; Task { await editor.talk() } } label: {
+                    Label("Talk about your workout", systemImage: "mic.fill")
+                }
+                .accessibilityIdentifier("feedback.talk")
+            }
+            Button("Type instead") { editor.stop(); typing = true }
+            if let message = editor.message { Text(message).foregroundStyle(.secondary) }
+            Text("Recording stays on this iPhone and is discarded. Review the text before saving.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        Section("Your words") {
+            TextEditor(text: Binding(get: { editor.text }, set: { editor.edit($0) }))
+                .frame(minHeight: 120).focused($typing)
+                .accessibilityLabel("Workout note").accessibilityIdentifier("feedback.note")
+        }
+        Section("Perceived fatigue (optional)") {
+            Picker("Fatigue", selection: $editor.fatigue) {
+                Text("Not rated").tag(Int?.none)
+                ForEach(1...10, id: \.self) { value in
+                    Text("\(value) / 10").tag(Int?.some(value))
+                }
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("feedback.fatigue")
+            Text("1 = fresh · 10 = exhausted").font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func finishWithoutChanges() {
+        editor.stop()
+        dismiss()
+        Task { await sync.finishWorkout(expected: target) }
     }
 
     private func saveFeedback() {

@@ -45,6 +45,9 @@ elif name == 'xcodebuild' and args[0] in ['build-for-testing', 'test-without-bui
     result.mkdir()
     (result / 'result.txt').write_text('synthetic evidence')
     print('build/test diagnostic')
+    if args[0] == 'test-without-building' and os.environ.get('MOCK_TEST_EXIT'):
+        print('Example.swift:42: error: XCTest assertion failed')
+        print('accessibility dump\\n' * 120)
     if args[0] == 'test-without-building' and os.environ.get('MOCK_CANCEL_DURING_TEST'):
         # Kill only the disposable verifier shell, emulating a runner that
         # cannot wait for cleanup. The test owns and removes its whole temp tree.
@@ -91,6 +94,7 @@ else: print('synthetic-tool-version')
         self.env['MOCK_TEST_EXIT']='65'
         result=self.run_script(['--runtime','runtime','--device','device','--only-testing','TresFortTests'])
         self.assertNotEqual(result.returncode,0)
+        self.assertIn('Example.swift:42: error: XCTest assertion failed', result.stderr)
         self.assertIn(['xcrun',['simctl','delete','disposable-simulator']],self.calls())
         self.assertEqual(len(list((self.root/'.artifacts').rglob('result.txt'))),2)
         self.assertIn('-only-testing:TresFortTests',next(args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building'))
@@ -144,7 +148,7 @@ else: print('synthetic-tool-version')
             for path in (SCRIPT.parents[1]/'ios'/'TresFortUITests').glob('*Tests.swift')
         }
         covered=set()
-        for shard in ['1','2','3']:
+        for shard in ['1','2','3','4','5','6']:
             with self.subTest(shard=shard):
                 result=self.run_script(['--runtime','runtime','--device','device','--ci-shard',shard])
                 self.assertEqual(result.returncode,0,result.stderr)
@@ -157,10 +161,11 @@ else: print('synthetic-tool-version')
                     self.assertTrue(all(arg.startswith('-only-testing:') for arg in selection))
                     selected={arg.removeprefix('-only-testing:') for arg in selection}
                 self.assertTrue(selected)
+                self.assertTrue(selected <= universe, selected - universe)
                 self.assertFalse(covered & selected)
                 covered |= selected
         self.assertEqual(covered,universe)
-        for extra in [['--ci-shard','4'],['--ci-shard','1','--only-testing','TresFortTests']]:
+        for extra in [['--ci-shard','0'],['--ci-shard','7'],['--ci-shard','1','--only-testing','TresFortTests']]:
             calls_before=self.calls()
             self.assertEqual(self.run_script(['--runtime','runtime','--device','device',*extra]).returncode,2)
             self.assertEqual(self.calls(),calls_before)
@@ -194,6 +199,7 @@ else: print('synthetic-tool-version')
         self.assertEqual([arg.removeprefix('-only-testing:') for arg in args if arg.startswith('-only-testing:')],selections)
         for extra in [['--ui-suite','invalid'],
                       ['--ui-suite','smoke','--ci-shard','3'],
+                      ['--ui-suite','smoke','--ci-shard','6'],
                       ['--ui-suite','smoke','--only-testing','TresFortTests']]:
             calls_before=self.calls()
             self.assertEqual(self.run_script(['--runtime','runtime','--device','device',*extra]).returncode,2)

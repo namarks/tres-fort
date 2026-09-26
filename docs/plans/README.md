@@ -102,24 +102,34 @@ provides private feedback, visible/correctable plan changes and accurate trainin
 context. [Physical iPhone feedback verification](completed/coaching-feedback-loop/device-verification.md)
 remains a separately authorized release follow-up.
 
+- [Bring your own AI coach](bring-your-own-ai-coach/plan.md) — **gated**;
+  complete real-provider verification and consumer linking. P5 plans contextual
+  workout/exercise requests, with delivery chosen after a measured prototype.
+
 ### Gym floor (`gym-floor`)
 
 Let a person create and execute a workout confidently, whether or not they use
 AI coaching.
 
 - [Member activation and adherence](member-activation-and-adherence/plan.md) —
-  **planned**; make onboarding, coach connection, invite continuation, and
-  lightweight reminders coherent.
-- [Workout library](workout-library/plan.md) — **active**; present
+  **paused**; first-workout entry and starters are delivered. Reminders/widgets,
+  compact upcoming sessions and actionable progress empty states remain future
+  slices.
+- [Workout library](workout-library/plan.md) — **gated**; present
   reusable workouts as the primary object, let a member drop one onto any
   date, add tags and archive, and support a freestyle session that can be
   saved as a workout. The weekly routine becomes one optional use of the
-  library.
+  library. P0.5(a)/(b) implement unified exercise guidance/history and shared
+  search/filter behavior; both shipped with the recent usability fixes in
+  internal TestFlight 1.0 (43). P1 tags/archive is implemented; migration, Worker
+  deployment and client distribution await separate release authority. P2
+  freestyle and Save as workout are implemented in PR #217, with release
+  awaiting separate authority; preview thumbnails remain planned pending activation.
 - [Workouts and multi-session days](workouts-and-multi-session/plan.md) —
-  **active**; rename `day_templates` to `workouts` end to end with a
-  compatibility window, then allow an ordered list of sessions per date so a
-  member can record two strength workouts in one day without changing any
-  single-session guarantee.
+  **active**; the owner retired legacy-client support. P0(c) removed old wire
+  contracts and physical-schema adaptation, preserving historical data. Canonical
+  Worker/client release remains separately gated; ordered sessions per date
+  follow as the next repository feature slice.
 [Supersets and circuits](completed/supersets-and-circuits/plan.md) are retained
 as completed repository history: shared coach/member authoring, alternating
 round execution and recovery, separate transition/round rests, and compatible
@@ -154,6 +164,15 @@ integration or social breadth.
 - [Reliability and service boundaries](reliability-and-service-boundaries/plan.md) —
   **active**; complete the owner-approved performance/quality follow-up to #201,
   including canonical-only clients, durable offline recovery and reproducible checks.
+### Member experience (`member-experience`)
+
+Give a member honest, private views of their own body and training trends
+without adding provider accounts, server collection or new data stores.
+
+- [Progress and Apple Health weight](apple-health-weight/plan.md) — **gated**;
+  the private weight view and Progress tab are merged and included in internal
+  TestFlight build 42. Owner verification on a real iPhone with Health readings
+  remains.
 
 ### Review-driven ordering
 
@@ -164,6 +183,22 @@ and repeatable iOS checks complete that foundation. Library P0 remains a small
 independent presentation improvement; storage/wire rename, multiple sessions
 and engagement features follow their existing decisions and demonstrated need.
 This order does not activate planned work or replace canonical phase readiness.
+
+### SensAI follow-up ordering
+
+The [September 18 hands-on comparison](../reviews/2026-09-sensai/report.md)
+selects six improvements within existing plans. Start with library P0.5(a)/(b):
+shared exercise technique/history and consistent exercise/swap filtering. Next
+consider P0.5(c) preview thumbnails and member-activation P3 upcoming sessions,
+then P4 progress empty states. Evaluate BYO-coach P5(a)'s contextual request
+prototype separately before choosing P5(b)'s delivery architecture.
+
+The owner subsequently activated library P0.5(a), the shared Technique / History
+sheet, ahead of tags/archive, and then P0.5(b) shared search/filter behavior.
+P0.5(a)/(b) are merged and shipped in internal TestFlight 1.0 (43), with exact
+source and Apple evidence in the release record. The other new slices remain planning
+approval only; canonical frontiers and release gates remain authoritative. Already
+delivered runner, swap, catalog, starter and progress capabilities are reused.
 
 ## Completed foundations
 

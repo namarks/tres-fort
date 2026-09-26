@@ -3,7 +3,6 @@ import { afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { addDays, createD1UsageObserver, createPlan, getRideConflicts, updatePlanTree } from '../src/db';
 import { handleMcp } from '../src/mcp/server';
 
-
 const TODAY = '2026-09-14';
 const NOTES = 'Member words: "keep this"\n  indented line — très fort';
 let userId: string;
@@ -45,11 +44,12 @@ beforeAll(async () => {
     (id,user_id,source,external_id,date,kind,title,training_load,planned_duration_sec,synced_at)
     VALUES ('performance-ride',?,'intervals','performance-ride',?,'ride','Long ride',160,10000,1)`)
     .bind(userId, TODAY).run();
-  // Prime only the physical-schema metadata. It is not a per-request query.
-  await db.prepare('SELECT id FROM workouts LIMIT 1').all();
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 it('bounds conflict-read work while retaining the real scheduling result', async () => {
   const observer = createD1UsageObserver(env.DB);
@@ -61,7 +61,8 @@ it('bounds conflict-read work while retaining the real scheduling result', async
 });
 
 it('bounds the eight-session coaching brief and retains text, tombstones and older completion context', async () => {
-  vi.spyOn(Date, 'now').mockReturnValue(Date.parse(`${TODAY}T12:00:00Z`));
+  // The brief's civil-date boundary uses new Date(), not only Date.now().
+  vi.setSystemTime(new Date(`${TODAY}T12:00:00Z`));
   const observer = createD1UsageObserver(env.DB);
   const result = await handleMcp({ jsonrpc: '2.0', id: 7, method: 'tools/call',
     params: { name: 'get_coach_brief', arguments: {} } }, { ...env, DB: observer.db }, userId);
@@ -79,6 +80,7 @@ it('bounds the eight-session coaching brief and retains text, tombstones and old
     logged_working_sets: 1 });
   for (const session of brief.recent_sessions) expect(session.logged_working_sets).toBe(1);
   expect(brief.active_plan).not.toHaveProperty('days');
+  expect(brief.active_plan.workouts).toHaveLength(1);
   expect(brief.ride_conflicts).toEqual([{ date: TODAY, conflicts: ['performance-ride'], severity: 'clash' }]);
   expect(observer.usage.rows_written).toBe(0);
   console.log('code-health brief reads', observer.usage);

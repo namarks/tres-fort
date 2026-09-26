@@ -50,7 +50,9 @@ struct OnboardingView: View {
         .preferredColorScheme(.dark)
         .sheet(isPresented: $showTrainingSetup) {
             let checkpoint = flow.checkpoint
-            TrainingSetupView(auth: auth) {
+            TrainingSetupView(auth: auth, onStarterSaved: { receipt in
+                if flow.finishWithStarter(receipt, from: checkpoint) { showTrainingSetup = false }
+            }) {
                 showTrainingSetup = false
                 advance(from: checkpoint)
             }
@@ -101,9 +103,9 @@ private struct WelcomeStep: View {
 
             VStack(alignment: .leading, spacing: 18) {
                 OnboardingBullet(icon: "dumbbell.fill", title: "Lift, logged",
-                                 text: "Run your workout in the app — it tracks every set, rep, and rest.")
+                                 text: "Track sets, reps, and rest during your workout.")
                 OnboardingBullet(icon: "brain.head.profile", title: "A coach that adapts",
-                                 text: "Build workouts yourself, or connect your own AI coach to review and adjust your plan.")
+                                 text: "Build your workouts or connect your own AI coach.")
                 OnboardingBullet(icon: "person.2.fill", title: "Your crew",
                                  text: "Share progress with family and friends in a private group.")
             }
@@ -136,7 +138,7 @@ private struct JoinGroupStep: View {
         VStack(spacing: 20) {
             StepHeader(icon: "person.2.fill",
                        title: "Join your group",
-                       subtitle: "Got an invite code from a friend or family member? Enter it to share workouts and see each other's progress.")
+                       subtitle: "Enter an invite code to share workouts with your group.")
 
             TextField("ABC123", text: $code)
                 .textInputAutocapitalization(.characters)
@@ -215,7 +217,7 @@ private struct ConnectIntervalsStep: View {
         VStack(spacing: 16) {
             StepHeader(icon: "bicycle",
                        title: "Connect intervals.icu",
-                       subtitle: "Ride or run? Connecting intervals.icu lets your coach see your cardio and balance it against your lifting. Only lift? Skip this.")
+                       subtitle: "Bring rides and runs into your training history. You can connect later in Profile.")
 
             // Primary path: one-tap OAuth — log in to intervals.icu and approve.
             OnboardingPrimaryButton(oauthRunning ? "Connecting…" : "Connect with intervals.icu",
@@ -309,11 +311,11 @@ private struct CoachIntroStep: View {
         VStack(spacing: 22) {
             StepHeader(icon: "dumbbell.fill",
                        title: "Choose your first step",
-                       subtitle: "Build and schedule your workouts here, or connect your own AI coach to help with your plan. Every member has their own Coach Connect, whether joining a group or training independently.")
-            Text("Both paths use your same plan. Find Workouts in Today’s menu and Coach Connect in Profile whenever you're ready.")
+                       subtitle: "Create a workout or connect your own AI coach.")
+            Text("Find Workouts on Today and Coach Connect in Profile anytime.")
                 .font(.footnote).foregroundStyle(Theme.muted)
                 .multilineTextAlignment(.center)
-            OnboardingPrimaryButton("Build my first workout", action: onManual)
+            OnboardingPrimaryButton("Create a workout", action: onManual)
             OnboardingPrimaryButton("Set up my coach", action: onCoach)
             OnboardingSkipButton("Enter Très Fort", action: onFinish)
         }

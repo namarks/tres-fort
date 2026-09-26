@@ -25,12 +25,18 @@ class IOSScopeTests(unittest.TestCase):
                 'migrations/0045_example.sql', 'README.md', 'vitest.config.ts',
             ]), 'skip')
 
-    def test_ios_shared_fixtures_workflow_and_unknown_paths_run_smoke(self):
+    def test_ios_shared_fixtures_and_unknown_paths_run_smoke(self):
         for path in ['ios/TresFort/App.swift', 'ios/project.yml',
                      'ios/TresFortTests/Fixtures/CalendarProjection.json',
-                     'scripts/verify-ios.sh', 'test/verify-ios.test.py',
-                     '.github/workflows/ci.yml', 'package.json', 'new-tool.conf']:
+                     'package.json', 'new-tool.conf']:
             self.assertEqual(policy.select_suite('pull_request', ['docs/note.md', path]), 'smoke')
+
+    def test_verification_changes_require_full_coverage_before_merge(self):
+        for event in ['pull_request', 'push']:
+            for path in ['.github/workflows/ci.yml', 'scripts/verify-ios.sh',
+                         'scripts/ci-ios-scope.py', 'test/verify-ios.test.py',
+                         'test/ci-ios-scope.test.py']:
+                self.assertEqual(policy.select_suite(event, ['docs/note.md', path]), 'full')
 
     def test_pull_request_compares_tested_merge_with_base_and_preserves_paths(self):
         with patch.object(policy.subprocess, 'check_output', return_value=

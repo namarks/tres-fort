@@ -1,5 +1,4 @@
 // Synthetic CPU/serialization evidence. No D1, network, credentials or user data.
-// Baseline must precede the canonical cutover and contain workoutWire.ts.
 // Usage: node scripts/benchmark-code-health.mjs <baseline-git-ref>
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -28,7 +27,6 @@ async function load(ref) {
   const context = source('src/coachingContext.ts', ref).replace("'./metrics'", JSON.stringify(metrics));
   return {
     context: await import(moduleURL(context)),
-    wire: ref ? await import(moduleURL(source('src/workoutWire.ts', ref))) : null,
   };
 }
 const baseline = await load(baselineRef);
@@ -57,12 +55,9 @@ for (const rows of [[], sets.slice(0, 1), sets]) {
 }
 const payload = { workouts: [{ id: 'workout', notes: session.notes }],
   session: candidate.context.coachingSession(session, sets, catalog) };
-const legacyWire = baseline.wire.workoutWire(payload);
-assert.deepEqual(legacyWire.workouts, payload.workouts);
-assert.deepEqual(legacyWire.session, payload.session);
-const legacyCompact = JSON.stringify(legacyWire);
-const canonicalCompact = JSON.stringify(payload);
-assert.deepEqual(JSON.parse(canonicalCompact), payload);
+const pretty = JSON.stringify(payload, null, 2);
+const compact = JSON.stringify(payload);
+assert.deepEqual(JSON.parse(compact), JSON.parse(pretty));
 
 function median(values) { return [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]; }
 function measure(before, after, iterations) {
@@ -86,7 +81,6 @@ console.log(JSON.stringify({
   coaching: { catalog_entries: catalog.length, input_sets: sets.length, ...measure(
     () => baseline.context.coachingSession(session, sets, catalog),
     () => candidate.context.coachingSession(session, sets, catalog), 1000) },
-  serialization: { legacy_bytes: Buffer.byteLength(legacyCompact), canonical_bytes: Buffer.byteLength(canonicalCompact),
-    ...measure(() => JSON.stringify(baseline.wire.workoutWire(payload)), () => JSON.stringify(payload), 1000) },
-  compatibility: 'Canonical values deeply equal; deprecated output aliases intentionally removed.',
+  serialization: { pretty_bytes: Buffer.byteLength(pretty), compact_bytes: Buffer.byteLength(compact) },
+  parity: 'Representative coaching outputs deeply equal; serialization uses the canonical workout contract.',
 }, null, 2));

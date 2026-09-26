@@ -7,6 +7,8 @@ struct SetReviewList: View {
     @ObservedObject var sync: SyncModel
     let sets: [SetLog]
     let pending: [PendingSetIntent]
+    var lastSetShortcut = false
+    var compact = false
     @State private var editing: ReviewItem?
     @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = "lb"
 
@@ -40,6 +42,7 @@ struct SetReviewList: View {
                 allowsAssistance: sync.isBodyweightExercise(item.exerciseID)
                     || sync.isTimedExercise(item.exerciseID),
                 storedUnit: WeightUnit(rawValue: sync.catalogRow(item.exerciseID)?.unit ?? "lb") ?? .lb,
+                unilateral: sync.sides(for: item.exerciseID) == 2,
                 onSave: { values in
                     if let set = item.set { return sync.enqueueCorrection(set: set, values: values) }
                     return sync.enqueueCorrection(pending: item.pending!, values: values)
@@ -62,34 +65,59 @@ struct SetReviewList: View {
         .accessibilityIdentifier("reload-correction-\(correction.setID)")
     }
 
+    private func recordedValues(_ item: ReviewItem, unit: WeightUnit, timed: Bool, formattedValues: String) -> some View {
+        let warmup = (item.set?.is_warmup == 1) || item.pending?.body.is_warmup == true
+        let showPreviousExercise = sync.finished || sync.currentExercise?.exercise_id != item.exerciseID
+        var compactParts = [formattedValues]
+        if !showPreviousExercise { compactParts.insert("Last set", at: 0) }
+        let timedValueIncludesUnit = timed && (item.values.durationSeconds ?? item.values.reps) > 0
+        if item.values.weight != 0 && !timedValueIncludesUnit { compactParts.append(unit.rawValue) }
+        if let rpe = item.values.rpe { compactParts.append("RPE \(SetValueFormatter.number(rpe))") }
+        if warmup { compactParts.append("Warm-up") }
+        let compactLabel = compactParts.joined(separator: " · ")
+        return VStack(alignment: .leading, spacing: 4) {
+            if compact {
+                if showPreviousExercise {
+                    Text("Last set · " + sync.exerciseName(item.exerciseID))
+                        .font(.caption).foregroundStyle(Theme.muted)
+                }
+                Text(compactLabel)
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("rest.lastValues")
+            } else {
+                Text((lastSetShortcut ? "Last set · " : "") + sync.exerciseName(item.exerciseID)).font(Theme.mono(11))
+                Text(formattedValues).font(Theme.mono(14, .bold))
+                if item.values.weight != 0 { Text("Load in \(unit.rawValue)").font(.caption).foregroundStyle(Theme.muted) }
+                if let rpe = item.values.rpe { Text("RPE \(SetValueFormatter.number(rpe))").font(.caption) }
+                if warmup {
+                    Text("Warm-up").font(.caption).foregroundStyle(Theme.muted)
+                }
+            }
+        }
+    }
+
     private func row(_ item: ReviewItem) -> some View {
         let unit = WeightUnit(rawValue: weightUnitRaw) ?? .lb
         let storedUnit = WeightUnit(rawValue: sync.catalogRow(item.exerciseID)?.unit ?? "lb") ?? .lb
         let correction = sync.correction(for: item.id)
         let timed = item.set.map { sync.isTimedSet($0) } ?? item.pending!.body.is_timed
+        let values = SetValueFormatter.value(
+            weight: storedUnit.convert(item.values.weight, to: unit), reps: item.values.reps,
+            durationSeconds: item.values.durationSeconds, timed: timed,
+            bodyweight: sync.isBodyweightExercise(item.exerciseID), unit: unit.rawValue,
+            unilateral: sync.sides(for: item.exerciseID) == 2)
         return VStack(alignment: .leading, spacing: 6) {
             let layout = dynamicTypeSize.isAccessibilitySize
                 ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8)) : AnyLayout(HStackLayout())
             layout {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(sync.exerciseName(item.exerciseID)).font(Theme.mono(11))
-                    Text(SetValueFormatter.value(
-                        weight: storedUnit.convert(item.values.weight, to: unit), reps: item.values.reps,
-                        durationSeconds: item.values.durationSeconds, timed: timed,
-                        bodyweight: sync.isBodyweightExercise(item.exerciseID), unit: unit.rawValue))
-                        .font(Theme.mono(14, .bold))
-                    if item.values.weight != 0 { Text("Load in \(unit.rawValue)").font(.caption).foregroundStyle(Theme.muted) }
-                    if let rpe = item.values.rpe { Text("RPE \(SetValueFormatter.number(rpe))").font(.caption) }
-                    if (item.set?.is_warmup == 1) || item.pending?.body.is_warmup == true {
-                        Text("Warm-up").font(.caption).foregroundStyle(Theme.muted)
-                    }
-                }
+                recordedValues(item, unit: unit, timed: timed, formattedValues: values)
                 if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                 Button { editing = item } label: {
-                    Text("Edit").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    Text(lastSetShortcut ? "Edit last set" : "Edit").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
                 }
-                .accessibilityLabel("Edit set \(item.setIndex) of \(sync.exerciseName(item.exerciseID))")
-                .accessibilityIdentifier("edit-set-\(item.id)")
+                .accessibilityLabel(lastSetShortcut ? "Edit last set of \(sync.exerciseName(item.exerciseID))" : "Edit set \(item.setIndex) of \(sync.exerciseName(item.exerciseID))")
+                .accessibilityIdentifier(lastSetShortcut ? "rest.editLastSet" : "edit-set-\(item.id)")
                 .disabled(correction != nil || sync.hasPendingTerminalIntentForCurrentWorkout)
             }
             if let correction {
@@ -103,7 +131,8 @@ struct SetReviewList: View {
                 if let values = correction.values {
                     Text("Requested: " + SetValueFormatter.value(
                         weight: storedUnit.convert(values.weight, to: unit), reps: values.reps, durationSeconds: values.durationSeconds,
-                        timed: timed, bodyweight: sync.isBodyweightExercise(item.exerciseID), unit: unit.rawValue))
+                        timed: timed, bodyweight: sync.isBodyweightExercise(item.exerciseID), unit: unit.rawValue,
+                        unilateral: sync.sides(for: item.exerciseID) == 2))
                         .font(.caption).foregroundStyle(Theme.muted)
                 }
                 if failed {
@@ -126,8 +155,29 @@ struct SetReviewList: View {
             }
         }
         .foregroundStyle(Theme.text)
-        .padding(12).background(Theme.surface)
+        .padding(compact ? 0 : 12).background(Theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+}
+
+/// Reuse the correction editor and queued-write rules for the actual committed
+/// set. The runner may already point at a different circuit member or exercise.
+struct LastRunnerSetReview: View {
+    @ObservedObject var sync: SyncModel
+    var compact = false
+
+    var body: some View {
+        if let id = sync.lastRunnerSetID {
+            let sets = sync.sets.filter {
+                $0.id == id && $0.deleted_at == nil && $0.session_id == sync.todaySession?.id
+            }
+            let pending = sync.setOutbox.pending.filter {
+                $0.id == id && $0.date == sync.todayString && sets.isEmpty
+            }
+            if !sets.isEmpty || !pending.isEmpty {
+                SetReviewList(sync: sync, sets: sets, pending: pending, lastSetShortcut: true, compact: compact)
+            }
+        }
     }
 }
 
@@ -137,6 +187,7 @@ struct SetValuesEditor: View {
     let setDescription: String?
     let timed: Bool
     let allowsAssistance: Bool
+    let unilateral: Bool
     let onSave: (SetCorrectionValues) -> Bool
     let onDelete: (() -> Bool)?
     @Environment(\.dismiss) private var dismiss
@@ -149,10 +200,11 @@ struct SetValuesEditor: View {
     @State private var showDeleteConfirmation = false
 
     init(title: String, values: SetCorrectionValues, setDescription: String? = nil,
-         timed: Bool, allowsAssistance: Bool, storedUnit: WeightUnit = .lb,
+         timed: Bool, allowsAssistance: Bool, storedUnit: WeightUnit = .lb, unilateral: Bool = false,
          onSave: @escaping (SetCorrectionValues) -> Bool, onDelete: (() -> Bool)? = nil) {
         self.title = title; self.setDescription = setDescription
         self.timed = timed; self.allowsAssistance = allowsAssistance
+        self.unilateral = unilateral
         self.onSave = onSave; self.onDelete = onDelete
         _weight = State(initialValue: WeightEntryDraft(weight: values.weight, storedUnit: storedUnit, unit: storedUnit))
         _reps = State(initialValue: String(values.reps))
@@ -196,9 +248,12 @@ struct SetValuesEditor: View {
                 }))
                 valueField(allowsAssistance ? "Load / assist (\(weight.unit.rawValue))" : "Weight (\(weight.unit.rawValue))",
                            placeholder: "Weight", text: $weight.text, keyboard: .numbersAndPunctuation)
-                valueField(timed ? "Duration (seconds)" : "Reps",
+                valueField(timed ? "Duration (seconds)" : (unilateral ? "Reps per side" : "Reps"),
                            placeholder: timed ? "Seconds" : "Reps", text: timed ? $duration : $reps,
                            keyboard: .numberPad)
+                if unilateral && !timed {
+                    Text("Enter reps for one side. One set covers both sides.").font(.caption)
+                }
                 valueField("RPE (optional)", placeholder: "—", text: $rpe, keyboard: .decimalPad)
                 if allowsAssistance { Text("Use a negative load for assistance, 0 for bodyweight, or a positive added load.").font(.caption) }
                 if let error { Text(error).foregroundStyle(.red) }

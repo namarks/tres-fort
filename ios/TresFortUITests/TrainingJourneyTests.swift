@@ -8,6 +8,8 @@ final class TrainingJourneyTests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = fixture
         if largeText { app.launchEnvironment["TRESFORT_UI_LARGE_TEXT"] = "1" }
+        // The fixture clears its preference suite before launch. A command-line
+        // weight override would mask unit changes made through the UI.
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
         XCTAssertTrue(app.staticTexts["fixture.scenario"].waitForExistence(timeout: 10))
@@ -74,6 +76,40 @@ final class TrainingJourneyTests: XCTestCase {
         screenshot("acknowledged-completion")
     }
 
+
+    func testUnilateralExercisesShowPerSideTargetsAndLogOneSetForBothSides() {
+        for (fixture, name) in [("unilateral-row", "Renegade Row"),
+                                ("unilateral-press", "Single-Arm Dumbbell Shoulder Press")] {
+            let app = launch(fixture)
+            XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 10))
+            XCTAssertTrue(app.staticTexts["runner.setSummary"].label.contains("10 per side"))
+            XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "3×10 per side")).firstMatch.exists)
+            let edit = app.buttons["Edit next set for " + name]
+            reveal(edit, in: app); edit.tap()
+            let reps = app.textFields["Reps"]
+            XCTAssertTrue(reps.waitForExistence(timeout: 5))
+            XCTAssertTrue(reps.label.contains("Reps per side"))
+            XCTAssertEqual(reps.value as? String, "10")
+            app.buttons["Save"].tap()
+            let increase = app.buttons["Increase reps per side by 1"]
+            reveal(increase, in: app)
+            XCTAssertTrue(app.staticTexts["REPS PER SIDE"].exists)
+            screenshot(fixture + "-per-side")
+            app.buttons["LOG SET 1"].tap()
+            XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
+            app.buttons["rest.done"].tap()
+            XCTAssertEqual(app.staticTexts["fixture.scenario"].value as? String,
+                           "sets:1;reps:10;total:20")
+            let correct = app.buttons["Edit set 1 of " + name]
+            reveal(correct, in: app); correct.tap()
+            XCTAssertTrue(reps.waitForExistence(timeout: 5))
+            XCTAssertTrue(reps.label.contains("Reps per side"))
+            XCTAssertEqual(reps.value as? String, "10")
+            app.buttons["Cancel"].tap()
+            app.terminate()
+        }
+    }
+
     func testSwapExerciseMidWorkoutPreservesCompletedSetAndRoutine() {
         let app = launch("workout-swap")
         let swap = app.buttons["runner.swap-exercise"]
@@ -127,6 +163,8 @@ final class TrainingJourneyTests: XCTestCase {
             navigation.tap()
             XCTAssertTrue(app.navigationBars["Workout preview"].waitForExistence(timeout: 5))
             XCTAssertTrue(app.staticTexts[heading].exists)
+            XCTAssertTrue(app.staticTexts["2×8 · 25 lb"].exists)
+            XCTAssertFalse(app.staticTexts["PRESCRIBED · 2×8 · 25 lb"].exists)
             XCTAssertTrue(app.staticTexts["runner.preview.timer"].label.hasPrefix("Stationary Bike · "))
             XCTAssertFalse(app.buttons["LOG SET 1"].exists)
             screenshot("timer-preview-\(heading)")
@@ -283,10 +321,14 @@ final class TrainingJourneyTests: XCTestCase {
         app.buttons["Save"].tap()
         XCTAssertEqual(weight.value as? String, "20")
         screenshot("kilogram-weight-entry")
+        let options = app.buttons["Exercise options"]
+        reveal(options, in: app); options.tap()
+        reveal(app.segmentedControls["runner.weight.unit"], in: app)
         app.segmentedControls["runner.weight.unit"].buttons["lb"].tap()
         XCTAssertEqual(weight.value as? String, "44.092")
         app.segmentedControls["runner.weight.unit"].buttons["kg"].tap()
         XCTAssertEqual(weight.value as? String, "20")
+        for _ in 0..<6 where !weight.isHittable { app.swipeDown() }
         weight.tap()
         app.buttons["Save"].tap()
         XCTAssertEqual(weight.value as? String, "20")

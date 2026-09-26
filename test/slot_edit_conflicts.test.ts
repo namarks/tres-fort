@@ -108,3 +108,39 @@ it('malformed slot-edit JSON receives a client error', async () => {
     expect(await response.json()).toEqual({ error: 'invalid_json' });
   }
 });
+
+
+it('stale editors receive conflicts after their workout and slot were removed', async () => {
+  const { userId, plan, day, slot } = await fixture();
+  await updatePlanTree(env.DB, userId, { expected_version: plan.version,
+    workouts: [{ name: 'Replacement', exercises: [] }] });
+  const current = (await getPlanTree(env.DB, userId))!;
+  const before = await counts(userId);
+  const jwt = await issueAppJwt(userId, env.APP_JWT_SECRET);
+  for (const [method, path, body] of [
+    ['POST', `workouts/${day.id}/exercises`, { exercise: 'bench', target_sets: 3, target_reps: 5, expected_version: plan.version }],
+    ['PATCH', `workouts/${day.id}/exercises/${slot.id}`, { cues: 'stale', expected_version: plan.version }],
+    ['DELETE', `workouts/${day.id}/exercises/${slot.id}?expected_version=${plan.version}`, undefined],
+    ['POST', `workouts/${day.id}/exercises/${slot.id}/swap`, { to_exercise: 'squat', expected_version: plan.version }],
+  ] as const) {
+    const response = await worker.fetch(new Request(`https://test/api/${path}`, { method,
+      headers: { authorization: `Bearer ${jwt}`, 'content-type': 'application/json' },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    }), env, createExecutionContext());
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ conflict: true, current_version: current.version });
+  }
+  for (const [name, args] of [
+    ['add_exercise', { day: 'A', exercise: 'bench', target_sets: 3, target_reps: 5 }],
+    ['update_exercise', { template_exercise_id: slot.id, patch: { cues: 'stale' } }],
+    ['delete_exercise', { template_exercise_id: slot.id }],
+    ['swap_exercise', { day: 'A', from_exercise: 'bench', to_exercise: 'squat' }],
+  ] as const) {
+    const result = await handleMcp({ jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name, arguments: { ...args, expected_version: plan.version } } }, env, userId);
+    const envelope = result.json as { result: { content: { text: string }[] } };
+    expect(JSON.parse(envelope.result.content[0]!.text)).toEqual({ conflict: true, current_version: current.version });
+  }
+  expect(await counts(userId)).toEqual(before);
+  expect(await getPlanTree(env.DB, userId)).toEqual(current);
+});

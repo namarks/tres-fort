@@ -2,7 +2,7 @@ import { measuredJson } from '../operationMetrics';
 import { slotEditResponse } from '../planEditResult';
 import { swapSessionExercise } from '../db';
 import { isGroupReportReason } from '../groupSafety';
-import { hasRetiredWorkoutFields } from '../workoutInput';
+import { validWorkoutTags, validArchivedAt } from '../workoutMetadata';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { HonoEnv } from '../types';
@@ -12,6 +12,11 @@ import { isGroupId } from '../exerciseGroups';
 import { appleProviderConfig } from '../apple';
 import { validActivitySourceTime } from '../activityTime';
 import {
+  getOwnedSession,
+  startFreestyleSession,
+  getFreestyleWorkoutDraft,
+  saveFreestyleWorkout,
+  type SaveFreestyleInput,
   getTrainingProfile,
   saveTrainingProfile,
   getStarterWorkouts,
@@ -94,6 +99,7 @@ import {
 } from '../db';
 import { isWorkoutWriteFenceEnabled } from '../workout-write-fence';
 import {
+  hasRetiredWorkoutFields,
   hasField as hasOwn,
   invalidFields as invalidMutationFields,
   isNonEmptyString,
@@ -227,8 +233,8 @@ apiRoutes.get('/state', async (c) => {
   // `activities_since` is already taken by the intervals.icu external
   // actuals cache, see migration 0015 / getState).
   const logSince = Number(c.req.query('log_since') ?? 0);
-  const state = await getState(c.env.DB, userId, since, setsSince, eventsSince, activitiesSince, logSince);
   const capabilities = readCapabilities(c.req.header('X-TresFort-Capabilities'));
+  const state = await getState(c.env.DB, userId, since, setsSince, eventsSince, activitiesSince, logSince);
   return measuredJson(c, { ...state, plan: state.plan
     ? planForCapabilities(state.plan, capabilities)
     : state.plan,
@@ -342,6 +348,8 @@ apiRoutes.post('/workouts', async (c) => {
     b,
     { name: isNonEmptyString },
     {
+      tags: validWorkoutTags,
+      archived_at: validArchivedAt,
       day_label: isNullableString,
       order_index: isNonNegativeInteger,
       expected_plan_id: isNonEmptyString,
@@ -372,6 +380,7 @@ apiRoutes.post('/workouts', async (c) => {
     orderIndex,
     { actor: 'ios', operation: 'add_workout', args: b },
     b.exercise_ids as string[] | undefined,
+    { tags: b.tags as string[] | undefined, archived_at: b.archived_at as number | null | undefined },
   );
   if ('error' in row) return c.json(row, 400);
   if ('conflict' in row) return c.json(row, 409);
@@ -390,6 +399,8 @@ apiRoutes.patch('/workouts/:id', async (c) => {
     {},
     {
       name: isNonEmptyString,
+      tags: validWorkoutTags,
+      archived_at: validArchivedAt,
       day_label: isNullableString,
       order_index: isNonNegativeInteger,
       notes: isNullableString,
@@ -399,6 +410,9 @@ apiRoutes.patch('/workouts/:id', async (c) => {
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   if (hasOwn(b, 'expected_version') && b.expected_version !== plan.version) {
     return c.json({ conflict: true, current_version: plan.version }, 409);
+  }
+  if ((hasOwn(b, 'tags') || hasOwn(b, 'archived_at')) && !hasOwn(b, 'expected_version')) {
+    return c.json({ error: 'invalid_fields', fields: ['expected_version'] }, 400);
   }
   const { expected_version: _expectedVersion, ...patch } = b;
   const row = await patchWorkoutAtVersion(
@@ -585,12 +599,6 @@ apiRoutes.post('/workouts/:id/exercises', async (c) => {
   const plan = await getActivePlan(c.env.DB, userId);
   if (!plan) return c.json({ error: 'no_active_plan' }, 400);
   const dayId = c.req.param('id');
-  // Resolve the nested day through THIS user's active plan before resolving
-  // the exercise or computing order. A globally-valid day from another user
-  // or one of this user's archived plans is intentionally indistinguishable
-  // from a missing day and can never receive a slot or bump the active plan.
-  const day = await getWorkoutInPlan(c.env.DB, plan.id, dayId);
-  if (!day) return c.json({ error: 'not_found' }, 404);
   const parsed = await readMutationBody(c);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body as {
@@ -610,6 +618,15 @@ apiRoutes.post('/workouts/:id/exercises', async (c) => {
   };
   const versionFields = invalidMutationFields(b, {}, { expected_version: isPositiveInteger });
   if (versionFields.length) return c.json({ error: 'invalid_fields', fields: versionFields }, 400);
+  if (b.expected_version !== undefined && b.expected_version !== plan.version) {
+    return c.json({ conflict: true, current_version: plan.version }, 409);
+  }
+  // Resolve the nested day through THIS user's active plan before resolving
+  // the exercise or computing order. A globally-valid day from another user
+  // or one of this user's archived plans is intentionally indistinguishable
+  // from a missing day and can never receive a slot or bump the active plan.
+  const day = await getWorkoutInPlan(c.env.DB, plan.id, dayId);
+  if (!day) return c.json({ error: 'not_found' }, 404);
   const groupFields = Object.keys(b).filter((key) => ['group_id', 'group_rest_seconds', 'group_transition_seconds'].includes(key));
   if (groupFields.length) return c.json({ error: 'unknown_fields', fields: groupFields }, 400);
   if (!isNonEmptyString(b.exercise)) return c.json({ error: 'invalid_fields', fields: ['exercise'] }, 400);
@@ -740,6 +757,30 @@ apiRoutes.delete('/workouts/:id/exercises/:teId', async (c) => {
 });
 
 // ---- sessions + sets -----------------------------------------------------
+apiRoutes.get('/sessions/:id/workout-draft', async (c) => {
+  const draft = await getFreestyleWorkoutDraft(c.env.DB,c.get('userId'),c.req.param('id'));
+  return 'error' in draft ? c.json(draft,draft.error==='not_found'?404:409) : c.json(draft);
+});
+
+apiRoutes.post('/sessions/:id/save-workout', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({error:parsed.error},400);
+  const b=parsed.body;
+  const invalid=invalidMutationFields(b, {
+    workout_id:(v)=>typeof v==='string' && UUID_RE.test(v), name:isNonEmptyString,
+    expected_plan_id:isNonEmptyString,expected_version:isPositiveInteger,expected_attempt:isNonNegativeInteger,
+    source_signature:(v)=>typeof v==='string',slots:(v)=>Array.isArray(v) && v.length>0 && v.length<=50
+      && v.every(s=>s!==null && typeof s==='object' && !Array.isArray(s)
+        && isNonEmptyString(s.exercise_id) && isPositiveInteger(s.target_sets)
+        && isPositiveInteger(s.target_reps) && (s.target_duration_s===null || isPositiveInteger(s.target_duration_s))
+        && isFiniteNumber(s.target_weight) && isNonNegativeInteger(s.rest_seconds)
+        && Array.isArray(s.source_set_ids) && s.source_set_ids.length>0 && s.source_set_ids.every(isNonEmptyString)),
+  });
+  if (invalid.length) return c.json({error:'invalid_fields',fields:invalid},400);
+  const result=await saveFreestyleWorkout(c.env.DB,c.get('userId'),c.req.param('id'),b as unknown as SaveFreestyleInput);
+  return 'error' in result || 'conflict' in result ? c.json(result,409) : c.json(result,201);
+});
+
 apiRoutes.get('/today', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
@@ -774,6 +815,7 @@ apiRoutes.post('/sessions', async (c) => {
     workout_id: (value) => value === null || isNonEmptyString(value),
     restart_discarded: (value) => typeof value === 'boolean',
     expected_attempt: isNonNegativeInteger,
+    kind: (value) => value === 'planned' || value === 'freestyle',
   });
   if (invalid.length > 0) return measuredJson(c, { error: 'invalid_fields', fields: invalid }, 400);
   const carriesAttemptProtocol =
@@ -798,6 +840,14 @@ apiRoutes.post('/sessions', async (c) => {
     protocolHeader.declared,
   );
   if (inactiveProtocol) return inactiveProtocol;
+  if (b.kind === 'freestyle') {
+    if (!hasOwn(b,'expected_attempt') || b.workout_id != null) {
+      return c.json({error:'invalid_fields',fields:['expected_attempt','workout_id']},400);
+    }
+    const result = await startFreestyleSession(c.env.DB,userId,
+      typeof b.date==='string' ? b.date : await todayForUser(c.env.DB,userId), Number(b.expected_attempt));
+    return 'error' in result ? c.json(result,409) : c.json(result.session,201);
+  }
   const date =
     typeof b.date === 'string'
       ? b.date

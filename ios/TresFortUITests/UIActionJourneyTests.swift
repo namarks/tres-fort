@@ -92,13 +92,15 @@ final class UIActionJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["editor.doneReordering"].exists)
         XCTAssertFalse(app.buttons["Options for Barbell Squat"].exists)
         capture("reorder")
-        let reorder = app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'Reorder'")).firstMatch
-        XCTAssertTrue(reorder.exists)
+        let reorder = app.buttons["Reorder Barbell Squat"]
+        XCTAssertTrue(reorder.isHittable)
         let row = app.buttons["editor.slot.a-row"]
         let dragStart = reorder.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
-        // Cross the next row's midpoint before releasing so the insertion position is unambiguous.
+        // Cross the next row's midpoint, then hold while the native list settles its drop target.
+        // The default fast drag released before the hosted simulator completed the move.
         let dragEnd = row.coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.9))
-        dragStart.press(forDuration: 0.5, thenDragTo: dragEnd)
+        dragStart.press(forDuration: 1, thenDragTo: dragEnd,
+                        withVelocity: .slow, thenHoldForDuration: 0.5)
         expectation(for: NSPredicate { _, _ in squat.frame.minY > row.frame.minY }, evaluatedWith: squat)
         waitForExpectations(timeout: 5)
         tap(app.buttons["editor.doneReordering"], in: app)
@@ -146,7 +148,7 @@ final class UIActionJourneyTests: XCTestCase {
         XCTAssertFalse(app.buttons["LOG SET 2"].exists)
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
-        tap(app.buttons["Finish without feedback"], in: app)
+        tap(app.buttons["feedback.finishWithoutChanges"], in: app)
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
     }
 
@@ -157,7 +159,10 @@ final class UIActionJourneyTests: XCTestCase {
         tap(app.buttons["Finish workout"], in: app)
         XCTAssertTrue(app.navigationBars["Finish workout"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Skip"].exists)
-        XCTAssertTrue(app.buttons["feedback.saveAndFinish"].isHittable)
+        XCTAssertTrue(app.staticTexts["feedback.finishSummary"].exists)
+        XCTAssertTrue(app.buttons["feedback.expand"].isHittable)
+        XCTAssertFalse(app.textViews["feedback.note"].exists)
+        XCTAssertFalse(app.buttons["feedback.saveAndFinish"].exists)
         XCTAssertTrue(app.buttons["feedback.finishWithoutChanges"].isHittable)
         capture("finish")
         tap(app.buttons["Keep working"], in: app)
@@ -165,7 +170,7 @@ final class UIActionJourneyTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["WORKOUT COMPLETE"].exists)
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
-        tap(app.buttons["Finish without feedback"], in: app)
+        tap(app.buttons["feedback.finishWithoutChanges"], in: app)
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
     }
 
@@ -174,6 +179,7 @@ final class UIActionJourneyTests: XCTestCase {
         tap(app.buttons["today.startWorkout"], in: app)
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)
+        tap(app.buttons["feedback.expand"], in: app)
         let note = app.textViews["feedback.note"]
         tap(note, in: app)
         note.typeText("Finished early today.")

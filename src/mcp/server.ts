@@ -1,7 +1,8 @@
+import { weekdayOf } from '../calendarProjection';
+import { validWorkoutTags, validArchivedAt } from '../workoutMetadata';
 import { ATTRIBUTION_INSTRUCTIONS } from '../dataAttribution';
 import { coachingSession, coachingPlanMeta } from '../coachingContext';
 import { TRAINING_PROFILE_COACH_GUIDANCE } from '../trainingProfile';
-import { hasRetiredWorkoutFields } from '../workoutInput';
 // Minimal, spec-correct MCP server over Streamable HTTP (JSON-RPC 2.0,
 // single application/json responses — no server-initiated streams needed
 // for read tools). Stateless: no Mcp-Session-Id required. All data access
@@ -12,6 +13,7 @@ import { resolvedScheduleNames } from '../planViews';
 import { positiveSetTonnage } from '../metrics';
 import type { MetricExercise } from '../metrics';
 import {
+  hasRetiredWorkoutFields,
   hasField,
   invalidFields,
   isNonEmptyString,
@@ -21,6 +23,9 @@ import {
 import { isGroupId } from '../exerciseGroups';
 import {
   getTrainingProfile,
+  getOwnedSessionByDate,
+  getWorkoutInPlan,
+  startFreestyleSession,
   addWorkoutAtVersion,
   addTemplateExercise,
   addTrip,
@@ -201,7 +206,91 @@ const obj = (props: Json, required: string[] = []): Json => ({
   additionalProperties: false,
 });
 
+function addWorkoutTool(): Tool {
+  const tool: Tool = {
+    description: 'Create a reusable workout in the active plan. Scheduling is optional; the workout can stay on demand. Creates a plan if none exists.',
+    inputSchema: obj(
+      {
+        name: { type: 'string' },
+        tags: { type: 'array', items: { type: 'string' }, maxItems: 12 },
+        archived_at: { type: ['integer', 'null'] },
+        day_label: { type: 'string' },
+        order_index: { type: 'integer' },
+      },
+      ['name'],
+    ),
+    write: true,
+    // Inserting at an occupied index rewrites existing workout order values.
+    atomicWrite: true,
+    handler: async (a, env, userId) => {
+      if ((a.tags !== undefined && !validWorkoutTags(a.tags)) ||
+          (a.archived_at !== undefined && !validArchivedAt(a.archived_at))) {
+        return { error: 'invalid_fields', fields: ['tags', 'archived_at'] };
+      }
+      let plan = await getActivePlan(env.DB, userId);
+      if (!plan) {
+        plan = (await ensureActivePlan(env.DB, userId, 'My Plan', {
+          actor: 'mcp', operation: 'ensure_active_plan', args: { name: 'My Plan' },
+        })).plan;
+      }
+      // Append densely (max+1) rather than the old 99 sentinel — same
+      // fix the add_exercise path got. Honors an explicit order_index.
+      const orderIndex =
+        typeof a.order_index === 'number'
+          ? a.order_index
+          : await nextWorkoutOrderIndex(env.DB, plan.id);
+      return addWorkoutAtVersion(
+        env.DB,
+        userId,
+        plan,
+        String(a.name),
+        typeof a.day_label === 'string' ? a.day_label : null,
+        orderIndex,
+        { actor: 'mcp', operation: 'add_workout', args: a, note: `Added workout "${a.name}".` },
+        [], { tags: a.tags as string[] | undefined, archived_at: a.archived_at as number | null | undefined },
+      );
+    },
+  };
+  return tool;
+}
 
+function updateWorkoutTool(): Tool {
+  const tool: Tool = {
+    description:
+      "Patch a reusable workout's metadata in the active plan: `name`, `day_label`, `order_index`, `notes`, `tags` (up to 12 short labels), `archived_at` (epoch-ms to archive, null to restore). Archiving clears scheduling and keeps history; active workouts cannot be archived. Identify the workout by `workout_id` OR by `day` (label/name). Bumps the plan version. Unknown patch keys → `{error:'unknown_fields', fields}`. To change exercises within a workout, use add_exercise / update_exercise / delete_exercise / swap_exercise.",
+    inputSchema: obj(
+      {
+        workout_id: { type: 'string' },
+        day: { type: 'string', description: 'day label or name (used when workout_id is omitted)' },
+        patch: { type: 'object' },
+      },
+      ['patch'],
+    ),
+    write: true,
+    atomicWrite: true,
+    handler: async (a, env, userId) => {
+      const plan = await getActivePlan(env.DB, userId);
+      if (!plan) return { error: 'no_active_plan' };
+      let dayId: string | null = null;
+      if (typeof a.workout_id === 'string') {
+        dayId = a.workout_id;
+      } else if (typeof a.day === 'string') {
+        dayId = await findWorkoutByRef(env.DB, plan.id, a.day, true);
+      }
+      if (!dayId) return { error: 'day_not_found' };
+      const r = await patchWorkoutAtVersion(
+        env.DB,
+        userId,
+        plan,
+        dayId,
+        (a.patch as Json) ?? {},
+        { actor: 'mcp', operation: 'update_workout', args: a, note: 'Updated workout.' },
+      );
+      return r ?? { error: 'day_not_found' };
+    },
+  };
+  return tool;
+}
 
 const TOOLS: Record<string, Tool> = {
   get_coach_brief: {
@@ -336,7 +425,7 @@ const TOOLS: Record<string, Tool> = {
         date,
         session,
         sets: session ? await getSetsForSession(env.DB, session.id) : [],
-        plan_workouts: tree ? coachWorkouts(tree) : [],
+        plan_workouts: tree ? coachWorkouts(tree).filter(workout => workout.archived_at == null) : [],
         schedule,
         last_session: last,
         last_session_sets: last ? await getSetsForSession(env.DB, last.id) : [],
@@ -585,7 +674,18 @@ const TOOLS: Record<string, Tool> = {
       // All rejection-only validation must finish before touching the date
       // row. In particular, a recent cross-channel duplicate must not revive
       // a discarded target session when no set will be written.
-      const session = await getOrCreateSession(env.DB, userId, plan.id, date, null);
+      const previous = await getOwnedSessionByDate(env.DB,userId,date);
+      const meta = parsePlanMeta(plan.meta);
+      const scheduledId = meta.schedule.week[weekdayOf(date)];
+      const scheduled = previous?.status !== 'skipped' && !(meta.trips ?? []).some(t => t.start <= date && date <= t.end)
+        && scheduledId && await getWorkoutInPlan(env.DB, plan.id, scheduledId);
+      const emptyGeneration = !previous || previous.status === 'discarded'
+        || (previous.workout_id === null && ['planned', 'skipped'].includes(previous.status));
+      const started = !scheduled && emptyGeneration
+        ? await startFreestyleSession(env.DB,userId,date,previous?.attempt ?? 0,'mcp') : null;
+      if (started && 'error' in started) return started;
+      const session = started && 'session' in started ? started.session
+        : await getOrCreateSession(env.DB, userId, plan.id, date, null);
       const existing = await getSetsForSession(env.DB, session.id);
       const setIndex =
         requestedSetIndex != null
@@ -900,7 +1000,7 @@ const TOOLS: Record<string, Tool> = {
   },
   update_plan: {
     description:
-      'Replace the plan tree (reusable workouts + exercises) transactionally. Exercise names must match the closed catalog — call list_exercises first to discover valid names (a single unknown name surfaces ALL unknowns at once in `queries: string[]`, not just the first). Pass expected_version for optimistic concurrency; it is required whenever the existing or supplied tree has group fields. A mismatch returns a conflict — refetch get_current_plan and reapply. Workouts are matched by day_label/name across the rebuild, so the weekly schedule follows surviving workouts; schedule entries for removed workouts are cleared. Workouts need not be scheduled. The legacy days input is accepted for one compatibility cycle.',
+      'Replace the plan tree (reusable workouts + exercises) transactionally. Exercise names must match the closed catalog — call list_exercises first to discover valid names (a single unknown name surfaces ALL unknowns at once in `queries: string[]`, not just the first). Pass expected_version for optimistic concurrency; it is required whenever the existing or supplied tree has group fields. A mismatch returns a conflict — refetch get_current_plan and reapply. Workouts are matched by day_label/name across the rebuild, so the weekly schedule follows surviving workouts; schedule entries for removed workouts are cleared. Workouts need not be scheduled.',
     inputSchema: obj(
       {
         name: { type: 'string' },
@@ -913,6 +1013,8 @@ const TOOLS: Record<string, Tool> = {
             properties: {
               day_label: { type: 'string' },
               name: { type: 'string' },
+                  tags: { type: 'array', items: { type: 'string' }, maxItems: 12 },
+                  archived_at: { type: ['integer', 'null'] },
               order_index: { type: 'integer' },
               notes: { type: 'string' },
               exercises: { type: 'array', items: { type: 'object' } },
@@ -1107,6 +1209,9 @@ const TOOLS: Record<string, Tool> = {
       if (groupFields.length) return { error: 'unknown_fields', fields: groupFields };
       const plan = await getActivePlan(env.DB, userId);
       if (!plan) return { error: 'no_active_plan' };
+      if (a.expected_version !== undefined && a.expected_version !== plan.version) {
+        return { conflict: true, current_version: plan.version };
+      }
       const dayId = await findWorkoutByRef(env.DB, plan.id, String(a.day));
       if (!dayId) return { error: 'day_not_found', day: a.day };
       const ex = await resolveExercise(env.DB, String(a.exercise));
@@ -1139,77 +1244,8 @@ const TOOLS: Record<string, Tool> = {
       }, { expectedVersion: a.expected_version as number | undefined });
     },
   },
-  add_workout: {
-    description: 'Create a reusable workout in the active plan. Scheduling is optional; the workout can stay on demand. Creates a plan if none exists.',
-    inputSchema: obj(
-      {
-        name: { type: 'string' },
-        day_label: { type: 'string' },
-        order_index: { type: 'integer' },
-      },
-      ['name'],
-    ),
-    write: true,
-    // Inserting at an occupied index rewrites existing workout order values.
-    atomicWrite: true,
-    handler: async (a, env, userId) => {
-      let plan = await getActivePlan(env.DB, userId);
-      if (!plan) {
-        plan = (await ensureActivePlan(env.DB, userId, 'My Plan', {
-          actor: 'mcp', operation: 'ensure_active_plan', args: { name: 'My Plan' },
-        })).plan;
-      }
-      // Append densely (max+1) rather than the old 99 sentinel — same
-      // fix the add_exercise path got. Honors an explicit order_index.
-      const orderIndex =
-        typeof a.order_index === 'number'
-          ? a.order_index
-          : await nextWorkoutOrderIndex(env.DB, plan.id);
-      return addWorkoutAtVersion(
-        env.DB,
-        userId,
-        plan,
-        String(a.name),
-        typeof a.day_label === 'string' ? a.day_label : null,
-        orderIndex,
-        { actor: 'mcp', operation: 'add_workout', args: a, note: `Added workout "${a.name}".` },
-      );
-    },
-  },
-  update_workout: {
-    description:
-      "Patch a reusable workout's metadata in the active plan: `name`, `day_label`, `order_index`, `notes`. Identify the workout by `workout_id` OR by `day` (label/name). Bumps the plan version. Unknown patch keys → `{error:'unknown_fields', fields}`. To change exercises within a workout, use add_exercise / update_exercise / delete_exercise / swap_exercise.",
-    inputSchema: obj(
-      {
-        workout_id: { type: 'string' },
-        day: { type: 'string', description: 'day label or name (used when workout_id is omitted)' },
-        patch: { type: 'object' },
-      },
-      ['patch'],
-    ),
-    write: true,
-    atomicWrite: true,
-    handler: async (a, env, userId) => {
-      const plan = await getActivePlan(env.DB, userId);
-      if (!plan) return { error: 'no_active_plan' };
-      let dayId: string | null = null;
-      if (typeof a.workout_id === 'string') {
-        dayId = a.workout_id;
-      } else if (typeof a.day === 'string') {
-        dayId = await findWorkoutByRef(env.DB, plan.id, a.day);
-      }
-      if (!dayId) return { error: 'day_not_found' };
-      const r = await patchWorkoutAtVersion(
-        env.DB,
-        userId,
-        plan,
-        dayId,
-        (a.patch as Json) ?? {},
-        { actor: 'mcp', operation: 'update_workout', args: a, note: 'Updated workout.' },
-      );
-      return r ?? { error: 'day_not_found' };
-    },
-  },
+  add_workout: addWorkoutTool(),
+  update_workout: updateWorkoutTool(),
   delete_workout: {
     description: 'Delete a reusable workout from the active plan, clearing its recurring schedule entries and preserving completed workout history. Requires the workout ID and current plan version. Rejected while the workout is in progress. To keep the workout but remove its weekdays, use set_schedule instead.',
     inputSchema: obj({ workout_id: { type: 'string' }, expected_version: { type: 'integer', minimum: 1 } }, ['workout_id', 'expected_version']),
@@ -1719,9 +1755,11 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
           version: tree.version,
           authored_context: authoredContext,
           weekly_schedule: schedule,
-          workouts: tree.workouts.map((d) => ({
+          workouts: tree.workouts.filter(d => d.archived_at == null).map((d) => ({
             label: d.day_label,
             name: d.name,
+            tags: JSON.parse(d.tags ?? '[]'),
+            archived_at: d.archived_at ?? null,
             exercises: d.exercises.length,
             groups: coachGroupSummary(d.exercises),
           })),
@@ -1824,10 +1862,9 @@ async function dispatch(
       if (!tool) return err(req.id, -32602, `unknown tool: ${name}`);
       try {
         const args = (req.params?.arguments as Json) ?? {};
-        if (hasRetiredWorkoutFields(args)) return ok(req.id, {
-          content: [{ type: 'text', text: JSON.stringify({ error: 'unsupported_workout_fields' }) }],
-          isError: true,
-        });
+        if (typeof args !== 'object' || Array.isArray(args) || hasRetiredWorkoutFields(args)) {
+          return err(req.id, -32602, 'Invalid arguments. Use workouts and workout_id for workout fields.');
+        }
         const result = await tool.handler(args, env, userId, bg);
         if (tool.write && !tool.atomicWrite && !tool.handlerAudited) {
           await writeAudit(env.DB, userId, name, args, JSON.stringify(result));

@@ -6,9 +6,12 @@ import SwiftUI
 /// of this code. An unknown fixture fails closed before constructing real auth.
 enum UIFixtureScenario: String, CaseIterable {
     case signIn = "sign-in", empty, emptyPlan = "empty-plan", loadFailure = "load-failure"
-    case ordinary, bodyweight, timed, pending, onboarding, groups, library
+    case ordinary, bodyweight, timed, pending, onboarding, groups, library, freestyle
     case workoutSummary = "workout-summary"
     case weight = "weight", progress = "progress"
+    case unilateralRow = "unilateral-row", unilateralPress = "unilateral-press"
+    var isUnilateral: Bool { self == .unilateralRow || self == .unilateralPress }
+    var unilateralName: String { self == .unilateralRow ? "Renegade Row" : "Single-Arm Dumbbell Shoulder Press" }
     case workoutSwap = "workout-swap"
     case appStore = "app-store"
     case groupSafety = "group-safety"
@@ -68,9 +71,13 @@ enum UIFixtureModel {
             auth.phase = .signedIn
         }
         if UIFixtureScenario.selected == .coachApproval {
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_PENDING_COACH_SETUP"] == "1" {
+                auth.requestEntry(.coach)
+            }
             auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
         }
-        if UIFixtureScenario.selected == .activationInvite {
+        if UIFixtureScenario.selected == .activationInvite
+            || ProcessInfo.processInfo.environment["TRESFORT_UI_PENDING_INVITE"] == "1" {
             auth.handleDeepLink(Config.apiBaseURL.appendingPathComponent("join/ABC234"))
         }
         if let scenario = UIFixtureScenario.selected, [.cachedEmpty, .cachedPlan].contains(scenario) {
@@ -101,6 +108,7 @@ struct UIFixtureView: View {
     @Environment(\.dynamicTypeSize) private var systemDynamicTypeSize
     @ObservedObject var auth: AuthModel
     let scenario: UIFixtureScenario
+    @State private var openedURL: URL?
 
     var body: some View {
         Group {
@@ -121,6 +129,16 @@ struct UIFixtureView: View {
                     Text("SYNTHETIC · \(scenario.rawValue)")
                         .font(.caption).dynamicTypeSize(.large)
                         .accessibilityIdentifier("fixture.scenario")
+                    if ProcessInfo.processInfo.environment["TRESFORT_UI_CAPTURE_LINKS"] == "1", let openedURL {
+                        Text(openedURL.absoluteString).font(.caption2).lineLimit(1)
+                            .accessibilityIdentifier("fixture.opened-url")
+                        if openedURL.host == "claude.ai" {
+                            Button("Simulate coach return") {
+                                auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
+                            }
+                            .accessibilityIdentifier("fixture.coach-return")
+                        }
+                    }
                     RootView(defaults: UIFixtureModel.defaults,
                              now: { CalendarProjection.date(from: "2026-09-08")! }).environmentObject(auth)
                 }
@@ -130,7 +148,19 @@ struct UIFixtureView: View {
         }
         .defaultAppStorage(UIFixtureModel.defaults.preferences)
         .tint(Theme.accent)
-        .environment(\.openURL, OpenURLAction { _ in .discarded })
+        .environment(\.openURL, OpenURLAction { url in
+            openedURL = url
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_RETURN_WITH_SETUP_OPEN"] == "1", url.host == "claude.ai" {
+                // Simulate an incoming link without accepting an outbound
+                // handoff: setup must be replaced by the incoming intent alone.
+                auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
+                return .discarded
+            }
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_CAPTURE_LINKS"] == "1", url.host == "claude.ai" {
+                return .handled
+            }
+            return .discarded
+        })
         .environment(\.dynamicTypeSize,
             ProcessInfo.processInfo.environment["TRESFORT_UI_LARGE_TEXT"] == "1" ? .accessibility5 : systemDynamicTypeSize)
     }
@@ -149,7 +179,10 @@ private struct UIFixtureTrainingView: View {
         self.scenario = scenario
         _sync = StateObject(wrappedValue: SyncModel(
             auth: auth, defaults: UIFixtureModel.defaults,
-            now: { scenario.isTimerNavigation ? Date() : CalendarProjection.date(from: "2026-09-08")! },
+            now: {
+                if scenario.isTimerNavigation || scenario == .freestyle { return Date() }
+                return CalendarProjection.date(from: "2026-09-08")!
+            },
             restActivityUpdater: { _, _ in }, restActivityEnder: {},
             restNotificationCanceller: {}))
     }
@@ -181,7 +214,7 @@ private struct UIFixtureTrainingView: View {
             await sync.load()
             if scenario == .workoutSummary { return }
             if ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_FEEDBACK"] == "1" { return }
-            if ![.empty, .emptyPlan, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .groups, .library, .planChanges].contains(scenario) {
+            if ![.empty, .emptyPlan, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .groups, .library, .planChanges, .freestyle].contains(scenario) {
                 sync.startWorkout()
                 if scenario.isTimerNavigation {
                     sync.jump(to: 1)
@@ -199,6 +232,9 @@ private struct UIFixtureTrainingView: View {
 
     private var fixtureEvidence: String {
         if scenario.isHistory { return "\(sync.sets.count) sets" }
+        if scenario.isUnilateral {
+            return "sets:\(sync.sets.count);reps:\(sync.sets.first?.reps ?? 0);total:\(sync.totalReps(for: sync.sets))"
+        }
         if scenario == .workoutSwap {
             return "original:\(sync.sets.filter { $0.exercise_id == "synthetic-exercise" }.count);replacement:\(sync.sets.filter { $0.exercise_id == "synthetic-replacement" }.count);plan:\(sync.plan?.version ?? 0)"
         }
@@ -258,6 +294,7 @@ private struct UIFixtureServer {
     var failCreatedWorkoutRefresh = false
     var failedEnsureRequest = false
     var returnedMoveConflict = false
+    var returnedScheduleFailure = false
     var signInAttempts = 0
     var stateAttempts = 0
     var inviteAttempts = 0
@@ -309,7 +346,7 @@ private struct UIFixtureServer {
         coachConnected = [.activationOwner, .activationCoach, .activationInvite].contains(scenario)
         if ![.signIn, .empty, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .activationManual].contains(scenario) {
             plan = makePlan()
-            sessions = [.groups, .library, .planChanges].contains(scenario) ? [] : [makeSession()]
+            sessions = [.groups, .library, .planChanges, .freestyle].contains(scenario) ? [] : [makeSession()]
             if scenario == .planChanges { plan?["version"] = 3 }
             if [.readyToFinish, .correctionFailure, .workoutSwap].contains(scenario) {
                 sets = [["id": "synthetic-set", "session_id": sessionID,
@@ -328,6 +365,13 @@ private struct UIFixtureServer {
         if scenario == .appStore || scenario == .progress {
             sessions = AppStoreScreenshotData.sessions
             sets = AppStoreScreenshotData.sets
+            if scenario == .appStore,
+               ProcessInfo.processInfo.environment["TRESFORT_UI_GROUP_CONTRACT"] != nil,
+               var days = plan?["days"] as? [[String: Any]], !days.isEmpty {
+                days[0]["exercises"] = groupFixture["slots"]
+                days[0]["day_label"] = days[0]["name"]
+                plan?["days"] = days
+            }
             if scenario == .progress && ProcessInfo.processInfo.environment["TRESFORT_UI_PROGRESS_EMPTY"] == "1" {
                 sessions = []; sets = []
             }
@@ -388,7 +432,7 @@ private struct UIFixtureServer {
     }
 
     func makeSession(status: String = "in_progress", attempt: Int = 1) -> [String: Any] {
-        ["id": sessionID, "date": scenario.isTimerNavigation ? CalendarProjection.dateString(Date()) : "2026-09-08", "status": status,
+        ["id": sessionID, "date": (scenario.isTimerNavigation || scenario == .freestyle) ? CalendarProjection.dateString(Date()) : "2026-09-08", "status": status,
          "workout_id": dayID, "updated_at": revision,
          "attempt": attempt, "write_protocol": "attempt-v1"]
     }
@@ -433,6 +477,13 @@ private struct UIFixtureServer {
             "exercise_unit": "lb", "exercise_modality": modality, "order_index": 0,
             "target_sets": 1, "target_reps": 5, "rest_seconds": 0,
             "target_weight": modality == "barbell" ? 45 : 0]
+        if scenario.isUnilateral {
+            slot["exercise_name"] = scenario.unilateralName
+            slot["exercise_modality"] = "dumbbell"
+            slot["exercise_laterality"] = "unilateral"
+            slot["target_reps"] = 10
+            slot["target_sets"] = 3
+        }
         if scenario == .timed { slot["target_duration_s"] = 5 }
         if scenario == .workoutSwap { slot["target_sets"] = 3 }
         let meta = scenario == .activationManual ? "{}"
@@ -445,7 +496,7 @@ private struct UIFixtureServer {
     mutating func respond(_ request: URLRequest) throws -> (Int, Data) {
         guard request.url?.host == "ui-fixture.invalid" else { throw URLError(.unsupportedURL) }
         guard !scenario.isHistory else { throw URLError(.notConnectedToInternet) }
-        if scenario == .coachApproval, request.url?.path.hasPrefix("/api/coach-requests/") == true {
+        if (scenario == .coachApproval || scenario.isActivation), request.url?.path.hasPrefix("/api/coach-requests/") == true {
             let value: [String: Any]
             if request.httpMethod == "POST" {
                 value = ["allowed": true, "redirect_uri": "https://client.example/callback?code=synthetic"]
@@ -622,9 +673,12 @@ private struct UIFixtureServer {
                 ["id": slot["exercise_id"]!, "name": slot["exercise_name"]!,
                  "modality": slot["exercise_modality"]!, "unit": "lb", "primary_muscle": "full body"]
             }
-        case ("GET", "/api/exercises") where scenario == .workoutSwap:
+        case ("GET", "/api/exercises") where scenario == .workoutSwap || scenario == .freestyle:
             response = [["id": "synthetic-exercise", "name": "Barbell Squat", "modality": "barbell", "unit": "lb", "primary_muscle": "legs"],
-                        ["id": "synthetic-replacement", "name": "Dumbbell Goblet Squat", "modality": "dumbbell", "unit": "lb", "primary_muscle": "legs"]]
+                        ["id": "synthetic-replacement", "name": "Dumbbell Goblet Squat", "modality": "dumbbell", "unit": "lb", "primary_muscle": "legs", "aliases": "[\"front loaded squat\"]"],
+                        ["id": "synthetic-upper", "name": "Arnold Press", "modality": "dumbbell", "unit": "lb", "primary_muscle": "shoulders", "aliases": "[\"rotating press\"]"],
+                        ["id": "synthetic-hold", "name": "Goblet Hold", "modality": "timed", "unit": "lb", "primary_muscle": "legs", "aliases": "[\"front loaded hold\"]"],
+                        ["id": "synthetic-cardio", "name": "Bike", "modality": "cardio", "unit": "lb", "primary_muscle": "legs"]]
         case ("GET", "/api/exercises"):
             if let fixture = workoutSummaryFixture { response = fixture["catalog"]!; break }
             if let fixture = coachingFixture { response = fixture["catalog"]!; break }
@@ -633,6 +687,11 @@ private struct UIFixtureServer {
                 "name": scenario == .bodyweight ? "Pull-Up" : scenario == .timed ? "Plank" : "Barbell Squat",
                 "modality": scenario == .bodyweight ? "bw" : scenario == .timed ? "timed" : "barbell",
                 "unit": "lb", "primary_muscle": "legs"]]
+            if scenario.isUnilateral {
+                response = [["id": "synthetic-exercise", "name": scenario.unilateralName,
+                    "modality": "dumbbell", "unit": "lb", "primary_muscle": "upper body",
+                    "laterality": "unilateral", "load_mode": "total"]]
+            }
             if scenario == .empty || scenario == .library {
                 response = (response as! [[String: Any]]) + [
                     ["id": "synthetic-upper", "name": "Bench Press", "modality": "barbell", "unit": "lb", "primary_muscle": "chest", "aliases": "[\"bench\",\"bp\"]"],
@@ -647,8 +706,23 @@ private struct UIFixtureServer {
             plan = makePlan(name: body["name"] as? String ?? "My Training", workouts: false)
             failCreatedWorkoutRefresh = ensureFailure == "refresh"
             response = ["plan": ["id": "synthetic-plan", "name": plan!["name"]!, "version": 1], "created": true]
-        case ("PUT", "/api/plan/schedule") where scenario == .library:
-            let version = (plan?["version"] as? Int ?? 1) + 1
+        case ("PUT", "/api/plan/schedule") where scenario == .library || scenario == .appStore:
+            let currentVersion = plan?["version"] as? Int ?? 1
+            if let failure = ProcessInfo.processInfo.environment["TRESFORT_UI_SCHEDULE_FAILURE"], !returnedScheduleFailure {
+                returnedScheduleFailure = true
+                if failure == "conflict" {
+                    plan?["version"] = currentVersion + 1
+                    status = 409; response = ["error": "Synthetic schedule conflict", "current_version": currentVersion + 1]
+                } else {
+                    status = 503; response = ["error": "Synthetic schedule save failed"]
+                }
+                break
+            }
+            guard body["expected_plan_id"] as? String == plan?["id"] as? String,
+                  body["expected_version"] as? Int == currentVersion else {
+                status = 409; response = ["error": "Synthetic schedule conflict", "current_version": currentVersion]; break
+            }
+            let version = currentVersion + 1
             let schedule: [String: Any] = ["version": 1, "week": body["week"] ?? [:]]
             plan?["meta"] = String(data: try JSONSerialization.data(withJSONObject: ["schedule": schedule]), encoding: .utf8)
             plan?["version"] = version
@@ -682,6 +756,32 @@ private struct UIFixtureServer {
             let to: [String: Any] = ["id": "move-to", "date": "2026-09-09", "status": "planned", "workout_id": dayID, "attempt": 1, "updated_at": revision]
             sessions += [from, to]
             response = ["ok": true, "from": from, "to": to]
+        case ("PATCH", let path) where scenario == .library && path.hasPrefix("/api/workouts/") && path.split(separator: "/").count == 3:
+            guard body["expected_version"] as? Int == plan?["version"] as? Int else {
+                status = 409; response = ["conflict": true]; break
+            }
+            let id = String(path.split(separator: "/").last!)
+            var days = plan?["days"] as? [[String: Any]] ?? []
+            guard let index = days.firstIndex(where: { $0["id"] as? String == id }) else { throw URLError(.badServerResponse) }
+            if let tags = body["tags"] as? [String] {
+                days[index]["tags"] = String(data: try JSONSerialization.data(withJSONObject: tags), encoding: .utf8)!
+            }
+            if let archived = body["archived_at"] {
+                days[index]["archived_at"] = archived
+                if !(archived is NSNull) {
+                    let metaText = plan?["meta"] as? String ?? "{}"
+                    var meta = try JSONSerialization.jsonObject(with: Data(metaText.utf8)) as? [String: Any] ?? [:]
+                    var schedule = meta["schedule"] as? [String: Any] ?? [:]
+                    var week = schedule["week"] as? [String: Any] ?? [:]
+                    for key in Array(week.keys) where week[key] as? String == id { week[key] = NSNull() }
+                    schedule["week"] = week; meta["schedule"] = schedule
+                    plan?["meta"] = String(data: try JSONSerialization.data(withJSONObject: meta), encoding: .utf8)!
+                }
+            }
+            plan?["days"] = days
+            let nextVersion = (plan?["version"] as? Int ?? 1) + 1
+            plan?["version"] = nextVersion
+            response = ["id": id]
         case ("DELETE", "/api/workouts/hotel") where scenario == .library:
             let remaining = (plan?["days"] as? [[String: Any]] ?? []).filter { $0["id"] as? String != "hotel" }
             let version = (plan?["version"] as? Int ?? 1) + 1
@@ -787,6 +887,44 @@ private struct UIFixtureServer {
                 "target_sets": body["target_sets"] ?? NSNull(), "cleared": ids.isEmpty]
             groupReceipts[receiptKey] = ack
             response = ack
+        case ("POST", "/api/sessions") where scenario == .freestyle:
+            if sessions.isEmpty {
+                guard body["kind"] as? String == "freestyle" else { throw URLError(.badServerResponse) }
+                var session = makeSession(attempt: 0)
+                session["kind"] = "freestyle"; session["workout_id"] = NSNull()
+                sessions = [session]
+            }
+            response = sessions[0]
+        case ("GET", "/api/sessions/\(sessionID)/workout-draft") where scenario == .freestyle:
+            let live = sets.filter { $0["is_warmup"] as? Int == 0 }
+            var slots: [[String:Any]] = []
+            for set in live {
+                if let index = slots.firstIndex(where: { $0["exercise_id"] as? String == set["exercise_id"] as? String }) {
+                    slots[index]["target_sets"] = (slots[index]["target_sets"] as! Int) + 1
+                } else {
+                    slots.append(["exercise_id":set["exercise_id"]!,"target_sets":1,"target_reps":set["reps"]!,
+                        "target_weight":set["weight"]!,"target_duration_s":set["duration_s"] ?? NSNull(),
+                        "rest_seconds":120,"source_set_ids":[set["id"]!]])
+                }
+            }
+            response = ["session":sessions[0],"source_signature":"synthetic-source","slots":slots]
+        case ("POST", "/api/sessions/\(sessionID)/save-workout") where scenario == .freestyle:
+            guard sessions[0]["status"] as? String == "completed",
+                  body["source_signature"] as? String == "synthetic-source" else { throw URLError(.badServerResponse) }
+            let id = body["workout_id"] as! String
+            var days = plan!["days"] as! [[String:Any]]
+            let slots = (body["slots"] as! [[String:Any]]).enumerated().map { index, slot -> [String:Any] in
+                var row = slot
+                row["id"] = "saved-\(index)"; row["order_index"] = index
+                row["exercise_name"] = "Barbell Squat"; row["exercise_unit"] = "lb"
+                row["exercise_modality"] = "barbell"
+                return row
+            }
+            days.append(["id":id,"name":body["name"]!,"order_index":days.count,"exercises":slots])
+            let nextVersion = (plan?["version"] as? Int ?? 1) + 1
+            plan?["days"] = days; plan?["version"] = nextVersion
+            sessions[0]["workout_id"] = id; sessions[0]["attempt"] = 1; sessions[0]["updated_at"] = revision
+            response = ["workout_id":id,"plan_id":"synthetic-plan","version":plan!["version"]!,"session":sessions[0]]
         case ("POST", "/api/sessions") where scenario == .appStore:
             // The screenshot fixture includes earlier sessions. Starting today
             // must bind today's session, never the first historical record.
@@ -834,6 +972,9 @@ private struct UIFixtureServer {
                     status = 422; response = ["error": "Synthetic member sequence mismatch"]; break
                 }
             }
+            if scenario == .freestyle {
+                guard body["template_exercise_id"] == nil && body["prescription"] == nil else { throw URLError(.badServerResponse) }
+            }
             var set = body
             set["is_warmup"] = (body["is_warmup"] as? Bool == true) ? 1 : 0
             set["is_timed"] = (body["is_timed"] as? Bool == true) ? 1 : 0
@@ -842,6 +983,7 @@ private struct UIFixtureServer {
             sets.removeAll { ($0["id"] as? String) == (set["id"] as? String) }
             sets.append(set)
             var current = makeSession(attempt: sessions.first(where: { $0["id"] as? String == sessionID })?["attempt"] as? Int ?? 0)
+            if scenario == .freestyle { current["kind"] = "freestyle"; current["workout_id"] = NSNull() }
             current["exercise_swaps"] = sessions.first { $0["id"] as? String == sessionID }?["exercise_swaps"]
             sessions.removeAll { $0["id"] as? String == sessionID }
             sessions.append(current)
@@ -873,6 +1015,19 @@ private struct UIFixtureServer {
             let version = (plan?["version"] as? Int ?? 1) + 1
             plan?["version"] = version
             response = ["id": slotID]
+        case ("PATCH", let path) where scenario == .appStore && path.hasPrefix("/api/sets/")
+            && ProcessInfo.processInfo.environment["TRESFORT_UI_ACCEPT_CORRECTIONS"] == "1":
+            let setID = String(path.split(separator: "/").last ?? "")
+            guard let index = sets.firstIndex(where: { $0["id"] as? String == setID }),
+                  sets[index]["session_id"] as? String == sessionID else { throw URLError(.badServerResponse) }
+            for key in ["weight", "reps", "rpe", "duration_s"] where body.keys.contains(key) {
+                sets[index][key] = body[key]
+            }
+            if body["deleted"] as? Bool == true { sets[index]["deleted_at"] = revision }
+            sets[index]["updated_at"] = revision
+            var corrected = sets[index]
+            corrected["session"] = sessions.first { $0["id"] as? String == sessionID }
+            response = corrected
         case ("PATCH", "/api/sets/synthetic-set") where scenario == .readyToFinish && body["deleted"] as? Bool == true:
             guard let index = sets.firstIndex(where: { $0["id"] as? String == "synthetic-set" }) else { throw URLError(.badServerResponse) }
             sets[index]["deleted_at"] = revision
@@ -898,6 +1053,7 @@ private struct UIFixtureServer {
             }
             let current = sessions.first { $0["id"] as? String == sessionID }
             var completed = makeSession(status: "completed", attempt: current?["attempt"] as? Int ?? 0)
+            if scenario == .freestyle { completed["kind"] = "freestyle"; completed["workout_id"] = NSNull() }
             completed["notes"] = body["notes"] ?? current?["notes"]
             completed["perceived_fatigue"] = body["perceived_fatigue"] ?? current?["perceived_fatigue"]
             sessions.removeAll { $0["id"] as? String == sessionID }

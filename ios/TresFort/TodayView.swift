@@ -178,6 +178,7 @@ private struct PendingTerminalBanner: View {
 }
 
 struct TodayView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var feedbackPresentation: WorkoutFeedbackPresentation?
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
@@ -192,14 +193,17 @@ struct TodayView: View {
     /// Confirms discarding the in-progress workout (destructive, undo-less).
     @State private var showDiscardConfirm = false
     @State private var discardTarget: WorkoutTerminalActionTarget?
-    /// Rest overlay collapsed to a floating pill so the runner underneath
+    /// Rest overlay collapsed to compact controls so the runner underneath
     /// (current exercise, jump strip, completed sets) is visible/scrollable
-    /// without ending the rest timer. Reset whenever `restEndDate` clears so
-    /// the next rest starts in the expanded state.
-    @State private var restMinimized = false
+    /// without ending the rest timer. Remember the member's presentation
+    /// preference across rests; the timer itself remains model-owned.
+    @AppStorage("restTimerMinimized") private var restMinimized = false
     /// Direct creation of a named saved workout.
     @State private var showRoutine = false
     @State private var showTrainingSetup = false
+    @State private var trainingSetupAccountID: String?
+    @State private var trainingSetupEpoch: UInt64 = 0
+    @State private var starterWorkoutToOpen: String?
     @State private var starterAvailable: Bool?
     @State private var starterAvailabilityFailed = false
     /// The day whose workout the editor sheet is editing.
@@ -208,6 +212,7 @@ struct TodayView: View {
     /// Keeps a double tap from starting twice while iOS is presenting the
     /// one-time notification permission prompt before a new workout.
     @State private var isPreparingWorkoutStart = false
+    @State private var showFreestyle = false
 
     var body: some View {
         let fullRestOverlayVisible = sync.restEndDate != nil && !restMinimized
@@ -225,7 +230,21 @@ struct TodayView: View {
                     if !sync.setCorrections.isEmpty {
                         PendingCorrectionsView(sync: sync)
                     }
+                    if sync.restEndDate != nil && restMinimized && !dynamicTypeSize.isAccessibilitySize {
+                        RestPill(sync: sync) { restMinimized = false }
+                    }
+                    if starterWorkoutToOpen != nil && !showTrainingSetup {
+                        Button("View saved workout", action: openSavedStarter)
+                            .frame(minHeight: 44)
+                            .accessibilityIdentifier("today.openSavedStarter")
+                    }
                     content
+                    if sync.canStartFreestyle {
+                        Button { showFreestyle = true } label: {
+                            Label(sync.isFreestyle ? "Continue freestyle" : "Start freestyle", systemImage: "figure.strengthtraining.traditional")
+                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        }.padding(.horizontal, 20).accessibilityIdentifier("today.startFreestyle")
+                    }
                     if let onLogActivity, !sync.running, !sync.finished {
                         Button(action: onLogActivity) {
                             Label("Log an activity", systemImage: "figure.walk")
@@ -240,16 +259,9 @@ struct TodayView: View {
                 // assistive actions can start/log a hidden set underneath it.
                 .disabled(fullRestOverlayVisible)
                 .accessibilityHidden(fullRestOverlayVisible)
-                if sync.restEndDate != nil {
-                    if restMinimized {
-                        RestPill(sync: sync) { restMinimized = false }
-                    } else {
-                        RestOverlay(sync: sync) { restMinimized = true }
-                    }
+                if fullRestOverlayVisible {
+                    RestOverlay(sync: sync) { restMinimized = true }
                 }
-            }
-            .onChange(of: sync.restEndDate) { _, new in
-                if new == nil { restMinimized = false }
             }
             .navigationTitle(sync.running ? "Workout" : "Today")
             .navigationBarTitleDisplayMode(.inline)
@@ -321,17 +333,34 @@ struct TodayView: View {
             .sheet(isPresented: $showOverridePicker) {
                 WorkoutsView(sync: sync, onStart: sync.todayIsCompleted ? nil : startChosenWorkout)
             }
+            .sheet(isPresented: $showFreestyle) { FreestyleExercisePicker(sync: sync, starting: true) }
             .sheet(isPresented: $showRoutine) {
                 CreateWorkoutView(sync: sync, onStart: sync.todayIsCompleted ? nil : startChosenWorkout)
             }
-            .sheet(isPresented: $showTrainingSetup) {
-                TrainingSetupView(auth: auth) {
+            .sheet(isPresented: $showTrainingSetup, onDismiss: openSavedStarter) {
+                TrainingSetupView(auth: auth, onStarterSaved: { receipt in
+                    guard receipt.acknowledged,
+                          auth.isCurrentFeatureSession(accountID: trainingSetupAccountID, epoch: trainingSetupEpoch) else { return }
+                    starterWorkoutToOpen = receipt.workout_id
+                    showTrainingSetup = false
+                }) {
                     showTrainingSetup = false
                 }
             }
         }
         .preferredColorScheme(.dark)
         .task(id: sync.canChooseStarterWorkout) { await loadStarterAvailability() }
+    }
+
+    /// Queue only after the setup sheet has dismissed. The member-entry route
+    /// refreshes the acknowledged workout before exposing its Start action.
+    private func openSavedStarter() {
+        guard let workoutID = starterWorkoutToOpen else { return }
+        guard auth.isCurrentFeatureSession(accountID: trainingSetupAccountID, epoch: trainingSetupEpoch) else {
+            starterWorkoutToOpen = nil
+            return
+        }
+        if auth.requestEntry(.workout(workoutID)) { starterWorkoutToOpen = nil }
     }
 
     /// A verified empty library alone cannot prove this account has an unused
@@ -352,11 +381,16 @@ struct TodayView: View {
         }
     }
 
+    private var scrollableRestExpansion: (() -> Void)? {
+        guard dynamicTypeSize.isAccessibilitySize, sync.restEndDate != nil, restMinimized else { return nil }
+        return { restMinimized = false }
+    }
+
     @ViewBuilder private var content: some View {
         if sync.finished {
-            FinishedView(sync: sync)
+            FinishedView(sync: sync, onExpandRest: scrollableRestExpansion)
         } else if sync.running {
-            RunnerView(sync: sync, auth: auth)
+            RunnerView(sync: sync, auth: auth, onExpandRest: scrollableRestExpansion)
         } else if sync.plan == nil && !sync.canCreateRoutine {
             PlanLoadRecoveryView(sync: sync)
         } else if sync.canChooseStarterWorkout && !sync.todayIsCompleted {
@@ -364,7 +398,11 @@ struct TodayView: View {
                 Text(starterAvailable == false ? "YOUR NEXT WORKOUT" : "YOUR FIRST WORKOUT")
                     .font(Theme.display(28)).foregroundStyle(Theme.text)
                 if starterAvailable == true {
-                    Button("Find a starting workout") { showTrainingSetup = true }
+                    Button("Find a starting workout") {
+                        trainingSetupAccountID = auth.userID
+                        trainingSetupEpoch = auth.featureSessionEpoch
+                        showTrainingSetup = true
+                    }
                         .buttonStyle(WorkoutPrimaryButtonStyle())
                         .accessibilityIdentifier("today.starterWorkout")
                 } else if starterAvailabilityFailed {
@@ -401,28 +439,43 @@ struct TodayView: View {
             VStack(spacing: 0) {
                 WorkoutDoneView(sync: sync)
                 Button { showOverridePicker = true } label: {
-                    todayRoute("Choose a workout", subtitle: "View and edit your library")
+                    todayRoute("Workouts", subtitle: "Your saved workouts")
                 }
                 .accessibilityIdentifier("today.chooseWorkout")
-                Button { showRoutine = true } label: {
-                    todayRoute("Create a workout", subtitle: "Save a workout for another day")
-                }
-                .accessibilityIdentifier("today.createWorkout")
             }
             .padding(.horizontal, 20)
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
                     Text(sync.todayString).font(Theme.mono(12)).foregroundStyle(Theme.muted)
-                    if let workout = sync.todayPreviewWorkout {
+                    if sync.isFreestyle {
+                        Text("Freestyle").font(Theme.display(30)).foregroundStyle(Theme.text)
+                        Text("Add exercises as you go. Your weekly schedule stays unchanged.").foregroundStyle(Theme.muted)
+                        if sync.hasResumableWorkout {
+                            Button("Continue freestyle") { sync.resumeWorkout() }
+                                .buttonStyle(WorkoutPrimaryButtonStyle()).accessibilityIdentifier("today.resumeFreestyle")
+                        }
+                    } else if let workout = sync.todayPreviewWorkout {
                         VStack(alignment: .leading, spacing: 14) {
                             Text(sync.hasResumableWorkout ? "In progress" : "Scheduled for today")
                                 .font(Theme.mono(12)).foregroundStyle(Theme.muted)
                             Text(workout.name).font(Theme.display(30)).foregroundStyle(Theme.text)
-                            Text("\(workout.exercises.count) exercises")
+                            Text("\(workout.exercises.count) \(workout.exercises.count == 1 ? "exercise" : "exercises")")
                                 .font(.subheadline).foregroundStyle(Theme.muted)
-                            Button("View workout", systemImage: "chevron.right") { previewTarget = IdentifiedString(id: workout.id) }
-                                .frame(minHeight: 44).accessibilityIdentifier("today.viewWorkout")
+                            let actionsLayout = dynamicTypeSize.isAccessibilitySize
+                                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+                                : AnyLayout(HStackLayout())
+                            actionsLayout {
+                                Button("View workout", systemImage: "chevron.right") { previewTarget = IdentifiedString(id: workout.id) }
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(minHeight: 44).accessibilityIdentifier("today.viewWorkout")
+                                if !dynamicTypeSize.isAccessibilitySize { Spacer() }
+                                if !sync.hasResumableWorkout && !sync.blocksNewWorkoutStart {
+                                    Button("Change today") { showOverridePicker = true }
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .frame(minHeight: 44).accessibilityIdentifier("today.changeWorkout")
+                                }
+                            }
                             Button(isPreparingWorkoutStart ? "Preparing…" : sync.hasResumableWorkout ? "Continue workout" : "Start workout") {
                                 prepareNewWorkout {
                                     if sync.hasResumableWorkout { sync.resumeWorkout() }
@@ -450,14 +503,9 @@ struct TodayView: View {
                             .foregroundStyle(Theme.muted)
                     }
                     Button { showOverridePicker = true } label: {
-                        todayRoute("Choose a workout", subtitle: "From your library")
+                        todayRoute("Workouts", subtitle: "Browse, create, and edit")
                     }
                     .accessibilityIdentifier("today.chooseWorkout")
-                    Button { showRoutine = true } label: {
-                        todayRoute("Create a workout", subtitle: "Build your own workout")
-                    }
-                    .accessibilityIdentifier("today.createWorkout")
-                    .disabled(sync.blocksNewWorkoutStart)
                     if let error = sync.loadError {
                         Text(error).font(.footnote).foregroundStyle(Theme.danger)
                     }
@@ -553,7 +601,18 @@ private struct NextWorkoutCard: View {
         }
         .buttonStyle(.plain)
         .sheet(item: $preview) { d in
-            DayAgendaView(sync: sync, dateString: d.id)
+            NavigationStack {
+                DayAgendaView(sync: sync, dateString: d.id)
+                    .navigationTitle("Workout date")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { preview = nil }
+                        }
+                    }
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
         }
     }
 }
@@ -606,8 +665,10 @@ private struct WorkoutDoneView: View {
                     Text(doneTemplateTitle)
                         .font(Theme.mono(13, .bold)).tracking(1)
                         .foregroundStyle(Theme.accent)
-                    Text("\(sets.count) working sets · \(Set(sets.map(\.exercise_id)).count) exercises")
+                    let exerciseCount = Set(sets.map(\.exercise_id)).count
+                    Text("\(sets.count) working \(sets.count == 1 ? "set" : "sets") · \(exerciseCount) \(exerciseCount == 1 ? "exercise" : "exercises")")
                         .font(.subheadline).foregroundStyle(Theme.muted)
+                        .accessibilityIdentifier("today.completedSummary")
                     Button("View workout", systemImage: "chevron.right") {
                         recordDate = IdentifiedString(id: sync.todayString)
                     }
@@ -699,6 +760,7 @@ private struct RunnerView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
+    var onExpandRest: (() -> Void)? = nil
 
     /// Tap-to-edit on the big weight number → decimal-pad sheet. Persists
     /// the in-flight edit string (`""` while the sheet is open and the user
@@ -708,12 +770,17 @@ private struct RunnerView: View {
     @State private var weightDraft = WeightEntryDraft(weight: 0, storedUnit: .lb, unit: .lb)
     @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = "lb"
     private var weightUnit: WeightUnit { WeightUnit(rawValue: weightUnitRaw) ?? .lb }
-    /// Exercise demo sheet, openable mid-workout — not just from the
+    /// Exercise information sheet, openable mid-workout — not just from the
     /// pre-start preview (#54).
-    @State private var demoFor: TemplateExercise?
+    @State private var informationFor: TemplateExercise?
     @State private var swapTarget: WorkoutSwapTarget?
-    @State private var editingValues = false
-    @State private var valueDraft: RunnerInputState?
+    private struct SetValueDraft: Identifiable {
+        let id = UUID()
+        let input: RunnerInputState
+        let exercise: TemplateExercise
+    }
+    @State private var showFreestyleExercise = false
+    @State private var valueDraft: SetValueDraft?
     @State private var weightPrescription: RunnerPrescription?
     @State private var loadingTarget: Double?
     @State private var showingLoading = false
@@ -729,6 +796,10 @@ private struct RunnerView: View {
             VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
+                        if let onExpandRest {
+                            RestPill(sync: sync, horizontalPadding: 0, onExpand: onExpandRest)
+                                .padding(.bottom, 16)
+                        }
                         if sync.workoutStart != nil {
                             TimelineView(.periodic(from: .now, by: 1)) { _ in
                                 let e = sync.workoutElapsedSeconds
@@ -739,26 +810,38 @@ private struct RunnerView: View {
                             .padding(.bottom, 12)
                         }
 
-                        ProgressBar(exercises: sync.exercises,
+                        if !sync.isFreestyle { ProgressBar(exercises: sync.exercises,
                                     currentIndex: sync.exerciseIndex, sync: sync)
-                            .padding(.bottom, 22)
+                            .padding(.bottom, 12) }
 
                         if let block = blocks.first(where: { $0.members.contains(where: { $0.id == ex.id }) }), block.isGroup {
-                            groupCard(block, current: ex)
-                                .padding(.bottom, 20)
+                            Text(block.title + " · Round \(min(displayedSetNumber, block.rounds)) of \(block.rounds)")
+                                .font(.subheadline).foregroundStyle(Theme.accent).padding(.bottom, 8)
                         }
 
-                        // Keep the compact scoreboard at ordinary sizes; allow
-                        // the full exercise name to wrap at accessibility sizes.
-                        HStack(alignment: .center, spacing: 10) {
+                        // Let the name use the entire line at accessibility
+                        // sizes; the demo remains a separate, labelled action.
+                        let titleLayout = dynamicTypeSize.isAccessibilitySize
+                            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+                            : AnyLayout(HStackLayout(alignment: .center, spacing: 10))
+                        titleLayout {
                             Text(ex.exercise_name.uppercased())
-                                .font(Theme.display(52)).foregroundStyle(Theme.text)
+                                .font(Theme.display(40)).foregroundStyle(Theme.text)
                                 .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                                 .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.4)
                                 .fixedSize(horizontal: false, vertical: true)
-                            DemoInfoButton(exerciseName: ex.exercise_name) { demoFor = ex }
-                            if ex.isWarmup { WarmupTag() }
-                            Spacer(minLength: 0)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .accessibilityIdentifier("runner.exerciseTitle")
+                            HStack(spacing: 10) {
+                                if dynamicTypeSize.isAccessibilitySize {
+                                    Button("Technique & history", systemImage: "info.circle") { informationFor = ex }
+                                        .font(.subheadline).frame(minHeight: 44)
+                                        .accessibilityLabel("Exercise information for " + ex.exercise_name)
+                                } else {
+                                    ExerciseInfoButton(exerciseName: ex.exercise_name) { informationFor = ex }
+                                }
+                                if ex.isWarmup { WarmupTag() }
+                            }
                         }
                         .frame(minHeight: 56)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -768,20 +851,39 @@ private struct RunnerView: View {
                             : AnyLayout(HStackLayout())
                         metadataLayout {
                             let complete = sync.isComplete(ex)
-                            meta(ex.group_id == nil ? "SET" : "ROUND", "\(min(displayedSetNumber, ex.target_sets))",
-                                 complete ? "OF \(ex.target_sets) ✓" : "OF \(ex.target_sets)")
-                            if !dynamicTypeSize.isAccessibilitySize { Spacer() }
-                            meta("TARGET", ex.targetLabel, "")
+                            meta(ex.group_id == nil ? "SET" : "ROUND", "\(sync.isFreestyle ? displayedSetNumber : min(displayedSetNumber, ex.target_sets))",
+                                 sync.isFreestyle ? "FREESTYLE" : complete ? "OF \(ex.target_sets) ✓" : "OF \(ex.target_sets)")
                             if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                             meta(ex.group_id == nil ? "REST" : "ROUND REST",
                                  "\(ex.group_rest_seconds ?? ex.rest_seconds)s", "")
                         }
                         .padding(.top, 12)
 
-                        prescriptionContext(ex: ex)
+                        Text(sync.isFreestyle ? "Choose your load and reps or time. Previous recorded values are a starting point." : ex.prescriptionLabel(in: weightUnit))
+                            .font(.subheadline).foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.top, 8)
+                        if ex.showsLoadControl {
+                            loadControl(ex: ex).disabled(sync.timedActive)
+                        }
+                        if ex.isTimed {
+                            TimedSetView(sync: sync, ex: ex)
+                        } else {
+                            stepper(label: ex.isUnilateral ? "REPS PER SIDE" : "REPS",
+                                    value: "\(sync.reps)", context: ex.isUnilateral ? "reps per side" : "reps",
+                                    steps: [("−1", { sync.adjustReps(-1) }, false),
+                                            ("+1", { sync.adjustReps(1) }, false)])
+                            if ex.isUnilateral {
+                                Text("Complete both sides, then log one set.")
+                                    .font(.caption).foregroundStyle(Theme.muted)
+                                    .padding(.top, 8)
+                            }
+                        }
+
                         Button {
-                            valueDraft = sync.currentInputState
-                            editingValues = true
+                            if let input = sync.currentInputState {
+                                valueDraft = SetValueDraft(input: input, exercise: ex)
+                            }
                         } label: {
                             Text("Edit weight, \(ex.isTimed ? "duration" : "reps") & RPE")
                                 .font(Theme.mono(12, .bold)).frame(minHeight: 44).contentShape(Rectangle())
@@ -792,33 +894,36 @@ private struct RunnerView: View {
                             Text("LOGGING RPE \(SetValueFormatter.number(rpe))")
                                 .font(Theme.mono(11)).foregroundStyle(Theme.accent)
                         }
-                        Toggle("Timer sounds", isOn: $timerCuesEnabled)
-                            .font(Theme.mono(11)).tint(Theme.accent)
-                            .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
-                        jumpStrip(ex: ex, blocks: blocks)
-
-                        if ex.showsLoadControl {
-                            loadControl(ex: ex).disabled(sync.timedActive)
+                        if let block = blocks.first(where: { $0.members.contains(where: { $0.id == ex.id }) }), block.isGroup {
+                            groupCard(block, current: ex).padding(.top, 16)
                         }
-                        if ex.exercise_modality == "barbell", ex.exercise_unit == "lb" {
-                            Button {
-                                loadingTarget = sync.weight
-                                showingLoading = true
-                            } label: {
-                                Text("Plates & warm-up guide")
-                                    .font(Theme.mono(12, .bold)).frame(minHeight: 44).contentShape(Rectangle())
+                        DisclosureGroup("Exercise options") {
+                            WeightUnitPicker(selection: Binding(
+                                get: { weightUnit }, set: { weightUnitRaw = $0.rawValue }), identifier: "runner.weight.unit")
+                                .padding(.vertical, 8)
+                            Toggle("Timer sounds", isOn: $timerCuesEnabled)
+                                .tint(Theme.accent)
+                                .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
+                            if ex.exercise_modality == "barbell", ex.exercise_unit == "lb" {
+                                Button {
+                                    loadingTarget = sync.weight
+                                    showingLoading = true
+                                } label: {
+                                    Text("Plates & warm-up guide")
+                                        .font(Theme.mono(12, .bold)).frame(minHeight: 44).contentShape(Rectangle())
+                                }
                             }
                         }
-
-                        if ex.isTimed {
-                            TimedSetView(sync: sync, ex: ex)
-                        } else {
-                            stepper(label: "REPS", value: "\(sync.reps)", context: "reps",
-                                    steps: [("−1", { sync.adjustReps(-1) }, false),
-                                            ("+1", { sync.adjustReps(1) }, false)])
+                        .font(.subheadline).padding(.top, 8)
+                        DisclosureGroup("Last session & technique") {
+                            prescriptionContext(ex: ex)
                         }
-
-                        Button {
+                        .font(.subheadline).padding(.top, 12)
+                        if sync.isFreestyle {
+                            Button("Add an exercise", systemImage: "plus.circle") { showFreestyleExercise = true }
+                                .frame(minHeight: 44).disabled(sync.timedActive)
+                                .accessibilityIdentifier("runner.addFreestyleExercise")
+                        } else { Button {
                             swapTarget = sync.workoutSwapTarget
                         } label: {
                             Label("Swap exercise", systemImage: "arrow.triangle.swap")
@@ -827,12 +932,13 @@ private struct RunnerView: View {
                         }
                         .foregroundStyle(Theme.accent)
                         .disabled(sync.workoutSwapTarget == nil)
-                        .accessibilityIdentifier("runner.swap-exercise")
+                        .accessibilityIdentifier("runner.swap-exercise") }
                         if sync.timedActive {
                             Text("Finish or stop the timer to swap exercises.")
                                 .font(.caption).foregroundStyle(Theme.muted)
                         }
 
+                        jumpStrip(ex: ex, blocks: blocks)
                         completedChips(ex: ex)
 
 
@@ -864,15 +970,12 @@ private struct RunnerView: View {
                         .padding(.top, 8)
                     }
                     .padding(20)
-                    // When a rest is running the floating RestPill sits at the
-                    // top-centre; reserve space so it never lands on the WORKOUT
-                    // timer + progress bar (#53). Invisible when the full rest
-                    // overlay is up (it covers the runner anyway).
-                    .padding(.top, sync.restEndDate != nil ? 52 : 0)
                 }
+                .contentShape(Rectangle())
                 // A sibling keeps the action inside the runner's hit-testing
                 // bounds as the full rest screen hides and restores app chrome.
                 RunnerSetAction(sync: sync, ex: ex)
+                    .zIndex(1)
             }
             .sheet(item: $swapTarget) { target in
                 WorkoutExerciseSwapSheet(sync: sync, target: target)
@@ -901,31 +1004,21 @@ private struct RunnerView: View {
             .onChange(of: sync.timedActive) {
                 if !sync.timedActive { previewFor = nil }
             }
-            .sheet(isPresented: $editingValues) {
-                if let draft = valueDraft {
-                    SetValuesEditor(title: "Next set", values: SetCorrectionValues(
-                        weight: draft.weight, reps: draft.reps, rpe: draft.rpe,
-                        durationSeconds: draft.prescription.timed ? draft.durationSeconds : nil),
-                        timed: draft.prescription.timed, allowsAssistance: ex.allowsAssistance,
-                        storedUnit: WeightUnit(rawValue: ex.exercise_unit) ?? .lb,
-                        onSave: { values in
-                            sync.setRunnerValues(values, expected: draft.prescription)
-                        })
-                }
+            .sheet(isPresented: $showFreestyleExercise) { FreestyleExercisePicker(sync: sync) }
+            .sheet(item: $valueDraft) { draft in
+                SetValuesEditor(title: "Next set", values: SetCorrectionValues(
+                    weight: draft.input.weight, reps: draft.input.reps, rpe: draft.input.rpe,
+                    durationSeconds: draft.input.prescription.timed ? draft.input.durationSeconds : nil),
+                    timed: draft.input.prescription.timed, allowsAssistance: draft.exercise.allowsAssistance,
+                    storedUnit: WeightUnit(rawValue: draft.exercise.exercise_unit) ?? .lb,
+                    unilateral: draft.exercise.isUnilateral,
+                    onSave: { values in
+                        sync.setRunnerValues(values, expected: draft.input.prescription)
+                    })
             }
-            .sheet(item: $demoFor) { ex in
-                ExerciseDemoSheet(
-                    exerciseID: ex.exercise_id,
-                    name: ex.exercise_name,
-                    primaryMuscle: sync.catalogRow(ex.exercise_id)?.primary_muscle
-                        ?? ex.exercise_modality,
-                    secondaryMuscles: [],
-                    modality: ex.exercise_modality,
-                    laterality: ex.exercise_laterality ?? "bilateral",
-                    loadMode: ex.exercise_load_mode ?? "total",
-                    demoSlug: ex.exercise_demo_slug,
-                    jwt: auth.featureJWT
-                )
+            .sheet(item: $informationFor) { ex in
+                ExerciseInformationSheet(sync: sync, information: ExerciseInformation(
+                    prescription: ex, catalog: sync.catalogRow(ex.exercise_id)))
             }
         }
     }
@@ -953,7 +1046,9 @@ private struct RunnerView: View {
                     Text(block.memberLabel(at: index)).font(Theme.mono(12, .bold))
                     VStack(alignment: .leading, spacing: 4) {
                         Text(member.exercise_name).font(.subheadline.weight(.semibold))
-                        Text(member.targetLabel).font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                        Text(member.prescriptionLabel(in: weightUnit))
+                            .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer()
                     Text(active ? "NOW" : (sync.isSkipped(member) ? "SKIPPED" : "\(sync.runnerSetsDone(member))/\(member.target_sets)"))
@@ -1035,7 +1130,8 @@ private struct RunnerView: View {
                             .font(Theme.mono(13, .bold))
                             .foregroundStyle(Theme.accent)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(16)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
                             .accessibilityIdentifier("runner.preview.timer")
                     }
                 }
@@ -1043,22 +1139,27 @@ private struct RunnerView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 12) {
                             ForEach(ExerciseGroupBlock.blocks(sync.exercises)) { block in
-                                VStack(alignment: .leading, spacing: 16) {
+                                VStack(alignment: .leading, spacing: 12) {
                                     if block.isGroup {
-                                        Text(block.title.uppercased()).font(Theme.mono(13, .bold)).foregroundStyle(Theme.accent)
-                                        Text("\(block.rounds) rounds · \(block.roundRest)s round rest · \(block.transitionRest)s transition")
-                                            .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(block.title.uppercased()).font(Theme.mono(13, .bold)).foregroundStyle(Theme.accent)
+                                            Text("\(block.rounds) rounds · \(block.roundRest)s round rest"
+                                                 + (block.transitionRest > 0 ? " · \(block.transitionRest)s transition" : ""))
+                                                .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                                        }
                                     }
                                     ForEach(Array(block.members.enumerated()), id: \.element.id) { index, ex in
-                                        VStack(alignment: .leading, spacing: 8) {
+                                        if index > 0 { Divider().overlay(Theme.surface2) }
+                                        VStack(alignment: .leading, spacing: 6) {
                                             Text((block.isGroup ? block.memberLabel(at: index) + " · " : "") + ex.exercise_name.uppercased())
-                                                .font(Theme.display(28)).foregroundStyle(Theme.text)
+                                                .font(Theme.display(24)).foregroundStyle(Theme.text)
+                                                .fixedSize(horizontal: false, vertical: true)
                                             if ex.isWarmup { WarmupTag() }
+                                            prescriptionContext(ex: ex, isPreview: true)
                                             if !block.isGroup {
-                                                Text("SETS \(ex.target_sets) · \(ex.rest_seconds)s rest")
-                                                    .font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                                                Text("\(ex.rest_seconds)s rest")
+                                                    .font(Theme.mono(11)).foregroundStyle(Theme.muted)
                                             }
-                                            prescriptionContext(ex: ex)
                                         }
                                         .id(ex.id)
                                     }
@@ -1095,9 +1196,6 @@ private struct RunnerView: View {
         let small = weightUnit == .kg ? 2.5 : 5.0
         let large = weightUnit == .kg ? 5.0 : 10.0
         return VStack(spacing: 8) {
-            WeightUnitPicker(selection: Binding(
-                get: { weightUnit }, set: { weightUnitRaw = $0.rawValue }), identifier: "runner.weight.unit")
-                .padding(.top, 16)
             stepper(
                 label: label,
                 value: value,
@@ -1181,30 +1279,29 @@ private struct RunnerView: View {
         .accessibilityValue(value)
     }
 
-    private func prescriptionContext(ex: TemplateExercise) -> some View {
+    private func prescriptionContext(ex: TemplateExercise, isPreview: Bool = false) -> some View {
         let storedUnit = WeightUnit(rawValue: ex.exercise_unit) ?? .lb
-        let load = ex.target_weight.map { WeightUnit.text(storedUnit.convert($0, to: weightUnit)) + " \(weightUnit.rawValue) · " } ?? ""
-        let effort = ex.target_rpe.map { " · RPE " + SetValueFormatter.number($0) } ?? ""
-        let target = "PRESCRIBED · " + load + ex.targetLabel + effort
+        let target = (isPreview ? "" : "PRESCRIBED · ") + ex.prescriptionLabel(in: weightUnit)
         let previous = sync.comparablePreviousSets(for: ex)
         let previousLabel = previous.map { set in
             let value = SetValueFormatter.value(weight: storedUnit.convert(set.weight, to: weightUnit),
                 reps: set.reps, durationSeconds: set.duration_s, timed: ex.isTimed,
-                bodyweight: ex.isBodyweight, unit: weightUnit.rawValue)
+                bodyweight: ex.isBodyweight, unit: weightUnit.rawValue, unilateral: ex.isUnilateral)
             let effort = set.rpe.map { " RPE " + SetValueFormatter.number($0) } ?? ""
             return value + effort
         }.joined(separator: " · ")
-        return VStack(alignment: .leading, spacing: 8) {
-            Text(target).font(Theme.mono(11, .bold)).foregroundStyle(Theme.text)
+        return VStack(alignment: .leading, spacing: isPreview ? 6 : 8) {
+            Text(target).font(Theme.mono(isPreview ? 18 : 11, .bold)).foregroundStyle(Theme.text)
+                .fixedSize(horizontal: false, vertical: true)
             if let cues = ex.cues, !cues.isEmpty {
                 Text(cues).font(.subheadline).foregroundStyle(Theme.muted)
             }
             if !previous.isEmpty {
                 Text("LAST TIME (\(weightUnit.rawValue)) · " + previousLabel).font(Theme.mono(11)).foregroundStyle(Theme.muted)
-            } else {
+            } else if !isPreview {
                 Text("No comparable previous session").font(.caption).foregroundStyle(Theme.muted)
             }
-        }.padding(.top, 16)
+        }.padding(.top, isPreview ? 0 : 16)
     }
 
     private func completedChips(ex: TemplateExercise) -> some View {
@@ -1341,7 +1438,7 @@ private struct RunnerSetAction: View {
             let values = SetValueFormatter.value(
                 weight: storedUnit.convert(sync.weight, to: unit), reps: sync.reps,
                 durationSeconds: ex.isTimed ? sync.holdDurationSeconds : nil, timed: ex.isTimed,
-                bodyweight: ex.isBodyweight, unit: unit.rawValue)
+                bodyweight: ex.isBodyweight, unit: unit.rawValue, unilateral: ex.isUnilateral)
             Text(values + (!ex.isTimed && sync.weight != 0 ? " · \(unit.rawValue)" : "")
                  + (sync.rpe.map { " · RPE \(SetValueFormatter.number($0))" } ?? ""))
                 .font(.caption).foregroundStyle(Theme.muted)
@@ -1359,7 +1456,7 @@ private struct RunnerSetAction: View {
                 .disabled(
                     sync.isTerminalMutationInFlight
                         || sync.hasPendingTerminalIntentForCurrentWorkout)
-            } else if sync.runnerSetsDone(ex) >= ex.target_sets {
+            } else if !sync.isFreestyle && sync.runnerSetsDone(ex) >= ex.target_sets {
                 Text("EXERCISE COMPLETE")
                     .font(Theme.display(24)).tracking(1.2)
                     .frame(maxWidth: .infinity).padding(.vertical, 16)
@@ -1409,7 +1506,7 @@ private struct RestOverlay: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var sync: SyncModel
-    /// Collapse the overlay to the floating pill (timer keeps running). The
+    /// Collapse the overlay to in-flow controls (timer keeps running). The
     /// pill caller restores it; this view never ends rest on its own —
     /// only DONE / +15 / −15 mutate the timer.
     let onMinimize: () -> Void
@@ -1471,8 +1568,10 @@ private struct RestOverlay: View {
                                     .accessibilityIdentifier("rest.upNext")
                             }
                             .padding(.top, 28)
+                            RestNextSetValues(sync: sync).padding(.top, 6)
+                            LastRunnerSetReview(sync: sync).padding(.top, 16)
 
-                            // Peek-through: collapse to a floating pill so the runner
+                            // Peek-through: collapse to in-flow controls so the runner
                             // (current exercise, jump strip, completed sets) is
                             // visible/scrollable without ending the timer. Discoverable
                             // tap target; swipe-down on the overlay also minimizes.
@@ -1489,6 +1588,7 @@ private struct RestOverlay: View {
                                 .background(Capsule().fill(Theme.surface))
                             }
                             .padding(.top, 36)
+                            .accessibilityIdentifier("rest.minimize")
                         }
                         .padding(20)
                         .frame(maxWidth: .infinity, minHeight: geometry.size.height)
@@ -1522,43 +1622,65 @@ private struct RestOverlay: View {
     }
 }
 
-// MARK: - Rest pill (minimized overlay)
+// MARK: - Compact rest controls
 
-/// Floating countdown chip shown when the rest overlay is minimized. Sits
-/// at the top safe area, hit-tests only itself (taps elsewhere pass through
-/// to the runner underneath), and re-expands the overlay on tap. The timer
-/// state lives in SyncModel — this view only renders it.
+/// In-flow rest controls leave workout inputs available and never overlap them.
 private struct RestPill: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var sync: SyncModel
+    var horizontalPadding: CGFloat = 20
     let onExpand: () -> Void
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
-            let remaining = sync.restEndDate
-                .map { Int(ceil($0.timeIntervalSince(ctx.date))) } ?? 0
-            let color = remaining <= 0 ? Theme.done : Theme.accent
-            Button(action: onExpand) {
-                HStack(spacing: 10) {
-                    Image(systemName: "timer")
-                        .font(.system(size: 13, weight: .bold))
-                    Text("REST")
-                        .font(Theme.mono(11, .bold)).tracking(2)
-                    Text(clock(remaining))
-                        .font(Theme.mono(15, .bold))
-                    Image(systemName: "chevron.up")
-                        .font(.system(size: 10, weight: .bold))
+        VStack(alignment: .leading, spacing: 4) {
+            TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
+                let remaining = sync.restEndDate.map { Int(ceil($0.timeIntervalSince(ctx.date))) } ?? 0
+                let layout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4)) : AnyLayout(HStackLayout())
+                layout {
+                    Button(action: onExpand) {
+                        Label("Rest " + clock(remaining), systemImage: "timer")
+                            .font(.headline).frame(minHeight: 44)
+                    }
+                    .accessibilityLabel("Expand rest timer")
+                    .accessibilityValue("\(max(0, remaining)) seconds remaining")
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer() }
+                    Button { sync.skipRest() } label: {
+                        Text("End rest").frame(minHeight: 44).contentShape(Rectangle())
+                    }
+                    .accessibilityIdentifier("rest.done")
                 }
-                .foregroundStyle(color)
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .frame(minHeight: 44)
-                .background(Capsule().fill(Theme.surface))
-                .overlay(Capsule().stroke(color.opacity(0.5), lineWidth: 1))
-                .shadow(color: .black.opacity(0.45), radius: 12, y: 4)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Expand rest timer")
-            .accessibilityValue(remaining <= 0 ? "Rest complete" : "\(remaining) seconds remaining")
-            .padding(.top, 6)
+            RestNextSetValues(sync: sync)
+            // The runner title and fixed action already name the next exercise.
+            // Keep the prior set distinct without repeating another full card.
+            LastRunnerSetReview(sync: sync, compact: true)
+        }
+        .foregroundStyle(Theme.text).tint(Theme.accent)
+        .padding(.horizontal, horizontalPadding).padding(.bottom, 8)
+        .background(Theme.surface)
+    }
+}
+
+private struct RestNextSetValues: View {
+    @ObservedObject var sync: SyncModel
+    @AppStorage(WeightUnit.preferenceKey) private var weightUnitRaw = "lb"
+
+    var body: some View {
+        if !sync.finished, let exercise = sync.currentExercise {
+            let unit = WeightUnit(rawValue: weightUnitRaw) ?? .lb
+            let storedUnit = WeightUnit(rawValue: exercise.exercise_unit) ?? .lb
+            let values = SetValueFormatter.value(
+                weight: storedUnit.convert(sync.weight, to: unit), reps: sync.reps,
+                durationSeconds: exercise.isTimed ? sync.holdDurationSeconds : nil,
+                timed: exercise.isTimed, bodyweight: exercise.isBodyweight,
+                unit: unit.rawValue, unilateral: exercise.isUnilateral)
+            Text("Set \(sync.currentPhysicalSetNumber)" + (sync.isFreestyle ? " · " : " of \(exercise.target_sets) · ") + values
+                 + (sync.weight != 0 && !exercise.isTimed ? " · \(unit.rawValue)" : "")
+                 + (exercise.isPerHand ? " each hand" : ""))
+                .font(.caption).foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("rest.nextValues")
         }
     }
 }
@@ -1567,6 +1689,7 @@ private struct RestPill: View {
 
 private struct FinishedView: View {
     @ObservedObject var sync: SyncModel
+    var onExpandRest: (() -> Void)? = nil
 
     /// All live WORKING sets in today's session (warm-ups excluded), taken
     /// straight from the session rather than per-slot so the same movement in
@@ -1584,6 +1707,9 @@ private struct FinishedView: View {
         let readyToFinish = sync.canFinishResolvedWorkout
         ScrollView {
             VStack(spacing: 16) {
+                if let onExpandRest {
+                    RestPill(sync: sync, horizontalPadding: 0, onExpand: onExpandRest)
+                }
                 Text(finishPending ? "WAITING" : readyToFinish ? "SETS DONE" : "REVIEW SETS")
                     .font(Theme.display(finishPending ? 64 : 58))
                     .foregroundStyle(Theme.done)

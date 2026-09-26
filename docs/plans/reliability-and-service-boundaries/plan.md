@@ -1,6 +1,6 @@
 # Reliability and Service Boundaries
 
-Slug: reliability-and-service-boundaries · Status: active · Updated: 2026-09-14 · Theme: platform
+Slug: reliability-and-service-boundaries · Status: active · Updated: 2026-09-26 · Theme: platform
 
 ## Goal
 
@@ -45,24 +45,26 @@ physical schema prerequisite; release and app distribution remain separate work.
 
 ## Next step
 
-**Now (@agent):** Complete iOS CI and review of [PR #202](https://github.com/namarks/tres-fort/pull/202).
-All 1,098 backend tests across 81 files pass locally in the three supported
-shards. Typecheck, plan graph and 25 Python verification-command checks pass
-locally; the Ruby submission checks pass in CI. The 24
-extracted service function bodies match their predecessors after removing the
-SQL adapter and formatting differences. P1 awaits iOS build/unit/UI evidence;
-P3 remains open for final review and merge. Release is separate.
+**Now (@agent):** Complete fresh iOS CI and exact-head review of
+[PR #202](https://github.com/namarks/tres-fort/pull/202) after reconciling it with
+main at `a7b3f4d`. Preserve main's archive/tags and freestyle behavior, canonical
+contract validation, release gate, and recorded migration evidence. Reviewed
+versions now take precedence over removed workout/slot lookups on REST and MCP;
+regressions cover all four slot edits without durable writes on conflict.
 
-The first iOS run built successfully and exercised 608 unit tests plus 12 smoke
-journeys. It exposed premature offline consumption of deferred group repairs;
-those receipts, pending corrections and terminal intents now retain live
-validation. The remaining final-rest expectations were updated. The final CI
-run must verify these corrections and the added attempt/date/UUID regressions.
+The September 14 head passed backend and native CI (610 unit tests and 12 smoke
+journeys). That evidence does not certify this reconciled head. Current local
+checks cover the three Workers/D1 shards, typecheck, plan graph, website tests,
+and test-command behavior. The default wrapper correctly reports the missing
+`sqlite3` prerequisite in this container; CI must supply query-plan, upload, and
+native build/unit/UI evidence. The 24 extracted service function bodies retain
+main's behavior; one extraction drops an unused destructured field. P1 and P3
+remain open until current native CI and review are green.
 
-The scope includes canonical routes/tools/fields, native D1 without SQL adapters,
-structured slot conflicts and reviewed-version iOS editing, internal OAuth and
-Intervals services, pure runner recovery, final-set rest, certified offline
-start/resume, reproducible test shards, and value-free operational measurements.
+The scope includes structured slot conflicts and reviewed-version iOS editing,
+internal OAuth and Intervals services, pure runner recovery, final-set rest,
+certified offline start/resume, reproducible test shards, and value-free
+operational measurements. Main already owns the canonical runtime cutover.
 Existing immutable snapshot and cache/outbox readers remain data-preservation
 code. No production migration, deployment or TestFlight distribution is part of
 this repository delivery.

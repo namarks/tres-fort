@@ -24,16 +24,32 @@ enum ExerciseSearchPolicy {
             .filter { !$0.isEmpty }.joined(separator: " ")
     }
 
-    static func results(_ catalog: [ExerciseCatalog], query: String, region: ExerciseRegion) -> [ExerciseCatalog] {
+    static func results(_ catalog: [ExerciseCatalog], query: String, region: ExerciseRegion,
+                        replacing: TemplateExercise? = nil) -> [ExerciseCatalog] {
         let terms = normalized(query).split(separator: " ")
+        let preferredMuscle = replacing.flatMap { target in
+            catalog.first { $0.id == target.exercise_id }.map { normalized($0.primary_muscle) }
+        }
         return catalog.filter { exercise in
+            if let replacing {
+                guard exercise.id != replacing.exercise_id,
+                      ["timed", "cardio"].contains(exercise.modality) == replacing.isTimed
+                else { return false }
+            }
             guard region.includes(exercise) else { return false }
             let aliases = exercise.aliases.flatMap { $0.data(using: .utf8) }
                 .flatMap { try? JSONDecoder().decode([String].self, from: $0) } ?? []
             let text = normalized(([exercise.name, exercise.primary_muscle, exercise.modality,
                                     exercise.modality == "bw" ? "bodyweight" : ""] + aliases).joined(separator: " "))
             return terms.allSatisfy { text.contains($0) }
-        }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }.sorted {
+            if let preferredMuscle {
+                let firstMatches = normalized($0.primary_muscle) == preferredMuscle
+                let secondMatches = normalized($1.primary_muscle) == preferredMuscle
+                if firstMatches != secondMatches { return firstMatches }
+            }
+            return $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
     }
 
     static func defaultName(existingNames: [String]) -> String {
@@ -63,18 +79,21 @@ struct ExerciseCatalogLabel: View {
     }
 }
 
-/// Shared lookup for creation and adding a saved prescription. Search and
+/// Shared lookup for creation, saved prescriptions and session swaps. Search and
 /// region selection compose; selecting an exercise never resets either.
 struct ExercisePickerList<Row: View>: View {
-    let catalog: [ExerciseCatalog]
-    let reload: () async -> Void
+    @ObservedObject var sync: SyncModel
+    var replacing: TemplateExercise? = nil
+    private var catalog: [ExerciseCatalog] { sync.catalog }
+    @State private var informationFor: ExerciseCatalog?
     @ViewBuilder var row: (ExerciseCatalog) -> Row
     @State private var query = ""
+    @FocusState private var searchFocused: Bool
     @State private var region: ExerciseRegion = .all
     @State private var refreshing = false
 
     private var matches: [ExerciseCatalog] {
-        ExerciseSearchPolicy.results(catalog, query: query, region: region)
+        ExerciseSearchPolicy.results(catalog, query: query, region: region, replacing: replacing)
     }
 
     var body: some View {
@@ -84,6 +103,8 @@ struct ExercisePickerList<Row: View>: View {
                 TextField("Search exercises", text: $query)
                     .textInputAutocapitalization(.never).autocorrectionDisabled()
                     .submitLabel(.search)
+                    .focused($searchFocused)
+                    .onSubmit { searchFocused = false }
                     .accessibilityIdentifier("exercisePicker.search")
                 if !query.isEmpty {
                     Button { query = "" } label: {
@@ -110,33 +131,59 @@ struct ExercisePickerList<Row: View>: View {
                     }
                 }.padding(.horizontal)
             }.padding(.vertical, 12)
+            .accessibilityIdentifier("exercisePicker.regions")
             List {
+                if let replacing {
+                    Section {
+                        Text("Replace \(replacing.exercise_name) for this session only. Your saved workout and completed sets stay unchanged.")
+                        Text("Keep \(replacing.targetLabel). Choose the replacement’s weight before logging your next set.")
+                            .foregroundStyle(Theme.muted)
+                    }
+                    .listRowBackground(Theme.surface)
+                }
                 if catalog.isEmpty {
                     Section {
                         Text("Connect to load the exercise library.").foregroundStyle(Theme.muted)
                         Button(refreshing ? "Loading…" : "Reload exercises") {
                             refreshing = true
-                            Task { await reload(); refreshing = false }
+                            Task { await sync.load(); refreshing = false }
                         }.disabled(refreshing)
                     }
                 } else if matches.isEmpty {
                     Section {
                         Text("No matching exercises").font(.headline)
-                        Button("Clear search and filters") { query = ""; region = .all }
+                        Button("Clear search and filters") {
+                            searchFocused = false
+                            query = ""; region = .all
+                        }
                         Text("Try another name, muscle, or equipment, or clear your filters.")
                             .foregroundStyle(Theme.muted)
                     }
                 } else {
-                    Section("\(matches.count) exercise\(matches.count == 1 ? "" : "s")") {
+                    Section(replacing == nil
+                            ? "\(matches.count) exercise\(matches.count == 1 ? "" : "s")"
+                            : "\(matches.count) compatible · matching muscle first") {
                         ForEach(matches) { exercise in
-                            row(exercise).listRowBackground(Theme.surface)
+                            HStack(spacing: 8) {
+                                row(exercise).frame(maxWidth: .infinity, alignment: .leading)
+                                    .buttonStyle(.plain)
+                                ExerciseInfoButton(exerciseName: exercise.name) {
+                                    searchFocused = false
+                                    informationFor = exercise
+                                }
+                            }
+                            .listRowBackground(Theme.surface)
                         }
                     }
                 }
             }
+            .accessibilityIdentifier("exercisePicker.results")
             .scrollDismissesKeyboard(.interactively)
             .scrollContentBackground(.hidden)
         }
         .background(Theme.background).tint(Theme.accent)
+        .sheet(item: $informationFor) { exercise in
+            ExerciseInformationSheet(sync: sync, information: ExerciseInformation(exercise: exercise))
+        }
     }
 }

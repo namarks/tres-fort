@@ -34,9 +34,10 @@ npx vitest run -t "logs a set"             # single test by name
 npm run typecheck              # tsc --noEmit
 npm run dev                    # wrangler dev (local Worker + local D1)
 npm run db:migrate:local       # apply migrations/ to local D1
-npm run db:migrate:remote      # production migration authority required
+npm run db:migrate:remote      # guarded; use the authorized migration runbook
 npm run deploy                 # deploy only, separate production authority required
-npm run release                # preflight, authorized migration, deploy
+npm run release                # guarded; deployment needs separate authority
+npm run test:workout-rollout    # migration integrity and canonical contract tests
 npm run ios:testflight         # build, archive, export, upload to TestFlight
 npm run beta:feedback          # mirror TestFlight beta feedback into GitHub issues
 ```
@@ -51,16 +52,16 @@ open ios/TresFort.xcodeproj
 Build/run with the **TresFort** scheme, never the widget-extension scheme.
 The `.xcodeproj` is generated; treat `project.yml` as the source of truth.
 
-## Workout vocabulary and stored data
+## Workout contract
 
-The owner retired the sole installed legacy client on 2026-09-14. Runtime SQL
-requires migration 0045 (`workouts` / `workout_id`); API/MCP requests and responses
-use canonical fields and tool names. Old routes/tools are removed, and retired
-identity fields are rejected before choosing defaults. Preserve immutable v1
-snapshot readers, historical audit names, and account-local cache/outbox decoders
-so upgrading never loses stored history or queued UUIDs. No SQL translation or
-schema probes remain. See the [release record](docs/plans/workouts-and-multi-session/plan.md)
-for the already-applied migration and remaining app/Worker distribution.
+Storage, REST, MCP and iOS writes use `workouts` / `workout_id` exclusively.
+Old `/api/days` routes and `add_day` / `update_day` MCP names are removed;
+retired request fields are rejected before mutation. Migration 0045 must already
+be applied before this Worker serves traffic. Keep historical audit names,
+immutable v1 snapshot restore, and old persisted cache/outbox readers intact.
+See the [release boundary](docs/plans/workouts-and-multi-session/rollout.md).
+Repository delivery does not authorize production migration, deployment or
+client distribution. No released-client compatibility cycle is required.
 
 ## Architecture
 

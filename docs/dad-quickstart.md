@@ -38,21 +38,23 @@ coach see your cardio and balance it against your lifting. If your watch isn't
 feeding intervals.icu yet, Nick will help you hook that up first — it's the one
 fiddly part, and it's worth getting right.
 
-**4. Get your connect code.** In the app: **Profile** tab → **Coach** → tap
-**Generate connect code**, then tap the code to copy it. This is the key that
-links your Claude to your training — the app makes it for you, so there's
-nothing to invent or remember.
+**4. Connect your coach.** In Très Fort, tap **Set up my coach** on Today,
+or open coach setup from **Profile**. Choose **Claude**, then tap **Connect
+with Claude**. Sign in to Claude and confirm the prefilled Très Fort connector.
+Choose **Open Très Fort to review access**, review what Claude can access,
+and allow the connection. Return to Claude when prompted. If the link opens
+Claude without the setup form, return to setup and press and hold **Connect
+with Claude** to copy the link, then paste it into Safari.
 
-**5. Get Claude (the paid version).** Your own coach needs a paid Claude plan
-(*Claude Pro*) — sign up at [claude.ai](https://claude.ai). This is what lets
-you add Très Fort as a coach.
+If Claude asks for a code, return to coach setup, expand **Use a connect
+code**, tap **Generate connect code**, and copy it. Paste it only on the
+Très Fort consent page, never into a chat. Claude account availability and
+usage limits depend on your plan.
 
-**6. Add Très Fort to Claude.** On [claude.ai](https://claude.ai):
-   - Go to **Settings → Connectors → Add custom connector**
-   - **Name:** `Très Fort`
-   - **URL:** `https://tres-fort.nmarkspdx.workers.dev/mcp`
-   - Tap **Connect.** When it asks for a **connect code**, paste the one you
-     copied in step 4 and approve.
+**Prefer Codex?** Choose **Codex** in the same setup screen, tap **Copy setup
+for Codex**, and paste it into Codex. Initial setup currently needs the
+computer running Codex. After pairing ChatGPT Remote, you can use that
+connection from your phone while the computer stays online.
 
 That's it. Your coach can now see your training.
 
@@ -88,5 +90,5 @@ go. The app just shows you what to do.
 
 ## Stuck?
 
-Text Nick. Most likely snag is step 4 or 6 (the coach connection) — that's the
+Text Nick. Most likely snag is step 4 (the coach connection) — that's the
 only technical bit, and he can sort it out in two minutes.

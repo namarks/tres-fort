@@ -3,7 +3,7 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() {
-  echo 'Usage: npm run ios:verify -- --runtime RUNTIME --device DEVICE [--ui-suite full|smoke] [--ci-shard 1|2|3] [--only-testing Target[/Class[/method]]] [--content-size SIZE]'
+  echo 'Usage: npm run ios:verify -- --runtime RUNTIME --device DEVICE [--ui-suite full|smoke] [--ci-shard 1|2|3|4|5|6] [--only-testing Target[/Class[/method]]] [--content-size SIZE]'
 }
 runtime=''
 device=''
@@ -31,13 +31,13 @@ done
 [[ -n "$runtime" && -n "$device" ]] || { usage >&2; exit 2; }
 [[ "$ui_suite" == full || "$ui_suite" == smoke ]] || { usage >&2; exit 2; }
 if [[ -n "$ci_shard" ]]; then
-  [[ "$ci_shard" == 1 || "$ci_shard" == 2 || "$ci_shard" == 3 ]] || { usage >&2; exit 2; }
+  [[ "$ci_shard" =~ ^[1-6]$ ]] || { usage >&2; exit 2; }
 fi
 if [[ -n "$ci_shard" || "$ui_suite" == smoke ]]; then
   [[ ${#test_args[@]} -eq 0 ]] || { echo 'CI selection cannot be combined with --only-testing' >&2; exit 2; }
 fi
 if [[ "$ui_suite" == smoke ]]; then
-  [[ "$ci_shard" != 3 ]] || { echo 'Smoke coverage uses shards 1 and 2' >&2; exit 2; }
+  [[ -z "$ci_shard" || "$ci_shard" == 1 || "$ci_shard" == 2 ]] || { echo 'Smoke coverage uses shards 1 and 2' >&2; exit 2; }
   # Bound the PR gate to twelve representative journeys. Select methods, never
   # whole UI classes: adding a regression must not silently grow the smoke run.
   # Every unit test still runs; all UI methods remain in nightly/manual full runs.
@@ -61,20 +61,27 @@ if [[ "$ui_suite" == smoke ]]; then
     test_args+=("-only-testing:TresFortUITests/GroupSafetyJourneyTests/testReportFallbackBlockAndUnblock")
   fi
 elif [[ -n "$ci_shard" ]]; then
-  # Shard 1 runs the complement, so new tests automatically remain covered.
+  # Keep full-suite jobs below the 30-minute budget, including a cold build.
+  # Shard 1 runs units and the complement, so new classes stay covered. The
+  # partition test checks all selectors against real suites without overlap.
   full_second=(TrainingJourneyTests WorkoutFeedbackJourneyTests)
-  full_third=(TodayNavigationJourneyTests UIActionJourneyTests
-    IntervalsConnectionJourneyTests HistoryJourneyTests ExerciseGroupJourneyTests)
+  full_third=(TodayNavigationJourneyTests IntervalsConnectionJourneyTests ExerciseDiscoveryJourneyTests)
+  full_fourth=(MemberActivationJourneyTests FreestyleJourneyTests)
+  full_fifth=(UIActionJourneyTests HistoryJourneyTests ExerciseGroupJourneyTests ExerciseInformationJourneyTests)
+  full_sixth=(WorkoutLibraryJourneyTests WeeklyScheduleJourneyTests RunnerStreamlineJourneyTests)
   if [[ "$ci_shard" == 1 ]]; then
-    for suite in "${full_second[@]}" "${full_third[@]}"; do
+    for suite in "${full_second[@]}" "${full_third[@]}" "${full_fourth[@]}" "${full_fifth[@]}" "${full_sixth[@]}"; do
       test_args+=("-skip-testing:TresFortUITests/$suite")
     done
-  elif [[ "$ci_shard" == 2 ]]; then
-    for suite in "${full_second[@]}"; do
-      test_args+=("-only-testing:TresFortUITests/$suite")
-    done
   else
-    for suite in "${full_third[@]}"; do
+    case "$ci_shard" in
+      2) suites=("${full_second[@]}") ;;
+      3) suites=("${full_third[@]}") ;;
+      4) suites=("${full_fourth[@]}") ;;
+      5) suites=("${full_fifth[@]}") ;;
+      6) suites=("${full_sixth[@]}") ;;
+    esac
+    for suite in "${suites[@]}"; do
       test_args+=("-only-testing:TresFortUITests/$suite")
     done
   fi
@@ -189,6 +196,7 @@ echo "Running $ui_suite tests (shard ${ci_shard:-all})..."
 if ! xcodebuild test-without-building "${build_args[@]}" \
     -resultBundlePath "$recording_root/Tests.xcresult" \
     ${test_args[@]+"${test_args[@]}"} >"$recording_root/xcodebuild.log" 2>&1; then
+  awk '/error:|Test Case .*failed|Test Suite .*failed/{print}' "$recording_root/xcodebuild.log" >&2
   tail -n 100 "$recording_root/xcodebuild.log" >&2
   exit 1
 fi

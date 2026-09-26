@@ -1,4 +1,5 @@
 import { measuredHttpOperation, responseBytes } from './operationMetrics';
+import { isArchivedWorkoutAssignment } from './workoutMetadata';
 import { Hono } from 'hono';
 import type { Env, HonoEnv } from './types';
 import { authRoutes } from './routes/auth';
@@ -36,6 +37,8 @@ app.route('/webhooks', webhookRoutes); // POST /webhooks/intervals (intervals.ic
 app.route('/mcp', mcpRoutes);
 
 app.onError((err) => {
+  if (err.message === 'session_kind_conflict') return Response.json({error:'session_kind_conflict'}, {status:409});
+  if (isArchivedWorkoutAssignment(err)) return Response.json({ error: 'unknown_day' }, { status: 422 });
   logUnexpectedError('http', err);
   return internalErrorResponse();
 });

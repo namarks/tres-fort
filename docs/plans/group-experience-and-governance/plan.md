@@ -1,6 +1,6 @@
 # Group Experience and Governance
 
-Slug: group-experience-and-governance · Status: planned · Updated: 2026-08-29 · Theme: connected-training
+Slug: group-experience-and-governance · Status: planned · Updated: 2026-09-18 · Theme: connected-training
 
 ## Goal
 
@@ -88,3 +88,11 @@ before adding engagement features.
 - Notification implementation still follows the repository's ordinary
   credential and release gates; this plan does not grant permission to create
   production APNs credentials or send production notifications.
+- [PR #175](https://github.com/namarks/tres-fort/pull/175) (2026-09-10) shipped
+  member blocking, reviewed report drafts, shared-text filtering and operator
+  group-sharing restriction under the
+  [private-group safety proposal](../app-store-submission/group-safety-proposal.md).
+  Those controls post-date this plan. P3 covers owner administration (rename,
+  revoke invites, remove member, delete group, leave) and must reuse the shipped
+  block/restriction visibility rules rather than duplicate them; P0 feed work
+  must honor either-direction blocks and restrictions.

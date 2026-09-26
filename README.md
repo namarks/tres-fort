@@ -23,7 +23,7 @@ training through MCP. Both clients use the same versioned plan writers.
 
 ### 1. Backend — Cloudflare Worker + D1
 One Worker (Hono) over a D1 (SQLite) database. Tables: users, exercises,
-plans, day_templates, template_exercises, sessions, set_logs, notes,
+plans, workouts, template_exercises, sessions, set_logs, notes,
 audit_log, oauth_*, intervals_oauth_states, groups, group_members,
 group_invites, external_activities, activities, external_events,
 session_load_exports. Plan tree is a **versioned document** (optimistic
@@ -46,8 +46,8 @@ A Streamable-HTTP MCP server at `/mcp` exposing the same service layer:
   `discard_workout` (explicit session ID and expected attempt; soft-deletes its sets),
   `add_note`, `update_plan` (transactional, `expected_version` → structured
   `{conflict, current_version}` result on mismatch), `update_exercise`,
-  `swap_exercise`, `add_exercise`, `add_day`,
-  `update_day`, `delete_exercise`, `adjust_today`, `set_schedule`,
+  `swap_exercise`, `add_exercise`, `add_workout`,
+  `update_workout`, `delete_workout`, `delete_exercise`, `adjust_today`, `set_schedule`,
   `set_planned_session`, `skip_planned_session`, `set_race`,
   `set_periodization`, `add_trip`, `update_trip`, `remove_trip`,
   `set_stress_model`, `refresh_rides`

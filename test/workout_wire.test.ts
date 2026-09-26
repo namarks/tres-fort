@@ -4,12 +4,15 @@ import { acceptStarterWorkout, getPlanTree, saveTrainingProfile, upsertUser } fr
 
 beforeAll(async () => applyD1Migrations(env.DB, env.TEST_MIGRATIONS));
 const base = 'https://tres-fort.test';
-async function tool(name: string, args: unknown = {}) {
+async function rpc(method: string, params: unknown = {}) {
   const response = await SELF.fetch(`${base}/mcp`, { method: 'POST',
     headers: { Authorization: 'Bearer test-mcp-token', 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }) });
-  const rpc = await response.json<any>();
-  return JSON.parse(rpc.result.content[0].text);
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }) });
+  return response.json<any>();
+}
+async function tool(name: string, args: unknown = {}) {
+  const result = await rpc('tools/call', { name, arguments: args });
+  return JSON.parse(result.result.content[0].text);
 }
 
 describe('canonical workout contract', () => {
@@ -24,7 +27,7 @@ describe('canonical workout contract', () => {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     return { status: response.status, body: await response.json<any>() };
   }
-  // Seed once per schema. Each independent test gets the same isolated snapshot;
+  // Seed the migrated schema. Each independent test gets the same isolated snapshot;
   // no long multi-stage HTTP chain competes with the default five-second limit.
   beforeAll(async () => {
     const auth = await SELF.fetch(`${base}/auth/dev`, { method: 'POST',
@@ -43,7 +46,7 @@ describe('canonical workout contract', () => {
     tree = (await api('plan/active')).body;
   });
 
-  it('creates and replays a starter on the canonical schema', async () => {
+  it('creates and replays a starter on the migrated schema', async () => {
     const member = await upsertUser(env.DB, crypto.randomUUID(), null, 'Synthetic starter member');
     await saveTrainingProfile(env.DB, member.id, { goal: 'general_fitness', activities: ['running'],
       activity_context: '', experience: 'new', strength_days: 2, session_minutes: 30,
@@ -56,9 +59,69 @@ describe('canonical workout contract', () => {
     expect(tree?.workouts[0]?.exercises).toHaveLength(3);
   });
 
-  it('authors through the canonical REST route', async () => {
+  it('edits through the canonical REST authoring route', async () => {
     expect((await api(`workouts/${hotel}`, 'PATCH', { name: 'Travel' })).status).toBe(200);
     expect((await api('plan/active')).body.workouts.find((w: any) => w.id === hotel).name).toBe('Travel');
+  });
+
+  it('rejects retired routes, tools and fields without changing training data', async () => {
+    const before = (await api('state')).body;
+    const auditCount = await env.DB.prepare('SELECT COUNT(*) AS n FROM audit_log').first('n');
+    const removed = await SELF.fetch(`${base}/api/days/${hotel}`, { method: 'PATCH',
+      headers: { Authorization: `Bearer ${jwt}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Must not change' }) });
+    expect(removed.status).toBe(404);
+    for (const [path, method] of [[`calendar/${today}`, 'PUT'], ['sessions', 'POST']]) {
+      expect(await api(path!, method!, { date: today, day_template_id: hotel, expected_attempt: 0 }))
+        .toMatchObject({ status: 400, body: { error: 'unsupported_workout_fields' } });
+    }
+    const listed = await rpc('tools/list');
+    const names = listed.result.tools.map((t: any) => t.name);
+    expect(names).toEqual(expect.arrayContaining(['add_workout', 'update_workout', 'delete_workout']));
+    for (const name of ['add_day', 'update_day']) {
+      expect(names).not.toContain(name);
+      expect(await rpc('tools/call', { name, arguments: { name: 'Must not create' } }))
+        .toMatchObject({ error: { code: -32602 } });
+    }
+    for (const [name, args] of [
+      ['update_plan', { days: [] }],
+      ['update_workout', { day_template_id: hotel, patch: { notes: 'Must not change' } }],
+      ['delete_exercise', { target: { day_template_id: gym.id, exercise: 'bench' } }],
+    ]) {
+      expect(await rpc('tools/call', { name, arguments: args })).toMatchObject({ error: { code: -32602 } });
+    }
+    const after = (await api('state')).body;
+    expect(after.plan).toEqual(before.plan);
+    expect(after.sessions).toEqual(before.sessions);
+    expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM audit_log').first('n')).toBe(auditCount);
+  });
+
+  it('returns canonical state and coach fields while preserving opaque metadata', async () => {
+    const meta = { workouts: ['member text'], days: ['member text'], day_template_id: 'member text' };
+    const result = await tool('update_plan', { meta, workouts: [{ name: 'Lift', exercises: [] }] });
+    expect(JSON.parse(result.plan.meta)).toMatchObject(meta);
+    expect(result.plan).not.toHaveProperty('days');
+    const state = (await api('state')).body;
+    expect(state.plan).not.toHaveProperty('days');
+    expect((await rpc('tools/list')).result.tools.find((t: any) => t.name === 'update_plan').inputSchema.properties)
+      .not.toHaveProperty('days');
+  });
+
+  it.each(['day_template_id', 'days', 'plan_days'])('rejects retired %s on slot writes before changing the tree or trail', async (field) => {
+    const before = (await api('plan/active')).body;
+    const trail = () => env.DB.prepare(`SELECT
+      (SELECT COUNT(*) FROM audit_log) AS audits,
+      (SELECT COUNT(*) FROM notes) AS notes,
+      (SELECT COUNT(*) FROM plan_snapshots) AS snapshots`).first();
+    const originalTrail = await trail();
+    expect(await api(`workouts/${gym.id}/exercises`, 'POST', {
+      exercise: 'bench', target_sets: 3, target_reps: 5, [field]: 'retired',
+    })).toMatchObject({ status: 400, body: { error: 'unsupported_workout_fields' } });
+    expect(await api(`workouts/${gym.id}/exercises/${gym.exercises[0].id}`, 'PATCH', {
+      target_reps: 9, [field]: 'retired',
+    })).toMatchObject({ status: 400, body: { error: 'unsupported_workout_fields' } });
+    expect((await api('plan/active')).body).toEqual(before);
+    expect(await trail()).toEqual(originalTrail);
   });
 
   it.each(['add_workout'])('audits the called %s name', async (name) => {
@@ -70,8 +133,7 @@ describe('canonical workout contract', () => {
   });
 
   it.each(['update_workout'])('accepts the %s selector', async (name) => {
-    const key = 'workout_id';
-    expect(await tool(name, { [key]: hotel, patch: { notes: 'On demand' } })).not.toHaveProperty('error');
+    expect(await tool(name, { workout_id: hotel, patch: { notes: 'On demand' } })).not.toHaveProperty('error');
     expect((await api('plan/active')).body.workouts.find((w: any) => w.id === hotel).notes).toBe('On demand');
   });
 
@@ -86,6 +148,7 @@ describe('canonical workout contract', () => {
     const assigned = await api(`calendar/${today}`, 'PUT', { workout_id: hotel, expected_attempt: 0 });
     expect(assigned.status).toBe(200);
     expect(assigned.body.session).toMatchObject({ workout_id: hotel });
+    expect(assigned.body.session).not.toHaveProperty('day_template_id');
     const read = (await api('state')).body;
     expect(read.plan.version).toBe(tree.version); expect(read.plan.meta).toBe(tree.meta);
     expect(read.sessions.find((s: any) => s.id === assigned.body.session.id).workout_id).toBe(hotel);
@@ -95,7 +158,7 @@ describe('canonical workout contract', () => {
     expect(retry.body.session.attempt).toBe(assigned.body.session.attempt);
   });
 
-  it('moves a date with canonical request and acknowledgement fields', async () => {
+  it('moves a date with canonical requests and idempotent acknowledgements', async () => {
     const next = new Date(`${today}T12:00:00Z`);
     next.setUTCDate(next.getUTCDate() + 1);
     const toDate = next.toISOString().slice(0, 10);
@@ -114,8 +177,9 @@ describe('canonical workout contract', () => {
     expect(unchanged.meta).toBe(tree.meta);
   });
 
-  it('exports the canonical collection without duplicating workouts', async () => {
+  it('exports one canonical workout collection', async () => {
     const exported = (await api('me/export')).body;
+    expect(exported.schema_version).toBe(3);
     expect(exported.training).not.toHaveProperty('day_templates');
     expect(exported.training.workouts).toEqual(expect.arrayContaining([expect.objectContaining({ id: hotel })]));
   });
@@ -131,7 +195,8 @@ describe('canonical workout contract', () => {
     ] as const) {
       expect(await api(path, method, body)).toEqual({ status: 400, body: { error: 'unsupported_workout_fields' } });
     }
-    expect(await tool('update_plan', { days: [] })).toEqual({ error: 'unsupported_workout_fields' });
+    expect(await rpc('tools/call', { name: 'update_plan', arguments: { days: [] } }))
+      .toMatchObject({ error: { code: -32602 } });
     for (const name of ['add_day', 'update_day']) {
       const response = await SELF.fetch(`${base}/mcp`, { method: 'POST',
         headers: { Authorization: 'Bearer test-mcp-token', 'content-type': 'application/json' },

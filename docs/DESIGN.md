@@ -115,6 +115,8 @@ CREATE TABLE workouts (
   day_label   TEXT,                             -- "A","Push","Wed"
   order_index INTEGER NOT NULL,
   notes       TEXT,
+  tags        TEXT NOT NULL DEFAULT '[]',        -- migration 0053; normalized short labels
+  archived_at INTEGER,                          -- migration 0053; nullable epoch-ms
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
@@ -257,7 +259,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `DELETE /api/me` | Permanently delete the signed caller after explicit in-app confirmation and recent Apple authentication. A UUID-bound intent serializes provider revocation and local deletion; a durable receipt makes a lost success response safe to acknowledge. The response reports `apple_revocation: revoked|manual_required`; provider failure, legacy accounts without a stored token, or an uncertain exchange never retain local data and instead trigger the manual Apple Account handoff. |
 | `PUT /api/plan/active` | Idempotently ensure an active plan for manual authoring. Returns the existing winner on retry/concurrent coach creation and never archives it; explicit plan replacement archives and inserts atomically so the two creation paths cannot violate the one-active-plan invariant. |
 | `POST /api/workouts` | Add a library workout; omitted `order_index` appends densely. Optional `exercise_ids` (1–50 unique catalog IDs) saves ordered initial slots in the same versioned transaction and requires `expected_plan_id` plus `expected_version`. Invalid selections create nothing. The first-day flow pins both `expected_plan_id` and `expected_version` to the plan returned by `PUT /api/plan/active`; app and MCP adds use the same atomic plan-version writer. |
-| `PATCH /api/workouts/{id}` | `{name?, day_label?, order_index?, notes?, expected_version?}` — rename/reorder a day through the same atomic plan-version writer as MCP. |
+| `PATCH /api/workouts/{id}` | `{name?, day_label?, order_index?, notes?, tags?, archived_at?, expected_version?}` — edit through the atomic plan-version writer. Metadata edits require `expected_version`; `tags` is a string array, `archived_at` is positive epoch-ms or null to restore. |
 | `DELETE /api/workouts/{id}?expected_version=` | Remove a day and scrub its recurring assignments. Completed history is detached, direct or same-plan schedule-resolved planned sessions become explicit rest, and removal is rejected while that day has a direct, same-plan schedule-resolved, or locally running workout. |
 | `POST /api/workouts/{id}/exercises` | Add an exercise slot (incl. `is_warmup`, `target_duration_s`). |
 | `PATCH /api/workouts/{id}/exercises/{teId}` | Edit one slot in place (targets / rest / warm-up flag / order). |
@@ -269,16 +271,16 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `POST /api/calendar/{date}/move` | Move one projected or unstarted workout to an empty date. The request pins the workout, active plan/version, both observed attempts and a caller UUID. Source rest, destination assignment and audit receipt commit atomically. Both attempts advance; an identical retry returns its original acknowledgement. A concurrent change to either date or the weekly schedule rejects the whole move. |
 | `PUT /api/calendar/{date}` | Assign one concrete date to a day (`workout_id`) or rest (`null`) without changing the recurring schedule or plan version. `expected_attempt=0` represents no observed assignment; the first assignment and every changed choice advance the session attempt, while an identical retry is idempotent. Started/completed sessions cannot be reassigned, and iOS also fences the mutation against a locally running workout before its first set creates the server session or a hard travel blackout. |
 
-Runtime routes and payloads use `/api/workouts`, `workouts`, `workout_id` and
-`plan_workouts`; MCP registers `add_workout`, `update_workout`, `delete_workout`.
-The owner retired the sole installed legacy client on 2026-09-14, authorizing
-removal of old routes, tool names and dual output fields without an adoption
-waiting period. Retired identity fields fail before mutation. New account exports use schema version 3 and
-contain `training.workouts`. Immutable v1 snapshots and durable iOS cache/outbox
-readers still preserve old stored data. Migration 0045 is already applied; current
-services use native D1 with no schema-adaptive SQL or probes. Canonical iOS
-requests work with the already-deployed adaptive Worker, permitting an app-first
-cutover. See the [release record](plans/workouts-and-multi-session/plan.md).
+Routes use `/api/workouts`; plan collections and references use `workouts` and
+`workout_id`. Retired `/api/days` routes and `add_day` / `update_day` MCP names
+are removed. Retired request fields fail before mutation. MCP registers
+`add_workout`, `update_workout` and `delete_workout`. Export schema v3 has only
+`training.workouts`; it still includes immutable historical snapshots and audit
+arguments verbatim. Snapshot schema v2 uses `workouts`; v1 documents remain
+readable/restorable without rewriting history. iOS writes and new caches use
+canonical names; old persisted snapshots and outbox intents remain readable.
+The Worker requires migration 0045, with no runtime SQL adaptation. See the
+[release boundary](plans/workouts-and-multi-session/rollout.md).
 
 Slot add/update/delete and MCP swap accept a reviewed `expected_version`.
 A stale version or exhausted tokenless retry returns `{conflict:true,current_version}`;
@@ -289,7 +291,7 @@ audit, note and snapshot remain one transaction.
 
 In-app manual authoring uses the same `plans` / `workouts` /
 `template_exercises` tree and `plans.meta.schedule` that MCP uses. The Workouts
-screen creates and orders days, edits exercise prescriptions, and maps weekdays;
+screen creates and orders workouts, edits exercise prescriptions, and maps weekdays;
 the calendar writes only concrete `sessions` exceptions. These REST endpoints
 are thin wrappers over the shared service layer and audit as `actor='ios'`.
 Every recurring plan-tree write bumps `plans.version`; one-date exceptions do
@@ -302,6 +304,35 @@ patches retain their existing input shape: they retry a bounded version
 conflict against fresh state and validate the merged prescription. Explicitly versioned edits return
 a conflict for the caller to review. See the
 [prescription contract](plans/completed/prescription-integrity/decisions.md).
+
+Migration `0053` adds workout tags and archiving. REST/MCP writes accept up to
+12 comma-free tags of 1–32 characters, trimmed, lowercased and deduplicated.
+Commas separate labels in the iOS editor; shared validation rejects them inside
+an API tag so opening and saving cannot silently split an accepted label. Plan reads
+carry `tags` as a JSON-encoded string, like other stored JSON fields. The
+atomic writer, both snapshot serializers, comparisons, restores and coach
+rebuilds retain tags and `archived_at`; a rebuild that omits metadata inherits
+it from the matched old workout. Rebuilds pair duplicate labels/names once in
+workout order, preserving each occurrence's metadata and history references;
+name-based metadata edits prefer active matches, with IDs available for an
+archived namesake. Immutable snapshots predating these fields
+decode with empty tags and no archive timestamp without rewriting history.
+
+Archived workouts remain in every client's plan tree to name completed history,
+with workout and slot references intact. Active iOS choices and coach briefs
+exclude them; assignment resolvers reject their IDs, including legacy aliases.
+An archive rejects an in-progress workout and atomically clears recurring
+assignments and turns its planned sessions into explicit rest with an advanced
+attempt. Session and set-write triggers close assignment races, including a
+local override whose slot belongs to a different workout than its session pin.
+Completed-history set writes remain supported. Restoring the library
+entry leaves those assignments cleared. A saved pre-first-set runner is
+invalidated when a live pull finds its workout archived. During a trip, active
+`travel`-tagged choices appear first without changing blackout rules.
+Targeted prescription edits, slot deletion and grouping require an active
+workout; bulk recurring adjustments skip archived entries. Restore the workout
+before editing its prescription through those paths.
+See the [metadata release boundary](plans/workout-library/metadata-release.md).
 
 Supersets and circuits have at least two contiguous members in one day, sharing
 one set count and both group rest values. Group fields, set count and ordering
@@ -329,7 +360,7 @@ version with a pinned target. `POST /api/plan/history/:version/restore` requires
 `expected_plan_id` and `expected_version`, restores as a new version, and rejects
 stale/foreign history or an active workout. Logged set values remain history;
 restore does not resurrect detached historical references. Account export schema
-version 2 includes snapshots, and account deletion removes them. See the
+version 3 includes snapshots, and account deletion removes them. See the
 [snapshot contract and release boundary](plans/completed/reversible-plan-management/decisions.md).
 
 ---
@@ -357,8 +388,7 @@ A saved substitution can resume even before the first set is logged.
 
 Release requires separate authority: apply migration 0050, deploy the reviewed
 Worker, verify its session-swap route and only then distribute the iOS build.
-Retain the existing workout rename compatibility gates. No production or app
-release is implied by repository delivery.
+No production or app release is implied by repository delivery.
 
 ## 5. MCP server — the product
 
@@ -392,13 +422,15 @@ Claude context-aware with zero tool calls.
   to today, creates a session, or substitutes completion. A stale attempt is
   rejected, and an identical retry adds no second discard audit.
 - `add_note({scope, ref_id?, body})`
-- `update_plan({name?, meta?, days, expected_version?})` → transactional upsert; a version mismatch returns structured `{conflict:true,current_version}` data in a normal JSON-RPC HTTP 200 response (Claude refetches + reapplies). The version is required when the current tree contains groups or the request explicitly supplies group fields, including nulls.
+- `update_plan({name?, meta?, workouts, expected_version?})` → transactional plan-tree replacement; a version mismatch returns structured `{conflict:true,current_version}` data in a normal JSON-RPC HTTP 200 response (Claude refetches + reapplies). The version is required when the current tree contains groups or the request explicitly supplies group fields, including nulls.
 - `update_exercise({target, patch})` → one slot (`target` = template_exercise_id or {day, exercise}).
 - `group_exercises({day, group_id, expected_version, exercises, round_rest, transition_rest?, target_sets?, order_index?})` → create/rewrite or move a group atomically. Use a caller-generated UUID and slot IDs for durable retries; unambiguous exercise names/aliases are also accepted.
 - `ungroup_exercises({group_id, expected_version})` → clear every member's group fields while preserving ordinary rests, through the same version and exact-retry boundary.
 - `swap_exercise({day, from_exercise, to_exercise})` — always preserves saved targets; validates them against the destination modality. The formerly ignored `carry_targets` option is no longer advertised.
 - `add_exercise({day, exercise, target_sets, target_reps, target_reps_max?, rest_seconds?, target_rpe?, progression?, order_index?})`
-- `add_day({name, day_label, order_index?, exercises?})`  ← "add a deadlift day"
+- `add_workout({name, day_label?, order_index?, tags?, archived_at?})` — create a reusable workout.
+- `update_workout({workout_id?, day?, patch})` — edit workout metadata in place.
+- `delete_workout({workout_id, expected_version})` — delete a workout while retaining logged history.
 - `adjust_today({intent:"deload|reduce_volume|reduce_intensity", magnitude?, day_label?})`
   changes recurring workout targets persistently; omitting a day affects the
   whole plan. Results name affected workouts, before/after changes and no-ops.
@@ -866,3 +898,31 @@ No member IDs, URLs with query strings, arguments, tokens or free text are logge
 Aggregate duration percentiles and payload sizes by operation to find real hot
 paths. CI enforces query budgets and response/accounting correctness; wall-clock
 and synthetic benchmark timings are observations, not latency thresholds.
+
+
+### Freestyle sessions
+
+Migration 0054 adds `sessions.kind` (planned by default). A freestyle session
+never inherits a scheduled template through a null workout pin. Kind is fixed
+within an attempt; explicit starts can change an empty planned/skipped or
+discarded date only with an attempt advance. Existing live/completed work is
+never replaced. The native runner persists its exercise list in its account-
+scoped checkpoint and logs ordinary idempotent sets with null template slots.
+
+`GET /api/sessions/{id}/workout-draft` derives working-set cohorts by exercise,
+rep/timed mode and exact load, in first-performed order. The reviewed
+`POST /api/sessions/{id}/save-workout` request binds plan ID/version, session
+attempt and the source revision signature. Each edited target keeps the source
+set IDs of one distinct draft cohort, so no cohort can be omitted or duplicated.
+One versioned transaction creates
+the unscheduled workout and validated slots, advances/repoints the session,
+and retains its audit, snapshot and idempotent receipt. Receipts participate
+in account export and deletion. Historical set slot links stay null.
+
+Freestyle uses one current client/server contract. Every authenticated client
+receives actual session kinds and ordinary incremental set updates/tombstones;
+there is no freestyle capability header, hidden-session view or upgrade-only
+cache reload. MCP logging honors explicit skipped dates before recurring
+schedule inference. See the
+[release procedure](plans/workout-library/freestyle-release.md) for the ordered
+migration, Worker, client and recovery boundaries.

@@ -13,7 +13,7 @@ struct SetRequestBody: Codable, Equatable {
     let prescription: SetPrescriptionContext?
     let id: String
     let exercise_id: String
-    let template_exercise_id: String
+    let template_exercise_id: String?
     let set_index: Int
     let weight: Double
     let reps: Int
@@ -30,7 +30,7 @@ struct SetRequestBody: Codable, Equatable {
     init(
         id: String,
         exercise_id: String,
-        template_exercise_id: String,
+        template_exercise_id: String?,
         set_index: Int,
         weight: Double,
         reps: Int,
@@ -132,7 +132,7 @@ struct PendingSetIntent: Codable, Identifiable, Equatable {
     }
 
     var id: String { body.id }
-    var slotID: String { body.template_exercise_id }
+    var slotID: String { body.template_exercise_id ?? body.exercise_id }
 }
 
 /// Account-local FIFO. Acknowledged `SetLog` rows never live here; the model

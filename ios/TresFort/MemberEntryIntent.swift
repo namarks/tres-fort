@@ -10,6 +10,14 @@ struct MemberEntryIntent: Codable, Equatable, Identifiable {
         case coach
         case coachApproval(String)
         case workouts
+        case workout(String)
+
+        var requiresPersonalAccount: Bool {
+            switch self {
+            case .workouts, .workout: return false
+            case .invite, .coach, .coachApproval: return true
+            }
+        }
     }
     let id: UUID
     let destination: Destination
@@ -49,6 +57,17 @@ final class OnboardingFlow: ObservableObject {
         // A linked invite already has a confirmation destination. Do not ask
         // the member to retype or redeem it in a competing onboarding step.
         step = next == .group && auth.pendingInviteCode != nil ? .intervals : next
+    }
+
+    /// A confirmed starter is already the member's first choice. Preserve any
+    /// earlier explicit invite/coach destination, then open this exact workout.
+    @discardableResult
+    func finishWithStarter(_ receipt: StarterWorkoutReceipt, from checkpoint: Checkpoint) -> Bool {
+        guard isCurrent(checkpoint), step == .welcome, receipt.acknowledged,
+              !receipt.workout_id.isEmpty,
+              auth.requestEntry(.workout(receipt.workout_id)) else { return false }
+        auth.completeOnboarding()
+        return auth.onboardingComplete
     }
 
     func finish(from checkpoint: Checkpoint, destination: MemberEntryIntent.Destination? = nil) {

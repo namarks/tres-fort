@@ -10,8 +10,53 @@ final class WorkoutLibraryJourneyTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["today.chooseWorkout"].waitForExistence(timeout: 10))
         app.buttons["today.chooseWorkout"].tap()
-        XCTAssertTrue(app.navigationBars["Choose a workout"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
         return app
+    }
+
+    func testTagsArchiveCancelAndRestore() {
+        let app = launch()
+        app.buttons["Actions for Gym"].tap()
+        app.buttons["Edit tags"].tap()
+        let input = app.textViews["workoutTags.input"]
+        if input.waitForExistence(timeout: 3) { input.tap(); input.typeText("quick, travel") }
+        else {
+            let field = app.textFields["workoutTags.input"]
+            XCTAssertTrue(field.waitForExistence(timeout: 3)); field.tap(); field.typeText("quick, travel")
+        }
+        app.buttons["workoutTags.save"].tap()
+        XCTAssertTrue(app.staticTexts["workoutTags-synthetic-day"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["workoutTags-synthetic-day"].label, "quick · travel")
+        app.buttons["library.tagFilter"].tap()
+        app.buttons["quick"].tap()
+        XCTAssertTrue(app.buttons["library.workout.synthetic-day"].exists)
+        XCTAssertFalse(app.buttons["library.workout.hotel"].exists)
+        app.buttons["library.tagFilter"].tap()
+        app.buttons["All tags"].tap()
+        XCTAssertTrue(app.buttons["library.workout.hotel"].exists)
+        app.buttons["Actions for Gym"].tap(); app.buttons["Archive workout"].tap()
+        let confirm = app.alerts["Archive Gym?"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5))
+        confirm.buttons["Cancel"].tap()
+        XCTAssertTrue(app.buttons["library.workout.synthetic-day"].exists)
+        app.buttons["Actions for Gym"].tap(); app.buttons["Archive workout"].tap()
+        confirm.buttons["Archive workout"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons["library.workout.synthetic-day"])
+        waitForExpectations(timeout: 5)
+        app.segmentedControls.buttons["Archived"].tap()
+        XCTAssertTrue(app.buttons["library.workout.synthetic-day"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["library.workout.hotel"].exists)
+        let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        image.name = "workout-archive"; image.lifetime = .keepAlways; add(image)
+        app.buttons["Actions for Gym"].tap()
+        XCTAssertFalse(app.buttons["Use on a date"].exists)
+        app.buttons["Restore workout"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: app.buttons["library.workout.synthetic-day"])
+        waitForExpectations(timeout: 5)
+        app.segmentedControls.buttons["Active"].tap()
+        XCTAssertTrue(app.buttons["library.workout.synthetic-day"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["workoutSchedule-synthetic-day"].label, "On demand")
+        XCTAssertEqual(app.staticTexts["workoutTags-synthetic-day"].label, "quick · travel")
     }
 
     func testLibraryBadgesUnscheduleAndDateAssignment() {
@@ -28,12 +73,34 @@ final class WorkoutLibraryJourneyTests: XCTestCase {
         app.buttons["Use on a date"].tap()
         XCTAssertTrue(app.buttons["assignLibraryWorkout"].waitForExistence(timeout: 5))
         app.buttons["assignLibraryWorkout"].tap()
-        XCTAssertTrue(app.navigationBars["Choose a workout"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.staticTexts["workoutSchedule-hotel"].label, "On demand")
         let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         image.name = "workout-library"; image.lifetime = .keepAlways; add(image)
-        app.navigationBars["Choose a workout"].buttons["Done"].tap()
+        app.navigationBars["Workouts"].buttons["Done"].tap()
         XCTAssertTrue(app.staticTexts["Hotel"].waitForExistence(timeout: 5))
+    }
+
+    func testDeletingLastTaggedWorkoutClearsFilter() {
+        let app = launch()
+        app.buttons["Actions for Hotel"].tap()
+        app.buttons["Edit tags"].tap()
+        let input = app.textViews["workoutTags.input"]
+        if input.waitForExistence(timeout: 3) { input.tap(); input.typeText("quick") }
+        else {
+            let field = app.textFields["workoutTags.input"]
+            XCTAssertTrue(field.waitForExistence(timeout: 3)); field.tap(); field.typeText("quick")
+        }
+        app.buttons["workoutTags.save"].tap()
+        XCTAssertTrue(app.buttons["library.tagFilter"].waitForExistence(timeout: 5))
+        app.buttons["library.tagFilter"].tap(); app.buttons["quick"].tap()
+        XCTAssertFalse(app.buttons["library.workout.synthetic-day"].exists)
+        app.buttons["Actions for Hotel"].tap(); app.buttons["Delete workout"].tap()
+        let confirmation = app.alerts["Delete Hotel?"]
+        XCTAssertTrue(confirmation.waitForExistence(timeout: 5))
+        confirmation.buttons["Delete workout"].tap()
+        XCTAssertTrue(app.buttons["library.workout.synthetic-day"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["library.tagFilter"].exists)
     }
 
     func testDeleteIsExplicitAndSeparateFromUnschedule() {
@@ -144,7 +211,7 @@ final class WorkoutLibraryJourneyTests: XCTestCase {
         let squat = app.buttons["exercisePicker.exercise.synthetic-exercise"]
         XCTAssertTrue(squat.waitForExistence(timeout: 5)); squat.tap()
         app.navigationBars["Add exercises"].buttons["Cancel"].tap()
-        XCTAssertTrue(app.navigationBars["Choose a workout"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "library.workout.")).count, 2)
         app.buttons["Actions for Gym"].tap()
         app.buttons["Edit exercises"].tap()

@@ -47,6 +47,7 @@ struct AccountExportFile: Equatable {
 
 struct APIClient {
     var baseURL = Config.apiBaseURL
+    var transport: URLSession? = nil
 
     private static var session: URLSession {
 #if DEBUG && targetEnvironment(simulator)
@@ -346,7 +347,7 @@ struct APIClient {
     //
     // Add / edit / remove an exercise slot in the active plan's day template.
     // Thin wrappers over the REST editor endpoints (POST/PATCH/DELETE
-    // /api/days/:dayId/exercises[/:teId]) — the app-side counterpart to the
+    // /api/workouts/:dayId/exercises[/:teId]) — the app-side counterpart to the
     // MCP add_exercise / update_exercise / delete_exercise tools. The caller
     // reloads /api/state afterwards, so these return just the slot id.
 
@@ -718,7 +719,7 @@ struct APIClient {
         // Covers every plan-bearing read, including restore responses, so a
         // grouped slot always retains its ordinary rest alongside group rests.
         req.setValue("groups", forHTTPHeaderField: "X-TresFort-Capabilities")
-        let (data, resp) = try await Self.session.data(for: req)
+        let (data, resp) = try await (transport ?? Self.session).data(for: req)
         let http = resp as? HTTPURLResponse
         let code = http?.statusCode ?? -1
         guard (200..<300).contains(code) else {

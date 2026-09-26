@@ -21,6 +21,8 @@ export interface PlanSnapshotExercise {
 }
 
 export interface PlanSnapshotWorkout {
+  tags?: string;
+  archived_at?: number | null;
   id: string;
   name: string;
   day_label: string | null;
@@ -63,6 +65,8 @@ export function serializePlanSnapshot(tree: PlanTree): PlanSnapshotDocument {
       day_label: day.day_label,
       order_index: day.order_index,
       notes: day.notes,
+      tags: day.tags ?? '[]',
+      archived_at: day.archived_at ?? null,
       exercises: day.exercises.map((slot) => ({
         id: slot.id,
         exercise_id: slot.exercise_id,
@@ -95,6 +99,10 @@ export function parsePlanSnapshot(raw: string): PlanSnapshotDocument {
   }
   // Read old immutable documents without rewriting their stored bytes.
   const doc: PlanSnapshotDocument = { schema_version: 2, plan: stored.plan, workouts };
+  for (const day of doc.workouts) {
+    day.tags ??= '[]';
+    day.archived_at ??= null;
+  }
   // Pre-group snapshots remain writable and compare as explicitly ungrouped.
   for (const day of doc.workouts) for (const slot of day.exercises) {
     slot.group_id ??= null;
@@ -129,7 +137,7 @@ function readableSlot(slot: PlanSnapshotExercise, options: PlanSnapshotCompariso
 }
 
 function readableDay(day: PlanSnapshotWorkout, options: PlanSnapshotComparisonOptions) {
-  return { ...dayIdentity(day), order_index: day.order_index, notes: day.notes,
+  return { ...dayIdentity(day), order_index: day.order_index, notes: day.notes, tags: day.tags ?? '[]', archived_at: day.archived_at ?? null,
     exercises: day.exercises.map((slot) => readableSlot(slot, options)) };
 }
 
@@ -261,8 +269,8 @@ export function comparePlanSnapshots(
     summary.exercises_added += day.exercises.length;
   }
   for (const [prior, day] of matchedDays.pairs) {
-    const beforeFields = { name: prior.name, day_label: prior.day_label, order_index: prior.order_index, notes: prior.notes };
-    const afterFields = { name: day.name, day_label: day.day_label, order_index: day.order_index, notes: day.notes };
+    const beforeFields = { name: prior.name, day_label: prior.day_label, order_index: prior.order_index, notes: prior.notes, tags: prior.tags ?? '[]', archived_at: prior.archived_at ?? null };
+    const afterFields = { name: day.name, day_label: day.day_label, order_index: day.order_index, notes: day.notes, tags: day.tags ?? '[]', archived_at: day.archived_at ?? null };
     if (stable(beforeFields) !== stable(afterFields)) {
       changes.push({ kind: 'day', path: `Workout · ${day.name}`, before: { ...dayIdentity(prior), ...beforeFields }, after: { ...dayIdentity(day), ...afterFields } });
       summary.days_changed++;

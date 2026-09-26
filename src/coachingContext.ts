@@ -4,6 +4,7 @@ import type { SummaryExercise, SummarySet } from './workoutSummary';
 export type CoachingSet = SummarySet & { session_id: string; logged_at: number };
 export type CoachingExercise = SummaryExercise & { primary_muscle: string };
 export type CoachingSession = {
+  kind?: string;
   id: string; date: string; status: string; notes?: string | null; perceived_fatigue?: number | null;
 };
 
@@ -61,7 +62,7 @@ export function coachingSession(session: CoachingSession, sets: CoachingSet[], c
     volumes.set(ex.unit, { value: old.value + value, sets: old.sets + 1 });
   }
   return {
-    id: session.id, date: session.date, status: session.status,
+    id: session.id, date: session.date, status: session.status, kind: session.kind ?? 'planned',
     notes: session.notes ?? null, perceived_fatigue: session.perceived_fatigue ?? null,
     logged_working_sets: live.length, sets_with_effort: live.filter(s => s.rpe != null).length,
     primary_muscle_sets: [...muscleCounts.keys()].sort().map(muscle => ({ muscle,

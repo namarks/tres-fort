@@ -24,10 +24,13 @@ struct ExerciseDemoSheet: View {
     let demoSlug: String?
     let jwt: String?
 
+    var timed: Bool? = nil
+    var cues: String? = nil
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var loader = DemoImageLoader()
     @State private var showSecondFrame = false
     @State private var isPaused = false
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ScrollView {
@@ -47,7 +50,13 @@ struct ExerciseDemoSheet: View {
                 badgesRow
                 muscleSection
 
-                if laterality == "unilateral" {
+                if let cues, !cues.isEmpty {
+                    Text(cues).font(.body).foregroundStyle(Theme.text)
+                }
+                if timed ?? ["timed", "cardio"].contains(modality) {
+                    Text("Log time in seconds.")
+                        .font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                } else if laterality == "unilateral" {
                     Text("Log one set with the per-side numbers — the app counts both legs/arms automatically.")
                         .font(Theme.mono(12))
                         .foregroundStyle(Theme.muted)
@@ -57,6 +66,11 @@ struct ExerciseDemoSheet: View {
                     Text("Weight is one dumbbell. Both hands hold the same load.")
                         .font(Theme.mono(12))
                         .foregroundStyle(Theme.muted)
+                }
+
+                if ["bw", "timed"].contains(modality) {
+                    Text("Zero load means bodyweight; positive load is added weight and negative load is assistance.")
+                        .font(Theme.mono(12)).foregroundStyle(Theme.muted)
                 }
 
                 Spacer(minLength: 0)
@@ -75,7 +89,7 @@ struct ExerciseDemoSheet: View {
             guard loader.frames.compactMap({ $0 }).count == 2 else { return }
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_400_000_000)
-                if !isPaused {
+                if !isPaused && !reduceMotion && !Task.isCancelled {
                     await MainActor.run {
                         withAnimation(.easeInOut(duration: 0.45)) {
                             showSecondFrame.toggle()
@@ -168,8 +182,8 @@ struct ExerciseDemoSheet: View {
 }
 
 /// Compact tap target — a circled (i) glyph rendered to the right of the
-/// exercise name. Calls `onTap` to open ExerciseDemoSheet on the parent.
-struct DemoInfoButton: View {
+/// exercise name. Opens technique and history without changing selection.
+struct ExerciseInfoButton: View {
     var exerciseName: String? = nil
     let onTap: () -> Void
 
@@ -182,6 +196,6 @@ struct DemoInfoButton: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(exerciseName.map { "Show demo for " + $0 } ?? "Show exercise demo")
+        .accessibilityLabel(exerciseName.map { "Exercise information for " + $0 } ?? "Exercise information")
     }
 }

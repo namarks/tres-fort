@@ -2,6 +2,22 @@ import XCTest
 @testable import TresFort
 
 final class CoachConnectionTests: XCTestCase {
+    func testClaudeInstallLinkPreservesTheEnvironmentAndEncodedURL() throws {
+        for base in ["https://ui-fixture.invalid", "https://example.invalid/fitness%20app", "https://example.invalid/a&b"] {
+            let url = CoachSetup.claudeInstallURL(baseURL: URL(string: base)!)
+            let parts = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false))
+            XCTAssertEqual(parts.scheme, "https")
+            XCTAssertEqual(parts.host, "claude.ai")
+            XCTAssertEqual(parts.path, "/customize/connectors")
+            let fields = Dictionary(uniqueKeysWithValues: try XCTUnwrap(parts.queryItems).map { ($0.name, $0.value) })
+            XCTAssertEqual(fields.count, 3, "Install links must not include a member code or credential")
+            XCTAssertEqual(fields["modal"], "add-custom-connector")
+            XCTAssertEqual(fields["connectorName"], "Très Fort")
+            XCTAssertEqual(fields["connectorUrl"], base + "/mcp")
+            XCTAssertNil(parts.fragment)
+        }
+    }
+
     private func profile(_ fields: String) throws -> MeProfile {
         let data = Data("""
         {"intervals":{"connected":false},\(fields)}

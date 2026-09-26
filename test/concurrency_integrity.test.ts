@@ -1514,8 +1514,12 @@ describe('discard terminal-state concurrency', () => {
       userId,
     );
     await paused.firstReached;
-    await discardSession(env.DB, userId, session.id, 0);
-    await reviveDiscardedSession(env.DB, userId, session.id, 0, null);
+    // MCP converted the empty unscheduled planned generation to freestyle
+    // before entering the set write. Discard/restart must beat that new token.
+    expect(await env.DB.prepare('SELECT kind,attempt FROM sessions WHERE id=?1').bind(session.id).first())
+      .toEqual({kind:'freestyle',attempt:1});
+    await discardSession(env.DB, userId, session.id, 1);
+    await reviveDiscardedSession(env.DB, userId, session.id, 1, null);
     paused.releaseFirst();
 
     const rpc = await rpcPromise;
@@ -1526,12 +1530,12 @@ describe('discard terminal-state concurrency', () => {
     expect(envelope.result.isError).toBeUndefined();
     expect(JSON.parse(envelope.result.content[0]!.text)).toMatchObject({
       error: 'session_attempt_conflict',
-      expected_attempt: 0,
-      current_attempt: 1,
+      expected_attempt: 1,
+      current_attempt: 2,
       current_session: {
         id: session.id,
         status: 'planned',
-        attempt: 1,
+        attempt: 2,
       },
     });
     expect(

@@ -102,6 +102,7 @@ struct TemplateExercise: Codable, Identifiable, Equatable {
     /// Duration-pinned loaded exercises still need their positive load, while
     /// cardio efforts do not expose a synthetic weight field.
     var showsLoadControl: Bool { exercise_modality != "cardio" }
+    var isUnilateral: Bool { exercise_laterality == "unilateral" }
     var isPerHand: Bool { exercise_load_mode == "per_hand" }
     /// Prescribed hold/effort for a timed or cardio set, in seconds. Uses
     /// target_duration_s (the real field) and falls back to target_reps for
@@ -119,21 +120,29 @@ struct TemplateExercise: Codable, Identifiable, Equatable {
         return "\(s)s"
     }
 
-    /// "3×5" / "3×5–8" / "3×45s" (hold) / "5 min" (single-set warm-up erg).
+    /// Rep targets include their per-side convention; durations keep their own units.
     var targetLabel: String {
         if isTimed {
             // A single-set timed effort (a warm-up erg, one plank) reads
             // cleaner as just the duration than "1×5 min".
             return target_sets <= 1 ? holdLabel : "\(target_sets)×\(holdLabel)"
         }
+        let side = isUnilateral ? " per side" : ""
         if let hi = target_reps_max, hi != target_reps {
-            return "\(target_sets)×\(target_reps)–\(hi)"
+            return "\(target_sets)×\(target_reps)–\(hi)\(side)"
         }
-        return "\(target_sets)×\(target_reps)"
+        return "\(target_sets)×\(target_reps)\(side)"
     }
 }
 
 struct Workout: Codable, Identifiable, Equatable {
+    var tags: String? = nil
+    var archived_at: Int? = nil
+    var isArchived: Bool { archived_at != nil }
+    var workoutTags: [String] {
+        guard let tags, let data = tags.data(using: .utf8) else { return [] }
+        return (try? JSONDecoder().decode([String].self, from: data)) ?? []
+    }
     let id: String
     let name: String
     let day_label: String?
@@ -168,6 +177,7 @@ struct PlanSchedule: Decodable, Equatable {
 }
 
 struct PlanTree: Codable, Equatable {
+    var availableWorkouts: [Workout] { workouts.filter { !$0.isArchived } }
     let id: String
     let name: String
     let version: Int
@@ -334,6 +344,8 @@ struct PlanComparisonResponse: Codable, Equatable {
 }
 
 struct SessionRow: Codable, Identifiable {
+    var kind: String? = nil
+    var isFreestyle: Bool { kind == "freestyle" }
     var exercise_swaps: String? = nil
     var notes: String? = nil
     var perceived_fatigue: Int? = nil
@@ -424,18 +436,19 @@ extension SetLog {
     /// One-line value for a logged set: a timed hold reads "45s"; a bodyweight
     /// rep set reads "BW+45 × 5", "BW−30 × 8", or "BW × 8"; a weighted set
     /// reads "85 × 5". A SetLog carries
-    /// no modality, so the caller resolves both flags from the exercise's
+    /// no modality or laterality, so the caller resolves the flags from the exercise's
     /// catalog row (see SyncModel.isTimedExercise / isBodyweightExercise) —
     /// "BW" keys off modality == "bw", NOT weight == 0, so a weighted lift
     /// logged at 0 load (unloaded warmup, machine/cable at zero) still reads
     /// "0 × reps", not "BW × reps". #30
-    func valueLabel(timed: Bool, bodyweight: Bool) -> String {
+    func valueLabel(timed: Bool, bodyweight: Bool, unilateral: Bool) -> String {
         SetValueFormatter.value(
             weight: weight,
             reps: reps,
             durationSeconds: duration_s,
             timed: timed,
-            bodyweight: bodyweight)
+            bodyweight: bodyweight,
+            unilateral: unilateral)
     }
 }
 
@@ -461,7 +474,8 @@ enum SetValueFormatter {
         durationSeconds: Int?,
         timed: Bool,
         bodyweight: Bool,
-        unit: String = "lb"
+        unit: String = "lb",
+        unilateral: Bool = false
     ) -> String {
         if timed {
             // Legacy MCP timed sets stored elapsed seconds in reps before the
@@ -473,12 +487,13 @@ enum SetValueFormatter {
                 return "\(seconds)s\(load)"
             }
         }
+        let side = unilateral && !timed ? " per side" : ""
         if bodyweight {
-            if weight > 0 { return "BW+\(number(weight)) × \(reps)" }
-            if weight < 0 { return "BW−\(number(abs(weight))) × \(reps)" }
-            return "BW × \(reps)"
+            if weight > 0 { return "BW+\(number(weight)) × \(reps)\(side)" }
+            if weight < 0 { return "BW−\(number(abs(weight))) × \(reps)\(side)" }
+            return "BW × \(reps)\(side)"
         }
-        return "\(number(weight)) × \(reps)"
+        return "\(number(weight)) × \(reps)\(side)"
     }
 }
 
@@ -814,9 +829,8 @@ struct StateResponse: Codable {
     }
 }
 
-// Workout vocabulary changes the domain, while decoding retains the released
-// wire/cache shapes. Encode the existing cache shape for this compatibility
-// cycle so a downgrade does not strand a persisted plan or session.
+// New snapshots use workout names. Read old persisted snapshots without
+// discarding their plan, session identity or attempt tokens.
 extension PlanTree {
     private enum CodingKeys: String, CodingKey { case id, name, version, workouts, days, meta }
 
@@ -841,19 +855,21 @@ extension PlanTree {
         try c.encode(id, forKey: .id)
         try c.encode(name, forKey: .name)
         try c.encode(version, forKey: .version)
-        try c.encode(workouts, forKey: .days)
+        try c.encode(workouts, forKey: .workouts)
         try c.encodeIfPresent(meta, forKey: .meta)
     }
 }
 
 extension SessionRow {
     private enum CodingKeys: String, CodingKey {
+        case kind
         case notes, perceived_fatigue, exercise_swaps, started_at, completed_at
         case id, date, status, workout_id, day_template_id, summary, updated_at, attempt, write_protocol
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decodeIfPresent(String.self, forKey: .kind)
         exercise_swaps = try c.decodeIfPresent(String.self, forKey: .exercise_swaps)
         notes = try c.decodeIfPresent(String.self, forKey: .notes)
         perceived_fatigue = try c.decodeIfPresent(Int.self, forKey: .perceived_fatigue)
@@ -878,13 +894,14 @@ extension SessionRow {
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(kind, forKey: .kind)
         try c.encodeIfPresent(exercise_swaps, forKey: .exercise_swaps)
         try c.encodeIfPresent(notes, forKey: .notes)
         try c.encodeIfPresent(perceived_fatigue, forKey: .perceived_fatigue)
         try c.encode(id, forKey: .id)
         try c.encode(date, forKey: .date)
         try c.encode(status, forKey: .status)
-        try c.encodeIfPresent(workout_id, forKey: .day_template_id)
+        try c.encodeIfPresent(workout_id, forKey: .workout_id)
         try c.encodeIfPresent(summary, forKey: .summary)
         try c.encodeIfPresent(started_at, forKey: .started_at)
         try c.encodeIfPresent(completed_at, forKey: .completed_at)

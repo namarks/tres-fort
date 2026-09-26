@@ -148,6 +148,8 @@ export interface PlanRow {
 }
 
 export interface WorkoutRow {
+  tags?: string;
+  archived_at?: number | null;
   id: string;
   plan_id: string;
   name: string;
@@ -188,6 +190,7 @@ export interface TemplateExerciseRow {
 }
 
 export interface SessionRow {
+  kind?: 'planned' | 'freestyle';
   exercise_swaps?: string | null;
   runner_targets?: string | null;
   id: string;

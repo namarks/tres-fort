@@ -1,4 +1,3 @@
-
 /** Stable SQLite RAISE() reason emitted when a pre-fence writer reaches D1. */
 export const WORKOUT_WRITE_FENCE_ACTIVE = 'workout_write_fence_active';
 export const WORKOUT_WRITE_FENCE_NOT_ACTIVE = 'workout_write_fence_not_active';

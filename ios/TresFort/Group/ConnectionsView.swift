@@ -1,13 +1,6 @@
 import SwiftUI
 
-/// Multi-source connections screen (see docs/CONNECTIONS-UI-SPEC.md).
-///
-/// v1 scope: intervals.icu is the PRIMARY recommended connection (it aggregates
-/// Garmin/Zwift/Polar/Wahoo and carries the richest data). Apple Health is now
-/// a real direct connection (on-device HealthKit reader → push). Garmin / Polar
-/// / Wahoo still render as disabled "Coming soon" rows — those are later phases.
-/// The intervals hero pushes `IntervalsSettingsView`; Apple Health pushes
-/// `AppleHealthSettingsView`.
+/// Available activity sources, with device-routing guidance on demand.
 struct ConnectionsView: View {
     @ObservedObject var groupModel: GroupModel
     @ObservedObject var health: HealthKitSyncModel
@@ -18,19 +11,10 @@ struct ConnectionsView: View {
     private var intervalsNeedsReauth: Bool {
         groupModel.intervalsStatus?.needs_reauth == true
     }
-    private var athleteID: String? {
-        groupModel.intervalsStatus?.athlete_id
-    }
 
     var body: some View {
         Form {
-            Section {
-                Text("Connect where your workouts are recorded, so your coach can see your cardio and balance it against your lifting.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
+            Section("Activity sources") {
                 NavigationLink {
                     IntervalsSettingsView(groupModel: groupModel)
                 } label: {
@@ -40,65 +24,39 @@ struct ConnectionsView: View {
                             .foregroundStyle(Theme.accent)
                             .frame(width: 30)
                         VStack(alignment: .leading, spacing: 3) {
-                            HStack(spacing: 6) {
-                                Text("intervals.icu").font(.headline)
-                                Text("Recommended")
-                                    .font(.caption2).bold()
-                                    .padding(.horizontal, 6).padding(.vertical, 2)
-                                    .background(Theme.accent.opacity(0.15))
-                                    .foregroundStyle(Theme.accent)
-                                    .clipShape(Capsule())
-                            }
+                            Text("intervals.icu").font(.headline)
                             if groupModel.intervalsStatusUnavailable || groupModel.intervalsStatus == nil {
                                 Text("Check connection status").font(.footnote).foregroundStyle(.secondary)
                             } else if intervalsNeedsReauth {
                                 Label("Reconnect needed", systemImage: "exclamationmark.circle")
                                     .font(.footnote).foregroundStyle(.orange)
-                            } else if groupModel.intervalsStatus?.sync_pending == true {
+                            } else if intervalsConnected && groupModel.intervalsStatus?.sync_pending == true {
                                 Label("Connected · Sync pending", systemImage: "arrow.clockwise")
                                     .font(.footnote).foregroundStyle(.orange)
                             } else if intervalsConnected {
-                                Label(athleteID.map { "Connected · \($0)" } ?? "Connected",
-                                      systemImage: "checkmark.circle.fill")
+                                Label("Connected", systemImage: "checkmark.circle.fill")
                                     .font(.footnote).foregroundStyle(.green)
                             } else {
-                                Text("One hub for Garmin, Zwift, Polar & Wahoo — the richest data")
+                                Text("Workouts and planned rides")
                                     .font(.footnote).foregroundStyle(.secondary)
                             }
                         }
                     }
                 }
                 .accessibilityIdentifier("connections.intervals")
-            } header: {
-                Text("Recommended")
-            } footer: {
-                if !intervalsConnected {
-                    Text("New to intervals.icu? It pulls in your Garmin, Zwift, Polar or Wahoo workouts. Tap to connect — or to set up your device first.")
-                }
-            }
-
-            Section {
                 appleHealthRow
-                comingSoonRow(name: "Garmin", icon: "applewatch",
-                              detail: "If you record on a Garmin watch or bike computer")
-                comingSoonRow(name: "Polar", icon: "waveform.path.ecg",
-                              detail: "If you train with a Polar watch")
-                comingSoonRow(name: "Wahoo", icon: "bicycle",
-                              detail: "If you use a Wahoo bike computer")
-            } header: {
-                Text("Or connect directly")
-            } footer: {
-                Text("Apple Health connects your iPhone & Apple Watch directly. Garmin, Polar and Wahoo are coming soon — for now, connect those to intervals.icu above and your workouts flow through with full detail.")
             }
 
             Section {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                    Text("Using Strava? Strava-synced activities arrive without details. Connect intervals.icu or your device directly instead.")
+                DisclosureGroup("Other devices") {
+                    Text("Connect Garmin, Zwift, Polar or Wahoo to intervals.icu, then connect intervals.icu here.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Text("Strava-synced activities arrive without details. Connect your device to intervals.icu directly.")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
+                .accessibilityIdentifier("connections.otherDevices")
             }
         }
         .navigationTitle("Connections")
@@ -130,24 +88,6 @@ struct ConnectionsView: View {
             .opacity(0.6)
         }
     }
-
-    @ViewBuilder
-    private func comingSoonRow(name: String, icon: String, detail: String) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: icon)
-                .foregroundStyle(Theme.muted)
-                .frame(width: 30)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                Text(detail).font(.footnote).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Text("Coming soon")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .opacity(0.6)
-    }
 }
 
 /// Observe both permissions so changing weight updates the single source row.
@@ -161,14 +101,14 @@ private struct AppleHealthConnectionLabel: View {
                 .foregroundStyle(health.enabled || weight.enabled ? Theme.accent : Theme.muted)
                 .frame(width: 30)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Apple Health")
+                Text("Apple Health").font(.headline)
                 if health.enabled || weight.enabled {
                     Label(health.enabled && weight.enabled ? "Workouts and weight enabled"
-                          : weight.enabled ? "Weight enabled" : "Workouts connected",
+                          : weight.enabled ? "Weight enabled" : "Workouts enabled",
                           systemImage: "checkmark.circle.fill")
                         .font(.footnote).foregroundStyle(.green)
                 } else {
-                    Text("Your iPhone & Apple Watch, no extra account")
+                    Text("Workouts and body weight")
                         .font(.footnote).foregroundStyle(.secondary)
                 }
             }

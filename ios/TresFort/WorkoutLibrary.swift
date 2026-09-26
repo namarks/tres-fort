@@ -2,6 +2,14 @@ import SwiftUI
 
 /// Schedule membership belongs to the plan, not to a workout's identity.
 enum WorkoutLibraryPolicy {
+    static func choices(plan: PlanTree?, date: String) -> [Workout] {
+        let workouts = plan?.availableWorkouts ?? []
+        guard plan?.trips.contains(where: { date >= $0.start && date <= $0.end }) == true else { return workouts }
+        // Stable partition: travel labels affect ordering, never eligibility.
+        return workouts.filter { $0.workoutTags.contains("travel") }
+            + workouts.filter { !$0.workoutTags.contains("travel") }
+    }
+
     static func isScheduled(workoutID: String, plan: PlanTree?) -> Bool {
         PlanSchedule.weekdayKeys.contains { plan?.schedule?.templateID(forWeekdayKey: $0) == workoutID }
     }
@@ -66,7 +74,7 @@ struct WorkoutDateSheet: View {
                         }
                     }
                     .disabled(saving || sync.isRoutineMutationInFlight
-                        || sync.workout(id: workout.id) == nil
+                        || sync.workout(id: workout.id)?.isArchived != false
                         || sync.calendarAssignmentUnavailableReason(date: dateString) != nil)
                     .accessibilityIdentifier("assignLibraryWorkout")
                     if let error = sync.loadError {

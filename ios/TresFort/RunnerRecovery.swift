@@ -119,7 +119,7 @@ enum RunnerRecovery {
         }
         let unresolvedIndices = Set(day.exercises.indices.filter { index in
             let slot = day.exercises[index]
-            return !skippedIDs.contains(slot.id) && checkpointSetIDs(slot).count < slot.target_sets
+            return !skippedIDs.contains(slot.id) && (serverSession?.isFreestyle == true || checkpointSetIDs(slot).count < slot.target_sets)
         })
         let normalizedFinished = unresolvedIndices.isEmpty
         let normalizedCurrentSlotID: String
@@ -163,6 +163,6 @@ enum RunnerRecovery {
             sessionAttempt: serverSession?.attempt ?? checkpoint.sessionAttempt,
             restartDiscardedAttempt: serverSession == nil ? checkpoint.restartDiscardedAttempt : nil,
             input: checkpoint.input, inputsBySlot: checkpoint.inputsBySlot, groupProgress: day.exercises.first(where: { $0.id == normalizedCurrentSlotID }).flatMap(checkpointGroup),
-            focus: normalizedFocus, feedback: checkpoint.feedback)
+            focus: normalizedFocus, feedback: checkpoint.feedback, freestyleExercises: checkpoint.freestyleExercises)
     }
 }

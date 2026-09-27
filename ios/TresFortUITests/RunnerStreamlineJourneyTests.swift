@@ -102,7 +102,11 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["Expand rest timer"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["rest.editLastSet"].exists)
         XCTAssertEqual(app.staticTexts["rest.lastValues"].label, "Last set · 135 × 5 · lb")
-        XCTAssertEqual(app.staticTexts["rest.nextValues"].label, "Set 2 of 3 · 135 × 5 · lb")
+        // The runner and fixed action carry the next set; the compact rest
+        // card does not repeat it.
+        XCTAssertFalse(app.staticTexts["rest.nextValues"].exists)
+        XCTAssertEqual(app.staticTexts["runner.setSummary"].label, "135 × 5 · lb")
+        XCTAssertTrue(app.buttons["LOG SET 2"].exists)
         XCTAssertFalse(app.staticTexts["Next · Barbell Squat"].exists)
         let repsControl = app.buttons["Increase reps by 1"]
         XCTAssertTrue(repsControl.isHittable)
@@ -119,7 +123,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertEqual(edit.label, "Edit last set of Barbell Squat")
         XCTAssertEqual(app.staticTexts["runner.exerciseTitle"].label, "DUMBBELL ROW")
         XCTAssertTrue(app.staticTexts["Last set · Barbell Squat"].exists)
-        XCTAssertEqual(app.staticTexts["rest.nextValues"].label, "Set 1 of 3 · 40 × 10 · lb")
+        XCTAssertEqual(app.staticTexts["runner.setSummary"].label, "40 × 10 · lb")
         edit.tap()
         let reps = app.textFields["Reps"]
         XCTAssertTrue(reps.waitForExistence(timeout: 5))

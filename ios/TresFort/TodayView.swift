@@ -815,7 +815,8 @@ private struct RunnerView: View {
                             .padding(.bottom, 12) }
 
                         if let block = blocks.first(where: { $0.members.contains(where: { $0.id == ex.id }) }), block.isGroup {
-                            Text(block.title + " · Round \(min(displayedSetNumber, block.rounds)) of \(block.rounds)")
+                            // The round count lives in the meta row below.
+                            Text(block.title)
                                 .font(.subheadline).foregroundStyle(Theme.accent).padding(.bottom, 8)
                         }
 
@@ -1192,13 +1193,18 @@ private struct RunnerView: View {
         let displayedWeight = storedUnit.convert(sync.weight, to: weightUnit)
         let label = ex.allowsAssistance ? "ADDED LOAD / ASSIST (\(unit)) · TAP TO EDIT"
             : "WEIGHT (\(unit))" + (ex.isPerHand ? " · EACH HAND" : "") + " · TAP TO EDIT"
-        let value = (ex.allowsAssistance && displayedWeight > 0 ? "+" : "") + WeightUnit.text(displayedWeight)
+        let sign = ex.allowsAssistance && displayedWeight > 0 ? "+" : ""
+        let value = sign + WeightUnit.text(displayedWeight)
+        // Converted loads (18 lb → 8.165 kg) truncate at the display size;
+        // show one decimal and keep the exact value for editing/VoiceOver.
+        let display = sign + SetValueFormatter.number(displayedWeight)
         let small = weightUnit == .kg ? 2.5 : 5.0
         let large = weightUnit == .kg ? 5.0 : 10.0
         return VStack(spacing: 8) {
             stepper(
                 label: label,
                 value: value,
+                display: display,
                 context: "weight in \(unit)" + (ex.isPerHand ? " per hand" : ""),
                 steps: [
                     ("−" + WeightUnit.text(large), { sync.adjustWeight(weightUnit.convert(-large, to: storedUnit)) }, true),
@@ -1214,13 +1220,13 @@ private struct RunnerView: View {
         }
     }
 
-    private func stepper(label: String, value: String, context: String,
+    private func stepper(label: String, value: String, display: String? = nil, context: String,
                          steps: [(String, () -> Void, Bool)],
                          onTapValue: (() -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(label).font(Theme.mono(11, .bold)).tracking(2).foregroundStyle(Theme.muted)
             if dynamicTypeSize.isAccessibilitySize {
-                stepperValue(value, context: context, onTap: onTapValue)
+                stepperValue(value, display: display, context: context, onTap: onTapValue)
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
                     ForEach(steps, id: \.0) { s in
                         stepBtn(s.0, s.2, context: context, value: value, s.1)
@@ -1231,7 +1237,7 @@ private struct RunnerView: View {
                     ForEach(Array(steps.prefix(steps.count / 2)), id: \.0) { s in
                         stepBtn(s.0, s.2, context: context, value: value, s.1)
                     }
-                    stepperValue(value, context: context, onTap: onTapValue)
+                    stepperValue(value, display: display, context: context, onTap: onTapValue)
                     ForEach(Array(steps.suffix(steps.count - steps.count / 2)), id: \.0) { s in
                         stepBtn(s.0, s.2, context: context, value: value, s.1)
                     }
@@ -1243,9 +1249,9 @@ private struct RunnerView: View {
         .padding(.top, 16)
     }
 
-    @ViewBuilder private func stepperValue(_ value: String, context: String,
+    @ViewBuilder private func stepperValue(_ value: String, display: String? = nil, context: String,
                                           onTap: (() -> Void)?) -> some View {
-        let number = Text(value).font(Theme.number(52)).foregroundStyle(Theme.text)
+        let number = Text(display ?? value).font(Theme.number(52)).foregroundStyle(Theme.text)
             .lineLimit(1).minimumScaleFactor(0.5)
             .frame(maxWidth: .infinity)
             .frame(minHeight: 56)
@@ -1429,6 +1435,7 @@ private struct RunnerSetAction: View {
     var body: some View {
         let displayedSetNumber = sync.currentSetNumber
         let physicalSetNumber = sync.currentPhysicalSetNumber
+        let resting = sync.restEndDate != nil
         let unit = WeightUnit(rawValue: weightUnitRaw) ?? .lb
         let storedUnit = WeightUnit(rawValue: ex.exercise_unit) ?? .lb
         VStack(spacing: 6) {
@@ -1487,8 +1494,13 @@ private struct RunnerSetAction: View {
                         .frame(maxWidth: .infinity).padding(.vertical, 16)
                         .contentShape(Rectangle())
                 }
-                .background(Theme.accent).foregroundStyle(.black)
+                // Logging during rest stays available, but a quieter button
+                // keeps the rest card the loudest thing on screen.
+                .background(resting ? Theme.surface2 : Theme.accent)
+                .foregroundStyle(resting ? Theme.accent : .black)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(Theme.accent.opacity(resting ? 0.6 : 0), lineWidth: 1))
                 .disabled(sync.isSetEntryBlocked(ex))
                 .opacity(sync.isSetEntryBlocked(ex) ? 0.55 : 1)
             }
@@ -1625,6 +1637,9 @@ private struct RestOverlay: View {
 // MARK: - Compact rest controls
 
 /// In-flow rest controls leave workout inputs available and never overlap them.
+/// The card is tinted and leads with a large countdown so a minimized rest
+/// still reads as a break, not as another row of set details. The runner
+/// below and the fixed action already show the next set's values.
 private struct RestPill: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var sync: SyncModel
@@ -1632,33 +1647,65 @@ private struct RestPill: View {
     let onExpand: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
+        VStack(alignment: .leading, spacing: 10) {
+            TimelineView(.periodic(from: .now, by: 0.25)) { ctx in
                 let remaining = sync.restEndDate.map { Int(ceil($0.timeIntervalSince(ctx.date))) } ?? 0
-                let layout = dynamicTypeSize.isAccessibilitySize
-                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4)) : AnyLayout(HStackLayout())
-                layout {
-                    Button(action: onExpand) {
-                        Label("Rest " + clock(remaining), systemImage: "timer")
-                            .font(.headline).frame(minHeight: 44)
+                let frac: Double = {
+                    guard let end = sync.restEndDate, sync.restTotal > 0 else { return 0 }
+                    return max(0, min(1, end.timeIntervalSince(ctx.date) / Double(sync.restTotal)))
+                }()
+                let color = remaining <= 0 ? Theme.done : Theme.accent
+                VStack(alignment: .leading, spacing: 10) {
+                    let layout = dynamicTypeSize.isAccessibilitySize
+                        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                        : AnyLayout(HStackLayout(alignment: .center, spacing: 12))
+                    layout {
+                        Button(action: onExpand) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Label(remaining <= 0 ? "REST OVER" : "RESTING", systemImage: "timer")
+                                    .font(Theme.mono(11, .bold)).tracking(2)
+                                Text(clock(remaining))
+                                    .font(Theme.display(44)).monospacedDigit()
+                                    .lineLimit(1).minimumScaleFactor(0.6)
+                            }
+                            .foregroundStyle(color)
+                            .frame(minHeight: 44, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Expand rest timer")
+                        .accessibilityValue("\(max(0, remaining)) seconds remaining")
+                        if !dynamicTypeSize.isAccessibilitySize { Spacer() }
+                        Button { sync.skipRest() } label: {
+                            Text("End rest")
+                                .font(Theme.mono(13, .bold))
+                                .padding(.horizontal, 16)
+                                .frame(minHeight: 44).contentShape(Rectangle())
+                                .background(Capsule().fill(Theme.accent))
+                                .foregroundStyle(.black)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("rest.done")
                     }
-                    .accessibilityLabel("Expand rest timer")
-                    .accessibilityValue("\(max(0, remaining)) seconds remaining")
-                    if !dynamicTypeSize.isAccessibilitySize { Spacer() }
-                    Button { sync.skipRest() } label: {
-                        Text("End rest").frame(minHeight: 44).contentShape(Rectangle())
-                    }
-                    .accessibilityIdentifier("rest.done")
+                    Capsule().fill(Theme.surface2)
+                        .frame(height: 4)
+                        .overlay(alignment: .leading) {
+                            GeometryReader { geometry in
+                                Capsule().fill(color).frame(width: geometry.size.width * frac)
+                            }
+                        }
+                        .accessibilityHidden(true)
                 }
             }
-            RestNextSetValues(sync: sync)
-            // The runner title and fixed action already name the next exercise.
-            // Keep the prior set distinct without repeating another full card.
+            // The runner title and fixed action already name the next exercise
+            // and its values. Keep only the prior set, for quick correction.
             LastRunnerSetReview(sync: sync, compact: true)
         }
         .foregroundStyle(Theme.text).tint(Theme.accent)
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.accent.opacity(0.12)))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.accent.opacity(0.45), lineWidth: 1))
         .padding(.horizontal, horizontalPadding).padding(.bottom, 8)
-        .background(Theme.surface)
     }
 }
 

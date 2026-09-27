@@ -114,7 +114,7 @@ struct SetReviewList: View {
                 recordedValues(item, unit: unit, timed: timed, formattedValues: values)
                 if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                 Button { editing = item } label: {
-                    Text(lastSetShortcut ? "Edit last set" : "Edit").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                    Text(lastSetShortcut && !compact ? "Edit last set" : "Edit").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
                 }
                 .accessibilityLabel(lastSetShortcut ? "Edit last set of \(sync.exerciseName(item.exerciseID))" : "Edit set \(item.setIndex) of \(sync.exerciseName(item.exerciseID))")
                 .accessibilityIdentifier(lastSetShortcut ? "rest.editLastSet" : "edit-set-\(item.id)")
@@ -155,7 +155,7 @@ struct SetReviewList: View {
             }
         }
         .foregroundStyle(Theme.text)
-        .padding(compact ? 0 : 12).background(Theme.surface)
+        .padding(compact ? 0 : 12).background(compact ? Color.clear : Theme.surface)
         .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 }

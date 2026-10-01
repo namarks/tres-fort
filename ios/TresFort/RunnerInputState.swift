@@ -22,17 +22,18 @@ struct RunnerPrescription: Codable, Equatable {
         reps = exercise.target_reps
         duration = exercise.target_duration_s
         rpe = exercise.target_rpe
-        unit = exercise.exercise_unit
+        unit = exercise.targetWeightUnit.rawValue
     }
 
-    /// Older checkpoints already stored values in the exercise's catalog
-    /// unit, but did not record that unit alongside the prescription. Retain
-    /// their inputs when every known field matches; explicit unit changes
-    /// still invalidate a newer draft.
+    /// `unit` is the unit the draft weight is held in. Older checkpoints
+    /// recorded the catalog unit ("lb", or "sec"/"min" for timed moves, both
+    /// held as lb) or nothing at all; compare the load unit each one implies,
+    /// so an lb-held draft never survives as a kg slot's load.
     func matches(current: Self) -> Bool {
-        var comparable = self
-        if comparable.unit == nil { comparable.unit = current.unit }
-        return comparable == current
+        var comparable = self, expected = current
+        comparable.unit = (WeightUnit(rawValue: unit ?? "") ?? .lb).rawValue
+        expected.unit = (WeightUnit(rawValue: current.unit ?? "") ?? .lb).rawValue
+        return comparable == expected
     }
 }
 
@@ -73,10 +74,16 @@ enum RunnerInputPolicy {
             return RunnerInputState(prescription: prescription, weight: draft.weight,
                 reps: draft.reps, rpe: draft.rpe, durationSeconds: draft.durationSeconds)
         }
+        // Every candidate is expressed in the slot's unit: the target already
+        // is, a previous set is converted from its own unit, and the default
+        // bar is 45 lb.
+        let unit = exercise.targetWeightUnit
+        let previousWeight = previous.map { $0.weightUnit.convert($0.weight, to: unit) }
         return RunnerInputState(
             prescription: prescription,
             weight: exercise.exercise_modality == "cardio" ? 0
-                : exercise.target_weight ?? previous?.weight ?? (exercise.isTimed || exercise.isBodyweight ? 0 : defaultWeight),
+                : exercise.target_weight ?? previousWeight
+                    ?? (exercise.isTimed || exercise.isBodyweight ? 0 : WeightUnit.lb.convert(defaultWeight, to: unit)),
             reps: exercise.target_reps,
             rpe: exercise.target_rpe,
             durationSeconds: exercise.holdSeconds)

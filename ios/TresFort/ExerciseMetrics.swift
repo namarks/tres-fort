@@ -56,7 +56,7 @@ enum ExerciseMetrics {
             return ExerciseMetricCohort.Key(
                 exerciseID: set.exercise_id,
                 timed: set.is_timed.map { $0 == 1 } ?? (ex?.modality == "timed"),
-                weight: set.weight, unit: ex?.unit ?? "lb",
+                weight: set.weight, unit: set.weightUnit.rawValue,
                 laterality: ex?.laterality ?? "bilateral", loadMode: ex?.load_mode ?? "total")
         }
         return grouped.map { key, rows in

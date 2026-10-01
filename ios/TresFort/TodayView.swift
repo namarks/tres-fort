@@ -905,7 +905,8 @@ private struct RunnerView: View {
                             Toggle("Timer sounds", isOn: $timerCuesEnabled)
                                 .tint(Theme.accent)
                                 .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
-                            if ex.exercise_modality == "barbell", ex.exercise_unit == "lb" {
+                            // The plate guide works in lb, so it only takes an lb runner load.
+                            if ex.exercise_modality == "barbell", ex.targetWeightUnit == .lb {
                                 Button {
                                     loadingTarget = sync.weight
                                     showingLoading = true
@@ -1011,7 +1012,7 @@ private struct RunnerView: View {
                     weight: draft.input.weight, reps: draft.input.reps, rpe: draft.input.rpe,
                     durationSeconds: draft.input.prescription.timed ? draft.input.durationSeconds : nil),
                     timed: draft.input.prescription.timed, allowsAssistance: draft.exercise.allowsAssistance,
-                    storedUnit: WeightUnit(rawValue: draft.exercise.exercise_unit) ?? .lb,
+                    storedUnit: draft.exercise.targetWeightUnit,
                     unilateral: draft.exercise.isUnilateral,
                     onSave: { values in
                         sync.setRunnerValues(values, expected: draft.input.prescription)
@@ -1188,7 +1189,7 @@ private struct RunnerView: View {
     }
 
     private func loadControl(ex: TemplateExercise) -> some View {
-        let storedUnit = WeightUnit(rawValue: ex.exercise_unit) ?? .lb
+        let storedUnit = ex.targetWeightUnit
         let unit = weightUnit.rawValue
         let displayedWeight = storedUnit.convert(sync.weight, to: weightUnit)
         let label = ex.allowsAssistance ? "ADDED LOAD / ASSIST (\(unit)) · TAP TO EDIT"
@@ -1286,11 +1287,10 @@ private struct RunnerView: View {
     }
 
     private func prescriptionContext(ex: TemplateExercise, isPreview: Bool = false) -> some View {
-        let storedUnit = WeightUnit(rawValue: ex.exercise_unit) ?? .lb
         let target = (isPreview ? "" : "PRESCRIBED · ") + ex.prescriptionLabel(in: weightUnit)
         let previous = sync.comparablePreviousSets(for: ex)
         let previousLabel = previous.map { set in
-            let value = SetValueFormatter.value(weight: storedUnit.convert(set.weight, to: weightUnit),
+            let value = SetValueFormatter.value(weight: set.weightUnit.convert(set.weight, to: weightUnit),
                 reps: set.reps, durationSeconds: set.duration_s, timed: ex.isTimed,
                 bodyweight: ex.isBodyweight, unit: weightUnit.rawValue, unilateral: ex.isUnilateral)
             let effort = set.rpe.map { " RPE " + SetValueFormatter.number($0) } ?? ""
@@ -1437,7 +1437,7 @@ private struct RunnerSetAction: View {
         let physicalSetNumber = sync.currentPhysicalSetNumber
         let resting = sync.restEndDate != nil
         let unit = WeightUnit(rawValue: weightUnitRaw) ?? .lb
-        let storedUnit = WeightUnit(rawValue: ex.exercise_unit) ?? .lb
+        let storedUnit = ex.targetWeightUnit
         VStack(spacing: 6) {
             Text(ex.exercise_name)
                 .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
@@ -1716,7 +1716,7 @@ private struct RestNextSetValues: View {
     var body: some View {
         if !sync.finished, let exercise = sync.currentExercise {
             let unit = WeightUnit(rawValue: weightUnitRaw) ?? .lb
-            let storedUnit = WeightUnit(rawValue: exercise.exercise_unit) ?? .lb
+            let storedUnit = exercise.targetWeightUnit
             let values = SetValueFormatter.value(
                 weight: storedUnit.convert(sync.weight, to: unit), reps: sync.reps,
                 durationSeconds: exercise.isTimed ? sync.holdDurationSeconds : nil,

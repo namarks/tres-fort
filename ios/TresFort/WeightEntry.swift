@@ -18,11 +18,11 @@ enum WeightUnit: String, CaseIterable {
 extension TemplateExercise {
     /// Read the saved prescription, never a runner draft or a historical load.
     /// Two-dumbbell targets are stored per hand; conversion keeps that meaning.
+    /// The load converts from the slot's own `target_weight_unit`.
     func prescriptionLabel(in unit: WeightUnit) -> String {
         var parts = [targetLabel]
         if showsLoadControl, let weight = target_weight {
-            let storedUnit = WeightUnit(rawValue: exercise_unit) ?? .lb
-            let value = WeightUnit.text(storedUnit.convert(abs(weight), to: unit))
+            let value = WeightUnit.text(targetWeightUnit.convert(abs(weight), to: unit))
             if allowsAssistance && weight == 0 {
                 parts.append("Bodyweight")
             } else if allowsAssistance && weight < 0 {

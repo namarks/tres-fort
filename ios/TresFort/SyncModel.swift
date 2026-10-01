@@ -2562,7 +2562,10 @@ final class SyncModel: ObservableObject {
             is_timed: ex.isTimed, rpe: rpe,
             prescription: isFreestyle ? nil : selectedDayID.flatMap { dayID in
                 plan.map { SetPrescriptionContext(plan_id: $0.id, version: $0.version, day_id: dayID) }
-            })
+            },
+            // Runner loads are held in the slot's unit, so the set is logged
+            // in that unit as-is — never converted through exercise_unit.
+            weight_unit: ex.targetWeightUnit.rawValue)
         let intent = PendingSetIntent(
             body: body,
             date: workoutDate,
@@ -4334,7 +4337,8 @@ final class SyncModel: ObservableObject {
         if exerciseIndex != index { runnerFocus.isExplicit = false }
         exerciseIndex = index
         seedInputs()
-        weight = failedIntent.body.weight
+        weight = failedIntent.body.weightUnit.convert(
+            failedIntent.body.weight, to: exercises[index].targetWeightUnit)
         reps = failedIntent.body.reps
         rpe = failedIntent.body.rpe
         rememberGroupProgress()
@@ -6518,7 +6522,8 @@ private extension SetLog {
             duration_s: duration_s,
             is_timed: is_timed,
             deleted_at: deleted_at,
-            updated_at: updated_at)
+            updated_at: updated_at,
+            weight_unit: weight_unit)
     }
 }
 

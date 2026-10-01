@@ -632,6 +632,7 @@ final class SetOutboxTests: XCTestCase {
         warmup: Bool = false,
         modality: String? = nil,
         targetWeight: Double? = nil,
+        targetWeightUnit: String? = nil,
         unsetWeight: Bool = false,
         groupID: String? = nil,
         roundRest: Int = 75,
@@ -658,6 +659,7 @@ final class SetOutboxTests: XCTestCase {
             exercise_demo_slug: nil,
             target_duration_s: timed ? 30 : nil,
             is_warmup: warmup ? 1 : 0,
+            target_weight_unit: targetWeightUnit,
             group_id: groupID,
             group_rest_seconds: groupID == nil ? nil : roundRest,
             group_transition_seconds: groupID == nil ? nil : transitionRest)
@@ -716,7 +718,8 @@ final class SetOutboxTests: XCTestCase {
             duration_s: body.duration_s,
             is_timed: body.is_timed ? 1 : 0,
             deleted_at: deletedAt,
-            updated_at: updatedAt)
+            updated_at: updatedAt,
+            weight_unit: body.weight_unit)
     }
 
     private func state(
@@ -13132,6 +13135,63 @@ extension SetOutboxTests {
         XCTAssertEqual(seeded.weight, 100)
         XCTAssertEqual(seeded.reps, ex.target_reps)
         XCTAssertNil(seeded.rpe)
+    }
+
+    func testKilogramSlotLogsItsPrefilledLoadInKilogramsWithoutConversion() async throws {
+        let defaults = defaults()
+        // Kettlebell Swing: catalog unit lb, slot prescribed in kg.
+        let ex = exercise(modality: "kettlebell", targetWeight: 24, targetWeightUnit: "kg")
+        let s = session()
+        let api = SetWriteAPIStub()
+        configureSuccess(api, exercise: ex, session: s)
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, uuidFactory: { self.fixedUUID },
+            now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s, running: true)
+
+        // The runner holds the slot's own number, not 24 lb (10.886 kg) or 52.9 lb.
+        XCTAssertEqual(model.weight, 24)
+        await model.logCurrentSet(expected: ex, expectedSetNumber: 1)
+        await model.drainSetOutbox()
+
+        let sent = try XCTUnwrap(api.logCalls.first?.body)
+        XCTAssertEqual(sent.weight, 24)
+        XCTAssertEqual(sent.weight_unit, "kg")
+        let logged = try XCTUnwrap(model.sets.first { $0.id == sent.id })
+        XCTAssertEqual(logged.weightUnit, .kg)
+        XCTAssertEqual(logged.weightUnit.convert(logged.weight, to: .kg), 24)
+        XCTAssertEqual(logged.weightUnit.convert(logged.weight, to: .lb), 24 / 0.45359237, accuracy: 1e-9)
+    }
+
+    func testRunnerLoadAdjustmentsStayInTheSlotUnitAndPoundSlotsLogPounds() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let kilograms = exercise(targetWeight: 24, targetWeightUnit: "kg")
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        prepare(model, exercise: kilograms, session: session(), running: true)
+        // A +2.5 kg step from the kg display is applied to the kg runner load as-is.
+        model.adjustWeight(WeightUnit.kg.convert(2.5, to: kilograms.targetWeightUnit))
+        XCTAssertEqual(model.weight, 26.5)
+        // A +5 lb step from an lb display is converted once, into kg.
+        model.adjustWeight(WeightUnit.lb.convert(5, to: kilograms.targetWeightUnit))
+        XCTAssertEqual(model.weight, 26.5 + 5 * 0.45359237, accuracy: 1e-9)
+        await model.logCurrentSet(expected: kilograms, expectedSetNumber: 1)
+        let queued = try XCTUnwrap(SetOutboxStore.load(userID: "user-a", defaults: defaults).pending.first?.body)
+        XCTAssertEqual(queued.weight, 26.5 + 5 * 0.45359237, accuracy: 1e-9)
+        XCTAssertEqual(queued.weight_unit, "kg")
+
+        let poundsDefaults = self.defaults()
+        let pounds = exercise(targetWeight: 24)
+        let poundModel = SyncModel(auth: retainedAuth(defaults: poundsDefaults), setWriteAPI: api,
+                                   defaults: poundsDefaults, now: { self.fixedDate })
+        prepare(poundModel, exercise: pounds, session: session(), running: true)
+        XCTAssertEqual(poundModel.weight, 24)
+        await poundModel.logCurrentSet(expected: pounds, expectedSetNumber: 1)
+        let poundBody = try XCTUnwrap(SetOutboxStore.load(userID: "user-a", defaults: poundsDefaults).pending.first?.body)
+        XCTAssertEqual(poundBody.weight, 24)
+        XCTAssertEqual(poundBody.weight_unit, "lb")
     }
 
     func testSupersetLoadsCarryIntoLaterRoundsWhileOffline() async {

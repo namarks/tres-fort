@@ -79,6 +79,6 @@ enum FreestyleRunner {
             exercise_modality: exercise.modality, exercise_laterality: exercise.laterality,
             exercise_load_mode: exercise.load_mode, exercise_demo_slug: exercise.demo_slug,
             target_duration_s: timed ? max(1, comparable?.duration_s ?? comparable?.reps ?? (exercise.modality == "cardio" ? 300 : 30)) : nil,
-            is_warmup: 0)
+            is_warmup: 0, target_weight_unit: comparable?.weightUnit.rawValue)
     }
 }

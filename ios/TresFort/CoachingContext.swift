@@ -56,7 +56,10 @@ enum CoachingContext {
             let ex = exercise(s.exercise_id)
             let timed = s.is_timed.map { $0 == 1 } ?? (ex?.modality == "timed" || ex?.modality == "cardio")
             let signed = ex?.modality == "bw" || ex?.modality == "timed"
-            let unit: String? = ex?.modality == "cardio" ? nil : ex?.unit == "sec" ? "lb" : ex?.unit
+            // A set's own weight_unit decides its load unit (labels and volume
+            // buckets); rows without one keep the server's catalog-derived unit.
+            let unit: String? = ex?.modality == "cardio" ? nil : s.weight_unit != nil ? s.weightUnit.rawValue
+                : ex?.unit == "sec" ? "lb" : ex?.unit
             let load: Double? = ex?.modality == "cardio" ? nil : s.weight
             let condition = load == nil ? "unavailable" : ex == nil ? "unknown"
                 : signed ? s.weight < 0 ? "assistance" : s.weight > 0 ? "added" : "bodyweight" : "external"
@@ -87,9 +90,10 @@ enum CoachingContext {
                   !(s.is_timed.map { $0 == 1 } ?? (ex.modality == "timed")), s.weight > 0 else { continue }
             let value = s.weight * Double(s.reps) * (ex.laterality == "unilateral" ? 2 : 1)
                 * (ex.load_mode == "per_hand" ? 2 : 1)
-            let old = volumes[ex.unit]
-            volumes[ex.unit] = Volume(unit: ex.unit, value: (old?.value ?? 0) + value,
-                                      contributing_sets: (old?.contributing_sets ?? 0) + 1)
+            let unit = s.weight_unit == nil ? ex.unit : s.weightUnit.rawValue
+            let old = volumes[unit]
+            volumes[unit] = Volume(unit: unit, value: (old?.value ?? 0) + value,
+                                   contributing_sets: (old?.contributing_sets ?? 0) + 1)
         }
         return Session(id: row.id, date: row.date, status: row.status, notes: row.notes,
                        perceived_fatigue: row.perceived_fatigue, logged_working_sets: live.count,

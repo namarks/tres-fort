@@ -55,11 +55,11 @@ struct ExerciseHistoryProgress: Identifiable {
         // the latest one. Estimates already in that unit keep their value.
         let estimated = history.filter { $0.est1RM != nil }
         if let unit = estimated.max(by: { ($0.date, $0.id) < ($1.date, $1.id) })?.loadUnit {
-            let estimates = estimated.compactMap { session in
-                session.est1RM.map { value in
-                    Point(date: session.date, value: session.loadUnit == unit ? value
-                        : (session.loadUnit.convert(value, to: unit) * 10).rounded() / 10)
-                }
+            let estimates = estimated.compactMap { session -> Point? in
+                guard let value = session.est1RM else { return nil }
+                if session.loadUnit == unit { return Point(date: session.date, value: value) }
+                let converted: Double = session.loadUnit.convert(value, to: unit)
+                return Point(date: session.date, value: (converted * 10).rounded() / 10)
             }
             options.insert(Self(id: .estimatedOneRepMax, title: "Estimated 1RM",
                 unit: unit.rawValue, points: dailyBest(estimates)), at: 0)

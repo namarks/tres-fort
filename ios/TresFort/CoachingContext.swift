@@ -58,8 +58,10 @@ enum CoachingContext {
             let signed = ex?.modality == "bw" || ex?.modality == "timed"
             // A set's own weight_unit decides its load unit (labels and volume
             // buckets); rows without one keep the server's catalog-derived unit.
-            let unit: String? = ex?.modality == "cardio" ? nil : s.weight_unit != nil ? s.weightUnit.rawValue
-                : ex?.unit == "sec" ? "lb" : ex?.unit
+            let unit: String?
+            if ex?.modality == "cardio" { unit = nil }
+            else if s.weight_unit != nil { unit = s.weightUnit.rawValue }
+            else { unit = ex?.unit == "sec" ? "lb" : ex?.unit }
             let load: Double? = ex?.modality == "cardio" ? nil : s.weight
             let condition = load == nil ? "unavailable" : ex == nil ? "unknown"
                 : signed ? s.weight < 0 ? "assistance" : s.weight > 0 ? "added" : "bodyweight" : "external"

@@ -9,6 +9,36 @@ final class FreestyleWorkoutTests: XCTestCase {
         XCTAssertTrue(wire["target_duration_s"] is NSNull)
     }
 
+    func testDraftSlotUnitLabelsTheLoadAndIsEchoedOnlyWhenTheDraftDeclaresIt() throws {
+        let json = #"""
+        {"session":{"id":"s","date":"2026-09-21","status":"completed","workout_id":null,"kind":"freestyle"},
+         "source_signature":"sig","slots":[
+          {"exercise_id":"swing","target_sets":3,"target_reps":12,"target_duration_s":null,"target_weight":24,
+           "target_weight_unit":"kg","rest_seconds":120,"is_timed":false,"source_set_ids":["a","b","c"]},
+          {"exercise_id":"bench","target_sets":2,"target_reps":8,"target_duration_s":null,"target_weight":100,
+           "rest_seconds":120,"is_timed":false,"source_set_ids":["d","e"]}]}
+        """#
+        let draft = try JSONDecoder().decode(FreestyleWorkoutDraft.self, from: Data(json.utf8))
+        let kg = draft.slots[0], legacy = draft.slots[1]
+        XCTAssertEqual(kg.target_weight_unit, "kg")
+        XCTAssertEqual(kg.targetWeightUnit, .kg)
+        XCTAssertEqual(kg.target_weight, 24)
+        XCTAssertEqual(kg.sourceSummary, "From 3 working sets at 24 kg")
+        XCTAssertNil(legacy.target_weight_unit)
+        XCTAssertEqual(legacy.targetWeightUnit, .lb)
+        XCTAssertEqual(legacy.sourceSummary, "From 2 working sets at 100 lb")
+
+        let request = SaveFreestyleRequest(workout_id: "w", name: "Freestyle", expected_plan_id: "p",
+            expected_version: 1, expected_attempt: 0, source_signature: draft.source_signature, slots: draft.slots)
+        let wire = try JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as! [String: Any]
+        let slots = try XCTUnwrap(wire["slots"] as? [[String: Any]])
+        XCTAssertEqual(slots[0]["target_weight_unit"] as? String, "kg")
+        XCTAssertEqual(slots[0]["target_weight"] as? Double, 24)
+        XCTAssertNil(slots[1]["target_weight_unit"])
+        XCTAssertEqual(Set(slots[1].keys), ["exercise_id", "target_sets", "target_reps", "target_duration_s",
+                                            "target_weight", "rest_seconds", "source_set_ids"])
+    }
+
     func testSessionKindRoundTripsWithoutChangingLegacyDecode() throws {
         let legacy = Data(#"{"id":"s","date":"2026-09-21","status":"in_progress","day_template_id":null}"#.utf8)
         var session = try JSONDecoder().decode(SessionRow.self, from: legacy)

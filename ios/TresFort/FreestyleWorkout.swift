@@ -8,9 +8,14 @@ struct FreestyleSlot: Codable, Equatable {
     var target_weight: Double
     var rest_seconds: Int
     var source_set_ids: [String]? = nil
+    /// Unit of `target_weight` ("lb" | "kg") when the draft declares one.
+    /// Echoed on save only when received, so a draft without it saves
+    /// exactly as before; read it via `targetWeightUnit`, never the catalog.
+    var target_weight_unit: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case exercise_id, target_sets, target_reps, target_duration_s, target_weight, rest_seconds, source_set_ids
+        case target_weight_unit
     }
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -21,6 +26,13 @@ struct FreestyleSlot: Codable, Equatable {
         try c.encode(target_weight, forKey: .target_weight)
         try c.encode(rest_seconds, forKey: .rest_seconds)
         try c.encodeIfPresent(source_set_ids, forKey: .source_set_ids)
+        try c.encodeIfPresent(target_weight_unit, forKey: .target_weight_unit)
+    }
+
+    /// The unit the draft load is shown and edited in; absent means lb.
+    var targetWeightUnit: WeightUnit { WeightUnit(rawValue: target_weight_unit ?? "") ?? .lb }
+    var sourceSummary: String {
+        "From \(source_set_ids?.count ?? target_sets) working sets at \(target_weight.formatted()) \(targetWeightUnit.rawValue)"
     }
 }
 

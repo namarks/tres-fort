@@ -125,6 +125,24 @@ final class SlotWeightUnitTests: XCTestCase {
         }
     }
 
+    func testHistoryRowsNameKilogramRepLoadsAndKeepPoundRowsUnchanged() {
+        func label(_ weight: Double, _ unit: String?, bodyweight: Bool = false, unilateral: Bool = false) -> String {
+            set(weight: weight, unit: unit).valueLabel(timed: false, bodyweight: bodyweight, unilateral: unilateral)
+        }
+        XCTAssertEqual(label(24, "kg"), "24 kg × 15")
+        XCTAssertEqual(label(24, "lb"), "24 × 15")
+        XCTAssertEqual(label(24, nil), "24 × 15")
+        XCTAssertEqual(label(24, "kg", unilateral: true), "24 kg × 15 per side")
+        XCTAssertEqual(label(10, "kg", bodyweight: true), "BW+10 kg × 15")
+        XCTAssertEqual(label(-10, "kg", bodyweight: true), "BW−10 kg × 15")
+        XCTAssertEqual(label(0, "kg", bodyweight: true), "BW × 15")
+        XCTAssertEqual(label(0, "kg"), "0 × 15")
+        let hold = SetLog(id: "hold", session_id: "session", exercise_id: "plank", template_exercise_id: nil,
+            set_index: 1, weight: 10, reps: 30, rpe: nil, is_warmup: 0, logged_at: 1, duration_s: 30,
+            is_timed: 1, deleted_at: nil, updated_at: 1, weight_unit: "kg")
+        XCTAssertEqual(hold.valueLabel(timed: true, bodyweight: false, unilateral: false), "30s · +10 kg")
+    }
+
     func testFreestyleSlotKeepsThePreviousSetUnit() {
         let catalog = ExerciseCatalog(id: "ex_kb_swing", name: "Kettlebell Swing", primary_muscle: "hamstrings",
             modality: "kettlebell", unit: "lb", laterality: "bilateral", load_mode: "total", demo_slug: nil)

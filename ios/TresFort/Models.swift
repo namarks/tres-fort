@@ -459,7 +459,8 @@ extension SetLog {
     /// "BW" keys off modality == "bw", NOT weight == 0, so a weighted lift
     /// logged at 0 load (unloaded warmup, machine/cable at zero) still reads
     /// "0 × reps", not "BW × reps". #30 A loaded hold's suffix names the
-    /// set's own unit.
+    /// set's own unit, and a kg rep load names it too ("24 kg × 15") so it
+    /// never reads as the same number of pounds; lb loads keep "85 × 5".
     func valueLabel(timed: Bool, bodyweight: Bool, unilateral: Bool) -> String {
         SetValueFormatter.value(
             weight: weight,
@@ -468,7 +469,8 @@ extension SetLog {
             timed: timed,
             bodyweight: bodyweight,
             unit: weightUnit.rawValue,
-            unilateral: unilateral)
+            unilateral: unilateral,
+            repLoadUnit: weightUnit == .kg ? weightUnit.rawValue : nil)
     }
 }
 
@@ -495,7 +497,8 @@ enum SetValueFormatter {
         timed: Bool,
         bodyweight: Bool,
         unit: String = "lb",
-        unilateral: Bool = false
+        unilateral: Bool = false,
+        repLoadUnit: String? = nil
     ) -> String {
         if timed {
             // Legacy MCP timed sets stored elapsed seconds in reps before the
@@ -508,12 +511,16 @@ enum SetValueFormatter {
             }
         }
         let side = unilateral && !timed ? " per side" : ""
+        // Rep loads are unlabelled unless the caller names one (a kg set);
+        // a zero load is the same in either unit.
+        var load = ""
+        if weight != 0, let repLoadUnit { load = " \(repLoadUnit)" }
         if bodyweight {
-            if weight > 0 { return "BW+\(number(weight)) × \(reps)\(side)" }
-            if weight < 0 { return "BW−\(number(abs(weight))) × \(reps)\(side)" }
+            if weight > 0 { return "BW+\(number(weight))\(load) × \(reps)\(side)" }
+            if weight < 0 { return "BW−\(number(abs(weight)))\(load) × \(reps)\(side)" }
             return "BW × \(reps)\(side)"
         }
-        return "\(number(weight)) × \(reps)\(side)"
+        return "\(number(weight))\(load) × \(reps)\(side)"
     }
 }
 

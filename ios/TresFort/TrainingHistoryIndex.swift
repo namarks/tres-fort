@@ -9,14 +9,20 @@ struct TrainingHistoryIndex {
         let est1RM: Double?
         let topWeight: Double
         let topReps: Int
+        /// Unit of `est1RM` and `topWeight`: the top set's own logged unit.
+        let loadUnit: WeightUnit
         let bestReps: Int?
         let totalReps: Int
-        let volume: Double?
+        /// External-load volume per logged unit; lb and kg are never summed.
+        let volumeByUnit: [WeightUnit: Double]
         let setCount: Int
         let bestHoldSeconds: Int?
         let hasTimedSets: Bool
         let avgDuration: Int
         let cohorts: [ExerciseMetricCohort]
+
+        /// The single-unit volume; nil when absent or when units are mixed.
+        var volume: Double? { volumeByUnit.count == 1 ? volumeByUnit.values.first : nil }
     }
 
     let sessionsByDate: [String: SessionRow]
@@ -68,6 +74,11 @@ struct TrainingHistoryIndex {
         func timed(_ set: SetLog) -> Bool {
             set.is_timed.map { $0 == 1 } ?? (exercise?.modality == "timed")
         }
+        // Estimates compare physically across units; the best keeps its own
+        // number and unit (`loadUnit`).
+        func estimateInPounds(_ cohort: ExerciseMetricCohort) -> Double {
+            cohort.estimatedOneRepMax.map { cohort.weightUnit.convert($0, to: .lb) } ?? 0
+        }
         return selected.compactMap { sid in
             guard let rows = grouped[sid], let date = datesBySession[sid], !rows.isEmpty else { return nil }
             let timedRows = rows.filter(timed)
@@ -75,19 +86,20 @@ struct TrainingHistoryIndex {
             let cohorts = ExerciseMetrics.cohorts(rows, catalog: exercise.map { [$0] } ?? [])
             let repCohorts = cohorts.filter { !$0.key.timed }
             let holdCohorts = cohorts.filter { $0.key.timed }
-            let top = cohorts.max {
-                ($0.estimatedOneRepMax ?? 0) < ($1.estimatedOneRepMax ?? 0)
-            }?.top ?? rows[0]
+            let best = cohorts.max { estimateInPounds($0) < estimateInPounds($1) }
+            let top = best?.top ?? rows[0]
             let durations = timedRows.map { $0.duration_s ?? $0.reps }
-            let volumes = repRows.filter { $0.weight > 0 }.map {
-                $0.weight * Double($0.reps * sides) * Double(implements)
+            var volumeByUnit: [WeightUnit: Double] = [:]
+            for row in repRows where row.weight > 0 {
+                volumeByUnit[row.weightUnit, default: 0] +=
+                    row.weight * Double(row.reps * sides) * Double(implements)
             }
             return SessionStat(id: sid, date: date,
-                est1RM: cohorts.compactMap(\.estimatedOneRepMax).max(),
-                topWeight: top.weight, topReps: top.reps,
+                est1RM: best?.estimatedOneRepMax,
+                topWeight: top.weight, topReps: top.reps, loadUnit: top.weightUnit,
                 bestReps: exercise?.modality == "bw" && repCohorts.count == 1 ? repCohorts[0].bestReps : nil,
                 totalReps: repRows.reduce(0) { $0 + $1.reps * sides },
-                volume: volumes.isEmpty ? nil : volumes.reduce(0, +), setCount: rows.count,
+                volumeByUnit: volumeByUnit, setCount: rows.count,
                 bestHoldSeconds: holdCohorts.count == 1 ? holdCohorts[0].bestHoldSeconds : nil,
                 hasTimedSets: !timedRows.isEmpty,
                 avgDuration: holdCohorts.count == 1 && !durations.isEmpty ? durations.reduce(0, +) / durations.count : 0,

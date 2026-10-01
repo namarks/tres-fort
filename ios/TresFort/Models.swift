@@ -458,7 +458,8 @@ extension SetLog {
     /// catalog row (see SyncModel.isTimedExercise / isBodyweightExercise) —
     /// "BW" keys off modality == "bw", NOT weight == 0, so a weighted lift
     /// logged at 0 load (unloaded warmup, machine/cable at zero) still reads
-    /// "0 × reps", not "BW × reps". #30
+    /// "0 × reps", not "BW × reps". #30 A loaded hold's suffix names the
+    /// set's own unit.
     func valueLabel(timed: Bool, bodyweight: Bool, unilateral: Bool) -> String {
         SetValueFormatter.value(
             weight: weight,
@@ -466,6 +467,7 @@ extension SetLog {
             durationSeconds: duration_s,
             timed: timed,
             bodyweight: bodyweight,
+            unit: weightUnit.rawValue,
             unilateral: unilateral)
     }
 }

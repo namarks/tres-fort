@@ -1783,8 +1783,10 @@ private struct FinishedView: View {
                     if reps > 0 {
                         sumRow("Total reps", "\(reps)")
                     }
-                    if let tonnage = sync.totalTonnage(for: sets) {
-                        sumRow("External-load volume", "\(Int(tonnage)) lb")
+                    // Each unit keeps its own total; lb and kg never sum.
+                    let tonnage = sync.tonnageByUnit(for: sets)
+                    if !tonnage.isEmpty {
+                        sumRow("External-load volume", WeightUnit.totals(tonnage) { "\(Int($0))" })
                     }
                 }
                 .padding(.top, 20)

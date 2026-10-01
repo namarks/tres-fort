@@ -2199,18 +2199,24 @@ final class SyncModel: ObservableObject {
         return holds.count == 1 ? holds[0].bestHoldSeconds : nil
     }
 
-    /// Effective positive-load tonnage represented by one rep set. Strict
-    /// bodyweight, assisted (negative-load), and timed work have no tonnage;
-    /// their progress is represented by reps or hold duration instead.
+    /// Effective positive-load tonnage represented by one rep set, in the
+    /// set's own `weightUnit`. Strict bodyweight, assisted (negative-load),
+    /// and timed work have no tonnage; their progress is represented by reps
+    /// or hold duration instead.
     func tonnage(for set: SetLog) -> Double? {
         guard set.weight > 0, !isTimedSet(set) else { return nil }
         return set.weight * Double(effectiveReps(for: set))
             * Double(implements(for: set.exercise_id))
     }
 
-    func totalTonnage(for sets: [SetLog]) -> Double? {
-        let values = sets.compactMap { tonnage(for: $0) }
-        return values.isEmpty ? nil : values.reduce(0, +)
+    /// Tonnage totals per logged unit: lb and kg sets are never summed into
+    /// one number. Empty when no set has tonnage.
+    func tonnageByUnit(for sets: [SetLog]) -> [WeightUnit: Double] {
+        var totals: [WeightUnit: Double] = [:]
+        for set in sets {
+            if let value = tonnage(for: set) { totals[set.weightUnit, default: 0] += value }
+        }
+        return totals
     }
 
     /// True when the catalog row is a timed modality (planks/holds) — the only

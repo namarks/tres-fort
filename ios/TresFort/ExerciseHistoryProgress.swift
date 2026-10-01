@@ -50,13 +50,19 @@ struct ExerciseHistoryProgress: Identifiable {
             return a == b ? lhs.title.localizedStandardCompare(rhs.title) == .orderedAscending : a > b
         }
 
-        let estimates = history.compactMap { session in
-            session.est1RM.map { Point(date: session.date, value: $0) }
-        }
-        if !estimates.isEmpty {
+        // An estimate is a physical quantity, so a history that switched
+        // units is still one trend: every estimate is shown in the unit of
+        // the latest one. Estimates already in that unit keep their value.
+        let estimated = history.filter { $0.est1RM != nil }
+        if let unit = estimated.max(by: { ($0.date, $0.id) < ($1.date, $1.id) })?.loadUnit {
+            let estimates = estimated.compactMap { session in
+                session.est1RM.map { value in
+                    Point(date: session.date, value: session.loadUnit == unit ? value
+                        : (session.loadUnit.convert(value, to: unit) * 10).rounded() / 10)
+                }
+            }
             options.insert(Self(id: .estimatedOneRepMax, title: "Estimated 1RM",
-                unit: history.flatMap(\.cohorts).first?.key.unit ?? "lb",
-                points: dailyBest(estimates)), at: 0)
+                unit: unit.rawValue, points: dailyBest(estimates)), at: 0)
         }
         return options
     }

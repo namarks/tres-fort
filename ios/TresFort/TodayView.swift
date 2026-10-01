@@ -783,6 +783,7 @@ private struct RunnerView: View {
     @State private var valueDraft: SetValueDraft?
     @State private var weightPrescription: RunnerPrescription?
     @State private var loadingTarget: Double?
+    @State private var loadingUnit = WeightUnit.lb
     @State private var showingLoading = false
     @State private var previewFor: TemplateExercise?
     @AppStorage(RestCue.defaultsKey) private var timerCuesEnabled = true
@@ -905,10 +906,12 @@ private struct RunnerView: View {
                             Toggle("Timer sounds", isOn: $timerCuesEnabled)
                                 .tint(Theme.accent)
                                 .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
-                            // The plate guide works in lb, so it only takes an lb runner load.
-                            if ex.exercise_modality == "barbell", ex.targetWeightUnit == .lb {
+                            // The runner load is held in the slot's unit; the
+                            // guide plans lb or kg plates in that same unit.
+                            if ex.exercise_modality == "barbell" {
                                 Button {
                                     loadingTarget = sync.weight
+                                    loadingUnit = ex.targetWeightUnit
                                     showingLoading = true
                                 } label: {
                                     Text("Plates & warm-up guide")
@@ -998,7 +1001,7 @@ private struct RunnerView: View {
                 )
             }
             .sheet(isPresented: $showingLoading) {
-                BarbellLoadingView(target: loadingTarget ?? sync.weight)
+                BarbellLoadingView(target: loadingTarget ?? sync.weight, unit: loadingUnit)
             }
             .sheet(item: $previewFor) { selected in
                 exercisePreview(startingAt: selected.id)

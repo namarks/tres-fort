@@ -64,8 +64,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["LOG SET 2"].isHittable)
         XCTAssertGreaterThan(app.scrollViews.firstMatch.frame.height, 100)
         let edit = app.buttons["rest.editLastSet"]
-        for _ in 0..<6 where !edit.isHittable
-            || edit.frame.maxY > app.buttons["LOG SET 2"].frame.minY { app.scrollViews.firstMatch.swipeUp() }
+        reveal(edit, above: app.buttons["LOG SET 2"], in: app)
         XCTAssertTrue(edit.isHittable); edit.tap()
         XCTAssertTrue(app.navigationBars["Correct set"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
@@ -75,6 +74,27 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["LOG SET 2"].isHittable)
         app.buttons["LOG SET 2"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.buttons["LOG SET 3"].waitForExistence(timeout: 5))
+    }
+
+    /// Scrolls the runner with short, momentum-free drags until `element` is
+    /// hittable and clear of the fixed action. At accessibility sizes the
+    /// compact rest card is taller than the visible runner, and a swipe's
+    /// momentum carries a control just below the fold past the top.
+    private func reveal(_ element: XCUIElement, above action: XCUIElement, in app: XCUIApplication) {
+        let scroll = app.scrollViews.firstMatch
+        for _ in 0..<12 {
+            let top = max(scroll.frame.minY, app.navigationBars.firstMatch.frame.maxY)
+            let bottom = min(scroll.frame.maxY, action.frame.minY)
+            if element.isHittable, element.frame.maxY <= bottom { return }
+            // Not below the visible area means above it: drag content down.
+            let down = element.frame.maxY <= bottom
+            let height = bottom - top
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: scroll.frame.midX, dy: top + height * (down ? 0.25 : 0.75)))
+            let end = origin.withOffset(CGVector(dx: scroll.frame.midX, dy: top + height * (down ? 0.75 : 0.25)))
+            start.press(forDuration: 0.1, thenDragTo: end,
+                        withVelocity: .slow, thenHoldForDuration: 0.5)
+        }
     }
 
     private func capture(_ name: String) {

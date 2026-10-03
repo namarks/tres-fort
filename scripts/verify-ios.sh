@@ -197,6 +197,15 @@ if ! xcodebuild test-without-building "${build_args[@]}" \
     -resultBundlePath "$recording_root/Tests.xcresult" \
     ${test_args[@]+"${test_args[@]}"} >"$recording_root/xcodebuild.log" 2>&1; then
   awk '/error:|Test Case .*failed|Test Suite .*failed/{print}' "$recording_root/xcodebuild.log" >&2
+  # Each failed test's own activity steps and errors (its last 80), so a
+  # failure that is not the shard's last test still shows what it waited
+  # on. Element-tree dumps are left out; they would crowd out the steps.
+  awk '/^Test Case .* started/ { n = 0 }
+       /^ +t = |error:/ { line[n++ % 80] = $0 }
+       /^Test Case .* failed/ {
+         print "---- trace: " $0
+         for (i = (n > 80 ? n - 80 : 0); i < n; i++) print line[i % 80]
+       }' "$recording_root/xcodebuild.log" >&2
   tail -n 100 "$recording_root/xcodebuild.log" >&2
   exit 1
 fi

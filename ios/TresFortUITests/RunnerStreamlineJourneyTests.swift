@@ -72,8 +72,11 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["Expand rest timer"].exists)
         let edit = app.buttons["rest.editLastSet"]
         reveal(edit, in: app); edit.tap()
-        XCTAssertTrue(app.navigationBars["Correct set"].waitForExistence(timeout: 5))
+        let correction = app.navigationBars["Correct set"]
+        XCTAssertTrue(correction.waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: correction)
+        waitForExpectations(timeout: 5)
         // All primary actions share the scrolling surface at accessibility
         // sizes; the footer must never consume the entire input viewport.
         for _ in 0..<8 where !endRest.isHittable { app.scrollViews.firstMatch.swipeDown() }
@@ -281,7 +284,10 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertTrue(expand.waitForExistence(timeout: 5)); expand.tap()
         XCTAssertTrue(app.staticTexts["rest.status"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["LOG SET 2"].isHittable)
-        app.buttons["rest.minimize"].tap()
+        let minimize = app.buttons["rest.minimize"]
+        minimize.tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: minimize)
+        waitForExpectations(timeout: 5)
         let end = app.buttons["rest.done"]
         XCTAssertTrue(end.isHittable)
         let endFrame = end.frame

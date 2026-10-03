@@ -496,12 +496,13 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@agent):** P0.6(a) implementation and local verification
-are complete. If [PR #229](https://github.com/namarks/tres-fort/pull/229) remains
-open, merge only after independent review and every required CI check pass on
-its exact final head. After merge, P0.6(b) client distribution is the next Focus
-gate and requires separate owner activation; repository completion does not
-establish that the installed app contains these changes.
+**Now (@agent):** P0.6(a) implementation and local verification are complete.
+Bring [PR #229](https://github.com/namarks/tres-fort/pull/229) to ready-to-merge
+with independent review and every required CI check passing on its exact final
+head. The repository's newly added Codex gate workflow leaves the merge to Nick.
+After merge, P0.6(b) client distribution is the next Focus gate and requires
+separate owner activation; repository completion does not establish that the
+installed app contains these changes.
 
 **Deferred owner verification:** Test the authenticated workout paths on a device
 using internal TestFlight 1.0 (44), including metadata, freestyle recovery/save

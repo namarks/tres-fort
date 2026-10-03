@@ -2,10 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>NSCameraUsageDescription</key>
+    <string>Count exercise repetitions in Station Mode on this device. Video is not recorded or uploaded.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Record optional workout feedback for an editable transcript. Audio is discarded.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Transcribe workout feedback on this iPhone. Only text you save is shared with your coach.</string>
+    <string>Transcribe workout feedback on this device. Only text you save is shared with your coach.</string>
   <key>CFBundleIdentifier</key>
   <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
   <key>CFBundleExecutable</key>
@@ -32,7 +34,7 @@
        never shows it (we pass toShare: []). The Share string IS shown in the
        read-permission sheet. -->
   <key>NSHealthShareUsageDescription</key>
-  <string>Très Fort reads workouts, heart rate, distance, and calories for coaching. You can also allow weight access to view your weight trend privately on this iPhone.</string>
+  <string>Très Fort reads workouts, heart rate, distance, and calories for coaching. You can also allow weight access to view your weight trend privately on this device.</string>
   <key>NSHealthUpdateUsageDescription</key>
   <string>Très Fort only reads Apple Health data for workout coaching and your private weight trend. It does not write to Apple Health.</string>
   <key>ITSAppUsesNonExemptEncryption</key>
@@ -49,6 +51,13 @@
   <key>UISupportedInterfaceOrientations</key>
   <array>
     <string>UIInterfaceOrientationPortrait</string>
+  </array>
+  <key>UISupportedInterfaceOrientations~ipad</key>
+  <array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationPortraitUpsideDown</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
   </array>
   <key>UIApplicationSceneManifest</key>
   <dict>

@@ -213,6 +213,7 @@ struct TodayView: View {
     /// one-time notification permission prompt before a new workout.
     @State private var isPreparingWorkoutStart = false
     @State private var showFreestyle = false
+    @State private var showStation = false
 
     var body: some View {
         let fullRestOverlayVisible = sync.restEndDate != nil && !restMinimized
@@ -266,6 +267,14 @@ struct TodayView: View {
             .navigationTitle(sync.running ? "Workout" : "Today")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if UIDevice.current.userInterfaceIdiom == .pad {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button { showStation = true } label: {
+                            Label("Station Mode", systemImage: "figure.strengthtraining.traditional")
+                        }
+                        .accessibilityIdentifier("today.station")
+                    }
+                }
                 if sync.running {
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
@@ -315,6 +324,10 @@ struct TodayView: View {
             }
             .sheet(item: $feedbackPresentation) { item in
                 WorkoutFeedbackSheet(sync: sync, target: item.target, finishAfterSave: true)
+            }
+            .fullScreenCover(isPresented: $showStation) {
+                StationView(workoutName: sync.selectedDay?.name)
+                    .environment(\.dynamicTypeSize, dynamicTypeSize)
             }
             .sheet(item: $previewTarget) { target in
                 WorkoutDetailsView(sync: sync, workoutID: target.id,

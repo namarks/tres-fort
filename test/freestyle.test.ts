@@ -72,7 +72,7 @@ it('keeps timed, rep, assistance, added-load, warmup and variation cohorts separ
   {id:'h',exercise_id:'pull',weight:20,reps:99,is_timed:0,is_warmup:1},
   {id:'i',exercise_id:'pull',weight:20,reps:99,is_timed:0,deleted_at:1},
  ].map((s,i)=>({user_id:'u',session_id:'s',template_exercise_id:null,set_index:i,rpe:null,notes:null,
-  is_warmup:0,logged_at:i,updated_at:i,deleted_at:null,duration_s:null,source:'ios' as const,...s}));
+  is_warmup:0,logged_at:i,updated_at:i,deleted_at:null,duration_s:null,source:'ios' as const,weight_unit:'lb' as const,...s}));
  expect(deriveFreestylePrescriptions(rows).map(s=>[s.exercise_id,s.target_weight,s.target_sets,s.target_reps,s.target_duration_s]))
   .toEqual([['pull',-30,2,6,null],['pull',0,1,8,null],['pull',20,1,3,null],['pull',20,2,1,23],['variation',20,1,9,null]]);
 });

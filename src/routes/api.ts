@@ -1090,6 +1090,7 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
       logged_at: isNonNegativeInteger,
       duration_s: isNullableNonNegativeInteger,
       is_timed: (value) => typeof value === 'boolean',
+      weight_unit: (value) => value === 'lb' || value === 'kg',
       expected_attempt: isNonNegativeInteger,
       prescription: (value) => {
         if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
@@ -1123,6 +1124,7 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
       logged_at: b.logged_at as number | undefined,
       duration_s: b.duration_s as number | null | undefined,
       is_timed: b.is_timed as boolean | undefined,
+      weight_unit: b.weight_unit as 'lb' | 'kg' | undefined,
       expected_attempt: b.expected_attempt as number | undefined,
       claim_attempt_protocol: protocolHeader.declared,
       prescription: b.prescription as { plan_id: string; version: number; day_id: string } | undefined,

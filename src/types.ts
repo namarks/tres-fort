@@ -234,6 +234,9 @@ export interface SetLogRow {
    *  incidental wall-clock duration). Added in migration 0024. */
   is_timed: number;
   deleted_at: number | null;
+  /** Unit of `weight`, as logged ('lb' | 'kg'). Rows predating migration
+   *  0055 read 'lb'; it never derives from the catalog exercise unit. */
+  weight_unit: 'lb' | 'kg';
 }
 
 export interface EnrichedTemplateExercise extends TemplateExerciseRow {

@@ -5224,6 +5224,8 @@ export async function logSet(
      *  countdown (e.g. a target_duration_s slot) passes true so the set is
      *  stored as timed regardless of modality. */
     is_timed?: boolean;
+    /** Unit of `weight` as the client logged it; omitted means 'lb'. */
+    weight_unit?: 'lb' | 'kg';
     /** Optional generation CAS. New durable clients persist and reuse it;
      *  omitted legacy/MCP calls still snapshot the pre-write attempt below. */
     expected_attempt?: number;
@@ -5418,6 +5420,7 @@ export async function logSet(
     duration_s: input.duration_s ?? null,
     is_timed: isTimedInt,
     deleted_at: null,
+    weight_unit: input.weight_unit ?? 'lb',
   };
   // The pre-check above resolves the common collision, but two concurrent
   // writers can both pass it and then race on the INSERT — only the unique
@@ -5433,8 +5436,8 @@ export async function logSet(
       db
         .prepare(
           `INSERT INTO set_logs
-           (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at,user_id,updated_at)
-           SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL,user_id,?17
+           (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at,user_id,updated_at,weight_unit)
+           SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL,user_id,?17,?19
              FROM sessions
             WHERE id = ?2
               AND user_id = ?18
@@ -5448,7 +5451,7 @@ export async function logSet(
           row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
           row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
           row.duration_s, row.is_timed, casAttempt, attemptScoped ? 1 : 0,
-          row.updated_at, userId,
+          row.updated_at, userId, row.weight_unit,
         ),
       // Claim/start only when this owned UUID now exists. Keeping the INSERT
       // first avoids mutating the session for a globally-colliding UUID, while
@@ -6072,13 +6075,14 @@ export async function getWorkoutSummary(
     db.prepare(`SELECT e.* FROM exercises e WHERE e.id IN (
       SELECT exercise_id FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL)`)
       .bind(sessionId, userId),
-    db.prepare(`SELECT sl.exercise_id,sl.weight,sl.is_timed,MAX(sl.reps) AS reps,
+    // A previous best is per load and unit: 24 kg never compares with 24 lb.
+    db.prepare(`SELECT sl.exercise_id,sl.weight,sl.weight_unit,sl.is_timed,MAX(sl.reps) AS reps,
         MAX(COALESCE(sl.duration_s,sl.reps)) AS duration_s
       FROM set_logs sl JOIN sessions s ON s.id=sl.session_id
       WHERE s.user_id=?2 AND s.status='completed' AND sl.deleted_at IS NULL AND sl.is_warmup=0
         AND s.date < (SELECT date FROM sessions WHERE id IN (${owned}))
         AND sl.exercise_id IN (SELECT exercise_id FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL)
-      GROUP BY sl.exercise_id,sl.weight,sl.is_timed`).bind(sessionId, userId),
+      GROUP BY sl.exercise_id,sl.weight,sl.weight_unit,sl.is_timed`).bind(sessionId, userId),
   ]);
   const session = sessionResult!.results[0] as unknown as SessionRow | undefined;
   if (!session) return null;

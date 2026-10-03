@@ -35,7 +35,7 @@ final class WorkoutSummaryJourneyTests: XCTestCase {
         let targets = app.buttons["workoutSummary.targets"]
         for _ in 0..<8 where !targets.isHittable { app.swipeUp() }
         XCTAssertTrue(targets.isHittable)
-        XCTAssertEqual(app.staticTexts.matching(identifier: "PLANK").count, 1)
+        XCTAssertEqual(app.staticTexts.matching(identifier: "Plank").count, 1)
         capture("completed-workout-details")
         targets.tap()
         XCTAssertTrue(app.staticTexts["1 sets not logged"].waitForExistence(timeout: 5))

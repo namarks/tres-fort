@@ -46,7 +46,10 @@ elif name == 'xcodebuild' and args[0] in ['build-for-testing', 'test-without-bui
     (result / 'result.txt').write_text('synthetic evidence')
     print('build/test diagnostic')
     if args[0] == 'test-without-building' and os.environ.get('MOCK_TEST_EXIT'):
+        print("Test Case '-[Suite testExample]' started.")
+        print('    t =     1.00s Tap "LOG SET 1" Button')
         print('Example.swift:42: error: XCTest assertion failed')
+        print("Test Case '-[Suite testExample]' failed (2.000 seconds).")
         print('accessibility dump\\n' * 120)
     if args[0] == 'test-without-building' and os.environ.get('MOCK_CANCEL_DURING_TEST'):
         # Kill only the disposable verifier shell, emulating a runner that
@@ -95,6 +98,9 @@ else: print('synthetic-tool-version')
         result=self.run_script(['--runtime','runtime','--device','device','--only-testing','TresFortTests'])
         self.assertNotEqual(result.returncode,0)
         self.assertIn('Example.swift:42: error: XCTest assertion failed', result.stderr)
+        # The failed test's trace survives even when later output fills the tail.
+        self.assertIn("---- trace: Test Case '-[Suite testExample]' failed", result.stderr)
+        self.assertIn('Tap "LOG SET 1" Button', result.stderr)
         self.assertIn(['xcrun',['simctl','delete','disposable-simulator']],self.calls())
         self.assertEqual(len(list((self.root/'.artifacts').rglob('result.txt'))),2)
         self.assertIn('-only-testing:TresFortTests',next(args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building'))

@@ -63,14 +63,13 @@ final class ExerciseInformationJourneyTests: XCTestCase {
         XCTAssertTrue(start.waitForExistence(timeout: 10)); start.tap()
         XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
         app.buttons["Increase reps by 1"].tap()
-        let draft = app.staticTexts["runner.setSummary"].label
+        let draft = app.buttons["runner.reps"].value as? String
         openInfo("Barbell Squat", in: app)
         history(app)
         app.buttons["exerciseInfo.done"].tap()
-        XCTAssertEqual(app.staticTexts["runner.setSummary"].label, draft)
+        XCTAssertEqual(app.buttons["runner.reps"].value as? String, draft)
         app.buttons["LOG SET 1"].tap()
-        let minimize = app.buttons["rest.minimize"]
-        XCTAssertTrue(minimize.waitForExistence(timeout: 5)); minimize.tap()
+        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
         for _ in 0..<4 where !app.buttons["Exercise information for Barbell Squat"].isHittable { app.swipeDown() }
         openInfo("Barbell Squat", in: app)
         history(app)
@@ -78,7 +77,7 @@ final class ExerciseInformationJourneyTests: XCTestCase {
         app.buttons["exerciseInfo.done"].tap()
         XCTAssertTrue(app.buttons["rest.done"].exists)
         XCTAssertTrue(app.buttons["LOG SET 2"].exists)
-        XCTAssertEqual(app.staticTexts["runner.setSummary"].label, draft)
+        XCTAssertEqual(app.buttons["runner.reps"].value as? String, draft)
     }
 
     func testActiveTimedSetContinuesWhileInformationIsOpen() {
@@ -147,6 +146,9 @@ final class ExerciseInformationJourneyTests: XCTestCase {
 
     func testSwapInfoDoesNotSelectAndRunnerUsesReplacementHistory() {
         let app = launch("workout-swap")
+        XCTAssertTrue(app.buttons["runner.outline"].waitForExistence(timeout: 10))
+        app.buttons["runner.outline"].tap()
+        app.buttons["Current exercise options"].tap()
         let swap = app.buttons["runner.swap-exercise"]
         XCTAssertTrue(swap.waitForExistence(timeout: 10))
         for _ in 0..<8 where !swap.isHittable { app.swipeUp() }
@@ -158,6 +160,7 @@ final class ExerciseInformationJourneyTests: XCTestCase {
         XCTAssertFalse(app.buttons["runner.confirm-swap"].isEnabled)
         app.buttons.containing(.staticText, identifier: "Dumbbell Goblet Squat").firstMatch.tap()
         app.buttons["runner.confirm-swap"].tap()
+        app.buttons["runner.outline.done"].tap()
         XCTAssertTrue(app.staticTexts["DUMBBELL GOBLET SQUAT"].waitForExistence(timeout: 5))
         openInfo("Dumbbell Goblet Squat", in: app)
         history(app)

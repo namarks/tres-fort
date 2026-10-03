@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: gated · Updated: 2026-09-19 · Theme: gym-floor
+Slug: workout-library · Status: active · Updated: 2026-10-03 · Theme: gym-floor
 
 ## Goal
 
@@ -306,6 +306,51 @@ No second editor, no per-session template copies, no weeks table.
       scrolling responsive and preserve text accessibility; visuals must not
       push the prescription or primary workout action out of reach.
 
+- [ ] **P0.6 — Focus the gym workflow**
+  - The October 3 design audit and owner approval activate this implementation.
+    Use the Focus direction: keep the current exercise, combined load/reps
+    entry and logging action central; retain the dark/amber visual language.
+  - [x] **(a) Implementation and local verification**
+    - Reserve compact rest and correction space beside the logging action.
+      Keep End rest separate when the timer expires; offer the large clock
+      explicitly. Collapse unloaded bodyweight input behind Add load/assistance.
+    - Show the current circuit round, every member and the next member's target
+      compactly. Name the single-set mutation Log set, including circuits.
+    - Consolidate exercise navigation, set review/corrections, swap, skip and
+      options into Workout outline. Browsing during an active timed set must
+      preserve its executing slot and deadline. Keep model-owned drafts,
+      signed assistance, load units and per-side/per-hand semantics intact.
+    - Hide tabs in the focused workout; offer Minimize and a clear Resume
+      workout route. Preserve timers and entries across tab navigation.
+    - Separate date selection from library management, start/continue today's
+      workout directly from Calendar, and collapse completed sets beneath
+      exercise summaries. Finish feedback remains optional.
+    - Verify compact-phone and accessibility layouts with synthetic native
+      journeys, exercise groups, timers, recovery and correction flows. Require
+      independent review and all applicable CI checks on the final PR head.
+    - Implemented in [PR #229](https://github.com/namarks/tres-fort/pull/229).
+      Compact rest keeps separate End rest and logging controls; Workout outline
+      holds secondary actions. Minimize/Resume also retains a Review workout
+      route when the final timed set completes on another tab. Calendar starts
+      prepare rest notifications and revalidate the selected session afterward.
+    - Local verification executed 679 existing unit tests with zero failures
+      and one simulator-only file-protection skip. All eight group-presentation
+      tests passed, including six new next-member regressions. Fifty-one distinct
+      native UI journeys passed across the final targeted runs and repaired-case
+      repeats on iPhone 16e / iOS 26.2. Coverage includes accessible rest/logging,
+      exact correction, per-side and signed load entry, timed browsing/recovery,
+      date selection, unresolved-record expansion/correction, schedule
+      conflict/retry and optional finish feedback. The compact rest row only
+      creates its periodic timeline while a rest deadline exists.
+      Native screenshots were inspected. The empty correction reservation uses
+      a layout spacer so it does not expose an unnamed accessibility element.
+      PR #229 retains final-head hosted review and CI as the merge gates;
+      physical-device and manual VoiceOver acceptance remain unverified.
+  - [ ] **(b) Client distribution**
+    - Implementation approval does not authorize TestFlight or public release.
+      Use the existing client release workflow after explicit owner activation;
+      preserve all previously deferred physical-device and live-account checks.
+
 - [x] **P1 — Library metadata: tags and archive**
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work
@@ -426,6 +471,7 @@ No second editor, no per-session template copies, no weeks table.
 
 - P0.2(b)
 - P0.5(c)
+- P0.6(b)
 
 ## Dependencies
 
@@ -442,6 +488,7 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 | P0.3(a) | coordinates_with | plan:member-activation-and-adherence#P0 | Both use first-workout entry and the shared exercise catalog. |
 | P0.5(c) | gated_by | external:owner-sensai-followup-implementation | Preview thumbnails remain planned pending activation. |
 | P0.5 | coordinates_with | plan:member-activation-and-adherence#P3 | Preview and upcoming-session entry share Today and workout detail routes. |
+| P0.6(b) | gated_by | external:owner-workout-focus-client-release | The October 3 approval covers implementation and repository delivery; client distribution needs separate activation. |
 | P0.2(b) | gated_by | external:owner-live-workout-verification | Authenticated session-swap and workout behavior still need a connected client/device; the build-44 internal-release exception does not claim these checks passed. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
 
@@ -451,7 +498,16 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@owner):** Test the deferred authenticated workout paths on a device
+**Now (@agent):** P0.6(a) implementation and local verification are complete.
+Complete the ready-to-merge handoff for
+[PR #229](https://github.com/namarks/tres-fort/pull/229) after independent review
+and every required CI check pass on its exact final head. Follow the repository's
+Codex gate for that handoff; this plan does not grant merge authority.
+After merge, P0.6(b) client distribution is the next Focus gate and requires
+separate owner activation; repository completion does not establish that the
+installed app contains these changes.
+
+**Deferred owner verification:** Test the authenticated workout paths on a device
 using internal TestFlight 1.0 (44), including metadata, freestyle recovery/save
 and session swaps. P1/P2 backend and internal client delivery are complete under
 the explicit build-44 verification exception; do not reinstate its upload gate.

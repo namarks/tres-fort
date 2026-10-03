@@ -23,6 +23,10 @@ struct DayAgendaView: View {
     @State private var showFreestyle = false
     @State private var confirmRemoval = false
     @State private var movingWorkout: Workout?
+    @State private var isPreparingWorkoutStart = false
+    @State private var workoutStartTask: Task<Void, Never>?
+    @State private var workoutStartRequestID: UUID?
+    @State private var workoutStartError: String?
 
     private static let prettyDateFormatter: DateFormatter = {
         let f = DateFormatter()
@@ -34,7 +38,7 @@ struct DayAgendaView: View {
 
     private var prettyDate: String {
         guard let d = CalendarProjection.date(from: dateString) else { return dateString }
-        return Self.prettyDateFormatter.string(from: d).uppercased()
+        return Self.prettyDateFormatter.string(from: d)
     }
 
     var body: some View {
@@ -56,13 +60,14 @@ struct DayAgendaView: View {
                             .foregroundStyle(Theme.danger)
                             .accessibilityIdentifier("calendarOverrideError")
                     }
+                    if let workoutStartError {
+                        Text(workoutStartError).font(.subheadline).foregroundStyle(Theme.muted)
+                    }
+                    todayWorkoutAction(proj, today: today)
                     content(proj, today: today)
                     if dateString == today, sync.canStartFreestyle {
                         Button("Start freestyle", systemImage: "figure.strengthtraining.traditional") { showFreestyle = true }
                             .frame(minHeight: 44).accessibilityIdentifier("calendar.startFreestyle")
-                    }
-                    if dateString == today, sync.running, sync.isFreestyle {
-                        Text("Your freestyle session is running. Open Today to continue.").foregroundStyle(Theme.accent)
                     }
                     // On a can_train_light=false blackout the backend projects
                     // items: [] — so suppress the endurance cards here too, or a
@@ -80,6 +85,12 @@ struct DayAgendaView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .onDisappear {
+            workoutStartTask?.cancel()
+            workoutStartTask = nil
+            workoutStartRequestID = nil
+            isPreparingWorkoutStart = false
+        }
         .sheet(isPresented: $showFreestyle) { FreestyleExercisePicker(sync: sync, starting: true, onStarted: onStartWorkout) }
         .sheet(item: $movingWorkout) { workout in
             MoveWorkoutDateSheet(sync: sync, workout: workout, fromDate: dateString)
@@ -142,7 +153,7 @@ struct DayAgendaView: View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(prettyDate)
-                    .font(Theme.mono(11, .bold)).tracking(2)
+                    .font(.subheadline)
                     .foregroundStyle(Theme.muted)
                 Text(title(proj, today: today))
                     .font(Theme.display(30))
@@ -275,6 +286,74 @@ struct DayAgendaView: View {
         sync.sessionsByDate[dateString]
     }
 
+    /// Only today's agenda can execute a workout. All transitions stay in the
+    /// same runner model, including a minimized or recovered freestyle session.
+    @ViewBuilder private func todayWorkoutAction(_ projection: DayProjection, today: String) -> some View {
+        if dateString == today, onStartWorkout != nil, !sync.todayIsCompleted {
+            let continuing = sync.running || sync.hasResumableWorkout
+            let workout = sync.previewWorkout(forDateString: dateString, today: today)
+            if continuing || (!projection.suppressesScheduleAndEndurance && workout != nil) {
+                Button(isPreparingWorkoutStart ? "Preparing…" : continuing ? "Continue workout" : "Start workout") {
+                    guard dateString == sync.todayString, !sync.todayIsCompleted else { return }
+                    if sync.running {
+                        onStartWorkout?()
+                    } else if sync.hasResumableWorkout {
+                        sync.resumeWorkout()
+                        if sync.running { onStartWorkout?() }
+                    } else if let workout {
+                        prepareWorkoutStart(workout)
+                    }
+                }
+                .buttonStyle(WorkoutPrimaryButtonStyle())
+                .disabled(isPreparingWorkoutStart || sync.isRoutineMutationInFlight
+                    || (!continuing && (sync.blocksNewWorkoutStart || workout?.exercises.isEmpty != false)))
+                .accessibilityIdentifier("calendar.startWorkout")
+            }
+        }
+    }
+
+    private func prepareWorkoutStart(_ workout: Workout) {
+        guard !isPreparingWorkoutStart else { return }
+        let reviewedSessionID = realSession?.id
+        let reviewedAttempt = realSession?.attempt
+        let reviewedStatus = realSession?.status
+        let reviewedPlanID = sync.plan?.id
+        let requestID = UUID()
+        workoutStartRequestID = requestID
+        isPreparingWorkoutStart = true
+        workoutStartError = nil
+        workoutStartTask = Task { @MainActor in
+            defer {
+                if workoutStartRequestID == requestID {
+                    isPreparingWorkoutStart = false
+                    workoutStartTask = nil
+                    workoutStartRequestID = nil
+                }
+            }
+            // Match Today's explicit start boundary: the first logged set must
+            // never be interrupted by the notification permission prompt.
+            await RestCue.requestNotificationPermissionIfNeeded()
+            guard !Task.isCancelled, workoutStartRequestID == requestID else { return }
+            // A permission dialog can outlive midnight, a sync, or a session
+            // change. Only start the exact workout/session the user reviewed.
+            guard dateString == sync.todayString,
+                  !sync.running, !sync.hasResumableWorkout,
+                  !sync.blocksNewWorkoutStart, !sync.todayIsCompleted,
+                  !sync.isRoutineMutationInFlight,
+                  sync.plan?.id == reviewedPlanID,
+                  sync.previewWorkout(forDateString: dateString) == workout,
+                  !sync.projection(for: dateString).suppressesScheduleAndEndurance,
+                  realSession?.id == reviewedSessionID,
+                  realSession?.attempt == reviewedAttempt,
+                  realSession?.status == reviewedStatus else {
+                workoutStartError = "This workout changed. Review the date before starting."
+                return
+            }
+            sync.startOverride(dayID: workout.id)
+            if sync.running { onStartWorkout?() }
+        }
+    }
+
     // MARK: content
 
     @ViewBuilder private func content(_ proj: DayProjection, today: String) -> some View {
@@ -367,33 +446,35 @@ struct DayAgendaView: View {
             if logged.isEmpty {
                 note("No sets logged.")
             } else {
-                Text("WORKOUT DETAILS")
-                    .font(Theme.mono(11, .bold)).tracking(2)
+                Text("Exercises")
+                    .font(.headline)
                     .foregroundStyle(Theme.muted)
                     .padding(.top, 12)
                     .accessibilityAddTraits(.isHeader)
                 ForEach(orderedIDs, id: \.self) { exID in
                     let rows = (groups[exID] ?? []).sorted { $0.set_index < $1.set_index }
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(sync.exerciseName(exID).uppercased())
-                            .font(Theme.display(20))
-                            .foregroundStyle(Theme.text)
-                        ForEach(rows) { s in
-                            HStack {
-                                Text("SET \(s.set_index)")
-                                    .font(Theme.mono(10, .bold)).tracking(1)
-                                    .foregroundStyle(Theme.dim)
-                                Spacer()
-                                Text(setLine(s))
-                                    .font(Theme.mono(14, .bold))
-                                    .foregroundStyle(s.is_warmup == 1 ? Theme.muted : Theme.text)
-                            }
-                            .padding(.vertical, 7)
-                            .overlay(alignment: .bottom) {
-                                Divider().overlay(Theme.surface2)
+                    DisclosureGroup {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(rows) { set in
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Text("Set \(set.set_index)")
+                                        .font(.caption).foregroundStyle(Theme.muted)
+                                    SetReviewList(sync: sync, sets: [set], pending: [])
+                                }
                             }
                         }
+                        .padding(.top, 12)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(sync.exerciseName(exID))
+                                .font(.headline).foregroundStyle(Theme.text)
+                                .accessibilityIdentifier("calendar.exercise.\(exID)")
+                            Text(exerciseSummary(rows))
+                                .font(.subheadline).foregroundStyle(Theme.muted)
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                     }
+                    .tint(Theme.accent)
                     .padding(16)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Theme.surface)
@@ -409,14 +490,16 @@ struct DayAgendaView: View {
         }
     }
 
-    private func setLine(_ s: SetLog) -> String {
-        var parts: [String] = [s.valueLabel(
-            timed: sync.isTimedSet(s),
-            bodyweight: sync.isBodyweightExercise(s.exercise_id),
-            unilateral: sync.sides(for: s.exercise_id) == 2)]
-        if let r = s.rpe { parts.append("RPE \(SetValueFormatter.number(r))") }
-        if s.is_warmup == 1 { parts.append("(warmup)") }
-        return parts.joined(separator: "  ")
+    private func exerciseSummary(_ rows: [SetLog]) -> String {
+        let working = rows.filter { $0.is_warmup != 1 }
+        let warmups = rows.count - working.count
+        var parts = ["\(working.count) working \(working.count == 1 ? "set" : "sets")"]
+        let reps = sync.totalReps(for: working)
+        let seconds = working.filter { sync.isTimedSet($0) }.reduce(0) { $0 + max(0, $1.duration_s ?? $1.reps) }
+        if reps > 0 { parts.append("\(reps) reps") }
+        if seconds > 0 { parts.append(WorkoutSummaryStats.duration(seconds)) }
+        if warmups > 0 { parts.append("\(warmups) warm-up \(warmups == 1 ? "set" : "sets")") }
+        return parts.joined(separator: " · ")
     }
 
     // planned / projected → template name + targets.

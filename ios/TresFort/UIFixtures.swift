@@ -111,6 +111,18 @@ struct UIFixtureView: View {
     let scenario: UIFixtureScenario
     @State private var openedURL: URL?
     @ObservedObject private var requestEvidence = UIFixtureRequestEvidence.shared
+    @State private var clockStartedAt = ProcessInfo.processInfo.systemUptime
+
+    private var appStoreClock: () -> Date {
+        let date = CalendarProjection.date(from: "2026-09-08")!
+        guard ProcessInfo.processInfo.environment["TRESFORT_UI_TICKING_CLOCK"] == "1" else {
+            return { date }
+        }
+        // Timer-completion journeys need elapsed time while keeping the
+        // fictional calendar/session date. Ordinary asset captures stay fixed.
+        let startedAt = clockStartedAt
+        return { date.addingTimeInterval(ProcessInfo.processInfo.systemUptime - startedAt) }
+    }
 
     var body: some View {
         Group {
@@ -125,7 +137,7 @@ struct UIFixtureView: View {
                 // QA fixtures retain their banner; this dedicated asset mode
                 // is excluded from release and physical-device builds.
                 RootView(defaults: UIFixtureModel.defaults,
-                         now: { CalendarProjection.date(from: "2026-09-08")! }).environmentObject(auth)
+                         now: appStoreClock).environmentObject(auth)
             } else if scenario == .signIn || scenario.isActivation || scenario.isIntervals || scenario == .groupSafety || scenario == .coachApproval {
                 VStack(spacing: 0) {
                     Text("SYNTHETIC · \(scenario.rawValue)")

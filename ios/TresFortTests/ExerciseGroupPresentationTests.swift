@@ -55,4 +55,75 @@ final class ExerciseGroupPresentationTests: XCTestCase {
         XCTAssertEqual(ExerciseGroupBlock.blocks(slots).count, 4)
         XCTAssertEqual(slots.map(\.rest_seconds), [45, 90, 120, 75])
     }
+
+    private func progress(_ counts: [Int], targets: [Int]? = nil, skipped: Set<Int> = []) -> GroupRunnerProgress {
+        GroupRunnerProgress(id: "group", members: counts.enumerated().map { index, count in
+            .init(id: "member-\(index)", target: targets?[index] ?? 2,
+                  completedIDs: Set((0..<count).map { "saved-\(index)-\($0)" }),
+                  skipped: skipped.contains(index))
+        })
+    }
+
+    func testNextPreviewUsesMinimumProgressAfterManuallyFocusedMember() {
+        let group = progress([0, 0, 1])
+        // Browsing to B does not make C next: A still needs its first set.
+        XCTAssertEqual(group.nextMemberID(afterCompleting: "member-1"), "member-0")
+        // C is on physical set 2 while the group is still on round 1.
+        XCTAssertEqual(group.nextMemberID(afterCompleting: "member-2"), "member-0")
+        XCTAssertEqual(group.round, 1)
+        XCTAssertEqual(group.members.map { $0.completedIDs.count }, [0, 0, 1])
+    }
+
+    func testNextPreviewCanRepeatCurrentMemberWhenItIsBehind() {
+        let group = progress([0, 2, 2], targets: [3, 3, 3])
+        XCTAssertEqual(group.nextMemberID(afterCompleting: "member-0"), "member-0")
+        XCTAssertEqual(progress([1, 2, 2], targets: [3, 3, 3])
+            .nextMemberID(afterCompleting: "member-0"), "member-0",
+            "Equal counts retain stored order, matching the live scheduler")
+    }
+
+    func testNextPreviewIgnoresSkippedAndCompleteMembers() {
+        let group = progress([0, 0, 2, 0], skipped: [1])
+        XCTAssertEqual(group.nextMemberID(afterCompleting: "member-0"), "member-3")
+        XCTAssertEqual(group.nextMemberID(afterCompleting: "member-1"), "member-0")
+        XCTAssertNil(group.nextMemberID(afterCompleting: "member-2"))
+        XCTAssertNil(group.nextMemberID(afterCompleting: "missing"))
+    }
+
+    func testNextPreviewReenablesOnlyTheManuallyRevisitedSkippedMember() {
+        let before = progress([0, 0, 1], skipped: [0, 1])
+        XCTAssertEqual(before.nextMemberID, "member-2")
+        let next = before.nextMemberID(afterCompleting: "member-0")
+        // Logging the explicitly revisited A unskips A, but B stays skipped.
+        // A and C then tie at one set: stored order selects A again.
+        XCTAssertEqual(next, "member-0")
+        let committed = GroupRunnerProgress(id: before.id, members: before.members.map { member in
+            .init(id: member.id, target: member.target,
+                  completedIDs: member.id == "member-0" ? member.completedIDs.union(["committed-set"]) : member.completedIDs,
+                  skipped: member.id == "member-0" ? false : member.skipped)
+        })
+        XCTAssertEqual(next, committed.nextMemberID)
+        XCTAssertEqual(before.members.map(\.skipped), [true, true, false])
+        XCTAssertEqual(before.members.map { $0.completedIDs.count }, [0, 0, 1])
+    }
+
+    func testNextPreviewEndsAtFinalRoundAndWrapsOnlyForRemainingWork() {
+        XCTAssertEqual(progress([1, 0]).nextMemberID(afterCompleting: "member-1"), "member-0")
+        XCTAssertNil(progress([2, 1]).nextMemberID(afterCompleting: "member-1"))
+        XCTAssertNil(progress([0, 1], skipped: [0]).nextMemberID(afterCompleting: "member-1"))
+        XCTAssertNil(progress([2, 2]).nextMemberID)
+    }
+
+    func testPreviewMatchesSchedulerAfterDurableCommitWithoutChangingOriginalProgress() {
+        let before = progress([1, 0, 1], skipped: [2])
+        let next = before.nextMemberID(afterCompleting: "member-1")
+        let committed = GroupRunnerProgress(id: before.id, members: before.members.map { member in
+            .init(id: member.id, target: member.target,
+                  completedIDs: member.id == "member-1" ? member.completedIDs.union(["committed-set"]) : member.completedIDs,
+                  skipped: member.skipped)
+        })
+        XCTAssertEqual(next, committed.nextMemberID)
+        XCTAssertEqual(before.members[1].completedIDs, [])
+    }
+
 }

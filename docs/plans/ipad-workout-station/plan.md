@@ -62,12 +62,15 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Prepare a direct development-build/console loop on the owner's
-Mac mini and connected A16 iPad. The owner reports improved but still inadequate
-tracking in internal build 1.0 (46), and is updating iPadOS. The pre-update USB
-connection is trusted and paired; Developer Mode was disabled. After the update,
-verify Developer Mode, device support and development signing, then install the
-same-bundle Debug build without uninstalling or resetting app data. Use opt-in
+**Now (@agent):** Resume direct-device setup after the owner reviews and accepts
+the updated Xcode license on the Mac mini. During setup, installed Xcode changed
+from 26.3 to 27.0; device commands now refuse to run until license acceptance.
+The iPad update to 26.7.1 was verified, and the owner subsequently reported
+enabling Developer Mode and restarting. Final Developer Mode confirmation is
+not yet verified. Once Apple tooling is available, verify the device connection,
+Developer Mode and development signing, then install the same-bundle Debug build
+without uninstalling or resetting app data. The owner reports improved but still
+inadequate tracking in internal build 1.0 (46). Use opt-in
 numeric diagnostics to inspect rejected poses, counter phases and repeated
 Apple warm-up resets during manually counted movements, including front-facing
 squats. Counting quality and any frontal algorithm remain unvalidated.
@@ -174,7 +177,11 @@ workout-write and automation gates remain in force.
   `.artifacts/ios/tres-fort-ios.AsQAYn/Tests.xcresult`. An unsigned device Release
   build passed and its binary excludes the diagnostic UI/output markers;
   evidence: `.artifacts/station-device/release-diagnostics-exclusion.json`.
-  This slice has not yet been installed or observed on the physical iPad.
+  The unsigned Debug device build also passed. These checks used Xcode 26.3;
+  the later Xcode 27.0 license gate is a host setup issue, not new source
+  validation. The first signed-build attempt timed out preparing the device
+  before the owner enabled Developer Mode. This slice has not yet been installed
+  or observed on the physical iPad; see `.artifacts/station-device/` for logs.
 
 ## Acceptance and verification
 

@@ -6,6 +6,11 @@ recorded nor uploaded, and Station Mode cannot log or advance workout sets.
 
 ## Setup and installation
 
+After an Xcode update, check for any license/first-launch gate. If Apple tooling
+requires a new agreement, the owner must review and accept it in Xcode or via
+`sudo xcodebuild -license` on the Mac running this workspace. Do not accept legal
+terms or handle the owner's password on their behalf.
+
 1. Finish any iPadOS update, unlock the iPad, trust the Mac and enable Developer
    Mode (including the required restart and confirmation). Select the iPad from
    `xcrun devicectl list devices` and keep its identifier in `station_device`.

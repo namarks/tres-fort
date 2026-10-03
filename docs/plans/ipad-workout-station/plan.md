@@ -62,7 +62,10 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Investigate frontal pose reliability before tuning rep counting.
+**Now (@agent):** Complete P0 review and repository checks, addressing the camera
+request-reuse finding and preserving the verified diagnostic setup below.
+**Next physical trial (@owner):** Participate in a controlled pose-reliability
+comparison before tuning frontal rep counting; P1 cannot run unattended.
 The Debug build is signed, verified, installed in place and launched with its
 console attached. iPadOS 26.7.1, enabled Developer Mode and usable developer
 services are verified. The existing App Store Connect release key refreshed

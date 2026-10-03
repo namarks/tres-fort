@@ -273,6 +273,8 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
     private let session: AVCaptureSession
     private let queue = DispatchQueue(label: "com.nmarkspdx.tresfort.station.capture", qos: .userInitiated)
     private let output = AVCaptureVideoDataOutput()
+    // Created and reused only by capture callbacks on the serial queue.
+    private lazy var poseRequest = VNDetectHumanBodyPoseRequest()
     private var device: AVCaptureDevice?
     private var run: StationCaptureRun?
     private var eventHandler: (@MainActor (StationCaptureEvent) -> Void)?
@@ -475,7 +477,7 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
 
         autoreleasepool {
             do {
-                let request = VNDetectHumanBodyPoseRequest()
+                let request = poseRequest
                 let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
                 let inferenceStartedAt = ProcessInfo.processInfo.systemUptime
                 try handler.perform([request])

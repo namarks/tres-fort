@@ -243,15 +243,38 @@ final class StationDiagnostics: ObservableObject {
         let joints = sample.comparison.selectedJoints.isEmpty
             ? sample.comparison.candidateJoints : sample.comparison.selectedJoints
         let checkedJoints = snapshot.inputJoints.isEmpty ? joints : snapshot.inputJoints
-        let weakJoints = checkedJoints.filter { (pose?.confidences[$0] ?? 0) < 0.6 }
-        let confidence = checkedJoints.compactMap { pose?.confidences[$0] }.min()
-            .map { String(format: "%.2f", $0) } ?? "—"
-        let quality = weakJoints.isEmpty ? "Minimum confidence \(confidence)"
-            : "Weak/missing: \(weakJoints.prefix(3).joined(separator: ", "))"
+        let quality = jointQualitySummary(checkedJoints: checkedJoints)
+        let collecting = ["waiting_for_pose", "warming_up", "collecting", "reacquiring"].contains(snapshot.state)
+        let decision = collecting ? snapshot.admission
+            : "not collecting · last decision: \(snapshot.admission)"
         let hip = pose?.hipHeight.map { String(format: "%.2f", $0) } ?? "—"
         let scale = pose?.torsoScale.map { String(format: "%.2f", $0) } ?? "—"
-        latestSummary = "\(snapshot.state) · \(snapshot.admission)\n\(joints.joined(separator: ", "))\n\(quality)\nAngle \(angle) · \(snapshot.custom.phase) · accepted \(snapshot.accepted), rejected \(snapshot.rejected)\nApple \(snapshot.appleWarmup)/90 · restarts \(snapshot.interruptedSegments)\nHip y \(hip) · torso scale \(scale)"
+        latestSummary = "\(snapshot.state) · \(decision)\n\(checkedJoints.joined(separator: ", "))\n\(quality)\nAngle \(angle) · \(snapshot.custom.phase) · accepted \(snapshot.accepted), rejected \(snapshot.rejected)\nApple \(snapshot.appleWarmup)/90 · restarts \(snapshot.interruptedSegments)\nHip y \(hip) · torso scale \(scale)"
         emit("STATION_DIAGNOSTIC " + json)
+    }
+
+    private func jointQualitySummary(checkedJoints: [String]) -> String {
+        func quality(_ names: [String], removeSide: Bool = false) -> String {
+            let weak = names.compactMap { name -> String? in
+                let label = removeSide
+                    ? name.replacingOccurrences(of: "left", with: "")
+                        .replacingOccurrences(of: "right", with: "").lowercased() : name
+                guard let confidence = pose?.confidences[name] else { return "\(label) missing" }
+                return confidence < 0.6 ? "\(label) \(String(format: "%.2f", confidence))" : nil
+            }
+            if !weak.isEmpty { return weak.joined(separator: ", ") }
+            let minimum = names.compactMap { pose?.confidences[$0] }.min() ?? 0
+            return "clear (minimum \(String(format: "%.2f", minimum)))"
+        }
+        if !checkedJoints.isEmpty { return "Checked joints: \(quality(checkedJoints))" }
+        // Show both alternatives before selection or when neither trio passes
+        // admission. An empty selected set is not evidence that joints are clear.
+        let leg = snapshot.exercise == StationExercise.squat.rawValue
+        let parts = leg ? ["Hip", "Knee", "Ankle"] : ["Shoulder", "Elbow", "Wrist"]
+        let limb = leg ? "leg" : "arm"
+        let left = quality(parts.map { "left" + $0 }, removeSide: true)
+        let right = quality(parts.map { "right" + $0 }, removeSide: true)
+        return "Either \(limb) is enough; all three joints on that side must be clear.\nLeft \(limb): \(left)\nRight \(limb): \(right)"
     }
 
     func clear() {

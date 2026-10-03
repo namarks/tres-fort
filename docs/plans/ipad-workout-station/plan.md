@@ -62,20 +62,30 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Resume direct-device setup after the owner reviews and accepts
-the updated Xcode license on the Mac mini. During setup, installed Xcode changed
-from 26.3 to 27.0; device commands now refuse to run until license acceptance.
-The iPad update to 26.7.1 was verified, and the owner subsequently reported
-enabling Developer Mode and restarting. Final Developer Mode confirmation is
-not yet verified. Once Apple tooling is available, verify the device connection,
-Developer Mode and development signing, then install the same-bundle Debug build
-without uninstalling or resetting app data. The owner reports improved but still
-inadequate tracking in internal build 1.0 (46). Use opt-in
+**Now (@agent):** Investigate frontal pose reliability before tuning rep counting.
+The Debug build is signed, verified, installed in place and launched with its
+console attached. iPadOS 26.7.1, enabled Developer Mode and usable developer
+services are verified. The existing App Store Connect release key refreshed
+both development profiles without another Apple account login; both signatures
+match the pre-existing development certificate. The owner confirmed the existing
+account/workout is visible and enabled the Station camera and measurement stream.
+Live numeric output is working. The owner completed five front-facing squats and
+confirmed the whole body, including both feet, stayed inside the preview.
+Standing samples isolate ankles below the prototype's 0.6 cutoff; movement
+samples also include low-confidence hips and no-person detections. The trial
+ran with counting stopped to inspect raw input, so there is no counter score.
+Preserve every emitted diagnostic sample for the next controlled comparison;
+the first host filter decimated the app's 2 Hz output to about 0.5 Hz and cannot
+establish an exact movement-by-movement trajectory. Assess a side-view control
+and alternative pose estimation if frontal losses persist before choosing a
+frontal counter or relaxing admission. No further reps are currently requested.
+The owner reports improved but still inadequate tracking in internal build
+1.0 (46). Use opt-in
 numeric diagnostics to inspect rejected poses, counter phases and repeated
 Apple warm-up resets during manually counted movements, including front-facing
 squats. Counting quality and any frontal algorithm remain unvalidated.
 Follow the [direct-device procedure](device-debugging.md); the existing
-development identity is valid, but local profiles do not yet include this iPad.
+development identity and refreshed profiles are verified for this iPad.
 Complete P0 repository delivery only after configured CI and exact-head review
 pass; an internal TestFlight upload does not satisfy merge gates. The later
 workout-write and automation gates remain in force.
@@ -177,11 +187,47 @@ workout-write and automation gates remain in force.
   `.artifacts/ios/tres-fort-ios.AsQAYn/Tests.xcresult`. An unsigned device Release
   build passed and its binary excludes the diagnostic UI/output markers;
   evidence: `.artifacts/station-device/release-diagnostics-exclusion.json`.
-  The unsigned Debug device build also passed. These checks used Xcode 26.3;
-  the later Xcode 27.0 license gate is a host setup issue, not new source
-  validation. The first signed-build attempt timed out preparing the device
-  before the owner enabled Developer Mode. This slice has not yet been installed
-  or observed on the physical iPad; see `.artifacts/station-device/` for logs.
+  The initial unsigned Debug device build also passed with Xcode 26.3. After
+  the host updated to Xcode 27.0 and the owner accepted its license, the same
+  application source compiled successfully with the new SDK; evidence:
+  `.artifacts/station-device/debug-build-xcode27-result.json`. Device preparation
+  initially required the owner to unlock the iPad. After unlocking, developer
+  services became usable, the signed build passed, and both app/widget signatures
+  and profiles were independently verified against the existing certificate,
+  required capabilities and this iPad. In-place installation and console launch
+  succeeded with version 1.0/build 46; evidence: `signed-build-verification.json`,
+  `install-result.json` and `app-after-install.json` under
+  `.artifacts/station-device/`. No video was recorded or uploaded. The owner
+  confirmed account/workout continuity and enabled the diagnostic stream.
+- Direct console output now verifies camera/Vision delivery at approximately
+  15 frames per second. Initial setup output includes person detections with
+  zero-confidence hips, knees and ankles, and repeated comparison reacquisition.
+  The first comparison started before streaming and later became incomplete;
+  no manually counted movement or viewing angle has been confirmed for it.
+  These observations identify input-quality failures, not counter accuracy.
+  The host filter now exposes all raw joint confidences/missing joints and
+  labels terminal-trial admission as not collecting. The app's empty selected
+  joint list must not be interpreted as evidence that all joints are clear.
+- In a subsequent stationary front-facing interval, all 14 host samples had
+  hips and knees above 0.6, while the left ankle exceeded that cutoff in only
+  four samples and the right ankle in none. This is a sampled diagnostic
+  interval, not a frame-level detection rate or calibrated confidence measure.
+  The owner then reported five front-facing squats with the entire body visible.
+  Raw hip height dropped and returned, with low-confidence hips and no-person
+  detections also present in the surrounding stream. Because the host retained
+  only the latest pose about every two seconds and the comparison was stopped,
+  no exact five-cycle reconstruction, per-rep errors or counter accuracy is
+  established. The next host run preserves the app's full 2 Hz summaries.
+  The Debug panel now names weak/missing joints on each alternative limb and
+  labels a terminal trial's admission as a historical decision; counting rules
+  and raw JSON are unchanged. All 10 diagnostic tests pass in
+  `.artifacts/ios/tres-fort-ios.rYh7lV/Tests.xcresult`. The incremental signed
+  Debug device build, both bundle signature/profile checks, in-place install
+  and console relaunch also passed. Local independent review found no blocking
+  issues. The updated diagnostic display is installed; frontal tracking is
+  still unvalidated. See `diagnostic-display-tests.log`,
+  `diagnostic-display-build.log` and `diagnostic-display-install.json` under
+  `.artifacts/station-device/`.
 
 ## Acceptance and verification
 

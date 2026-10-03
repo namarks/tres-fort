@@ -146,5 +146,59 @@ final class StationDiagnosticsTests: XCTestCase {
         XCTAssertNil(object["image"])
         XCTAssertEqual(value.missingJoints.count, 12)
     }
+
+    func testNoSquatCandidateShowsWeakAndMissingAnklesAsAlternativeLegs() {
+        let diagnostics = StationDiagnostics(now: { 0 }, emit: { _ in })
+        diagnostics.isEnabled = true
+        defer { diagnostics.isEnabled = false }
+        var input = pose()
+        input.confidences = ["leftHip": 0.65, "leftKnee": 0.75, "leftAnkle": 0.49,
+                             "rightHip": 0.68, "rightKnee": 0.72]
+        var snapshot = StationComparisonDiagnosticSnapshot()
+        snapshot.state = "waiting_for_pose"
+        snapshot.admission = "unclear_joints"
+        diagnostics.record(pose: input, snapshot: snapshot)
+        XCTAssertTrue(diagnostics.latestSummary.contains("Either leg is enough"))
+        XCTAssertTrue(diagnostics.latestSummary.contains("Left leg: ankle 0.49"))
+        XCTAssertTrue(diagnostics.latestSummary.contains("Right leg: ankle missing"))
+        XCTAssertFalse(diagnostics.latestSummary.contains("Minimum confidence —"))
+        XCTAssertFalse(diagnostics.latestSummary.contains("not collecting"))
+    }
+
+    func testNoArmCandidateShowsOneClearSideWithoutRequiringBothArms() {
+        for exercise in ["curl", "benchPress"] {
+            let diagnostics = StationDiagnostics(now: { 0 }, emit: { _ in })
+            diagnostics.isEnabled = true
+            var input = pose()
+            input.confidences = ["rightShoulder": 0.8, "rightElbow": 0.9, "rightWrist": 0.7]
+            var snapshot = StationComparisonDiagnosticSnapshot()
+            snapshot.exercise = exercise
+            diagnostics.record(pose: input, snapshot: snapshot)
+            XCTAssertTrue(diagnostics.latestSummary.contains("Either arm is enough"))
+            XCTAssertTrue(diagnostics.latestSummary.contains("Left arm: shoulder missing, elbow missing, wrist missing"))
+            XCTAssertTrue(diagnostics.latestSummary.contains("Right arm: clear (minimum 0.70)"))
+            XCTAssertFalse(diagnostics.latestSummary.contains("ankle"))
+            diagnostics.isEnabled = false
+        }
+    }
+
+    func testIncompleteTrialLabelsPreviousAdmissionWithoutChangingJSONDecision() throws {
+        var lines: [String] = []
+        let diagnostics = StationDiagnostics(now: { 0 }, emit: { lines.append($0) })
+        diagnostics.isEnabled = true
+        defer { diagnostics.isEnabled = false }
+        var snapshot = StationComparisonDiagnosticSnapshot()
+        snapshot.state = "incomplete"
+        snapshot.admission = "unclear_joints"
+        snapshot.rejected = 3
+        diagnostics.record(pose: pose(timestamp: 22), snapshot: snapshot)
+        XCTAssertTrue(diagnostics.latestSummary.contains("not collecting · last decision: unclear_joints"))
+        let line = try XCTUnwrap(lines.first)
+        let json = Data(line.dropFirst("STATION_DIAGNOSTIC ".count).utf8)
+        let decoded = try JSONDecoder().decode(StationDiagnosticSample.self, from: json)
+        XCTAssertEqual(decoded.comparison.admission, "unclear_joints")
+        XCTAssertEqual(decoded.comparison.rejected, 3)
+        XCTAssertEqual(decoded.pose?.timestamp, 22)
+    }
 }
 #endif

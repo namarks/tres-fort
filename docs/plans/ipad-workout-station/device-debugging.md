@@ -19,8 +19,10 @@ terms or handle the owner's password on their behalf.
    continuing; obtain `station_udid` from its hardware properties locally.
 2. Verify the existing development identity and local profile metadata. Both
    the app and embedded widget need valid development profiles containing the
-   iPad. Reuse the existing team and signing identity. If Xcode needs account
-   sign-in or new signing credentials, leave that step to the owner.
+   iPad. Reuse the existing team and signing identity. Existing App Store Connect
+   authentication can support profile refresh even without a signed-in Xcode
+   account; do not create or copy credentials. If no existing authorized method
+   works, leave account sign-in or new signing credentials to the owner.
 3. Generate the project and build incrementally. `station_udid` is the locally
    verified hardware UDID used by Xcode; `station_dev_sha1` identifies the
    existing Apple Development certificate. Do not put device identifiers or
@@ -32,14 +34,23 @@ xcodebuild -project ios/TresFort.xcodeproj -scheme TresFort \
   -configuration Debug -destination "platform=iOS,id=$station_udid" \
   -derivedDataPath "$PWD/.artifacts/station-device/DerivedData" \
   DEVELOPMENT_TEAM=8BA2RY6RCA CODE_SIGN_STYLE=Automatic \
-  CODE_SIGN_IDENTITY="$station_dev_sha1" CURRENT_PROJECT_VERSION=46 build
+  CODE_SIGN_IDENTITY='Apple Development' CURRENT_PROJECT_VERSION=46 build
 ```
 
 If device registration/profile refresh is needed, the one-time build can add
-`-allowProvisioningUpdates -allowProvisioningDeviceRegistration` using the
-existing signed-in Xcode account and pinned identity. These flags permit wider
-portal changes; stop if new certificates, credentials or owner interaction are
-requested. Keep the DerivedData path for subsequent iterations.
+`-allowProvisioningUpdates -allowProvisioningDeviceRegistration`. With an existing
+authorized App Store Connect key, also pass `-authenticationKeyPath`,
+`-authenticationKeyID` and `-authenticationKeyIssuerID` using the established
+local release configuration. Pass the existing key file directly to Xcode;
+never print, copy or commit its contents. This path successfully registered the
+iPad and refreshed both development profiles with the existing release key.
+
+Automatic signing rejects a literal certificate hash as `CODE_SIGN_IDENTITY`.
+Use the supported `Apple Development` selector, then verify that **both** bundles'
+actual signing-leaf fingerprints match the pre-existing `station_dev_sha1`
+before installation. These provisioning flags permit wider portal changes;
+stop if new certificates, credentials or owner interaction are requested. Keep
+the DerivedData path for subsequent iterations.
 
 4. Verify the resulting app and widget signatures, bundle IDs, team,
    `get-task-allow`, required capabilities, development profile expiry and iPad
@@ -68,10 +79,29 @@ most 60 seconds and is bounded by sample count; there is no file/network sink.
 
 Filter the attached console for `STATION_DIAGNOSTIC ` followed by JSON. Output
 is limited to two summaries per second; transitions and angle extrema between
-summaries are coalesced. Inspect only these diagnostic lines when sharing
+summaries are coalesced. Preserve every emitted sample on the host: further
+decimation loses hip-height and confidence changes. Even 2 Hz summaries are not
+a full frame-rate movement trace; use actual counter results plus manual ground
+truth to assess accuracy. Inspect only these diagnostic lines when sharing
 evidence, rather than unrelated application logs. Capture source timestamps,
 joint confidence/missing joints, admission reasons, counter phases, segment
 resets and Apple warm-up/coverage/queue state. Missing values remain missing.
+When no candidate limb qualifies, selected/input joint lists can be empty;
+inspect the raw confidence and missing/unclear fields instead. For squats,
+either complete hip/knee/ankle trio can qualify; both sides are not required.
+Once a comparison becomes terminal, its admission field is the last decision,
+while camera measurements continue updating. Label that decision as historical
+and start a new comparison before assessing counting or rejection rates.
+Keep the iPad unlocked during preparation and installation. An active Station
+camera keeps the screen awake for the trial.
+
+The verified live console path uses the connected iPad and `devicectl --console`.
+Keep that connection during the trial; ordinary app operation does not require
+it. A restricted shell may fail to initialize CoreDevice even while the device
+is connected, so use the runtime's authorized device-service access. Xcode 27's
+LLDB crashed during a separate attach attempt in this setup; stdout diagnostics
+work without LLDB. A debugger-induced pause must not be attributed to camera
+performance. Camera inference latency alone does not measure console delay.
 
 Start with manually counted side-view and front-facing squats, including slow
 reps, bottom pauses, partial dips and a brief occlusion. Also check standing

@@ -59,16 +59,20 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
 
 // Embedded inside the merged History tab (see HistoryView) — owns no nav
 // chrome (no NavigationStack/title; the parent's stack handles navigation).
-// Self-owned `monthAnchor` plus an in-header "TODAY" button; the feed's scroll
+// Self-owned month selection plus an in-header "TODAY" button; the feed's scroll
 // offset drives the condense morph.
 struct CalendarMonthView: View {
     @ObservedObject var sync: SyncModel
     var onWeeklySchedule: (() -> Void)? = nil
     var onStartWorkout: (() -> Void)? = nil
 
-    /// First day of the displayed month (anchored to its 1st). Self-owned now
-    /// — the in-calendar "Today" button resets it; prev/next arrows shift it.
-    @State private var monthAnchor: Date = CalendarMonthView.currentMonth()
+    /// A month the prev/next arrows moved to; nil shows the current month.
+    /// The in-calendar "Today" button clears it.
+    @State private var pinnedMonth: Date?
+    /// The model's day as of the last "Today" tap; nil follows the model's
+    /// clock. A tap after a date rollover changes it, so the new month and
+    /// today's cell render even when no other observed state changed.
+    @State private var todayTapped: String?
     @State private var selectedDate: String?      // YYYY-MM-DD → agenda sheet
     /// Drives the morph: false → full month grid header; true → condensed
     /// contribution-heatmap "hub". Flipped by the feed's scroll offset.
@@ -77,9 +81,17 @@ struct CalendarMonthView: View {
     private var cal: Calendar { CalendarProjection.calendar }
     private let feedSpace = "history-feed"
 
-    static func currentMonth() -> Date {
+    /// First day of the displayed month. The current month comes from the
+    /// model's clock, the same one that marks today's cell, never a separate
+    /// `Date()`.
+    private var monthAnchor: Date {
+        pinnedMonth ?? Self.month(containing: todayTapped ?? sync.todayString)
+    }
+
+    static func month(containing ymd: String) -> Date {
         let cal = CalendarProjection.calendar
-        return cal.date(from: cal.dateComponents([.year, .month], from: Date()))!
+        let day = CalendarProjection.date(from: ymd) ?? Date()
+        return cal.date(from: cal.dateComponents([.year, .month], from: day))!
     }
 
     // ONE calendar surface that condenses, not two stacked views: a fixed
@@ -280,7 +292,7 @@ struct CalendarMonthView: View {
 
     private func shiftMonth(_ delta: Int) {
         if let d = cal.date(byAdding: .month, value: delta, to: monthAnchor) {
-            monthAnchor = d
+            pinnedMonth = d
         }
     }
 
@@ -294,7 +306,9 @@ struct CalendarMonthView: View {
             // "Today" lives in the calendar itself now (not the nav bar), so
             // the toolbar can stay a single centered segmented control with no
             // shifting/blank trailing slot.
-            Button { withAnimation { monthAnchor = Self.currentMonth() } } label: {
+            Button {
+                withAnimation { pinnedMonth = nil; todayTapped = sync.todayString }
+            } label: {
                 Text("TODAY")
                     .font(Theme.mono(12, .bold))
                     .foregroundStyle(Theme.accent)

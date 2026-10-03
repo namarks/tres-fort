@@ -55,22 +55,68 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertTrue(minimize.waitForExistence(timeout: 5))
         for _ in 0..<10 where !minimize.isHittable { app.swipeUp() }
         XCTAssertTrue(minimize.isHittable); minimize.tap()
+        // The full rest screen (which has its own rest.done) animates away
+        // and the navigation and tab bars return. Check the compact card and
+        // fixed action only once it is gone and hit-testing has settled.
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: minimize)
+        waitForExpectations(timeout: 5)
         XCTAssertTrue(app.buttons["Expand rest timer"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["rest.done"].isHittable)
-        XCTAssertTrue(app.buttons["LOG SET 2"].isHittable)
+        waitUntilHittable(app.buttons["rest.done"])
+        assertPinnedActionReachable(app.buttons["LOG SET 2"], in: app)
         XCTAssertGreaterThan(app.scrollViews.firstMatch.frame.height, 100)
         let edit = app.buttons["rest.editLastSet"]
-        for _ in 0..<6 where !edit.isHittable
-            || edit.frame.maxY > app.buttons["LOG SET 2"].frame.minY { app.scrollViews.firstMatch.swipeUp() }
+        reveal(edit, above: app.buttons["LOG SET 2"], in: app)
         XCTAssertTrue(edit.isHittable); edit.tap()
-        XCTAssertTrue(app.navigationBars["Correct set"].waitForExistence(timeout: 5))
+        let correction = app.navigationBars["Correct set"]
+        XCTAssertTrue(correction.waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: correction)
+        waitForExpectations(timeout: 5)
         for _ in 0..<6 where !app.buttons["rest.done"].isHittable { app.scrollViews.firstMatch.swipeDown() }
         capture("compact-rest-accessibility-size")
         app.buttons["rest.done"].tap()
-        XCTAssertTrue(app.buttons["LOG SET 2"].isHittable)
+        assertPinnedActionReachable(app.buttons["LOG SET 2"], in: app)
         app.buttons["LOG SET 2"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.buttons["LOG SET 3"].waitForExistence(timeout: 5))
+    }
+
+    /// Waits out layout animation, such as app chrome returning after rest,
+    /// before requiring a control to take taps.
+    private func waitUntilHittable(_ element: XCUIElement) {
+        expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: element)
+        waitForExpectations(timeout: 5)
+    }
+
+    /// After rest restores the app chrome, XCTest can misreport the pinned
+    /// action's hittability; the activation tests see the same for FINISH.
+    /// Check its frame instead. The physical tap at the end proves it logs.
+    private func assertPinnedActionReachable(_ action: XCUIElement, in app: XCUIApplication,
+                                             file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(action.isEnabled, file: file, line: line)
+        XCTAssertTrue(app.frame.contains(action.frame),
+                      "\(action.frame) is outside \(app.frame)", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(action.frame.height, 44, file: file, line: line)
+    }
+
+    /// Scrolls the runner with short, momentum-free drags until `element` is
+    /// hittable and clear of the fixed action. At accessibility sizes the
+    /// compact rest card is taller than the visible runner, and a swipe's
+    /// momentum carries a control just below the fold past the top.
+    private func reveal(_ element: XCUIElement, above action: XCUIElement, in app: XCUIApplication) {
+        let scroll = app.scrollViews.firstMatch
+        for _ in 0..<12 {
+            let top = max(scroll.frame.minY, app.navigationBars.firstMatch.frame.maxY)
+            let bottom = min(scroll.frame.maxY, action.frame.minY)
+            if element.isHittable, element.frame.maxY <= bottom { return }
+            // Not below the visible area means above it: drag content down.
+            let down = element.frame.maxY <= bottom
+            let height = bottom - top
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: scroll.frame.midX, dy: top + height * (down ? 0.25 : 0.75)))
+            let end = origin.withOffset(CGVector(dx: scroll.frame.midX, dy: top + height * (down ? 0.75 : 0.25)))
+            start.press(forDuration: 0.1, thenDragTo: end,
+                        withVelocity: .slow, thenHoldForDuration: 0.5)
+        }
     }
 
     private func capture(_ name: String) {

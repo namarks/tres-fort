@@ -96,8 +96,9 @@ final class TrainingJourneyTests: XCTestCase {
             XCTAssertTrue(app.staticTexts["REPS PER SIDE"].exists)
             screenshot(fixture + "-per-side")
             app.buttons["LOG SET 1"].tap()
-            XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
-            app.buttons["rest.done"].tap()
+            // The fixture slot has no rest, so logging moves straight to set 2.
+            XCTAssertTrue(app.buttons["LOG SET 2"].waitForExistence(timeout: 5))
+            XCTAssertFalse(app.buttons["rest.done"].exists)
             XCTAssertEqual(app.staticTexts["fixture.scenario"].value as? String,
                            "sets:1;reps:10;total:20")
             let correct = app.buttons["Edit set 1 of " + name]

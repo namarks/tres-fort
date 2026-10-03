@@ -39,7 +39,8 @@ enum PlanHistoryPresentation {
         let names = [
             "target_sets": "Target sets", "target_reps": "Target reps",
             "target_reps_max": "Maximum reps", "target_rpe": "Target effort",
-            "target_weight": "Target load", "target_duration_s": "Target duration",
+            "target_weight": "Target load", "target_weight_unit": "Target load unit",
+            "target_duration_s": "Target duration",
             "rest_seconds": "Rest time", "schedule": "Weekly schedule",
             "name": change.kind == "day" ? "Workout name" : "Training plan name",
             "cues": "Coaching cues", "order_index": "Order",

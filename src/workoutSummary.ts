@@ -8,6 +8,8 @@ export type SummaryExercise = MetricExercise & { id: string; name: string };
 export interface RunnerTarget {
   slot_id: string; exercise_id: string; name: string; is_warmup: number; is_timed: number;
   sets: number; reps: number; reps_max: number | null; weight: number | null;
+  /** Unit of weight; snapshots captured before migration 0055 read lb. */
+  weight_unit?: 'lb' | 'kg';
   duration_s: number | null; rpe: number | null;
 }
 export interface RunnerTargetSnapshot {
@@ -81,7 +83,8 @@ export function summarizeWorkout(
     const comparisonAvailable = !live.some((set) => set.exercise_id === target.exercise_id
       && set.template_exercise_id == null && set.is_timed === target.is_timed);
     const changed = actual.filter((set) =>
-      (target.weight != null && set.weight !== target.weight)
+      (target.weight != null && !sameLoad({ weight: set.weight, unit: set.weight_unit ?? 'lb' },
+        { weight: target.weight, unit: target.weight_unit ?? 'lb' }))
       || (target.is_timed === 1
         ? (set.duration_s ?? set.reps) !== (target.duration_s ?? target.reps)
         : set.reps < target.reps || set.reps > (target.reps_max ?? target.reps))

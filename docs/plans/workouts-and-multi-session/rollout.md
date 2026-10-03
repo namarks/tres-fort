@@ -59,7 +59,7 @@ schema is present, stop; recovery needs a separately reviewed migration plan.
 Account for every pending migration and release gate at the chosen source,
 including [workout metadata](../workout-library/metadata-release.md),
 [freestyle sessions](../workout-library/freestyle-release.md) and
-[per-set weight units](weight-unit-release.md). This rename cleanup
+[per-slot and per-set weight units](weight-unit-release.md). This rename cleanup
 adds no migration and does not authorize those feature releases. The generic
 `npm run release` and `npm run db:migrate:remote` remain fail-closed and point to
 these procedures. Use each approved feature runbook's ordered steps; do not

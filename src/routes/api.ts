@@ -611,6 +611,7 @@ apiRoutes.post('/workouts/:id/exercises', async (c) => {
     target_rpe?: number | null;
     rest_seconds?: number;
     target_weight?: number | null;
+    target_weight_unit?: 'lb' | 'kg';
     target_duration_s?: number | null;
     progression?: unknown;
     cues?: string | null;
@@ -646,6 +647,7 @@ apiRoutes.post('/workouts/:id/exercises', async (c) => {
     target_rpe: b.target_rpe ?? null,
     rest_seconds: b.rest_seconds === undefined ? 120 : b.rest_seconds,
     target_weight: b.target_weight ?? null,
+    ...(b.target_weight_unit === undefined ? {} : { target_weight_unit: b.target_weight_unit }),
     target_duration_s: b.target_duration_s ?? null,
     progression: b.progression == null ? null : JSON.stringify(b.progression),
     cues: b.cues ?? null,
@@ -718,6 +720,7 @@ apiRoutes.patch('/workouts/:id/exercises/:teId', async (c) => {
     target_rpe?: number | null;
     rest_seconds?: number;
     target_weight?: number | null;
+    target_weight_unit?: 'lb' | 'kg';
     target_duration_s?: number | null;
     cues?: string | null;
     progression?: unknown;
@@ -774,6 +777,7 @@ apiRoutes.post('/sessions/:id/save-workout', async (c) => {
         && isNonEmptyString(s.exercise_id) && isPositiveInteger(s.target_sets)
         && isPositiveInteger(s.target_reps) && (s.target_duration_s===null || isPositiveInteger(s.target_duration_s))
         && isFiniteNumber(s.target_weight) && isNonNegativeInteger(s.rest_seconds)
+        && (s.target_weight_unit === undefined || s.target_weight_unit === 'lb' || s.target_weight_unit === 'kg')
         && Array.isArray(s.source_set_ids) && s.source_set_ids.length>0 && s.source_set_ids.every(isNonEmptyString)),
   });
   if (invalid.length) return c.json({error:'invalid_fields',fields:invalid},400);
@@ -1155,9 +1159,10 @@ apiRoutes.patch('/sets/:id', async (c) => {
       || !Number.isSafeInteger(expected_updated_at) || (expected_updated_at as number) < 0)) {
     return measuredJson(c, { error: 'invalid_correction_identity' }, 400);
   }
-  const allowed = new Set(['weight', 'reps', 'rpe', 'notes', 'duration_s', 'deleted']);
+  const allowed = new Set(['weight', 'weight_unit', 'reps', 'rpe', 'notes', 'duration_s', 'deleted']);
   const invalid = invalidMutationFields(b, {}, {
     weight: isFiniteNumber,
+    weight_unit: (value) => value === 'lb' || value === 'kg',
     reps: isNonNegativeInteger,
     rpe: isNullableFiniteNumber,
     notes: isNullableString,

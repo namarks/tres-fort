@@ -62,6 +62,7 @@ import {
   listGroupsForUser,
   logActivity,
   logSet,
+  slotWeightUnit,
   logWorkoutComplete,
   nextWorkoutOrderIndex,
   nextExerciseOrderIndex,
@@ -303,7 +304,7 @@ const TOOLS: Record<string, Tool> = {
   },
   get_current_plan: {
     description:
-      'Get the active training plan: reusable workouts with optional recurring scheduling, exercises, target sets/reps/RPE, rest, progression rules, and form cues.',
+      'Get the active training plan: reusable workouts with optional recurring scheduling, exercises, target sets/reps/RPE, rest, progression rules, and form cues. Every weight carries its own unit: each template exercise has `target_weight_unit` (`lb` or `kg`). Units are per exercise, not per plan — a plan can mix lb and kg slots.',
     inputSchema: obj({}),
     handler: async (_a, env, userId) => {
       const tree = await getPlanTree(env.DB, userId);
@@ -601,7 +602,15 @@ const TOOLS: Record<string, Tool> = {
     inputSchema: obj(
       {
         exercise: { type: 'string', description: 'name, alias, or id' },
-        weight: { type: 'number' },
+        weight: {
+          type: 'number',
+          description:
+            "External load. Pair with weight_unit (`lb`|`kg`); when weight_unit is omitted the set inherits the slot's target_weight_unit (freestyle / no-slot sets default to `lb`).",
+        },
+        weight_unit: {
+          type: 'string', enum: ['lb', 'kg'],
+          description: "Unit for weight. Optional; defaults to the slot's target_weight_unit, or `lb` for freestyle sets.",
+        },
         reps: { type: 'integer' },
         rpe: { type: 'number' },
         is_warmup: { type: 'boolean' },
@@ -630,6 +639,9 @@ const TOOLS: Record<string, Tool> = {
       if (!plan) return { error: 'no_active_plan' };
       const today = await todayForUser(env.DB, userId);
       const date = typeof a.session_date === 'string' ? a.session_date : today;
+      if (a.weight_unit !== undefined && a.weight_unit !== 'lb' && a.weight_unit !== 'kg') {
+        return { error: 'invalid_fields', fields: ['weight_unit'] };
+      }
       const ex = await resolveExercise(env.DB, String(a.exercise));
       if (!ex) return { error: 'unknown_exercise', query: a.exercise };
       const exId = (ex as { id: string }).id;
@@ -654,6 +666,8 @@ const TOOLS: Record<string, Tool> = {
             is_warmup: isWarmup,
             set_index: requestedSetIndex,
             duration_s: requestedDuration,
+            // An unnamed unit can still be the iOS set it would duplicate.
+            weight_unit: a.weight_unit as 'lb' | 'kg' | undefined,
           });
       if (recent && a.confirm_duplicate !== true) {
         const ageS = Math.max(0, Math.round((Date.now() - recent.logged_at) / 1000));
@@ -691,6 +705,8 @@ const TOOLS: Record<string, Tool> = {
         requestedSetIndex != null
           ? requestedSetIndex
           : existing.filter((s) => s.exercise_id === exId && !s.is_warmup).length + 1;
+      const weightUnit = (a.weight_unit as 'lb' | 'kg' | undefined)
+        ?? await slotWeightUnit(env.DB, session.workout_id, exId, isWarmup);
       let writeResult: Awaited<ReturnType<typeof logSet>>;
       try {
         writeResult = await logSet(env.DB, userId, {
@@ -699,6 +715,7 @@ const TOOLS: Record<string, Tool> = {
           exercise_id: exId,
           set_index: setIndex,
           weight: Number(a.weight),
+          weight_unit: weightUnit,
           reps: Number(a.reps),
           rpe: a.rpe == null ? null : Number(a.rpe),
           is_warmup: a.is_warmup === true,
@@ -747,8 +764,8 @@ const TOOLS: Record<string, Tool> = {
           // For two-dumbbell lifts, the weight is one dumbbell — surface a
           // ready-to-say phrasing so guidance never reads as the vague total.
           weight_display: perHand
-            ? `${set.weight} lb in each hand`
-            : `${set.weight} lb`,
+            ? `${set.weight} ${set.weight_unit} in each hand`
+            : `${set.weight} ${set.weight_unit}`,
         },
       };
     },
@@ -756,13 +773,14 @@ const TOOLS: Record<string, Tool> = {
   correct_set: {
     description:
       'Correct the values on an existing logged set while preserving its identity and history. ' +
-      'Pass the set_id plus at least one corrected value: weight, reps, rpe, notes, or duration_s. ' +
+      'Pass the set_id plus at least one corrected value: weight, weight_unit, reps, rpe, notes, or duration_s. ' +
       'Use null to clear rpe, notes, or duration_s. Find the id with get_current_session or ' +
       'get_session_log. Use delete_set instead only when the entire set is a phantom or duplicate.',
     inputSchema: obj(
       {
         set_id: { type: 'string', description: 'set_logs.id (UUID) to correct' },
         weight: { type: 'number' },
+        weight_unit: { type: 'string', enum: ['lb', 'kg'], description: 'Unit for weight.' },
         reps: { type: 'integer', minimum: 0 },
         rpe: { type: ['number', 'null'] },
         notes: { type: ['string', 'null'] },
@@ -777,11 +795,14 @@ const TOOLS: Record<string, Tool> = {
     write: true,
     handler: async (a, env, userId) => {
       const has = (field: string) => Object.prototype.hasOwnProperty.call(a, field);
-      const allowed = new Set(['set_id', 'weight', 'reps', 'rpe', 'notes', 'duration_s']);
+      const allowed = new Set(['set_id', 'weight', 'weight_unit', 'reps', 'rpe', 'notes', 'duration_s']);
       const invalid: string[] = [];
       if (typeof a.set_id !== 'string' || a.set_id.length === 0) invalid.push('set_id');
       if (has('weight') && (typeof a.weight !== 'number' || !Number.isFinite(a.weight))) {
         invalid.push('weight');
+      }
+      if (has('weight_unit') && a.weight_unit !== 'lb' && a.weight_unit !== 'kg') {
+        invalid.push('weight_unit');
       }
       if (has('reps') && (!Number.isSafeInteger(a.reps) || (a.reps as number) < 0)) {
         invalid.push('reps');
@@ -806,16 +827,18 @@ const TOOLS: Record<string, Tool> = {
       invalid.push(...Object.keys(a).filter((field) => !allowed.has(field)));
       if (invalid.length > 0) return { error: 'invalid_fields', fields: invalid };
 
-      const correctionFields = ['weight', 'reps', 'rpe', 'notes', 'duration_s'] as const;
+      const correctionFields = ['weight', 'weight_unit', 'reps', 'rpe', 'notes', 'duration_s'] as const;
       if (!correctionFields.some(has)) return { error: 'no_corrections' };
       const patch: {
         weight?: number;
+        weight_unit?: 'lb' | 'kg';
         reps?: number;
         rpe?: number | null;
         notes?: string | null;
         duration_s?: number | null;
       } = {};
       if (has('weight')) patch.weight = a.weight as number;
+      if (has('weight_unit')) patch.weight_unit = a.weight_unit as 'lb' | 'kg';
       if (has('reps')) patch.reps = a.reps as number;
       if (has('rpe')) patch.rpe = a.rpe as number | null;
       if (has('notes')) patch.notes = a.notes as string | null;
@@ -827,7 +850,7 @@ const TOOLS: Record<string, Tool> = {
     note: (a, r) =>
       r?.error
         ? null
-        : `Corrected set ${a.set_id} to ${r.weight}x${r.reps}` +
+        : `Corrected set ${a.set_id} to ${r.weight}${r.weight_unit === 'kg' ? ' kg' : ''}x${r.reps}` +
           `${r.rpe == null ? '' : ` @ RPE ${r.rpe}`}` +
           `${r.duration_s == null ? '' : `, ${r.duration_s}s`}.`,
   },
@@ -1000,7 +1023,7 @@ const TOOLS: Record<string, Tool> = {
   },
   update_plan: {
     description:
-      'Replace the plan tree (reusable workouts + exercises) transactionally. Exercise names must match the closed catalog — call list_exercises first to discover valid names (a single unknown name surfaces ALL unknowns at once in `queries: string[]`, not just the first). Pass expected_version for optimistic concurrency; it is required whenever the existing or supplied tree has group fields. A mismatch returns a conflict — refetch get_current_plan and reapply. Workouts are matched by day_label/name across the rebuild, so the weekly schedule follows surviving workouts; schedule entries for removed workouts are cleared. Workouts need not be scheduled.',
+      'Replace the plan tree (reusable workouts + exercises) transactionally. Exercise names must match the closed catalog — call list_exercises first to discover valid names (a single unknown name surfaces ALL unknowns at once in `queries: string[]`, not just the first). Each exercise slot carries its own `target_weight_unit` (`lb`|`kg`, default `lb`); weights are read with their own unit, never reinterpreted across units. A rebuilt slot that omits it keeps the unit of the slot it replaces. Pass expected_version for optimistic concurrency; it is required whenever the existing or supplied tree has group fields. A mismatch returns a conflict — refetch get_current_plan and reapply. Workouts are matched by day_label/name across the rebuild, so the weekly schedule follows surviving workouts; schedule entries for removed workouts are cleared. Workouts need not be scheduled.',
     inputSchema: obj(
       {
         name: { type: 'string' },
@@ -1115,7 +1138,7 @@ const TOOLS: Record<string, Tool> = {
   },
   update_exercise: {
     description:
-      'Patch one plan slot. Identify it by template_exercise_id, or by day (label/name) + exercise. Patchable keys: target_sets, target_reps, target_reps_max, target_rpe, rest_seconds, target_weight, target_duration_s, cues, progression, order_index, is_warmup. Group columns are changed only through group_exercises/ungroup_exercises; grouped order and target_sets are group-owned. Unknown keys are rejected with {error:"unknown_fields", fields:[...]} — no silent drop.',
+      'Patch one plan slot. Identify it by template_exercise_id, or by day (label/name) + exercise. Patchable keys: target_sets, target_reps, target_reps_max, target_rpe, rest_seconds, target_weight, target_weight_unit (`lb`|`kg`), target_duration_s, cues, progression, order_index, is_warmup. Each slot carries its own target_weight_unit — units are per exercise, not per plan. Group columns are changed only through group_exercises/ungroup_exercises; grouped order and target_sets are group-owned. Unknown keys are rejected with {error:"unknown_fields", fields:[...]} — no silent drop.',
     inputSchema: obj(
       {
         expected_version: { type: 'integer', minimum: 1, description: 'Reviewed plan version. A stale value returns conflict/current_version; omit only for a tokenless patch with one bounded retry.' },
@@ -1190,7 +1213,11 @@ const TOOLS: Record<string, Tool> = {
         target_weight: {
           type: 'number',
           description:
-            'Planned external load. On bodyweight/timed work: positive = added load, 0 = strict bodyweight, negative = assistance.',
+            'Planned external load, in target_weight_unit (`lb`|`kg`; defaults to `lb`). On bodyweight/timed work: positive = added load, 0 = strict bodyweight, negative = assistance.',
+        },
+        target_weight_unit: {
+          type: 'string', enum: ['lb', 'kg'],
+          description: 'Unit for target_weight on this slot. Optional; defaults to `lb`.',
         },
         target_duration_s: { type: 'integer', description: 'Planned hold/effort seconds for timed or cardio slots (planks, erg warm-ups); leave unset for conventional reps slots.' },
         progression: { type: 'object' },
@@ -1233,6 +1260,7 @@ const TOOLS: Record<string, Tool> = {
         target_rpe: a.target_rpe == null ? null : a.target_rpe as number,
         rest_seconds: a.rest_seconds === undefined ? 120 : a.rest_seconds as number,
         target_weight: a.target_weight == null ? null : a.target_weight as number,
+        ...(a.target_weight_unit === undefined ? {} : { target_weight_unit: a.target_weight_unit as 'lb' | 'kg' }),
         target_duration_s:
           a.target_duration_s == null ? null : a.target_duration_s as number,
         progression: a.progression == null ? null : JSON.stringify(a.progression),

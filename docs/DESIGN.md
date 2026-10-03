@@ -135,6 +135,7 @@ CREATE TABLE template_exercises (
   group_rest_seconds INTEGER,                   -- rest after a round; ordinary rest_seconds stays intact
   group_transition_seconds INTEGER,             -- rest between members, normally 0
   target_weight    REAL,                        -- current working weight; Claude advances this
+  target_weight_unit TEXT NOT NULL DEFAULT 'lb', -- 'lb'|'kg', unit of target_weight; migration 0055
   progression      TEXT,                        -- JSON, see below
   cues             TEXT,                        -- form-cue reminders Claude sets
   is_warmup        INTEGER NOT NULL DEFAULT 0,  -- 1 = prescribed warm-up slot (erg, mobility); migration 0026
@@ -178,6 +179,7 @@ CREATE TABLE set_logs (
   template_exercise_id TEXT REFERENCES template_exercises(id),  -- link to plan slot
   set_index            INTEGER NOT NULL,
   weight               REAL NOT NULL,
+  weight_unit          TEXT NOT NULL DEFAULT 'lb', -- 'lb'|'kg', unit of weight; migration 0055
   reps                 INTEGER NOT NULL,
   rpe                  REAL,
   is_warmup            INTEGER NOT NULL DEFAULT 0,

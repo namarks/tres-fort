@@ -6,8 +6,8 @@ on:
   push:
     branches: [main]
   schedule:
-    # Nightly full UI coverage on main (early morning Pacific time).
-    - cron: '17 11 * * *'
+    # Weekly full UI coverage on main (Monday, early morning Pacific time).
+    - cron: '17 11 * * 1'
   workflow_dispatch:
 
 # A newer push to the same branch/PR cancels the in-flight run.

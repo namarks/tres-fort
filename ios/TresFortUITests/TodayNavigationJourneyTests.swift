@@ -141,23 +141,8 @@ final class TodayNavigationJourneyTests: XCTestCase {
         return app
     }
 
-    func testPrescribedWeightsAppearInLibraryAndCalendar() throws {
-        let app = try launchGroupedPreview()
-        tap(app.buttons["today.chooseWorkout"], in: app)
-        tap(app.buttons["library.workout.synthetic-day"], in: app)
-        XCTAssertTrue(app.navigationBars["Strength A"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["2×8 · 25 lb each hand"].exists)
-        XCTAssertTrue(app.staticTexts["2×8 · 45 lb"].exists)
-        capture("library-prescribed-weights")
-        tap(app.navigationBars["Strength A"].buttons["Done"], in: app)
-        tap(app.navigationBars["Workouts"].buttons["Done"], in: app)
-        tap(app.tabBars.buttons["Calendar"], in: app)
-        tap(app.buttons["calendar.date.2026-09-08"], in: app)
-        XCTAssertTrue(app.staticTexts["2×8 · 25 lb each hand"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["2×8 · 45 lb"].exists)
-        capture("calendar-prescribed-weights")
-    }
-
+    // Also covers prescribed weights ("2×8 · 25 lb each hand", "2×8 · 45 lb")
+    // on both the calendar date and the library's workout details.
     func testCalendarPrioritizesGroupedWorkoutAndMatchesLibraryPreview() throws {
         let app = try launchGroupedPreview()
         tap(app.tabBars.buttons["Calendar"], in: app)

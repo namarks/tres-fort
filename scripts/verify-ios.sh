@@ -40,7 +40,7 @@ if [[ "$ui_suite" == smoke ]]; then
   [[ -z "$ci_shard" || "$ci_shard" == 1 || "$ci_shard" == 2 ]] || { echo 'Smoke coverage uses shards 1 and 2' >&2; exit 2; }
   # Bound the PR gate to twelve representative journeys. Select methods, never
   # whole UI classes: adding a regression must not silently grow the smoke run.
-  # Every unit test still runs; all UI methods remain in nightly/manual full runs.
+  # Every unit test still runs; all UI methods remain in weekly/manual full runs.
   if [[ -z "$ci_shard" || "$ci_shard" == 1 ]]; then
     test_args+=("-only-testing:TresFortTests")
     for method in testMixedSportSetupCreatesFirstWorkoutAndKeepsProfile \

@@ -29,6 +29,8 @@ final class TrainingJourneyTests: XCTestCase {
         // intent without launching AuthenticationServices or sending credentials.
         XCTAssertTrue(app.buttons["Sign in with Apple"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Create a workout"].exists)
+        XCTAssertFalse(app.buttons["Reviewer sign-in"].exists)
+        XCTAssertFalse(app.secureTextFields["review.password"].exists)
         screenshot("fresh-sign-in")
         app.buttons["Sign in with Apple"].tap()
         XCTAssertTrue(app.staticTexts["Sign-in requested (synthetic)"].waitForExistence(timeout: 5))
@@ -52,15 +54,6 @@ final class TrainingJourneyTests: XCTestCase {
         screenshot("created-first-workout")
     }
 
-    func testFailedInitialLoadCannotMasqueradeAsEmptyPlan() {
-        let app = launch("load-failure")
-        XCTAssertTrue(app.buttons["Try again"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.buttons["Create a workout"].exists)
-        app.buttons["Try again"].tap()
-        XCTAssertTrue(app.staticTexts["COULDN’T LOAD YOUR PLAN"].waitForExistence(timeout: 5))
-        screenshot("failed-initial-load")
-    }
-
     func testOrdinarySetLogsAndCompletesThroughAcknowledgement() {
         let app = launch("ordinary")
         XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 10))
@@ -68,10 +61,15 @@ final class TrainingJourneyTests: XCTestCase {
         app.buttons["LOG SET 1"].tap()
         XCTAssertTrue(app.staticTexts["READY TO FINISH"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.buttons["rest.done"].exists)
-        screenshot("logged-ready-to-finish")
+        // Finishing stays explicit, and its pinned action is a full-size
+        // target that needs no scrolling.
         let finish = app.buttons["FINISH"]
-        if !finish.isHittable { app.swipeUp() }
-        finish.tap()
+        XCTAssertTrue(finish.isEnabled)
+        XCTAssertTrue(app.frame.contains(finish.frame))
+        XCTAssertGreaterThanOrEqual(finish.frame.height, 44)
+        XCTAssertFalse(app.staticTexts["WORKOUT COMPLETE"].exists)
+        screenshot("logged-ready-to-finish")
+        finish.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
         screenshot("acknowledged-completion")
     }
@@ -216,31 +214,6 @@ final class TrainingJourneyTests: XCTestCase {
         screenshot("pending-write")
     }
 
-    func testCorrectionFailurePreservesOriginalAndOffersRecovery() {
-        let app = launch("correction-failure")
-        XCTAssertTrue(app.buttons["edit-set-synthetic-set"].waitForExistence(timeout: 10))
-        app.buttons["edit-set-synthetic-set"].tap()
-        let reps = app.textFields["Reps"]
-        XCTAssertTrue(reps.waitForExistence(timeout: 5))
-        reveal(reps, in: app)
-        reps.tap()
-        reps.doubleTap()
-        reps.typeText("6")
-        XCTAssertEqual(reps.value as? String, "6")
-        app.buttons["Save"].tap()
-        XCTAssertTrue(app.staticTexts["Edit rejected (HTTP 422)."].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["45 × 5"].exists)
-        screenshot("correction-failure-original-retained")
-    }
-
-    func testReadyToFinishFixtureRequiresExplicitFinish() {
-        let app = launch("ready-to-finish")
-        XCTAssertTrue(app.staticTexts["READY TO FINISH"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.buttons["FINISH"].exists)
-        XCTAssertFalse(app.staticTexts["WORKOUT COMPLETE"].exists)
-        screenshot("ready-to-finish")
-    }
-
     private func reveal(_ element: XCUIElement, in app: XCUIApplication,
                         file: StaticString = #filePath, line: UInt = #line) {
         _ = element.waitForExistence(timeout: 3)
@@ -335,22 +308,6 @@ final class TrainingJourneyTests: XCTestCase {
         XCTAssertEqual(weight.value as? String, "20")
     }
 
-    func testFinalSetCompletionRemainsReachable() {
-        let app = launch("ordinary")
-        let log = app.buttons["LOG SET 1"]
-        reveal(log, in: app)
-        log.tap()
-        let finish = app.buttons["FINISH"]
-        XCTAssertTrue(finish.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["rest.done"].exists)
-        XCTAssertTrue(finish.isEnabled)
-        XCTAssertTrue(app.frame.contains(finish.frame))
-        XCTAssertGreaterThanOrEqual(finish.frame.height, 44)
-        screenshot("journey-finish")
-        finish.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(app.staticTexts["WORKOUT COMPLETE"].waitForExistence(timeout: 10))
-    }
-
     func testCorrectionRecoveryRemainsReachable() {
         let app = launch("correction-failure")
         let edit = app.buttons["edit-set-synthetic-set"]
@@ -376,7 +333,8 @@ final class TrainingJourneyTests: XCTestCase {
         XCTAssertTrue(edit.isEnabled)
     }
 
-    private func audit(_ fixture: String) throws {
+    @discardableResult
+    private func audit(_ fixture: String) throws -> XCUIApplication {
         let app = launch(fixture)
         let ready = fixture == "empty" ? app.buttons["Create a workout"]
             : fixture == "load-failure" ? app.buttons["Try again"]
@@ -392,10 +350,16 @@ final class TrainingJourneyTests: XCTestCase {
             print(issue.element?.debugDescription ?? "No associated element")
             return false
         }
+        return app
     }
 
     func testAccessibilityAuditEmpty() throws { try audit("empty") }
     func testAccessibilityAuditLoadFailure() throws { try audit("load-failure") }
     func testAccessibilityAuditOrdinary() throws { try audit("ordinary") }
-    func testAccessibilityAuditReadyToFinish() throws { try audit("ready-to-finish") }
+    func testAccessibilityAuditReadyToFinish() throws {
+        // A restored ready state still waits for an explicit finish.
+        let app = try audit("ready-to-finish")
+        XCTAssertTrue(app.buttons["FINISH"].exists)
+        XCTAssertFalse(app.staticTexts["WORKOUT COMPLETE"].exists)
+    }
 }

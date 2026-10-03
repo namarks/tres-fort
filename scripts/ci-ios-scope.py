@@ -12,7 +12,7 @@ def select_suite(event, paths=()):
         raise ValueError('Unsupported CI event: ' + event)
 
     # Changes to the selection/partition machinery must prove full coverage on
-    # the PR itself; a passing smoke run cannot validate the nightly job budget.
+    # the PR itself; a passing smoke run cannot validate the weekly job budget.
     verification_paths = {
         '.github/workflows/ci.yml', 'scripts/verify-ios.sh',
         'scripts/ci-ios-scope.py', 'test/verify-ios.test.py',

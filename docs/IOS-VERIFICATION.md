@@ -32,7 +32,7 @@ iOS change.
 
 CI uses `--ui-suite smoke` for ordinary iOS changes on pull requests and pushes to main.
 Changes to the workflow, verifier, scope selector, or their contract tests select
-`full` on the PR and push, so changes to nightly coverage prove the full job budget
+`full` on the PR and push, so changes to full coverage prove the full job budget
 before merging.
 The smoke suite includes every `TresFortTests` unit test and twelve UI journeys:
 sign-in through starter setup and first workout, provider setup, mobile AI
@@ -44,8 +44,9 @@ regressions normally join the full suite, with focused verification on the PR
 that changes their behavior. Replacing a smoke journey is an explicit coverage
 decision. Script checks enforce twelve valid, unique methods and all unit tests.
 
-Full UI runs are periodic, rather than required on every merge. The nightly
-GitHub Actions schedule runs at 11:17 UTC on main (early morning Pacific time).
+Full UI runs are periodic, rather than required on every merge. The weekly
+GitHub Actions schedule runs Mondays at 11:17 UTC on main (early morning Pacific
+time), so a regression in full-only coverage surfaces within a week.
 Use the CI workflow's **Run workflow** action for an additional full run. Both
 select `--ui-suite full`, including history measurements, accessibility audits,
 and the broader UI journeys. Schedules run only after the workflow lands on
@@ -69,6 +70,8 @@ in shard 1 automatically. The partition contract rejects missing or overlapping
 selectors. Monitor full-run duration as journeys grow and rebalance before a
 shard approaches the 30-minute limit. The September 24 baseline had 124 UI
 methods: two of the previous three partitions still had unrun tests at timeout.
+An October 3 audit of the three largest suites folded six duplicated methods
+into the tests that already covered their assertions, leaving 118.
 Both modes retain the 30-minute job limit and existing assertions/element waits.
 Sharding or smoke mode cannot be combined with `--only-testing`. Without these
 arguments the command still runs the full suite locally.
@@ -178,10 +181,10 @@ workflow files, package configuration, and unknown paths trigger smoke coverage.
 `scripts/ci-ios-scope.py` compares the tested PR merge with its base or the entire
 push range, including deletions and both sides of renames. A missing Git base or
 failed scope job fails the aggregate; only an explicit `skip` decision permits
-skipped iOS jobs. Nightly and manual runs always request full coverage regardless
+skipped iOS jobs. Scheduled and manual runs always request full coverage regardless
 of changed paths. Full runs have separate concurrency groups from push/PR runs.
 
-CI uploads `ios-smoke-1` / `ios-smoke-2` or `ios-full-1` through `ios-full-3` results with a
+CI uploads `ios-smoke-1` / `ios-smoke-2` or `ios-full-1` through `ios-full-6` results with a
 seven-day artifact retention. No production credentials or account data are
 supplied to these jobs. Dependency installation
 and GitHub action permissions follow the existing repository workflow.

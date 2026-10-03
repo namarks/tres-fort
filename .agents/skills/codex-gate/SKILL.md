@@ -21,9 +21,9 @@ of polling.
 
 - Open PRs ready for review, never as drafts: Codex does not review drafts.
 - Write `@codex` only as the exact comment `@codex review`. Any other mention,
-  including one quoted in a PR description, asks Codex for a cloud task
-  instead; it answers "create an environment for this repo" and skips the
-  review.
+  including one quoted in a PR description or a thread reply, asks Codex for a
+  cloud task instead; it answers "create an environment for this repo" and
+  skips the review.
 - Never merge (including `gh pr merge --auto`). The gate ends at "ready to
   merge"; Nick merges.
 - Merging never authorizes a production migration, Worker deploy or client
@@ -55,11 +55,15 @@ each to `HEAD` by commit, never by timestamp alone:
 | 👍 reaction on the PR | issue reactions | Posted when a review finishes clean. One per PR, so it can belong to an older commit: never use it alone. |
 
 ```bash
-gh api "repos/namarks/tres-fort/issues/$PR/comments" \
+gh api --paginate "repos/namarks/tres-fort/issues/$PR/comments" \
   --jq '.[]|select(.user.login=="chatgpt-codex-connector[bot]")|{created_at,updated_at,body}'
-gh api "repos/namarks/tres-fort/pulls/$PR/reviews" \
+gh api --paginate "repos/namarks/tres-fort/pulls/$PR/reviews" \
   --jq '.[]|select(.user.login|startswith("chatgpt-codex-connector"))|{commit_id,state,submitted_at}'
 ```
+
+Read every page of comments, reviews and threads: the API returns 30 per page
+by default, so a busy PR's latest request or findings can sit beyond the
+first. With the MCP tools, pass `perPage: 100` and keep paging.
 
 Codex threads carry `is_resolved` (MCP `get_review_comments`; with `gh`, query
 `reviewThreads { isResolved }` through `gh api graphql`).

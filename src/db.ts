@@ -6075,7 +6075,8 @@ export async function getWorkoutSummary(
     db.prepare(`SELECT e.* FROM exercises e WHERE e.id IN (
       SELECT exercise_id FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL)`)
       .bind(sessionId, userId),
-    // A previous best is per load and unit: 24 kg never compares with 24 lb.
+    // Bests stay per load and unit (24 kg is not 24 lb); summarizeWorkout
+    // matches the same physical load across units (24 kg and 53 lb).
     db.prepare(`SELECT sl.exercise_id,sl.weight,sl.weight_unit,sl.is_timed,MAX(sl.reps) AS reps,
         MAX(COALESCE(sl.duration_s,sl.reps)) AS duration_s
       FROM set_logs sl JOIN sessions s ON s.id=sl.session_id
@@ -7541,7 +7542,9 @@ export async function getVolume(
     .bind(normalizedMuscle).first();
   if (!known) return { error: 'unknown_muscle' as const, query: muscle };
   const rows = await db.prepare(
-    `SELECT strftime('%Y-%W', s.date) AS week, e.unit,
+    // A loaded set's volume is in its own logged unit; zero load keeps the catalog unit.
+    `SELECT strftime('%Y-%W', s.date) AS week,
+            CASE WHEN sl.weight = 0 THEN e.unit WHEN sl.weight_unit = 'kg' THEN 'kg' ELSE 'lb' END AS load_unit,
             COUNT(*) AS logged_working_sets, COUNT(sl.rpe) AS sets_with_effort,
             SUM(CASE WHEN sl.weight > 0 AND sl.is_timed = 0 AND e.unit != 'sec' AND e.modality != 'cardio'
                      THEN sl.weight * sl.reps
@@ -7553,9 +7556,9 @@ export async function getVolume(
      JOIN exercises e ON e.id = sl.exercise_id
      WHERE s.user_id = ?1 AND lower(e.primary_muscle) = ?2 AND sl.deleted_at IS NULL
        AND s.status != 'discarded' AND sl.is_warmup = 0 AND sl.logged_at BETWEEN ?3 AND ?4
-     GROUP BY week, e.unit ORDER BY week, e.unit`,
+     GROUP BY week, load_unit ORDER BY week, load_unit`,
   ).bind(userId, normalizedMuscle, from, to).all<{
-    week: string; unit: string; logged_working_sets: number; sets_with_effort: number;
+    week: string; load_unit: string; logged_working_sets: number; sets_with_effort: number;
     external_load_volume: number | null; contributing_sets: number;
   }>();
   const weeks = [...new Set(rows.results.map(row => row.week))];
@@ -7568,7 +7571,7 @@ export async function getVolume(
       const group = rows.results.filter(row => row.week === week);
       const count = group.reduce((n, row) => n + row.logged_working_sets, 0);
       const byUnit = group.filter(row => row.external_load_volume != null).map(row => ({
-        unit: row.unit, value: row.external_load_volume!, contributing_sets: row.contributing_sets,
+        unit: row.load_unit, value: row.external_load_volume!, contributing_sets: row.contributing_sets,
       }));
       return { week, hard_sets: count, logged_working_sets: count,
         sets_with_effort: group.reduce((n, row) => n + row.sets_with_effort, 0),
@@ -9529,6 +9532,7 @@ export async function getGroupFeed(
         `SELECT sl.session_id,
                 sl.exercise_id,
                 sl.weight,
+                sl.weight_unit,
                 sl.reps,
                 sl.duration_s,
                 sl.is_timed,
@@ -9547,6 +9551,7 @@ export async function getGroupFeed(
         session_id: string;
         exercise_id: string;
         weight: number;
+        weight_unit: 'lb' | 'kg';
         reps: number;
         duration_s: number | null;
         is_timed: number;
@@ -9575,7 +9580,8 @@ export async function getGroupFeed(
           cohort_key: cohort.key,
           exercise_id: exercise.exercise_id,
           exercise: exercise.exercise_name,
-          unit: exercise.exercise_unit,
+          // The cohort's own logged unit (24 kg stays kg), never the catalog's.
+          unit: cohort.unit,
           modality: exercise.exercise_modality,
           laterality: exercise.laterality,
           load_mode: exercise.load_mode,
@@ -9606,8 +9612,10 @@ export async function getGroupFeed(
     return [...byExercise.values()].flatMap((rows) => {
       if (rows.length === 1) return rows;
       const estimated = rows.filter((row) => row.est_1rm > 0);
+      // Estimates are in each row's unit; compare kg and lb by physical load.
+      const pounds = (row: typeof rows[number]) => row.unit === 'kg' ? row.est_1rm / 0.45359237 : row.est_1rm;
       return estimated.length ? [estimated.reduce((best, row) =>
-        row.est_1rm > best.est_1rm ? row : best)] : [];
+        pounds(row) > pounds(best) ? row : best)] : [];
     });
   };
   const sessionItems: FeedSessionItem[] = sessionRows.results.map((s) => ({

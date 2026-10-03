@@ -7,6 +7,13 @@
   "working_sets": 4,
   "total_reps": 25,
   "external_load_volume": 225,
+  "external_load_volume_by_unit": [
+    {
+      "unit": "lb",
+      "value": 225,
+      "contributing_sets": 1
+    }
+  ],
   "cohorts": [
     {
       "exercise_id": "pull",
@@ -68,7 +75,9 @@
       "weight": -30,
       "metric": "reps",
       "value": 12,
-      "previous": 10
+      "previous": 10,
+      "previous_weight": -30,
+      "previous_unit": "lb"
     }
   ],
   "targets_available": false,

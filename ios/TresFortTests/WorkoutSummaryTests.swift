@@ -11,8 +11,24 @@ final class WorkoutSummaryTests: XCTestCase {
         XCTAssertEqual(summary.records.count, 1)
         XCTAssertEqual(summary.records.first?.label, "BW−30 lb assist · 12 reps")
         XCTAssertEqual(summary.records.first?.previous, 10)
+        XCTAssertEqual(summary.records.first?.previousLabel, "Previous: 10 reps")
         XCTAssertFalse(summary.targets_available)
         XCTAssertEqual(summary.cohorts.last?.label, "Strict BW · 45s")
+    }
+
+    func testCrossUnitRecordNamesThePreviousLoad() throws {
+        func record(_ previous: [String: Any]) throws -> WorkoutSummary.Record {
+            var row: [String: Any] = ["exercise_id": "swing", "name": "Kettlebell Swing", "weight": 24,
+                "unit": "kg", "modality": "kettlebell", "laterality": "bilateral", "load_mode": "total",
+                "metric": "reps", "value": 6, "previous": 5]
+            row.merge(previous) { _, value in value }
+            return try JSONDecoder().decode(WorkoutSummary.Record.self,
+                from: JSONSerialization.data(withJSONObject: row))
+        }
+        XCTAssertEqual(try record(["previous_weight": 53, "previous_unit": "lb"]).previousLabel,
+                       "Previous: 5 reps at 53 lb")
+        XCTAssertEqual(try record(["previous_weight": 24, "previous_unit": "kg"]).previousLabel, "Previous: 5 reps")
+        XCTAssertEqual(try record([:]).previousLabel, "Previous: 5 reps")
     }
 }
 

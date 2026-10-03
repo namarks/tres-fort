@@ -156,11 +156,12 @@ describe('working-set trend semantics', () => {
   it('states effort coverage and primary attribution and never adds incompatible units', async () => {
     await rest(`sessions/${session.id}/sets`, 'POST', { id: crypto.randomUUID(),
       exercise_id: 'ex_bench', set_index: 2, weight: 50, reps: 5, rpe: 8 });
-    // Same primary muscle, different unit. Catalog fixtures are test-only.
+    // Same primary muscle, different unit; the set carries its own unit.
+    // Catalog fixtures are test-only.
     await env.DB.prepare(`INSERT INTO exercises (id,name,primary_muscle,modality,unit,created_at)
       VALUES ('coaching-kg','Kilogram press','chest','barbell','kg',0)`).run();
     await rest(`sessions/${session.id}/sets`, 'POST', { id: crypto.randomUUID(),
-      exercise_id: 'coaching-kg', set_index: 1, weight: 20, reps: 5 });
+      exercise_id: 'coaching-kg', set_index: 1, weight: 20, reps: 5, weight_unit: 'kg' });
     const result = await tool('get_volume_trend', { muscle_group: 'chest', range: 'all' });
     expect(result).toMatchObject({ muscle_attribution: 'primary_muscle_only', set_count_basis: 'logged_non_warmup_sets' });
     expect(result.buckets).toEqual([expect.objectContaining({ hard_sets: 3, logged_working_sets: 3,

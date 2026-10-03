@@ -56,9 +56,19 @@ struct WorkoutSummary: Codable {
         let metric: String
         let value: Int
         let previous: Int
+        /// The previous best's own load, which can be the same implement in
+        /// the other unit (53 lb for 24 kg). Older summaries omit it.
+        let previous_weight: Double?
+        let previous_unit: String?
         var id: String { "\(exercise_id):\(weight):\(metric)" }
         var label: String { Cohort.label(weight: weight, unit: unit, modality: modality,
             loadMode: load_mode, laterality: laterality, metric: metric, value: value) }
+        var previousLabel: String {
+            let text = "Previous: \(previous)\(metric == "duration" ? "s" : " reps")"
+            guard let previousWeight = previous_weight, previousWeight != 0,
+                  let previousUnit = previous_unit, previousUnit != unit else { return text }
+            return text + " at \(SetValueFormatter.number(previousWeight)) \(previousUnit)"
+        }
     }
     struct Target: Codable, Identifiable {
         let slot_id: String

@@ -335,11 +335,13 @@ No second editor, no per-session template copies, no weeks table.
       prepare rest notifications and revalidate the selected session afterward.
     - Local verification executed 679 existing unit tests with zero failures
       and one simulator-only file-protection skip. All eight group-presentation
-      tests passed, including six new next-member regressions. Forty distinct
+      tests passed, including six new next-member regressions. Fifty-one distinct
       native UI journeys passed across the final targeted runs and repaired-case
       repeats on iPhone 16e / iOS 26.2. Coverage includes accessible rest/logging,
       exact correction, per-side and signed load entry, timed browsing/recovery,
-      date selection, schedule conflict/retry and optional finish feedback.
+      date selection, unresolved-record expansion/correction, schedule
+      conflict/retry and optional finish feedback. The compact rest row only
+      creates its periodic timeline while a rest deadline exists.
       Native screenshots were inspected. The empty correction reservation uses
       a layout spacer so it does not expose an unnamed accessibility element.
       PR #229 retains final-head hosted review and CI as the merge gates;

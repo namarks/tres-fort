@@ -1583,27 +1583,31 @@ private struct RestPill: View {
     let onExpand: () -> Void
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 0.25)) { ctx in
-            HStack(spacing: 10) {
-                if let end = sync.restEndDate {
+        Group {
+            if let end = sync.restEndDate {
+                TimelineView(.periodic(from: .now, by: 0.25)) { ctx in
                     let remaining = max(0, Int(ceil(end.timeIntervalSince(ctx.date))))
-                    Button(action: onExpand) {
-                        Label(remaining == 0 ? "Rest complete" : "Rest · " + clock(remaining), systemImage: "timer")
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundStyle(remaining == 0 ? Theme.done : Theme.accent)
-                            .frame(minHeight: 44).contentShape(Rectangle())
+                    HStack(spacing: 10) {
+                        Button(action: onExpand) {
+                            Label(remaining == 0 ? "Rest complete" : "Rest · " + clock(remaining), systemImage: "timer")
+                                .font(.subheadline.monospacedDigit())
+                                .foregroundStyle(remaining == 0 ? Theme.done : Theme.accent)
+                                .frame(minHeight: 44).contentShape(Rectangle())
+                        }
+                        .accessibilityLabel("Expand rest timer")
+                        .accessibilityValue("\(remaining) seconds remaining")
+                        Spacer(minLength: 4)
+                        Button { sync.skipRest() } label: {
+                            Text("End rest").font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 12).frame(minHeight: 44)
+                                .background(Theme.accent).foregroundStyle(.black)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                        }
+                        .accessibilityIdentifier("rest.done")
                     }
-                    .accessibilityLabel("Expand rest timer")
-                    .accessibilityValue("\(remaining) seconds remaining")
-                    Spacer(minLength: 4)
-                    Button { sync.skipRest() } label: {
-                        Text("End rest").font(.subheadline.weight(.semibold))
-                            .padding(.horizontal, 12).frame(minHeight: 44)
-                            .background(Theme.accent).foregroundStyle(.black)
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
-                    .accessibilityIdentifier("rest.done")
-                } else {
+                }
+            } else {
+                HStack(spacing: 10) {
                     Label(sync.timedActive ? "Timer running" : "Ready when you are", systemImage: sync.timedActive ? "timer" : "checkmark.circle")
                         .font(.subheadline).foregroundStyle(Theme.muted)
                         .frame(minHeight: 44)

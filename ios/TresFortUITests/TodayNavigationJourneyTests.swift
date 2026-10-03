@@ -477,7 +477,24 @@ final class TodayNavigationJourneyTests: XCTestCase {
             tap(app.buttons["today.viewUnresolvedWorkout"], in: app)
             XCTAssertTrue(app.navigationBars["Workout record"].waitForExistence(timeout: 5))
             if status == "in_progress" {
-                XCTAssertTrue(app.staticTexts["SET 1"].exists)
+                XCTAssertTrue(app.staticTexts["IN PROGRESS"].exists)
+                let exercise = app.staticTexts["calendar.exercise.squat"]
+                XCTAssertTrue(exercise.waitForExistence(timeout: 5))
+                XCTAssertEqual(exercise.label, "Barbell Squat")
+                XCTAssertTrue(app.staticTexts["1 working set · 5 reps"].exists)
+                XCTAssertFalse(app.staticTexts["Set 1"].exists)
+                let edit = app.buttons["edit-set-unresolved-set"]
+                XCTAssertFalse(edit.exists)
+                tap(exercise, in: app)
+                XCTAssertTrue(app.staticTexts["Set 1"].waitForExistence(timeout: 5))
+                tap(edit, in: app)
+                XCTAssertTrue(app.navigationBars["Correct set"].waitForExistence(timeout: 5))
+                XCTAssertEqual(app.textFields["Reps"].value as? String, "5")
+                XCTAssertTrue(app.buttons["Delete set 1 of Barbell Squat"].exists)
+                tap(app.navigationBars["Correct set"].buttons["Cancel"], in: app)
+                tap(exercise, in: app)
+                XCTAssertFalse(edit.exists)
+                XCTAssertTrue(app.staticTexts["1 working set · 5 reps"].exists)
                 XCTAssertFalse(app.staticTexts["No sets logged."].exists)
             } else {
                 tap(app.buttons["calendar.dateActions"], in: app)

@@ -20,6 +20,10 @@ of polling.
 ## Ground rules
 
 - Open PRs ready for review, never as drafts: Codex does not review drafts.
+- Write `@codex` only as the exact comment `@codex review`. Any other mention,
+  including one quoted in a PR description, asks Codex for a cloud task
+  instead; it answers "create an environment for this repo" and skips the
+  review.
 - Never merge (including `gh pr merge --auto`). The gate ends at "ready to
   merge"; Nick merges.
 - Merging never authorizes a production migration, Worker deploy or client

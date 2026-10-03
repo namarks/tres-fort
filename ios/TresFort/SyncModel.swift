@@ -4115,6 +4115,13 @@ final class SyncModel: ObservableObject {
         })
     }
 
+    /// Read-only equipment preparation preview, sharing the commit scheduler's
+    /// durable progress and queued/acknowledged ID union.
+    func nextGroupExercise(afterLogging ex: TemplateExercise) -> TemplateExercise? {
+        guard let nextID = groupProgress(for: ex)?.nextMemberID(afterCompleting: ex.id) else { return nil }
+        return exercises.first { $0.id == nextID }
+    }
+
     private func groupContext(for ex: TemplateExercise) -> RunnerGroupContext? {
         guard let id = ex.group_id else { return nil }
         return RunnerGroupContext(id: id, memberIDs: exercises.filter { $0.group_id == id }.map(\.id),

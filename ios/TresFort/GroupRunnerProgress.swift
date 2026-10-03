@@ -13,10 +13,25 @@ struct GroupRunnerProgress: Codable, Equatable {
     let members: [Member]
 
     var executable: [Member] { members.filter { !$0.skipped } }
-    var nextMemberID: String? {
-        let incomplete = executable.filter { $0.completedIDs.count < $0.target }
-        guard let minimum = incomplete.map({ $0.completedIDs.count }).min() else { return nil }
-        return incomplete.first { $0.completedIDs.count == minimum }?.id
+    var nextMemberID: String? { nextMemberID(completing: nil) }
+
+    /// Preview the same scheduling decision a successful local commit makes.
+    /// Adjust the count without inventing a durable set ID. Logging also
+    /// re-enables a manually revisited skipped member, as the live runner does.
+    /// A complete or missing member cannot produce a new set.
+    func nextMemberID(afterCompleting memberID: String) -> String? {
+        guard let member = members.first(where: { $0.id == memberID }),
+              member.completedIDs.count < member.target else { return nil }
+        return nextMemberID(completing: memberID)
+    }
+
+    private func nextMemberID(completing memberID: String?) -> String? {
+        let candidates = members.filter { !$0.skipped || $0.id == memberID }
+        let incomplete = candidates.map { member in
+            (member: member, count: member.completedIDs.count + (member.id == memberID ? 1 : 0))
+        }.filter { $0.count < $0.member.target }
+        guard let minimum = incomplete.map(\.count).min() else { return nil }
+        return incomplete.first { $0.count == minimum }?.member.id
     }
     var completedRounds: Int { executable.map { min($0.completedIDs.count, $0.target) }.min() ?? 0 }
     var round: Int { completedRounds + 1 }

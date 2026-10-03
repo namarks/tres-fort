@@ -8,14 +8,14 @@ final class TodayNavigationJourneyTests: XCTestCase {
             capture("today-navigation-failure")
         }
     }
-    private func launch(unassignedDate: Bool = false, createRefreshFailure: Bool = false, moveConflict: Bool = false, creationFailure: String? = nil) -> XCUIApplication {
+    private func launch(unassignedDate: Bool = false, createRefreshFailure: Bool = false, moveConflict: Bool = false, creationFailure: String? = nil, restCues: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "app-store"
         if unassignedDate { app.launchEnvironment["TRESFORT_UI_UNASSIGNED_DATE"] = "1" }
         if createRefreshFailure { app.launchEnvironment["TRESFORT_UI_CREATE_REFRESH_FAILURE"] = "1" }
         if moveConflict { app.launchEnvironment["TRESFORT_UI_MOVE_CONFLICT"] = "1" }
         if let creationFailure { app.launchEnvironment["TRESFORT_UI_CREATE_FAILURE"] = creationFailure }
-        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-restAudioCuesEnabled", "NO"]
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-restAudioCuesEnabled", restCues ? "YES" : "NO"]
         app.launch()
         XCTAssertTrue(app.buttons["today.viewWorkout"].waitForExistence(timeout: 10))
         return app
@@ -81,6 +81,8 @@ final class TodayNavigationJourneyTests: XCTestCase {
         // Moving/removing a workout writes an explicit skipped session; the
         // agenda preserves that distinction from an unscheduled rest day.
         XCTAssertTrue(app.staticTexts["SKIPPED"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["calendar.startWorkout"].exists,
+                       "A skipped date must be assigned again before it can start")
         tap(app.buttons["calendar.dateActions"], in: app)
         XCTAssertTrue(app.buttons["calendar.chooseWorkout"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["calendar.moveWorkout"].exists)
@@ -209,10 +211,125 @@ final class TodayNavigationJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["calendar.removeWorkout"].exists)
         tap(app.buttons["calendar.chooseWorkout"], in: app)
         XCTAssertTrue(app.navigationBars["Choose a workout"].waitForExistence(timeout: 5))
-        tap(app.buttons["library.workout.synthetic-day"], in: app)
-        XCTAssertTrue(app.navigationBars["Strength A"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["workoutPicker.schedule"].isEnabled,
+                      "Changing an assigned date starts with its current workout selected")
+        tap(app.buttons["workoutPicker.workout.synthetic-day"], in: app)
+        tap(app.buttons["workoutPicker.preview"], in: app)
+        XCTAssertFalse(app.buttons["workoutDetails.edit"].exists)
         assertGroupedPreview()
-        capture("library-matching-grouped-workout")
+        capture("picker-matching-grouped-workout")
+    }
+
+    func testCalendarPickerSchedulesOnlySelectedDateWithoutManagementTools() {
+        let app = launch()
+        tap(app.tabBars.buttons["Calendar"], in: app)
+        tap(app.buttons["calendar.date.2026-09-09"], in: app)
+        XCTAssertFalse(app.buttons["calendar.startWorkout"].exists, "Future workouts cannot be started")
+        tap(app.buttons["calendar.dateActions"], in: app)
+        tap(app.buttons["calendar.chooseWorkout"], in: app)
+        XCTAssertTrue(app.navigationBars["Choose a workout"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["workoutPicker.date"].label, "For 2026-09-09")
+        XCTAssertFalse(app.buttons["workoutPicker.schedule"].isEnabled)
+        XCTAssertFalse(app.buttons["library.scope"].exists)
+        XCTAssertFalse(app.buttons["library.tagFilter"].exists)
+        XCTAssertFalse(app.buttons["Actions for Strength B"].exists)
+        XCTAssertFalse(app.buttons["Add workout"].exists)
+        XCTAssertFalse(app.staticTexts["Changes"].exists)
+        tap(app.buttons["workoutPicker.workout.strength-b"], in: app)
+        XCTAssertTrue(app.buttons["workoutPicker.schedule"].isEnabled)
+        capture("date-workout-picker")
+        tap(app.buttons["workoutPicker.schedule"], in: app)
+        XCTAssertTrue(app.navigationBars["Workout date"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["STRENGTH B"].exists)
+        tap(app.navigationBars["Workout date"].buttons["Done"], in: app)
+        tap(app.buttons["calendar.date.2026-09-08"], in: app)
+        XCTAssertTrue(app.staticTexts["STRENGTH A"].waitForExistence(timeout: 5))
+        tap(app.navigationBars["Workout date"].buttons["Done"], in: app)
+        tap(app.buttons["calendar.date.2026-09-05"], in: app)
+        XCTAssertFalse(app.buttons["calendar.startWorkout"].exists, "Historical records cannot be started")
+    }
+
+    func testChangeTodayUsesDatePickerAndPreservesLibraryManagementRoute() {
+        let app = launch()
+        tap(app.buttons["today.changeWorkout"], in: app)
+        XCTAssertTrue(app.navigationBars["Choose a workout"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["workoutPicker.date"].label, "For 2026-09-08")
+        XCTAssertFalse(app.buttons["Actions for Strength A"].exists)
+        XCTAssertFalse(app.buttons["Add workout"].exists)
+        XCTAssertFalse(app.staticTexts["Changes"].exists)
+        tap(app.buttons["workoutPicker.workout.strength-b"], in: app)
+        tap(app.buttons["workoutPicker.schedule"], in: app)
+        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Strength B"].exists)
+        XCTAssertFalse(app.buttons["LOG SET 1"].exists, "Changing the date must not start a workout")
+        tap(app.buttons["today.chooseWorkout"], in: app)
+        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Actions for Strength B"].exists)
+        XCTAssertTrue(app.buttons["Add workout"].exists)
+    }
+
+    func testCompletedExercisesExpandToCorrectionControls() throws {
+        let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "WorkoutSummaryPresentation", withExtension: "json"))
+        let app = XCUIApplication()
+        app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "workout-summary"
+        app.launchEnvironment["TRESFORT_UI_SUMMARY_CONTRACT"] = try String(contentsOf: url)
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+        XCTAssertTrue(app.staticTexts["workoutSummary.duration"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["edit-set-squat-1"].exists)
+        // Tap the header text itself. The native DisclosureGroup button's
+        // accessibility frame includes expanded content on some iOS versions.
+        let exercise = app.staticTexts["calendar.exercise.squat"]
+        tap(exercise, in: app)
+        let edit = app.buttons["edit-set-squat-1"]
+        tap(edit, in: app)
+        XCTAssertTrue(app.navigationBars["Correct set"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.textFields["Weight"].exists)
+        XCTAssertTrue(app.buttons["Delete set 1 of Goblet Squat"].exists)
+        tap(app.navigationBars["Correct set"].buttons["Cancel"], in: app)
+        tap(exercise, in: app)
+        XCTAssertFalse(edit.exists)
+        XCTAssertTrue(app.staticTexts["calendar.exercise.pushup"].exists)
+        capture("completed-exercise-disclosures")
+    }
+
+    func testCalendarStartsAndContinuesTheSameTodaysWorkout() {
+        let app = launch()
+        tap(app.tabBars.buttons["Calendar"], in: app)
+        tap(app.buttons["calendar.date.2026-09-08"], in: app)
+        let start = app.buttons["calendar.startWorkout"]
+        XCTAssertEqual(start.label, "Start workout")
+        tap(start, in: app)
+        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
+        let exerciseName = app.staticTexts["runner.exerciseTitle"].label
+        tap(app.buttons["LOG SET 1"], in: app)
+        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
+        tap(app.buttons["runner.minimize"], in: app)
+        tap(app.tabBars.buttons["Calendar"], in: app)
+        tap(app.buttons["calendar.date.2026-09-08"], in: app)
+        XCTAssertEqual(app.buttons["calendar.startWorkout"].label, "Continue workout")
+        tap(app.buttons["calendar.startWorkout"], in: app)
+        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["runner.exerciseTitle"].label, exerciseName)
+        XCTAssertFalse(app.tabBars.buttons["Calendar"].isHittable)
+        capture("calendar-continued-workout")
+    }
+
+    func testCalendarStartPreparesRestNotificationsBeforeLogging() {
+        let app = launch(restCues: true)
+        tap(app.tabBars.buttons["Calendar"], in: app)
+        tap(app.buttons["calendar.date.2026-09-08"], in: app)
+        tap(app.buttons["calendar.startWorkout"], in: app)
+        // The OS prompts only once per installation. A fresh simulator must
+        // finish this permission boundary before the first set can be logged.
+        let allow = XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.buttons["Allow"]
+        if allow.waitForExistence(timeout: 3) {
+            XCTAssertFalse(app.buttons["LOG SET 1"].exists)
+            allow.tap()
+        }
+        tap(app.buttons["LOG SET 1"], in: app)
+        XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
+        XCTAssertFalse(allow.exists, "Logging must not trigger a permission prompt")
     }
 
     func testCalendarCanRemoveAPlannedDateWithoutASavedWorkoutIdentity() {
@@ -360,7 +477,24 @@ final class TodayNavigationJourneyTests: XCTestCase {
             tap(app.buttons["today.viewUnresolvedWorkout"], in: app)
             XCTAssertTrue(app.navigationBars["Workout record"].waitForExistence(timeout: 5))
             if status == "in_progress" {
-                XCTAssertTrue(app.staticTexts["SET 1"].exists)
+                XCTAssertTrue(app.staticTexts["IN PROGRESS"].exists)
+                let exercise = app.staticTexts["calendar.exercise.squat"]
+                XCTAssertTrue(exercise.waitForExistence(timeout: 5))
+                XCTAssertEqual(exercise.label, "Barbell Squat")
+                XCTAssertTrue(app.staticTexts["1 working set · 5 reps"].exists)
+                XCTAssertFalse(app.staticTexts["Set 1"].exists)
+                let edit = app.buttons["edit-set-unresolved-set"]
+                XCTAssertFalse(edit.exists)
+                tap(exercise, in: app)
+                XCTAssertTrue(app.staticTexts["Set 1"].waitForExistence(timeout: 5))
+                tap(edit, in: app)
+                XCTAssertTrue(app.navigationBars["Correct set"].waitForExistence(timeout: 5))
+                XCTAssertEqual(app.textFields["Reps"].value as? String, "5")
+                XCTAssertTrue(app.buttons["Delete set 1 of Barbell Squat"].exists)
+                tap(app.navigationBars["Correct set"].buttons["Cancel"], in: app)
+                tap(exercise, in: app)
+                XCTAssertFalse(edit.exists)
+                XCTAssertTrue(app.staticTexts["1 working set · 5 reps"].exists)
                 XCTAssertFalse(app.staticTexts["No sets logged."].exists)
             } else {
                 tap(app.buttons["calendar.dateActions"], in: app)

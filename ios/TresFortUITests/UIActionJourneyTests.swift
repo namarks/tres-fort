@@ -48,28 +48,29 @@ final class UIActionJourneyTests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Account"].exists)
     }
 
-    func testLogSetStaysAboveTabsBeforeAndAfterScrolling() {
+    func testLogSetStaysFixedAndFocusHidesTabsBeforeAndAfterRest() {
         let app = launch()
         tap(app.buttons["today.startWorkout"], in: app)
         let log = app.buttons["LOG SET 1"]
         XCTAssertTrue(log.waitForExistence(timeout: 5))
         XCTAssertTrue(log.isHittable)
-        XCTAssertLessThan(log.frame.maxY, app.tabBars.firstMatch.frame.minY)
+        XCTAssertFalse(app.tabBars.firstMatch.exists)
         XCTAssertFalse(app.buttons["today.discardWorkout"].exists)
         capture("runner")
         let y = log.frame.minY
         app.swipeUp()
         XCTAssertEqual(log.frame.minY, y, accuracy: 2)
         XCTAssertTrue(log.isHittable)
-        XCTAssertTrue(app.staticTexts["runner.setSummary"].exists)
+        XCTAssertTrue(app.buttons["runner.reps"].exists)
         log.tap()
         XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 10))
-        XCTAssertFalse(log.isHittable, "The full rest screen must shield the pinned action")
+        XCTAssertTrue(app.buttons["LOG SET 2"].isHittable)
+        XCTAssertEqual(app.buttons["LOG SET 2"].frame.minY, y, accuracy: 2)
         app.buttons["rest.done"].tap()
         let next = app.buttons["LOG SET 2"]
         XCTAssertTrue(next.waitForExistence(timeout: 10))
         XCTAssertTrue(next.isEnabled)
-        XCTAssertLessThan(next.frame.maxY, app.tabBars.firstMatch.frame.minY)
+        XCTAssertFalse(app.tabBars.firstMatch.exists)
         XCTAssertTrue(app.frame.contains(next.frame))
         next.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))

@@ -42,12 +42,16 @@ final class FreestyleJourneyTests: XCTestCase {
         let skip = app.buttons["rest.done"]
         XCTAssertTrue(skip.waitForExistence(timeout: 5)); skip.tap()
         XCTAssertTrue(app.buttons[timed ? "START SET 2" : "LOG SET 2"].waitForExistence(timeout: 5))
+        let outline = app.buttons["runner.outline"]
+        reveal(outline, app: app); outline.tap()
+        app.buttons["Current exercise options"].tap()
         let addExercise = app.buttons["runner.addFreestyleExercise"]
         reveal(addExercise, app: app); addExercise.tap()
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap(); search.typeText("Dumbbell Goblet Squat\n")
         let replacement = app.buttons["freestyle.exercise.synthetic-replacement"]
         XCTAssertTrue(replacement.waitForExistence(timeout: 5)); replacement.tap()
+        app.buttons["runner.outline.done"].tap()
         XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5)); app.buttons["LOG SET 1"].tap()
         XCTAssertTrue(skip.waitForExistence(timeout: 5)); skip.tap()
         let actions = app.buttons["today.workoutActions"]

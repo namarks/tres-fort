@@ -82,7 +82,8 @@ final class TrainingJourneyTests: XCTestCase {
                                 ("unilateral-press", "Single-Arm Dumbbell Shoulder Press")] {
             let app = launch(fixture)
             XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 10))
-            XCTAssertTrue(app.staticTexts["runner.setSummary"].label.contains("10 per side"))
+            XCTAssertEqual(app.buttons["runner.reps"].value as? String, "10")
+            XCTAssertTrue(app.buttons["runner.reps"].label.contains("per side"))
             XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "3×10 per side")).firstMatch.exists)
             let edit = app.buttons["Edit next set for " + name]
             reveal(edit, in: app); edit.tap()
@@ -93,14 +94,17 @@ final class TrainingJourneyTests: XCTestCase {
             app.buttons["Save"].tap()
             let increase = app.buttons["Increase reps per side by 1"]
             reveal(increase, in: app)
-            XCTAssertTrue(app.staticTexts["REPS PER SIDE"].exists)
+            XCTAssertTrue(app.staticTexts["Reps per side"].exists)
             screenshot(fixture + "-per-side")
             app.buttons["LOG SET 1"].tap()
-            // The fixture slot has no rest, so logging moves straight to set 2.
+            // This fixture prescribes zero rest, so advance directly to the
+            // next physical set without inventing a timer to dismiss.
             XCTAssertTrue(app.buttons["LOG SET 2"].waitForExistence(timeout: 5))
             XCTAssertFalse(app.buttons["rest.done"].exists)
             XCTAssertEqual(app.staticTexts["fixture.scenario"].value as? String,
                            "sets:1;reps:10;total:20")
+            reveal(app.buttons["runner.outline"], in: app)
+            app.buttons["runner.outline"].tap()
             let correct = app.buttons["Edit set 1 of " + name]
             reveal(correct, in: app); correct.tap()
             XCTAssertTrue(reps.waitForExistence(timeout: 5))
@@ -113,6 +117,9 @@ final class TrainingJourneyTests: XCTestCase {
 
     func testSwapExerciseMidWorkoutPreservesCompletedSetAndRoutine() {
         let app = launch("workout-swap")
+        reveal(app.buttons["runner.outline"], in: app)
+        app.buttons["runner.outline"].tap()
+        app.buttons["Current exercise options"].tap()
         let swap = app.buttons["runner.swap-exercise"]
         reveal(swap, in: app)
         swap.tap()
@@ -120,9 +127,11 @@ final class TrainingJourneyTests: XCTestCase {
         screenshot("workout-swap-picker")
         app.buttons.containing(.staticText, identifier: "Dumbbell Goblet Squat").firstMatch.tap()
         app.buttons["runner.confirm-swap"].tap()
+        app.buttons["runner.outline.done"].tap()
         XCTAssertTrue(app.staticTexts["DUMBBELL GOBLET SQUAT"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["LOG SET 2"].exists)
-        XCTAssertEqual(app.staticTexts["runner.setSummary"].label, "0 × 5")
+        XCTAssertEqual(app.buttons["runner.reps"].value as? String, "5")
+        XCTAssertEqual(app.buttons["runner.weight"].value as? String, "0")
         screenshot("workout-swapped-exercise")
         reveal(app.buttons["LOG SET 2"], in: app)
         app.buttons["LOG SET 2"].tap()
@@ -141,7 +150,7 @@ final class TrainingJourneyTests: XCTestCase {
         screenshot("timed-workout")
     }
 
-    func testTimedSetSurvivesExerciseStripAndPreviousNextPreview() {
+    func testTimedSetSurvivesWorkoutOutlineBrowsing() {
         let app = launch("timed-navigation")
         let start = app.buttons["START SET 1"]
         reveal(start, in: app)
@@ -150,25 +159,17 @@ final class TrainingJourneyTests: XCTestCase {
         XCTAssertTrue(remaining.waitForExistence(timeout: 5))
         let initial = Int(remaining.label.dropLast())!
 
-        // Re-selecting the executing exercise is a no-op, not a timer reset.
-        let bike = app.buttons["Stationary Bike"]
-        bike.tap()
-        XCTAssertTrue(remaining.exists)
-        XCTAssertFalse(start.exists)
-
-        for (control, heading) in [("NEXT →", "PUSH-UP"), ("← PREV", "GOBLET SQUAT"),
-                                   ("Push-Up", "PUSH-UP")] {
-            let navigation = app.buttons[control]
-            if control == "Push-Up" { app.swipeDown() }
-            reveal(navigation, in: app)
-            navigation.tap()
-            XCTAssertTrue(app.navigationBars["Workout preview"].waitForExistence(timeout: 5))
-            XCTAssertTrue(app.staticTexts[heading].exists)
+        for name in ["Stationary Bike", "Push-Up", "Goblet Squat"] {
+            reveal(app.buttons["runner.outline"], in: app)
+            app.buttons["runner.outline"].tap()
+            XCTAssertTrue(app.navigationBars["Workout outline"].waitForExistence(timeout: 5))
+            let exercise = app.buttons[name]
+            reveal(exercise, in: app)
+            XCTAssertFalse(exercise.isEnabled, "Browsing cannot replace the executing timed slot")
             XCTAssertTrue(app.staticTexts["2×8 · 25 lb"].exists)
-            XCTAssertFalse(app.staticTexts["PRESCRIBED · 2×8 · 25 lb"].exists)
-            XCTAssertTrue(app.staticTexts["runner.preview.timer"].label.hasPrefix("Stationary Bike · "))
+            XCTAssertTrue(app.staticTexts["runner.preview.timer"].exists)
             XCTAssertFalse(app.buttons["LOG SET 1"].exists)
-            screenshot("timer-preview-\(heading)")
+            screenshot("timer-outline-\(name)")
             app.buttons["Return to timer"].tap()
             XCTAssertTrue(remaining.waitForExistence(timeout: 5))
             XCTAssertLessThan(Int(remaining.label.dropLast())!, initial)
@@ -182,7 +183,6 @@ final class TrainingJourneyTests: XCTestCase {
         XCTAssertFalse(remaining.exists)
         // Only the bike was logged; the following exercise still has set 1.
         XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Stationary Bike"].exists)
         let evidence = app.staticTexts["fixture.scenario"].value as? String ?? ""
         XCTAssertTrue(evidence.hasPrefix("bike:1;other:0;seconds:"))
         XCTAssertTrue(evidence.hasSuffix(";warmup:1"))
@@ -193,11 +193,12 @@ final class TrainingJourneyTests: XCTestCase {
         let start = app.buttons["START SET 1"]
         reveal(start, in: app)
         start.tap()
-        app.buttons["Push-Up"].tap()
-        XCTAssertTrue(app.navigationBars["Workout preview"].waitForExistence(timeout: 5))
+        reveal(app.buttons["runner.outline"], in: app)
+        app.buttons["runner.outline"].tap()
+        XCTAssertTrue(app.navigationBars["Workout outline"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["runner.preview.timer"].exists)
         let closed = NSPredicate(format: "exists == false")
-        expectation(for: closed, evaluatedWith: app.navigationBars["Workout preview"])
+        expectation(for: closed, evaluatedWith: app.navigationBars["Workout outline"])
         waitForExpectations(timeout: 25)
         let restDone = app.buttons["rest.done"]
         if restDone.waitForExistence(timeout: 3) { restDone.tap() }
@@ -322,12 +323,18 @@ final class TrainingJourneyTests: XCTestCase {
         app.buttons["Save"].tap()
         XCTAssertEqual(weight.value as? String, "20")
         screenshot("kilogram-weight-entry")
-        let options = app.buttons["Exercise options"]
+        let options = app.buttons["runner.outline"]
         reveal(options, in: app); options.tap()
+        app.buttons["Current exercise options"].tap()
         reveal(app.segmentedControls["runner.weight.unit"], in: app)
         app.segmentedControls["runner.weight.unit"].buttons["lb"].tap()
+        app.buttons["runner.outline.done"].tap()
         XCTAssertEqual(weight.value as? String, "44.092")
+        options.tap()
+        app.buttons["Current exercise options"].tap()
+        reveal(app.segmentedControls["runner.weight.unit"], in: app)
         app.segmentedControls["runner.weight.unit"].buttons["kg"].tap()
+        app.buttons["runner.outline.done"].tap()
         XCTAssertEqual(weight.value as? String, "20")
         for _ in 0..<6 where !weight.isHittable { app.swipeDown() }
         weight.tap()

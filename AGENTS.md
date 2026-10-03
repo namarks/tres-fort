@@ -24,9 +24,10 @@ initiative, index, or adapter.
 
 ## Pull requests
 
-Repository skills live in `.agents/skills` (`.claude/skills` links there).
-Drive a PR with `codex-gate`: Codex must review the exact head commit, after
-every fix push too (`@codex review`), and `plan graph`, `typecheck + tests` and
+Repository skills live in `.agents/skills` (`.claude/skills` links there), as
+plain Markdown any agent can read. Drive a PR by following
+`.agents/skills/codex-gate/SKILL.md`: Codex must review the exact head commit,
+after every fix push too, and `plan graph`, `typecheck + tests` and
 `iOS build + tests` must be green on that commit. Agents stop at ready to
 merge; Nick merges.
 

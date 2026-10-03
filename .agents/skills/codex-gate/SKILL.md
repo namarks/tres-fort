@@ -1,21 +1,23 @@
 ---
 name: codex-gate
-description: "Drive a Tres Fort pull request to ready-to-merge: confirm Codex reviewed the exact head commit with no open findings (re-requesting review after every fix push), require plan graph, typecheck + tests and iOS build + tests green on that head, then report ready to merge. Never merges and never deploys; Nick merges. Use when opening, babysitting or fixing a Tres Fort PR, or when asked to run the Codex gate."
-argument-hint: "<PR-number>"
+description: "Drive a Tres Fort pull request to ready-to-merge: confirm Codex reviewed the exact head commit with no open findings (re-requesting review after every fix push), require plan graph, typecheck + tests and iOS build + tests green on that head, then report ready to merge. Never merges and never deploys; Nick merges. Use when opening, babysitting or fixing a Tres Fort PR, or when asked to run the Codex gate for a PR number."
 ---
 
 # Codex gate for Tres Fort
+
+This procedure is for any coding agent. It needs only GitHub access and
+plain shell commands, and it does not depend on one AI product.
 
 Everything here is judged against the PR's exact head commit (`HEAD` below).
 When the head moves, the previous verdicts no longer apply: start again at
 step 1. The repository is `namarks/tres-fort`.
 
-Use `gh` where it exists. In Claude Code web sessions there is no `gh`; use
-the GitHub MCP tools for the same reads and writes (`pull_request_read` with
-`get`, `get_comments`, `get_reviews`, `get_review_comments`, `get_check_runs`;
-`add_issue_comment` and `add_reply_to_pull_request_comment`; job logs via
-`get_job_logs`). Where the session receives PR events, wait for them instead
-of polling.
+Use `gh` where it exists. Without it, as in some hosted agent sessions, use
+the agent's GitHub integration for the same reads and writes; with the GitHub
+MCP server those are `pull_request_read` (`get`, `get_comments`,
+`get_reviews`, `get_review_comments`, `get_check_runs`), `add_issue_comment`,
+`add_reply_to_pull_request_comment` and `get_job_logs`. If the agent receives
+PR events, wait for them instead of polling.
 
 ## Ground rules
 
@@ -125,8 +127,8 @@ with the full `HEAD` SHA. Do not merge.
 
 ## Fallback: Codex unavailable
 
-Run a local adversarial review so the PR is not unreviewed: a review subagent
-reads `AGENTS.md` and the complete diff against fresh `origin/main` and ranks
-findings P1 to P3. P1 and P2 block like Codex findings. A clean fallback review
+Run a local adversarial review so the PR is not unreviewed: a separate review
+pass (a subagent where the agent supports one) reads `AGENTS.md` and the
+complete diff against fresh `origin/main` and ranks findings P1 to P3. P1 and P2 block like Codex findings. A clean fallback review
 is advisory only: report that Codex did not review `HEAD`, and when Codex is
 available again, request `@codex review` before calling the PR ready.

@@ -22,7 +22,10 @@ may turn detections into durable workout actions.
     from target reps or lost tracking.
   - Verify deterministic counting/loss scenarios, iPad navigation/layout and
     iPhone regressions; complete exact-head review and repository checks.
-- [ ] **P1 — Validate the mounted iPad in the exercise area**
+- [ ] **P1 — Compare existing counters and validate the mounted iPad**
+  - Treat the custom angle counter as a baseline, not the selected production
+    algorithm. Compare Apple HumanBodyActionCounter and a MediaPipe-based
+    reference pipeline before adding assisted logging.
   - On an authorized device build, compare counts to manual ground truth for
     all three modes, including slow/paused/partial reps and obstructed views.
   - Evaluate landscape camera placement, screen readability, tracking recovery,
@@ -50,7 +53,8 @@ may turn detections into durable workout actions.
 ## Next step
 
 **Now (@agent):** Complete P0 in the coherent implementation branch, including
-simulator verification and exact-head independent review. Preserve the P1
+simulator verification and exact-head independent review. Then implement the
+P1 comparison below before selecting a production counter. Preserve the P1
 device/distribution gate and the later workout-write/automation gates.
 
 ## Implementation evidence
@@ -80,6 +84,42 @@ device/distribution gate and the later workout-write/automation gates.
 - All station controls remain reachable at accessibility sizes and in portrait.
 - Unit fixtures and simulator journeys prove logic/layout only. Real camera
   accuracy, performance, interruptions and exercise coverage remain P1 evidence.
+
+## Algorithm comparison before assisted logging
+
+The prototype reuses Apple Vision for pose estimation but implements its own
+exercise-specific angle-cycle counter. No comparison has established that this
+counter, or Vision, is the best available choice. The following are candidates
+for a measured comparison, not selected dependencies:
+
+1. **Apple HumanBodyActionCounter:** pretrained repetition counting and an
+   official native sample; test its temporal-window latency and treatment of
+   slow reps, pauses and partial cycles. The framework is proprietary even
+   though Apple supplies reusable sample source.
+2. **MediaPipe Pose Landmarker plus Google's reference pose classifier/counter:**
+   the primary open-source mobile alternative. Native iOS live-stream support
+   and estimated 3D landmarks are available; the pose model itself does not
+   count reps. The published classifier example covers push-ups and squats and
+   needs representative pose examples for other movements. The reference
+   counting implementation is Android/Python; native Swift needs adaptation.
+3. **RepNet:** a secondary research comparator for general video periodicity.
+   Do not assume an iPad-ready implementation or that generic repetition counts
+   identify valid exercise cycles and set completion.
+
+Compare complete-set exact counts, false counts during setup/rest/partial reps,
+slow and paused lifts, bench/rack occlusion, tracking loss and recovery, latency,
+thermal/power cost and camera placement effort. Use permitted labeled inputs and
+live manual ground truth; the current no-recording/no-upload behavior remains.
+Evaluate pose tracking separately from repetition logic so a better detector is
+not confused with a better counter. Selection must follow results on the A16
+station and supported exercises, not generic pose benchmarks or demo claims.
+
+Sources checked 2026-10-03:
+
+- [Apple counting sample](https://developer.apple.com/documentation/createmlcomponents/counting-human-body-action-repetitions-in-a-live-video-feed)
+- [MediaPipe native iOS guide](https://developers.google.com/edge/mediapipe/solutions/vision/pose_landmarker/ios)
+- [Google pose classification and counting reference](https://developers.google.com/ml-kit/vision/pose-detection/classifying-poses)
+- [Google RepNet research](https://research.google/blog/repnet-counting-repetitions-in-videos/)
 
 ## Notes / open questions
 

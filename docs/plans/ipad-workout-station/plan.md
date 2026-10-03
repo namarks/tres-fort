@@ -53,9 +53,11 @@ may turn detections into durable workout actions.
 ## Next step
 
 **Now (@agent):** Complete P0 in the coherent implementation branch, including
-simulator verification and exact-head independent review. Then implement the
-P1 comparison below before selecting a production counter. Preserve the P1
-device/distribution gate and the later workout-write/automation gates.
+simulator verification and exact-head independent review. After P0, stop at
+`external:owner-ipad-station-device-build`; do not begin P1 until its authorized
+device build and owner participation are available. Once that gate is satisfied,
+perform the P1 comparison before selecting a production counter. The later
+workout-write/automation gates remain in force.
 
 ## Implementation evidence
 

@@ -25,6 +25,18 @@ final class TodayNavigationJourneyTests: XCTestCase {
         for _ in 0..<6 where !element.isHittable { app.swipeUp() }
         XCTAssertTrue(element.isHittable); element.tap()
     }
+    /// A tap that lands while the review screen is still animating in can
+    /// leave the name field without keyboard focus. Retry the tap until it
+    /// has focus, then type.
+    private func type(_ text: String, into field: XCUIElement, in app: XCUIApplication) {
+        let focused = NSPredicate(format: "hasKeyboardFocus == true")
+        for _ in 0..<3 {
+            tap(field, in: app)
+            let wait = XCTNSPredicateExpectation(predicate: focused, object: field)
+            if XCTWaiter.wait(for: [wait], timeout: 2) == .completed { break }
+        }
+        field.typeText(text)
+    }
     private func capture(_ name: String) {
         let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         image.name = name; image.lifetime = .keepAlways; add(image)
@@ -54,7 +66,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
         XCTAssertTrue(selection.waitForExistence(timeout: 5)); selection.tap()
         app.buttons["createWorkout.review"].tap()
         let name = app.textFields["createWorkout.name"]
-        tap(name, in: app); name.typeText("Hotel session")
+        type("Hotel session", into: name, in: app)
         tap(app.buttons["createWorkout.create"], in: app)
         XCTAssertTrue(app.navigationBars["Edit Hotel session"].waitForExistence(timeout: 5))
         tap(app.navigationBars["Edit Hotel session"].buttons["Done"], in: app)
@@ -242,7 +254,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
         XCTAssertTrue(selection.waitForExistence(timeout: 5)); selection.tap()
         app.buttons["createWorkout.review"].tap()
         let name = app.textFields["createWorkout.name"]
-        tap(name, in: app); name.typeText("Hotel session")
+        type("Hotel session", into: name, in: app)
         tap(app.buttons["createWorkout.create"], in: app)
         XCTAssertTrue(app.navigationBars["Workout unavailable"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["createWorkout.create"].exists)
@@ -266,7 +278,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
             XCTAssertTrue(selection.waitForExistence(timeout: 5)); selection.tap()
             app.buttons["createWorkout.review"].tap()
             let name = app.textFields["createWorkout.name"]
-            tap(name, in: app); name.typeText("Hotel session")
+            type("Hotel session", into: name, in: app)
             let create = app.buttons["createWorkout.create"]
             tap(create, in: app)
             let expectedLabel = failure == "conflict" ? "Create workout" : "Retry creation"
@@ -320,7 +332,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
             XCTAssertTrue(selection.waitForExistence(timeout: 5)); selection.tap()
             app.buttons["createWorkout.review"].tap()
             let name = app.textFields["createWorkout.name"]
-            tap(name, in: app); name.typeText("First workout")
+            type("First workout", into: name, in: app)
             tap(app.buttons["createWorkout.create"], in: app)
             tap(app.buttons["createWorkout.refreshPlan"], in: app)
             XCTAssertEqual(name.value as? String, "First workout")

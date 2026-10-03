@@ -44,7 +44,7 @@ jobs:
           echo "iOS coverage: $suite"
 
   ios-tests:
-    name: iOS ${{ needs.plans.outputs.ios-suite }} (${{ matrix.shard }}/${{ needs.plans.outputs.ios-suite == 'full' && 6 || 2 }})
+    name: ${{ matrix.shard == 'station' && 'iPad Station' || format('iOS {0} ({1}/{2})', needs.plans.outputs.ios-suite, matrix.shard, needs.plans.outputs.ios-suite == 'full' && 6 || 2) }}
     needs: plans
     # Standard public-repository capacity only; never opt into a paid runner.
     if: github.event.repository.private == false && needs.plans.outputs.ios-suite != 'skip'
@@ -54,6 +54,8 @@ jobs:
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(needs.plans.outputs.ios-suite == 'full' && '[1, 2, 3, 4, 5, 6]' || '[1, 2]') }}
+        include:
+          - shard: station
     env:
       IOS_UI_SUITE: ${{ needs.plans.outputs.ios-suite }}
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
@@ -77,7 +79,11 @@ jobs:
           cp -R "$generator_dir/xcodegen" "$RUNNER_TEMP/tres-fort-tools/"
           echo "$RUNNER_TEMP/tres-fort-tools/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Unsigned simulator build and tests
+        if: matrix.shard != 'station'
         run: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPhone-17 --ui-suite "$IOS_UI_SUITE" --ci-shard ${{ matrix.shard }}
+      - name: iPad Station build and tests
+        if: matrix.shard == 'station'
+        run: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPad-A16 --only-testing TresFortTests/StationCounterTests --only-testing TresFortTests/StationDiagnosticsTests --only-testing TresFortTests/StationComparisonTests --only-testing TresFortTests/StationCameraConfigurationTests --only-testing TresFortTests/StationPoseFeedbackTests --only-testing TresFortUITests/StationJourneyTests --only-testing TresFortUITests/MemberActivationJourneyTests/testFreshDeviceSignInRestoresExistingTrainingAndStation --only-testing TresFortUITests/MemberActivationJourneyTests/testFreshDeviceStateFailureRetriesWithoutOfferingNewAccountSetup --only-testing TresFortUITests/MemberActivationJourneyTests/testFreshDeviceConfirmedEmptyAccountStillOffersSetup
       - name: Retain synthetic screenshots and test results
         if: always()
         uses: actions/upload-artifact@v4

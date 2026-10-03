@@ -15,6 +15,13 @@ final class AuthModel: ObservableObject {
         case error(String)
     }
 
+    enum OnboardingResolution: Equatable {
+        case unresolved
+        case checking
+        case needsSetup
+        case failed(String)
+    }
+
     @Published var phase: Phase = .signedOut
     @Published var jwt: String?
     var isReviewAccount: Bool { jwt.flatMap(Self.claims)?["app_review"] as? Bool == true }
@@ -69,10 +76,17 @@ final class AuthModel: ObservableObject {
     }
 
     /// Drives whether RootView shows the first-run `OnboardingView` or the
-    /// main app. `false` ⇒ a brand-new sign-in that hasn't been guided
-    /// through setup yet. Persisted so it survives relaunch and never
-    /// re-fires once completed. See the grandfathering logic in `init`.
+    /// main app. `false` means this installation has not completed setup;
+    /// it does not prove that the server account is new. Persisted so it
+    /// survives relaunch and never re-fires once completed. See `init`.
     @Published var onboardingComplete = false
+    @Published private(set) var onboardingResolution: OnboardingResolution = .unresolved
+    /// RootView keys its resolution task on invalidations, not on .checking:
+    /// a cancelled task's deferred reset may occur after a replacement task
+    /// has observed .checking and returned. This schedules that replacement
+    /// again without making a request cancel itself when it starts.
+    @Published private(set) var onboardingResolutionRevision: UInt64 = 0
+    private var onboardingRequestID = UUID()
 
     @Published private(set) var pendingEntryIntents: [MemberEntryIntent] = []
     @Published private(set) var entryPersistenceError: String?
@@ -185,6 +199,7 @@ final class AuthModel: ObservableObject {
     private let appleCredentialChecker: any AppleCredentialStateChecking
     private let defaults: LocalPersistence
     private let now: () -> Date
+    private let onboardingStateReader: @MainActor (String) async throws -> StateResponse
     /// Weak-owner callbacks registered by mounted feature models. AuthModel
     /// invokes them immediately before an account boundary makes their epoch
     /// stale, so process-shared UI such as Live Activities cannot outlive the
@@ -224,13 +239,17 @@ final class AuthModel: ObservableObject {
         appleCredentialChecker: any AppleCredentialStateChecking =
             AppleCredentialStateChecker(),
         defaults: LocalPersistence = .standard,
-        now: @escaping () -> Date = Date.init
+        now: @escaping () -> Date = Date.init,
+        onboardingStateReader: @escaping @MainActor (String) async throws -> StateResponse = {
+            try await APIClient().getState(jwt: $0)
+        }
     ) {
         self.api = api
         self.tokenStore = tokenStore
         self.appleCredentialChecker = appleCredentialChecker
         self.defaults = defaults
         self.now = now
+        self.onboardingStateReader = onboardingStateReader
         postDeletionAppleRevocationRequired = defaults.bool(
             forKey: Self.postDeletionAppleRevocationKey)
         let token = tokenStore.load()
@@ -311,6 +330,91 @@ final class AuthModel: ObservableObject {
         guard let accountID = userID, featureJWT != nil else { return }
         defaults.set(true, forKey: AccountLocalState.onboardedKey(userID: accountID))
         onboardingComplete = true
+        resetOnboardingResolution()
+    }
+
+    /// A fresh installation has no account-scoped completion flag. Read the
+    /// server with zero sync cursors before offering setup, so an existing
+    /// member's phone and iPad enter the same training account. This read does
+    /// not create feature models, flush outboxes, or mutate server data.
+    func resolveOnboarding() async {
+        guard !onboardingComplete, let token = featureJWT, let accountID = userID,
+              onboardingResolution != .checking, onboardingResolution != .needsSetup,
+              !Task.isCancelled
+        else { return }
+        let draftKey = AccountLocalState.trainingProfileDraftKey(userID: accountID)
+        let localDraft = defaults.data(forKey: draftKey)
+        guard !defaults.hasFailure(userID: accountID) else { return }
+        if localDraft != nil {
+            // Resume this installation's unfinished setup. Its draft may own
+            // an uncertain starter acceptance that TrainingSetupModel must
+            // reconcile, even when its server-side plan was already created.
+            onboardingResolution = .needsSetup
+            return
+        }
+        let epoch = featureSessionEpoch
+        let requestID = UUID()
+        onboardingRequestID = requestID
+        onboardingResolution = .checking
+        defer {
+            // View-task cancellation can occur during navigation or storage
+            // recovery. A later mount must be able to start a fresh request.
+            if onboardingRequestID == requestID, featureSessionEpoch == epoch,
+               userID == accountID, onboardingResolution == .checking {
+                resetOnboardingResolution()
+            }
+        }
+        do {
+            let state = try await withTaskCancellationHandler {
+                try await onboardingStateReader(token)
+            } onCancel: { [weak self] in
+                Task { @MainActor in
+                    guard let self, self.onboardingRequestID == requestID,
+                          self.featureSessionEpoch == epoch, self.userID == accountID,
+                          self.onboardingResolution == .checking
+                    else { return }
+                    self.resetOnboardingResolution()
+                }
+            }
+            try Task.checkCancellation()
+            guard onboardingRequestID == requestID,
+                  isCurrentFeatureSession(accountID: accountID, epoch: epoch),
+                  !onboardingComplete
+            else { return }
+            if Self.hasExistingTraining(state) {
+                completeOnboarding()
+            } else {
+                onboardingResolution = .needsSetup
+            }
+        } catch {
+            guard !Task.isCancelled, !(error is CancellationError),
+                  onboardingRequestID == requestID,
+                  isCurrentFeatureSession(accountID: accountID, epoch: epoch),
+                  !onboardingComplete
+            else { return }
+            if case let APIError.http(code, _) = error, code == 401,
+               featureJWT == token {
+                requireReauthentication()
+            } else {
+                onboardingResolution = .failed(
+                    "We couldn’t check your existing training. Check your connection and try again.")
+            }
+        }
+    }
+
+    private static func hasExistingTraining(_ state: StateResponse) -> Bool {
+        let discardedSessions = Set(state.sessions.filter { $0.status == "discarded" }.map(\.id))
+        return state.plan != nil
+            || state.sessions.contains { $0.status == "completed" || $0.status == "in_progress" }
+            || state.sets.contains { $0.deleted_at == nil && !discardedSessions.contains($0.session_id) }
+            || state.activities.contains { $0.deleted_at == nil }
+            || state.external_activities.contains { !$0.isDeleted }
+    }
+
+    private func resetOnboardingResolution() {
+        onboardingRequestID = UUID()
+        onboardingResolution = .unresolved
+        onboardingResolutionRevision &+= 1
     }
 
     func handleAppleResult(_ result: Result<ASAuthorization, Error>) {
@@ -412,6 +516,7 @@ final class AuthModel: ObservableObject {
         }
         AccountLocalState.bindLegacyState(userID: res.user.id, defaults: defaults)
         featureSessionEpoch &+= 1
+        resetOnboardingResolution()
         tokenStore.save(res.jwt)
         jwt = res.jwt
         userID = res.user.id
@@ -535,6 +640,7 @@ final class AuthModel: ObservableObject {
         }
         notifyFeatureSessionBoundary()
         featureSessionEpoch &+= 1
+        resetOnboardingResolution()
         tokenStore.clear()
         jwt = nil
         reauthenticationReason = reason
@@ -552,6 +658,7 @@ final class AuthModel: ObservableObject {
         guard persistEntryIntents([]) else { return }
         notifyFeatureSessionBoundary()
         featureSessionEpoch &+= 1
+        resetOnboardingResolution()
         tokenStore.clear()
         defaults.removeObject(forKey: Self.userIDKey)
         pendingEntryIntents = []
@@ -587,6 +694,7 @@ final class AuthModel: ObservableObject {
         }
         if userID == accountID {
             accountDeletionPending = true
+            resetOnboardingResolution()
         }
         let response: AccountDeletionResponse
         do {
@@ -654,6 +762,7 @@ final class AuthModel: ObservableObject {
         }
         guard userID == accountID else { return }
         featureSessionEpoch &+= 1
+        resetOnboardingResolution()
         accountDeletionPending = false
         tokenStore.clear()
         defaults.removeObject(forKey: Self.userIDKey)

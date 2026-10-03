@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-09-19 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-10-03 · Theme: release
 
 ## Goal
 
@@ -96,6 +96,24 @@ Replacing or resubmitting the candidate requires separate App Review authority;
 neither the TestFlight release nor the MANUAL change supplies it. Public release
 remains separately gated after a compatible candidate and readiness evidence.
 
+**Internal comparison beta (2026-10-03):** The owner requested upload of the
+iPad camera comparison while Mac CI was queued. [Build 45's receipt](release-45.md)
+records independently reviewed branch source, local verification, signed package,
+and successful Apple validation/upload. At `2026-10-03T21:18:16.656Z`, Apple
+confirmed VALID / IN_BETA_TESTING and internal Testers assignment. PR #228 remains
+unmerged; its repository merge gates remain in force. No backend or public
+App Store changes were made.
+
+**Corrective iPad beta (2026-10-03):** The owner's first physical build-45 trial
+exposed repeated setup for an existing account, narrow framing and unsuccessful
+tracking. [Build 46's receipt](release-46.md) records the fixes, independent
+review of source `5989bce81942e18b53e9ba35918986b595408411`, local verification,
+and successful Apple validation/upload. At `2026-10-03T21:55:28.607Z`, Apple
+confirmed 1.0 (46) VALID / IN_BETA_TESTING and internal Testers assignment.
+Physical camera accuracy still needs a new trial. The PR remains unmerged
+pending its configured gates; this internal beta does not replace the App
+Review candidate or authorize public release.
+
 **Internal beta follow-up (2026-09-18):** The owner approved workout-library
 P0.5(b), then a combined internal TestFlight build including P0.4(a), P0.5(a)
 and P0.5(b). [Build 43's release receipt](release-43.md) records completion from
@@ -116,7 +134,7 @@ deferring authenticated live workout checks to device testing for this internal
 release. Those checks remain unperformed; do not reinstate the upload gate or
 treat the exception as public-readiness acceptance.
 
-**Current Apple readback (2026-09-19):** Version 1.0 now has build 40
+**Apple readback (2026-09-19 snapshot):** Version 1.0 had build 40
 **IN_REVIEW** with **MANUAL** release after the explicitly approved setting
 change. Build 44 is the latest internal beta, VALID and available to Testers;
 external Alpha Testers do not have it. The App Review candidate was not replaced

@@ -120,14 +120,89 @@ final class MemberActivationJourneyTests: XCTestCase {
         image.name = "activation-first-completion"; image.lifetime = .keepAlways; add(image)
     }
 
-    func testOwnerEntryReachesFirstCompletedWorkout() {
+    func testOwnerEntryRestoresTrainingWithoutRepeatingSetup() {
         let app = launch("activation-owner")
         XCTAssertTrue(app.buttons["app.privacy-policy"].isHittable)
         XCTAssertTrue(app.buttons["Contact support"].isHittable)
         tap(app.buttons["Sign in with Apple"], in: app)
-        onboard(app)
-        tap(app.buttons["Enter Très Fort"], in: app)
+        assertExistingTraining(app)
         completeFirstWorkout(app)
+    }
+
+    func testFreshDeviceSignInRestoresExistingTrainingAndStation() {
+        let app = launch("activation-returning")
+        tap(app.buttons["Sign in with Apple"], in: app)
+        assertExistingTraining(app)
+        assertReturningRequestsDidNotMutateSetup(app)
+
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            tap(app.buttons["today.station"], in: app)
+            XCTAssertTrue(app.buttons["station.enableCamera"].waitForExistence(timeout: 5))
+            XCTAssertEqual(app.staticTexts["station.repCount"].label, "Custom counter: 0 reps")
+            tap(app.buttons["station.done"], in: app)
+            assertExistingTraining(app)
+            assertReturningRequestsDidNotMutateSetup(app)
+        }
+    }
+
+    func testFreshDeviceStateFailureRetriesWithoutOfferingNewAccountSetup() {
+        let app = launch("activation-returning-retry")
+        tap(app.buttons["Sign in with Apple"], in: app)
+        let retry = app.buttons["onboarding.resolve.retry"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["onboarding.resolve.error"].exists)
+        XCTAssertTrue(app.buttons["onboarding.resolve.signOut"].isHittable)
+        XCTAssertFalse(app.buttons["Get started"].exists)
+        XCTAssertFalse(app.buttons["trainingSetup.next"].exists)
+        XCTAssertFalse(app.buttons["today.createWorkout"].exists)
+        XCTAssertFalse(app.navigationBars["Today"].exists)
+        assertReturningRequestsDidNotMutateSetup(app, minimumStateReads: 1)
+        tap(retry, in: app)
+        assertExistingTraining(app)
+        assertReturningRequestsDidNotMutateSetup(app, minimumStateReads: 2)
+    }
+
+    func testFreshDeviceConfirmedEmptyAccountStillOffersSetup() {
+        let app = launch("activation-manual")
+        tap(app.buttons["Sign in with Apple"], in: app)
+        XCTAssertTrue(app.buttons["Get started"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.navigationBars["Today"].exists)
+        assertReturningRequestsDidNotMutateSetup(app)
+        tap(app.buttons["Get started"], in: app)
+        XCTAssertTrue(app.buttons["trainingSetup.next"].waitForExistence(timeout: 5))
+    }
+
+    private func assertExistingTraining(_ app: XCUIApplication,
+                                        file: StaticString = #filePath, line: UInt = #line) {
+        // iPadOS renders the tab strip outside an XCUI TabBar. The actual Today
+        // navigation surface and server workout prove restoration on both sizes.
+        XCTAssertTrue(app.navigationBars["Today"].waitForExistence(timeout: 10), file: file, line: line)
+        XCTAssertTrue(app.staticTexts["Workout A"].waitForExistence(timeout: 10), file: file, line: line)
+        XCTAssertFalse(app.buttons["Get started"].exists, file: file, line: line)
+        XCTAssertFalse(app.staticTexts["Choose your first step"].exists, file: file, line: line)
+        XCTAssertFalse(app.buttons["today.createWorkout"].exists, file: file, line: line)
+    }
+
+    private func assertReturningRequestsDidNotMutateSetup(_ app: XCUIApplication, minimumStateReads: Int = 1,
+                                                          file: StaticString = #filePath, line: UInt = #line) {
+        let evidence = app.staticTexts["fixture.scenario"]
+        let observed = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let counters = self.requestCounts(evidence)
+            return counters["signIn"] == 1 && (counters["state"] ?? 0) >= minimumStateReads
+        }, object: evidence)
+        XCTAssertEqual(XCTWaiter.wait(for: [observed], timeout: 5), .completed, file: file, line: line)
+        let counters = requestCounts(evidence)
+        XCTAssertEqual(counters["profileWrites"], 0, file: file, line: line)
+        XCTAssertEqual(counters["starterWrites"], 0, file: file, line: line)
+        XCTAssertEqual(counters["workoutWrites"], 0, file: file, line: line)
+    }
+
+    private func requestCounts(_ evidence: XCUIElement) -> [String: Int] {
+        Dictionary(uniqueKeysWithValues: (evidence.value as? String ?? "").split(separator: ";").compactMap { item in
+            let pair = item.split(separator: ":")
+            guard pair.count == 2, let value = Int(pair[1]) else { return nil }
+            return (String(pair[0]), value)
+        })
     }
 
     func testMixedSportSetupCreatesFirstWorkoutAndKeepsProfile() {
@@ -278,10 +353,9 @@ final class MemberActivationJourneyTests: XCTestCase {
         tap(app.buttons["Sign in with Apple"], in: app)
         XCTAssertTrue(app.buttons["Sign in with Apple"].waitForExistence(timeout: 10))
         tap(app.buttons["Sign in with Apple"], in: app)
-        onboard(app, invited: true)
-        tap(app.buttons["Enter Très Fort"], in: app)
         let retry = app.buttons["Try again"]
         XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Get started"].exists)
         XCTAssertGreaterThanOrEqual(retry.frame.height, 44, "The retry button itself must own its full touch target")
         // Tap below the text, inside the button's expanded touch target.
         XCTAssertTrue(retry.isHittable)
@@ -292,14 +366,13 @@ final class MemberActivationJourneyTests: XCTestCase {
         completeFirstWorkout(app)
     }
 
-    func testIndependentCoachIntentReturnsToPersonalSetupThenCompletesWorkout() {
+    func testReturningCoachIntentReachesCoachThenExistingWorkout() {
         let app = launch("activation-coach")
         tap(app.buttons["Set up my coach"], in: app)
         XCTAssertTrue(app.staticTexts["Sign in to continue to Coach Connect."].exists)
         tap(app.buttons["Sign in with Apple"], in: app)
-        onboard(app)
-        tap(app.buttons["Enter Très Fort"], in: app)
         XCTAssertTrue(app.navigationBars["Connect your coach"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.buttons["Get started"].exists)
         XCTAssertTrue(app.staticTexts["coach.connected-status"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["coach.data-sharing"].exists)
         tap(app.navigationBars["Connect your coach"].buttons["Done"], in: app)
@@ -311,7 +384,7 @@ final class MemberActivationJourneyTests: XCTestCase {
     }
 
     func testInviteAndCoachChoicesAreDeliveredOnceInOrder() {
-        let app = launch("activation-invite")
+        let app = launch("activation-manual", pendingInvite: true)
         tap(app.buttons["Sign in with Apple"], in: app)
         onboard(app, invited: true)
         tap(app.buttons["Set up my coach"], in: app)

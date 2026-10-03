@@ -61,7 +61,8 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: minimize)
         waitForExpectations(timeout: 5)
         XCTAssertTrue(app.buttons["Expand rest timer"].waitForExistence(timeout: 5))
-        waitUntilHittable(app.buttons["rest.done"], app.buttons["LOG SET 2"])
+        waitUntilHittable(app.buttons["rest.done"])
+        assertPinnedActionReachable(app.buttons["LOG SET 2"], in: app)
         XCTAssertGreaterThan(app.scrollViews.firstMatch.frame.height, 100)
         let edit = app.buttons["rest.editLastSet"]
         reveal(edit, above: app.buttons["LOG SET 2"], in: app)
@@ -74,18 +75,27 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         for _ in 0..<6 where !app.buttons["rest.done"].isHittable { app.scrollViews.firstMatch.swipeDown() }
         capture("compact-rest-accessibility-size")
         app.buttons["rest.done"].tap()
-        waitUntilHittable(app.buttons["LOG SET 2"])
+        assertPinnedActionReachable(app.buttons["LOG SET 2"], in: app)
         app.buttons["LOG SET 2"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.buttons["LOG SET 3"].waitForExistence(timeout: 5))
     }
 
     /// Waits out layout animation, such as app chrome returning after rest,
-    /// before requiring controls to take taps.
-    private func waitUntilHittable(_ elements: XCUIElement...) {
-        for element in elements {
-            expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: element)
-        }
+    /// before requiring a control to take taps.
+    private func waitUntilHittable(_ element: XCUIElement) {
+        expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: element)
         waitForExpectations(timeout: 5)
+    }
+
+    /// After rest restores the app chrome, XCTest can misreport the pinned
+    /// action's hittability; the activation tests see the same for FINISH.
+    /// Check its frame instead. The physical tap at the end proves it logs.
+    private func assertPinnedActionReachable(_ action: XCUIElement, in app: XCUIApplication,
+                                             file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertTrue(action.isEnabled, file: file, line: line)
+        XCTAssertTrue(app.frame.contains(action.frame),
+                      "\(action.frame) is outside \(app.frame)", file: file, line: line)
+        XCTAssertGreaterThanOrEqual(action.frame.height, 44, file: file, line: line)
     }
 
     /// Scrolls the runner with short, momentum-free drags until `element` is

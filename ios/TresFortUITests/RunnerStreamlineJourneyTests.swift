@@ -55,25 +55,37 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertTrue(minimize.waitForExistence(timeout: 5))
         for _ in 0..<10 where !minimize.isHittable { app.swipeUp() }
         XCTAssertTrue(minimize.isHittable); minimize.tap()
-        // The full rest screen (which has its own rest.done) animates away;
-        // check the compact card and fixed action only once it is gone.
+        // The full rest screen (which has its own rest.done) animates away
+        // and the navigation and tab bars return. Check the compact card and
+        // fixed action only once it is gone and hit-testing has settled.
         expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: minimize)
         waitForExpectations(timeout: 5)
         XCTAssertTrue(app.buttons["Expand rest timer"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["rest.done"].isHittable)
-        XCTAssertTrue(app.buttons["LOG SET 2"].isHittable)
+        waitUntilHittable(app.buttons["rest.done"], app.buttons["LOG SET 2"])
         XCTAssertGreaterThan(app.scrollViews.firstMatch.frame.height, 100)
         let edit = app.buttons["rest.editLastSet"]
         reveal(edit, above: app.buttons["LOG SET 2"], in: app)
         XCTAssertTrue(edit.isHittable); edit.tap()
-        XCTAssertTrue(app.navigationBars["Correct set"].waitForExistence(timeout: 5))
+        let correction = app.navigationBars["Correct set"]
+        XCTAssertTrue(correction.waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: correction)
+        waitForExpectations(timeout: 5)
         for _ in 0..<6 where !app.buttons["rest.done"].isHittable { app.scrollViews.firstMatch.swipeDown() }
         capture("compact-rest-accessibility-size")
         app.buttons["rest.done"].tap()
-        XCTAssertTrue(app.buttons["LOG SET 2"].isHittable)
+        waitUntilHittable(app.buttons["LOG SET 2"])
         app.buttons["LOG SET 2"].coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
         XCTAssertTrue(app.buttons["LOG SET 3"].waitForExistence(timeout: 5))
+    }
+
+    /// Waits out layout animation, such as app chrome returning after rest,
+    /// before requiring controls to take taps.
+    private func waitUntilHittable(_ elements: XCUIElement...) {
+        for element in elements {
+            expectation(for: NSPredicate(format: "hittable == true"), evaluatedWith: element)
+        }
+        waitForExpectations(timeout: 5)
     }
 
     /// Scrolls the runner with short, momentum-free drags until `element` is

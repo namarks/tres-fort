@@ -499,11 +499,10 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 ## Next step
 
 **Now (@agent):** P0.6(a) implementation and local verification are complete.
-Deliver [PR #229](https://github.com/namarks/tres-fort/pull/229) after independent
-review and every required CI check pass on its exact final head. This request's
-explicit session instructions authorize merging the approved implementation;
-the subsequently imported Codex gate's default manual-merge handoff does not
-revoke that existing authorization. Apply its exact-head review and CI checks.
+Complete the ready-to-merge handoff for
+[PR #229](https://github.com/namarks/tres-fort/pull/229) after independent review
+and every required CI check pass on its exact final head. Follow the repository's
+Codex gate for that handoff; this plan does not grant merge authority.
 After merge, P0.6(b) client distribution is the next Focus gate and requires
 separate owner activation; repository completion does not establish that the
 installed app contains these changes.

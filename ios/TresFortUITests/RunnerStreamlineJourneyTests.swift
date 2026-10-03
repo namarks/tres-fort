@@ -55,6 +55,10 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertTrue(minimize.waitForExistence(timeout: 5))
         for _ in 0..<10 where !minimize.isHittable { app.swipeUp() }
         XCTAssertTrue(minimize.isHittable); minimize.tap()
+        // The full rest screen (which has its own rest.done) animates away;
+        // check the compact card and fixed action only once it is gone.
+        expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: minimize)
+        waitForExpectations(timeout: 5)
         XCTAssertTrue(app.buttons["Expand rest timer"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["rest.done"].isHittable)
         XCTAssertTrue(app.buttons["LOG SET 2"].isHittable)

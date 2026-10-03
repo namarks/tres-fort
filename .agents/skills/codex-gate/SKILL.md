@@ -36,7 +36,7 @@ PR events, wait for them instead of polling.
 
 ```bash
 PR=<n>
-gh pr view "$PR" --json state,isDraft,baseRefName,headRefOid,mergeable
+gh pr view "$PR" --json state,isDraft,baseRefName,headRefOid,mergeable,createdAt
 ```
 
 - `MERGED` or `CLOSED`: stop and report it. GitHub cancels a closed PR's runs,
@@ -57,8 +57,10 @@ each to `HEAD` by commit, never by timestamp alone:
 | 👍 reaction on the PR | issue reactions | Posted when a review finishes clean. One per PR, so it can belong to an older commit: never use it alone. |
 
 ```bash
+# Codex's comments plus every review request, whoever posted it.
 gh api --paginate "repos/namarks/tres-fort/issues/$PR/comments" \
-  --jq '.[]|select(.user.login=="chatgpt-codex-connector[bot]")|{created_at,updated_at,body}'
+  --jq '.[]|select(.user.login=="chatgpt-codex-connector[bot]"
+    or (.body|test("^@codex (security )?review")))|{user:.user.login,created_at,updated_at,body}'
 gh api --paginate "repos/namarks/tres-fort/pulls/$PR/reviews" \
   --jq '.[]|select(.user.login|startswith("chatgpt-codex-connector"))|{commit_id,state,submitted_at}'
 ```
@@ -72,7 +74,8 @@ Codex threads carry `is_resolved` (MCP `get_review_comments`; with `gh`, query
 
 Decide in this order, where "summary Commit" is the short SHA in the summary
 table, "completed at" is the time shown beside Completed, and "the latest
-request" is the last `@codex review` comment, or the PR opening:
+request" is the newest comment starting `@codex review` by anyone, or the PR's
+`createdAt` when there is none:
 
 1. **Unavailable:** a Codex comment matching `usage limit` appears after the
    latest request, or the summary is unchanged 10 minutes after a request. Run

@@ -469,7 +469,7 @@ const TOOLS: Record<string, Tool> = {
   },
   get_history: {
     description:
-      'Get set history for one exercise (by name or id, e.g. "bench"). Compare reps and holds only within the returned cohorts (same exercise/variation, execution mode and exact external load). Mixed bodyweight/hold conditions have no overall top set. Bodyweight est_1rm is always null, including positive added load; Epley is only for conventional loaded rep work. Pooled total reps describe work, not strength progress. Nullable tonnage measures positive external-load volume only, never bodyweight system load.',
+      'Get set history for one exercise (by name or id, e.g. "bench"). Compare reps and holds only within the returned cohorts (same exercise/variation, execution mode and exact external load). Mixed bodyweight/hold conditions have no overall top set. Bodyweight est_1rm is always null, including positive added load; Epley is only for conventional loaded rep work. Pooled total reps describe work, not strength progress. Nullable tonnage measures positive external-load volume only, never bodyweight system load. Each set has its own weight_unit; a session\'s top and est_1rm are in its `unit`, and tonnage is null when lb and kg both contribute (see tonnage_by_unit).',
     inputSchema: obj(
       {
         exercise: { type: 'string', description: 'Exercise name, alias, or id' },

@@ -20,7 +20,7 @@ import { validActivitySourceTime } from './activityTime';
 // Public service facade: REST and MCP share the same domain operations.
 // Cohesive internal services live in services/; they never import this facade. Timestamps are epoch-ms integers.
 import { parseRunnerTargets, summarizeWorkout, type SummaryExercise, type SummarySet, type RunnerTargetSnapshot, type WorkoutSummary } from './workoutSummary';
-import { metricCohorts, estimatedOneRepMax, positiveSetTonnage, type MetricExercise } from './metrics';
+import { metricCohorts, estimatedOneRepMax, loadUnit, positiveSetTonnage, type MetricExercise } from './metrics';
 import type {
   ActivityRow,
   DayConflict,
@@ -7546,15 +7546,25 @@ export async function getHistory(
     const repCohorts = cohorts.filter((cohort) => !cohort.is_timed);
     const timedCohorts = cohorts.filter((cohort) => cohort.is_timed);
     const estimated = rows.filter((row) => estimatedOneRepMax(row, exercise) != null);
+    // Each estimate is in its set's unit; rank kg and lb by physical load.
+    const pounds = (row: SetLogRow) => estimatedOneRepMax(row, exercise)!
+      / (loadUnit(row, exercise) === 'kg' ? 0.45359237 : 1);
     const estimatedTop = estimated.length ? estimated.reduce((best, row) =>
-      estimatedOneRepMax(row, exercise)! > estimatedOneRepMax(best, exercise)! ? row : best) : null;
+      pounds(row) > pounds(best) ? row : best) : null;
     // Preserve conventional Epley summaries. Incompatible BW/hold conditions
     // have no overall winner; callers use the explicitly keyed cohorts.
     const top = cohorts.length === 1 ? cohorts[0]!.top : estimatedTop;
-    const tonnages = rows.map((row) => positiveSetTonnage(row, exercise))
-      .filter((value): value is number => value != null);
+    const volumes = new Map<string, number>();
+    for (const row of rows) {
+      const tonnage = positiveSetTonnage(row, exercise);
+      if (tonnage != null) volumes.set(loadUnit(row, exercise), (volumes.get(loadUnit(row, exercise)) ?? 0) + tonnage);
+    }
+    const byUnit = [...volumes].sort(([a], [b]) => a.localeCompare(b))
+      .map(([unit, value]) => ({ unit, value }));
     return {
       date, top,
+      /** Unit of top, and so of est_1rm. */
+      unit: top == null ? null : loadUnit(top, exercise),
       notes: rows[0]!.session_notes,
       perceived_fatigue: rows[0]!.session_perceived_fatigue,
       metric: top == null ? 'mixed' : estimatedTop ? 'load' : cohorts[0]!.metric,
@@ -7564,7 +7574,9 @@ export async function getHistory(
       total_reps: exercise.modality === 'bw'
         ? repCohorts.reduce((sum, cohort) => sum + (cohort.total_reps ?? 0), 0) : null,
       best_duration_s: timedCohorts.length === 1 ? timedCohorts[0]!.best_duration_s : null,
-      tonnage: tonnages.length ? tonnages.reduce((a, b) => a + b, 0) : null,
+      // A scalar only for one unit; lb and kg are never summed.
+      tonnage: byUnit.length === 1 ? byUnit[0]!.value : null,
+      tonnage_by_unit: byUnit,
       tonnage_basis: 'external_load',
       cohorts,
     };

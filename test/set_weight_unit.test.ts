@@ -165,7 +165,7 @@ describe('per-set weight_unit (migration 0055)', () => {
       previous_weight: 24, previous_unit: 'kg' })]);
   });
 
-  it('labels group feed and volume trend loads in the unit each set was logged in', async () => {
+  it('labels group feed, history and volume trend loads in the unit each set was logged in', async () => {
     const workout = await completed('2026-09-09', [[60, 5, 'kg'], [100, 5, 'lb']]);
     const owner = await env.DB.prepare('SELECT user_id FROM sessions WHERE id = ?1')
       .bind(workout.id).first<{ user_id: string }>();
@@ -176,6 +176,12 @@ describe('per-set weight_unit (migration 0055)', () => {
       .toEqual([[60, 'kg'], [100, 'lb']]);
     // 60 kg × 5 (70 kg ≈ 154 lb estimate) outranks 100 lb × 5 (≈ 117 lb).
     expect(item.session.top_sets).toEqual([expect.objectContaining({ weight: 60, unit: 'kg' })]);
+
+    const history = JSON.parse((await mcp('tools/call', { name: 'get_history',
+      arguments: { exercise: 'ex_bench', range: 'all' } })).content[0].text);
+    const day = history.by_session.find((entry: any) => entry.date === '2026-09-09');
+    expect(day).toMatchObject({ top: { weight: 60, weight_unit: 'kg' }, unit: 'kg', est_1rm: 70,
+      tonnage: null, tonnage_by_unit: [{ unit: 'kg', value: 300 }, { unit: 'lb', value: 500 }] });
 
     const trend = JSON.parse((await mcp('tools/call', { name: 'get_volume_trend',
       arguments: { muscle_group: 'chest', range: 'all' } })).content[0].text);

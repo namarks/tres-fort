@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-09-19 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-10-03 · Theme: release
 
 ## Goal
 
@@ -10,8 +10,8 @@ candidate, compatible production backend, documented verification and owner
 exceptions, accurate privacy disclosures, listing and reviewer access. The owner
 requested expedited shipment on 2026-09-10. Complete the prepared App Store
 package and submission requirements while retaining the existing submission.
-The owner-authorized change to MANUAL release was read back on 2026-09-19
-Pacific, with build 40 still IN_REVIEW. Build 40 is known to use retired workout
+The October 3 Apple readback retains MANUAL release and selects build 40,
+now REJECTED. Build 40 is known to use retired workout
 routes/fields and is incompatible with the serving canonical Worker. Public
 release remains blocked on a compatible candidate; the manual setting prevents
 automatic publication. Preparation
@@ -86,8 +86,8 @@ and TestFlight availability do not mean public release.
 
 ## Next step
 
-**Now (@agent):** Finish P1/P2 review-package preparation against the canonical
-build-44 source and retain the owner's device-verification follow-up. The
+**Now (@agent):** Finish P1/P2 review-package preparation against the reviewed
+[build-47 source](release-47.md) and retain the owner's device-verification follow-up. The
 owner-approved switch to MANUAL is complete. The selected build 40 is incompatible
 with the current canonical backend: its default `.legacy` client writes to
 `/api/days` and sends `day_template_id`; the serving Worker rejects that route
@@ -116,19 +116,27 @@ deferring authenticated live workout checks to device testing for this internal
 release. Those checks remain unperformed; do not reinstate the upload gate or
 treat the exception as public-readiness acceptance.
 
-**Current Apple readback (2026-09-19):** Version 1.0 now has build 40
-**IN_REVIEW** with **MANUAL** release after the explicitly approved setting
-change. Build 44 is the latest internal beta, VALID and available to Testers;
-external Alpha Testers do not have it. The App Review candidate was not replaced
-or resubmitted; no public release was performed.
+**Build 47 release (2026-10-03):** The owner requested internal TestFlight
+distribution, then separately approved production deployment of reviewed source
+`e3251de9bf8ff6f2e447068b69fe4154c0b468a8`. [The release receipt](release-47.md)
+records the Focus UI delivery, signed upload and a compatible Worker at 100%
+traffic. The deployment repairs a pre-existing mismatch in slot-edit version
+handling. All source migrations were already applied; none was run for this
+release. Public checks pass; authenticated live workout and physical-device
+acceptance remain unperformed.
+
+**Current Apple readback (2026-10-03):** Version 1.0 selects build 40,
+**REJECTED**, with **MANUAL** release. Build 47 is VALID / IN_BETA_TESTING and
+assigned to internal Testers; external Alpha Testers do not have it. The App
+Review candidate was not replaced or resubmitted; no public release occurred.
 
 **Agent follow-through:** Finish the runnable P1/P2 audit against canonical source
-`d801e9dbfdb402531ddae6266b9b16e3da46dece`: reconcile privacy/account and group
+`e3251de9bf8ff6f2e447068b69fe4154c0b468a8`: reconcile privacy/account and group
 controls, public policy/support availability, listing and reviewer instructions,
 and the documented verification exceptions. Record evidence and identify any
 owner-only App Store fields before completing those phases. The App Review
 candidate remains pinned, but the serving backend is now canonical source
-`d801e9dbfdb402531ddae6266b9b16e3da46dece`, recorded in [release 44](release-44.md).
+`e3251de9bf8ff6f2e447068b69fe4154c0b468a8`, recorded in [release 47](release-47.md).
 The reviewed build-40 source defaults to the retired REST contract, so its
 workout mutations are known to be incompatible, not merely unverified. Keep
 public release blocked until a compatible candidate replaces it and required

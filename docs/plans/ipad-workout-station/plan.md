@@ -53,18 +53,19 @@ may turn detections into durable workout actions.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P1 | gated_by | external:owner-ipad-station-device-build | Owner began physical testing of internal build 45; prepare and verify a corrective internal build before continuing the comparison. |
+| P1 | gated_by | external:owner-ipad-station-device-build | Corrective internal build 46 is verified available to Testers; the owner must evaluate framing and counting on the actual iPad. |
 | P2 | gated_by | external:owner-ipad-station-write-contract | Confirm the supported movements, correction UX and multi-device controller policy before enabling workout writes. |
 | P3 | gated_by | external:owner-ipad-station-automation-criteria | Automation needs explicit measured quality criteria and activation authority. |
 
 ## Next step
 
-**Now (@agent):** Verify and deliver the corrective internal build for the
-owner's first physical trial findings: repeated setup after fresh-device sign-in,
-narrow framing, and neither counter producing useful tracking. Recheck wider
-framing, visible joints and sustained counting on the actual A16 iPad. Complete
-P0 repository delivery only after configured CI and exact-head review pass;
-an internal TestFlight upload does not satisfy merge gates. The later
+**Now (@agent):** Support the next physical trial using verified internal build
+1.0 (46): confirm the wider front-camera view and overlay alignment, then compare
+both counts with manually counted movements on the actual A16 iPad. The first
+trial's repeated setup, framing and tracking defects have corrective code and
+local regression evidence; physical counting quality is still unverified.
+Complete P0 repository delivery only after configured CI and exact-head review
+pass; an internal TestFlight upload does not satisfy merge gates. The later
 workout-write and automation gates remain in force.
 
 ## Approved comparison scope
@@ -140,8 +141,16 @@ workout-write and automation gates remain in force.
   failed-read retry and confirmed-empty setup. Results:
   `.artifacts/ios/tres-fort-ios.RD8r7z/Tests.xcresult`. Wider-format selection,
   overlay projection, segmented recovery and the three Station interface
-  journeys also passed in the initial focused iPad run; full iPhone activation
-  and the new real Apple multi-window iPad regression are still being verified.
+  journeys also passed in the initial focused iPad run. The iPhone run passed
+  740 unit tests with one existing skip and 25 UI journeys, including all 23
+  activation cases. Results: `.artifacts/ios/tres-fort-ios.XueYM6/Tests.xcresult`.
+  After the final Apple adapter correction, all 23 comparison cases including
+  real multi-window inference passed against the exact candidate's iOS source
+  set on iPad: `.artifacts/ios/tres-fort-ios.QSDi8b/Tests.xcresult`.
+- Apple validation and upload of corrective build 1.0 (46) succeeded from
+  independently reviewed source `5989bce81942e18b53e9ba35918986b595408411`.
+  At `2026-10-03T21:55:28.607Z`, Apple confirmed VALID / IN_BETA_TESTING and
+  internal Testers assignment. See the [build receipt](../app-store-submission/release-46.md).
 
 ## Acceptance and verification
 

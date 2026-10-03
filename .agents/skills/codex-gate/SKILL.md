@@ -10,7 +10,7 @@ plain shell commands, and it does not depend on one AI product.
 
 Everything here is judged against the PR's exact head commit (`HEAD` below).
 When the head moves, the previous verdicts no longer apply: start again at
-step 1. The repository is `namarks/tres-fort`.
+section 1. The repository is `namarks/tres-fort`.
 
 Use `gh` where it exists. Without it, as in some hosted agent sessions, use
 the agent's GitHub integration for the same reads and writes; with the GitHub
@@ -70,20 +70,25 @@ first. With the MCP tools, pass `perPage: 100` and keep paging.
 Codex threads carry `is_resolved` (MCP `get_review_comments`; with `gh`, query
 `reviewThreads { isResolved }` through `gh api graphql`).
 
-Decide, where "summary Commit" is the short SHA in the summary table and "the
-latest request" is the last `@codex review` comment, or the PR opening:
+Decide in this order, where "summary Commit" is the short SHA in the summary
+table, "completed at" is the time shown beside Completed, and "the latest
+request" is the last `@codex review` comment, or the PR opening:
 
-- **Findings:** a Codex review with `commit_id == HEAD` was submitted after the
-  latest request, or a Codex review thread is unresolved. Go to step 3.
-- **Clean:** `HEAD` starts with the summary Commit, Status is Completed, and
-  there are no findings. An earlier review of the same commit whose threads
-  were answered and resolved does not block a later clean review.
-- **Reviewing:** Status is Running for `HEAD`, or Codex reacted 👀. Wait.
-- **Not reviewed:** the summary Commit is not `HEAD`. Codex does not review a
-  push on its own: comment `@codex review` once and wait.
-- **Unavailable:** a Codex comment matching `usage limit` appears after the
-  latest request, or nothing changes for 10 minutes after one. Run the
-  fallback below.
+1. **Unavailable:** a Codex comment matching `usage limit` appears after the
+   latest request, or the summary is unchanged 10 minutes after a request. Run
+   the fallback below.
+2. **Reviewing:** Status is Running for `HEAD`, or a request was made since
+   `HEAD` was pushed and the summary has not completed after it yet. Wait; an
+   older Completed row says nothing about the newer request.
+3. **Findings:** a Codex review with `commit_id == HEAD` was submitted after the
+   latest request, or a Codex review thread is unresolved. Go to section 3.
+4. **Clean:** `HEAD` starts with the summary Commit, Status is Completed, it
+   completed after the latest request, and there are no findings. An earlier
+   review of the same commit whose threads were answered and resolved does not
+   block this later clean review.
+5. **Not reviewed:** the summary Commit is not `HEAD` and no review has been
+   requested since `HEAD` was pushed. Codex does not review a push on its own:
+   comment `@codex review` once and wait.
 
 ## 3. Address findings, then re-request review
 
@@ -95,7 +100,7 @@ latest request" is the last `@codex review` comment, or the PR opening:
    initiatives, adapters), and the Python checks in `test/` for CI scripts.
    Swift builds only in CI's macOS jobs.
 3. Push, reply on each addressed thread with the fixing commit, resolve it,
-   then comment `@codex review`. Return to step 1 with the new `HEAD`.
+   then comment `@codex review`. Return to section 1 with the new `HEAD`.
 
 ## 4. CI on HEAD
 

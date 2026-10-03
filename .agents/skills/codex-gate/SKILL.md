@@ -16,8 +16,10 @@ Use `gh` where it exists. Without it, as in some hosted agent sessions, use
 the agent's GitHub integration for the same reads and writes; with the GitHub
 MCP server those are `pull_request_read` (`get`, `get_comments`,
 `get_reviews`, `get_review_comments`, `get_check_runs`), `add_issue_comment`,
-`add_reply_to_pull_request_comment` and `get_job_logs`. If the agent receives
-PR events, wait for them instead of polling.
+`add_reply_to_pull_request_comment`, thread resolution (`resolve_review_thread`
+with the thread's ID, or `pull_request_review_write` with
+`method: resolve_thread` in newer server versions) and `get_job_logs`. If the
+agent receives PR events, wait for them instead of polling.
 
 ## Ground rules
 
@@ -60,7 +62,7 @@ each to `HEAD` by commit, never by timestamp alone:
 # Codex's comments plus every review request, whoever posted it.
 gh api --paginate "repos/namarks/tres-fort/issues/$PR/comments" \
   --jq '.[]|select(.user.login=="chatgpt-codex-connector[bot]"
-    or (.body|test("^@codex (security )?review")))|{user:.user.login,created_at,updated_at,body}'
+    or (.body|test("^@codex (security )?review[ \\t]*(\\r?\\n|$)")))|{user:.user.login,created_at,updated_at,body}'
 gh api --paginate "repos/namarks/tres-fort/pulls/$PR/reviews" \
   --jq '.[]|select(.user.login|startswith("chatgpt-codex-connector"))|{commit_id,state,submitted_at}'
 ```
@@ -74,8 +76,9 @@ Codex threads carry `is_resolved` (MCP `get_review_comments`; with `gh`, query
 
 Decide in this order, where "summary Commit" is the short SHA in the summary
 table, "completed at" is the time shown beside Completed, and "the latest
-request" is the newest comment starting `@codex review` by anyone, or the PR's
-`createdAt` when there is none:
+request" is the newest comment whose first line is exactly `@codex review` (or
+`@codex security review`), by anyone, or the PR's `createdAt` when there is
+none. A line such as `@codex reviewing` is not a request:
 
 1. **Unavailable:** a Codex comment matching `usage limit` appears after the
    latest request, or the summary is unchanged 10 minutes after a request. Run
@@ -104,6 +107,8 @@ request" is the newest comment starting `@codex review` by anyone, or the PR's
    Swift builds only in CI's macOS jobs.
 3. Push, reply on each addressed thread with the fixing commit, resolve it,
    then comment `@codex review`. Return to section 1 with the new `HEAD`.
+   With `gh`, resolve a thread through GraphQL:
+   `gh api graphql -f query='mutation { resolveReviewThread(input: {threadId: "<id>"}) { thread { isResolved } } }'`.
 
 ## 4. CI on HEAD
 

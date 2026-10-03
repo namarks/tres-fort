@@ -18,6 +18,9 @@ struct SetReviewList: View {
         var id: String { self.set?.id ?? pending!.id }
         var setIndex: Int { self.set?.set_index ?? pending!.body.set_index }
         var exerciseID: String { self.set?.exercise_id ?? pending!.body.exercise_id }
+        /// The unit this set's weight was logged in. Corrections send weight
+        /// without a unit, so the editor must stay in this one.
+        var weightUnit: WeightUnit { self.set?.weightUnit ?? pending!.body.weightUnit }
         var values: SetCorrectionValues {
             SetCorrectionValues(weight: set?.weight ?? pending!.body.weight,
                                 reps: set?.reps ?? pending!.body.reps,
@@ -41,7 +44,7 @@ struct SetReviewList: View {
                 timed: item.set.map { sync.isTimedSet($0) } ?? item.pending!.body.is_timed,
                 allowsAssistance: sync.isBodyweightExercise(item.exerciseID)
                     || sync.isTimedExercise(item.exerciseID),
-                storedUnit: WeightUnit(rawValue: sync.catalogRow(item.exerciseID)?.unit ?? "lb") ?? .lb,
+                storedUnit: item.weightUnit,
                 unilateral: sync.sides(for: item.exerciseID) == 2,
                 onSave: { values in
                     if let set = item.set { return sync.enqueueCorrection(set: set, values: values) }
@@ -99,7 +102,7 @@ struct SetReviewList: View {
 
     private func row(_ item: ReviewItem) -> some View {
         let unit = WeightUnit(rawValue: weightUnitRaw) ?? .lb
-        let storedUnit = WeightUnit(rawValue: sync.catalogRow(item.exerciseID)?.unit ?? "lb") ?? .lb
+        let storedUnit = item.weightUnit
         let correction = sync.correction(for: item.id)
         let timed = item.set.map { sync.isTimedSet($0) } ?? item.pending!.body.is_timed
         let values = SetValueFormatter.value(

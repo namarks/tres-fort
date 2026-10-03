@@ -93,7 +93,7 @@ struct SaveFreestyleWorkoutView: View {
 
     @ViewBuilder private func slotSection(_ index: Int, slot: FreestyleSlot) -> some View {
         Section(sync.exerciseName(slot.exercise_id)) {
-            Text("From \(sourceSlots[index].source_set_ids?.count ?? sourceSlots[index].target_sets) working sets at \(sourceSlots[index].target_weight.formatted()) \((WeightUnit(rawValue: sync.catalogRow(slot.exercise_id)?.unit ?? "") ?? .lb).rawValue)")
+            Text(sourceSlots[index].sourceSummary)
                 .font(.caption).foregroundStyle(Theme.muted)
             Stepper("Sets: \(slot.target_sets)", value: binding(index, \.target_sets), in: 1...100)
             if slot.target_duration_s != nil {
@@ -104,7 +104,8 @@ struct SaveFreestyleWorkoutView: View {
                 Stepper("Reps: \(slot.target_reps)", value: binding(index, \.target_reps), in: 1...1000)
             }
             HStack {
-                Text("Load (\((WeightUnit(rawValue: sync.catalogRow(slot.exercise_id)?.unit ?? "") ?? .lb).rawValue))")
+                // Edited in the draft's own unit and saved as entered: no conversion.
+                Text("Load (\(slot.targetWeightUnit.rawValue))")
                 TextField("Load", value: binding(index, \.target_weight), format: .number)
                     .keyboardType(.numbersAndPunctuation).multilineTextAlignment(.trailing)
             }

@@ -13,16 +13,23 @@ enum WeightUnit: String, CaseIterable {
         String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), value)
             .replacingOccurrences(of: "\\.?0+$", with: "", options: .regularExpression)
     }
+
+    /// Per-unit totals side by side ("1200 lb · 300 kg", lb first), never
+    /// added together. Empty when there are no totals.
+    static func totals(_ values: [Self: Double], number: (Double) -> String) -> String {
+        allCases.compactMap { unit in values[unit].map { "\(number($0)) \(unit.rawValue)" } }
+            .joined(separator: " · ")
+    }
 }
 
 extension TemplateExercise {
     /// Read the saved prescription, never a runner draft or a historical load.
     /// Two-dumbbell targets are stored per hand; conversion keeps that meaning.
+    /// The load converts from the slot's own `target_weight_unit`.
     func prescriptionLabel(in unit: WeightUnit) -> String {
         var parts = [targetLabel]
         if showsLoadControl, let weight = target_weight {
-            let storedUnit = WeightUnit(rawValue: exercise_unit) ?? .lb
-            let value = WeightUnit.text(storedUnit.convert(abs(weight), to: unit))
+            let value = WeightUnit.text(targetWeightUnit.convert(abs(weight), to: unit))
             if allowsAssistance && weight == 0 {
                 parts.append("Bodyweight")
             } else if allowsAssistance && weight < 0 {

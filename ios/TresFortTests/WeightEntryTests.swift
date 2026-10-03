@@ -18,8 +18,72 @@ final class WeightEntryTests: XCTestCase {
         XCTAssertEqual(exercise.prescriptionLabel(in: .lb), "4×10 · 25 lb each hand")
         XCTAssertEqual(exercise.prescriptionLabel(in: .kg), "4×10 · 11.34 kg each hand")
         XCTAssertEqual(exercise.target_weight, 25)
-        let kilograms = try prescription(["exercise_unit": "kg", "target_weight": 10])
+        let kilograms = try prescription(["target_weight_unit": "kg", "target_weight": 10])
         XCTAssertEqual(kilograms.prescriptionLabel(in: .lb), "4×10 · 22.046 lb each hand")
+    }
+
+    /// Kettlebell Swing as served: catalog unit lb, slot prescribed in kg.
+    private func swing(_ weight: Double, unit: String) throws -> TemplateExercise {
+        try prescription(["exercise_name": "Kettlebell Swing", "exercise_modality": "kettlebell",
+            "exercise_load_mode": "total", "target_sets": 3, "target_reps": 15,
+            "target_weight": weight, "target_weight_unit": unit])
+    }
+
+    func testSlotLoadConvertsFromItsOwnUnitToEveryDisplayUnit() throws {
+        let kilograms = try swing(24, unit: "kg"), pounds = try swing(24, unit: "lb")
+        XCTAssertEqual(kilograms.prescriptionLabel(in: .kg), "3×15 · 24 kg")
+        XCTAssertEqual(kilograms.prescriptionLabel(in: .lb), "3×15 · 52.911 lb")
+        XCTAssertEqual(pounds.prescriptionLabel(in: .kg), "3×15 · 10.886 kg")
+        XCTAssertEqual(pounds.prescriptionLabel(in: .lb), "3×15 · 24 lb")
+        XCTAssertEqual(try swing(16, unit: "kg").prescriptionLabel(in: .kg), "3×15 · 16 kg")
+        XCTAssertEqual(kilograms.targetWeightUnit, .kg)
+        XCTAssertEqual(kilograms.target_weight, 24)
+    }
+
+    func testCatalogUnitNeverDecidesTheSlotLoadUnit() throws {
+        // A slot without a declared unit is lb even when the catalog says
+        // otherwise; a declared slot unit wins over any catalog unit.
+        for catalogUnit in ["kg", "sec", "min"] {
+            let undeclared = try prescription(["exercise_unit": catalogUnit, "exercise_load_mode": "total"])
+            XCTAssertEqual(undeclared.targetWeightUnit, .lb)
+            XCTAssertEqual(undeclared.prescriptionLabel(in: .lb), "4×10 · 25 lb")
+        }
+        let declared = try prescription(["exercise_unit": "lb", "target_weight_unit": "kg",
+                                         "exercise_load_mode": "total"])
+        XCTAssertEqual(declared.prescriptionLabel(in: .kg), "4×10 · 25 kg")
+    }
+
+    func testBodyweightSlotsWithZeroOrMissingLoadNeverShowAConvertedWeight() throws {
+        let bodyweight: [String: Any] = ["exercise_name": "Push-Up", "exercise_modality": "bw",
+                                         "exercise_load_mode": "total", "target_sets": 3]
+        let units: [Any] = ["kg", "lb", NSNull()]
+        for unit in units {
+            let zero = try prescription(bodyweight.merging(["target_weight": 0, "target_weight_unit": unit]) { _, new in new })
+            let missing = try prescription(bodyweight.merging(["target_weight": NSNull(), "target_weight_unit": unit]) { _, new in new })
+            for display in WeightUnit.allCases {
+                XCTAssertEqual(zero.prescriptionLabel(in: display), "3×10 · Bodyweight")
+                XCTAssertEqual(missing.prescriptionLabel(in: display), "3×10")
+            }
+        }
+        let added = try prescription(bodyweight.merging(["target_weight": 10, "target_weight_unit": "kg"]) { _, new in new })
+        XCTAssertEqual(added.prescriptionLabel(in: .kg), "3×10 · +10 kg")
+        XCTAssertEqual(added.prescriptionLabel(in: .lb), "3×10 · +22.046 lb")
+        let assisted = try prescription(bodyweight.merging(["target_weight": -10, "target_weight_unit": "kg"]) { _, new in new })
+        XCTAssertEqual(assisted.prescriptionLabel(in: .kg), "3×10 · 10 kg assistance")
+    }
+
+    func testKilogramLoadShownInPoundsSavesBackToExactKilograms() throws {
+        // Opening the editor on a 24 kg slot in lb and saving untouched text
+        // keeps exactly 24 kg; an edited lb value converts once, into kg.
+        var draft = WeightEntryDraft(weight: 24, storedUnit: .kg, unit: .lb)
+        XCTAssertEqual(draft.text, "52.911")
+        XCTAssertEqual(draft.storedWeight, 24)
+        draft.select(.kg)
+        XCTAssertEqual(draft.text, "24")
+        XCTAssertEqual(draft.storedWeight, 24)
+        draft.select(.lb)
+        draft.text = "55"
+        XCTAssertEqual(try XCTUnwrap(draft.storedWeight), 55 * 0.45359237, accuracy: 1e-9)
     }
 
     func testPrescriptionKeepsTotalLoadRepRangeAndEffort() throws {

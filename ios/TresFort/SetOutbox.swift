@@ -16,6 +16,10 @@ struct SetRequestBody: Codable, Equatable {
     let template_exercise_id: String?
     let set_index: Int
     let weight: Double
+    /// Unit of `weight`. Sent explicitly so the Worker never re-derives it
+    /// from the slot; nil only on intents queued by builds before per-slot
+    /// units, which are resent unchanged.
+    let weight_unit: String?
     let reps: Int
     let rpe: Double?
     let is_warmup: Bool
@@ -40,7 +44,8 @@ struct SetRequestBody: Codable, Equatable {
         is_timed: Bool,
         expected_attempt: Int? = nil,
         rpe: Double? = nil,
-        prescription: SetPrescriptionContext? = nil
+        prescription: SetPrescriptionContext? = nil,
+        weight_unit: String? = nil
     ) {
         self.prescription = prescription
         self.id = id
@@ -48,6 +53,7 @@ struct SetRequestBody: Codable, Equatable {
         self.template_exercise_id = template_exercise_id
         self.set_index = set_index
         self.weight = weight
+        self.weight_unit = weight_unit
         self.reps = reps
         self.rpe = rpe
         self.is_warmup = is_warmup
@@ -70,8 +76,11 @@ struct SetRequestBody: Codable, Equatable {
             duration_s: duration_s,
             is_timed: is_timed,
             expected_attempt: expectedAttempt ?? expected_attempt,
-            rpe: rpe, prescription: prescription)
+            rpe: rpe, prescription: prescription, weight_unit: weight_unit)
     }
+
+    /// Unit `weight` is in; legacy intents without one were logged in lb.
+    var weightUnit: WeightUnit { WeightUnit(rawValue: weight_unit ?? "") ?? .lb }
 }
 
 enum SetIntentDeliveryState: String, Codable, Equatable {

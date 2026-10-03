@@ -2,21 +2,23 @@ import XCTest
 @testable import TresFort
 
 final class ExerciseInformationTests: XCTestCase {
-    private func prescription(weight: Double? = 20, timed: Bool = false) -> TemplateExercise {
+    private func prescription(weight: Double? = 20, timed: Bool = false, unit: String? = nil) -> TemplateExercise {
         TemplateExercise(id: "slot", exercise_id: "exercise", exercise_name: "Pull-Up",
             exercise_unit: "lb", order_index: 0, target_sets: 3, target_reps: 8,
             target_reps_max: nil, target_rpe: nil, rest_seconds: 60,
             target_weight: weight, cues: "Stay controlled", exercise_modality: "bw",
             exercise_laterality: "unilateral", exercise_load_mode: "per_hand",
-            exercise_demo_slug: nil, target_duration_s: timed ? 30 : nil, is_warmup: 0)
+            exercise_demo_slug: nil, target_duration_s: timed ? 30 : nil, is_warmup: 0,
+            target_weight_unit: unit)
     }
 
     private func set(_ id: String, session: String, weight: Double = 20, timed: Bool = false,
-                     warmup: Bool = false, deleted: Bool = false, exercise: String = "exercise") -> SetLog {
+                     warmup: Bool = false, deleted: Bool = false, exercise: String = "exercise",
+                     unit: String? = nil) -> SetLog {
         SetLog(id: id, session_id: session, exercise_id: exercise, template_exercise_id: "slot",
             set_index: 1, weight: weight, reps: 8, rpe: nil, is_warmup: warmup ? 1 : 0,
             logged_at: 1, duration_s: timed ? 30 : nil, is_timed: timed ? 1 : 0,
-            deleted_at: deleted ? 2 : nil)
+            deleted_at: deleted ? 2 : nil, weight_unit: unit)
     }
 
     private let sessions = [
@@ -63,6 +65,19 @@ final class ExerciseInformationTests: XCTestCase {
         XCTAssertEqual(result?.date, "2026-09-01")
         XCTAssertEqual(result?.cohorts.count, 3)
         XCTAssertEqual(Set(result?.cohorts.map(\.top.id) ?? []), ["working", "assisted", "hold"])
+    }
+
+    func testPrescribedLoadMatchesOnlyHistoryLoggedInTheSameUnit() {
+        // A 20 kg target is not the newer 20 lb performance.
+        let result = summary([set("kilograms", session: "older", unit: "kg"),
+                              set("pounds", session: "newer", unit: "lb")],
+                             target: prescription(unit: "kg"))
+        XCTAssertEqual(result?.date, "2026-09-01")
+        XCTAssertEqual(result?.cohorts.map(\.top.id), ["kilograms"])
+        XCTAssertEqual(result?.cohorts.first?.valueLabel, "BW+20 kg each hand · 8 reps per side")
+        let pounds = summary([set("kilograms", session: "older", unit: "kg"),
+                              set("pounds", session: "newer")], target: prescription())
+        XCTAssertEqual(pounds?.cohorts.map(\.top.id), ["pounds"])
     }
 
     func testNoMatchingPerformanceIsNotSubstitutedWithDifferentLoad() {

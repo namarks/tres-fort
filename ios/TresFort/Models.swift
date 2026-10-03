@@ -64,6 +64,10 @@ struct TemplateExercise: Codable, Identifiable, Equatable {
     /// logged sets stay out of working-set rollups / session RPE. Optional so
     /// pre-0026 payloads decode → defaults to a working slot. (Migration 0026.)
     let is_warmup: Int?
+    /// Unit of `target_weight` ("lb" | "kg"), owned by this slot: a plan can
+    /// mix lb and kg slots. Optional so payloads without it still decode;
+    /// read it through `targetWeightUnit`, never through `exercise_unit`.
+    var target_weight_unit: String? = nil
 
     /// Group-owned round/transition rests leave the ordinary slot rest intact.
     /// Mutable defaults preserve older memberwise initializers while synthesized
@@ -104,6 +108,11 @@ struct TemplateExercise: Codable, Identifiable, Equatable {
     var showsLoadControl: Bool { exercise_modality != "cardio" }
     var isUnilateral: Bool { exercise_laterality == "unilateral" }
     var isPerHand: Bool { exercise_load_mode == "per_hand" }
+    /// The unit `target_weight` is stored in, and therefore the unit the
+    /// runner keeps its draft load in and logs with. The catalog
+    /// `exercise_unit` (which can even be "sec"/"min") never decides this;
+    /// a slot without a declared unit is lb, matching the server default.
+    var targetWeightUnit: WeightUnit { WeightUnit(rawValue: target_weight_unit ?? "") ?? .lb }
     /// Prescribed hold/effort for a timed or cardio set, in seconds. Uses
     /// target_duration_s (the real field) and falls back to target_reps for
     /// older slots that stored the hold there. Min 1s so the timer is never
@@ -398,6 +407,9 @@ struct SetLog: Codable, Identifiable {
     /// SyncModel.isTimedSet).
     let is_timed: Int?
     let deleted_at: Int?
+    /// Unit `weight` was logged in ("lb" | "kg"). Optional so rows from a
+    /// Worker without per-set units still decode; read it via `weightUnit`.
+    let weight_unit: String?
 
     init(
         id: String,
@@ -413,7 +425,8 @@ struct SetLog: Codable, Identifiable {
         duration_s: Int?,
         is_timed: Int?,
         deleted_at: Int?,
-        updated_at: Int? = nil
+        updated_at: Int? = nil,
+        weight_unit: String? = nil
     ) {
         self.id = id
         self.session_id = session_id
@@ -429,7 +442,12 @@ struct SetLog: Codable, Identifiable {
         self.duration_s = duration_s
         self.is_timed = is_timed
         self.deleted_at = deleted_at
+        self.weight_unit = weight_unit
     }
+
+    /// The set's own load unit. Rows without one predate per-set units and
+    /// were logged in lb.
+    var weightUnit: WeightUnit { WeightUnit(rawValue: weight_unit ?? "") ?? .lb }
 }
 
 extension SetLog {
@@ -440,7 +458,9 @@ extension SetLog {
     /// catalog row (see SyncModel.isTimedExercise / isBodyweightExercise) —
     /// "BW" keys off modality == "bw", NOT weight == 0, so a weighted lift
     /// logged at 0 load (unloaded warmup, machine/cable at zero) still reads
-    /// "0 × reps", not "BW × reps". #30
+    /// "0 × reps", not "BW × reps". #30 A loaded hold's suffix names the
+    /// set's own unit, and a kg rep load names it too ("24 kg × 15") so it
+    /// never reads as the same number of pounds; lb loads keep "85 × 5".
     func valueLabel(timed: Bool, bodyweight: Bool, unilateral: Bool) -> String {
         SetValueFormatter.value(
             weight: weight,
@@ -448,7 +468,9 @@ extension SetLog {
             durationSeconds: duration_s,
             timed: timed,
             bodyweight: bodyweight,
-            unilateral: unilateral)
+            unit: weightUnit.rawValue,
+            unilateral: unilateral,
+            repLoadUnit: weightUnit == .kg ? weightUnit.rawValue : nil)
     }
 }
 
@@ -475,7 +497,8 @@ enum SetValueFormatter {
         timed: Bool,
         bodyweight: Bool,
         unit: String = "lb",
-        unilateral: Bool = false
+        unilateral: Bool = false,
+        repLoadUnit: String? = nil
     ) -> String {
         if timed {
             // Legacy MCP timed sets stored elapsed seconds in reps before the
@@ -488,12 +511,16 @@ enum SetValueFormatter {
             }
         }
         let side = unilateral && !timed ? " per side" : ""
+        // Rep loads are unlabelled unless the caller names one (a kg set);
+        // a zero load is the same in either unit.
+        var load = ""
+        if weight != 0, let repLoadUnit { load = " \(repLoadUnit)" }
         if bodyweight {
-            if weight > 0 { return "BW+\(number(weight)) × \(reps)\(side)" }
-            if weight < 0 { return "BW−\(number(abs(weight))) × \(reps)\(side)" }
+            if weight > 0 { return "BW+\(number(weight))\(load) × \(reps)\(side)" }
+            if weight < 0 { return "BW−\(number(abs(weight)))\(load) × \(reps)\(side)" }
             return "BW × \(reps)\(side)"
         }
-        return "\(number(weight)) × \(reps)\(side)"
+        return "\(number(weight))\(load) × \(reps)\(side)"
     }
 }
 

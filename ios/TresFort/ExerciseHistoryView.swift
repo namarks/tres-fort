@@ -84,8 +84,9 @@ struct ExerciseDetailView: View {
                             if session.totalReps > 0 {
                                 Text("\(session.totalReps) total reps · work logged")
                             }
-                            if let volume = session.volume {
-                                Text("\(SetValueFormatter.number(volume)) lb external-load volume")
+                            if !session.volumeByUnit.isEmpty {
+                                // Each unit keeps its own total; lb and kg never sum.
+                                Text("\(WeightUnit.totals(session.volumeByUnit, number: SetValueFormatter.number)) external-load volume")
                             }
                             if let row = sync.sessions.first(where: { $0.id == session.id }) {
                                 let feedback = WorkoutFeedback(notes: row.notes, perceivedFatigue: row.perceived_fatigue)

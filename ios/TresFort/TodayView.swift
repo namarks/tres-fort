@@ -783,6 +783,7 @@ private struct RunnerView: View {
     @State private var valueDraft: SetValueDraft?
     @State private var weightPrescription: RunnerPrescription?
     @State private var loadingTarget: Double?
+    @State private var loadingUnit = WeightUnit.lb
     @State private var showingLoading = false
     @State private var previewFor: TemplateExercise?
     @AppStorage(RestCue.defaultsKey) private var timerCuesEnabled = true
@@ -905,9 +906,12 @@ private struct RunnerView: View {
                             Toggle("Timer sounds", isOn: $timerCuesEnabled)
                                 .tint(Theme.accent)
                                 .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
-                            if ex.exercise_modality == "barbell", ex.exercise_unit == "lb" {
+                            // The runner load is held in the slot's unit; the
+                            // guide plans lb or kg plates in that same unit.
+                            if ex.exercise_modality == "barbell" {
                                 Button {
                                     loadingTarget = sync.weight
+                                    loadingUnit = ex.targetWeightUnit
                                     showingLoading = true
                                 } label: {
                                     Text("Plates & warm-up guide")
@@ -997,7 +1001,7 @@ private struct RunnerView: View {
                 )
             }
             .sheet(isPresented: $showingLoading) {
-                BarbellLoadingView(target: loadingTarget ?? sync.weight)
+                BarbellLoadingView(target: loadingTarget ?? sync.weight, unit: loadingUnit)
             }
             .sheet(item: $previewFor) { selected in
                 exercisePreview(startingAt: selected.id)
@@ -1011,7 +1015,7 @@ private struct RunnerView: View {
                     weight: draft.input.weight, reps: draft.input.reps, rpe: draft.input.rpe,
                     durationSeconds: draft.input.prescription.timed ? draft.input.durationSeconds : nil),
                     timed: draft.input.prescription.timed, allowsAssistance: draft.exercise.allowsAssistance,
-                    storedUnit: WeightUnit(rawValue: draft.exercise.exercise_unit) ?? .lb,
+                    storedUnit: draft.exercise.targetWeightUnit,
                     unilateral: draft.exercise.isUnilateral,
                     onSave: { values in
                         sync.setRunnerValues(values, expected: draft.input.prescription)
@@ -1188,7 +1192,7 @@ private struct RunnerView: View {
     }
 
     private func loadControl(ex: TemplateExercise) -> some View {
-        let storedUnit = WeightUnit(rawValue: ex.exercise_unit) ?? .lb
+        let storedUnit = ex.targetWeightUnit
         let unit = weightUnit.rawValue
         let displayedWeight = storedUnit.convert(sync.weight, to: weightUnit)
         let label = ex.allowsAssistance ? "ADDED LOAD / ASSIST (\(unit)) · TAP TO EDIT"
@@ -1286,11 +1290,10 @@ private struct RunnerView: View {
     }
 
     private func prescriptionContext(ex: TemplateExercise, isPreview: Bool = false) -> some View {
-        let storedUnit = WeightUnit(rawValue: ex.exercise_unit) ?? .lb
         let target = (isPreview ? "" : "PRESCRIBED · ") + ex.prescriptionLabel(in: weightUnit)
         let previous = sync.comparablePreviousSets(for: ex)
         let previousLabel = previous.map { set in
-            let value = SetValueFormatter.value(weight: storedUnit.convert(set.weight, to: weightUnit),
+            let value = SetValueFormatter.value(weight: set.weightUnit.convert(set.weight, to: weightUnit),
                 reps: set.reps, durationSeconds: set.duration_s, timed: ex.isTimed,
                 bodyweight: ex.isBodyweight, unit: weightUnit.rawValue, unilateral: ex.isUnilateral)
             let effort = set.rpe.map { " RPE " + SetValueFormatter.number($0) } ?? ""
@@ -1437,7 +1440,7 @@ private struct RunnerSetAction: View {
         let physicalSetNumber = sync.currentPhysicalSetNumber
         let resting = sync.restEndDate != nil
         let unit = WeightUnit(rawValue: weightUnitRaw) ?? .lb
-        let storedUnit = WeightUnit(rawValue: ex.exercise_unit) ?? .lb
+        let storedUnit = ex.targetWeightUnit
         VStack(spacing: 6) {
             Text(ex.exercise_name)
                 .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
@@ -1716,7 +1719,7 @@ private struct RestNextSetValues: View {
     var body: some View {
         if !sync.finished, let exercise = sync.currentExercise {
             let unit = WeightUnit(rawValue: weightUnitRaw) ?? .lb
-            let storedUnit = WeightUnit(rawValue: exercise.exercise_unit) ?? .lb
+            let storedUnit = exercise.targetWeightUnit
             let values = SetValueFormatter.value(
                 weight: storedUnit.convert(sync.weight, to: unit), reps: sync.reps,
                 durationSeconds: exercise.isTimed ? sync.holdDurationSeconds : nil,
@@ -1780,8 +1783,10 @@ private struct FinishedView: View {
                     if reps > 0 {
                         sumRow("Total reps", "\(reps)")
                     }
-                    if let tonnage = sync.totalTonnage(for: sets) {
-                        sumRow("External-load volume", "\(Int(tonnage)) lb")
+                    // Each unit keeps its own total; lb and kg never sum.
+                    let tonnage = sync.tonnageByUnit(for: sets)
+                    if !tonnage.isEmpty {
+                        sumRow("External-load volume", WeightUnit.totals(tonnage) { "\(Int($0))" })
                     }
                 }
                 .padding(.top, 20)

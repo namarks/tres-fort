@@ -37,8 +37,13 @@ enum ExerciseInformationHistory {
             where completed.contains(session.id) {
             let cohorts = session.cohorts.filter { cohort in
                 guard let prescription else { return true }
+                // Both sides keep their own units: 24 kg is not the 24 lb cohort.
+                // Zero load (strict bodyweight) matches in either unit.
                 return cohort.key.timed == prescription.isTimed
-                    && (prescription.target_weight == nil || cohort.key.weight == prescription.target_weight)
+                    && (prescription.target_weight == nil
+                        || (cohort.key.weight == prescription.target_weight
+                            && (cohort.key.weight == 0
+                                || cohort.key.unit == prescription.targetWeightUnit.rawValue)))
             }
             if !cohorts.isEmpty { return Summary(date: session.date, cohorts: cohorts) }
         }

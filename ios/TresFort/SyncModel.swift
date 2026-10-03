@@ -2199,18 +2199,24 @@ final class SyncModel: ObservableObject {
         return holds.count == 1 ? holds[0].bestHoldSeconds : nil
     }
 
-    /// Effective positive-load tonnage represented by one rep set. Strict
-    /// bodyweight, assisted (negative-load), and timed work have no tonnage;
-    /// their progress is represented by reps or hold duration instead.
+    /// Effective positive-load tonnage represented by one rep set, in the
+    /// set's own `weightUnit`. Strict bodyweight, assisted (negative-load),
+    /// and timed work have no tonnage; their progress is represented by reps
+    /// or hold duration instead.
     func tonnage(for set: SetLog) -> Double? {
         guard set.weight > 0, !isTimedSet(set) else { return nil }
         return set.weight * Double(effectiveReps(for: set))
             * Double(implements(for: set.exercise_id))
     }
 
-    func totalTonnage(for sets: [SetLog]) -> Double? {
-        let values = sets.compactMap { tonnage(for: $0) }
-        return values.isEmpty ? nil : values.reduce(0, +)
+    /// Tonnage totals per logged unit: lb and kg sets are never summed into
+    /// one number. Empty when no set has tonnage.
+    func tonnageByUnit(for sets: [SetLog]) -> [WeightUnit: Double] {
+        var totals: [WeightUnit: Double] = [:]
+        for set in sets {
+            if let value = tonnage(for: set) { totals[set.weightUnit, default: 0] += value }
+        }
+        return totals
     }
 
     /// True when the catalog row is a timed modality (planks/holds) — the only
@@ -2562,7 +2568,10 @@ final class SyncModel: ObservableObject {
             is_timed: ex.isTimed, rpe: rpe,
             prescription: isFreestyle ? nil : selectedDayID.flatMap { dayID in
                 plan.map { SetPrescriptionContext(plan_id: $0.id, version: $0.version, day_id: dayID) }
-            })
+            },
+            // Runner loads are held in the slot's unit, so the set is logged
+            // in that unit as-is — never converted through exercise_unit.
+            weight_unit: ex.targetWeightUnit.rawValue)
         let intent = PendingSetIntent(
             body: body,
             date: workoutDate,
@@ -4334,7 +4343,8 @@ final class SyncModel: ObservableObject {
         if exerciseIndex != index { runnerFocus.isExplicit = false }
         exerciseIndex = index
         seedInputs()
-        weight = failedIntent.body.weight
+        weight = failedIntent.body.weightUnit.convert(
+            failedIntent.body.weight, to: exercises[index].targetWeightUnit)
         reps = failedIntent.body.reps
         rpe = failedIntent.body.rpe
         rememberGroupProgress()
@@ -6518,7 +6528,8 @@ private extension SetLog {
             duration_s: duration_s,
             is_timed: is_timed,
             deleted_at: deleted_at,
-            updated_at: updated_at)
+            updated_at: updated_at,
+            weight_unit: weight_unit)
     }
 }
 

@@ -12,7 +12,16 @@ export type MetricSet = {
   reps: number;
   duration_s: number | null;
   is_timed: number;
+  /** The set's own load unit, on rows that carry one. */
+  weight_unit?: string | null;
 };
+/** A set's own load unit when it carries one ('kg', otherwise 'lb'); rows
+ * without one keep the catalog unit. Zero load reads the same in any unit. */
+export function loadUnit(set: Pick<MetricSet, 'weight' | 'weight_unit'>, exercise: MetricExercise): string {
+  if (set.weight_unit == null || set.weight === 0) return exercise.unit;
+  return set.weight_unit === 'kg' ? 'kg' : 'lb';
+}
+
 const epley = (weight: number, reps: number) =>
   Math.round(weight * (1 + reps / 30) * 10) / 10;
 const timedDurationSeconds = (set: Pick<MetricSet, 'duration_s' | 'reps'>) =>
@@ -35,8 +44,9 @@ export function positiveSetTonnage(set: MetricSet, exercise: MetricExercise): nu
 export function metricCohorts<T extends MetricSet>(rows: T[], exercise: MetricExercise) {
   const groups = new Map<string, T[]>();
   for (const row of rows) {
+    // A 24 kg and a 24 lb set are different loads, never one cohort.
     const key = JSON.stringify([row.exercise_id, row.is_timed === 1, row.weight,
-      exercise.unit, exercise.laterality, exercise.load_mode]);
+      loadUnit(row, exercise), exercise.laterality, exercise.load_mode]);
     const group = groups.get(key) ?? [];
     group.push(row);
     groups.set(key, group);
@@ -48,7 +58,7 @@ export function metricCohorts<T extends MetricSet>(rows: T[], exercise: MetricEx
     const tonnages = sets.map((set) => positiveSetTonnage(set, exercise))
       .filter((value): value is number => value != null);
     return {
-      key, exercise_id: top.exercise_id, ...exercise,
+      key, exercise_id: top.exercise_id, ...exercise, unit: loadUnit(top, exercise),
       weight: top.weight,
       load_condition: top.weight < 0 ? 'assisted' : top.weight > 0 ? 'added' : 'zero',
       is_timed: timed,

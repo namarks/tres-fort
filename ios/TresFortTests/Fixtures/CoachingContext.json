@@ -548,5 +548,365 @@
       ],
       "expected": "none"
     }
-  ]
+  ],
+  "set_units": {
+    "catalog": [
+      {
+        "id": "swing",
+        "name": "Kettlebell Swing",
+        "modality": "kettlebell",
+        "unit": "lb",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "primary_muscle": "hamstrings"
+      },
+      {
+        "id": "pull",
+        "name": "Pull-Up",
+        "modality": "bw",
+        "unit": "lb",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "primary_muscle": "back"
+      },
+      {
+        "id": "hold",
+        "name": "Plank",
+        "modality": "timed",
+        "unit": "sec",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "primary_muscle": "core"
+      },
+      {
+        "id": "erg",
+        "name": "Bike",
+        "modality": "cardio",
+        "unit": "sec",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "primary_muscle": "cardio"
+      }
+    ],
+    "sets": [
+      {
+        "id": "u0",
+        "session_id": "units",
+        "exercise_id": "swing",
+        "template_exercise_id": null,
+        "set_index": 1,
+        "weight": 24,
+        "reps": 15,
+        "duration_s": null,
+        "is_timed": 0,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 0,
+        "deleted_at": null,
+        "weight_unit": "kg"
+      },
+      {
+        "id": "u1",
+        "session_id": "units",
+        "exercise_id": "swing",
+        "template_exercise_id": null,
+        "set_index": 2,
+        "weight": 24,
+        "reps": 15,
+        "duration_s": null,
+        "is_timed": 0,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1,
+        "deleted_at": null,
+        "weight_unit": "lb"
+      },
+      {
+        "id": "u2",
+        "session_id": "units",
+        "exercise_id": "swing",
+        "template_exercise_id": null,
+        "set_index": 3,
+        "weight": 53,
+        "reps": 12,
+        "duration_s": null,
+        "is_timed": 0,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 2,
+        "deleted_at": null
+      },
+      {
+        "id": "u3",
+        "session_id": "units",
+        "exercise_id": "pull",
+        "template_exercise_id": null,
+        "set_index": 4,
+        "weight": -10,
+        "reps": 8,
+        "duration_s": null,
+        "is_timed": 0,
+        "rpe": 8,
+        "is_warmup": 0,
+        "logged_at": 3,
+        "deleted_at": null,
+        "weight_unit": "kg"
+      },
+      {
+        "id": "u4",
+        "session_id": "units",
+        "exercise_id": "hold",
+        "template_exercise_id": null,
+        "set_index": 5,
+        "weight": 0,
+        "reps": 45,
+        "duration_s": 45,
+        "is_timed": 1,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 4,
+        "deleted_at": null,
+        "weight_unit": "kg"
+      },
+      {
+        "id": "u5",
+        "session_id": "units",
+        "exercise_id": "hold",
+        "template_exercise_id": null,
+        "set_index": 6,
+        "weight": 10,
+        "reps": 30,
+        "duration_s": 30,
+        "is_timed": 1,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 5,
+        "deleted_at": null,
+        "weight_unit": "kg"
+      },
+      {
+        "id": "u6",
+        "session_id": "units",
+        "exercise_id": "erg",
+        "template_exercise_id": null,
+        "set_index": 7,
+        "weight": 0,
+        "reps": 300,
+        "duration_s": 300,
+        "is_timed": 1,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 6,
+        "deleted_at": null,
+        "weight_unit": "kg"
+      },
+      {
+        "id": "u7",
+        "session_id": "units",
+        "exercise_id": "missing",
+        "template_exercise_id": null,
+        "set_index": 8,
+        "weight": 12,
+        "reps": 3,
+        "duration_s": null,
+        "is_timed": 0,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 7,
+        "deleted_at": null,
+        "weight_unit": "kg"
+      }
+    ],
+    "session": {
+      "id": "units",
+      "date": "2026-09-10",
+      "status": "completed",
+      "workout_id": null,
+      "notes": null,
+      "perceived_fatigue": null
+    },
+    "expected_session": {
+      "id": "units",
+      "date": "2026-09-10",
+      "status": "completed",
+      "notes": null,
+      "perceived_fatigue": null,
+      "logged_working_sets": 8,
+      "sets_with_effort": 1,
+      "primary_muscle_sets": [
+        {
+          "muscle": "back",
+          "logged_working_sets": 1
+        },
+        {
+          "muscle": "cardio",
+          "logged_working_sets": 1
+        },
+        {
+          "muscle": "core",
+          "logged_working_sets": 2
+        },
+        {
+          "muscle": "hamstrings",
+          "logged_working_sets": 3
+        },
+        {
+          "muscle": "unknown",
+          "logged_working_sets": 1
+        }
+      ],
+      "external_load_volume": [
+        {
+          "unit": "kg",
+          "value": 360,
+          "contributing_sets": 1
+        },
+        {
+          "unit": "lb",
+          "value": 996,
+          "contributing_sets": 2
+        }
+      ],
+      "key_sets": [
+        "Kettlebell Swing: 15 reps \u00b7 24 kg",
+        "Kettlebell Swing: 15 reps \u00b7 24 lb",
+        "Kettlebell Swing: 12 reps \u00b7 53 lb",
+        "Pull-Up: 8 reps \u00b7 10 kg assistance \u00b7 RPE 8",
+        "Plank: 45s \u00b7 bodyweight",
+        "Plank: 30s \u00b7 10 kg added",
+        "Bike: 300s",
+        "missing: 3 reps \u00b7 12 kg"
+      ],
+      "sets": [
+        {
+          "id": "u0",
+          "exercise_id": "swing",
+          "name": "Kettlebell Swing",
+          "unit": "kg",
+          "modality": "kettlebell",
+          "laterality": "bilateral",
+          "load_mode": "total",
+          "weight": 24,
+          "load_condition": "external",
+          "reps": 15,
+          "duration_s": null,
+          "is_timed": false,
+          "rpe": null,
+          "label": "Kettlebell Swing: 15 reps \u00b7 24 kg"
+        },
+        {
+          "id": "u1",
+          "exercise_id": "swing",
+          "name": "Kettlebell Swing",
+          "unit": "lb",
+          "modality": "kettlebell",
+          "laterality": "bilateral",
+          "load_mode": "total",
+          "weight": 24,
+          "load_condition": "external",
+          "reps": 15,
+          "duration_s": null,
+          "is_timed": false,
+          "rpe": null,
+          "label": "Kettlebell Swing: 15 reps \u00b7 24 lb"
+        },
+        {
+          "id": "u2",
+          "exercise_id": "swing",
+          "name": "Kettlebell Swing",
+          "unit": "lb",
+          "modality": "kettlebell",
+          "laterality": "bilateral",
+          "load_mode": "total",
+          "weight": 53,
+          "load_condition": "external",
+          "reps": 12,
+          "duration_s": null,
+          "is_timed": false,
+          "rpe": null,
+          "label": "Kettlebell Swing: 12 reps \u00b7 53 lb"
+        },
+        {
+          "id": "u3",
+          "exercise_id": "pull",
+          "name": "Pull-Up",
+          "unit": "kg",
+          "modality": "bw",
+          "laterality": "bilateral",
+          "load_mode": "total",
+          "weight": -10,
+          "load_condition": "assistance",
+          "reps": 8,
+          "duration_s": null,
+          "is_timed": false,
+          "rpe": 8,
+          "label": "Pull-Up: 8 reps \u00b7 10 kg assistance \u00b7 RPE 8"
+        },
+        {
+          "id": "u4",
+          "exercise_id": "hold",
+          "name": "Plank",
+          "unit": "kg",
+          "modality": "timed",
+          "laterality": "bilateral",
+          "load_mode": "total",
+          "weight": 0,
+          "load_condition": "bodyweight",
+          "reps": null,
+          "duration_s": 45,
+          "is_timed": true,
+          "rpe": null,
+          "label": "Plank: 45s \u00b7 bodyweight"
+        },
+        {
+          "id": "u5",
+          "exercise_id": "hold",
+          "name": "Plank",
+          "unit": "kg",
+          "modality": "timed",
+          "laterality": "bilateral",
+          "load_mode": "total",
+          "weight": 10,
+          "load_condition": "added",
+          "reps": null,
+          "duration_s": 30,
+          "is_timed": true,
+          "rpe": null,
+          "label": "Plank: 30s \u00b7 10 kg added"
+        },
+        {
+          "id": "u6",
+          "exercise_id": "erg",
+          "name": "Bike",
+          "unit": null,
+          "modality": "cardio",
+          "laterality": "bilateral",
+          "load_mode": "total",
+          "weight": null,
+          "load_condition": "unavailable",
+          "reps": null,
+          "duration_s": 300,
+          "is_timed": true,
+          "rpe": null,
+          "label": "Bike: 300s"
+        },
+        {
+          "id": "u7",
+          "exercise_id": "missing",
+          "name": null,
+          "unit": "kg",
+          "modality": null,
+          "laterality": null,
+          "load_mode": null,
+          "weight": 12,
+          "load_condition": "unknown",
+          "reps": 3,
+          "duration_s": null,
+          "is_timed": false,
+          "rpe": null,
+          "label": "missing: 3 reps \u00b7 12 kg"
+        }
+      ]
+    }
+  }
 }

@@ -13,8 +13,15 @@ final class CoachingContextTests: XCTestCase {
         let sets: [SetLog]
         let session: SessionRow
         let expected_session: CoachingContext.Session
+        struct UnitCase: Decodable {
+            let catalog: [ExerciseCatalog]
+            let sets: [SetLog]
+            let session: SessionRow
+            let expected_session: CoachingContext.Session
+        }
         let meta: [String: JSONValue]
         let conflicts: [Conflict]
+        let set_units: UnitCase
     }
     func fixture() throws -> Fixture {
         let url = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "CoachingContext", withExtension: "json"))
@@ -26,6 +33,13 @@ final class CoachingContextTests: XCTestCase {
         let meta = String(decoding: try JSONEncoder().encode(f.meta), as: UTF8.self)
         XCTAssertEqual(CoachingContext.planMeta(meta), f.meta)
         XCTAssertTrue(CoachingContext.planMeta("{invalid").values.allSatisfy { $0 == .null })
+    }
+    /// The Worker reads this same case (test/coaching_context.test.ts), so a
+    /// set's own unit labels and buckets identically on both sides.
+    func testSharedSetUnitsProjectIdenticallyToTheWorker() throws {
+        let units = try fixture().set_units
+        XCTAssertEqual(CoachingContext.session(units.session, sets: units.sets, catalog: units.catalog),
+                       units.expected_session)
     }
     func testSharedSchedulingHeuristicUnknownAndThresholdFixtures() throws {
         for c in try fixture().conflicts {

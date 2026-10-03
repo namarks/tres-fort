@@ -250,6 +250,13 @@ chat start) and a **prompt** (`coach_brief`).
   `YYYY-MM-DD` string (client owns the "today" boundary — do not convert to
   UTC).
 - IDs are UUID strings (`crypto.randomUUID()`).
+- Loads carry their own unit (`lb` | `kg`, migration 0055): a slot's
+  `target_weight` is in `template_exercises.target_weight_unit` and a logged
+  set's `weight` is in `set_logs.weight_unit`. Omitted REST units mean `lb`;
+  an MCP `log_set` without one inherits its slot's unit. Never derive a load
+  unit from the catalog `exercises.unit`, and never sum lb with kg. Previous
+  bests match the same physical load across units (`sameLoad`). See the
+  [weight unit release](docs/plans/workouts-and-multi-session/weight-unit-release.md).
 - Periodization is **not** in the schema. Deloads/waves/blocks are Claude
   editing `target_*` / the per-exercise `progression` JSON and writing a
   note. `progression.type` (linear|double|rpe|manual) is interpreted by

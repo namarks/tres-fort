@@ -174,6 +174,9 @@ export interface TemplateExerciseRow {
   target_rpe: number | null;
   rest_seconds: number;
   target_weight: number | null;
+  /** Unit of target_weight; never derived from the catalog unit. Added in
+   *  migration 0055; every stored row has one (pre-0055 rows read 'lb'). */
+  target_weight_unit?: 'lb' | 'kg';
   /** Planned hold/duration in seconds for timed slots (planks, Cat-Cow,
    *  etc.). NULL → conventional weight-and-reps slot. Mirror of
    *  set_logs.duration_s (the *logged* counterpart). Added in 0010. */
@@ -234,6 +237,9 @@ export interface SetLogRow {
    *  incidental wall-clock duration). Added in migration 0024. */
   is_timed: number;
   deleted_at: number | null;
+  /** Unit of `weight`, as logged ('lb' | 'kg'). Rows predating migration
+   *  0055 read 'lb'; it never derives from the catalog exercise unit. */
+  weight_unit: 'lb' | 'kg';
 }
 
 export interface EnrichedTemplateExercise extends TemplateExerciseRow {

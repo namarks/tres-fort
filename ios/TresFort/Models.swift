@@ -329,7 +329,8 @@ extension JSONValue {
         let labels = [
             "day_name": "Workout", "day_label": "Label", "exercise_name": "Exercise",
             "target_sets": "Sets", "target_reps": "Reps", "target_reps_max": "Maximum reps",
-            "target_rpe": "Effort", "target_weight": "Load", "target_duration_s": "Duration",
+            "target_rpe": "Effort", "target_weight": "Load", "target_weight_unit": "Load unit",
+            "target_duration_s": "Duration",
             "rest_seconds": "Rest", "is_warmup": "Warm-up", "order_index": "Order",
             "progression": "Progression", "cues": "Cues", "exercises": "Exercises",
         ]
@@ -338,7 +339,7 @@ extension JSONValue {
 
     private static func displayOrder(_ key: String) -> Int {
         let keys = ["day_name", "day_label", "exercise_name", "target_sets", "target_reps",
-                    "target_reps_max", "target_weight", "target_duration_s", "target_rpe",
+                    "target_reps_max", "target_weight", "target_weight_unit", "target_duration_s", "target_rpe",
                     "rest_seconds", "is_warmup", "progression", "cues", "exercises", "order_index"]
         return keys.firstIndex(of: key) ?? keys.count
     }

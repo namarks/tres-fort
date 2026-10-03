@@ -14,6 +14,8 @@ export interface PlanSnapshotExercise {
   target_rpe: number | null;
   rest_seconds: number;
   target_weight: number | null;
+  /** Absent in documents written before migration 0055; those read lb. */
+  target_weight_unit?: 'lb' | 'kg';
   target_duration_s: number | null;
   progression: string | null;
   cues: string | null;
@@ -77,6 +79,7 @@ export function serializePlanSnapshot(tree: PlanTree): PlanSnapshotDocument {
         target_rpe: slot.target_rpe,
         rest_seconds: slot.rest_seconds,
         target_weight: slot.target_weight,
+        target_weight_unit: slot.target_weight_unit ?? 'lb',
         target_duration_s: slot.target_duration_s,
         progression: slot.progression,
         cues: slot.cues,
@@ -103,8 +106,10 @@ export function parsePlanSnapshot(raw: string): PlanSnapshotDocument {
     day.tags ??= '[]';
     day.archived_at ??= null;
   }
-  // Pre-group snapshots remain writable and compare as explicitly ungrouped.
+  // Pre-group snapshots remain writable and compare as explicitly ungrouped;
+  // pre-unit snapshots were authored in lb.
   for (const day of doc.workouts) for (const slot of day.exercises) {
+    slot.target_weight_unit ??= 'lb';
     slot.group_id ??= null;
     slot.group_rest_seconds ??= null;
     slot.group_transition_seconds ??= null;

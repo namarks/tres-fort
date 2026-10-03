@@ -20,7 +20,7 @@ import { validActivitySourceTime } from './activityTime';
 // Public service facade: REST and MCP share the same domain operations.
 // Cohesive internal services live in services/; they never import this facade. Timestamps are epoch-ms integers.
 import { parseRunnerTargets, summarizeWorkout, type SummaryExercise, type SummarySet, type RunnerTargetSnapshot, type WorkoutSummary } from './workoutSummary';
-import { metricCohorts, estimatedOneRepMax, positiveSetTonnage, type MetricExercise } from './metrics';
+import { metricCohorts, estimatedOneRepMax, loadUnit, positiveSetTonnage, type MetricExercise } from './metrics';
 import type {
   ActivityRow,
   DayConflict,
@@ -76,7 +76,8 @@ function runnerTargetSnapshotSQL(dayExpression: string, timestamp: string): stri
       'is_warmup', te.is_warmup,
       'is_timed', CASE WHEN e.modality IN ('timed','cardio') OR te.target_duration_s IS NOT NULL THEN 1 ELSE 0 END,
       'sets', te.target_sets, 'reps', te.target_reps, 'reps_max', te.target_reps_max,
-      'weight', te.target_weight, 'duration_s', te.target_duration_s, 'rpe', te.target_rpe))
+      'weight', te.target_weight, 'weight_unit', te.target_weight_unit,
+      'duration_s', te.target_duration_s, 'rpe', te.target_rpe))
       FROM template_exercises te JOIN exercises e ON e.id=te.exercise_id
       WHERE te.workout_id=d.id)))
     FROM workouts d JOIN plans p ON p.id=d.plan_id
@@ -108,7 +109,8 @@ async function targetsForSetPrescription(
       is_warmup: slot.is_warmup, is_timed: ['timed', 'cardio'].includes(exercise.modality)
         || slot.target_duration_s != null ? 1 : 0,
       sets: slot.target_sets, reps: slot.target_reps, reps_max: slot.target_reps_max,
-      weight: slot.target_weight, duration_s: slot.target_duration_s, rpe: slot.target_rpe });
+      weight: slot.target_weight, weight_unit: slot.target_weight_unit ?? 'lb',
+      duration_s: slot.target_duration_s, rpe: slot.target_rpe });
   }
   return JSON.stringify(targets);
 }
@@ -3162,7 +3164,8 @@ export function preparePlanSnapshotInsert(
                      'order_index',te.order_index,'target_sets',te.target_sets,
                      'target_reps',te.target_reps,'target_reps_max',te.target_reps_max,
                      'target_rpe',te.target_rpe,'rest_seconds',te.rest_seconds,
-                     'target_weight',te.target_weight,'target_duration_s',te.target_duration_s,
+                     'target_weight',te.target_weight,'target_weight_unit',te.target_weight_unit,
+                     'target_duration_s',te.target_duration_s,
                      'progression',te.progression,'cues',te.cues,'is_warmup',te.is_warmup,
                      'group_id',te.group_id,'group_rest_seconds',te.group_rest_seconds,
                      'group_transition_seconds',te.group_transition_seconds
@@ -3518,27 +3521,27 @@ export async function restorePlanSnapshot(
       `INSERT OR IGNORE INTO template_exercises
        (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,
         target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,
-        created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds)
-       SELECT ?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18,?19,?20,?21
+        created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds,target_weight_unit)
+       SELECT ?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18,?19,?20,?21,?23
        WHERE ${guarded(22)}`,
     ).bind(plan.id, userId, -plan.version, slot.id, slot.workout_id,
       slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
       slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
       slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
       slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null,
-      nonce));
+      nonce, slot.target_weight_unit ?? 'lb'));
     statements.push(db.prepare(
       `UPDATE template_exercises SET workout_id=?5,exercise_id=?6,order_index=?7,
        target_sets=?8,target_reps=?9,target_reps_max=?10,target_rpe=?11,
        rest_seconds=?12,target_weight=?13,target_duration_s=?14,progression=?15,
        cues=?16,is_warmup=?17,updated_at=?18,group_id=?19,group_rest_seconds=?20,
-       group_transition_seconds=?21 WHERE id=?4 AND ${guarded(22)}`,
+       group_transition_seconds=?21,target_weight_unit=?23 WHERE id=?4 AND ${guarded(22)}`,
     ).bind(plan.id, userId, -plan.version, slot.id, slot.workout_id,
       slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
       slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
       slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
       slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null,
-      nonce));
+      nonce, slot.target_weight_unit ?? 'lb'));
   }
   for (const day of current.workouts) {
     for (const slot of day.exercises) if (!targetSlotIds.has(slot.id)) {
@@ -4109,6 +4112,7 @@ export async function addTemplateExercise(
   const ts = now();
   const row: TemplateExerciseRow = {
     ...input,
+    target_weight_unit: input.target_weight_unit ?? 'lb',
     is_warmup: input.is_warmup ? 1 : 0,
     id: uuid(),
     created_at: ts,
@@ -4124,8 +4128,8 @@ export async function addTemplateExercise(
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
     db.prepare(
       `INSERT INTO template_exercises
-       (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at)
-       SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16
+       (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at,target_weight_unit)
+       SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?21
        WHERE EXISTS (SELECT 1 FROM plans WHERE id=?17 AND user_id=?18 AND version=-?19 AND plan_write_nonce=?20)`,
     )
     .bind(
@@ -4133,6 +4137,7 @@ export async function addTemplateExercise(
       row.target_reps, row.target_reps_max, row.target_rpe, row.rest_seconds,
       row.target_weight, row.target_duration_s, row.progression, row.cues, row.is_warmup ? 1 : 0,
       row.created_at, row.updated_at, plan.id, plan.user_id, plan.version, nonce,
+      row.target_weight_unit ?? 'lb',
     ),
     ...(collides ? ordered.map((slot, index) => db.prepare(
       `UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
@@ -5224,6 +5229,8 @@ export async function logSet(
      *  countdown (e.g. a target_duration_s slot) passes true so the set is
      *  stored as timed regardless of modality. */
     is_timed?: boolean;
+    /** Unit of `weight` as the client logged it; omitted means 'lb'. */
+    weight_unit?: 'lb' | 'kg';
     /** Optional generation CAS. New durable clients persist and reuse it;
      *  omitted legacy/MCP calls still snapshot the pre-write attempt below. */
     expected_attempt?: number;
@@ -5418,6 +5425,7 @@ export async function logSet(
     duration_s: input.duration_s ?? null,
     is_timed: isTimedInt,
     deleted_at: null,
+    weight_unit: input.weight_unit ?? 'lb',
   };
   // The pre-check above resolves the common collision, but two concurrent
   // writers can both pass it and then race on the INSERT — only the unique
@@ -5433,8 +5441,8 @@ export async function logSet(
       db
         .prepare(
           `INSERT INTO set_logs
-           (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at,user_id,updated_at)
-           SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL,user_id,?17
+           (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at,user_id,updated_at,weight_unit)
+           SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,NULL,user_id,?17,?19
              FROM sessions
             WHERE id = ?2
               AND user_id = ?18
@@ -5448,7 +5456,7 @@ export async function logSet(
           row.id, row.session_id, row.exercise_id, row.template_exercise_id, row.set_index,
           row.weight, row.reps, row.rpe, row.is_warmup, row.notes, row.logged_at, row.source,
           row.duration_s, row.is_timed, casAttempt, attemptScoped ? 1 : 0,
-          row.updated_at, userId,
+          row.updated_at, userId, row.weight_unit,
         ),
       // Claim/start only when this owned UUID now exists. Keeping the INSERT
       // first avoids mutating the session for a globally-colliding UUID, while
@@ -5605,6 +5613,7 @@ export async function findRecentMatchingSet(
     is_warmup: boolean;
     set_index?: number | null;
     duration_s?: number | null;
+    weight_unit?: 'lb' | 'kg';
     within_ms?: number;
   },
 ): Promise<SetLogRow | null> {
@@ -5624,6 +5633,7 @@ export async function findRecentMatchingSet(
          AND sl.logged_at >= ?6
          AND (?7 IS NULL OR sl.set_index = ?7)
          AND (?8 IS NULL OR sl.duration_s = ?8)
+         AND (?9 IS NULL OR sl.weight_unit = ?9)
        ORDER BY sl.logged_at DESC LIMIT 1`,
     )
     .bind(
@@ -5635,9 +5645,23 @@ export async function findRecentMatchingSet(
       since,
       args.set_index ?? null,
       args.duration_s ?? null,
+      args.weight_unit ?? null,
     )
     .first<SetLogRow>();
   return row ?? null;
+}
+
+/** The unit an MCP set inherits when it names none: the session workout's
+ * slot for that exercise (matching warm-up flag first), else lb. */
+export async function slotWeightUnit(
+  db: D1Database, workoutId: string | null, exerciseId: string, isWarmup: boolean,
+): Promise<'lb' | 'kg'> {
+  if (!workoutId) return 'lb';
+  const slot = await db.prepare(`SELECT target_weight_unit FROM template_exercises
+      WHERE workout_id=?1 AND exercise_id=?2
+      ORDER BY is_warmup=?3 DESC, order_index, id LIMIT 1`)
+    .bind(workoutId, exerciseId, isWarmup ? 1 : 0).first<{ target_weight_unit: string }>();
+  return slot?.target_weight_unit === 'kg' ? 'kg' : 'lb';
 }
 
 export async function patchSet(
@@ -5646,6 +5670,7 @@ export async function patchSet(
   setId: string,
   patch: {
     weight?: number;
+    weight_unit?: 'lb' | 'kg';
     reps?: number;
     rpe?: number | null;
     notes?: string | null;
@@ -5671,7 +5696,7 @@ export async function patchSet(
   const matches = (candidate: SetLogRow) => {
     if (patch.deleted === true) return candidate.deleted_at != null;
     if (candidate.deleted_at != null) return false;
-    return (['weight', 'reps', 'rpe', 'notes', 'duration_s'] as const)
+    return (['weight', 'weight_unit', 'reps', 'rpe', 'notes', 'duration_s'] as const)
       .every((field) => !has(field) || candidate[field] === patch[field]);
   };
   if (expected && (row.session_id !== expected.session_id || row.session_attempt !== expected.attempt
@@ -5699,6 +5724,7 @@ export async function patchSet(
     assignments.push(`${column}=?${values.length}`);
   };
   if (has('weight')) assign('weight', patch.weight);
+  if (has('weight_unit')) assign('weight_unit', patch.weight_unit);
   if (has('reps')) assign('reps', patch.reps);
   if (has('rpe')) assign('rpe', patch.rpe);
   if (has('notes')) assign('notes', patch.notes);
@@ -6072,13 +6098,15 @@ export async function getWorkoutSummary(
     db.prepare(`SELECT e.* FROM exercises e WHERE e.id IN (
       SELECT exercise_id FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL)`)
       .bind(sessionId, userId),
-    db.prepare(`SELECT sl.exercise_id,sl.weight,sl.is_timed,MAX(sl.reps) AS reps,
+    // Bests stay per load and unit (24 kg is not 24 lb); summarizeWorkout
+    // matches the same physical load across units (24 kg and 53 lb).
+    db.prepare(`SELECT sl.exercise_id,sl.weight,sl.weight_unit,sl.is_timed,MAX(sl.reps) AS reps,
         MAX(COALESCE(sl.duration_s,sl.reps)) AS duration_s
       FROM set_logs sl JOIN sessions s ON s.id=sl.session_id
       WHERE s.user_id=?2 AND s.status='completed' AND sl.deleted_at IS NULL AND sl.is_warmup=0
         AND s.date < (SELECT date FROM sessions WHERE id IN (${owned}))
         AND sl.exercise_id IN (SELECT exercise_id FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL)
-      GROUP BY sl.exercise_id,sl.weight,sl.is_timed`).bind(sessionId, userId),
+      GROUP BY sl.exercise_id,sl.weight,sl.weight_unit,sl.is_timed`).bind(sessionId, userId),
   ]);
   const session = sessionResult!.results[0] as unknown as SessionRow | undefined;
   if (!session) return null;
@@ -6251,6 +6279,9 @@ export interface ExerciseInput extends ExerciseGroupFields {
   target_rpe?: number | null;
   rest_seconds?: number;
   target_weight?: number | null;
+  /** Unit of target_weight. Omitted keeps the matched slot's unit in a
+   *  rebuild, else lb. */
+  target_weight_unit?: 'lb' | 'kg';
   /** Planned hold seconds for timed slots (mirrors set_logs.duration_s).
    *  NULL/omitted → conventional reps slot. */
   target_duration_s?: number | null;
@@ -6295,6 +6326,8 @@ export function validateExercisePrescription(
       (typeof value.target_weight !== 'number' || !Number.isFinite(value.target_weight))) bad.add('target_weight');
   if (typeof value.target_weight === 'number' && value.target_weight < 0 &&
       options.modality !== 'bw' && options.modality !== 'timed') bad.add('target_weight');
+  if (has('target_weight_unit') && value.target_weight_unit !== undefined &&
+      value.target_weight_unit !== 'lb' && value.target_weight_unit !== 'kg') bad.add('target_weight_unit');
   if (has('order_index') && (!Number.isSafeInteger(value.order_index) || (value.order_index as number) < 0)) bad.add('order_index');
   if (has('cues') && value.cues !== null && typeof value.cues !== 'string') bad.add('cues');
   if (has('progression') && value.progression !== null && !isPlainRecord(value.progression)) bad.add('progression');
@@ -6525,6 +6558,9 @@ export async function updatePlanTree(
   // key on is_warmup itself. The n-th old slot of an exercise pairs to the n-th
   // new one (old rows ordered by order_index above).
   const oldIsWarmupByDayExOcc = new Map<string, number>();
+  // A load unit follows the same positional match: a rebuild that omits
+  // target_weight_unit must not relabel a 24 kg target as 24 lb.
+  const oldUnitByDayExOcc = new Map<string, 'lb' | 'kg'>();
   {
     const occ = new Map<string, number>();
     for (const ot of oldTeRows.results) {
@@ -6534,6 +6570,7 @@ export async function updatePlanTree(
       const o = occ.get(exKey) ?? 0;
       occ.set(exKey, o + 1);
       oldIsWarmupByDayExOcc.set(`${exKey}:${o}`, ot.is_warmup);
+      oldUnitByDayExOcc.set(`${exKey}:${o}`, ot.target_weight_unit ?? 'lb');
     }
   }
 
@@ -6554,6 +6591,9 @@ export async function updatePlanTree(
   const isWarmupPerOccurrence: number[][] = input.workouts.map((d) =>
     (d.exercises ?? []).map(() => 0),
   );
+  const unitPerOccurrence: ('lb' | 'kg')[][] = input.workouts.map((d) =>
+    (d.exercises ?? []).map(() => 'lb' as const),
+  );
   const newTeIdByClassOcc = new Map<string, string>();
   {
     const posOcc = new Map<string, number>(); // positional (exId) — inheritance lookup
@@ -6572,6 +6612,7 @@ export async function updatePlanTree(
               ? 1
               : 0;
         isWarmupPerOccurrence[di]![ei] = isWarmup;
+        unitPerOccurrence[di]![ei] = e.target_weight_unit ?? oldUnitByDayExOcc.get(`${exKey}:${p}`) ?? 'lb';
         const classKey = `${exKey}:${isWarmup}`;
         const c = classOcc.get(classKey) ?? 0;
         classOcc.set(classKey, c + 1);
@@ -6704,8 +6745,8 @@ export async function updatePlanTree(
         db
           .prepare(
             `INSERT INTO template_exercises
-             (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds)
-             SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?20,?21,?22
+             (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds,target_weight_unit)
+             SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?20,?21,?22,?23
               WHERE EXISTS (
                 SELECT 1 FROM plans
                  WHERE id = ?17 AND user_id = ?18 AND status = 'active' AND version = ?19
@@ -6718,6 +6759,7 @@ export async function updatePlanTree(
             e.progression == null ? null : JSON.stringify(e.progression),
             e.cues ?? null, isWarmup, ts, ts, plan!.id, userId, -plan!.version,
             group.group_id, group.group_rest_seconds, group.group_transition_seconds,
+            unitPerOccurrence[di]![ei]!,
           ),
       );
     });
@@ -6967,6 +7009,7 @@ const TEMPLATE_EXERCISE_PATCH_KEYS = new Set<string>([
   'target_rpe',
   'rest_seconds',
   'target_weight',
+  'target_weight_unit',
   'target_duration_s',
   'cues',
   'progression',
@@ -6987,6 +7030,7 @@ export async function updateExercise(
       | 'target_rpe'
       | 'rest_seconds'
       | 'target_weight'
+      | 'target_weight_unit'
       | 'target_duration_s'
       | 'cues'
       | 'order_index'
@@ -7017,6 +7061,7 @@ export async function updateExercise(
     target_rpe: patch.target_rpe === undefined ? slot.target_rpe : patch.target_rpe,
     rest_seconds: patch.rest_seconds === undefined ? slot.rest_seconds : patch.rest_seconds,
     target_weight: patch.target_weight === undefined ? slot.target_weight : patch.target_weight,
+    target_weight_unit: patch.target_weight_unit === undefined ? slot.target_weight_unit : patch.target_weight_unit,
     target_duration_s: patch.target_duration_s === undefined ? slot.target_duration_s : patch.target_duration_s,
     cues: patch.cues === undefined ? slot.cues : patch.cues,
     order_index: patch.order_index === undefined ? slot.order_index : patch.order_index,
@@ -7364,9 +7409,12 @@ export async function adjustToday(
         // toward zero and accidentally make the exercise harder.
         const assisted = te.target_weight < 0;
         const scaled = assisted ? te.target_weight / wtF : te.target_weight * wtF;
-        const rounded = Math.round(scaled / 5) * 5;
-        // Keep the existing five-pound convention when it increases
-        // assistance, but never let a small negative value round to zero.
+        // Round to the slot unit's smallest common jump: 5 lb or 2.5 kg.
+        const unit = te.target_weight_unit ?? 'lb';
+        const step = unit === 'kg' ? 2.5 : 5;
+        const rounded = Math.round(scaled / step) * step;
+        // Keep that rounding when it increases assistance, but never let a
+        // small negative value round to zero.
         const w = Math.min(te.target_weight, rounded);
         if (w === te.target_weight) continue;
         const invalid = validateExercisePrescription({
@@ -7385,7 +7433,7 @@ export async function adjustToday(
               AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
             .bind(te.id, w, ts, tree.id, userId, tree.version, nonce),
         );
-        changes.push(`${d.day_label ?? d.name}/${te.exercise_name}: weight ${te.target_weight}→${w}`);
+        changes.push(`${d.day_label ?? d.name}/${te.exercise_name}: weight ${te.target_weight}→${w} ${unit}`);
       } else {
         const s = Math.max(1, Math.round(te.target_sets * setF));
         if (s === te.target_sets) continue;
@@ -7498,15 +7546,25 @@ export async function getHistory(
     const repCohorts = cohorts.filter((cohort) => !cohort.is_timed);
     const timedCohorts = cohorts.filter((cohort) => cohort.is_timed);
     const estimated = rows.filter((row) => estimatedOneRepMax(row, exercise) != null);
+    // Each estimate is in its set's unit; rank kg and lb by physical load.
+    const pounds = (row: SetLogRow) => estimatedOneRepMax(row, exercise)!
+      / (loadUnit(row, exercise) === 'kg' ? 0.45359237 : 1);
     const estimatedTop = estimated.length ? estimated.reduce((best, row) =>
-      estimatedOneRepMax(row, exercise)! > estimatedOneRepMax(best, exercise)! ? row : best) : null;
+      pounds(row) > pounds(best) ? row : best) : null;
     // Preserve conventional Epley summaries. Incompatible BW/hold conditions
     // have no overall winner; callers use the explicitly keyed cohorts.
     const top = cohorts.length === 1 ? cohorts[0]!.top : estimatedTop;
-    const tonnages = rows.map((row) => positiveSetTonnage(row, exercise))
-      .filter((value): value is number => value != null);
+    const volumes = new Map<string, number>();
+    for (const row of rows) {
+      const tonnage = positiveSetTonnage(row, exercise);
+      if (tonnage != null) volumes.set(loadUnit(row, exercise), (volumes.get(loadUnit(row, exercise)) ?? 0) + tonnage);
+    }
+    const byUnit = [...volumes].sort(([a], [b]) => a.localeCompare(b))
+      .map(([unit, value]) => ({ unit, value }));
     return {
       date, top,
+      /** Unit of top, and so of est_1rm. */
+      unit: top == null ? null : loadUnit(top, exercise),
       notes: rows[0]!.session_notes,
       perceived_fatigue: rows[0]!.session_perceived_fatigue,
       metric: top == null ? 'mixed' : estimatedTop ? 'load' : cohorts[0]!.metric,
@@ -7516,7 +7574,9 @@ export async function getHistory(
       total_reps: exercise.modality === 'bw'
         ? repCohorts.reduce((sum, cohort) => sum + (cohort.total_reps ?? 0), 0) : null,
       best_duration_s: timedCohorts.length === 1 ? timedCohorts[0]!.best_duration_s : null,
-      tonnage: tonnages.length ? tonnages.reduce((a, b) => a + b, 0) : null,
+      // A scalar only for one unit; lb and kg are never summed.
+      tonnage: byUnit.length === 1 ? byUnit[0]!.value : null,
+      tonnage_by_unit: byUnit,
       tonnage_basis: 'external_load',
       cohorts,
     };
@@ -7537,7 +7597,9 @@ export async function getVolume(
     .bind(normalizedMuscle).first();
   if (!known) return { error: 'unknown_muscle' as const, query: muscle };
   const rows = await db.prepare(
-    `SELECT strftime('%Y-%W', s.date) AS week, e.unit,
+    // A loaded set's volume is in its own logged unit; zero load keeps the catalog unit.
+    `SELECT strftime('%Y-%W', s.date) AS week,
+            CASE WHEN sl.weight = 0 THEN e.unit WHEN sl.weight_unit = 'kg' THEN 'kg' ELSE 'lb' END AS load_unit,
             COUNT(*) AS logged_working_sets, COUNT(sl.rpe) AS sets_with_effort,
             SUM(CASE WHEN sl.weight > 0 AND sl.is_timed = 0 AND e.unit != 'sec' AND e.modality != 'cardio'
                      THEN sl.weight * sl.reps
@@ -7549,9 +7611,9 @@ export async function getVolume(
      JOIN exercises e ON e.id = sl.exercise_id
      WHERE s.user_id = ?1 AND lower(e.primary_muscle) = ?2 AND sl.deleted_at IS NULL
        AND s.status != 'discarded' AND sl.is_warmup = 0 AND sl.logged_at BETWEEN ?3 AND ?4
-     GROUP BY week, e.unit ORDER BY week, e.unit`,
+     GROUP BY week, load_unit ORDER BY week, load_unit`,
   ).bind(userId, normalizedMuscle, from, to).all<{
-    week: string; unit: string; logged_working_sets: number; sets_with_effort: number;
+    week: string; load_unit: string; logged_working_sets: number; sets_with_effort: number;
     external_load_volume: number | null; contributing_sets: number;
   }>();
   const weeks = [...new Set(rows.results.map(row => row.week))];
@@ -7564,7 +7626,7 @@ export async function getVolume(
       const group = rows.results.filter(row => row.week === week);
       const count = group.reduce((n, row) => n + row.logged_working_sets, 0);
       const byUnit = group.filter(row => row.external_load_volume != null).map(row => ({
-        unit: row.unit, value: row.external_load_volume!, contributing_sets: row.contributing_sets,
+        unit: row.load_unit, value: row.external_load_volume!, contributing_sets: row.contributing_sets,
       }));
       return { week, hard_sets: count, logged_working_sets: count,
         sets_with_effort: group.reduce((n, row) => n + row.sets_with_effort, 0),
@@ -9525,6 +9587,7 @@ export async function getGroupFeed(
         `SELECT sl.session_id,
                 sl.exercise_id,
                 sl.weight,
+                sl.weight_unit,
                 sl.reps,
                 sl.duration_s,
                 sl.is_timed,
@@ -9543,6 +9606,7 @@ export async function getGroupFeed(
         session_id: string;
         exercise_id: string;
         weight: number;
+        weight_unit: 'lb' | 'kg';
         reps: number;
         duration_s: number | null;
         is_timed: number;
@@ -9571,7 +9635,8 @@ export async function getGroupFeed(
           cohort_key: cohort.key,
           exercise_id: exercise.exercise_id,
           exercise: exercise.exercise_name,
-          unit: exercise.exercise_unit,
+          // The cohort's own logged unit (24 kg stays kg), never the catalog's.
+          unit: cohort.unit,
           modality: exercise.exercise_modality,
           laterality: exercise.laterality,
           load_mode: exercise.load_mode,
@@ -9602,8 +9667,10 @@ export async function getGroupFeed(
     return [...byExercise.values()].flatMap((rows) => {
       if (rows.length === 1) return rows;
       const estimated = rows.filter((row) => row.est_1rm > 0);
+      // Estimates are in each row's unit; compare kg and lb by physical load.
+      const pounds = (row: typeof rows[number]) => row.unit === 'kg' ? row.est_1rm / 0.45359237 : row.est_1rm;
       return estimated.length ? [estimated.reduce((best, row) =>
-        row.est_1rm > best.est_1rm ? row : best)] : [];
+        pounds(row) > pounds(best) ? row : best)] : [];
     });
   };
   const sessionItems: FeedSessionItem[] = sessionRows.results.map((s) => ({
@@ -10419,7 +10486,11 @@ export interface SaveFreestyleInput {
   expected_version: number;
   expected_attempt: number;
   source_signature: string;
-  slots: (FreestylePrescription & { source_set_ids: string[] })[];
+  slots: (Omit<FreestylePrescription, 'target_weight_unit'> & {
+    source_set_ids: string[];
+    /** Omitted by older clients: the reviewed load keeps its source unit. */
+    target_weight_unit?: 'lb' | 'kg';
+  })[];
 }
 
 /** Creates the complete reviewed prescription, reassigns history, advances the
@@ -10434,7 +10505,8 @@ export async function saveFreestyleWorkout(db: D1Database,userId: string,session
     slots: input.slots.map(s => ({exercise_id: s.exercise_id, target_sets: s.target_sets,
       target_reps: s.target_reps, target_duration_s: s.target_duration_s,
       target_weight: s.target_weight, rest_seconds: s.rest_seconds,
-      source_set_ids: [...(s.source_set_ids ?? [])].sort()}))});
+      source_set_ids: [...(s.source_set_ids ?? [])].sort(),
+      ...(s.target_weight_unit === undefined ? {} : {target_weight_unit: s.target_weight_unit})}))});
   const readReceipt = async () => {
     const receipt = await db.prepare('SELECT request,response FROM freestyle_workout_receipts WHERE user_id=?1 AND new_workout_id=?2')
       .bind(userId,input.workout_id).first<{request:string;response:string}>();
@@ -10460,10 +10532,12 @@ export async function saveFreestyleWorkout(db: D1Database,userId: string,session
   const sourceKey = (ids: string[]) => JSON.stringify([...ids].sort());
   const cohorts = new Map(draft.slots.map(slot => [sourceKey(slot.source_set_ids), slot]));
   const reviewed = new Set<string>();
+  const units: ('lb' | 'kg')[] = [];
   if (input.slots.length !== cohorts.size) return {error:'invalid_fields' as const,fields:['slots']};
   for (const slot of input.slots) {
     const key = sourceKey(slot.source_set_ids ?? []);
     const source = cohorts.get(key);
+    units.push(slot.target_weight_unit ?? source?.target_weight_unit ?? 'lb');
     if (!source || reviewed.has(key) || source.exercise_id !== slot.exercise_id
       || source.is_timed !== (slot.target_duration_s !== null)) {
       return {error:'invalid_fields' as const,fields:['source_set_ids']};
@@ -10496,10 +10570,10 @@ export async function saveFreestyleWorkout(db: D1Database,userId: string,session
       SELECT ?5,?1,?6,(SELECT COALESCE(MAX(order_index)+1,0) FROM workouts WHERE plan_id=?1),?7,?7 WHERE ${claim}`)
       .bind(...bindings,input.workout_id,input.name.trim(),ts),
     ...input.slots.map((slot,index)=>db.prepare(`INSERT INTO template_exercises
-      (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_duration_s,target_weight,rest_seconds,progression,is_warmup,created_at,updated_at)
-      SELECT ?5,?6,?7,?8,?9,?10,?11,?12,?13,'{"type":"manual"}',0,?14,?14 WHERE ${claim}`)
+      (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_duration_s,target_weight,rest_seconds,progression,is_warmup,created_at,updated_at,target_weight_unit)
+      SELECT ?5,?6,?7,?8,?9,?10,?11,?12,?13,'{"type":"manual"}',0,?14,?14,?15 WHERE ${claim}`)
       .bind(...bindings,uuid(),input.workout_id,slot.exercise_id,index,slot.target_sets,slot.target_reps,
-        slot.target_duration_s,slot.target_weight,slot.rest_seconds,ts)),
+        slot.target_duration_s,slot.target_weight,slot.rest_seconds,ts,units[index]!)),
     db.prepare(`UPDATE sessions SET plan_id=?1,workout_id=?5,attempt=attempt+1,updated_at=?6 WHERE id=?7 AND ${claim}`)
       .bind(...bindings,input.workout_id,response.session.updated_at,draft.session.id),
     db.prepare(`INSERT INTO freestyle_workout_receipts (user_id,new_workout_id,session_id,source_attempt,request,response,created_at)

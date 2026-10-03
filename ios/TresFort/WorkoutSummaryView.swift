@@ -43,7 +43,7 @@ struct WorkoutSummaryView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(record.name).font(.subheadline.weight(.semibold))
                                     Text(record.label).font(.subheadline)
-                                    Text("Previous: \(record.previous)\(record.metric == "duration" ? "s" : " reps")")
+                                    Text(record.previousLabel)
                                         .font(.caption).foregroundStyle(Theme.muted)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)

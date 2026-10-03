@@ -247,7 +247,9 @@ struct FeedSessionItem: Codable, Identifiable, Equatable {
                 reps: reps,
                 durationSeconds: duration_s,
                 timed: is_timed == true,
-                bodyweight: modality == "bw")
+                bodyweight: modality == "bw",
+                unit: unit == "kg" ? "kg" : "lb",
+                repLoadUnit: unit == "kg" ? "kg" : nil)
                 + (is_timed == true && weight == 0 && ["bw", "timed"].contains(modality ?? "") ? " · BW" : "")
                 + (load_mode == "per_hand" ? " · each hand" : "")
                 + (laterality == "unilateral" ? " · per side" : "")

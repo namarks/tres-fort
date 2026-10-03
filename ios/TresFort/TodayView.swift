@@ -930,14 +930,29 @@ private struct RunnerView: View {
         if let input = sync.currentInputState { valueDraft = SetValueDraft(input: input, exercise: ex) }
     }
 
+    /// Match the correction view's visible source, including a queued set or
+    /// a tombstone arriving after its shortcut was first shown.
+    private var hasLastSetReview: Bool {
+        guard let id = sync.lastRunnerSetID else { return false }
+        return sync.sets.contains {
+            $0.id == id && $0.deleted_at == nil && $0.session_id == sync.todaySession?.id
+        } || sync.setOutbox.pending.contains {
+            $0.id == id && $0.date == sync.todayString
+        }
+    }
+
     private func runnerActions(_ ex: TemplateExercise) -> some View {
         VStack(spacing: 4) {
             // A reserved row keeps the current inputs and the logging action in
             // place as rest starts/ends. End rest never becomes a logging button.
             RestPill(sync: sync, horizontalPadding: 0, onExpand: { onExpandRest?() })
-            ZStack(alignment: .leading) {
-                Color.clear.frame(height: 44).accessibilityHidden(true)
+            if hasLastSetReview {
                 LastRunnerSetReview(sync: sync, compact: true)
+                    .frame(minHeight: 44, alignment: .leading)
+            } else {
+                // Reserve layout without mounting an empty correction view or
+                // a Color-backed container, which SwiftUI exposes to AX audits.
+                Spacer(minLength: 0).frame(height: 44)
             }
             RunnerSetAction(sync: sync, ex: ex)
         }

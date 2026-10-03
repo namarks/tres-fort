@@ -97,8 +97,10 @@ final class TrainingJourneyTests: XCTestCase {
             XCTAssertTrue(app.staticTexts["Reps per side"].exists)
             screenshot(fixture + "-per-side")
             app.buttons["LOG SET 1"].tap()
-            XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
-            app.buttons["rest.done"].tap()
+            // This fixture prescribes zero rest, so advance directly to the
+            // next physical set without inventing a timer to dismiss.
+            XCTAssertTrue(app.buttons["LOG SET 2"].waitForExistence(timeout: 5))
+            XCTAssertFalse(app.buttons["rest.done"].exists)
             XCTAssertEqual(app.staticTexts["fixture.scenario"].value as? String,
                            "sets:1;reps:10;total:20")
             reveal(app.buttons["runner.outline"], in: app)

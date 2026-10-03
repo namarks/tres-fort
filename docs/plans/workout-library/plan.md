@@ -310,7 +310,7 @@ No second editor, no per-session template copies, no weeks table.
   - The October 3 design audit and owner approval activate this implementation.
     Use the Focus direction: keep the current exercise, combined load/reps
     entry and logging action central; retain the dark/amber visual language.
-  - [ ] **(a) Repository implementation and verification**
+  - [x] **(a) Implementation and local verification**
     - Reserve compact rest and correction space beside the logging action.
       Keep End rest separate when the timer expires; offer the large clock
       explicitly. Collapse unloaded bodyweight input behind Add load/assistance.
@@ -328,6 +328,22 @@ No second editor, no per-session template copies, no weeks table.
     - Verify compact-phone and accessibility layouts with synthetic native
       journeys, exercise groups, timers, recovery and correction flows. Require
       independent review and all applicable CI checks on the final PR head.
+    - Implemented in [PR #229](https://github.com/namarks/tres-fort/pull/229).
+      Compact rest keeps separate End rest and logging controls; Workout outline
+      holds secondary actions. Minimize/Resume also retains a Review workout
+      route when the final timed set completes on another tab. Calendar starts
+      prepare rest notifications and revalidate the selected session afterward.
+    - Local verification executed 679 existing unit tests with zero failures
+      and one simulator-only file-protection skip. All eight group-presentation
+      tests passed, including six new next-member regressions. Forty distinct
+      native UI journeys passed across the final targeted runs and repaired-case
+      repeats on iPhone 16e / iOS 26.2. Coverage includes accessible rest/logging,
+      exact correction, per-side and signed load entry, timed browsing/recovery,
+      date selection, schedule conflict/retry and optional finish feedback.
+      Native screenshots were inspected. The empty correction reservation uses
+      a layout spacer so it does not expose an unnamed accessibility element.
+      PR #229 retains final-head hosted review and CI as the merge gates;
+      physical-device and manual VoiceOver acceptance remain unverified.
   - [ ] **(b) Client distribution**
     - Implementation approval does not authorize TestFlight or public release.
       Use the existing client release workflow after explicit owner activation;
@@ -453,7 +469,7 @@ No second editor, no per-session template copies, no weeks table.
 
 - P0.2(b)
 - P0.5(c)
-- P0.6(a)
+- P0.6(b)
 
 ## Dependencies
 
@@ -480,9 +496,12 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@agent):** Implement and verify the approved Focus workout workflow in
-P0.6(a), then deliver the exact reviewed head through the repository gates.
-Client distribution P0.6(b) remains separately gated.
+**Now (@agent):** P0.6(a) implementation and local verification
+are complete. If [PR #229](https://github.com/namarks/tres-fort/pull/229) remains
+open, merge only after independent review and every required CI check pass on
+its exact final head. After merge, P0.6(b) client distribution is the next Focus
+gate and requires separate owner activation; repository completion does not
+establish that the installed app contains these changes.
 
 **Deferred owner verification:** Test the authenticated workout paths on a device
 using internal TestFlight 1.0 (44), including metadata, freestyle recovery/save

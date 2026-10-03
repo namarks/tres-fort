@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import HealthKit
 import XCTest
@@ -2768,5 +2769,313 @@ extension AuthModelTests {
         XCTAssertFalse(flow.finishWithStarter(receipt, from: checkpoint))
         XCTAssertFalse(auth.onboardingComplete)
         XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+    }
+}
+
+
+extension AuthModelTests {
+    private func onboardingState(
+        plan: PlanTree? = nil,
+        sessions: [SessionRow] = [],
+        sets: [SetLog] = [],
+        activities: [ActivityRow] = [],
+        externalActivities: [ExternalActivity] = []
+    ) -> StateResponse {
+        StateResponse(plan: plan, plan_version: plan?.version ?? 0,
+            sessions: sessions, sets: sets, external_events: [],
+            external_activities: externalActivities, activities: activities,
+            server_time: 2_000_000_000_000)
+    }
+
+    private var existingOnboardingPlan: PlanTree {
+        PlanTree(id: "existing-plan", name: "My training", version: 7,
+            workouts: [], meta: nil)
+    }
+
+    private func onboardingAuth(
+        userID: String = "user-a",
+        local: LocalPersistence? = nil,
+        reader: @escaping @MainActor (String) async throws -> StateResponse
+    ) async -> (AuthModel, AuthAPIStub) {
+        let api = AuthAPIStub()
+        api.authResult = .success(AuthResponse(jwt: sessionToken(for: userID),
+            user: UserDTO(id: userID, display_name: nil, email: nil)))
+        let auth = AuthModel(api: api, tokenStore: MemoryTokenStore(),
+            defaults: local ?? defaults(), onboardingStateReader: reader)
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        return (auth, api)
+    }
+
+    func testSameReturningAccountOnTwoFreshDevicesSkipsSetupAfterServerRead() async throws {
+        let firstDevice = defaults(), secondDevice = defaults()
+        let state = onboardingState(plan: existingOnboardingPlan)
+        var reads: [String] = []
+        let reader: @MainActor (String) async throws -> StateResponse = { token in
+            reads.append(token)
+            return state
+        }
+        let (phone, _) = await onboardingAuth(local: firstDevice, reader: reader)
+        let (iPad, _) = await onboardingAuth(local: secondDevice, reader: reader)
+        let phoneToken = try XCTUnwrap(phone.jwt), iPadToken = try XCTUnwrap(iPad.jwt)
+        XCTAssertEqual(phone.userID, iPad.userID)
+        XCTAssertFalse(phone.onboardingComplete)
+        XCTAssertFalse(iPad.onboardingComplete)
+        XCTAssertEqual(iPad.onboardingResolution, .unresolved)
+        await phone.resolveOnboarding()
+        await iPad.resolveOnboarding()
+        XCTAssertTrue(phone.onboardingComplete)
+        XCTAssertTrue(iPad.onboardingComplete)
+        XCTAssertEqual(reads, [phoneToken, iPadToken])
+        XCTAssertTrue(firstDevice.bool(forKey: AccountLocalState.onboardedKey(userID: "user-a")))
+        XCTAssertTrue(secondDevice.bool(forKey: AccountLocalState.onboardedKey(userID: "user-a")))
+        let restored = AuthModel(api: AuthAPIStub(),
+            tokenStore: MemoryTokenStore(iPadToken), defaults: secondDevice,
+            onboardingStateReader: { _ in XCTFail("Completed installations do not need a check"); return state })
+        await restored.resolveOnboarding()
+        XCTAssertTrue(restored.onboardingComplete)
+    }
+
+    func testEmptyAccountOffersSetupOnlyAfterSuccessfulCheck() async {
+        let started = AsyncLatch(), release = AsyncLatch()
+        let state = onboardingState()
+        var reads = 0
+        let (auth, _) = await onboardingAuth { _ in
+            reads += 1
+            await started.open()
+            await release.wait()
+            return state
+        }
+        let task = Task { await auth.resolveOnboarding() }
+        await started.wait()
+        XCTAssertEqual(auth.onboardingResolution, .checking)
+        XCTAssertFalse(auth.onboardingComplete)
+        await auth.resolveOnboarding()
+        XCTAssertEqual(reads, 1)
+        await release.open()
+        await task.value
+        XCTAssertEqual(auth.onboardingResolution, .needsSetup)
+        XCTAssertFalse(auth.onboardingComplete)
+        await auth.resolveOnboarding()
+        XCTAssertEqual(reads, 1)
+    }
+
+    func testFailedReturningAccountCheckRetriesWithoutOfferingSetup() async {
+        let state = onboardingState(plan: existingOnboardingPlan)
+        var reads = 0
+        let (auth, _) = await onboardingAuth { _ in
+            reads += 1
+            if reads == 1 { throw URLError(.notConnectedToInternet) }
+            return state
+        }
+        await auth.resolveOnboarding()
+        guard case .failed = auth.onboardingResolution else {
+            return XCTFail("A failed read must show recovery, not first-run setup")
+        }
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertEqual(auth.phase, .signedIn)
+        await auth.resolveOnboarding()
+        XCTAssertTrue(auth.onboardingComplete)
+        XCTAssertEqual(reads, 2)
+    }
+
+    func testReturningAccountKeepsInviteAndCoachEntryIntentsInOrder() async {
+        let api = AuthAPIStub(), state = onboardingState(plan: existingOnboardingPlan)
+        let auth = AuthModel(api: api, tokenStore: MemoryTokenStore(), defaults: defaults(),
+            onboardingStateReader: { _ in state })
+        auth.requestEntry(.invite("ABC234"))
+        auth.requestEntry(.coach)
+        api.authResult = .success(AuthResponse(jwt: sessionToken(for: "user-a"),
+            user: UserDTO(id: "user-a", display_name: nil, email: nil)))
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        await auth.resolveOnboarding()
+        XCTAssertTrue(auth.onboardingComplete)
+        XCTAssertEqual(auth.pendingEntryIntents.map(\.destination), [.invite("ABC234"), .coach])
+        XCTAssertEqual(auth.nextEntryIntent?.destination, .invite("ABC234"))
+        XCTAssertEqual(auth.pendingEntryIntents.map(\.accountID), ["user-a", "user-a"])
+    }
+
+    func testLateReturningAccountCheckCannotCompleteAfterSignOut() async {
+        let started = AsyncLatch(), release = AsyncLatch(), local = defaults()
+        let state = onboardingState(plan: existingOnboardingPlan)
+        let (auth, _) = await onboardingAuth(local: local) { _ in
+            await started.open(); await release.wait(); return state
+        }
+        let task = Task { await auth.resolveOnboarding() }
+        await started.wait()
+        auth.signOut()
+        await release.open()
+        await task.value
+        XCTAssertEqual(auth.phase, .signedOut)
+        XCTAssertEqual(auth.onboardingResolution, .unresolved)
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertFalse(local.bool(forKey: AccountLocalState.onboardedKey(userID: "user-a")))
+    }
+
+    func testLateReturningAccountCheckCannotCompleteDifferentAccount() async {
+        let started = AsyncLatch(), release = AsyncLatch(), local = defaults()
+        let state = onboardingState(plan: existingOnboardingPlan)
+        let (auth, api) = await onboardingAuth(local: local) { _ in
+            await started.open(); await release.wait(); return state
+        }
+        let task = Task { await auth.resolveOnboarding() }
+        await started.wait()
+        api.authResult = .success(AuthResponse(jwt: sessionToken(for: "user-b"),
+            user: UserDTO(id: "user-b", display_name: nil, email: nil)))
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        await release.open()
+        await task.value
+        XCTAssertEqual(auth.userID, "user-b")
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertEqual(auth.onboardingResolution, .unresolved)
+        XCTAssertFalse(local.bool(forKey: AccountLocalState.onboardedKey(userID: "user-b")))
+    }
+
+    func testLateReturningAccountCheckCannotCrossSameUserReloginOrNewAttempt() async {
+        let firstStarted = AsyncLatch(), releaseFirst = AsyncLatch()
+        let secondStarted = AsyncLatch(), releaseSecond = AsyncLatch()
+        let existing = onboardingState(plan: existingOnboardingPlan), empty = onboardingState()
+        var reads = 0
+        let (auth, _) = await onboardingAuth { _ in
+            reads += 1
+            if reads == 1 { await firstStarted.open(); await releaseFirst.wait(); return existing }
+            await secondStarted.open(); await releaseSecond.wait(); return empty
+        }
+        let first = Task { await auth.resolveOnboarding() }
+        await firstStarted.wait()
+        auth.signOut()
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        let second = Task { await auth.resolveOnboarding() }
+        await secondStarted.wait()
+        await releaseFirst.open()
+        await first.value
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertEqual(auth.onboardingResolution, .checking)
+        await releaseSecond.open()
+        await second.value
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertEqual(auth.onboardingResolution, .needsSetup)
+    }
+
+    func testCancelledOnboardingCheckReschedulesImmediateReplacementBeforeOldReaderReturns() async {
+        let started = AsyncLatch(), release = AsyncLatch()
+        let existing = onboardingState(plan: existingOnboardingPlan), empty = onboardingState()
+        var reads = 0
+        let (auth, _) = await onboardingAuth { _ in
+            reads += 1
+            if reads == 1 { await started.open(); await release.wait(); return existing }
+            return empty
+        }
+        let first = Task { await auth.resolveOnboarding() }
+        await started.wait()
+        let revision = auth.onboardingResolutionRevision
+        let rerun = expectation(description: "Root task reruns after resolution invalidation")
+        // Model RootView's task keyed on the revision. A replacement task can
+        // arrive before the old cancellation handler gets its MainActor turn.
+        let observation = auth.$onboardingResolutionRevision.dropFirst().sink { _ in
+            Task { @MainActor in
+                await auth.resolveOnboarding()
+                rerun.fulfill()
+            }
+        }
+        defer { observation.cancel() }
+        first.cancel()
+        await auth.resolveOnboarding()
+        await fulfillment(of: [rerun], timeout: 2)
+        XCTAssertGreaterThan(auth.onboardingResolutionRevision, revision)
+        XCTAssertEqual(auth.onboardingResolution, .needsSetup)
+        await release.open()
+        await first.value
+        XCTAssertEqual(auth.onboardingResolution, .needsSetup)
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertEqual(reads, 2)
+    }
+
+    func testExpiredOnboardingReadRequiresReauthenticationAndPreservesEntry() async {
+        let (auth, _) = await onboardingAuth { _ in throw APIError.http(401, "expired") }
+        auth.requestEntry(.invite("ABC234"))
+        await auth.resolveOnboarding()
+        XCTAssertEqual(auth.phase, .signedOut)
+        XCTAssertNil(auth.jwt)
+        XCTAssertEqual(auth.userID, "user-a")
+        XCTAssertEqual(auth.onboardingResolution, .unresolved)
+        XCTAssertEqual(auth.pendingInviteCode, "ABC234")
+        XCTAssertFalse(auth.onboardingComplete)
+    }
+
+    func testTrainingHistoryWithoutPlanAlsoRestoresReturningAccount() async throws {
+        let session = SessionRow(id: "session", date: "2026-10-03", status: "completed", workout_id: nil)
+        let set = SetLog(id: "set", session_id: "session", exercise_id: "squat",
+            template_exercise_id: nil, set_index: 1, weight: 0, reps: 5,
+            rpe: nil, is_warmup: 0, logged_at: 1, duration_s: nil, is_timed: nil, deleted_at: nil)
+        let activity = ActivityRow(id: "manual", user_id: "user-a", date: "2026-10-03",
+            type: "walk", title: nil, duration_minutes: 10, notes: nil,
+            logged_at: 1, source: "ios", deleted_at: nil)
+        let external = try JSONDecoder().decode(ExternalActivity.self, from: Data("""
+            {"id":"ride", "source":"intervals", "external_id":"ride-1", "date":"2026-10-03", "kind":"ride"}
+            """.utf8))
+        for state in [onboardingState(sessions: [session]), onboardingState(sets: [set]),
+                      onboardingState(activities: [activity]), onboardingState(externalActivities: [external])] {
+            let (auth, _) = await onboardingAuth { _ in state }
+            await auth.resolveOnboarding()
+            XCTAssertTrue(auth.onboardingComplete)
+        }
+    }
+
+    func testDiscardedAndDeletedTrainingDoesNotFalselyCompleteSetup() async throws {
+        let sessions = ["discarded", "planned", "skipped"].map {
+            SessionRow(id: $0, date: "2026-10-03", status: $0, workout_id: nil)
+        }
+        let sets = [("discarded", Optional<Int>.none), ("other", 42)].map { session, deleted in
+            SetLog(id: session, session_id: session, exercise_id: "squat",
+                template_exercise_id: nil, set_index: 1, weight: 0, reps: 5,
+                rpe: nil, is_warmup: 0, logged_at: 1, duration_s: nil, is_timed: nil, deleted_at: deleted)
+        }
+        let activity = ActivityRow(id: "manual", user_id: "user-a", date: "2026-10-03",
+            type: "walk", title: nil, duration_minutes: 10, notes: nil,
+            logged_at: 1, source: "ios", deleted_at: 42)
+        let external = try JSONDecoder().decode(ExternalActivity.self, from: Data("""
+            {"id":"ride", "source":"intervals", "external_id":"ride-1", "date":"2026-10-03", "kind":"ride", "deleted_at":42}
+            """.utf8))
+        let state = onboardingState(sessions: sessions, sets: sets, activities: [activity], externalActivities: [external])
+        let (auth, _) = await onboardingAuth { _ in state }
+        await auth.resolveOnboarding()
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertEqual(auth.onboardingResolution, .needsSetup)
+    }
+
+    func testUnfinishedLocalSetupPreservesPendingStarterReceiptReconciliation() async throws {
+        let local = defaults(), state = onboardingState(plan: existingOnboardingPlan)
+        var reads = 0
+        let (auth, _) = await onboardingAuth(local: local) { _ in reads += 1; return state }
+        let profile = try JSONSerialization.jsonObject(with: JSONEncoder().encode(TrainingProfile()))
+        let draft = try JSONSerialization.data(withJSONObject: [
+            "profile": profile, "version": 2,
+            "acceptance": ["id": "starter-a", "profileVersion": 2]
+        ])
+        let draftKey = AccountLocalState.trainingProfileDraftKey(userID: "user-a")
+        XCTAssertTrue(local.set(draft, forKey: draftKey))
+        await auth.resolveOnboarding()
+        XCTAssertEqual(auth.onboardingResolution, .needsSetup)
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertEqual(local.data(forKey: draftKey), draft)
+        XCTAssertEqual(reads, 0, "The existing setup owns recovery of its exact acceptance")
+    }
+
+    func testOnboardingCheckWaitsForPendingDeletionAndStorageRecovery() async {
+        let state = onboardingState(plan: existingOnboardingPlan), local = defaults()
+        local.set("pending-delete", forKey: AccountLocalState.accountDeletionKey(userID: "user-a"))
+        var reads = 0
+        let (pendingDeletion, _) = await onboardingAuth(local: local) { _ in reads += 1; return state }
+        await pendingDeletion.resolveOnboarding()
+        XCTAssertEqual(reads, 0)
+        XCTAssertEqual(pendingDeletion.onboardingResolution, .unresolved)
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let broken = h.open()
+        let (needsRecovery, _) = await onboardingAuth(local: broken) { _ in reads += 1; return state }
+        broken.recordInvalidData(Data([1]), forKey: StateSnapshotStore.scopedKey(userID: "user-a"))
+        await needsRecovery.resolveOnboarding()
+        XCTAssertEqual(reads, 0)
+        XCTAssertEqual(needsRecovery.onboardingResolution, .unresolved)
     }
 }

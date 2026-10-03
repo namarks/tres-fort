@@ -9,15 +9,16 @@ struct StationComparisonFrame {
     let sample: StationPoseSample
     let applePose: Pose?
     let visionMilliseconds: Double
+    var imageAspectRatio: Double = 1
 }
 
 enum StationComparisonState: Equatable {
     case idle, waitingForPose, warmingUp, collecting, finishing, finished
-    case incomplete(String), failed(String)
+    case reacquiring(String), incomplete(String), failed(String)
 
     var isCollecting: Bool {
         switch self {
-        case .waitingForPose, .warmingUp, .collecting: return true
+        case .waitingForPose, .reacquiring, .warmingUp, .collecting: return true
         default: return false
         }
     }
@@ -31,8 +32,9 @@ enum StationComparisonState: Equatable {
     var message: String {
         switch self {
         case .idle: return "Ready for a comparison trial"
-        case .waitingForPose: return "Show the moving arm or leg to start both counters"
-        case .warmingUp: return "Collecting Apple's first 90 poses"
+        case .waitingForPose: return "Finding a stable view before counting"
+        case .reacquiring(let reason): return "Reacquiring: \(reason) Earlier counts are partial."
+        case .warmingUp: return "Collecting Apple's first 90 poses for this segment"
         case .collecting: return "Both counters are observing"
         case .finishing: return "Finishing Apple's pending estimates"
         case .finished: return "Trial finished"
@@ -48,7 +50,9 @@ struct StationComparisonMetrics: Equatable {
     var acceptedFPS: Double?
     var appleCoveredFrames = 0
     var pendingFrames: Int { max(0, acceptedFrames - appleCoveredFrames) }
-    var windowProgress: Int { min(acceptedFrames, windowFrames) }
+    var segmentAcceptedFrames = 0
+    var interruptedSegments = 0
+    var windowProgress: Int { min(segmentAcceptedFrames, windowFrames) }
     let windowFrames = StationAppleWindowBuilder.length
     var observedHistorySeconds: Double?
     var visionMilliseconds: Double?
@@ -65,110 +69,158 @@ final class StationComparisonModel: ObservableObject {
     @Published private(set) var appleCount: Float?
     @Published private(set) var state: StationComparisonState = .idle
     @Published private(set) var metrics = StationComparisonMetrics()
+    @Published private(set) var hasIncompleteCoverage = false
+    @Published private(set) var readinessMessage = "Show the moving arm or leg clearly."
+
+    var selectedJoints: Set<StationJoint> {
+        Set((selectedLimb ?? candidateLimb ?? []).map { $0.0 })
+    }
 
     private let appleEngineFactory: @MainActor () -> any StationAppleCountingEngine
+    private let readinessDuration: TimeInterval
     private var engine: (any StationAppleCountingEngine)?
     private var generation = UUID()
     private var counter = StationRepCounter(exercise: .squat)
     private var exercise: StationExercise = .squat
     private var selectedLimb: [(StationJoint, JointKey)]?
+    private var candidateLimb: [(StationJoint, JointKey)]?
+    private var candidateSince: TimeInterval?
+    private var candidateLastTimestamp: TimeInterval?
     private var firstTimestamp: TimeInterval?
     private var lastTimestamp: TimeInterval?
+    private var lastObservedTimestamp: TimeInterval?
     private var appleTimestamp: TimeInterval?
+    private var customBase = 0
+    private var appleBase: Float = 0
+    private var coveredBase = 0
+    private var segmentCoveredFrames = 0
     private var finishTimeout: Task<Void, Never>?
 
-    init(appleEngineFactory: @escaping @MainActor () -> any StationAppleCountingEngine = { StationAppleCounter() }) {
+    init(appleEngineFactory: @escaping @MainActor () -> any StationAppleCountingEngine = { StationAppleCounter() },
+         readinessDuration: TimeInterval = 0.3) {
         self.appleEngineFactory = appleEngineFactory
+        self.readinessDuration = max(0, readinessDuration)
     }
 
     func reset(exercise: StationExercise) {
-        generation = UUID()
-        finishTimeout?.cancel()
-        finishTimeout = nil
-        engine?.cancel()
-        engine = nil
+        cancelEngine()
         counter.reset(exercise: exercise)
         self.exercise = exercise
         selectedLimb = nil
+        clearCandidate()
         customCount = 0
+        customBase = 0
         customStatus = .seekingPosition
         appleCount = nil
+        appleBase = 0
+        coveredBase = 0
+        segmentCoveredFrames = 0
         metrics = StationComparisonMetrics()
+        hasIncompleteCoverage = false
         firstTimestamp = nil
         lastTimestamp = nil
+        lastObservedTimestamp = nil
         appleTimestamp = nil
+        readinessMessage = "Show \(requiredJoints) clearly and hold the iPad still."
         state = .idle
     }
 
     func start(exercise: StationExercise) {
         reset(exercise: exercise)
-        let generation = generation
-        let engine = appleEngineFactory()
-        self.engine = engine
         state = .waitingForPose
-        engine.start { [weak self] event in self?.receive(event, generation: generation) }
     }
 
     func process(_ frame: StationComparisonFrame) {
         guard state.isCollecting else { return }
         let sample = frame.sample
         guard sample.timestamp.isFinite, sample.timestamp >= 0 else {
-            reject(reason: "The camera timestamp was invalid.")
+            recover(reason: "The camera timestamp was invalid.")
             return
         }
-        if let lastTimestamp, sample.timestamp <= lastTimestamp {
+        if let lastObservedTimestamp, sample.timestamp <= lastObservedTimestamp {
             metrics.rejectedFrames += 1
             return
         }
+        lastObservedTimestamp = sample.timestamp
         guard sample.personCount == 1 else {
             customStatus = sample.personCount > 1 ? .multiplePeople : .trackingLost
-            reject(reason: sample.personCount > 1 ? "More than one person entered view." : "The person left view.")
+            if sample.personCount > 1 {
+                metrics.rejectedFrames += 1
+                invalidate(reason: "More than one person entered view. Start a new comparison when alone.")
+            } else {
+                recover(reason: "No person detected. Show \(requiredJoints).")
+            }
             return
         }
-        let limb = selectedLimb ?? usableLimb(in: sample)
+        let stableCandidate = candidateLimb.flatMap { Self.hasUsableJoints(sample, limb: $0) ? $0 : nil }
+        let limb = selectedLimb ?? stableCandidate ?? usableLimb(in: sample)
         guard let pose = frame.applePose, let limb, Self.hasUsableJoints(sample, limb: limb) else {
             customStatus = .trackingLost
-            reject(reason: "Body joints were no longer clear. Reposition and start a new trial.")
+            recover(reason: "Keep \(requiredJoints) visible and clear on one side.")
             return
         }
         if let lastTimestamp, sample.timestamp - lastTimestamp > 0.5 {
-            reject(reason: "A gap in camera poses interrupted the comparison.")
+            recover(reason: "Camera poses paused. Hold \(requiredJoints) in view.")
             return
+        }
+        if selectedLimb == nil {
+            // Do not admit a fleeting close-up while the person walks away from
+            // the Start button. Readiness frames are not fabricated or replayed.
+            let sameLimb = candidateLimb?.map { $0.0 } == limb.map { $0.0 }
+            let continuous = candidateLastTimestamp.map { sample.timestamp - $0 <= 0.5 } ?? false
+            if !sameLimb || !continuous { candidateSince = sample.timestamp }
+            candidateLimb = limb
+            candidateLastTimestamp = sample.timestamp
+            readinessMessage = "Hold \(requiredJoints) clearly in view for a moment."
+            guard let candidateSince, sample.timestamp - candidateSince >= readinessDuration else { return }
+            selectedLimb = limb
+            clearCandidate()
+            let engine = appleEngineFactory()
+            self.engine = engine
+            let generation = generation
+            engine.start { [weak self] event in self?.receive(event, generation: generation) }
+            guard state.isCollecting else { return }
         }
         let selectedPose = JointsSelector(selectedJoints: limb.map { $0.1 }).applied(to: pose)
-        let input = StationAppleInput(pose: selectedPose, timestamp: sample.timestamp, frameIndex: metrics.acceptedFrames + 1)
+        let input = StationAppleInput(pose: selectedPose, timestamp: sample.timestamp,
+                                      frameIndex: metrics.segmentAcceptedFrames + 1)
         guard engine?.append(input) == true else {
-            reject(reason: "Apple's pending window buffer filled. Start a new trial.")
+            recover(reason: "Apple fell behind. Hold still while both counters restart.")
             return
         }
-        // Only admitted inputs advance either side. Both counts refer to this
-        // common stream; Apple may still be working on its most recent window.
-        selectedLimb = limb
+        // Both counters consume the same admitted stream in each segment. A gap
+        // begins a fresh cycle/window, never a bridge across unseen movement.
         let jointNames = Set(limb.map { $0.0 })
-        let selectedSample = StationPoseSample(timestamp: sample.timestamp,
-                                              joints: sample.joints.filter { jointNames.contains($0.key) },
-                                              personCount: sample.personCount)
-        counter.process(selectedSample)
-        customCount = counter.count
+        counter.process(StationPoseSample(timestamp: sample.timestamp,
+                                          joints: sample.joints.filter { jointNames.contains($0.key) },
+                                          personCount: sample.personCount))
+        customCount = customBase + counter.count
         customStatus = counter.status
         firstTimestamp = firstTimestamp ?? sample.timestamp
         lastTimestamp = sample.timestamp
         metrics.acceptedFrames += 1
+        metrics.segmentAcceptedFrames += 1
         if let firstTimestamp, sample.timestamp > firstTimestamp {
             metrics.acceptedFPS = Double(metrics.acceptedFrames - 1) / (sample.timestamp - firstTimestamp)
         }
         metrics.visionMilliseconds = frame.visionMilliseconds.isFinite ? max(0, frame.visionMilliseconds) : nil
         if let appleTimestamp { metrics.appleSourceLagSeconds = max(0, sample.timestamp - appleTimestamp) }
-        state = appleCount == nil ? .warmingUp : .collecting
+        readinessMessage = "Tracking \(requiredJoints) on one side."
+        state = segmentCoveredFrames == 0 ? .warmingUp : .collecting
     }
 
-    /// Normal stop closes admission and drains real queued windows. No repeated
-    /// frames are fabricated to fill a tail shorter than the model window.
+    /// Normal stop drains real queued windows. A trial stopped during readiness
+    /// has no engine to drain and finishes immediately with an honest partial state.
     func stop() {
         guard state.isCollecting else { return }
+        guard let engine else {
+            state = .incomplete(hasIncompleteCoverage ? "Tracking was still reacquiring; counts are partial." :
+                               "No stable pose segment was captured.")
+            return
+        }
         state = .finishing
         let generation = generation
-        engine?.finish()
+        engine.finish()
         guard state == .finishing else { return }
         finishTimeout = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 5_000_000_000) } catch { return }
@@ -177,21 +229,39 @@ final class StationComparisonModel: ObservableObject {
         }
     }
 
-    /// Loss, rotation, scene changes and leaving the screen cancel the stream;
-    /// late asynchronous predictions can never change this or a future trial.
+    /// Rotation, scene changes and ambiguous identity require an explicit restart.
     func invalidate(reason: String) {
         guard state.isCollecting || state.isFinishing else { return }
-        generation = UUID()
-        finishTimeout?.cancel()
-        finishTimeout = nil
-        engine?.cancel()
-        engine = nil
+        hasIncompleteCoverage = true
+        cancelEngine()
         state = .incomplete(reason)
     }
 
-    private func reject(reason: String) {
+    private func recover(reason: String) {
         metrics.rejectedFrames += 1
-        if metrics.acceptedFrames > 0 { invalidate(reason: reason) }
+        clearCandidate()
+        readinessMessage = reason
+        guard metrics.segmentAcceptedFrames > 0 || selectedLimb != nil else {
+            if hasIncompleteCoverage { state = .reacquiring(reason) }
+            return
+        }
+        hasIncompleteCoverage = true
+        metrics.interruptedSegments += 1
+        cancelEngine()
+        customBase = customCount
+        appleBase = appleCount ?? 0
+        coveredBase = metrics.appleCoveredFrames
+        segmentCoveredFrames = 0
+        metrics.segmentAcceptedFrames = 0
+        metrics.appleSourceLagSeconds = nil
+        metrics.appleProcessingMilliseconds = nil
+        metrics.observedHistorySeconds = nil
+        counter.reset(exercise: exercise)
+        customStatus = .trackingLost
+        selectedLimb = nil
+        lastTimestamp = nil
+        appleTimestamp = nil
+        state = .reacquiring(reason)
     }
 
     private func receive(_ event: StationAppleCounterEvent, generation: UUID) {
@@ -199,8 +269,8 @@ final class StationComparisonModel: ObservableObject {
         switch event {
         case .estimate(let estimate):
             guard estimate.cumulativeCount.isFinite, estimate.cumulativeCount >= 0,
-                  estimate.throughFrame > metrics.appleCoveredFrames,
-                  estimate.throughFrame <= metrics.acceptedFrames,
+                  estimate.throughFrame > segmentCoveredFrames,
+                  estimate.throughFrame <= metrics.segmentAcceptedFrames,
                   estimate.throughTimestamp.isFinite,
                   let lastTimestamp, estimate.throughTimestamp <= lastTimestamp,
                   estimate.windowDuration.isFinite, estimate.windowDuration >= 0,
@@ -208,9 +278,10 @@ final class StationComparisonModel: ObservableObject {
                 fail("Apple returned an invalid estimate. Start a new trial.")
                 return
             }
-            appleCount = estimate.cumulativeCount
+            appleCount = appleBase + estimate.cumulativeCount
             appleTimestamp = estimate.throughTimestamp
-            metrics.appleCoveredFrames = estimate.throughFrame
+            segmentCoveredFrames = estimate.throughFrame
+            metrics.appleCoveredFrames = coveredBase + estimate.throughFrame
             metrics.observedHistorySeconds = estimate.windowDuration
             metrics.appleProcessingMilliseconds = estimate.processingMilliseconds
             metrics.appleSourceLagSeconds = max(0, lastTimestamp - estimate.throughTimestamp)
@@ -223,7 +294,9 @@ final class StationComparisonModel: ObservableObject {
             finishTimeout?.cancel()
             finishTimeout = nil
             engine = nil
-            if metrics.acceptedFrames < metrics.windowFrames {
+            if hasIncompleteCoverage {
+                state = .incomplete("Tracking restarted during this trial. Counts cover only the observed segments.")
+            } else if metrics.segmentAcceptedFrames < metrics.windowFrames {
                 state = .incomplete("Apple needs at least 90 clear poses before its first estimate.")
             } else if metrics.pendingFrames > 0 {
                 state = .incomplete("Apple did not cover the last \(metrics.pendingFrames) poses; shown estimates are partial.")
@@ -235,13 +308,28 @@ final class StationComparisonModel: ObservableObject {
         }
     }
 
-    private func fail(_ message: String) {
+    private func cancelEngine() {
         generation = UUID()
         finishTimeout?.cancel()
         finishTimeout = nil
         engine?.cancel()
         engine = nil
+    }
+
+    private func fail(_ message: String) {
+        hasIncompleteCoverage = true
+        cancelEngine()
         state = .failed(message)
+    }
+
+    private func clearCandidate() {
+        candidateLimb = nil
+        candidateSince = nil
+        candidateLastTimestamp = nil
+    }
+
+    private var requiredJoints: String {
+        exercise == .squat ? "hip, knee and ankle" : "shoulder, elbow and wrist"
     }
 
     private func usableLimb(in sample: StationPoseSample) -> [(StationJoint, JointKey)]? {
@@ -263,8 +351,6 @@ final class StationComparisonModel: ObservableObject {
     }
 
     private static func hasUsableJoints(_ sample: StationPoseSample, limb: [(StationJoint, JointKey)]) -> Bool {
-        // Apple's documented JointsSelector supports a subset. Both counters use
-        // the same visible limb throughout the trial; far-side occlusion is fine.
         limb.allSatisfy { joint, _ in
             guard let point = sample.joints[joint] else { return false }
             return point.x.isFinite && point.y.isFinite && point.confidence.isFinite

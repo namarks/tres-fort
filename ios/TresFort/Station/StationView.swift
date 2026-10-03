@@ -143,6 +143,7 @@ struct StationView: View {
                 Color.black
                 if camera.state == .running {
                     StationCameraPreview(session: camera.session)
+                        .overlay { StationPoseOverlay(frame: camera.latestFrame) }
                 } else {
                     VStack(spacing: 14) {
                         Image(systemName: "viewfinder")
@@ -165,6 +166,18 @@ struct StationView: View {
             .clipShape(RoundedRectangle(cornerRadius: 20))
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Camera setup")
+
+            if camera.state == .running {
+                Text(camera.framingDescription)
+                    .font(.subheadline.bold()).foregroundStyle(Theme.text)
+                    .accessibilityIdentifier("station.framing")
+                Text(StationPoseFeedback(sample: camera.latestPose, exercise: exercise).message)
+                    .font(.headline).foregroundStyle(Theme.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("station.poseFeedback")
+                Text("Green joints are clear. Orange joints need a better view.")
+                    .font(.caption).foregroundStyle(Theme.muted)
+            }
 
             Text(exercise.guidance)
                 .font(.body).foregroundStyle(Theme.text)
@@ -219,6 +232,19 @@ struct StationView: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("station.tracking")
+            if comparison.state.isCollecting {
+                Text(comparison.readinessMessage)
+                    .font(.subheadline).foregroundStyle(Theme.text)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("station.readiness")
+            }
+            if comparison.hasIncompleteCoverage {
+                Text("Tracking was interrupted. These counts cover only the movements we could see.")
+                    .font(.subheadline).foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("station.partialCoverage")
+            }
             if comparison.state == .warmingUp {
                 ProgressView(value: Double(comparison.metrics.windowProgress),
                              total: Double(comparison.metrics.windowFrames))
@@ -257,7 +283,7 @@ struct StationView: View {
 
     @ViewBuilder private var countTiles: some View {
         countTile(title: "Custom", value: String(comparison.customCount),
-                  detail: "Complete movement cycles", identifier: "station.repCount",
+                  detail: comparison.state.isCollecting ? comparison.customStatus.message : "Complete movement cycles", identifier: "station.repCount",
                   spokenValue: "Custom counter: \(comparison.customCount) reps")
         countTile(title: "Apple estimate", value: comparison.appleCount.map { String(format: "%.1f", $0) } ?? "—",
                   detail: "May update later", identifier: "station.appleCount",

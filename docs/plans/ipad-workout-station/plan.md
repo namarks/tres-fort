@@ -22,9 +22,10 @@ may turn detections into durable workout actions.
   - Bound queued work, fence late results by trial identity and make incomplete
     coverage or inference failure visible. Stop and reset both together.
   - Keep trials isolated from SyncModel writes, outboxes, rest and progression.
-  - Stop/invalidate tracking across missing joints, additional people, camera
-    interruption, rotation, backgrounding and view exit. Never infer completion
-    from target reps or lost tracking.
+  - Reset both counters' movement history after missing joints or a pose gap;
+    reacquire a stable view and keep the whole trial visibly partial. Additional
+    people, camera interruption, rotation, backgrounding and view exit require
+    an explicit restart. Never infer completion from target reps or lost tracking.
   - Verify deterministic counting/loss scenarios, iPad navigation/layout and
     iPhone regressions; complete exact-head review and repository checks.
 - [ ] **P1 — Compare existing counters and validate the mounted iPad**
@@ -52,19 +53,19 @@ may turn detections into durable workout actions.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P1 | gated_by | external:owner-ipad-station-device-build | Internal build 45 is verified available to Testers; physical evaluation still requires owner participation. |
+| P1 | gated_by | external:owner-ipad-station-device-build | Owner began physical testing of internal build 45; prepare and verify a corrective internal build before continuing the comparison. |
 | P2 | gated_by | external:owner-ipad-station-write-contract | Confirm the supported movements, correction UX and multi-device controller policy before enabling workout writes. |
 | P3 | gated_by | external:owner-ipad-station-automation-criteria | Automation needs explicit measured quality criteria and activation authority. |
 
 ## Next step
 
-**Now (@agent):** Complete P0 repository delivery after all configured CI and
-review of the current PR head pass. Internal TestFlight build 1.0 (45) is
-verified available to Testers; that upload does not satisfy repository merge
-gates. P1 physical evaluation remains behind
-`external:owner-ipad-station-device-build` until the owner can participate; the
-build-availability portion of that gate is satisfied. Support that trial when
-the owner is ready. The later workout-write and automation gates remain in force.
+**Now (@agent):** Verify and deliver the corrective internal build for the
+owner's first physical trial findings: repeated setup after fresh-device sign-in,
+narrow framing, and neither counter producing useful tracking. Recheck wider
+framing, visible joints and sustained counting on the actual A16 iPad. Complete
+P0 repository delivery only after configured CI and exact-head review pass;
+an internal TestFlight upload does not satisfy merge gates. The later
+workout-write and automation gates remain in force.
 
 ## Approved comparison scope
 
@@ -111,6 +112,36 @@ the owner is ready. The later workout-write and automation gates remain in force
   `2026-10-03T21:18:16.656Z`, Apple confirmed VALID / IN_BETA_TESTING and internal
   Testers assignment; see the [build receipt](../app-store-submission/release-45.md).
   No physical camera accuracy is established yet.
+- The owner installed build 45 and reported repeated new-member setup after
+  using the same Apple account, insufficient full-body framing and no useful
+  tracking from either counter. The lack of a skeleton was expected in that
+  build; it did not distinguish failed pose detection from failed counting.
+- The corrective client slice reads existing server training before offering
+  setup on a fresh installation, retains unfinished local setup receipts and
+  shows retry after a failed read. This does not create or merge server accounts.
+- Camera selection now prefers front Ultra Wide, chooses bounded video formats
+  by reported vertical coverage, disables dynamic cropping during capture and
+  restores the prior Center Stage setting on exit. A joint overlay and explicit
+  visibility guidance expose the shared pose input to the tester.
+- Brief tracking loss now fences the old engine and starts a fresh stable
+  segment for both counters. Reported earlier counts remain partial; no cycle
+  or Apple window can span missing movement. A16 format availability, overlay
+  alignment, sustained inference and actual count accuracy still need a device trial.
+- A sustained native-model probe reproduced a framework trap on the second
+  overlapping window: our adapter used capture-time ticks where Apple's
+  `SlidingWindowTransformer` emits pose-index ranges. The adapter now uses
+  those index ranges and keeps actual capture timestamps separately for measured
+  rate, history and lag. The prior one-window smoke could not expose this bug.
+- The corrected production engine completed a native 180-pose probe with 19
+  estimates and no admission failures. Synthetic zero-count input proves
+  sustained API execution, not counting accuracy or A16 performance. Evidence:
+  `.artifacts/station-recovery-smoke/result-fixed-production.json`.
+- Three fresh-iPad sign-in journeys pass, including existing-training restore,
+  failed-read retry and confirmed-empty setup. Results:
+  `.artifacts/ios/tres-fort-ios.RD8r7z/Tests.xcresult`. Wider-format selection,
+  overlay projection, segmented recovery and the three Station interface
+  journeys also passed in the initial focused iPad run; full iPhone activation
+  and the new real Apple multi-window iPad regression are still being verified.
 
 ## Acceptance and verification
 
@@ -125,6 +156,9 @@ the owner is ready. The later workout-write and automation gates remain in force
   tracking loss or engine failure leaves the trial visibly incomplete. No
   synthetic poses fill the tail and no missing estimate is presented as zero.
 - Low-confidence joints, multiple people and camera gaps cannot bridge a rep.
+- Missing joints and camera gaps reacquire with fresh cycle/window state after
+  a stable pose. The trial remains incomplete even after counting resumes;
+  multiple people still require an explicit new comparison.
 - Rotation invalidates the current trial; returning to the foreground requires
   explicit camera/trial restart. Exiting releases camera and idle-timer policy.
 - All station controls remain reachable at accessibility sizes and in portrait.

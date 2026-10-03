@@ -5,6 +5,57 @@ import Foundation
 import ImageIO
 import Vision
 
+/// Prefer usable video formats with the most vertical coverage. A 16:9 preset
+/// can discard the top and bottom of a 4:3 sensor before Vision sees the frame.
+/// Bound resolution so a full-resolution photo format cannot stall pose input.
+enum StationCameraConfiguration {
+    enum ConfigurationError: Error { case noUsableVideoFormat }
+
+    struct Format {
+        let index: Int
+        let width: Int
+        let height: Int
+        let horizontalFieldOfView: Double
+        let frameRate: Int32
+
+        private var hasKnownFieldOfView: Bool {
+            horizontalFieldOfView.isFinite && horizontalFieldOfView > 0 && horizontalFieldOfView < 180
+        }
+
+        private var verticalCoverage: Int {
+            guard hasKnownFieldOfView else {
+                // Unknown FOV: prefer a taller video aspect ratio.
+                return Int((Double(height) / Double(width)) * 100)
+            }
+            let radians = horizontalFieldOfView * .pi / 180
+            return Int((2 * atan(tan(radians / 2) * Double(height) / Double(width)) * 180 / .pi) * 2)
+        }
+
+        fileprivate var preference: [Int] {
+            [width >= 960 && height >= 720 ? 1 : 0,
+             hasKnownFieldOfView ? 1 : 0,
+             verticalCoverage,
+             -abs(width * height - 1280 * 960),
+             Int(frameRate)]
+        }
+    }
+
+    static func preferredFormat(in formats: [Format]) -> Format? {
+        formats.filter {
+            $0.width >= 640 && $0.height >= 480
+                && $0.width <= 1920 && $0.height <= 1440
+                && ($0.frameRate == 30 || $0.frameRate == 15)
+        }.max { $0.preference.lexicographicallyPrecedes($1.preference) }
+    }
+
+    static func frontCamera() -> AVCaptureDevice? {
+        // On Center Stage iPads, the Wide device is a cropped virtual view of
+        // the physical Ultra Wide camera. Ask for the physical view first.
+        AVCaptureDevice.default(.builtInUltraWideCamera, for: .video, position: .front)
+            ?? AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front)
+    }
+}
+
 enum StationCameraState: Equatable {
     case idle
     case requestingPermission
@@ -34,6 +85,7 @@ final class StationCamera: ObservableObject {
     @Published private(set) var state: StationCameraState = .idle
     @Published private(set) var latestPose: StationPoseSample?
     @Published private(set) var latestFrame: StationComparisonFrame?
+    @Published private(set) var framingDescription = "Front camera"
 
     private let capture: StationCaptureWorker
     private var run: StationCaptureRun?
@@ -52,7 +104,7 @@ final class StationCamera: ObservableObject {
         guard run == nil else { return }
         // Device discovery does not open the camera or require permission. Avoid
         // presenting a permission prompt when there is no usable camera (Simulator).
-        guard AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) != nil else {
+        guard StationCameraConfiguration.frontCamera() != nil else {
             latestPose = nil
             latestFrame = nil
             state = .unavailable
@@ -103,8 +155,9 @@ final class StationCamera: ObservableObject {
                 guard run.isActive else { return }
                 self.observeRotation(device: device, run: run)
                 self.capture.start(run: run, orientation: self.imageOrientation, revision: run.orientationRevision)
-            case .running:
+            case .running(let framingDescription):
                 guard run.isActive else { return }
+                self.framingDescription = framingDescription
                 self.state = .running
             case .pose(let frame, let revision):
                 guard run.isActive, run.orientationRevision == revision, self.state == .running else { return }
@@ -209,7 +262,7 @@ private final class StationCaptureRun: @unchecked Sendable {
 
 private enum StationCaptureEvent {
     case prepared(AVCaptureDevice)
-    case running
+    case running(String)
     case pose(StationComparisonFrame, revision: UInt64)
     case ended(StationCameraState)
 }
@@ -227,6 +280,7 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
     private var orientation: CGImagePropertyOrientation = .up
     private var orientationRevision: UInt64 = 0
     private var lastFrameTime: TimeInterval?
+    private var previousCenterStage: (mode: AVCaptureDevice.CenterStageControlMode, enabled: Bool)?
 
     init(session: AVCaptureSession) {
         self.session = session
@@ -246,6 +300,8 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
                 }
                 guard run.isActive else { stopOnQueue(); return }
                 emit(.prepared(device), run: run)
+            } catch StationCameraConfiguration.ConfigurationError.noUsableVideoFormat {
+                end(.failed("This front camera does not have a supported tracking format."), run: run)
             } catch {
                 end(.failed("The camera could not start. Try again."), run: run)
             }
@@ -268,7 +324,9 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
                 end(.failed("The camera could not start. Try again."), run: run)
                 return
             }
-            emit(.running, run: run)
+            let description = device?.deviceType == .builtInUltraWideCamera
+                ? "Wide view · front camera" : "Front camera"
+            emit(.running(description), run: run)
         }
     }
 
@@ -286,24 +344,65 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
     }
 
     private func configure() throws -> AVCaptureDevice? {
-        if let device { return device }
-        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) else {
+        guard let device = device ?? StationCameraConfiguration.frontCamera() else {
             return nil
         }
-        let input = try AVCaptureDeviceInput(device: device)
+        // Center Stage changes the crop while someone moves. Pose comparison
+        // requires one fixed coordinate system; restore the app's prior setting
+        // when this capture ends instead of leaving a global preference changed.
+        previousCenterStage = (AVCaptureDevice.centerStageControlMode, AVCaptureDevice.isCenterStageEnabled)
+        AVCaptureDevice.centerStageControlMode = .app
+        AVCaptureDevice.isCenterStageEnabled = false
         session.beginConfiguration()
         defer { session.commitConfiguration() }
-        if session.canSetSessionPreset(.hd1280x720) { session.sessionPreset = .hd1280x720 }
-        guard session.canAddInput(input) else { return nil }
-        session.addInput(input)
-        guard session.canAddOutput(output) else {
-            session.removeInput(input)
-            return nil
+        if self.device == nil {
+            let input = try AVCaptureDeviceInput(device: device)
+            guard session.canAddInput(input) else { return nil }
+            session.addInput(input)
+            guard session.canAddOutput(output) else {
+                session.removeInput(input)
+                return nil
+            }
+            output.alwaysDiscardsLateVideoFrames = true
+            output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
+            session.addOutput(output)
+            // Retain this completed wiring even if configuration locking fails;
+            // the next start must reuse it instead of adding duplicate inputs.
+            self.device = device
         }
-        output.alwaysDiscardsLateVideoFrames = true
-        output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
-        session.addOutput(output)
+        // Apply presets before activeFormat; a later preset can replace the
+        // format we selected for full-body coverage.
+        if session.canSetSessionPreset(.inputPriority) { session.sessionPreset = .inputPriority }
+        try device.lockForConfiguration()
+        defer { device.unlockForConfiguration() }
+        if device.isGeometricDistortionCorrectionSupported {
+            // Correct the ultra-wide lens for meaningful joint angles. This
+            // trades a small amount of edge coverage for straighter geometry.
+            device.isGeometricDistortionCorrectionEnabled = true
+        }
+        let formats = device.formats.enumerated().compactMap { index, format -> StationCameraConfiguration.Format? in
+            let ranges = format.videoSupportedFrameRateRanges
+            let rate: Int32
+            if ranges.contains(where: { $0.minFrameRate <= 30 && $0.maxFrameRate >= 30 }) { rate = 30 }
+            else if ranges.contains(where: { $0.minFrameRate <= 15 && $0.maxFrameRate >= 15 }) { rate = 15 }
+            else { return nil }
+            let dimensions = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
+            return StationCameraConfiguration.Format(
+                index: index, width: Int(dimensions.width), height: Int(dimensions.height),
+                horizontalFieldOfView: Double(device.isGeometricDistortionCorrectionEnabled
+                    ? format.geometricDistortionCorrectedVideoFieldOfView : format.videoFieldOfView),
+                frameRate: rate)
+        }
+        guard let format = StationCameraConfiguration.preferredFormat(in: formats) else {
+            throw StationCameraConfiguration.ConfigurationError.noUsableVideoFormat
+        }
+        device.activeFormat = device.formats[format.index]
+        device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: format.frameRate)
+        device.activeVideoMaxFrameDuration = CMTime(value: 1, timescale: format.frameRate)
+        device.videoZoomFactor = min(device.maxAvailableVideoZoomFactor,
+                                     max(1, device.minAvailableVideoZoomFactor))
         if let connection = output.connection(with: .video) {
+            if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = .off }
             // Newer landscape-camera iPads default to a 180-degree data-output
             // rotation. Force native pixels so the coordinator angle is applied once.
             if connection.isVideoRotationAngleSupported(0) { connection.videoRotationAngle = 0 }
@@ -348,6 +447,12 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
         observers.removeAll()
         output.setSampleBufferDelegate(nil, queue: nil)
         if session.isRunning { session.stopRunning() }
+        if let previousCenterStage {
+            AVCaptureDevice.centerStageControlMode = .app
+            AVCaptureDevice.isCenterStageEnabled = previousCenterStage.enabled
+            AVCaptureDevice.centerStageControlMode = previousCenterStage.mode
+            self.previousCenterStage = nil
+        }
         lastFrameTime = nil
     }
 
@@ -379,16 +484,16 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
                 let observations = request.results ?? []
                 var joints: [StationJoint: StationJointPoint] = [:]
                 var applePose: Pose?
+                let width = Double(CVPixelBufferGetWidth(pixelBuffer))
+                let height = Double(CVPixelBufferGetHeight(pixelBuffer))
+                let swapsAxes = orientation == .left || orientation == .right
+                let uprightAspect = swapsAxes ? height / width : width / height
                 // Never silently choose one person from a crowded frame.
                 if observations.count == 1, let observation = observations.first {
                     // Preserve the complete original normalized observation for
                     // Apple's model before adapting coordinates for angle math.
                     applePose = try Pose(observation)
                     let points = try observation.recognizedPoints(.all)
-                    let width = Double(CVPixelBufferGetWidth(pixelBuffer))
-                    let height = Double(CVPixelBufferGetHeight(pixelBuffer))
-                    let swapsAxes = orientation == .left || orientation == .right
-                    let uprightAspect = swapsAxes ? height / width : width / height
                     for (joint, name) in Self.jointNames {
                         guard let point = points[name], point.x.isFinite, point.y.isFinite else { continue }
                         // Upright, unmirrored, bottom-left origin. Both axes use image
@@ -400,7 +505,8 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
                 }
                 let sample = StationPoseSample(timestamp: timestamp, joints: joints, personCount: observations.count)
                 let frame = StationComparisonFrame(sample: sample, applePose: applePose,
-                                                   visionMilliseconds: visionMilliseconds)
+                                                   visionMilliseconds: visionMilliseconds,
+                                                   imageAspectRatio: uprightAspect)
                 emit(.pose(frame, revision: frameRevision), run: run)
             } catch {
                 end(.failed("Movement tracking stopped. Start again to retry."), run: run)

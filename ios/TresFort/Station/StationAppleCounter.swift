@@ -39,6 +39,15 @@ struct StationAppleWindow: Sendable {
     let firstTimestamp: TimeInterval
     let lastTimestamp: TimeInterval
     let throughFrame: Int
+
+    /// Match SlidingWindowTransformer: range values are pose indices, even
+    /// when upstream timestamps use finer ticks. The model uses index overlap.
+    /// This nominal sampling clock is not a capture-rate or latency measurement.
+    func identifier(source: String) -> TemporalSegmentIdentifier {
+        TemporalSegmentIdentifier(source: source,
+                                  range: (throughFrame - StationAppleWindowBuilder.length)..<throughFrame,
+                                  timescale: 15)
+    }
 }
 
 /// Apple's sample uses 90 poses and a stride of five. An unfinished tail is
@@ -81,7 +90,6 @@ final class StationAppleCounter: StationAppleCountingEngine {
     private var builder = StationAppleWindowBuilder()
     private var pending: [TemporalSegmentIdentifier: PendingWindow] = [:]
     private var accepting = false
-    private var firstTimestamp: TimeInterval?
 
     func start(onEvent: @escaping @MainActor (StationAppleCounterEvent) -> Void) {
         cancel()
@@ -120,22 +128,16 @@ final class StationAppleCounter: StationAppleCountingEngine {
 
     func append(_ input: StationAppleInput) -> Bool {
         guard accepting, let continuation else { return false }
-        firstTimestamp = firstTimestamp ?? input.timestamp
         // Match the official sample's body-joint selection, after the original
         // Vision observation has been converted to Pose in the capture worker.
         let selected = JointsSelector(ignoredJoints: [.nose, .leftEye, .leftEar, .rightEye, .rightEar])
             .applied(to: input.pose)
         let input = StationAppleInput(pose: selected, timestamp: input.timestamp, frameIndex: input.frameIndex)
         guard let window = builder.append(input) else { return true }
-        // Keep actual camera time in the temporal IDs. A relative epoch avoids
-        // dependence on device uptime and microseconds distinguish captured frames.
-        let origin = firstTimestamp ?? window.firstTimestamp
-        let lower = (window.firstTimestamp - origin) * 1_000_000
-        let upper = (window.lastTimestamp - origin) * 1_000_000
-        guard lower.isFinite, upper.isFinite, lower >= 0, upper >= lower,
-              upper < Double(Int.max - 1) else { return false }
-        let id = TemporalSegmentIdentifier(source: generation.uuidString,
-                                           range: Int(lower)..<(Int(upper) + 1), timescale: 1_000_000)
+        // Capture timestamps stay on the window for measured history/lag. The
+        // counter requires the same frame-index ranges as Apple's transformer;
+        // microsecond ranges trap inside it on the second overlapping window.
+        let id = window.identifier(source: generation.uuidString)
         pending[id] = PendingWindow(window: window)
         switch continuation.yield(TemporalFeature(id: id, feature: window.poses)) {
         case .enqueued:
@@ -165,7 +167,6 @@ final class StationAppleCounter: StationAppleCountingEngine {
         handler = nil
         pending.removeAll()
         builder = StationAppleWindowBuilder()
-        firstTimestamp = nil
     }
 
     private func markStarted(_ id: TemporalSegmentIdentifier, at time: TimeInterval, generation: UUID) {

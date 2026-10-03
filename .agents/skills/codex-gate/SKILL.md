@@ -61,11 +61,17 @@ gh api "repos/namarks/tres-fort/pulls/$PR/reviews" \
   --jq '.[]|select(.user.login|startswith("chatgpt-codex-connector"))|{commit_id,state,submitted_at}'
 ```
 
-Decide, where "summary Commit" is the short SHA in the summary table:
+Codex threads carry `is_resolved` (MCP `get_review_comments`; with `gh`, query
+`reviewThreads { isResolved }` through `gh api graphql`).
 
-- **Clean:** `HEAD` starts with the summary Commit, Status is Completed, and no
-  Codex review has `commit_id == HEAD`.
-- **Findings:** a Codex review has `commit_id == HEAD`. Go to step 3.
+Decide, where "summary Commit" is the short SHA in the summary table and "the
+latest request" is the last `@codex review` comment, or the PR opening:
+
+- **Findings:** a Codex review with `commit_id == HEAD` was submitted after the
+  latest request, or a Codex review thread is unresolved. Go to step 3.
+- **Clean:** `HEAD` starts with the summary Commit, Status is Completed, and
+  there are no findings. An earlier review of the same commit whose threads
+  were answered and resolved does not block a later clean review.
 - **Reviewing:** Status is Running for `HEAD`, or Codex reacted 👀. Wait.
 - **Not reviewed:** the summary Commit is not `HEAD`. Codex does not review a
   push on its own: comment `@codex review` once and wait.
@@ -76,7 +82,8 @@ Decide, where "summary Commit" is the short SHA in the summary table:
 ## 3. Address findings, then re-request review
 
 1. Verify each finding against the code and tests; Codex can be wrong. Fix what
-   is real. Where it is not, reply on the thread with the evidence.
+   is real. Where it is not, reply on the thread with the evidence and resolve
+   it, then request a review again: no push is needed, so `HEAD` stays the same.
 2. Before pushing, run the checks a contributor runs for the change:
    `npm run typecheck` and `npm test` (backend), `npm run plans:check` (plans,
    initiatives, adapters), and the Python checks in `test/` for CI scripts.

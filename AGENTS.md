@@ -22,6 +22,14 @@ dependencies, execution frontier, and next step. Run the shared
 `planning-conventions` compiler's `check` command after changing a plan,
 initiative, index, or adapter.
 
+## Pull requests
+
+Repository skills live in `.agents/skills` (`.claude/skills` links there).
+Drive a PR with `codex-gate`: Codex must review the exact head commit, after
+every fix push too (`@codex review`), and `plan graph`, `typecheck + tests` and
+`iOS build + tests` must be green on that commit. Agents stop at ready to
+merge; Nick merges.
+
 ## Commands
 
 Backend (repo root):

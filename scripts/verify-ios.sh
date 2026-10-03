@@ -61,7 +61,8 @@ if [[ "$ui_suite" == smoke ]]; then
     test_args+=("-only-testing:TresFortUITests/GroupSafetyJourneyTests/testReportFallbackBlockAndUnblock")
   fi
 elif [[ -n "$ci_shard" ]]; then
-  # Keep full-suite jobs below the 30-minute budget, including a cold build.
+  # Keep full-suite jobs near 30 minutes, including a cold build. The CI
+  # limit for full runs is 40 minutes only as headroom for slow runners.
   # Shard 1 runs units and the complement, so new classes stay covered. The
   # partition test checks all selectors against real suites without overlap.
   full_second=(TrainingJourneyTests WorkoutFeedbackJourneyTests)

@@ -67,12 +67,16 @@ runner timings (including cold build time):
 
 The partitions are disjoint and cover every suite; newly added classes remain
 in shard 1 automatically. The partition contract rejects missing or overlapping
-selectors. Monitor full-run duration as journeys grow and rebalance before a
-shard approaches the 30-minute limit. The September 24 baseline had 124 UI
-methods: two of the previous three partitions still had unrun tests at timeout.
+selectors. Monitor full-run duration as journeys grow, and rebalance or add a
+shard before a shard's typical run approaches 30 minutes. The September 24
+baseline had 124 UI methods: two of the previous three partitions still had
+unrun tests at timeout.
 An October 3 audit of the three largest suites folded six duplicated methods
 into the tests that already covered their assertions, leaving 118.
-Both modes retain the 30-minute job limit and existing assertions/element waits.
+Smoke jobs keep a 30-minute limit. Full jobs allow 40 minutes: on October 3,
+slow hosted runners took shard 3 to 29 minutes, 8 of them building. The extra
+time is headroom for slow runners, not room for more tests. Existing
+assertions and element waits are unchanged.
 Sharding or smoke mode cannot be combined with `--only-testing`. Without these
 arguments the command still runs the full suite locally.
 

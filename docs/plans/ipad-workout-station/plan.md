@@ -62,8 +62,17 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Complete P0 review and repository checks, addressing the camera
-request-reuse finding and preserving the verified diagnostic setup below.
+**Now (@owner):** Tracking work is paused at the owner's request (2026-10-03).
+Resume when the owner returns; no further physical trial or unattended tracking
+is requested.
+**On resumption (@agent):** Continue P0 delivery from local merge commit
+`b37c648e283c91c3eba8bd1fe5388bfd830b077b`: the Vision request-reuse fix and
+main-branch conflict resolution are committed locally but not pushed. Exact-head
+local review is clean; 17 unit and six iPad UI checks passed, and the signed
+Debug device build passed. That latest build has not been installed. The iPad
+has the earlier diagnostic-display update from `3c72d305150b694315887690838be0ef9f64ec10`.
+Refresh remote review/CI, push the reviewed fixes after checking branch state,
+answer/resolve the addressed review threads and request exact-head review.
 **Next physical trial (@owner):** Participate in a controlled pose-reliability
 comparison before tuning frontal rep counting; P1 cannot run unattended.
 The Debug build is signed, verified, installed in place and launched with its
@@ -231,6 +240,15 @@ workout-write and automation gates remain in force.
   still unvalidated. See `diagnostic-display-tests.log`,
   `diagnostic-display-build.log` and `diagnostic-display-install.json` under
   `.artifacts/station-device/`.
+- Review follow-up reuses one Vision request on the serial capture queue;
+  no accuracy or measured performance gain is claimed. Main was merged while
+  preserving both Station request evidence and the deterministic fixture clock.
+  Exact local head `b37c648e283c91c3eba8bd1fe5388bfd830b077b` passed independent
+  review, signed Debug compilation and 17 unit plus six iPad UI tests (Station
+  navigation and fresh-device restoration/retry/empty-account journeys).
+  Evidence: `.artifacts/ios/tres-fort-ios.SWgBMN/Tests.xcresult` and
+  `.artifacts/station-device/post-merge-device-build.log`. Work paused before
+  pushing these follow-ups or installing that latest device build.
 
 ## Acceptance and verification
 

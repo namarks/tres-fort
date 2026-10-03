@@ -69,6 +69,10 @@ struct CalendarMonthView: View {
     /// A month the prev/next arrows moved to; nil shows the current month.
     /// The in-calendar "Today" button clears it.
     @State private var pinnedMonth: Date?
+    /// The model's day as of the last "Today" tap; nil follows the model's
+    /// clock. A tap after a date rollover changes it, so the new month and
+    /// today's cell render even when no other observed state changed.
+    @State private var todayTapped: String?
     @State private var selectedDate: String?      // YYYY-MM-DD → agenda sheet
     /// Drives the morph: false → full month grid header; true → condensed
     /// contribution-heatmap "hub". Flipped by the feed's scroll offset.
@@ -80,7 +84,9 @@ struct CalendarMonthView: View {
     /// First day of the displayed month. The current month comes from the
     /// model's clock, the same one that marks today's cell, never a separate
     /// `Date()`.
-    private var monthAnchor: Date { pinnedMonth ?? Self.month(containing: sync.todayString) }
+    private var monthAnchor: Date {
+        pinnedMonth ?? Self.month(containing: todayTapped ?? sync.todayString)
+    }
 
     static func month(containing ymd: String) -> Date {
         let cal = CalendarProjection.calendar
@@ -300,7 +306,9 @@ struct CalendarMonthView: View {
             // "Today" lives in the calendar itself now (not the nav bar), so
             // the toolbar can stay a single centered segmented control with no
             // shifting/blank trailing slot.
-            Button { withAnimation { pinnedMonth = nil } } label: {
+            Button {
+                withAnimation { pinnedMonth = nil; todayTapped = sync.todayString }
+            } label: {
                 Text("TODAY")
                     .font(Theme.mono(12, .bold))
                     .foregroundStyle(Theme.accent)

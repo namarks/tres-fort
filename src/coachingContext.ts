@@ -8,6 +8,8 @@ export type CoachingSession = {
   id: string; date: string; status: string; notes?: string | null; perceived_fatigue?: number | null;
 };
 
+const setUnit = (unit: string) => unit === 'kg' ? 'kg' : 'lb';
+
 /** Presentation only. Raw logs remain authoritative; no effort or body mass is inferred. */
 export function coachingSession(session: CoachingSession, sets: CoachingSet[], catalog: CoachingExercise[]) {
   const live = sets.filter(s => s.session_id === session.id && !s.is_warmup && s.deleted_at == null)
@@ -34,7 +36,11 @@ export function coachingSession(session: CoachingSession, sets: CoachingSet[], c
     const ex = exercises.get(s.exercise_id);
     const timed = s.is_timed === 1;
     const signed = ex?.modality === 'bw' || ex?.modality === 'timed';
-    const unit = ex?.modality === 'cardio' ? null : ex?.unit === 'sec' ? 'lb' : ex?.unit ?? null;
+    // A set's own weight_unit decides its load unit (labels and volume
+    // buckets); rows without one keep the catalog-derived unit. Mirrors iOS.
+    const unit = ex?.modality === 'cardio' ? null
+      : s.weight_unit != null ? setUnit(s.weight_unit)
+      : ex?.unit === 'sec' ? 'lb' : ex?.unit ?? null;
     const load = ex?.modality === 'cardio' ? null : s.weight;
     const condition = load == null ? 'unavailable' : !ex ? 'unknown'
       : signed ? load < 0 ? 'assistance' : load > 0 ? 'added' : 'bodyweight' : 'external';
@@ -58,8 +64,10 @@ export function coachingSession(session: CoachingSession, sets: CoachingSet[], c
     if (!ex || ex.modality === 'cardio' || ex.unit === 'sec') continue;
     const value = positiveSetTonnage(s, ex);
     if (value == null) continue;
-    const old = volumes.get(ex.unit) ?? { value: 0, sets: 0 };
-    volumes.set(ex.unit, { value: old.value + value, sets: old.sets + 1 });
+    // lb and kg volume stay in separate buckets, never summed.
+    const unit = s.weight_unit == null ? ex.unit : setUnit(s.weight_unit);
+    const old = volumes.get(unit) ?? { value: 0, sets: 0 };
+    volumes.set(unit, { value: old.value + value, sets: old.sets + 1 });
   }
   return {
     id: session.id, date: session.date, status: session.status, kind: session.kind ?? 'planned',

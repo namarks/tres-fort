@@ -52,18 +52,19 @@ may turn detections into durable workout actions.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P1 | gated_by | external:owner-ipad-station-device-build | The internal comparison build is owner-authorized; physical evaluation still requires a verified available build and owner participation. |
+| P1 | gated_by | external:owner-ipad-station-device-build | Internal build 45 is verified available to Testers; physical evaluation still requires owner participation. |
 | P2 | gated_by | external:owner-ipad-station-write-contract | Confirm the supported movements, correction UX and multi-device controller policy before enabling workout writes. |
 | P3 | gated_by | external:owner-ipad-station-automation-criteria | Automation needs explicit measured quality criteria and activation authority. |
 
 ## Next step
 
-**Now (@agent):** Complete exact-head repository checks/review for the implemented
-P0 custom-versus-Apple comparison and prepare the owner-authorized internal
-device-test build. P1 physical evaluation
-remains behind `external:owner-ipad-station-device-build` until that build is
-verified available and the owner can participate. The later workout-write and
-automation gates remain in force.
+**Now (@agent):** Complete P0 repository delivery after all configured CI and
+review of the current PR head pass. Internal TestFlight build 1.0 (45) is
+verified available to Testers; that upload does not satisfy repository merge
+gates. P1 physical evaluation remains behind
+`external:owner-ipad-station-device-build` until the owner can participate; the
+build-availability portion of that gate is satisfied. Support that trial when
+the owner is ready. The later workout-write and automation gates remain in force.
 
 ## Approved comparison scope
 
@@ -72,6 +73,9 @@ automation gates remain in force.
 - This authorizes comparison implementation and the internal device-test build.
   It does not authorize public App Store release, backend deployment, workout
   logging, automatic progression or video storage/upload.
+- The owner subsequently requested TestFlight upload while the Mac checks were
+  queued. The independently reviewed source was uploaded as an internal branch
+  build; repository merge still requires its configured checks and review.
 - MediaPipe remains a later candidate, not an included dependency.
 
 ## Implementation evidence
@@ -97,8 +101,16 @@ automation gates remain in force.
   populated-pose parity coverage. The assertion uses Apple's documented zero-
   masking for unselected joints and requires selected coordinates/confidence to
   remain exact. Production code was unchanged after the simulator checks.
-- Exact-head GitHub review/checks and internal build availability remain
-  unverified. No physical camera accuracy is established yet.
+- All 16 comparison cases also passed on the iPad A16 simulator from exact
+  source `cfcdf87a6c663f2f4d678e09422ed424cc181ae1`. Results:
+  `.artifacts/ios/tres-fort-ios.uInGdt/Tests.xcresult`.
+- [Independent GitHub review](https://github.com/namarks/tres-fort/pull/228#issuecomment-5973527266)
+  found no major issues at that exact source. Backend/plan CI passed; seven Mac
+  jobs were queued at upload, and PR #228 remains unmerged.
+- Apple validation and upload of 1.0 (45) succeeded on 2026-10-03. At
+  `2026-10-03T21:18:16.656Z`, Apple confirmed VALID / IN_BETA_TESTING and internal
+  Testers assignment; see the [build receipt](../app-store-submission/release-45.md).
+  No physical camera accuracy is established yet.
 
 ## Acceptance and verification
 

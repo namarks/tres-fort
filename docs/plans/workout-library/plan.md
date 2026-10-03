@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: gated · Updated: 2026-09-19 · Theme: gym-floor
+Slug: workout-library · Status: active · Updated: 2026-10-03 · Theme: gym-floor
 
 ## Goal
 
@@ -306,6 +306,33 @@ No second editor, no per-session template copies, no weeks table.
       scrolling responsive and preserve text accessibility; visuals must not
       push the prescription or primary workout action out of reach.
 
+- [ ] **P0.6 — Focus the gym workflow**
+  - The October 3 design audit and owner approval activate this implementation.
+    Use the Focus direction: keep the current exercise, combined load/reps
+    entry and logging action central; retain the dark/amber visual language.
+  - [ ] **(a) Repository implementation and verification**
+    - Reserve compact rest and correction space beside the logging action.
+      Keep End rest separate when the timer expires; offer the large clock
+      explicitly. Collapse unloaded bodyweight input behind Add load/assistance.
+    - Show the current circuit round, every member and the next member's target
+      compactly. Name the single-set mutation Log set, including circuits.
+    - Consolidate exercise navigation, set review/corrections, swap, skip and
+      options into Workout outline. Browsing during an active timed set must
+      preserve its executing slot and deadline. Keep model-owned drafts,
+      signed assistance, load units and per-side/per-hand semantics intact.
+    - Hide tabs in the focused workout; offer Minimize and a clear Resume
+      workout route. Preserve timers and entries across tab navigation.
+    - Separate date selection from library management, start/continue today's
+      workout directly from Calendar, and collapse completed sets beneath
+      exercise summaries. Finish feedback remains optional.
+    - Verify compact-phone and accessibility layouts with synthetic native
+      journeys, exercise groups, timers, recovery and correction flows. Require
+      independent review and all applicable CI checks on the final PR head.
+  - [ ] **(b) Client distribution**
+    - Implementation approval does not authorize TestFlight or public release.
+      Use the existing client release workflow after explicit owner activation;
+      preserve all previously deferred physical-device and live-account checks.
+
 - [x] **P1 — Library metadata: tags and archive**
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work
@@ -426,6 +453,7 @@ No second editor, no per-session template copies, no weeks table.
 
 - P0.2(b)
 - P0.5(c)
+- P0.6(a)
 
 ## Dependencies
 
@@ -442,6 +470,7 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 | P0.3(a) | coordinates_with | plan:member-activation-and-adherence#P0 | Both use first-workout entry and the shared exercise catalog. |
 | P0.5(c) | gated_by | external:owner-sensai-followup-implementation | Preview thumbnails remain planned pending activation. |
 | P0.5 | coordinates_with | plan:member-activation-and-adherence#P3 | Preview and upcoming-session entry share Today and workout detail routes. |
+| P0.6(b) | gated_by | external:owner-workout-focus-client-release | The October 3 approval covers implementation and repository delivery; client distribution needs separate activation. |
 | P0.2(b) | gated_by | external:owner-live-workout-verification | Authenticated session-swap and workout behavior still need a connected client/device; the build-44 internal-release exception does not claim these checks passed. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
 
@@ -451,7 +480,11 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@owner):** Test the deferred authenticated workout paths on a device
+**Now (@agent):** Implement and verify the approved Focus workout workflow in
+P0.6(a), then deliver the exact reviewed head through the repository gates.
+Client distribution P0.6(b) remains separately gated.
+
+**Deferred owner verification:** Test the authenticated workout paths on a device
 using internal TestFlight 1.0 (44), including metadata, freestyle recovery/save
 and session swaps. P1/P2 backend and internal client delivery are complete under
 the explicit build-44 verification exception; do not reinstate its upload gate.

@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 
 /// One installed owner per account/feature identity. SwiftUI may recreate a
 /// MainTabView value without installing new state; defer model construction
@@ -10,6 +11,7 @@ private final class MainTabModels: ObservableObject {
     let group: GroupModel
     let health: HealthKitSyncModel
     let connectivity: SetConnectivityMonitor
+    private var syncObservation: AnyCancellable?
 
     init(auth: AuthModel, defaults: LocalPersistence, now: @escaping () -> Date,
          weightReader: (any BodyWeightReading)?) {
@@ -41,6 +43,12 @@ private final class MainTabModels: ObservableObject {
         self.group = groupModel
         self.health = health
         self.connectivity = setConnectivity
+        // The tab shell reads runner lifecycle state as well as owning its
+        // models. Forward changes so first-start, minimize and completion
+        // update its chrome immediately, without an unrelated tab interaction.
+        syncObservation = sync.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 }
 
@@ -52,6 +60,7 @@ struct MainTabView: View {
     @State private var showHealthSettings = false
     @State private var showActivitySheet = false
     @State private var selectedTab: Tab = .today
+    @State private var isWorkoutFocused = true
 
     private var sync: SyncModel { models.sync }
     private var groupModel: GroupModel { models.group }
@@ -69,12 +78,15 @@ struct MainTabView: View {
         TabView(selection: $selectedTab) {
             TodayView(sync: sync,
                       auth: auth,
-                      onLogActivity: { showActivitySheet = true })
+                      onLogActivity: { showActivitySheet = true },
+                      isWorkoutFocused: isWorkoutFocused,
+                      onMinimizeWorkout: { isWorkoutFocused = false },
+                      onResumeWorkout: resumeWorkout)
                 .tabItem {
                     Label("Today", systemImage: "figure.strengthtraining.traditional")
                 }
                 .tag(Tab.today)
-            HistoryView(sync: sync, onStartWorkout: { selectedTab = .today })
+            HistoryView(sync: sync, onStartWorkout: resumeWorkout)
                 .tabItem { Label("Calendar", systemImage: "calendar") }
                 .tag(Tab.history)
             TrainingProgressView(sync: sync, weight: health.weight,
@@ -96,6 +108,27 @@ struct MainTabView: View {
                 .tag(Tab.profile)
         }
         .tint(Theme.accent)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if sync.running && !isWorkoutFocused && selectedTab != .today {
+                Button(action: resumeWorkout) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "figure.strengthtraining.traditional")
+                        Text(sync.finished ? "Review workout" : "Resume workout").font(.headline)
+                        Spacer()
+                        Image(systemName: "arrow.up.right")
+                    }
+                    .padding(.horizontal, 20)
+                    .frame(minHeight: 52)
+                    .foregroundStyle(Theme.accent)
+                    .background(Theme.surface)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("workout.resume")
+            }
+        }
+        .onChange(of: sync.running) { _, running in
+            if running { isWorkoutFocused = true }
+        }
         .task {
             guard let initiatingUserID = auth.userID else { return }
             await auth.checkAppleCredentialState()
@@ -161,6 +194,11 @@ struct MainTabView: View {
         .modifier(MemberEntryPresentation(auth: auth, sync: sync, groupModel: groupModel,
                                           onJoined: { selectedTab = .group },
                                           onCoach: { selectedTab = .profile },
-                                          onWorkout: { selectedTab = .today }))
+                                          onWorkout: resumeWorkout))
+    }
+
+    private func resumeWorkout() {
+        isWorkoutFocused = true
+        selectedTab = .today
     }
 }

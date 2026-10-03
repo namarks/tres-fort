@@ -88,11 +88,17 @@ struct WorkoutsView: View {
     @State private var showHistory = false
 
     var body: some View {
-        NavigationStack { libraryContent }
-            .preferredColorScheme(.dark)
-            .onChange(of: availableTags) { _, tags in
-                if !tags.contains(selectedTag) { selectedTag = "" }
+        Group {
+            if let date {
+                WorkoutDatePickerView(sync: sync, date: date)
+            } else {
+                NavigationStack { libraryContent }
+                    .onChange(of: availableTags) { _, tags in
+                        if !tags.contains(selectedTag) { selectedTag = "" }
+                    }
             }
+        }
+        .preferredColorScheme(.dark)
     }
 
     private var libraryContent: some View {

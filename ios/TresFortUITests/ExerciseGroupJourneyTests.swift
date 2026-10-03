@@ -92,7 +92,8 @@ final class ExerciseGroupJourneyTests: XCTestCase {
                 XCTAssertTrue(app.descendants(matching: .any)["runner.group"].waitForExistence(timeout: 5))
                 XCTAssertTrue(app.descendants(matching: .any)["runner.group.member.group-pushup"].exists)
                 XCTAssertTrue(app.descendants(matching: .any)["runner.group.member.group-squat"].exists)
-                XCTAssertTrue(app.staticTexts["Log each exercise to advance automatically."].exists)
+                XCTAssertTrue(app.staticTexts["runner.group.next"].label.contains("Bodyweight Squat"))
+                XCTAssertTrue(app.buttons["runner.addBodyweightLoad"].isHittable)
             }
             if index >= 4 {
                 let weight = app.buttons["runner.weight"]
@@ -112,7 +113,7 @@ final class ExerciseGroupJourneyTests: XCTestCase {
                 XCTAssertEqual(weight.value as? String, index % 2 == 0 ? "20" : "15")
                 if index == 6 { screenshot("superset-second-round-retains-kilograms") }
             }
-            let log = app.buttons["LOG ROUND \(rounds[index])"]
+            let log = app.buttons["LOG SET \(rounds[index])"]
             XCTAssertTrue(log.waitForExistence(timeout: 5))
             XCTAssertTrue(log.isEnabled)
             XCTAssertTrue(app.frame.contains(log.frame))
@@ -133,7 +134,7 @@ final class ExerciseGroupJourneyTests: XCTestCase {
             } else {
                 let done = app.buttons["rest.done"]
                 XCTAssertTrue(done.waitForExistence(timeout: 5))
-                XCTAssertEqual(app.staticTexts["rest.upNext"].label,
+                XCTAssertEqual(app.staticTexts["runner.exerciseTitle"].label,
                                names[index + 1])
                 if index == 4 { screenshot("transition-rest-next-member") }
                 done.tap()

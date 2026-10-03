@@ -77,6 +77,8 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
 
     func testSwapAliasFilterInfoAndCancellationPreserveSession() {
         let app = launch("workout-swap")
+        tap(app.buttons["runner.outline"], in: app)
+        tap(app.buttons["Current exercise options"], in: app)
         tap(app.buttons["runner.swap-exercise"], in: app)
         let replacement = app.buttons["exercisePicker.exercise.synthetic-replacement"]
         XCTAssertTrue(replacement.waitForExistence(timeout: 5))
@@ -97,6 +99,7 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
                        "Replace Barbell Squat with Dumbbell Goblet Squat.")
         capture("swap-alias-selection")
         app.buttons["Cancel"].tap()
+        app.buttons["runner.outline.done"].tap()
         XCTAssertTrue(app.staticTexts["BARBELL SQUAT"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["LOG SET 2"].exists)
         XCTAssertEqual(app.staticTexts["fixture.scenario"].value as? String, "original:1;replacement:0;plan:1")
@@ -104,6 +107,8 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
 
     func testSwapEmptyResetRetainsCompatibilityAndCanConfirmAliasReplacement() {
         let app = launch("workout-swap")
+        tap(app.buttons["runner.outline"], in: app)
+        tap(app.buttons["Current exercise options"], in: app)
         tap(app.buttons["runner.swap-exercise"], in: app)
         region("Upper body", in: app)
         search("front loaded", in: app)
@@ -125,6 +130,7 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
         XCTAssertEqual(app.buttons["runner.confirm-swap"].label, "Swap for this session")
         capture("swap-filtered-confirmation")
         app.buttons["runner.confirm-swap"].tap()
+        app.buttons["runner.outline.done"].tap()
         XCTAssertTrue(app.staticTexts["DUMBBELL GOBLET SQUAT"].waitForExistence(timeout: 5))
         app.buttons["LOG SET 2"].tap()
         expectation(for: NSPredicate(format: "value == %@", "original:1;replacement:1;plan:1"),

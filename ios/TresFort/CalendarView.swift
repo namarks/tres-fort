@@ -68,7 +68,7 @@ struct CalendarMonthView: View {
 
     /// First day of the displayed month (anchored to its 1st). Self-owned now
     /// — the in-calendar "Today" button resets it; prev/next arrows shift it.
-    @State private var monthAnchor: Date = CalendarMonthView.currentMonth()
+    @State private var monthAnchor: Date
     @State private var selectedDate: String?      // YYYY-MM-DD → agenda sheet
     /// Drives the morph: false → full month grid header; true → condensed
     /// contribution-heatmap "hub". Flipped by the feed's scroll offset.
@@ -77,9 +77,18 @@ struct CalendarMonthView: View {
     private var cal: Calendar { CalendarProjection.calendar }
     private let feedSpace = "history-feed"
 
-    static func currentMonth() -> Date {
+    init(sync: SyncModel, onWeeklySchedule: (() -> Void)? = nil,
+         onStartWorkout: (() -> Void)? = nil) {
+        self.sync = sync
+        self.onWeeklySchedule = onWeeklySchedule
+        self.onStartWorkout = onStartWorkout
+        _monthAnchor = State(initialValue: Self.currentMonth(today: sync.todayString))
+    }
+
+    private static func currentMonth(today: String) -> Date {
         let cal = CalendarProjection.calendar
-        return cal.date(from: cal.dateComponents([.year, .month], from: Date()))!
+        let date = CalendarProjection.date(from: today) ?? Date()
+        return cal.date(from: cal.dateComponents([.year, .month], from: date))!
     }
 
     // ONE calendar surface that condenses, not two stacked views: a fixed
@@ -294,7 +303,7 @@ struct CalendarMonthView: View {
             // "Today" lives in the calendar itself now (not the nav bar), so
             // the toolbar can stay a single centered segmented control with no
             // shifting/blank trailing slot.
-            Button { withAnimation { monthAnchor = Self.currentMonth() } } label: {
+            Button { withAnimation { monthAnchor = Self.currentMonth(today: sync.todayString) } } label: {
                 Text("TODAY")
                     .font(Theme.mono(12, .bold))
                     .foregroundStyle(Theme.accent)

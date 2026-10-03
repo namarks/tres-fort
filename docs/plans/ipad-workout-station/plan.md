@@ -11,11 +11,16 @@ may turn detections into durable workout actions.
 
 ## Phases
 
-- [ ] **P0 — Deliver the observation-only Station Mode prototype**
+- [ ] **P0 — Deliver the observation-only Station Mode comparison**
   - Enable native iPad support and a responsive landscape/portrait display.
   - Enter from Today on iPad; request camera access only on explicit action.
   - Process the front camera locally with Vision and experimental angle-cycle
     counters for squat, curl and bench press. Do not record or upload frames.
+  - Feed each accepted Vision pose and timestamp to the custom baseline and
+    Apple HumanBodyActionCounter. Show both counts, Apple warm-up/coverage and
+    reporting timing, with optional manual ground truth after the trial.
+  - Bound queued work, fence late results by trial identity and make incomplete
+    coverage or inference failure visible. Stop and reset both together.
   - Keep trials isolated from SyncModel writes, outboxes, rest and progression.
   - Stop/invalidate tracking across missing joints, additional people, camera
     interruption, rotation, backgrounding and view exit. Never infer completion
@@ -24,8 +29,9 @@ may turn detections into durable workout actions.
     iPhone regressions; complete exact-head review and repository checks.
 - [ ] **P1 — Compare existing counters and validate the mounted iPad**
   - Treat the custom angle counter as a baseline, not the selected production
-    algorithm. Compare Apple HumanBodyActionCounter and a MediaPipe-based
-    reference pipeline before adding assisted logging.
+    algorithm. Compare it with Apple HumanBodyActionCounter in the first
+    device build. Consider the MediaPipe reference pipeline if pose quality
+    limits the results; it is not part of the first comparison build.
   - On an authorized device build, compare counts to manual ground truth for
     all three modes, including slow/paused/partial reps and obstructed views.
   - Evaluate landscape camera placement, screen readability, tracking recovery,
@@ -46,40 +52,66 @@ may turn detections into durable workout actions.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P1 | gated_by | external:owner-ipad-station-device-build | Distribution and physical camera/placement testing require an authorized device build and owner participation. |
+| P1 | gated_by | external:owner-ipad-station-device-build | The internal comparison build is owner-authorized; physical evaluation still requires a verified available build and owner participation. |
 | P2 | gated_by | external:owner-ipad-station-write-contract | Confirm the supported movements, correction UX and multi-device controller policy before enabling workout writes. |
 | P3 | gated_by | external:owner-ipad-station-automation-criteria | Automation needs explicit measured quality criteria and activation authority. |
 
 ## Next step
 
-**Now (@agent):** Complete P0 in the coherent implementation branch, including
-simulator verification and exact-head independent review. After P0, stop at
-`external:owner-ipad-station-device-build`; do not begin P1 until its authorized
-device build and owner participation are available. Once that gate is satisfied,
-perform the P1 comparison before selecting a production counter. The later
-workout-write/automation gates remain in force.
+**Now (@agent):** Complete exact-head repository checks/review for the implemented
+P0 custom-versus-Apple comparison and prepare the owner-authorized internal
+device-test build. P1 physical evaluation
+remains behind `external:owner-ipad-station-device-build` until that build is
+verified available and the owner can participate. The later workout-write and
+automation gates remain in force.
+
+## Approved comparison scope
+
+- On 2026-10-03 the owner approved making the first device-test build compare
+  the custom counter and Apple counter side by side on the same movements.
+- This authorizes comparison implementation and the internal device-test build.
+  It does not authorize public App Store release, backend deployment, workout
+  logging, automatic progression or video storage/upload.
+- MediaPipe remains a later candidate, not an included dependency.
 
 ## Implementation evidence
 
-- Native iPad layout, opt-in local capture and isolated trial counters are
-  implemented. Independent local review found no remaining actionable issues.
-- iPad A16 / iOS 26.2 simulator: 17 counter tests and three interface journeys
-  passed after permission, camera-unavailable and landscape-control fixes.
-  Synthetic screenshots cover landscape and large-text portrait.
+- Native iPad layout, opt-in local capture and both isolated trial counters are
+  implemented. Each trial locks the initially visible exercise-relevant limb
+  (hip/knee/ankle or shoulder/elbow/wrist) for both counters. Confidence 0.6 and
+  this joint subset are prototype policies, not vendor-calibrated thresholds.
+- Independent local review of the comparison found no blocking issues.
+- iPad A16 / iOS 26.2 simulator: 17 custom-counter cases, 15 comparison lifecycle
+  and window cases, and three interface journeys passed. Synthetic screenshots
+  show both readouts in landscape and reachable controls at accessibility size.
+  Results: `.artifacts/ios/tres-fort-ios.BGHY55/Tests.xcresult`.
+- A temporary macOS smoke harness exercised the actual Apple model and received
+  a result for a synthetic 90-pose window. This checks API invocation and output
+  pairing, not A16 performance or movement accuracy.
 - CI now includes a dedicated iPad Station job in the existing aggregate gate.
   Coverage selection and verification-harness checks pass (7 and 12 tests).
-- iPhone 17 / iOS 26.2: all 696 unit cases completed (695 passed, one skipped),
-  plus three navigation/set-logging journeys passed.
-- Remote exact-head review/checks remain part of P0 delivery. No physical
-  camera accuracy is established yet.
+- iPhone 17 / iOS 26.2: 710 unit tests passed, one skipped. Results:
+  `.artifacts/ios/tres-fort-ios.ZcoJKY/Tests.xcresult`. Three navigation/set-logging
+  journeys also passed in `.artifacts/ios/tres-fort-ios.JygNuE/Tests.xcresult`.
+- All 16 comparison cases passed in a focused native XCTest run after adding
+  populated-pose parity coverage. The assertion uses Apple's documented zero-
+  masking for unselected joints and requires selected coordinates/confidence to
+  remain exact. Production code was unchanged after the simulator checks.
+- Exact-head GitHub review/checks and internal build availability remain
+  unverified. No physical camera accuracy is established yet.
 
 ## Acceptance and verification
 
 - Entering Station Mode does not start a workout or request camera access.
 - Exercise selection, trial start/stop and all detections cannot write a set.
-- A valid observed cycle requires a stable extended position, flexion and return
-  to extension on one visible side. The thresholds are experimental counting
-  heuristics, not a form, depth, safety or training-quality assessment.
+- The custom counter requires a stable extended position, flexion and return
+  to extension on one visible side. Apple supplies a separate fractional
+  estimate from temporal pose windows. Neither result is a form, depth, safety
+  or training-quality assessment.
+- Apple's first window needs 90 poses and then advances every five. Normal stop
+  drains queued windows for up to five seconds; an uncovered final 1–4 poses,
+  tracking loss or engine failure leaves the trial visibly incomplete. No
+  synthetic poses fill the tail and no missing estimate is presented as zero.
 - Low-confidence joints, multiple people and camera gaps cannot bridge a rep.
 - Rotation invalidates the current trial; returning to the foreground requires
   explicit camera/trial restart. Exiting releases camera and idle-timer policy.
@@ -91,8 +123,9 @@ workout-write/automation gates remain in force.
 
 The prototype reuses Apple Vision for pose estimation but implements its own
 exercise-specific angle-cycle counter. No comparison has established that this
-counter, or Vision, is the best available choice. The following are candidates
-for a measured comparison, not selected dependencies:
+counter, or Vision, is the best available choice. Apple is approved as the first
+comparison engine. MediaPipe and RepNet remain candidates for later evaluation;
+no production winner is selected:
 
 1. **Apple HumanBodyActionCounter:** pretrained repetition counting and an
    official native sample; test its temporal-window latency and treatment of
@@ -132,8 +165,9 @@ Sources checked 2026-10-03:
 - Current runner ownership protects a process/local persistence namespace.
   Distinct set UUIDs from two devices can represent one physical set twice;
   existing idempotency is not a cross-device controller lock.
-- No backend, database, provider, video-retention or client distribution change
-  is part of P0. Do not store account emails, receipts or purchase identifiers in
+- No backend, database, provider or video-retention change is part of this
+  work. Client distribution is limited to the approved internal comparison
+  build. Do not store account emails, receipts or purchase identifiers in
   repository evidence.
 - Sources: [Apple Vision body pose](https://developer.apple.com/documentation/vision/detecting-human-body-poses-in-images),
   [Apple repetition sample](https://developer.apple.com/documentation/CreateMLComponents/counting-human-body-action-repetitions-in-a-live-video-feed),

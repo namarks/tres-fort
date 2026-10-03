@@ -83,7 +83,7 @@ jobs:
         run: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPhone-17 --ui-suite "$IOS_UI_SUITE" --ci-shard ${{ matrix.shard }}
       - name: iPad Station build and tests
         if: matrix.shard == 'station'
-        run: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPad-A16 --only-testing TresFortTests/StationCounterTests --only-testing TresFortUITests/StationJourneyTests
+        run: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPad-A16 --only-testing TresFortTests/StationCounterTests --only-testing TresFortTests/StationComparisonTests --only-testing TresFortUITests/StationJourneyTests
       - name: Retain synthetic screenshots and test results
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,5 +1,6 @@
 import AVFoundation
 import Combine
+import CreateMLComponents
 import Foundation
 import ImageIO
 import Vision
@@ -17,7 +18,7 @@ enum StationCameraState: Equatable {
         switch self {
         case .idle: return "Camera is off."
         case .requestingPermission: return "Starting camera. Allow camera access if prompted."
-        case .running: return "Camera is on. Keep your whole body in view."
+        case .running: return "Camera is on. Keep the moving joints in view."
         case .denied: return "Camera access is off. Allow it in Settings to try the station."
         case .unavailable: return "A front camera is not available on this device."
         case .interrupted: return "Camera interrupted. Start again when you are ready."
@@ -32,6 +33,7 @@ final class StationCamera: ObservableObject {
     let session: AVCaptureSession
     @Published private(set) var state: StationCameraState = .idle
     @Published private(set) var latestPose: StationPoseSample?
+    @Published private(set) var latestFrame: StationComparisonFrame?
 
     private let capture: StationCaptureWorker
     private var run: StationCaptureRun?
@@ -52,12 +54,14 @@ final class StationCamera: ObservableObject {
         // presenting a permission prompt when there is no usable camera (Simulator).
         guard AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front) != nil else {
             latestPose = nil
+            latestFrame = nil
             state = .unavailable
             return
         }
         let run = StationCaptureRun()
         self.run = run
         latestPose = nil
+        latestFrame = nil
         state = .requestingPermission
 
         switch AVCaptureDevice.authorizationStatus(for: .video) {
@@ -86,6 +90,7 @@ final class StationCamera: ObservableObject {
         run = nil
         clearRotation()
         latestPose = nil
+        latestFrame = nil
         state = .idle
         capture.stop()
     }
@@ -101,9 +106,10 @@ final class StationCamera: ObservableObject {
             case .running:
                 guard run.isActive else { return }
                 self.state = .running
-            case .pose(let sample, let revision):
+            case .pose(let frame, let revision):
                 guard run.isActive, run.orientationRevision == revision, self.state == .running else { return }
-                self.latestPose = sample
+                self.latestPose = frame.sample
+                self.latestFrame = frame
             case .ended(let state):
                 self.finish(state, run: run)
             }
@@ -127,6 +133,7 @@ final class StationCamera: ObservableObject {
                 // A rep must never span two camera coordinate systems.
                 let revision = run.advanceOrientation()
                 self.latestPose = nil
+                self.latestFrame = nil
                 self.capture.setOrientation(orientation, revision: revision, run: run)
             }
         }
@@ -150,6 +157,7 @@ final class StationCamera: ObservableObject {
         self.run = nil
         clearRotation()
         latestPose = nil
+        latestFrame = nil
         self.state = state
         capture.stop()
     }
@@ -202,7 +210,7 @@ private final class StationCaptureRun: @unchecked Sendable {
 private enum StationCaptureEvent {
     case prepared(AVCaptureDevice)
     case running
-    case pose(StationPoseSample, revision: UInt64)
+    case pose(StationComparisonFrame, revision: UInt64)
     case ended(StationCameraState)
 }
 
@@ -364,12 +372,18 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
             do {
                 let request = VNDetectHumanBodyPoseRequest()
                 let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
+                let inferenceStartedAt = ProcessInfo.processInfo.systemUptime
                 try handler.perform([request])
+                let visionMilliseconds = (ProcessInfo.processInfo.systemUptime - inferenceStartedAt) * 1_000
                 guard run.isActive else { return }
                 let observations = request.results ?? []
                 var joints: [StationJoint: StationJointPoint] = [:]
+                var applePose: Pose?
                 // Never silently choose one person from a crowded frame.
                 if observations.count == 1, let observation = observations.first {
+                    // Preserve the complete original normalized observation for
+                    // Apple's model before adapting coordinates for angle math.
+                    applePose = try Pose(observation)
                     let points = try observation.recognizedPoints(.all)
                     let width = Double(CVPixelBufferGetWidth(pixelBuffer))
                     let height = Double(CVPixelBufferGetHeight(pixelBuffer))
@@ -384,8 +398,10 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
                         )
                     }
                 }
-                emit(.pose(StationPoseSample(timestamp: timestamp, joints: joints, personCount: observations.count),
-                           revision: frameRevision), run: run)
+                let sample = StationPoseSample(timestamp: timestamp, joints: joints, personCount: observations.count)
+                let frame = StationComparisonFrame(sample: sample, applePose: applePose,
+                                                   visionMilliseconds: visionMilliseconds)
+                emit(.pose(frame, revision: frameRevision), run: run)
             } catch {
                 end(.failed("Movement tracking stopped. Start again to retry."), run: run)
             }

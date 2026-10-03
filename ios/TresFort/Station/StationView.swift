@@ -10,8 +10,9 @@ struct StationView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @StateObject private var camera = StationCamera()
     @State private var exercise: StationExercise = .squat
-    @State private var counter = StationRepCounter(exercise: .squat)
-    @State private var isCounting = false
+    @StateObject private var comparison = StationComparisonModel()
+    @State private var actualReps = ""
+    @FocusState private var actualRepsFocused: Bool
     @State private var hasRunTrial = false
     @State private var previousIdleTimerDisabled = false
 
@@ -25,7 +26,7 @@ struct StationView: View {
                         if geometry.size.width >= 850 && !dynamicTypeSize.isAccessibilitySize {
                             HStack(alignment: .top, spacing: 24) {
                                 cameraPanel.frame(maxWidth: .infinity)
-                                counterPanel.frame(width: 310)
+                                counterPanel.frame(width: 400)
                             }
                         } else {
                             counterPanel
@@ -52,13 +53,13 @@ struct StationView: View {
         .preferredColorScheme(.dark)
         .onAppear { previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled }
         .onDisappear {
-            isCounting = false
+            cancelComparison("Camera closed. Results cover only part of this trial.")
             camera.stop()
             UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase != .active else { return }
-            isCounting = false
+            cancelComparison("Comparison stopped when the app became inactive.")
             // The system permission alert temporarily makes this scene inactive.
             // Keep that request alive; actual backgrounding always cancels it.
             if phase == .inactive && camera.state == .requestingPermission { return }
@@ -66,27 +67,34 @@ struct StationView: View {
             UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
         }
         .onChange(of: camera.state) { _, state in
-            if state != .running { isCounting = false }
+            if state != .running {
+                cancelComparison("Camera stopped. Results cover only part of this trial.")
+            }
             UIApplication.shared.isIdleTimerDisabled = state == .running
                 ? true : previousIdleTimerDisabled
         }
-        .onReceive(camera.$latestPose) { sample in
-            guard isCounting else { return }
-            // nil also invalidates a trial when the camera changes orientation.
-            guard camera.state == .running, let sample else {
-                isCounting = false
+        .onReceive(camera.$latestFrame) { frame in
+            guard comparison.state.isCollecting else { return }
+            guard camera.state == .running, let frame else {
+                cancelComparison("Camera view changed. Start a new comparison.")
                 return
             }
-            counter.process(sample)
+            comparison.process(frame)
+        }
+    }
+
+    private func cancelComparison(_ reason: String) {
+        if comparison.state.isCollecting || comparison.state.isFinishing {
+            comparison.invalidate(reason: reason)
         }
     }
 
     private var heading: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("CAMERA SETUP")
+            Text("COMPARE COUNTERS")
                 .font(Theme.display(44)).foregroundStyle(Theme.text)
                 .accessibilityAddTraits(.isHeader)
-            Text("Try camera counting before your workout.")
+            Text("One camera. The same movements. Two independent counts.")
                 .font(.title3).foregroundStyle(Theme.muted)
             if let workoutName {
                 Text("Today's workout · \(workoutName)")
@@ -109,10 +117,11 @@ struct StationView: View {
     @ViewBuilder private var exerciseButtons: some View {
         ForEach(StationExercise.allCases) { option in
             Button {
-                isCounting = false
                 hasRunTrial = false
+                actualReps = ""
+                actualRepsFocused = false
                 exercise = option
-                counter.reset(exercise: option)
+                comparison.reset(exercise: option)
             } label: {
                 Text(option.title)
                     .font(.headline)
@@ -170,7 +179,7 @@ struct StationView: View {
     private var cameraControls: some View {
         if camera.state == .running {
             Button("Turn camera off", systemImage: "video.slash") {
-                isCounting = false
+                cancelComparison("Camera turned off. Results cover only part of this trial.")
                 camera.stop()
             }
             .frame(minHeight: 48)
@@ -198,48 +207,134 @@ struct StationView: View {
     private var counterPanel: some View {
         VStack(spacing: 16) {
             Text(exercise.title.uppercased())
-                .font(Theme.display(34)).foregroundStyle(Theme.text)
+                .font(Theme.display(30)).foregroundStyle(Theme.text)
                 .accessibilityIdentifier("station.movement")
-            Text(String(counter.count))
-                .font(Theme.number(dynamicTypeSize.isAccessibilitySize ? 70 : 112))
-                .foregroundStyle(Theme.text).monospacedDigit()
-                .accessibilityLabel("\(counter.count) observed reps")
-                .accessibilityIdentifier("station.repCount")
-            Text("REPS OBSERVED")
-                .font(Theme.mono(11, .bold)).tracking(2).foregroundStyle(Theme.muted)
-            Label(trackingMessage, systemImage: isCounting ? "viewfinder" : "pause.circle")
-                .font(.headline).foregroundStyle(isCounting ? Theme.done : Theme.muted)
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(spacing: 16) { countTiles }
+            } else {
+                HStack(alignment: .top, spacing: 12) { countTiles }
+            }
+            Text(comparison.state.message)
+                .font(.headline).foregroundStyle(Theme.muted)
                 .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("station.tracking")
-            Divider().overlay(Theme.dim)
+            if comparison.state == .warmingUp {
+                ProgressView(value: Double(comparison.metrics.windowProgress),
+                             total: Double(comparison.metrics.windowFrames))
+                    .tint(Theme.accent)
+                    .accessibilityLabel("Apple counter warm-up")
+            }
             Button {
-                if isCounting {
-                    isCounting = false
+                actualRepsFocused = false
+                if comparison.state.isCollecting {
+                    comparison.stop()
                 } else {
-                    counter.reset(exercise: exercise)
+                    actualReps = ""
                     hasRunTrial = true
-                    isCounting = true
+                    comparison.start(exercise: exercise)
                 }
             } label: {
-                Text(isCounting ? "Stop trial" : (hasRunTrial ? "New trial" : "Start trial"))
+                Text(comparison.state.isFinishing ? "Finishing Apple…" :
+                     comparison.state.isCollecting ? "Stop comparison" :
+                     hasRunTrial ? "New comparison" : "Start comparison")
                     .font(.headline).frame(maxWidth: .infinity, minHeight: 54)
             }
             .buttonStyle(.borderedProminent).tint(Theme.accent).foregroundStyle(Theme.bg)
-            .disabled(camera.state != .running)
+            .disabled(camera.state != .running || comparison.state.isFinishing)
             .accessibilityIdentifier("station.trial")
+
+            if hasRunTrial && comparison.state.isTerminal { referenceCount }
+            if hasRunTrial { timingDetails }
             Text("Trial only · No sets are saved")
                 .font(.subheadline).foregroundStyle(Theme.muted)
                 .multilineTextAlignment(.center)
                 .accessibilityIdentifier("station.trialNotice")
         }
-        .padding(24).frame(maxWidth: .infinity)
+        .padding(20).frame(maxWidth: .infinity)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 20))
     }
 
-    private var trackingMessage: String {
-        if isCounting { return counter.status.message }
-        if hasRunTrial { return "Trial stopped" }
-        return camera.state == .running ? "Ready to try" : "Camera is off"
+    @ViewBuilder private var countTiles: some View {
+        countTile(title: "Custom", value: String(comparison.customCount),
+                  detail: "Complete movement cycles", identifier: "station.repCount",
+                  spokenValue: "Custom counter: \(comparison.customCount) reps")
+        countTile(title: "Apple estimate", value: comparison.appleCount.map { String(format: "%.1f", $0) } ?? "—",
+                  detail: "May update later", identifier: "station.appleCount",
+                  spokenValue: comparison.appleCount.map { String(format: "Apple estimate: %.1f reps", $0) }
+                    ?? "Apple estimate: awaiting result")
+    }
+
+    private func countTile(title: String, value: String, detail: String,
+                           identifier: String, spokenValue: String) -> some View {
+        VStack(spacing: 8) {
+            Text(title).font(.headline).foregroundStyle(Theme.text)
+            Text(value)
+                .font(Theme.number(54)).monospacedDigit()
+                .foregroundStyle(Theme.text)
+                .lineLimit(1).minimumScaleFactor(0.5)
+                .accessibilityLabel(spokenValue)
+                .accessibilityIdentifier(identifier)
+            Text(detail).font(.caption).foregroundStyle(Theme.muted)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity).padding(.vertical, 12)
+        .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var referenceCount: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("How many reps did you do?").font(.headline)
+            TextField("Actual reps", text: $actualReps)
+                .keyboardType(.numberPad).textFieldStyle(.roundedBorder)
+                .focused($actualRepsFocused)
+                .accessibilityIdentifier("station.actualReps")
+                .onChange(of: actualReps) { _, value in
+                    let digits = String(value.filter { $0.isASCII && $0.isNumber }.prefix(3))
+                    if value != digits { actualReps = digits }
+                }
+            if let actual = Int(actualReps) {
+                Text("Custom difference: \(comparison.customCount - actual, specifier: "%+d")")
+                    .accessibilityIdentifier("station.customDifference")
+                if let apple = comparison.appleCount {
+                    Text("Apple difference: \(Double(apple) - Double(actual), specifier: "%+.1f")")
+                        .accessibilityIdentifier("station.appleDifference")
+                }
+                if comparison.state != .finished {
+                    Text("This trial is incomplete. Differences include unobserved movement.")
+                        .foregroundStyle(Theme.muted)
+                }
+            }
+            if actualRepsFocused {
+                Button("Done entering count") { actualRepsFocused = false }
+            }
+        }
+        .font(.subheadline).foregroundStyle(Theme.text)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var timingDetails: some View {
+        DisclosureGroup("Timing and coverage") {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Same input: \(comparison.metrics.acceptedFrames) poses")
+                Text("Apple coverage: \(comparison.metrics.appleCoveredFrames) poses")
+                if let fps = comparison.metrics.acceptedFPS {
+                    Text("Observed pose rate: \(fps, specifier: "%.1f") fps")
+                }
+                if let lag = comparison.metrics.appleSourceLagSeconds {
+                    Text("Apple coverage behind input: \(lag, specifier: "%.1f") s")
+                }
+                if let duration = comparison.metrics.appleProcessingMilliseconds {
+                    Text("Latest Apple analysis: \(duration, specifier: "%.0f") ms")
+                }
+                Text("Coverage delay measures how far Apple's result trails the incoming poses. It is not a measurement of full camera-to-screen latency.")
+                    .foregroundStyle(Theme.muted)
+            }
+            .font(.caption).frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 8)
+        }
+        .font(.subheadline).foregroundStyle(Theme.text)
+        .accessibilityIdentifier("station.timing")
     }
 
     private var privacyNote: some View {

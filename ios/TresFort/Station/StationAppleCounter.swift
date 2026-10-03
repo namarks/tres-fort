@@ -91,8 +91,24 @@ final class StationAppleCounter: StationAppleCountingEngine {
     private var pending: [TemporalSegmentIdentifier: PendingWindow] = [:]
     private var accepting = false
 
+#if DEBUG
+    private var diagnosticDroppedWindows = 0
+    private var diagnosticTerminatedWindows = 0
+    var diagnosticSnapshot: StationAppleDiagnosticSnapshot {
+        StationAppleDiagnosticSnapshot(
+            bufferedPoses: builder.bufferedPoseCount,
+            queuedWindows: pending.values.filter { $0.startedAt == nil }.count,
+            inFlightWindows: pending.values.filter { $0.startedAt != nil }.count,
+            droppedWindows: diagnosticDroppedWindows, terminatedWindows: diagnosticTerminatedWindows)
+    }
+#endif
+
     func start(onEvent: @escaping @MainActor (StationAppleCounterEvent) -> Void) {
         cancel()
+#if DEBUG
+        diagnosticDroppedWindows = 0
+        diagnosticTerminatedWindows = 0
+#endif
         let generation = UUID()
         self.generation = generation
         handler = onEvent
@@ -142,7 +158,16 @@ final class StationAppleCounter: StationAppleCountingEngine {
         switch continuation.yield(TemporalFeature(id: id, feature: window.poses)) {
         case .enqueued:
             return true
-        case .dropped, .terminated:
+        case .dropped:
+#if DEBUG
+            diagnosticDroppedWindows += 1
+#endif
+            pending.removeValue(forKey: id)
+            return false
+        case .terminated:
+#if DEBUG
+            diagnosticTerminatedWindows += 1
+#endif
             pending.removeValue(forKey: id)
             return false
         @unknown default:

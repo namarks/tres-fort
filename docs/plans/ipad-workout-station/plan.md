@@ -37,6 +37,9 @@ may turn detections into durable workout actions.
     all three modes, including slow/paused/partial reps and obstructed views.
   - Evaluate landscape camera placement, screen readability, tracking recovery,
     a workout-length thermal/power trial and continued use of the main phone.
+  - Treat front-facing squats as a primary wall-mounted use case. Evaluate
+    calibrated hip movement and inferred 3D knee angles using live evidence;
+    the current side-view 2D angle counter cannot establish frontal coverage.
   - Record count errors, corrections and setup/repositioning effort. Select the
     supported movements/angles from observed evidence, not assumed accuracy.
 - [ ] **P2 — Add assisted set completion and correction**
@@ -59,11 +62,17 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Support the next physical trial using verified internal build
-1.0 (46): confirm the wider front-camera view and overlay alignment, then compare
-both counts with manually counted movements on the actual A16 iPad. The first
-trial's repeated setup, framing and tracking defects have corrective code and
-local regression evidence; physical counting quality is still unverified.
+**Now (@agent):** Prepare a direct development-build/console loop on the owner's
+Mac mini and connected A16 iPad. The owner reports improved but still inadequate
+tracking in internal build 1.0 (46), and is updating iPadOS. The pre-update USB
+connection is trusted and paired; Developer Mode was disabled. After the update,
+verify Developer Mode, device support and development signing, then install the
+same-bundle Debug build without uninstalling or resetting app data. Use opt-in
+numeric diagnostics to inspect rejected poses, counter phases and repeated
+Apple warm-up resets during manually counted movements, including front-facing
+squats. Counting quality and any frontal algorithm remain unvalidated.
+Follow the [direct-device procedure](device-debugging.md); the existing
+development identity is valid, but local profiles do not yet include this iPad.
 Complete P0 repository delivery only after configured CI and exact-head review
 pass; an internal TestFlight upload does not satisfy merge gates. The later
 workout-write and automation gates remain in force.
@@ -79,6 +88,10 @@ workout-write and automation gates remain in force.
   queued. The independently reviewed source was uploaded as an internal branch
   build; repository merge still requires its configured checks and review.
 - MediaPipe remains a later candidate, not an included dependency.
+- The owner requested direct iPad debugging to shorten iteration and identified
+  front-facing squat support as a needed use case. Developer diagnostics stay
+  opt-in and Debug-only: bounded numerical summaries on the local console,
+  with no images, video, account identifiers, network sink or workout writes.
 
 ## Implementation evidence
 
@@ -151,6 +164,17 @@ workout-write and automation gates remain in force.
   independently reviewed source `5989bce81942e18b53e9ba35918986b595408411`.
   At `2026-10-03T21:55:28.607Z`, Apple confirmed VALID / IN_BETA_TESTING and
   internal Testers assignment. See the [build receipt](../app-store-submission/release-46.md).
+- The direct-device diagnostic slice adds opt-in Debug UI and at most two
+  numeric console summaries per second, retaining up to 60 seconds in memory.
+  It observes input before admission and reports the same frame's decision,
+  confidence, angle/phase, resets and Apple queue/coverage. Raw hip/shoulder
+  heights and torso scale support investigation of front-facing movement;
+  repetition rules are unchanged. All 47 focused unit cases and three Station
+  interface journeys passed on the A16 simulator in
+  `.artifacts/ios/tres-fort-ios.AsQAYn/Tests.xcresult`. An unsigned device Release
+  build passed and its binary excludes the diagnostic UI/output markers;
+  evidence: `.artifacts/station-device/release-diagnostics-exclusion.json`.
+  This slice has not yet been installed or observed on the physical iPad.
 
 ## Acceptance and verification
 

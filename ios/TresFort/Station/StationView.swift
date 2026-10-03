@@ -11,6 +11,9 @@ struct StationView: View {
     @StateObject private var camera = StationCamera()
     @State private var exercise: StationExercise = .squat
     @StateObject private var comparison = StationComparisonModel()
+#if DEBUG
+    @StateObject private var diagnostics = StationDiagnostics()
+#endif
     @State private var actualReps = ""
     @FocusState private var actualRepsFocused: Bool
     @State private var hasRunTrial = false
@@ -32,6 +35,9 @@ struct StationView: View {
                             counterPanel
                             cameraPanel
                         }
+#if DEBUG
+                        diagnosticPanel
+#endif
                         privacyNote
                     }
                     .padding(24)
@@ -53,6 +59,9 @@ struct StationView: View {
         .preferredColorScheme(.dark)
         .onAppear { previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled }
         .onDisappear {
+#if DEBUG
+            diagnostics.isEnabled = false
+#endif
             cancelComparison("Camera closed. Results cover only part of this trial.")
             camera.stop()
             UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
@@ -74,6 +83,9 @@ struct StationView: View {
                 ? true : previousIdleTimerDisabled
         }
         .onReceive(camera.$latestFrame) { frame in
+#if DEBUG
+            diagnostics.observe(frame: frame, model: comparison)
+#endif
             guard comparison.state.isCollecting else { return }
             guard camera.state == .running, let frame else {
                 cancelComparison("Camera view changed. Start a new comparison.")
@@ -368,4 +380,29 @@ struct StationView: View {
             .font(.footnote).foregroundStyle(Theme.muted)
             .fixedSize(horizontal: false, vertical: true)
     }
+
+#if DEBUG
+    private var diagnosticPanel: some View {
+        DisclosureGroup("Developer diagnostics") {
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle("Stream tracking measurements", isOn: $diagnostics.isEnabled)
+                    .accessibilityIdentifier("station.diagnosticsEnabled")
+                Text("While enabled, joint measurements and counting decisions stream to the connected Mac. Camera images are never included. Recent measurements stay in memory for up to one minute.")
+                    .font(.caption).foregroundStyle(Theme.muted)
+                if diagnostics.isEnabled {
+                    Text(diagnostics.latestSummary)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("station.diagnosticsSummary")
+                    Button("Clear measurements") { diagnostics.clear() }
+                        .accessibilityIdentifier("station.clearDiagnostics")
+                }
+            }
+            .padding(.top, 12)
+        }
+        .font(.subheadline).foregroundStyle(Theme.text)
+        .accessibilityIdentifier("station.diagnostics")
+    }
+#endif
 }

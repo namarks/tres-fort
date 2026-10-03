@@ -69,6 +69,29 @@ struct StationRepCounter {
     private var phase: Phase = .seekingStart
     private var endpointCandidate: EndpointCandidate?
 
+#if DEBUG
+    private var diagnosticTimestamp: TimeInterval?
+    private var diagnosticAngle: Double?
+    private var diagnosticConfidence: Float?
+
+    var diagnosticSnapshot: StationCounterDiagnosticSnapshot {
+        let phaseName: String
+        switch phase {
+        case .seekingStart: phaseName = "seeking_start"
+        case .armed(let startedAt): phaseName = startedAt == nil ? "armed" : "descending"
+        case .returning: phaseName = "returning"
+        }
+        let endpoint = endpointCandidate.map { $0.endpoint == .extended ? "extended" : "flexed" }
+        return StationCounterDiagnosticSnapshot(
+            timestamp: diagnosticTimestamp, angle: diagnosticAngle,
+            minimumConfidence: diagnosticConfidence.map(Double.init), phase: phaseName,
+            endpoint: endpoint,
+            endpointDwell: endpointCandidate.flatMap { candidate in
+                diagnosticTimestamp.map { max(0, $0 - candidate.since) }
+            })
+    }
+#endif
+
     private static let minimumConfidence: Float = 0.6
     private static let endpointDwell: TimeInterval = 0.18
     private static let minimumCycleDuration: TimeInterval = 0.55
@@ -83,6 +106,11 @@ struct StationRepCounter {
     }
 
     mutating func process(_ sample: StationPoseSample) {
+#if DEBUG
+        diagnosticTimestamp = sample.timestamp.isFinite ? sample.timestamp : nil
+        diagnosticAngle = nil
+        diagnosticConfidence = nil
+#endif
         guard sample.timestamp.isFinite, sample.timestamp >= 0 else {
             loseTracking(.trackingLost)
             return
@@ -123,6 +151,10 @@ struct StationRepCounter {
         }
 
         let thresholds = thresholds
+#if DEBUG
+        diagnosticAngle = measurement.angle
+        diagnosticConfidence = measurement.confidence
+#endif
         let endpoint = stableEndpoint(angle: measurement.angle, timestamp: sample.timestamp)
         switch phase {
         case .seekingStart:

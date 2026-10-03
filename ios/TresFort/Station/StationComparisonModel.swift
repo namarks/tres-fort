@@ -96,6 +96,30 @@ final class StationComparisonModel: ObservableObject {
     private var segmentCoveredFrames = 0
     private var finishTimeout: Task<Void, Never>?
 
+#if DEBUG
+    weak var diagnostics: StationDiagnostics?
+    private var diagnosticAdmission = "idle"
+    private var diagnosticInputJoints: [String] = []
+    private var diagnosticResetReason: String?
+    private var diagnosticLastApple: StationAppleDiagnosticSnapshot?
+    var diagnosticSnapshot: StationComparisonDiagnosticSnapshot {
+        StationComparisonDiagnosticSnapshot(
+            exercise: exercise.rawValue, state: state.diagnosticName,
+            admission: diagnosticAdmission, resetReason: diagnosticResetReason,
+            inputJoints: diagnosticInputJoints,
+            candidateJoints: (candidateLimb ?? []).map { $0.0.rawValue },
+            selectedJoints: (selectedLimb ?? []).map { $0.0.rawValue },
+            readinessSeconds: candidateSince.flatMap { since in candidateLastTimestamp.map { max(0, $0 - since) } },
+            accepted: metrics.acceptedFrames, rejected: metrics.rejectedFrames,
+            segmentAccepted: metrics.segmentAcceptedFrames, interruptedSegments: metrics.interruptedSegments,
+            appleCovered: metrics.appleCoveredFrames, appleWarmup: metrics.windowProgress,
+            appleLagSeconds: metrics.appleSourceLagSeconds, appleMilliseconds: metrics.appleProcessingMilliseconds,
+            customCount: customCount, appleCount: appleCount.map(Double.init),
+            custom: counter.diagnosticSnapshot,
+            apple: (engine as? StationAppleCounter)?.diagnosticSnapshot ?? diagnosticLastApple)
+    }
+#endif
+
     init(appleEngineFactory: @escaping @MainActor () -> any StationAppleCountingEngine = { StationAppleCounter() },
          readinessDuration: TimeInterval = 0.3) {
         self.appleEngineFactory = appleEngineFactory
@@ -103,7 +127,16 @@ final class StationComparisonModel: ObservableObject {
     }
 
     func reset(exercise: StationExercise) {
+#if DEBUG
+        defer { diagnostics?.modelDidUpdate(self) }
+#endif
         cancelEngine()
+#if DEBUG
+        diagnosticAdmission = "idle"
+        diagnosticInputJoints = []
+        diagnosticResetReason = nil
+        diagnosticLastApple = nil
+#endif
         counter.reset(exercise: exercise)
         self.exercise = exercise
         selectedLimb = nil
@@ -128,21 +161,38 @@ final class StationComparisonModel: ObservableObject {
     func start(exercise: StationExercise) {
         reset(exercise: exercise)
         state = .waitingForPose
+#if DEBUG
+        diagnostics?.modelDidUpdate(self)
+#endif
     }
 
     func process(_ frame: StationComparisonFrame) {
         guard state.isCollecting else { return }
+#if DEBUG
+        diagnosticAdmission = "checking"
+        diagnosticInputJoints = (selectedLimb ?? candidateLimb ?? []).map { $0.0.rawValue }
+        defer { diagnostics?.modelDidUpdate(self) }
+#endif
         let sample = frame.sample
         guard sample.timestamp.isFinite, sample.timestamp >= 0 else {
+#if DEBUG
+            diagnosticAdmission = "invalid_timestamp"
+#endif
             recover(reason: "The camera timestamp was invalid.")
             return
         }
         if let lastObservedTimestamp, sample.timestamp <= lastObservedTimestamp {
+#if DEBUG
+            diagnosticAdmission = "stale_timestamp"
+#endif
             metrics.rejectedFrames += 1
             return
         }
         lastObservedTimestamp = sample.timestamp
         guard sample.personCount == 1 else {
+#if DEBUG
+            diagnosticAdmission = sample.personCount > 1 ? "multiple_people" : "no_person"
+#endif
             customStatus = sample.personCount > 1 ? .multiplePeople : .trackingLost
             if sample.personCount > 1 {
                 metrics.rejectedFrames += 1
@@ -154,16 +204,28 @@ final class StationComparisonModel: ObservableObject {
         }
         let stableCandidate = candidateLimb.flatMap { Self.hasUsableJoints(sample, limb: $0) ? $0 : nil }
         let limb = selectedLimb ?? stableCandidate ?? usableLimb(in: sample)
+#if DEBUG
+        diagnosticInputJoints = (limb ?? []).map { $0.0.rawValue }
+#endif
         guard let pose = frame.applePose, let limb, Self.hasUsableJoints(sample, limb: limb) else {
+#if DEBUG
+            diagnosticAdmission = frame.applePose == nil ? "missing_apple_pose" : "unclear_joints"
+#endif
             customStatus = .trackingLost
             recover(reason: "Keep \(requiredJoints) visible and clear on one side.")
             return
         }
         if let lastTimestamp, sample.timestamp - lastTimestamp > 0.5 {
+#if DEBUG
+            diagnosticAdmission = "pose_gap"
+#endif
             recover(reason: "Camera poses paused. Hold \(requiredJoints) in view.")
             return
         }
         if selectedLimb == nil {
+#if DEBUG
+            diagnosticAdmission = "readiness"
+#endif
             // Do not admit a fleeting close-up while the person walks away from
             // the Start button. Readiness frames are not fabricated or replayed.
             let sameLimb = candidateLimb?.map { $0.0 } == limb.map { $0.0 }
@@ -185,6 +247,9 @@ final class StationComparisonModel: ObservableObject {
         let input = StationAppleInput(pose: selectedPose, timestamp: sample.timestamp,
                                       frameIndex: metrics.segmentAcceptedFrames + 1)
         guard engine?.append(input) == true else {
+#if DEBUG
+            diagnosticAdmission = "apple_admission_rejected"
+#endif
             recover(reason: "Apple fell behind. Hold still while both counters restart.")
             return
         }
@@ -194,6 +259,9 @@ final class StationComparisonModel: ObservableObject {
         counter.process(StationPoseSample(timestamp: sample.timestamp,
                                           joints: sample.joints.filter { jointNames.contains($0.key) },
                                           personCount: sample.personCount))
+#if DEBUG
+        diagnosticAdmission = "accepted"
+#endif
         customCount = customBase + counter.count
         customStatus = counter.status
         firstTimestamp = firstTimestamp ?? sample.timestamp
@@ -213,6 +281,9 @@ final class StationComparisonModel: ObservableObject {
     /// has no engine to drain and finishes immediately with an honest partial state.
     func stop() {
         guard state.isCollecting else { return }
+#if DEBUG
+        defer { diagnostics?.modelDidUpdate(self) }
+#endif
         guard let engine else {
             state = .incomplete(hasIncompleteCoverage ? "Tracking was still reacquiring; counts are partial." :
                                "No stable pose segment was captured.")
@@ -232,12 +303,19 @@ final class StationComparisonModel: ObservableObject {
     /// Rotation, scene changes and ambiguous identity require an explicit restart.
     func invalidate(reason: String) {
         guard state.isCollecting || state.isFinishing else { return }
+#if DEBUG
+        diagnosticResetReason = reason
+        defer { diagnostics?.modelDidUpdate(self) }
+#endif
         hasIncompleteCoverage = true
         cancelEngine()
         state = .incomplete(reason)
     }
 
     private func recover(reason: String) {
+#if DEBUG
+        diagnosticResetReason = reason
+#endif
         metrics.rejectedFrames += 1
         clearCandidate()
         readinessMessage = reason
@@ -266,6 +344,9 @@ final class StationComparisonModel: ObservableObject {
 
     private func receive(_ event: StationAppleCounterEvent, generation: UUID) {
         guard self.generation == generation, state.isCollecting || state.isFinishing else { return }
+#if DEBUG
+        defer { diagnostics?.modelDidUpdate(self) }
+#endif
         switch event {
         case .estimate(let estimate):
             guard estimate.cumulativeCount.isFinite, estimate.cumulativeCount >= 0,
@@ -309,6 +390,9 @@ final class StationComparisonModel: ObservableObject {
     }
 
     private func cancelEngine() {
+#if DEBUG
+        if let engine = engine as? StationAppleCounter { diagnosticLastApple = engine.diagnosticSnapshot }
+#endif
         generation = UUID()
         finishTimeout?.cancel()
         finishTimeout = nil

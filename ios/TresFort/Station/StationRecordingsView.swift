@@ -116,11 +116,14 @@ struct StationRecordingDetailView: View {
     @StateObject private var replay: StationReplayModel
     @StateObject private var stillModel: StationRecordingStill
     @State private var actualReps = ""
+    @State private var actualLeftReps = ""
+    @State private var actualRightReps = ""
     @State private var selectedIndex = 0.0
     @State private var error: String?
     @State private var shareItems: StationShareItems?
     @State private var previousIdleTimerDisabled = false
-    @FocusState private var editingCount: Bool
+    private enum CountField: Hashable { case single, left, right }
+    @FocusState private var editingCount: CountField?
 
     init(recording: StationRecording, access: StationAccess) {
         self.recording = recording
@@ -149,14 +152,16 @@ struct StationRecordingDetailView: View {
                 Text("Both detectors process every saved frame. Drag the slider to inspect exactly the same moment in both views.")
                 if let error { Text(error).foregroundStyle(.red) }
                 if let error = replay.error { Text(error).foregroundStyle(.red) }
-                HStack {
+                if recording.exercise == .curl {
+                    curlCountLabels
+                } else { HStack {
                     TextField("Actual reps", text: $actualReps)
                         .keyboardType(.numberPad).textFieldStyle(.roundedBorder).frame(maxWidth: 180)
-                        .focused($editingCount)
+                        .focused($editingCount, equals: .single)
                         .accessibilityIdentifier("station.recordingActualReps")
                     Button("Save count") { saveCount() }
                         .disabled(!actualReps.isEmpty && (Int(actualReps).map { !(0...1000).contains($0) } ?? true))
-                }
+                } }
                 if replay.isRunning {
                     ProgressView(value: Double(replay.completedFrames), total: Double(max(1, recording.frameCount))) {
                         Text("Comparing frame \(replay.completedFrames) of \(recording.frameCount)")
@@ -172,8 +177,22 @@ struct StationRecordingDetailView: View {
 
                 if let report = replay.report, let frame {
                     if let last = report.frames.last {
-                        Text("Full clip angle cycles: Apple \(last.appleCycles) · MediaPipe \(last.mediaPipeCycles)")
-                            .font(.headline)
+                        if recording.exercise == .curl {
+                            if let apple = curlCycles(left: last.appleLeftCycles, right: last.appleRightCycles),
+                               let mediaPipe = curlCycles(left: last.mediaPipeLeftCycles, right: last.mediaPipeRightCycles) {
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Full clip angle cycles").font(.headline)
+                                    Text("Apple · \(apple)")
+                                    Text("MediaPipe · \(mediaPipe)")
+                                }.accessibilityIdentifier("station.curlReplayCounts")
+                            } else {
+                                Text("This comparison has no per-arm counts. Run comparison again to count the left and right arms separately.")
+                                    .foregroundStyle(.orange)
+                            }
+                        } else {
+                            Text("Full clip angle cycles: Apple \(last.appleCycles) · MediaPipe \(last.mediaPipeCycles)")
+                                .font(.headline)
+                        }
                     }
                     Text("Frame \(Int(selectedIndex) + 1) / \(report.frames.count) · \(frame.timestamp, specifier: "%.2f") s")
                         .font(.headline).monospacedDigit()
@@ -183,12 +202,16 @@ struct StationRecordingDetailView: View {
                     }
                     ViewThatFits(in: .horizontal) {
                         HStack(alignment: .top, spacing: 16) {
-                            posePanel("Apple Vision", pose: frame.apple, cycles: frame.appleCycles).frame(minWidth: 280)
-                            posePanel("MediaPipe Full", pose: frame.mediaPipe, cycles: frame.mediaPipeCycles).frame(minWidth: 280)
+                            posePanel("Apple Vision", pose: frame.apple, cycles: frame.appleCycles,
+                                      leftCycles: frame.appleLeftCycles, rightCycles: frame.appleRightCycles).frame(minWidth: 280)
+                            posePanel("MediaPipe Full", pose: frame.mediaPipe, cycles: frame.mediaPipeCycles,
+                                      leftCycles: frame.mediaPipeLeftCycles, rightCycles: frame.mediaPipeRightCycles).frame(minWidth: 280)
                         }
                         VStack(spacing: 16) {
-                            posePanel("Apple Vision", pose: frame.apple, cycles: frame.appleCycles)
-                            posePanel("MediaPipe Full", pose: frame.mediaPipe, cycles: frame.mediaPipeCycles)
+                            posePanel("Apple Vision", pose: frame.apple, cycles: frame.appleCycles,
+                                      leftCycles: frame.appleLeftCycles, rightCycles: frame.appleRightCycles)
+                            posePanel("MediaPipe Full", pose: frame.mediaPipe, cycles: frame.mediaPipeCycles,
+                                      leftCycles: frame.mediaPipeLeftCycles, rightCycles: frame.mediaPipeRightCycles)
                         }
                     }
                     if let stillError { Text(stillError).foregroundStyle(.red) }
@@ -210,6 +233,8 @@ struct StationRecordingDetailView: View {
         .onAppear {
             guard access.validate() else { dismiss(); return }
             actualReps = recording.actualReps.map(String.init) ?? ""
+            actualLeftReps = recording.actualLeftReps.map(String.init) ?? ""
+            actualRightReps = recording.actualRightReps.map(String.init) ?? ""
             previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
         }
         .onChange(of: replay.isRunning) { _, running in
@@ -228,16 +253,19 @@ struct StationRecordingDetailView: View {
             stillModel.clear()
             shareItems = nil
             actualReps = ""
+            actualLeftReps = ""
+            actualRightReps = ""
             error = nil
             selectedIndex = 0
-            editingCount = false
+            editingCount = nil
             dismiss()
         }
         .task(id: frame?.timestamp ?? 0) { await loadStill(at: frame?.timestamp ?? 0) }
         .sheet(item: $shareItems) { items in StationShareSheet(urls: items.urls, access: access) }
     }
 
-    private func posePanel(_ title: String, pose: StationReplayPose, cycles: Int) -> some View {
+    private func posePanel(_ title: String, pose: StationReplayPose, cycles: Int,
+                           leftCycles: Int?, rightCycles: Int?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(title).font(.headline)
             ZStack {
@@ -251,8 +279,15 @@ struct StationRecordingDetailView: View {
             }
             .aspectRatio(recording.imageAspectRatio, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 12))
-            Text("\(pose.personCount) people · \(pose.milliseconds, specifier: "%.1f") ms · \(cycles) angle cycles")
-                .font(.caption).monospacedDigit()
+            if recording.exercise == .curl {
+                Text("\(pose.personCount) people · \(pose.milliseconds, specifier: "%.1f") ms")
+                    .font(.caption).monospacedDigit()
+                Text(curlCycles(left: leftCycles, right: rightCycles) ?? "Run comparison again for per-arm counts.")
+                    .font(.caption).monospacedDigit()
+            } else {
+                Text("\(pose.personCount) people · \(pose.milliseconds, specifier: "%.1f") ms · \(cycles) angle cycles")
+                    .font(.caption).monospacedDigit()
+            }
             Text(jointSummary(pose)).font(.system(.caption, design: .monospaced))
                 .textSelection(.enabled)
         }
@@ -272,10 +307,55 @@ struct StationRecordingDetailView: View {
     private func saveCount() {
         guard access.validate() else { return }
         do {
-            try StationRecordingStore(session: access.session).updateActualReps(actualReps.isEmpty ? nil : Int(actualReps), for: recording.id)
-            editingCount = false
+            let store = try StationRecordingStore(session: access.session)
+            if recording.exercise == .curl {
+                guard validRepInput(actualLeftReps), validRepInput(actualRightReps) else { throw StationRecordingError.invalidReps }
+                try store.updateActualCurlReps(left: Int(actualLeftReps), right: Int(actualRightReps), for: recording.id)
+            } else {
+                try store.updateActualReps(actualReps.isEmpty ? nil : Int(actualReps), for: recording.id)
+            }
+            editingCount = nil
             error = nil
         } catch { self.error = error.localizedDescription }
+    }
+
+    private var curlCountLabels: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Actual reps by arm").font(.headline)
+            Text("Left and right refer to your body, not the sides of the screen. Leave a count blank if unknown.")
+                .font(.subheadline).foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Left arm")
+                    TextField("Actual left reps", text: $actualLeftReps)
+                        .keyboardType(.numberPad).textFieldStyle(.roundedBorder).focused($editingCount, equals: .left)
+                        .accessibilityIdentifier("station.recordingActualLeftReps")
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Right arm")
+                    TextField("Actual right reps", text: $actualRightReps)
+                        .keyboardType(.numberPad).textFieldStyle(.roundedBorder).focused($editingCount, equals: .right)
+                        .accessibilityIdentifier("station.recordingActualRightReps")
+                }
+            }
+            Button("Save arm counts") { saveCount() }
+                .disabled(!validRepInput(actualLeftReps) || !validRepInput(actualRightReps))
+                .accessibilityIdentifier("station.saveRecordingArmCounts")
+            if let previous = recording.actualReps {
+                Text("Previous single count: \(previous) (arm unspecified). This older label is kept separately.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("station.recordingLegacyCurlCount")
+            }
+        }
+    }
+
+    private func validRepInput(_ value: String) -> Bool {
+        value.isEmpty || Int(value).map { (0...1_000).contains($0) } == true
+    }
+
+    private func curlCycles(left: Int?, right: Int?) -> String? {
+        guard let left, let right else { return nil }
+        return "Left arm \(left) · Right arm \(right)"
     }
 
     private func share() {

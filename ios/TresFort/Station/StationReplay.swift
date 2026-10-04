@@ -32,7 +32,13 @@ struct StationReplayFrame: Codable, Equatable {
     let mediaPipeLandmarks: [[StationMediaPipeLandmark]]
     let mediaPipeWorldLandmarks: [[StationMediaPipeWorldLandmark]]
     let appleCycles: Int
+    // For curls these legacy scalar fields contain max(left, right), never
+    // their sum. New displays use the explicit per-arm fields below.
     let mediaPipeCycles: Int
+    var appleLeftCycles: Int? = nil
+    var appleRightCycles: Int? = nil
+    var mediaPipeLeftCycles: Int? = nil
+    var mediaPipeRightCycles: Int? = nil
 }
 
 struct StationReplayReport: Codable {
@@ -46,6 +52,7 @@ struct StationReplayReport: Codable {
     let osVersion: String
     let appBuild: String
     let frames: [StationReplayFrame]
+    var counterVersion: String? = nil
 }
 
 enum StationReplayError: LocalizedError {
@@ -87,8 +94,8 @@ enum StationReplayWorker {
         let vision = VNDetectHumanBodyPoseRequest()
         let mediaPipe = try StationMediaPipeDetector()
         var frames: [StationReplayFrame] = []
-        var appleCounter = StationRepCounter(exercise: recording.exercise)
-        var mediaPipeCounter = StationRepCounter(exercise: recording.exercise)
+        var appleCounter = StationMovementCounter(exercise: recording.exercise)
+        var mediaPipeCounter = StationMovementCounter(exercise: recording.exercise)
         var previousTimestamp = -Double.infinity
         var previousMilliseconds = -1
         while let buffer = try session.withAccess({ output.copyNextSampleBuffer() }) {
@@ -116,7 +123,9 @@ enum StationReplayWorker {
                 mediaPipeCounter.process(mp.sample(at: timestamp))
                 return StationReplayFrame(timestamp: timestamp, apple: apple, mediaPipe: mp,
                                           mediaPipeLandmarks: result.poses, mediaPipeWorldLandmarks: result.worldPoses,
-                                          appleCycles: appleCounter.count, mediaPipeCycles: mediaPipeCounter.count)
+                                          appleCycles: appleCounter.count, mediaPipeCycles: mediaPipeCounter.count,
+                                          appleLeftCycles: appleCounter.leftCount, appleRightCycles: appleCounter.rightCount,
+                                          mediaPipeLeftCycles: mediaPipeCounter.leftCount, mediaPipeRightCycles: mediaPipeCounter.rightCount)
             }
             try session.requireActive()
             frames.append(frame)
@@ -132,7 +141,7 @@ enum StationReplayWorker {
                                    mediaPipeModelSHA256: StationMediaPipeDetector.modelSHA256,
                                    osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
                                    appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
-                                   frames: frames)
+                                   frames: frames, counterVersion: "independent-curl-arms-v1")
     }
 
     static func validatedMilliseconds(_ timestamp: Double, after previous: Double,

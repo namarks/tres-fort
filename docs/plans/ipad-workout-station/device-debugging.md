@@ -23,7 +23,10 @@ uses MediaPipe live tracking and captures silent video and one measurement row f
 processed camera frame. Camera shutdown or rotation ends a partial clip; no
 recording resumes automatically. Twenty clips maximum, with explicit deletion.
 
-Open **Saved tests**, select the clip and save its actual rep count. **Compare
+Open **Saved tests**, select the clip and save its actual rep count. Curl tests
+have separate body-left and body-right labels and comparison counts; leave
+unknown labels blank, and rerun older comparisons to obtain per-arm results.
+**Compare
 Apple and MediaPipe** decodes each frame once and runs both detectors on those
 pixels with the same orientation/time, then shows synchronized frame scrubbing.
 The replay's two angle-cycle counts use the same experimental 2D rule; they

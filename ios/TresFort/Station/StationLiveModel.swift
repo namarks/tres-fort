@@ -22,13 +22,17 @@ final class StationLiveModel: ObservableObject {
     }
 
     @Published private(set) var count = 0
+    @Published private(set) var leftCount: Int?
+    @Published private(set) var rightCount: Int?
+    @Published private(set) var leftStatus: StationTrackingStatus?
+    @Published private(set) var rightStatus: StationTrackingStatus?
     @Published private(set) var status: StationTrackingStatus = .seekingPosition
     @Published private(set) var state: State = .idle
     @Published private(set) var hasIncompleteCoverage = false
     @Published private(set) var observedFrames = 0
     @Published private(set) var observedFPS: Double?
     @Published private(set) var inferenceMilliseconds: Double?
-    private var counter = StationRepCounter(exercise: .squat)
+    private var counter = StationMovementCounter(exercise: .squat)
     private var exercise: StationExercise = .squat
     private var firstTimestamp: TimeInterval?
     private var lastTimestamp: TimeInterval?
@@ -37,6 +41,10 @@ final class StationLiveModel: ObservableObject {
         self.exercise = exercise
         counter.reset(exercise: exercise)
         count = 0
+        leftCount = counter.leftCount
+        rightCount = counter.rightCount
+        leftStatus = counter.leftStatus
+        rightStatus = counter.rightStatus
         status = .seekingPosition
         state = .idle
         hasIncompleteCoverage = false
@@ -74,8 +82,14 @@ final class StationLiveModel: ObservableObject {
         if let lastTimestamp, sample.timestamp - lastTimestamp > 0.5 { hasIncompleteCoverage = true }
         counter.process(sample)
         count = counter.count
+        leftCount = counter.leftCount
+        rightCount = counter.rightCount
+        leftStatus = counter.leftStatus
+        rightStatus = counter.rightStatus
         status = counter.status
-        if status == .trackingLost { hasIncompleteCoverage = true }
+        if status == .trackingLost || leftStatus == .trackingLost || rightStatus == .trackingLost {
+            hasIncompleteCoverage = true
+        }
         observedFrames += 1
         firstTimestamp = firstTimestamp ?? sample.timestamp
         lastTimestamp = sample.timestamp
@@ -101,8 +115,10 @@ final class StationLiveModel: ObservableObject {
         StationComparisonDiagnosticSnapshot(
             exercise: exercise.rawValue, state: state.isCollecting ? "collecting" : "stopped",
             admission: status == .trackingLost ? "unclear_joints" : "observed",
-            accepted: observedFrames, customCount: count, custom: counter.diagnosticSnapshot,
-            detector: StationPoseDetector.mediaPipe.rawValue)
+            accepted: observedFrames, customCount: count, custom: counter.diagnosticSnapshot ?? StationCounterDiagnosticSnapshot(),
+            detector: StationPoseDetector.mediaPipe.rawValue,
+            leftCount: leftCount, rightCount: rightCount,
+            leftCounter: counter.leftDiagnosticSnapshot, rightCounter: counter.rightDiagnosticSnapshot)
     }
 #endif
 }

@@ -16,7 +16,7 @@ enum StationExercise: String, CaseIterable, Identifiable {
     var guidance: String {
         switch self {
         case .squat: return "Keep your hips, knees and ankles visible. Stand tall, then squat and stand. Try front-facing and side views in separate tests."
-        case .curl: return "Show your shoulder, elbow and wrist from the side. Lower your arm, then lift and lower."
+        case .curl: return "Keep your shoulder, elbow and wrist visible. Lower each arm, then curl and lower. Each arm counts separately; a side view can make the elbow bend clearer."
         case .benchPress: return "Show your shoulder, elbow and wrist from the side. Start with arms extended, then lower and press."
         }
     }

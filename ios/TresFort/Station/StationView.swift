@@ -294,9 +294,20 @@ struct StationView: View {
             Text(exercise.title.uppercased())
                 .font(Theme.display(30)).foregroundStyle(Theme.text)
                 .accessibilityIdentifier("station.movement")
-            countTile(title: "MediaPipe", value: String(comparison.count),
-                      detail: comparison.state.isCollecting ? comparison.status.message : "Complete movement cycles",
-                      identifier: "station.repCount", spokenValue: "MediaPipe: \(comparison.count) reps")
+            if exercise == .curl {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(spacing: 12) { curlCountTiles }
+                } else {
+                    HStack(alignment: .top, spacing: 12) { curlCountTiles }
+                }
+                Text("Each arm is counted separately. Left and right refer to your body.")
+                    .font(.caption).foregroundStyle(Theme.muted)
+                    .multilineTextAlignment(.center)
+            } else {
+                countTile(title: "MediaPipe", value: String(comparison.count),
+                          detail: comparison.state.isCollecting ? comparison.status.message : "Complete movement cycles",
+                          identifier: "station.repCount", spokenValue: "MediaPipe: \(comparison.count) reps")
+            }
             Text(comparison.state.message)
                 .font(.headline).foregroundStyle(Theme.muted)
                 .multilineTextAlignment(.center)
@@ -333,7 +344,12 @@ struct StationView: View {
             .disabled(camera.state != .running || recordingBusy)
             .accessibilityIdentifier("station.trial")
 
-            if hasRunTrial && comparison.state.isTerminal { referenceCount }
+            if hasRunTrial && comparison.state.isTerminal {
+                if exercise == .curl {
+                    Text("For a recorded test, enter the actual count for each arm in Saved tests.")
+                        .font(.subheadline).foregroundStyle(Theme.muted)
+                } else { referenceCount }
+            }
             if hasRunTrial { timingDetails }
             Text("Trial only · No sets are saved")
                 .font(.subheadline).foregroundStyle(Theme.muted)
@@ -342,6 +358,15 @@ struct StationView: View {
         }
         .padding(20).frame(maxWidth: .infinity)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 20))
+    }
+
+    @ViewBuilder private var curlCountTiles: some View {
+        countTile(title: "Left arm", value: String(comparison.leftCount ?? 0),
+                  detail: comparison.state.isCollecting ? (comparison.leftStatus?.message ?? "Step into view") : "MediaPipe",
+                  identifier: "station.leftRepCount", spokenValue: "Left arm: \(comparison.leftCount ?? 0) reps")
+        countTile(title: "Right arm", value: String(comparison.rightCount ?? 0),
+                  detail: comparison.state.isCollecting ? (comparison.rightStatus?.message ?? "Step into view") : "MediaPipe",
+                  identifier: "station.rightRepCount", spokenValue: "Right arm: \(comparison.rightCount ?? 0) reps")
     }
 
     private func countTile(title: String, value: String, detail: String,

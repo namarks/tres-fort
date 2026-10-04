@@ -21,6 +21,9 @@ may turn detections into durable workout actions.
     Retain Apple Vision in saved-video comparison on identical frames.
   - Bound queued work, fence late results by trial and account session, and make
     incomplete coverage or inference failure visible.
+  - Count curls independently for body-left and body-right arms in live mode
+    and saved replay. Save actual counts per arm; never double bilateral reps
+    into one displayed total or assign an old unspecified label to an arm.
   - Keep trials isolated from SyncModel writes, outboxes, rest and progression.
   - Reset movement history after missing joints or a pose gap;
     reacquire a stable view and keep the whole trial visibly partial. Additional
@@ -68,8 +71,10 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Finish PR #228's exact-head review and required checks; Nick
-owns merge. MediaPipe live source `23ef59f6bade9f464d79c9d59564badd97de5722` is
+**Now (@agent):** The independent-arm curl correction is built and locally
+verified; install when the owner confirms the camera is off and the iPad is
+unlocked, then finish PR #228's
+exact-head review and required checks; Nick owns merge. MediaPipe live source `23ef59f6bade9f464d79c9d59564badd97de5722` is
 signed, verified and installed in place over the paired iPad's active Wi-Fi
 connection. The owner completed and transferred one combined front/side squat
 clip; both real native detectors ran on all 388 frames. The live-default change,
@@ -105,6 +110,29 @@ automatic workout actions remain unvalidated. No unattended recording is request
 
 ## Implementation evidence
 
+- On 2026-10-04 the owner reported improved tracking but curls failing on one
+  side. The exact counter reproduced zero counts for three curls when the
+  opposite stationary arm had a higher confidence score; mirroring sides had
+  the same result. This proves a software failure mode, not the precise cause
+  of the owner's reported failure. No confidence or angle cutoff was lowered.
+- `StationMovementCounter` now runs two independent fixed-arm counters for
+  curls, sharing the existing endpoint, timing, person and tracking-loss rules.
+  One arm cannot steal selection from, finish a cycle for, or reset the other.
+  Squat and bench behavior use the unchanged baseline. Live/replay show each
+  arm's count/status, and optional saved labels distinguish unknown from zero.
+  Old single labels remain unspecified; old comparisons can be rerun for new
+  per-arm results. The compatibility scalar is max(left, right), never a sum;
+  curl displays use the per-arm fields. Replay metadata records counter version.
+
+- Curl correction verification: 121 unit cases passed, one native-only Apple
+  replay case skipped, and all four Station UI journeys passed on iPad A16.
+  Every current Swift file matches the tested snapshot at
+  `.artifacts/ios/tres-fort-ios.GVIxvi/`. Signed native compilation and both
+  signature/profile checks pass (`curl-independent-arms-build.log`,
+  `curl-signed-verification.json` under `.artifacts/station-device/`). Independent
+  local reviews found no blockers. The curl build has not been installed;
+  physical readiness confirmation is pending. No owner camera was started or
+  stopped, and no test recording was changed. Exact-head PR gates remain required.
 - First owner clip: 25.8 seconds, 388 paired frames, one person detected in every
   frame by both models. Original shared angle-rule counts were MediaPipe 9 and
   Apple Vision 1. The owner provisionally reported five front-facing plus five

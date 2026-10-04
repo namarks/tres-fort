@@ -40,6 +40,9 @@ struct StationRecording: Codable, Identifiable, Equatable {
     let appBuild: String
     var actualReps: Int?
     var detector: StationPoseDetector? = nil
+    // Curl labels are independent. Legacy actualReps never identifies an arm.
+    var actualLeftReps: Int? = nil
+    var actualRightReps: Int? = nil
 
     var exercise: StationExercise { StationExercise(rawValue: exerciseRawValue) ?? .squat }
     var imageOrientation: CGImagePropertyOrientation { CGImagePropertyOrientation(rawValue: orientation) ?? .up }
@@ -91,12 +94,13 @@ struct StationRecordingMeasurement: Codable, Equatable {
 }
 
 enum StationRecordingError: LocalizedError {
-    case storageFull, invalidReps, missingRecording, invalidManifest, damagedRecording(UUID), noFrames, encodingFailed
+    case storageFull, invalidReps, perArmRepsRequireCurl, missingRecording, invalidManifest, damagedRecording(UUID), noFrames, encodingFailed
 
     var errorDescription: String? {
         switch self {
         case .storageFull: return "There are 20 saved tests. Delete a test before recording another."
         case .invalidReps: return "Enter an actual rep count between 0 and 1,000."
+        case .perArmRepsRequireCurl: return "Arm counts can only be saved for curl tests."
         case .missingRecording: return "This test is no longer available on this iPad."
         case .invalidManifest: return "This test could not be read."
         case .damagedRecording: return "A saved test is damaged. Delete damaged tests to restore the recording list."
@@ -191,6 +195,8 @@ final class StationRecordingStore: @unchecked Sendable {
               CGImagePropertyOrientation(rawValue: recording.orientation) != nil,
               StationExercise(rawValue: recording.exerciseRawValue) != nil,
               recording.actualReps == nil || (0...1_000).contains(recording.actualReps!),
+              recording.actualLeftReps == nil || (0...1_000).contains(recording.actualLeftReps!),
+              recording.actualRightReps == nil || (0...1_000).contains(recording.actualRightReps!),
               recording.imageAspectRatio.isFinite, recording.imageAspectRatio > 0,
               FileManager.default.fileExists(atPath: try videoURL(for: id).path),
               FileManager.default.fileExists(atPath: try measurementsURL(for: id).path) else {
@@ -218,6 +224,22 @@ final class StationRecordingStore: @unchecked Sendable {
         recording.actualReps = reps
         try JSONEncoder().encode(recording).write(to: manifestURL(for: id), options: [.atomic, .completeFileProtection])
         return recording
+        }
+    }
+
+    @discardableResult
+    func updateActualCurlReps(left: Int?, right: Int?, for id: UUID) throws -> StationRecording {
+        try session.withAccess {
+            guard left == nil || (0...1_000).contains(left!),
+                  right == nil || (0...1_000).contains(right!) else { throw StationRecordingError.invalidReps }
+            var recording = try load(id: id)
+            guard recording.exercise == .curl else { throw StationRecordingError.perArmRepsRequireCurl }
+            recording.actualLeftReps = left
+            recording.actualRightReps = right
+            // Retain the previous unspecified label for provenance. Neither it
+            // nor a sum of the two arms is a per-arm ground-truth count.
+            try JSONEncoder().encode(recording).write(to: manifestURL(for: id), options: [.atomic, .completeFileProtection])
+            return recording
         }
     }
 

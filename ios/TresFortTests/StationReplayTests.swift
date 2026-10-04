@@ -3,6 +3,55 @@ import XCTest
 @testable import TresFort
 
 final class StationReplayTests: XCTestCase {
+    func testLegacyReportKeepsPerArmCountsAndCounterVersionUnknownAfterRoundTrip() throws {
+        let report = try JSONDecoder().decode(StationReplayReport.self, from: legacyReportData)
+        let frame = try XCTUnwrap(report.frames.first)
+        XCTAssertEqual(frame.appleCycles, 3)
+        XCTAssertEqual(frame.mediaPipeCycles, 7)
+        XCTAssertNil(frame.appleLeftCycles)
+        XCTAssertNil(frame.appleRightCycles)
+        XCTAssertNil(frame.mediaPipeLeftCycles)
+        XCTAssertNil(frame.mediaPipeRightCycles)
+        XCTAssertNil(report.counterVersion)
+
+        let encoded = try JSONEncoder().encode(report)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let encodedFrame = try XCTUnwrap((object["frames"] as? [[String: Any]])?.first)
+        for key in ["appleLeftCycles", "appleRightCycles", "mediaPipeLeftCycles", "mediaPipeRightCycles"] {
+            XCTAssertNil(encodedFrame[key], "Legacy totals must not invent per-arm evidence")
+        }
+        XCTAssertNil(object["counterVersion"])
+        let restored = try JSONDecoder().decode(StationReplayReport.self, from: encoded)
+        XCTAssertEqual(restored.frames, report.frames)
+        XCTAssertNil(restored.counterVersion)
+    }
+
+    func testCurrentReportRoundTripsIndependentArmCountsIncludingObservedZero() throws {
+        let legacy = try JSONDecoder().decode(StationReplayReport.self, from: legacyReportData)
+        var frame = try XCTUnwrap(legacy.frames.first)
+        frame.appleLeftCycles = 3
+        frame.appleRightCycles = 1
+        frame.mediaPipeLeftCycles = 7
+        frame.mediaPipeRightCycles = 0
+        let report = StationReplayReport(schemaVersion: legacy.schemaVersion, recordingID: legacy.recordingID,
+            createdAt: legacy.createdAt, appleRevision: legacy.appleRevision, mediaPipeModel: legacy.mediaPipeModel,
+            mediaPipeRuntime: legacy.mediaPipeRuntime, mediaPipeModelSHA256: legacy.mediaPipeModelSHA256,
+            osVersion: legacy.osVersion, appBuild: legacy.appBuild, frames: [frame],
+            counterVersion: "independent-curl-arms-v1")
+
+        let encoded = try JSONEncoder().encode(report)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let encodedFrame = try XCTUnwrap((object["frames"] as? [[String: Any]])?.first)
+        XCTAssertEqual(encodedFrame["appleLeftCycles"] as? Int, 3)
+        XCTAssertEqual(encodedFrame["appleRightCycles"] as? Int, 1)
+        XCTAssertEqual(encodedFrame["mediaPipeLeftCycles"] as? Int, 7)
+        XCTAssertEqual(encodedFrame["mediaPipeRightCycles"] as? Int, 0)
+        XCTAssertEqual(object["counterVersion"] as? String, "independent-curl-arms-v1")
+        let restored = try JSONDecoder().decode(StationReplayReport.self, from: encoded)
+        XCTAssertEqual(restored.frames, [frame])
+        XCTAssertEqual(restored.counterVersion, report.counterVersion)
+    }
+
     func testInvalidTimestampsFailBeforeIntegerConversion() throws {
         for timestamp in [Double.nan, .infinity, -.infinity, .greatestFiniteMagnitude, -1, 47] {
             XCTAssertThrowsError(try StationReplayWorker.validatedMilliseconds(timestamp, after: -1, previousMilliseconds: -1))
@@ -60,6 +109,7 @@ final class StationReplayTests: XCTestCase {
         XCTAssertEqual(report.frames.first?.timestamp, 0)
         XCTAssertEqual(report.frames.last?.timestamp ?? -1, recording.durationSeconds, accuracy: 0.001)
         XCTAssertEqual(report.mediaPipeModelSHA256, StationMediaPipeDetector.modelSHA256)
+        XCTAssertEqual(report.counterVersion, "independent-curl-arms-v1")
         XCTAssertTrue(report.frames.allSatisfy { $0.apple.personCount == 0 && $0.mediaPipe.personCount == 0 })
         XCTAssertTrue(report.frames.allSatisfy { $0.appleCycles == 0 && $0.mediaPipeCycles == 0 })
         XCTAssertTrue(report.frames.allSatisfy { $0.apple.milliseconds >= 0 && $0.mediaPipe.milliseconds >= 0 })
@@ -111,5 +161,32 @@ final class StationReplayTests: XCTestCase {
                 } catch { continuation.resume(throwing: error) }
             }
         }
+    }
+
+    /// Explicit pre-arm-count wire format, with nonzero legacy totals. A
+    /// decoder must preserve the missing evidence instead of assigning a side.
+    private var legacyReportData: Data {
+        Data("""
+        {
+          "schemaVersion": 1,
+          "recordingID": "58D69D1A-1F63-452C-B189-2FCB6DF24D99",
+          "createdAt": 0,
+          "appleRevision": 1,
+          "mediaPipeModel": "synthetic-model",
+          "mediaPipeRuntime": "synthetic-runtime",
+          "mediaPipeModelSHA256": "synthetic-sha",
+          "osVersion": "test-os",
+          "appBuild": "test-build",
+          "frames": [{
+            "timestamp": 0.25,
+            "apple": { "personCount": 0, "joints": {}, "milliseconds": 1 },
+            "mediaPipe": { "personCount": 0, "joints": {}, "milliseconds": 2 },
+            "mediaPipeLandmarks": [],
+            "mediaPipeWorldLandmarks": [],
+            "appleCycles": 3,
+            "mediaPipeCycles": 7
+          }]
+        }
+        """.utf8)
     }
 }

@@ -41,6 +41,10 @@ struct StationComparisonDiagnosticSnapshot: Codable, Equatable {
     var custom = StationCounterDiagnosticSnapshot()
     var apple: StationAppleDiagnosticSnapshot?
     var detector: String?
+    var leftCount: Int?
+    var rightCount: Int?
+    var leftCounter: StationCounterDiagnosticSnapshot?
+    var rightCounter: StationCounterDiagnosticSnapshot?
 }
 
 extension StationComparisonState {
@@ -196,6 +200,14 @@ final class StationDiagnostics: ObservableObject {
             snapshot.custom.angle = nil
             snapshot.custom.minimumConfidence = nil
         }
+        if snapshot.leftCounter?.timestamp != pose?.timestamp {
+            snapshot.leftCounter?.angle = nil
+            snapshot.leftCounter?.minimumConfidence = nil
+        }
+        if snapshot.rightCounter?.timestamp != pose?.timestamp {
+            snapshot.rightCounter?.angle = nil
+            snapshot.rightCounter?.minimumConfidence = nil
+        }
         self.pose = pose
         self.snapshot = snapshot
         let time = now()
@@ -207,7 +219,10 @@ final class StationDiagnostics: ObservableObject {
             angleMinimum = min(angleMinimum ?? angle, angle)
             angleMaximum = max(angleMaximum ?? angle, angle)
         }
-        let signature = "\(snapshot.state):\(snapshot.admission):\(snapshot.custom.phase)"
+        var signature = "\(snapshot.state):\(snapshot.admission):\(snapshot.custom.phase)"
+        if let left = snapshot.leftCounter, let right = snapshot.rightCounter {
+            signature += ":left=\(left.phase):right=\(right.phase)"
+        }
         if signature != lastSignature {
             changes.append(signature)
             if changes.count > 8 { changes.removeFirst(changes.count - 8) }
@@ -262,6 +277,16 @@ final class StationDiagnostics: ObservableObject {
         let scale = pose?.torsoScale.map { String(format: "%.2f", $0) } ?? "—"
         let engineDetail = snapshot.detector == "mediaPipe" ? "MediaPipe live" : "Apple \(snapshot.appleWarmup)/90 · restarts \(snapshot.interruptedSegments)"
         latestSummary = "\(snapshot.state) · \(decision)\n\(checkedJoints.joined(separator: ", "))\n\(quality)\nAngle \(angle) · \(snapshot.custom.phase) · accepted \(snapshot.accepted), rejected \(snapshot.rejected)\n\(engineDetail)\nHip y \(hip) · torso scale \(scale)"
+        if let left = snapshot.leftCounter, let right = snapshot.rightCounter {
+            func arm(_ name: String, _ value: StationCounterDiagnosticSnapshot, _ count: Int?) -> String {
+                let angle = value.angle.map { String(format: "%.0f°", $0) } ?? "—"
+                let confidence = value.minimumConfidence.map { String(format: "%.2f", $0) } ?? "—"
+                return "\(name): \(count ?? 0) · \(angle) · \(value.phase) · score \(confidence)"
+            }
+            latestSummary = "\(snapshot.state) · MediaPipe live\n\(quality)\n"
+                + arm("Left arm", left, snapshot.leftCount) + "\n"
+                + arm("Right arm", right, snapshot.rightCount)
+        }
         emit("STATION_DIAGNOSTIC " + json)
     }
 

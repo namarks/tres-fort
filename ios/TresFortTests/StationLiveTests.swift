@@ -95,4 +95,31 @@ final class StationLiveTests: XCTestCase {
         XCTAssertNil(legacy.detector)
         XCTAssertEqual(legacy.visionMilliseconds, 6)
     }
+
+    func testCurlsPublishBothArmsWithoutFollowingTheClearerRestingArm() {
+        let model = StationLiveModel()
+        model.start(exercise: .curl)
+        let angles = [170.0, 170, 170, 130, 90, 50, 50, 50, 90, 130, 170, 170, 170]
+        for (i, angle) in angles.enumerated() {
+            func arm(_ side: String, angle: Double, score: Float) -> [StationJoint: StationJointPoint] {
+                let radians = angle * .pi / 180
+                let keys: [StationJoint] = side == "left"
+                    ? [.leftShoulder, .leftElbow, .leftWrist] : [.rightShoulder, .rightElbow, .rightWrist]
+                return [keys[0]: .init(x: 0.5, y: 0.8, confidence: score),
+                        keys[1]: .init(x: 0.5, y: 0.5, confidence: score),
+                        keys[2]: .init(x: 0.5 + sin(radians) * 0.25, y: 0.5 + cos(radians) * 0.25, confidence: score)]
+            }
+            let joints = arm("left", angle: angle, score: 0.8)
+                .merging(arm("right", angle: 170, score: 0.95), uniquingKeysWith: { first, _ in first })
+            model.process(StationComparisonFrame(sample: .init(timestamp: Double(i) * 0.1, joints: joints, personCount: 1),
+                                                 inferenceMilliseconds: 25, imageAspectRatio: 1, detector: .mediaPipe))
+        }
+        XCTAssertEqual(model.leftCount, 1)
+        XCTAssertEqual(model.rightCount, 0)
+        XCTAssertEqual(model.count, 1)
+        model.reset(exercise: .squat)
+        XCTAssertNil(model.leftCount)
+        XCTAssertNil(model.rightCount)
+        XCTAssertEqual(model.count, 0)
+    }
 }

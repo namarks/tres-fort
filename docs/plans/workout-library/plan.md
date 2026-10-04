@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: gated · Updated: 2026-09-19 · Theme: gym-floor
+Slug: workout-library · Status: active · Updated: 2026-10-03 · Theme: gym-floor
 
 ## Goal
 
@@ -306,6 +306,58 @@ No second editor, no per-session template copies, no weeks table.
       scrolling responsive and preserve text accessibility; visuals must not
       push the prescription or primary workout action out of reach.
 
+- [x] **P0.6 — Focus the gym workflow**
+  - The October 3 design audit and owner approval activate this implementation.
+    Use the Focus direction: keep the current exercise, combined load/reps
+    entry and logging action central; retain the dark/amber visual language.
+  - [x] **(a) Implementation and local verification**
+    - Reserve compact rest and correction space beside the logging action.
+      Keep End rest separate when the timer expires; offer the large clock
+      explicitly. Collapse unloaded bodyweight input behind Add load/assistance.
+    - Show the current circuit round, every member and the next member's target
+      compactly. Name the single-set mutation Log set, including circuits.
+    - Consolidate exercise navigation, set review/corrections, swap, skip and
+      options into Workout outline. Browsing during an active timed set must
+      preserve its executing slot and deadline. Keep model-owned drafts,
+      signed assistance, load units and per-side/per-hand semantics intact.
+    - Hide tabs in the focused workout; offer Minimize and a clear Resume
+      workout route. Preserve timers and entries across tab navigation.
+    - Separate date selection from library management, start/continue today's
+      workout directly from Calendar, and collapse completed sets beneath
+      exercise summaries. Finish feedback remains optional.
+    - Verify compact-phone and accessibility layouts with synthetic native
+      journeys, exercise groups, timers, recovery and correction flows. Require
+      independent review and all applicable CI checks on the final PR head.
+    - Implemented in [PR #229](https://github.com/namarks/tres-fort/pull/229).
+      Compact rest keeps separate End rest and logging controls; Workout outline
+      holds secondary actions. Minimize/Resume also retains a Review workout
+      route when the final timed set completes on another tab. Calendar starts
+      prepare rest notifications and revalidate the selected session afterward.
+    - Local verification executed 679 existing unit tests with zero failures
+      and one simulator-only file-protection skip. All eight group-presentation
+      tests passed, including six new next-member regressions. Fifty-one distinct
+      native UI journeys passed across the final targeted runs and repaired-case
+      repeats on iPhone 16e / iOS 26.2. Coverage includes accessible rest/logging,
+      exact correction, per-side and signed load entry, timed browsing/recovery,
+      date selection, unresolved-record expansion/correction, schedule
+      conflict/retry and optional finish feedback. The compact rest row only
+      creates its periodic timeline while a rest deadline exists.
+      Native screenshots were inspected. The empty correction reservation uses
+      a layout spacer so it does not expose an unnamed accessibility element.
+      PR #229 merged as `e3251de` after independent review on head `343fb2e`
+      and all eight required checks passed. The merged tree equals the reviewed
+      tree. Final CI executed 685 unit tests (684 passed, one simulator skip)
+      and passed 12 UI smoke journeys. Physical-device and manual VoiceOver
+      acceptance remain unverified.
+  - [x] **(b) Client distribution**
+    - The owner requested TestFlight distribution on October 3. [Build 47's
+      receipt](../app-store-submission/release-47.md) records successful upload
+      from `e3251de`, Apple VALID / IN_BETA_TESTING and internal Testers assignment.
+      The owner separately approved the matching Worker deployment to repair
+      pre-existing slot-edit version handling; no migration was needed.
+      Previously deferred physical-device and live-account checks remain open.
+      App Review still selects build 40; no public release occurred.
+
 - [x] **P1 — Library metadata: tags and archive**
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work
@@ -451,14 +503,18 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@owner):** Test the deferred authenticated workout paths on a device
-using internal TestFlight 1.0 (44), including metadata, freestyle recovery/save
-and session swaps. P1/P2 backend and internal client delivery are complete under
-the explicit build-44 verification exception; do not reinstate its upload gate.
-P0.2(b) live verification and physical/VoiceOver acceptance remain open. See the
-[release receipt](../app-store-submission/release-44.md). Preview thumbnails
-P0.5(c) still require activation. Ordered multi-session work proceeds in the
-workouts-and-multi-session plan; wider onboarding and RPE semantics remain separate.
+**Now (@agent):** P0.6 is delivered in [TestFlight 1.0 (47)](../app-store-submission/release-47.md)
+from reviewed merged source `e3251de`; Apple confirms internal Testers availability.
+The separately approved compatible Worker is serving that source at 100% traffic.
+
+**Deferred owner verification:** Use build 47 to test authenticated workout paths
+on a device, including slot edits/reordering, metadata, freestyle recovery/save
+and session swaps, plus the focused runner at ordinary and accessibility sizes.
+P1/P2 backend and internal client delivery were completed under the explicit
+build-44 verification exception; those live checks remain unperformed, not passed.
+P0.2(b) live verification and physical/VoiceOver acceptance remain open. Preview
+thumbnails P0.5(c) still require activation. Ordered multi-session work proceeds
+in the workouts-and-multi-session plan; wider onboarding and RPE semantics remain separate.
 
 **P1 repository evidence (September 19):** Migration 0053, atomic REST/MCP
 metadata writes, snapshot/rebuild preservation and archive assignment fences
@@ -478,12 +534,11 @@ records production and internal-client delivery evidence, with the approved
 live-verification deferral stated above. A pre-metadata Worker is unsafe to restore after
 metadata writes because its rebuild/snapshots omit the fields.
 
-**Current client distribution:** [TestFlight 1.0 (44)](../app-store-submission/release-44.md)
-includes P1 tags/archive, P2 freestyle/save and the canonical workout contract.
+**Current client distribution:** [TestFlight 1.0 (47)](../app-store-submission/release-47.md)
+includes the Focus workflow and the earlier library/canonical-workout changes.
 Apple confirmed VALID / IN_BETA_TESTING and internal Testers assignment on
-September 19 Pacific. Build 40 remains IN_REVIEW with MANUAL release and is
-incompatible with the canonical backend; replacing it is a separate App Review
-action. No public release is authorized by this beta.
+October 3. The selected App Review build remains 40, now REJECTED, with MANUAL
+release; replacing it is a separate App Review action. No public release occurred.
 
 **Previous client distribution:** [TestFlight 1.0 (43)](../app-store-submission/release-43.md)
 contains the usability and accessibility fixes in PRs #209/#210 plus the shared

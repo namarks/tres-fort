@@ -61,7 +61,8 @@ final class AppStoreScreenshotTests: XCTestCase {
         let log = app.buttons["LOG SET 1"]
         XCTAssertTrue(log.waitForExistence(timeout: 5))
         XCTAssertTrue(log.isHittable, "Logging must be available without scrolling")
-        XCTAssertLessThan(log.frame.maxY, app.tabBars.firstMatch.frame.minY)
+        XCTAssertFalse(app.tabBars.firstMatch.exists)
+        XCTAssertTrue(app.frame.contains(log.frame))
         capture("02-runner")
         tap(app.buttons["today.workoutActions"], in: app)
         tap(app.buttons["Finish workout"], in: app)

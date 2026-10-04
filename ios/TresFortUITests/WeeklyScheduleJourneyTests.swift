@@ -136,10 +136,11 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
         XCTAssertTrue(actions.waitForExistence(timeout: 5))
         actions.tap()
         app.buttons["calendar.chooseWorkout"].tap()
-        let workout = app.buttons["library.workout.synthetic-day"]
+        let workout = app.buttons["workoutPicker.workout.synthetic-day"]
         XCTAssertTrue(workout.waitForExistence(timeout: 5))
         workout.tap()
-        assertPinnedAction("workoutDetails.schedule", in: app)
+        app.buttons["workoutPicker.preview"].tap()
+        assertPinnedAction("workoutPicker.schedule", in: app)
     }
 
     private func assertPinnedAction(_ identifier: String, in app: XCUIApplication) {

@@ -114,16 +114,29 @@ final class ExerciseGroupJourneyTests: XCTestCase {
                 if index == 6 { screenshot("superset-second-round-retains-kilograms") }
             }
             let log = app.buttons["LOG SET \(rounds[index])"]
-            XCTAssertTrue(log.waitForExistence(timeout: 5))
+            if index == 0 {
+                // Before any rest presentation, require an actionable footer;
+                // a visible AX frame alone does not establish tap readiness.
+                let ready = XCTNSPredicateExpectation(
+                    predicate: NSPredicate(format: "exists == true AND enabled == true AND hittable == true"),
+                    object: log)
+                XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 5), .completed)
+            } else {
+                XCTAssertTrue(log.waitForExistence(timeout: 5))
+            }
             XCTAssertTrue(log.isEnabled)
             XCTAssertTrue(app.frame.contains(log.frame))
             XCTAssertGreaterThanOrEqual(log.frame.height, 44)
             if index == 0 || index == 4 { screenshot("group-runner-member-\(index)") }
-            // iOS can report isHittable=false after restoring the rest screen's
-            // navigation chrome even though this visible footer receives taps.
-            // Exercise its actual touch target; the exact next member/rest and
-            // fixture sequence below prove the tap logged one physical set.
-            log.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            if index == 0 {
+                log.tap()
+            } else {
+                // iOS can report isHittable=false after restoring the rest screen's
+                // navigation chrome even though this visible footer receives taps.
+                // Exercise its actual touch target; the exact next member/rest and
+                // fixture sequence below prove the tap logged one physical set.
+                log.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            }
             if index + 1 == names.count {
                 XCTAssertTrue(app.staticTexts["READY TO FINISH"].waitForExistence(timeout: 5))
                 XCTAssertFalse(app.buttons["rest.done"].exists, "Final work must go directly to completion")

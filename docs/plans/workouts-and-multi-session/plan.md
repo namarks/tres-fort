@@ -1,6 +1,6 @@
 # Workouts and Multi-Session Days
 
-Slug: workouts-and-multi-session · Status: active · Updated: 2026-09-19 · Theme: gym-floor
+Slug: workouts-and-multi-session · Status: active · Updated: 2026-10-03 · Theme: gym-floor
 
 ## Goal
 
@@ -180,10 +180,11 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 merge, recovery and outbox isolation, under the canonical client contract. P0(c)
 is implemented with 1,161 backend tests passing and 636 iOS unit tests passing
 (one existing skip). The authorized production migrations and canonical Worker
-release and P0(b) internal TestFlight distribution are complete. Build 44 is
-available to Testers under the specific owner-approved deferral of live
-authenticated workout checks to device testing. Do not repeat this release or
-claim those checks passed; App Review/public-release gates remain separate.
+release and P0(b) internal TestFlight distribution are complete. The current
+[build 47 receipt](../app-store-submission/release-47.md) records internal Testers
+availability and compatible production source `e3251de`. Authenticated workout
+checks deferred with build 44 remain unperformed; App Review/public-release
+gates remain separate.
 
 The owner's 2026-09-19 decision and explicit implementation approval supersede
 the earlier canonical-client minimum-build and observed-cycle dependency.
@@ -207,7 +208,7 @@ version `92adb0e0-28bd-4952-81ad-b09029f75ac9` per the
 retained the adaptive layer and legacy routes. It is no longer serving.
 
 The September 19 [build 44 receipt](../app-store-submission/release-44.md) records
-the current canonical Worker `dcbcc2ba-09dd-4dfb-9d50-c860cc1553d3`, source
+the then-serving canonical Worker `dcbcc2ba-09dd-4dfb-9d50-c860cc1553d3`, source
 `d801e9dbfdb402531ddae6266b9b16e3da46dece`, at 100% traffic. Migrations through
 0054 are applied, with no pending migrations or foreign-key violations. Do not
 repeat A/B or the completed metadata/freestyle migrations and Worker deployment.

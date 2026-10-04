@@ -161,7 +161,10 @@ final class WorkoutFeedbackJourneyTests: XCTestCase {
         openFeedback(app)
         type("Typed before asking to record", app: app)
         let talk = app.buttons["feedback.talk"]
-        app.swipeDown(); reveal(talk, app: app); talk.tap()
+        // Swiping down while the form is already at its top dismisses the
+        // sheet. Scroll back up only when typing left the button off-screen.
+        if !talk.isHittable { app.swipeDown() }
+        reveal(talk, app: app); talk.tap()
         XCTAssertTrue(app.staticTexts["Recording permission is off. You can type instead or skip."].waitForExistence(timeout: 5))
         XCTAssertEqual(app.textViews["feedback.note"].value as? String, "Typed before asking to record")
         app.buttons["Save feedback"].tap()

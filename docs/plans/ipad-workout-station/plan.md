@@ -68,13 +68,13 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Verify the MediaPipe live-default update and account-scoped
-recordings, then finish PR #228's exact-head review and required checks; Nick
-owns merge. The prior record/replay source `7e4941efe4d190be841472154309cebe309474dc`
-is installed over Wi-Fi. The owner completed and transferred one combined
-front/side squat clip. Both real native detectors ran on all 388 frames.
-**Next physical trial (@owner):** After the updated development build is verified
-and installed, test the live count with separate front-facing and side-view
+**Now (@agent):** Finish PR #228's exact-head review and required checks; Nick
+owns merge. MediaPipe live source `23ef59f6bade9f464d79c9d59564badd97de5722` is
+signed, verified and installed in place over the paired iPad's active Wi-Fi
+connection. The owner completed and transferred one combined front/side squat
+clip; both real native detectors ran on all 388 frames. The live-default change,
+account-scoped recordings and returning-account follow-up are locally verified.
+**Next physical trial (@owner):** Use the installed development build to test the live count with separate front-facing and side-view
 clips and save each actual count. No additional repetitions are needed for the
 current diagnosis. Sustained performance, other movements, false positives and
 automatic workout actions remain unvalidated. No unattended recording is requested.
@@ -133,6 +133,23 @@ automatic workout actions remain unvalidated. No unattended recording is request
   who previously skipped everything has no durable server completion marker;
   after a successful empty-account read the welcome screen offers Continue to
   app. Failed reads and unfinished local drafts cannot use that bypass.
+
+- Live-default source `23ef59f6bade9f464d79c9d59564badd97de5722` passed signed
+  native compilation and app/widget signature/profile checks, then installed
+  in place over verified `localNetwork` transport after the owner unlocked the
+  iPad. No camera was started by the agent. Receipts:
+  `.artifacts/station-device/mediapipe-live-build-source.json`,
+  `mediapipe-live-signed-verification.json`, `mediapipe-live-install.json`.
+- Focused checks cover 212 unit cases (211 pass and one native-only replay skip)
+  and eight UI journeys across the broad and affected reruns. Two test-only
+  failures were diagnosed: a synthetic rep was faster than the existing minimum,
+  and one navigation assertion still expected the old Custom label. Both were
+  corrected and reverified. The final current-Swift snapshot passed all 18
+  affected unit and five UI cases in `.artifacts/ios/tres-fort-ios.Ixqtod/`;
+  unchanged cases passed in `.artifacts/ios/tres-fort-ios.4VOANz/`. Auth's 109
+  unit cases, direct-entry UI, counter's 22 cases and privacy's 12 cases pass.
+  Plan, harness and CI-scope checks pass. Independent local reviews found no
+  remaining blockers; remote exact-head review and CI remain required.
 
 Earlier build evidence (historical, superseded where stated above):
 

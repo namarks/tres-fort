@@ -290,9 +290,11 @@ final class MemberActivationJourneyTests: XCTestCase {
     }
 
     func testSetupCanBeSkippedWhileItsInitialReadIsPending() {
-        let app = launch("activation-manual", pendingSetup: true)
-        tap(app.buttons["Sign in with Apple"], in: app)
+        // Start at the editor's parent so the pending profile request belongs
+        // to TrainingSetupModel, not the earlier returning-account check.
+        let app = launch("onboarding", pendingSetup: true)
         tap(app.buttons["Get started"], in: app)
+        XCTAssertTrue(app.activityIndicators["Loading your setup…"].waitForExistence(timeout: 5))
         let skip = app.buttons["trainingSetup.skip"]
         XCTAssertTrue(skip.waitForExistence(timeout: 5))
         XCTAssertTrue(skip.isEnabled)

@@ -71,10 +71,11 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** The independent-arm curl correction is built and locally
-verified; install when the owner confirms the camera is off and the iPad is
-unlocked, then finish PR #228's
-exact-head review and required checks; Nick owns merge. MediaPipe live source `23ef59f6bade9f464d79c9d59564badd97de5722` is
+**Now (@agent):** Finish PR #228's exact-head review and required checks;
+Nick owns merge. The independent-arm curl correction is locally verified.
+After the gates, rebuild the current source to include the saved-replay identity
+fix; install when the owner confirms the camera is off and the iPad is unlocked.
+MediaPipe live source `23ef59f6bade9f464d79c9d59564badd97de5722` is
 signed, verified and installed in place over the paired iPad's active Wi-Fi
 connection. The owner completed and transferred one combined front/side squat
 clip; both real native detectors ran on all 388 frames. The live-default change,
@@ -110,6 +111,11 @@ automatic workout actions remain unvalidated. No unattended recording is request
 
 ## Implementation evidence
 
+- Saved replay now rejects the entire comparison if either detector sees more
+  than one person, before counting that frame. It cannot resume with another
+  person or publish a completed total. A rerun removes its prior derived
+  comparison first, so failure or cancellation cannot expose stale totals in
+  sharing; raw video, measurements and labels remain unchanged.
 - On 2026-10-04 the owner reported improved tracking but curls failing on one
   side. The exact counter reproduced zero counts for three curls when the
   opposite stationary arm had a higher confidence score; mirroring sides had

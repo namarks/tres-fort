@@ -2,7 +2,121 @@ import AVFoundation
 import XCTest
 @testable import TresFort
 
+private actor ReplayReportGate {
+    private var continuation: CheckedContinuation<StationReplayReport, Never>?
+    private var report: StationReplayReport?
+
+    func wait() async -> StationReplayReport {
+        if let report { return report }
+        return await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release(_ report: StationReplayReport) {
+        self.report = report
+        continuation?.resume(returning: report)
+        continuation = nil
+    }
+}
+
 final class StationReplayTests: XCTestCase {
+    func testIdentityGateRejectsAmbiguityDetectedOnlyByApple() {
+        XCTAssertThrowsError(try StationReplayWorker.validateIdentity(applePersonCount: 2, mediaPipePersonCount: 1)) {
+            guard case StationReplayError.multiplePeople = $0 else { return XCTFail("Expected identity rejection, got \($0)") }
+        }
+    }
+
+    func testIdentityGateRejectsAmbiguityDetectedOnlyByMediaPipe() {
+        XCTAssertThrowsError(try StationReplayWorker.validateIdentity(applePersonCount: 1, mediaPipePersonCount: 2)) {
+            guard case StationReplayError.multiplePeople = $0 else { return XCTFail("Expected identity rejection, got \($0)") }
+        }
+    }
+
+    func testIdentityGateAllowsNoPersonOrOnePersonFromEitherDetector() {
+        for apple in 0...1 {
+            for mediaPipe in 0...1 {
+                XCTAssertNoThrow(try StationReplayWorker.validateIdentity(applePersonCount: apple, mediaPipePersonCount: mediaPipe))
+            }
+        }
+    }
+
+    func testSavedVideoAbortsAtAmbiguousFrameBeforeLaterFramesOrCompletedReport() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("station-ambiguous-replay-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try StationRecordingStore(rootURL: root)
+        let recording = try await makeRecording(store: store)
+        XCTAssertEqual(recording.frameCount, 4)
+        var appleFrames = 0
+        var report: StationReplayReport?
+        do {
+            report = try await StationReplayWorker.run(recording: recording, videoURL: store.videoURL(for: recording.id),
+                session: store.session, appleDetection: { _, _ in
+                    appleFrames += 1
+                    return StationReplayPose(personCount: appleFrames == 2 ? 2 : 1, joints: [:], milliseconds: 0)
+                }) { _ in }
+            XCTFail("An ambiguous clip must not produce completed totals")
+        } catch StationReplayError.multiplePeople {
+            // The real decoder and MediaPipe runner stopped at the ambiguous frame.
+        }
+        XCTAssertEqual(appleFrames, 2, "Later single-person frames must not resume this comparison")
+        XCTAssertNil(report)
+    }
+
+    @MainActor
+    func testFailedRerunRemovesOldComparisonBeforeWorkerAndPublishesNoReport() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("station-failed-rerun-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let access = StationAccess(accountID: UUID().uuidString, epoch: 1,
+            isCurrentSession: { true }, observeBoundary: { _ in })
+        let store = try StationRecordingStore(session: access.session, baseURL: root)
+        let previous = try JSONDecoder().decode(StationReplayReport.self, from: legacyReportData)
+        let recording = try makeModelRecording(store: store, id: previous.recordingID)
+        try store.saveComparison(previous, for: recording.id)
+        let originals = try store.shareURLs(for: recording.id).filter { $0.lastPathComponent != "comparison.json" }
+        XCTAssertEqual(try store.shareURLs(for: recording.id).count, 4)
+        let replay = StationReplayModel(access: access) { _, _, _, _ in
+            XCTAssertFalse(try store.shareURLs(for: recording.id).contains { $0.lastPathComponent == "comparison.json" })
+            throw StationReplayError.multiplePeople
+        }
+        let task = try XCTUnwrap(replay.start(recording: recording, store: store))
+        XCTAssertNil(replay.report)
+        XCTAssertEqual(try store.shareURLs(for: recording.id), originals)
+        await task.value
+        XCTAssertNil(replay.report)
+        XCTAssertFalse(replay.isRunning)
+        XCTAssertEqual(replay.error, StationReplayError.multiplePeople.localizedDescription)
+        XCTAssertEqual(try store.shareURLs(for: recording.id), originals)
+        XCTAssertEqual(try store.load(id: recording.id), recording)
+    }
+
+    @MainActor
+    func testCanceledRerunCannotRestoreOldComparisonFromLateWorkerResult() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("station-canceled-rerun-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let access = StationAccess(accountID: UUID().uuidString, epoch: 1,
+            isCurrentSession: { true }, observeBoundary: { _ in })
+        let store = try StationRecordingStore(session: access.session, baseURL: root)
+        let previous = try JSONDecoder().decode(StationReplayReport.self, from: legacyReportData)
+        let recording = try makeModelRecording(store: store, id: previous.recordingID)
+        try store.saveComparison(previous, for: recording.id)
+        let gate = ReplayReportGate()
+        let started = expectation(description: "Rerun worker started")
+        let replay = StationReplayModel(access: access) { _, _, _, _ in
+            started.fulfill()
+            return await gate.wait()
+        }
+        let task = try XCTUnwrap(replay.start(recording: recording, store: store))
+        XCTAssertFalse(try store.shareURLs(for: recording.id).contains { $0.lastPathComponent == "comparison.json" })
+        await fulfillment(of: [started], timeout: 3)
+        replay.cancel()
+        await gate.release(previous)
+        await task.value
+        XCTAssertNil(replay.report)
+        XCTAssertNil(replay.error)
+        XCTAssertFalse(replay.isRunning)
+        XCTAssertFalse(try store.shareURLs(for: recording.id).contains { $0.lastPathComponent == "comparison.json" })
+        XCTAssertEqual(try store.load(id: recording.id), recording)
+    }
+
     func testLegacyReportKeepsPerArmCountsAndCounterVersionUnknownAfterRoundTrip() throws {
         let report = try JSONDecoder().decode(StationReplayReport.self, from: legacyReportData)
         let frame = try XCTUnwrap(report.frames.first)
@@ -129,6 +243,20 @@ final class StationReplayTests: XCTestCase {
         XCTAssertEqual(report.frames.count, recording.frameCount)
         XCTAssertTrue(report.frames.allSatisfy { $0.apple.personCount == 0 && $0.mediaPipe.personCount == 0 })
 #endif
+    }
+
+    /// Model tests inject their runner, so only valid store files are needed;
+    /// the separate worker integration tests decode an actual saved movie.
+    private func makeModelRecording(store: StationRecordingStore, id: UUID) throws -> StationRecording {
+        let recording = StationRecording(schemaVersion: 1, id: id, createdAt: Date(), exerciseRawValue: "squat",
+            durationSeconds: 1, frameCount: 2, droppedFrameCount: 0, orientation: 1,
+            width: 640, height: 480, imageAspectRatio: 4.0 / 3.0,
+            finishReason: .userStopped, appBuild: "replay-model-test", actualReps: nil)
+        let pending = try store.prepare(id: id)
+        try Data([1, 2, 3]).write(to: pending.appendingPathComponent("clip.mov"))
+        try Data().write(to: pending.appendingPathComponent("measurements.jsonl"))
+        try store.publish(recording)
+        return recording
     }
 
     private func makeRecording(store: StationRecordingStore) async throws -> StationRecording {

@@ -56,12 +56,13 @@ struct StationReplayReport: Codable {
 }
 
 enum StationReplayError: LocalizedError {
-    case invalidRecording, readFailed, noFrames
+    case invalidRecording, readFailed, noFrames, multiplePeople
     var errorDescription: String? {
         switch self {
         case .invalidRecording: return "This recording cannot be compared. Try a new test."
         case .readFailed: return "The video could not be read completely. Try again."
         case .noFrames: return "This recording has no video frames."
+        case .multiplePeople: return "More than one person was detected. Counts are unavailable for this test. Record a new test with only one person visible."
         }
     }
 }
@@ -119,6 +120,10 @@ enum StationReplayWorker {
                 let result = try mediaPipe.detect(pixelBuffer: pixels, timestampMilliseconds: milliseconds,
                                                   orientation: orientation)
                 let mp = adaptMediaPipe(result, aspect: recording.imageAspectRatio)
+                // Identity ambiguity is terminal for the whole comparison,
+                // just as it is for live tracking. Never join different people
+                // across a reset or publish a partial stream as a full total.
+                try validateIdentity(applePersonCount: apple.personCount, mediaPipePersonCount: mp.personCount)
                 appleCounter.process(apple.sample(at: timestamp))
                 mediaPipeCounter.process(mp.sample(at: timestamp))
                 return StationReplayFrame(timestamp: timestamp, apple: apple, mediaPipe: mp,
@@ -142,6 +147,10 @@ enum StationReplayWorker {
                                    osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
                                    appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
                                    frames: frames, counterVersion: "independent-curl-arms-v1")
+    }
+
+    static func validateIdentity(applePersonCount: Int, mediaPipePersonCount: Int) throws {
+        guard applePersonCount <= 1, mediaPipePersonCount <= 1 else { throw StationReplayError.multiplePeople }
     }
 
     static func validatedMilliseconds(_ timestamp: Double, after previous: Double,
@@ -232,7 +241,13 @@ final class StationReplayModel: ObservableObject {
         completedFrames = 0
         guard access.validate(), store.session === access.session else { return nil }
         let url: URL
-        do { _ = try store.load(id: recording.id); url = try store.videoURL(for: recording.id) }
+        do {
+            _ = try store.load(id: recording.id)
+            url = try store.videoURL(for: recording.id)
+            // Reruns replace derived evidence. If a rerun fails or discovers an
+            // ambiguous identity, sharing must not revive an older total.
+            try store.removeComparison(for: recording.id)
+        }
         catch { self.error = error.localizedDescription; return nil }
         isRunning = true
         let token = generation

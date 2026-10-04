@@ -269,6 +269,14 @@ final class StationRecordingStore: @unchecked Sendable {
         }
     }
 
+    func removeComparison(for id: UUID) throws {
+        try session.withAccess {
+            _ = try load(id: id)
+            let url = try directoryURL(for: id).appendingPathComponent("comparison.json")
+            if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+        }
+    }
+
     func prepare(id: UUID) throws -> URL {
         try session.withAccess {
         Self.initializationLock.lock()

@@ -68,10 +68,10 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Complete the owner-approved record/replay slice and MediaPipe
-integration, verify local simulator and signed device builds, and deliver the
-updated Debug app over the paired wireless connection. Then refresh PR #228's
-exact-head review and required checks; Nick owns merge. The owner's 2026-10-03
+**Now (@agent):** Finish PR #228's exact-head review and required checks for the
+record/replay slice; Nick owns merge. Source
+`7e4941efe4d190be841472154309cebe309474dc` is verified, signed and installed
+in place over Wi-Fi. The owner's 2026-10-03
 pause ended on 2026-10-04 with explicit approval to implement this testing flow.
 **Next physical trial (@owner):** Mount the iPad in the workout room, record a
 short front-facing five-squat test and a side-view control, label actual reps,
@@ -123,6 +123,14 @@ No unattended recording or movement trial is requested.
   CI-scope checks pass. Local independent review has no remaining blocking
   findings. The signed Debug device build and both identity/profile checks pass;
   see `.artifacts/station-device/record-replay-signed-build.log`.
+- The same bundle/team was installed in place over the verified wireless
+  connection from source `7e4941efe4d190be841472154309cebe309474dc`, without an
+  uninstall, TestFlight upload or backend deployment. Exact app/debug-library
+  and model hashes, signatures and installation receipt are retained in
+  `.artifacts/station-device/record-replay-build-source.json`,
+  `record-replay-signed-verification.json` and `record-replay-install.json`.
+  No camera or recording was started by the agent; a new owner-participated
+  clip and native replay remain to be evaluated.
 - Native iPad layout, opt-in local capture and both isolated trial counters are
   implemented. Each trial locks the initially visible exercise-relevant limb
   (hip/knee/ankle or shoulder/elbow/wrist) for both counters. Confidence 0.6 and

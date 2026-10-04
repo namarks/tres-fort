@@ -1,6 +1,6 @@
 # Progress and Apple Health Weight
 
-Slug: apple-health-weight · Status: gated · Updated: 2026-09-18 · Theme: member-experience
+Slug: apple-health-weight · Status: gated · Updated: 2026-10-04 · Theme: member-experience
 
 ## Goal
 
@@ -29,11 +29,22 @@ upload permission.
     from Progress to the same settings. Do not add a second provider connection.
   - Verify civil-week boundaries, completed-state filtering, cached history,
     navigation, permission changes and accessibility text using synthetic data.
+- [x] **P4 — Make weight connection failures recoverable in place**
+  - Show a specific explanation for locked Health data, access requests,
+    restrictions and unavailable Health; do not describe every read failure as
+    a locked phone or infer permission denial from an empty result.
+  - Offer Reconnect Apple Health on the Weight and Apple Health settings
+    screens without requiring an off/on toggle; retry a locked read directly.
+  - Keep permission help collapsed until needed, preserve account-scoped
+    intent, and reject recovery callbacks after disconnect or sign-out.
 - [ ] **P2 — Verify on an authorized device build**
   - After authorized iOS distribution, enable Read weight in Profile →
     Connections → Apple Health, then open Progress → Weight on an iPhone with readings.
   - Verify Apple's weight permission sheet, a real dated measurement and its
     source, relaunch/foreground refresh, permission revocation and reconnect.
+  - After P4 is merged and included in an authorized distribution, verify its
+    inline recovery on the device; simulator fixtures do not prove that a real
+    HealthKit failure or permission change is repaired.
   - Verify a Withings measurement after it arrives in Apple Health; this does
     not establish that Withings background delivery is immediate or reliable.
 
@@ -49,7 +60,9 @@ upload permission.
 later build: enable Read weight in Profile → Connections → Apple Health, open
 Progress → Weight, and record the permission sheet, a real dated measurement
 and its source, relaunch/foreground refresh, revocation/reconnect and a
-Withings-sourced reading.
+Withings-sourced reading. P4's recovery is implemented in this branch but has
+not been distributed; its real-device recovery check requires a later authorized
+build containing the change.
 
 P1 merged in [PR #196](https://github.com/namarks/tres-fort/pull/196) on
 2026-09-12 and P3 in [PR #197](https://github.com/namarks/tres-fort/pull/197) on
@@ -61,6 +74,18 @@ satisfies only the installed-build precondition; Health permissions, readings
 and Withings delivery on a real device remain unverified.
 
 ## Verification evidence
+
+- P4 was prompted by the owner's 2026-10-04 report that switching Read weight
+  off and on seemed to restore readings. The earlier screen used an unlock
+  instruction for every read error, so that report does not identify the
+  underlying HealthKit error or complete P2's device matrix.
+- P4 local verification passed 21 unit tests, seven Weight journeys and five
+  Progress regression journeys using synthetic data on a disposable iPhone 16e /
+  iOS 26.2 simulator on 2026-10-04. Recovery tests cover repeated authorization, read-only retry,
+  failed initial authorization, preserved opt-in, opaque empty reads and late
+  callbacks after disconnect or account replacement. Source manifests, native
+  screenshots and test results are retained with the local verification evidence;
+  exact-head review and required CI remain recorded on the implementation PR.
 
 - P3 passed a disposable iPhone 17 / iOS 26.2 unsigned build and 30 focused
   checks on 2026-09-13: 22 calculation/lifecycle tests and eight UI journeys.

@@ -95,15 +95,18 @@ final class StationLinkStation: ObservableObject {
     }
 
     /// The trial ended some other way: the member stopped it, or tracking
-    /// was invalidated. A non-zero count is offered, never auto-logged when partial.
-    func trialEnded(count: Int, leftCount: Int?, rightCount: Int?, partial: Bool) {
-        guard isCounting, arm != nil else { return }
-        if count > 0 {
-            complete(count: count, leftCount: leftCount, rightCount: rightCount, partial: partial)
-        } else {
+    /// was invalidated. A non-zero count is offered, never auto-logged when
+    /// partial. Returns whether a count was sent; otherwise the arm can retry.
+    @discardableResult
+    func trialEnded(count: Int, leftCount: Int?, rightCount: Int?, partial: Bool) -> Bool {
+        guard isCounting, arm != nil else { return false }
+        guard count > 0 else {
             isCounting = false
             report(.stopped)
+            return false
         }
+        complete(count: count, leftCount: leftCount, rightCount: rightCount, partial: partial)
+        return true
     }
 
     /// The member took over the iPad by hand; the iPhone keeps the set manual.

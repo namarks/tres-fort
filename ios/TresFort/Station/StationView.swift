@@ -177,8 +177,12 @@ struct StationView: View {
             // Stopped by hand or invalidated before the set settled: offer
             // what was counted as partial, so it never logs without a tap.
             guard linkedArmID != nil, link.isCounting, state.isTerminal else { return }
-            link.trialEnded(count: comparison.count, leftCount: comparison.leftCount,
-                            rightCount: comparison.rightCount, partial: true)
+            // Nothing was counted: the same arm may be retried with Start
+            // tracking or by turning the camera back on.
+            if !link.trialEnded(count: comparison.count, leftCount: comparison.leftCount,
+                                rightCount: comparison.rightCount, partial: true) {
+                linkedArmID = nil
+            }
         }
     }
 
@@ -292,7 +296,9 @@ struct StationView: View {
     @ViewBuilder private var exerciseButtons: some View {
         ForEach(StationExercise.allCases) { option in
             Button {
-                if linkedArmID != nil { link.abandon(); linkedArmID = nil }
+                // Taking over by hand ends this arm here; linkedArmID stays so
+                // the camera or Start tracking can't silently re-link it.
+                if linkedArmID != nil { link.abandon() }
                 hasRunTrial = false
                 actualReps = ""
                 actualRepsFocused = false
@@ -435,6 +441,8 @@ struct StationView: View {
                 actualRepsFocused = false
                 if comparison.state.isCollecting {
                     comparison.stop()
+                } else if let arm = link.arm, linkedArmID == nil {
+                    startLinkedTrial(arm)
                 } else {
                     actualReps = ""
                     hasRunTrial = true

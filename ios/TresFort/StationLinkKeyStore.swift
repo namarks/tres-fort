@@ -19,15 +19,24 @@ extension APIClient {
 enum StationLinkKeyStore {
     private static let service = "com.nmarkspdx.tresfort.station-link"
 
+    /// A cached key is used at once, so a weak gym connection never delays
+    /// the link; the server copy refreshes it in the background.
     static func load(accountID: String, jwt: String?) async -> Data? {
         guard !accountID.isEmpty else { return nil }
-        if let jwt, let response = try? await APIClient().stationLinkKey(jwt: jwt),
-           response.version == StationLink.keyVersion,
-           let key = Data(base64Encoded: response.key), key.count == 32 {
-            save(key, accountID: accountID)
+        if let key = cached(accountID: accountID) {
+            if let jwt { Task { _ = await fetch(accountID: accountID, jwt: jwt) } }
             return key
         }
-        return cached(accountID: accountID)
+        guard let jwt else { return nil }
+        return await fetch(accountID: accountID, jwt: jwt)
+    }
+
+    private static func fetch(accountID: String, jwt: String) async -> Data? {
+        guard let response = try? await APIClient().stationLinkKey(jwt: jwt),
+              response.version == StationLink.keyVersion,
+              let key = Data(base64Encoded: response.key), key.count == 32 else { return nil }
+        save(key, accountID: accountID)
+        return key
     }
 
     private static func query(_ accountID: String) -> [String: Any] {

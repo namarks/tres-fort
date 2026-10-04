@@ -15,14 +15,36 @@ final class StationLinkTests: XCTestCase {
 
     // MARK: pairing and protocol
 
-    func testAccountTagIsStablePerAccountAndHidesTheAccountID() {
-        let account = "8C1F6A64-1E2B-4D0B-9F52-1B8D1D4A0C11"
-        let tag = StationLink.accountTag(for: account)
-        XCTAssertEqual(tag, StationLink.accountTag(for: account))
-        XCTAssertNotEqual(tag, StationLink.accountTag(for: "another-account"))
+    func testDiscoveryTagIsAFilterDerivedFromTheKey() {
+        let key = Data(repeating: 7, count: 32)
+        let tag = StationLink.discoveryTag(key: key)
+        XCTAssertEqual(tag, StationLink.discoveryTag(key: key))
+        XCTAssertNotEqual(tag, StationLink.discoveryTag(key: Data(repeating: 8, count: 32)))
         XCTAssertEqual(tag.count, 24)
-        XCTAssertFalse(tag.contains(account.lowercased().prefix(8)))
         XCTAssertLessThanOrEqual(StationLink.serviceType.count, 15)
+    }
+
+    func testOnlyAKeyHolderCanAnswerTheChallengeForItsOwnRole() {
+        let key = Data(repeating: 1, count: 32)
+        let phoneNonce = StationLink.newNonce(), ipadNonce = StationLink.newNonce()
+        XCTAssertEqual(phoneNonce.count, 32)
+        XCTAssertNotEqual(phoneNonce, ipadNonce)
+        // The iPad answers the iPhone's challenge.
+        let proof = StationLink.proof(key: key, responderRole: "station",
+                                      challengerNonce: phoneNonce, responderNonce: ipadNonce)
+        XCTAssertTrue(StationLink.verify(proof, key: key, responderRole: "station",
+                                         challengerNonce: phoneNonce, responderNonce: ipadNonce))
+        XCTAssertFalse(StationLink.verify(proof, key: Data(repeating: 2, count: 32), responderRole: "station",
+                                          challengerNonce: phoneNonce, responderNonce: ipadNonce),
+                       "A peer that only copied the public tag has no valid proof")
+        XCTAssertFalse(StationLink.verify(proof, key: key, responderRole: "controller",
+                                          challengerNonce: phoneNonce, responderNonce: ipadNonce),
+                       "A proof cannot be reflected back as the other role")
+        XCTAssertFalse(StationLink.verify(proof, key: key, responderRole: "station",
+                                          challengerNonce: StationLink.newNonce(), responderNonce: ipadNonce),
+                       "A proof cannot be replayed against a new challenge")
+        XCTAssertFalse(StationLink.verify(proof, key: key, responderRole: "station",
+                                          challengerNonce: Data(), responderNonce: ipadNonce))
     }
 
     func testMessagesRoundTripAndRejectOtherProtocolVersions() throws {
@@ -32,6 +54,7 @@ final class StationLinkTests: XCTestCase {
             .arm(arm), .disarm(armID: arm.armID),
             .progress(StationLinkProgress(armID: arm.armID, count: 3, leftCount: 3, rightCount: 2, status: "Tracking")),
             .completion(completion(arm, reps: 9)), .station(.cameraOff, armID: nil),
+            .challenge(StationLink.newNonce()), .proof(Data(repeating: 3, count: 32)),
         ]
         for message in messages {
             XCTAssertEqual(StationLinkMessage.decode(try message.encoded()), message)

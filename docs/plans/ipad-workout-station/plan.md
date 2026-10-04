@@ -58,8 +58,11 @@ may turn detections into durable workout actions.
     choose a hands-free confirmation mechanism based on the physical trial.
   - Repository slice (owner-requested 2026-10-04): the iPhone runner is the
     only controller. An opt-in, encrypted local MultipeerConnectivity link pairs
-    it with an iPad Station signed in to the same account (one-way account tag,
-    no server). The iPhone arms the current countable set once rest is over;
+    it with an iPad Station of the same account. Each device fetches a
+    per-account link key once (`GET /api/me/station-link-key`, derived, not
+    stored, and cached in the device Keychain); a mutual challenge-response
+    proves both hold it before any message is trusted, because the discovery
+    tag is public (owner chose this over code matching). The iPhone arms the current countable set once rest is over;
     every distinct slot/set gets a fresh arm ID. The iPad counts that set and
     reports a finished count once it holds steady for four seconds outside a
     rep; target reps never end a set. The owner chose instant logging: the
@@ -91,8 +94,9 @@ only controller, iPad counts the armed set) through exact-head review and the
 required checks; Nick owns merge. PR #228's observation-only Station merged.
 MediaPipe live source `23ef59f6bade9f464d79c9d59564badd97de5722` is installed
 on the paired iPad; the linked build is not yet on either device.
-**Next physical trial (@owner):** With a build containing the link on both the
-iPhone and the iPad, turn on "Count reps with iPad Station" in the iPhone
+**Next physical trial (@owner):** Deploy the Worker with the link-key route
+(both devices must fetch the key online once), then, with a build containing
+the link on both the iPhone and the iPad, turn on "Count reps with iPad Station" in the iPhone
 runner menu and "Count sets for my iPhone workout" on the iPad, then run a few
 squat sets. Note each counted versus actual rep total, any set that logged
 wrongly, and whether Undo was quick enough to fix a miscount mid-workout.
@@ -123,8 +127,10 @@ unvalidated. No unattended recording is requested.
   is available and to progress and finish sets from the iPad's count. This
   authorizes the opt-in local link. Asked how a counted set should log, the
   owner chose instant logging with Undo over a countdown or a tap. This is an
-  opt-in trial setting; P3's measured acceptance thresholds remain unmet, and
-  no backend change or client distribution is authorized.
+  opt-in trial setting; P3's measured acceptance thresholds remain unmet.
+  The owner also chose the server-issued link key, which adds one read-only
+  Worker route; its production deploy and any client distribution still need
+  separate authority.
 - The owner requested direct iPad debugging to shorten iteration and identified
   front-facing squat support as a needed use case. Developer diagnostics stay
   opt-in and Debug-only: bounded numerical summaries on the local console,
@@ -436,7 +442,8 @@ Sources checked 2026-10-03:
 - Current runner ownership protects a process/local persistence namespace.
   Distinct set UUIDs from two devices can represent one physical set twice;
   existing idempotency is not a cross-device controller lock.
-- No backend, database or provider change is part of this work. Bounded local
+- No database or provider change is part of this work; the only backend change
+  is the read-only link-key route. Bounded local
   test retention is owner-approved; client distribution is limited to the internal comparison
   build. Do not store account emails, receipts or purchase identifiers in
   repository evidence.

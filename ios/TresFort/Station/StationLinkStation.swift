@@ -10,6 +10,8 @@ final class StationLinkStation: ObservableObject {
     @Published private(set) var arm: StationLinkArm?
     @Published private(set) var isCounting = false
     @Published private(set) var isEnabled = false
+    /// No link key yet: the iPad must reach the server once to set up.
+    @Published private(set) var needsKey = false
 
     private let transport: StationLinkTransport
     private var detector = StationSetEndDetector()
@@ -27,14 +29,23 @@ final class StationLinkStation: ObservableObject {
         self.transport.onConnect = { [weak self] in self?.report(.ready) }
     }
 
-    func setEnabled(_ enabled: Bool, accountID: String) {
-        isEnabled = enabled && !accountID.isEmpty
-        if isEnabled { transport.start(accountID: accountID) } else { stop() }
+    /// Starts advertising with the account's link key, or records that the
+    /// key could not be loaded.
+    func enable(key: Data?) {
+        guard let key else {
+            stop()
+            needsKey = true
+            return
+        }
+        needsKey = false
+        isEnabled = true
+        transport.start(key: key)
     }
 
     func stop() {
         withdraw()
         isEnabled = false
+        needsKey = false
         transport.stop()
     }
 
@@ -47,8 +58,8 @@ final class StationLinkStation: ObservableObject {
         case .disarm(let armID):
             guard arm?.armID == armID else { return }
             withdraw()
-        case .progress, .completion, .station:
-            break // only the iPad reports counts
+        case .progress, .completion, .station, .challenge, .proof:
+            break // only the iPad reports counts; the transport authenticates
         }
     }
 

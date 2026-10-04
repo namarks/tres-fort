@@ -5,25 +5,30 @@ import Combine
 /// AuthModel is reduced to a validator and boundary registration at the caller.
 struct StationEntryView: View {
     let workoutName: String?
+    let loadLinkKey: @MainActor () async -> Data?
     @StateObject private var access: StationAccess
 
     init(workoutName: String?, accountID: String?, epoch: UInt64,
          isCurrentSession: @escaping @MainActor () -> Bool,
-         observeBoundary: @escaping (@escaping () -> Bool) -> Void) {
+         observeBoundary: @escaping (@escaping () -> Bool) -> Void,
+         loadLinkKey: @escaping @MainActor () async -> Data? = { nil }) {
         self.workoutName = workoutName
+        self.loadLinkKey = loadLinkKey
         _access = StateObject(wrappedValue: StationAccess(accountID: accountID, epoch: epoch,
                                                        isCurrentSession: isCurrentSession,
                                                        observeBoundary: observeBoundary))
     }
 
-    var body: some View { StationView(workoutName: workoutName, access: access) }
+    var body: some View { StationView(workoutName: workoutName, access: access, loadLinkKey: loadLinkKey) }
 }
 
-/// An observation-only trial. This view receives a display string, never a
-/// SyncModel, API client, outbox or binding to the workout's mutable state.
+/// An observation-only trial. This view receives a display string and a link
+/// key loader, never a SyncModel, API client, outbox or binding to the
+/// workout's mutable state.
 struct StationView: View {
     let workoutName: String?
     @ObservedObject var access: StationAccess
+    let loadLinkKey: @MainActor () async -> Data?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -45,9 +50,11 @@ struct StationView: View {
     @State private var countdownTask: Task<Void, Never>?
     @State private var showSavedTests = false
 
-    init(workoutName: String?, access: StationAccess) {
+    init(workoutName: String?, access: StationAccess,
+         loadLinkKey: @escaping @MainActor () async -> Data? = { nil }) {
         self.workoutName = workoutName
         self.access = access
+        self.loadLinkKey = loadLinkKey
         _camera = StateObject(wrappedValue: StationCamera(access: access))
     }
 
@@ -167,12 +174,11 @@ struct StationView: View {
         .sheet(isPresented: $showSavedTests) { StationRecordingsView(access: access) }
         .onChange(of: link.arm) { _, arm in handleArm(arm) }
         .onChange(of: comparison.state) { _, state in
-            // Stopped by hand or invalidated: offer what was counted. A
-            // partial count never logs without a tap on the iPhone.
+            // Stopped by hand or invalidated before the set settled: offer
+            // what was counted as partial, so it never logs without a tap.
             guard linkedArmID != nil, link.isCounting, state.isTerminal else { return }
             link.trialEnded(count: comparison.count, leftCount: comparison.leftCount,
-                            rightCount: comparison.rightCount,
-                            partial: comparison.hasIncompleteCoverage || state != .finished)
+                            rightCount: comparison.rightCount, partial: true)
         }
     }
 
@@ -214,8 +220,13 @@ struct StationView: View {
             Toggle("Count sets for my iPhone workout", isOn: Binding(
                 get: { link.isEnabled },
                 set: { enabled in
+                    guard enabled else { link.stop(); return }
                     guard access.validate() else { return }
-                    link.setEnabled(enabled, accountID: access.session.accountID)
+                    Task { @MainActor in
+                        let key = await loadLinkKey()
+                        guard access.validate() else { return }
+                        link.enable(key: key)
+                    }
                 }))
                 .tint(Theme.accent)
                 .accessibilityIdentifier("station.link")
@@ -230,6 +241,9 @@ struct StationView: View {
     }
 
     private var linkMessage: String {
+        if link.needsKey {
+            return "Connect this iPad to the internet once to set up counting for your iPhone, then try again."
+        }
         switch link.connection {
         case .off:
             return "Your iPhone runs the workout and logs each set. Turn this on, then turn on iPad Station in your iPhone workout."

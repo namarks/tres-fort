@@ -25,7 +25,8 @@ struct StationLinkRunnerPanel: View {
     }
 
     static func target(sync: SyncModel, ex: TemplateExercise, now: Date) -> StationLinkTarget? {
-        guard sync.running, !sync.finished, !ex.isTimed, !sync.timedActive,
+        // A blocked slot disarms; unblocking mints a fresh arm for the set.
+        guard sync.running, !sync.finished, !ex.isTimed, !sync.timedActive, !sync.isSetEntryBlocked(ex),
               sync.isFreestyle || sync.runnerSetsDone(ex) < ex.target_sets,
               (sync.restEndDate.map { $0 <= now } ?? true),
               let movement = StationExercise.match(exerciseName: ex.exercise_name,
@@ -41,7 +42,7 @@ struct StationLinkRunnerPanel: View {
             proposalView(proposal)
         } else {
             VStack(alignment: .leading, spacing: 4) {
-                if let logged = link.lastLogged { undoRow(logged) }
+                if let logged = link.lastLogged { StationLinkUndoRow(sync: sync, link: link, logged: logged) }
                 Label(statusText(target: target), systemImage: "ipad.landscape")
                     .font(.footnote).foregroundStyle(link.isConnected ? Theme.text : Theme.muted)
                     .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -52,6 +53,7 @@ struct StationLinkRunnerPanel: View {
 
     private func statusText(target: StationLinkTarget?) -> String {
         guard link.isConnected else {
+            if link.needsKey { return "Go online once to set up iPad Station" }
             return link.connection == .off ? "iPad Station off" : "Looking for your iPad Station"
         }
         guard target != nil else {
@@ -66,20 +68,6 @@ struct StationLinkRunnerPanel: View {
     private func countText(_ count: Int, _ left: Int?, _ right: Int?) -> String {
         if let left, let right { return "L \(left) · R \(right)" }
         return count == 1 ? "1 rep" : "\(count) reps"
-    }
-
-    private func undoRow(_ logged: StationLinkLoggedSet) -> some View {
-        HStack {
-            Text("iPad logged \(logged.reps) \(logged.reps == 1 ? "rep" : "reps")")
-                .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
-                .accessibilityIdentifier("runner.station.logged")
-            Spacer()
-            Button("Undo") { Task { await undo(logged) } }
-                .font(.subheadline.weight(.semibold))
-                .frame(minWidth: 44, minHeight: 44)
-                .accessibilityLabel("Undo set logged from iPad")
-                .accessibilityIdentifier("runner.station.undo")
-        }
     }
 
     private func proposalView(_ proposal: StationLinkProposal) -> some View {
@@ -144,10 +132,31 @@ struct StationLinkRunnerPanel: View {
         link.recordLogged(StationLinkLoggedSet(setID: setID, slotID: proposal.slotID,
                                                setNumber: proposal.setNumber, reps: proposal.reps))
     }
+}
 
-    /// Undo removes the logged set through the ordinary correction path, ends
-    /// rest and returns to that slot so the iPad counts the set again.
-    private func undo(_ logged: StationLinkLoggedSet) async {
+/// "iPad logged 8 reps · Undo", in the runner and in final review. Undo
+/// removes the set through the ordinary correction path, ends rest and returns
+/// to that slot so the iPad counts the set again.
+struct StationLinkUndoRow: View {
+    @ObservedObject var sync: SyncModel
+    @ObservedObject var link: StationLinkController
+    let logged: StationLinkLoggedSet
+
+    var body: some View {
+        HStack {
+            Text("iPad logged \(logged.reps) \(logged.reps == 1 ? "rep" : "reps")")
+                .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
+                .accessibilityIdentifier("runner.station.logged")
+            Spacer()
+            Button("Undo") { Task { await undo() } }
+                .font(.subheadline.weight(.semibold))
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel("Undo set logged from iPad")
+                .accessibilityIdentifier("runner.station.undo")
+        }
+    }
+
+    private func undo() async {
         link.clearLogged()
         if let set = sync.sets.first(where: { $0.id == logged.setID && $0.deleted_at == nil }) {
             guard sync.enqueueCorrection(set: set, values: nil) else { return }
@@ -157,7 +166,8 @@ struct StationLinkRunnerPanel: View {
             return
         }
         if sync.restEndDate != nil { sync.skipRest() }
-        if sync.currentExercise?.id != logged.slotID,
+        // Jumping also reopens final review when the undone set was the last.
+        if sync.finished || sync.currentExercise?.id != logged.slotID,
            let index = sync.exercises.firstIndex(where: { $0.id == logged.slotID }) {
             sync.jump(to: index)
         }

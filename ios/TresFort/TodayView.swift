@@ -223,7 +223,8 @@ struct TodayView: View {
     @StateObject private var stationLink = StationLinkController()
     @AppStorage(StationLink.enabledDefaultsKey) private var stationLinkEnabled = false
     private var stationLinkAccount: String? {
-        guard stationLinkEnabled, sync.running, !sync.finished,
+        // Final review keeps the link so the last iPad-logged set can be undone.
+        guard stationLinkEnabled, sync.running,
               UIDevice.current.userInterfaceIdiom == .phone else { return nil }
         return auth.userID
     }
@@ -353,6 +354,10 @@ struct TodayView: View {
                         stationAuth?.isCurrentFeatureSession(accountID: accountID, epoch: epoch) == true
                     }, observeBoundary: { [weak stationAuth = auth] observer in
                         _ = stationAuth?.observeFeatureSessionBoundary(observer)
+                    }, loadLinkKey: { [weak stationAuth = auth] in
+                        guard let accountID, let stationAuth,
+                              stationAuth.isCurrentFeatureSession(accountID: accountID, epoch: epoch) else { return nil }
+                        return await StationLinkKeyStore.load(accountID: accountID, jwt: stationAuth.featureJWT)
                     })
                     .environment(\.dynamicTypeSize, dynamicTypeSize)
             }
@@ -394,7 +399,10 @@ struct TodayView: View {
         .preferredColorScheme(.dark)
         .task(id: sync.canChooseStarterWorkout) { await loadStarterAvailability() }
         .task(id: stationLinkAccount) {
-            if let account = stationLinkAccount { stationLink.start(accountID: account) } else { stationLink.stop() }
+            guard let account = stationLinkAccount else { stationLink.stop(); return }
+            let key = await StationLinkKeyStore.load(accountID: account, jwt: auth.featureJWT)
+            guard !Task.isCancelled, stationLinkAccount == account else { return }
+            if let key { stationLink.start(key: key) } else { stationLink.keyUnavailable() }
         }
         .onChange(of: sync.restEndDate) { if sync.restEndDate == nil { restExpanded = false } }
         .onChange(of: sync.running) { if !sync.running { isLocallyMinimized = false } }
@@ -436,7 +444,7 @@ struct TodayView: View {
 
     @ViewBuilder private var content: some View {
         if sync.finished {
-            FinishedView(sync: sync, onExpandRest: scrollableRestExpansion)
+            FinishedView(sync: sync, stationLink: stationLink, onExpandRest: scrollableRestExpansion)
         } else if sync.running && !workoutFocused {
             VStack(alignment: .leading, spacing: 16) {
                 Text("Workout in progress").font(.title2.weight(.semibold))
@@ -1690,6 +1698,7 @@ private struct RestNextSetValues: View {
 
 private struct FinishedView: View {
     @ObservedObject var sync: SyncModel
+    @ObservedObject var stationLink: StationLinkController
     var onExpandRest: (() -> Void)? = nil
 
     /// All live WORKING sets in today's session (warm-ups excluded), taken
@@ -1710,6 +1719,9 @@ private struct FinishedView: View {
             VStack(spacing: 16) {
                 if let onExpandRest {
                     RestPill(sync: sync, horizontalPadding: 0, onExpand: onExpandRest)
+                }
+                if let logged = stationLink.lastLogged {
+                    StationLinkUndoRow(sync: sync, link: stationLink, logged: logged)
                 }
                 Text(finishPending ? "WAITING" : readyToFinish ? "SETS DONE" : "REVIEW SETS")
                     .font(Theme.display(finishPending ? 64 : 58))

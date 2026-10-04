@@ -9,16 +9,43 @@ enum StationLink {
     /// matching `_tresfort-stn._tcp` / `_udp` entries for local network access.
     static let serviceType = "tresfort-stn"
     static let protocolVersion = 1
+    /// Matches the server's `STATION_LINK_KEY_VERSION`.
+    static let keyVersion = 1
     /// Seconds the count must hold steady, outside a rep, before the iPad
     /// reports the set finished. Target reps never end a set on their own.
     static let settleSeconds: TimeInterval = 4
     static let enabledDefaultsKey = "stationLinkEnabled"
 
-    /// Discovery advertises only a one-way account tag, never the account ID.
-    /// Devices pair only when both are signed in to the same account.
-    static func accountTag(for accountID: String) -> String {
-        let digest = SHA256.hash(data: Data("tres-fort-station-link:\(accountID)".utf8))
-        return digest.prefix(12).map { String(format: "%02x", $0) }.joined()
+    /// Discovery filters peers by a tag derived from the account's link key.
+    /// The tag is public, so it is only a filter: a peer must still prove it
+    /// holds the key before any count or arm crosses the link.
+    static func discoveryTag(key: Data) -> String {
+        let mac = HMAC<SHA256>.authenticationCode(for: Data("tres-fort:station-link:discovery".utf8),
+                                                  using: SymmetricKey(data: key))
+        return Data(mac).prefix(12).map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func newNonce() -> Data {
+        SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }
+    }
+
+    /// Mutual challenge-response: the responder's role and both nonces are
+    /// bound, so a proof can be neither replayed nor reflected back.
+    static func proof(key: Data, responderRole: String, challengerNonce: Data, responderNonce: Data) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(
+            for: proofMessage(responderRole, challengerNonce, responderNonce), using: SymmetricKey(data: key)))
+    }
+
+    static func verify(_ proof: Data, key: Data, responderRole: String,
+                       challengerNonce: Data, responderNonce: Data) -> Bool {
+        guard challengerNonce.count == 32, responderNonce.count == 32 else { return false }
+        return HMAC<SHA256>.isValidAuthenticationCode(
+            proof, authenticating: proofMessage(responderRole, challengerNonce, responderNonce),
+            using: SymmetricKey(data: key))
+    }
+
+    private static func proofMessage(_ role: String, _ challenger: Data, _ responder: Data) -> Data {
+        Data("tres-fort:station-link:proof:\(role):".utf8) + challenger + responder
     }
 }
 
@@ -78,6 +105,9 @@ enum StationLinkMessage: Codable, Equatable {
     case progress(StationLinkProgress)
     case completion(StationLinkCompletion)
     case station(StationLinkStationState, armID: UUID?)
+    /// Link authentication, handled by the transport and never delivered.
+    case challenge(Data)
+    case proof(Data)
 
     func encoded() throws -> Data {
         try JSONEncoder().encode(StationLinkEnvelope(version: StationLink.protocolVersion, message: self))

@@ -109,6 +109,7 @@ import {
 } from '../validation';
 import { WEEKDAYS } from '../types';
 import type { Weekday } from '../types';
+import { deriveStationLinkKey, STATION_LINK_KEY_VERSION } from '../stationLink';
 
 export const apiRoutes = new Hono<HonoEnv>();
 apiRoutes.use('*', requireAppJwt);
@@ -1436,6 +1437,15 @@ apiRoutes.post('/starter-workouts/:id', async (c) => {
 apiRoutes.get('/me', async (c) => {
   const userId = c.get('userId');
   return measuredJson(c, await getMeProfile(c.env.DB, userId, c.env.OWNER_APPLE_SUB));
+});
+
+// GET /api/me/station-link-key — the caller's iPad Station link secret. The
+// iPhone and iPad each fetch it with their own session; it never leaves the
+// devices of the account it was derived for and is never cached.
+apiRoutes.get('/me/station-link-key', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  const key = await deriveStationLinkKey(c.env.APP_JWT_SECRET, c.get('userId'));
+  return c.json({ version: STATION_LINK_KEY_VERSION, key });
 });
 
 // GET /api/me/export — download the authenticated caller's portable account

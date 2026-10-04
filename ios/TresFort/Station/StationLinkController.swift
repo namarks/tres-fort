@@ -13,6 +13,8 @@ final class StationLinkController: ObservableObject {
     @Published private(set) var stationState: StationLinkStationState?
     @Published private(set) var proposal: StationLinkProposal?
     @Published private(set) var lastLogged: StationLinkLoggedSet?
+    /// No link key yet: the device must reach the server once to set up.
+    @Published private(set) var needsKey = false
 
     private let transport: StationLinkTransport
     private var seenEvents: Set<UUID> = []
@@ -49,11 +51,20 @@ final class StationLinkController: ObservableObject {
 
     var isConnected: Bool { connection.isConnected }
 
-    func start(accountID: String) { transport.start(accountID: accountID) }
+    func start(key: Data) {
+        needsKey = false
+        transport.start(key: key)
+    }
+
+    func keyUnavailable() {
+        transport.stop()
+        needsKey = true
+    }
 
     func stop() {
         request(nil)
         transport.stop()
+        needsKey = false
         proposal = nil
         lastLogged = nil
         seenEvents.removeAll()
@@ -121,8 +132,8 @@ final class StationLinkController: ObservableObject {
         case .station(let state, let armID):
             guard armID == nil || armID == arm?.armID else { return }
             stationState = state
-        case .arm, .disarm:
-            break // only the iPhone arms sets
+        case .arm, .disarm, .challenge, .proof:
+            break // only the iPhone arms sets; the transport authenticates
         }
     }
 }

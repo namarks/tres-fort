@@ -2,14 +2,37 @@ import Combine
 import CreateMLComponents
 import Foundation
 
-/// Two representations of one Vision result. Pose keeps Vision's original
-/// normalized coordinates; the custom sample uses equal units on both axes.
-/// Neither representation retains the source image or Vision observation.
+enum StationPoseDetector: String, Codable {
+    case appleVision, mediaPipe
+}
+
+/// Value-only camera input. Apple Pose is used only by the retained legacy
+/// counter benchmark; MediaPipe live frames never synthesize an Apple Pose.
 struct StationComparisonFrame {
     let sample: StationPoseSample
     let applePose: Pose?
-    let visionMilliseconds: Double
+    let inferenceMilliseconds: Double
     var imageAspectRatio: Double = 1
+    var detector: StationPoseDetector = .appleVision
+
+    // Compatibility for the original Apple counter benchmark and its fixtures.
+    var visionMilliseconds: Double { inferenceMilliseconds }
+    init(sample: StationPoseSample, applePose: Pose?, visionMilliseconds: Double,
+         imageAspectRatio: Double = 1) {
+        self.sample = sample
+        self.applePose = applePose
+        inferenceMilliseconds = visionMilliseconds
+        self.imageAspectRatio = imageAspectRatio
+    }
+
+    init(sample: StationPoseSample, inferenceMilliseconds: Double,
+         imageAspectRatio: Double, detector: StationPoseDetector) {
+        self.sample = sample
+        applePose = nil
+        self.inferenceMilliseconds = inferenceMilliseconds
+        self.imageAspectRatio = imageAspectRatio
+        self.detector = detector
+    }
 }
 
 enum StationComparisonState: Equatable {

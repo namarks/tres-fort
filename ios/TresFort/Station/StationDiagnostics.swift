@@ -40,6 +40,7 @@ struct StationComparisonDiagnosticSnapshot: Codable, Equatable {
     var appleCount: Double?
     var custom = StationCounterDiagnosticSnapshot()
     var apple: StationAppleDiagnosticSnapshot?
+    var detector: String?
 }
 
 extension StationComparisonState {
@@ -66,6 +67,8 @@ struct StationDiagnosticPose: Codable, Equatable {
     var missingJoints: [String]
     var unclearJoints: [String]
     var visionMilliseconds: Double?
+    var detector: String?
+    var inferenceMilliseconds: Double?
     // Exploratory frontal-view signals, not an alternative repetition counter.
     // Heights are relative to the upright image; torso scale uses image-height units.
     var hipHeight: Double?
@@ -88,7 +91,9 @@ struct StationDiagnosticPose: Codable, Equatable {
             confidences[joint.rawValue] = Double(point.confidence)
             if point.confidence < 0.6 { unclearJoints.append(joint.rawValue) }
         }
-        visionMilliseconds = frame.visionMilliseconds.isFinite ? frame.visionMilliseconds : nil
+        detector = frame.detector.rawValue
+        inferenceMilliseconds = frame.inferenceMilliseconds.isFinite ? frame.inferenceMilliseconds : nil
+        visionMilliseconds = frame.detector == .appleVision ? inferenceMilliseconds : nil
         func clearPoint(_ point: StationJointPoint) -> Bool {
             let confident = point.confidence.isFinite && point.confidence >= 0.6 && point.confidence <= 1
             let validX = point.x.isFinite && point.x >= 0 && point.x <= frame.imageAspectRatio
@@ -172,6 +177,12 @@ final class StationDiagnostics: ObservableObject {
         if !model.state.isCollecting || frame == nil { modelDidUpdate(model) }
     }
 
+    func observeLive(frame: StationComparisonFrame?, snapshot: StationComparisonDiagnosticSnapshot) {
+        guard isEnabled else { return }
+        if frame != nil { observedFrames += 1 }
+        record(pose: frame.map(StationDiagnosticPose.init), snapshot: snapshot)
+    }
+
     func modelDidUpdate(_ model: StationComparisonModel) {
         guard isEnabled, self.model === model else { return }
         record(pose: pose, snapshot: model.diagnosticSnapshot)
@@ -249,7 +260,8 @@ final class StationDiagnostics: ObservableObject {
             : "not collecting · last decision: \(snapshot.admission)"
         let hip = pose?.hipHeight.map { String(format: "%.2f", $0) } ?? "—"
         let scale = pose?.torsoScale.map { String(format: "%.2f", $0) } ?? "—"
-        latestSummary = "\(snapshot.state) · \(decision)\n\(checkedJoints.joined(separator: ", "))\n\(quality)\nAngle \(angle) · \(snapshot.custom.phase) · accepted \(snapshot.accepted), rejected \(snapshot.rejected)\nApple \(snapshot.appleWarmup)/90 · restarts \(snapshot.interruptedSegments)\nHip y \(hip) · torso scale \(scale)"
+        let engineDetail = snapshot.detector == "mediaPipe" ? "MediaPipe live" : "Apple \(snapshot.appleWarmup)/90 · restarts \(snapshot.interruptedSegments)"
+        latestSummary = "\(snapshot.state) · \(decision)\n\(checkedJoints.joined(separator: ", "))\n\(quality)\nAngle \(angle) · \(snapshot.custom.phase) · accepted \(snapshot.accepted), rejected \(snapshot.rejected)\n\(engineDetail)\nHip y \(hip) · torso scale \(scale)"
         emit("STATION_DIAGNOSTIC " + json)
     }
 

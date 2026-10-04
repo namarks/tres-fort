@@ -2801,7 +2801,8 @@ extension AuthModelTests {
         api.authResult = .success(AuthResponse(jwt: sessionToken(for: userID),
             user: UserDTO(id: userID, display_name: nil, email: nil)))
         let auth = AuthModel(api: api, tokenStore: MemoryTokenStore(),
-            defaults: local ?? defaults(), onboardingStateReader: reader)
+            defaults: local ?? defaults(), onboardingStateReader: reader,
+            onboardingAccountReader: OnboardingAccountReaderStub())
         await auth.exchange(identityToken: "synthetic", fullName: nil)
         return (auth, api)
     }

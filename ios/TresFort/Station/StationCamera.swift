@@ -1,12 +1,10 @@
 import AVFoundation
 import Combine
-import CreateMLComponents
 import Foundation
 import ImageIO
-import Vision
 
 /// Prefer usable video formats with the most vertical coverage. A 16:9 preset
-/// can discard the top and bottom of a 4:3 sensor before Vision sees the frame.
+/// can discard the top and bottom of a 4:3 sensor before tracking sees the frame.
 /// Bound resolution so a full-resolution photo format cannot stall pose input.
 enum StationCameraConfiguration {
     enum ConfigurationError: Error { case noUsableVideoFormat }
@@ -91,21 +89,31 @@ final class StationCamera: ObservableObject {
     @Published private(set) var completedRecording: StationRecording?
 
     private let capture: StationCaptureWorker
+    private let access: StationAccess
     private var run: StationCaptureRun?
     private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private var rotationObservation: NSKeyValueObservation?
     private var imageOrientation: CGImagePropertyOrientation = .up
     private var recordingID: UUID?
 
-    init() {
+    init(access: StationAccess) {
+        self.access = access
         let session = AVCaptureSession()
         self.session = session
-        capture = StationCaptureWorker(session: session)
+        capture = StationCaptureWorker(session: session, sessionGate: access.session)
+        access.observeInvalidation { [weak self] in
+            guard let self else { return false }
+            self.stop()
+            self.recordingID = nil
+            self.recordingState = .idle
+            self.completedRecording = nil
+            return true
+        }
     }
 
     /// Called by the explicit start control, never by view construction.
     func start() {
-        guard run == nil else { return }
+        guard access.validate(), run == nil else { return }
         // Device discovery does not open the camera or require permission. Avoid
         // presenting a permission prompt when there is no usable camera (Simulator).
         guard StationCameraConfiguration.frontCamera() != nil else {
@@ -153,13 +161,13 @@ final class StationCamera: ObservableObject {
 
     /// The view supplies the countdown; this method never starts the camera.
     func startRecording(exercise: StationExercise) {
-        guard state == .running, let run, run.isActive, !recordingState.isBusy else { return }
+        guard access.validate(), state == .running, let run, run.isActive, !recordingState.isBusy else { return }
         let id = UUID()
         recordingID = id
         completedRecording = nil
         recordingState = .recording(elapsed: 0)
         capture.startRecording(exercise: exercise, run: run) { [weak self] event in
-            guard let self, self.recordingID == id else { return }
+            guard let self, self.access.validate(), self.recordingID == id else { return }
             switch event {
             case .elapsed(let elapsed): self.recordingState = .recording(elapsed: elapsed)
             case .finishing: self.recordingState = .finishing
@@ -179,7 +187,7 @@ final class StationCamera: ObservableObject {
 
     private func prepare(_ run: StationCaptureRun) {
         capture.prepare(run: run) { [weak self] event in
-            guard let self, self.run === run else { return }
+            guard let self, self.access.validate(), self.run === run else { return }
             switch event {
             case .prepared(let device):
                 guard run.isActive else { return }
@@ -223,7 +231,7 @@ final class StationCamera: ObservableObject {
     }
 
     private static func orientation(for degrees: CGFloat) -> CGImagePropertyOrientation {
-        // Data output is explicitly unrotated and unmirrored. Vision receives the
+        // Data output is explicitly unrotated and unmirrored. MediaPipe receives the
         // sensor-to-upright transform; the preview applies its own coordinator angle.
         let quarterTurns = (Int((degrees / 90).rounded()) % 4 + 4) % 4
         switch quarterTurns {
@@ -258,7 +266,7 @@ final class StationCamera: ObservableObject {
 }
 
 /// Cancellation crosses the main/capture queues immediately, including while
-/// permission, startRunning, or Vision is still in flight.
+/// permission, startRunning, or inference is still in flight.
 private final class StationCaptureRun: @unchecked Sendable {
     private let lock = NSLock()
     private var active = true
@@ -306,10 +314,11 @@ private enum StationRecordingEvent {
 /// pixels here; no sample buffer or pixel buffer is handed to the main queue.
 private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     private let session: AVCaptureSession
+    private let sessionGate: StationSessionGate
     private let queue = DispatchQueue(label: "com.nmarkspdx.tresfort.station.capture", qos: .userInitiated)
     private let output = AVCaptureVideoDataOutput()
     // Created and reused only by capture callbacks on the serial queue.
-    private lazy var poseRequest = VNDetectHumanBodyPoseRequest()
+    private var detector: StationMediaPipeDetector?
     private var device: AVCaptureDevice?
     private var run: StationCaptureRun?
     private var eventHandler: (@MainActor (StationCaptureEvent) -> Void)?
@@ -324,14 +333,15 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
     private var recordingStartedAt: TimeInterval?
     private var recordingFinishing = false
 
-    init(session: AVCaptureSession) {
+    init(session: AVCaptureSession, sessionGate: StationSessionGate) {
         self.session = session
+        self.sessionGate = sessionGate
         super.init()
     }
 
     func prepare(run: StationCaptureRun, handler: @escaping @MainActor (StationCaptureEvent) -> Void) {
         queue.async { [self] in
-            guard run.isActive else { return }
+            guard run.isActive, sessionGate.isActive else { return }
             stopOnQueue()
             self.run = run
             eventHandler = handler
@@ -340,6 +350,7 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
                     end(.unavailable, run: run)
                     return
                 }
+                detector = try StationMediaPipeDetector()
                 guard run.isActive else { stopOnQueue(); return }
                 emit(.prepared(device), run: run)
             } catch StationCameraConfiguration.ConfigurationError.noUsableVideoFormat {
@@ -352,7 +363,7 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
 
     func start(run: StationCaptureRun, orientation: CGImagePropertyOrientation, revision: UInt64) {
         queue.async { [self] in
-            guard self.run === run, run.isActive else { return }
+            guard self.run === run, run.isActive, sessionGate.isActive else { return }
             self.orientation = orientation
             orientationRevision = revision
             lastFrameTime = nil
@@ -379,6 +390,8 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
             self.orientation = orientation
             orientationRevision = revision
             lastFrameTime = nil
+            do { detector = try StationMediaPipeDetector() }
+            catch { end(.failed("MediaPipe could not restart after rotation. Try again."), run: run) }
         }
     }
 
@@ -389,13 +402,13 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
     func startRecording(exercise: StationExercise, run: StationCaptureRun,
                         handler: @escaping @MainActor (StationRecordingEvent) -> Void) {
         queue.async { [self] in
-            guard self.run === run, run.isActive, session.isRunning, recording == nil else {
+            guard self.run === run, run.isActive, sessionGate.isActive, session.isRunning, recording == nil else {
                 DispatchQueue.main.async { handler(.failed("The camera is not ready to record. Try again.")) }
                 return
             }
             recordingHandler = handler
             do {
-                let writer = try StationRecordingWriter(exercise: exercise, store: StationRecordingStore())
+                let writer = try StationRecordingWriter(exercise: exercise, store: StationRecordingStore(session: sessionGate))
                 recording = writer
                 recordingFinishing = false
                 recordingStartedAt = ProcessInfo.processInfo.systemUptime
@@ -530,7 +543,7 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
                      AVCaptureSession.didStopRunningNotification] {
             observers.append(center.addObserver(forName: name, object: session, queue: nil) { [weak self] _ in
                 guard let self, run.isActive else { return }
-                // Invalidate even a currently executing Vision request before queuing cleanup.
+                // Invalidate even a currently executing inference request before queuing cleanup.
                 run.cancel()
                 self.queue.async { [weak self] in
                     guard let self, self.run === run else { return }
@@ -549,7 +562,8 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
     }
 
     private func stopOnQueue() {
-        finishRecording(reason: .cameraStopped)
+        if sessionGate.isActive { finishRecording(reason: .cameraStopped) }
+        else { failRecording(StationAccessError.sessionEnded) }
         run?.cancel()
         run = nil
         eventHandler = nil
@@ -564,6 +578,7 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
             self.previousCenterStage = nil
         }
         lastFrameTime = nil
+        detector = nil
     }
 
     private func emit(_ event: StationCaptureEvent, run: StationCaptureRun) {
@@ -573,7 +588,7 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
 
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
                        from connection: AVCaptureConnection) {
-        guard let run, run.isActive, run.orientationRevision == orientationRevision else { return }
+        guard let run, run.isActive, sessionGate.isActive, run.orientationRevision == orientationRevision else { return }
         let frameRevision = orientationRevision
         let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         guard time.isNumeric else { return }
@@ -585,38 +600,21 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
 
         autoreleasepool {
             do {
-                let request = poseRequest
-                let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation)
-                let inferenceStartedAt = ProcessInfo.processInfo.systemUptime
-                try handler.perform([request])
-                let visionMilliseconds = (ProcessInfo.processInfo.systemUptime - inferenceStartedAt) * 1_000
-                guard run.isActive else { return }
-                let observations = request.results ?? []
-                var joints: [StationJoint: StationJointPoint] = [:]
-                var applePose: Pose?
+                guard let detector, timestamp >= 0, timestamp * 1_000 < Double(Int.max) else { return }
+                let result = try detector.detect(pixelBuffer: pixelBuffer,
+                                                 timestampMilliseconds: Int((timestamp * 1_000).rounded()),
+                                                 orientation: orientation)
+                guard run.isActive, sessionGate.isActive else { return }
                 let width = Double(CVPixelBufferGetWidth(pixelBuffer))
                 let height = Double(CVPixelBufferGetHeight(pixelBuffer))
                 let swapsAxes = orientation == .left || orientation == .right
                 let uprightAspect = swapsAxes ? height / width : width / height
-                // Never silently choose one person from a crowded frame.
-                if observations.count == 1, let observation = observations.first {
-                    // Preserve the complete original normalized observation for
-                    // Apple's model before adapting coordinates for angle math.
-                    applePose = try Pose(observation)
-                    let points = try observation.recognizedPoints(.all)
-                    for (joint, name) in Self.jointNames {
-                        guard let point = points[name], point.x.isFinite, point.y.isFinite else { continue }
-                        // Upright, unmirrored, bottom-left origin. Both axes use image
-                        // height as their unit so joint angles survive portrait/landscape.
-                        joints[joint] = StationJointPoint(
-                            x: Double(point.x) * uprightAspect, y: Double(point.y), confidence: point.confidence
-                        )
-                    }
-                }
-                let sample = StationPoseSample(timestamp: timestamp, joints: joints, personCount: observations.count)
-                let frame = StationComparisonFrame(sample: sample, applePose: applePose,
-                                                   visionMilliseconds: visionMilliseconds,
-                                                   imageAspectRatio: uprightAspect)
+                // Live capture and replay share the same joint mapping, units,
+                // ambiguity policy and visibility/presence admission score.
+                let pose = StationReplayWorker.adaptMediaPipe(result, aspect: uprightAspect)
+                let frame = StationComparisonFrame(sample: pose.sample(at: timestamp),
+                                                   inferenceMilliseconds: result.inferenceMilliseconds,
+                                                   imageAspectRatio: uprightAspect, detector: .mediaPipe)
                 // A rotation invalidates this frame immediately, before the queued
                 // orientation update can close the current recording.
                 if run.orientationRevision == frameRevision, let recording, !recordingFinishing {
@@ -639,12 +637,4 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
         }
     }
 
-    private static let jointNames: [(StationJoint, VNHumanBodyPoseObservation.JointName)] = [
-        (.leftShoulder, .leftShoulder), (.rightShoulder, .rightShoulder),
-        (.leftElbow, .leftElbow), (.rightElbow, .rightElbow),
-        (.leftWrist, .leftWrist), (.rightWrist, .rightWrist),
-        (.leftHip, .leftHip), (.rightHip, .rightHip),
-        (.leftKnee, .leftKnee), (.rightKnee, .rightKnee),
-        (.leftAnkle, .leftAnkle), (.rightAnkle, .rightAnkle)
-    ]
 }

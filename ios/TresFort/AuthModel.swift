@@ -2,6 +2,17 @@ import AuthenticationServices
 import Foundation
 import SwiftUI
 
+/// Existing, read-only account endpoints. Default /me fields exist at sign-in
+/// and are not evidence that the member has used or completed setup.
+@MainActor
+protocol OnboardingAccountReading {
+    func trainingProfile(jwt: String) async throws -> TrainingProfileState
+    func getMe(jwt: String) async throws -> MeProfile
+    func listGroups(jwt: String) async throws -> [GroupSummary]
+}
+
+extension APIClient: OnboardingAccountReading {}
+
 @MainActor
 final class AuthModel: ObservableObject {
     private struct ServerErrorEnvelope: Decodable {
@@ -80,6 +91,9 @@ final class AuthModel: ObservableObject {
     /// it does not prove that the server account is new. Persisted so it
     /// survives relaunch and never re-fires once completed. See `init`.
     @Published var onboardingComplete = false
+    /// Empty server state cannot distinguish a new member from someone who
+    /// previously skipped every optional step. Let either enter directly.
+    @Published private(set) var canContinueWithoutSetup = false
     @Published private(set) var onboardingResolution: OnboardingResolution = .unresolved
     /// RootView keys its resolution task on invalidations, not on .checking:
     /// a cancelled task's deferred reset may occur after a replacement task
@@ -200,6 +214,7 @@ final class AuthModel: ObservableObject {
     private let defaults: LocalPersistence
     private let now: () -> Date
     private let onboardingStateReader: @MainActor (String) async throws -> StateResponse
+    private let onboardingAccountReader: any OnboardingAccountReading
     /// Weak-owner callbacks registered by mounted feature models. AuthModel
     /// invokes them immediately before an account boundary makes their epoch
     /// stale, so process-shared UI such as Live Activities cannot outlive the
@@ -242,7 +257,8 @@ final class AuthModel: ObservableObject {
         now: @escaping () -> Date = Date.init,
         onboardingStateReader: @escaping @MainActor (String) async throws -> StateResponse = {
             try await APIClient().getState(jwt: $0)
-        }
+        },
+        onboardingAccountReader: any OnboardingAccountReading = APIClient()
     ) {
         self.api = api
         self.tokenStore = tokenStore
@@ -250,6 +266,7 @@ final class AuthModel: ObservableObject {
         self.defaults = defaults
         self.now = now
         self.onboardingStateReader = onboardingStateReader
+        self.onboardingAccountReader = onboardingAccountReader
         postDeletionAppleRevocationRequired = defaults.bool(
             forKey: Self.postDeletionAppleRevocationKey)
         let token = tokenStore.load()
@@ -333,10 +350,23 @@ final class AuthModel: ObservableObject {
         resetOnboardingResolution()
     }
 
+    func continueWithoutSetup() {
+        guard canContinueWithoutSetup, let accountID = userID, featureJWT != nil else { return }
+        // A setup sheet may have created a draft since the initial account
+        // read. It still owns any uncertain starter acceptance.
+        let draft = defaults.data(forKey: AccountLocalState.trainingProfileDraftKey(userID: accountID))
+        guard draft == nil, !defaults.hasFailure(userID: accountID) else {
+            canContinueWithoutSetup = false
+            return
+        }
+        completeOnboarding()
+    }
+
     /// A fresh installation has no account-scoped completion flag. Read the
-    /// server with zero sync cursors before offering setup, so an existing
-    /// member's phone and iPad enter the same training account. This read does
-    /// not create feature models, flush outboxes, or mutate server data.
+    /// server with zero sync cursors and, if needed, existing account setup
+    /// before offering guidance, so a returning member can use a fresh device.
+    /// These reads do not create feature models, flush outboxes, or mutate
+    /// server data.
     func resolveOnboarding() async {
         guard !onboardingComplete, let token = featureJWT, let accountID = userID,
               onboardingResolution != .checking, onboardingResolution != .needsSetup,
@@ -365,8 +395,17 @@ final class AuthModel: ObservableObject {
             }
         }
         do {
-            let state = try await withTaskCancellationHandler {
-                try await onboardingStateReader(token)
+            let hasExistingSetup = try await withTaskCancellationHandler {
+                @MainActor func validateRead() throws {
+                    try Task.checkCancellation()
+                    guard onboardingRequestID == requestID,
+                          isCurrentFeatureSession(accountID: accountID, epoch: epoch)
+                    else { throw CancellationError() }
+                }
+                let state = try await onboardingStateReader(token)
+                try validateRead()
+                if Self.hasExistingTraining(state) { return true }
+                return try await hasExistingAccountSetup(token: token, validateRead: validateRead)
             } onCancel: { [weak self] in
                 Task { @MainActor in
                     guard let self, self.onboardingRequestID == requestID,
@@ -381,9 +420,10 @@ final class AuthModel: ObservableObject {
                   isCurrentFeatureSession(accountID: accountID, epoch: epoch),
                   !onboardingComplete
             else { return }
-            if Self.hasExistingTraining(state) {
+            if hasExistingSetup {
                 completeOnboarding()
             } else {
+                canContinueWithoutSetup = true
                 onboardingResolution = .needsSetup
             }
         } catch {
@@ -397,7 +437,7 @@ final class AuthModel: ObservableObject {
                 requireReauthentication()
             } else {
                 onboardingResolution = .failed(
-                    "We couldn’t check your existing training. Check your connection and try again.")
+                    "We couldn’t check your account. Check your connection and try again.")
             }
         }
     }
@@ -411,8 +451,31 @@ final class AuthModel: ObservableObject {
             || state.external_activities.contains { !$0.isDeleted }
     }
 
+    private func hasExistingAccountSetup(token: String, validateRead: @MainActor () throws -> Void) async throws -> Bool {
+        let training = try await onboardingAccountReader.trainingProfile(jwt: token)
+        try validateRead()
+        if training.profile != nil && training.version > 0 { return true }
+
+        let profile = try await onboardingAccountReader.getMe(jwt: token)
+        try validateRead()
+        // Only explicit setup or integration history counts. Apple supplies a
+        // name/email on first sign-in; bootstrap ownership is also not setup.
+        if profile.intervals.connected || profile.intervals.needs_reauth == true
+            || (profile.intervals.credential_generation ?? 0) > 0
+            || profile.intervals.last_synced_at != nil
+            || profile.coach.connected || profile.coach.last_active != nil
+            || profile.health?.sharing_in_group == true {
+            return true
+        }
+
+        let groups = try await onboardingAccountReader.listGroups(jwt: token)
+        try validateRead()
+        return !groups.isEmpty
+    }
+
     private func resetOnboardingResolution() {
         onboardingRequestID = UUID()
+        canContinueWithoutSetup = false
         onboardingResolution = .unresolved
         onboardingResolutionRevision &+= 1
     }

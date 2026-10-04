@@ -3,6 +3,7 @@ import SwiftUI
 import UIKit
 
 struct StationRecordingsView: View {
+    @ObservedObject var access: StationAccess
     @Environment(\.dismiss) private var dismiss
     @State private var recordings: [StationRecording] = []
     @State private var error: String?
@@ -26,7 +27,7 @@ struct StationRecordingsView: View {
                 }
                 ForEach(recordings) { recording in
                     NavigationLink {
-                        StationRecordingDetailView(recording: recording)
+                        StationRecordingDetailView(recording: recording, access: access)
                     } label: {
                         VStack(alignment: .leading, spacing: 6) {
                             Text(recording.exercise.title).font(.headline)
@@ -47,17 +48,27 @@ struct StationRecordingsView: View {
                 get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })) {
                     Button("Delete test", role: .destructive) {
                         guard let id = pendingDelete else { return }
-                        do { try StationRecordingStore().delete(id: id); reload() }
+                        guard access.validate() else { return }
+                        do { try StationRecordingStore(session: access.session).delete(id: id); reload() }
                         catch { self.error = error.localizedDescription }
                         pendingDelete = nil
                     }
                 }
         }
         .preferredColorScheme(.dark)
+        .onReceive(access.$isActive) { active in
+            guard !active else { return }
+            recordings = []
+            pendingDelete = nil
+            damagedRecording = nil
+            error = nil
+            dismiss()
+        }
     }
 
     private func reload() {
-        do { recordings = try StationRecordingStore().list(); error = nil; damagedRecording = nil }
+        guard access.validate() else { recordings = []; return }
+        do { recordings = try StationRecordingStore(session: access.session).list(); error = nil; damagedRecording = nil }
         catch StationRecordingError.damagedRecording(let id) {
             damagedRecording = id
             error = "A saved test is damaged. Delete it to view the remaining tests."
@@ -73,24 +84,53 @@ private struct StationShareItems: Identifiable {
 
 private struct StationShareSheet: UIViewControllerRepresentable {
     let urls: [URL]
+    @ObservedObject var access: StationAccess
     func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: urls, applicationActivities: nil)
+        let items = access.validate() ? urls.map { StationShareItem(url: $0, session: access.session) } : []
+        return UIActivityViewController(activityItems: items, applicationActivities: nil)
     }
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) { }
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {
+        if !access.isActive { uiViewController.dismiss(animated: false) }
+    }
+}
+
+final class StationShareItem: NSObject, UIActivityItemSource {
+    private let url: URL
+    private let session: StationSessionGate
+    init(url: URL, session: StationSessionGate) { self.url = url; self.session = session }
+    func activityViewControllerPlaceholderItem(_ activityViewController: UIActivityViewController) -> Any {
+        if let allowedURL = try? session.withAccess({ url }) { return allowedURL }
+        return ""
+    }
+    func activityViewController(_ activityViewController: UIActivityViewController,
+                                itemForActivityType activityType: UIActivity.ActivityType?) -> Any? {
+        try? session.withAccess { url }
+    }
 }
 
 struct StationRecordingDetailView: View {
     let recording: StationRecording
+    @ObservedObject var access: StationAccess
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var replay = StationReplayModel()
+    @StateObject private var replay: StationReplayModel
+    @StateObject private var stillModel: StationRecordingStill
     @State private var actualReps = ""
     @State private var selectedIndex = 0.0
-    @State private var still: UIImage?
-    @State private var stillError: String?
     @State private var error: String?
     @State private var shareItems: StationShareItems?
     @State private var previousIdleTimerDisabled = false
     @FocusState private var editingCount: Bool
+
+    init(recording: StationRecording, access: StationAccess) {
+        self.recording = recording
+        self.access = access
+        _replay = StateObject(wrappedValue: StationReplayModel(access: access))
+        _stillModel = StateObject(wrappedValue: StationRecordingStill(access: access))
+    }
+
+    private var still: UIImage? { stillModel.image }
+    private var stillError: String? { stillModel.error }
 
     private var frame: StationReplayFrame? {
         guard let frames = replay.report?.frames, !frames.isEmpty else { return nil }
@@ -124,7 +164,7 @@ struct StationRecordingDetailView: View {
                     Button("Cancel comparison") { replay.cancel() }
                 } else {
                     Button(replay.report == nil ? "Compare Apple and MediaPipe" : "Run comparison again", systemImage: "person.crop.rectangle.badge.plus") {
-                        do { replay.start(recording: recording, store: try StationRecordingStore()) }
+                        do { replay.start(recording: recording, store: try StationRecordingStore(session: access.session)) }
                         catch { self.error = error.localizedDescription }
                     }.buttonStyle(.borderedProminent)
                     .accessibilityIdentifier("station.replay")
@@ -168,6 +208,7 @@ struct StationRecordingDetailView: View {
         }
         .navigationTitle(recording.exercise.title + " test")
         .onAppear {
+            guard access.validate() else { dismiss(); return }
             actualReps = recording.actualReps.map(String.init) ?? ""
             previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
         }
@@ -175,9 +216,25 @@ struct StationRecordingDetailView: View {
             UIApplication.shared.isIdleTimerDisabled = running ? true : previousIdleTimerDisabled
         }
         .onChange(of: scenePhase) { _, phase in if phase != .active { replay.cancel() } }
-        .onDisappear { replay.cancel(); UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled }
+        .onDisappear {
+            replay.cancel()
+            stillModel.clear()
+            shareItems = nil
+            UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
+        }
+        .onReceive(access.$isActive) { active in
+            guard !active else { return }
+            replay.clear()
+            stillModel.clear()
+            shareItems = nil
+            actualReps = ""
+            error = nil
+            selectedIndex = 0
+            editingCount = false
+            dismiss()
+        }
         .task(id: frame?.timestamp ?? 0) { await loadStill(at: frame?.timestamp ?? 0) }
-        .sheet(item: $shareItems) { items in StationShareSheet(urls: items.urls) }
+        .sheet(item: $shareItems) { items in StationShareSheet(urls: items.urls, access: access) }
     }
 
     private func posePanel(_ title: String, pose: StationReplayPose, cycles: Int) -> some View {
@@ -213,38 +270,29 @@ struct StationRecordingDetailView: View {
     }
 
     private func saveCount() {
+        guard access.validate() else { return }
         do {
-            try StationRecordingStore().updateActualReps(actualReps.isEmpty ? nil : Int(actualReps), for: recording.id)
+            try StationRecordingStore(session: access.session).updateActualReps(actualReps.isEmpty ? nil : Int(actualReps), for: recording.id)
             editingCount = false
             error = nil
         } catch { self.error = error.localizedDescription }
     }
 
     private func share() {
+        guard access.validate() else { return }
         do {
-            let store = try StationRecordingStore()
-            var urls = [store.videoURL(for: recording.id), store.measurementsURL(for: recording.id),
-                        store.manifestURL(for: recording.id)]
-            let result = store.directoryURL(for: recording.id).appendingPathComponent("comparison.json")
-            if FileManager.default.fileExists(atPath: result.path) { urls.append(result) }
+            let store = try StationRecordingStore(session: access.session)
+            let urls = try store.shareURLs(for: recording.id)
             shareItems = StationShareItems(urls: urls)
         } catch { self.error = error.localizedDescription }
     }
 
     private func loadStill(at seconds: Double) async {
-        still = nil
-        stillError = nil
+        guard access.validate() else { stillModel.clear(); return }
         do {
-            let url = try StationRecordingStore().videoURL(for: recording.id)
-            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
-            generator.appliesPreferredTrackTransform = true
-            generator.maximumSize = CGSize(width: 1280, height: 1280)
-            generator.requestedTimeToleranceBefore = .zero
-            generator.requestedTimeToleranceAfter = .zero
-            let result = try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600_000))
-            try Task.checkCancellation()
-            still = UIImage(cgImage: result.image)
+            let store = try StationRecordingStore(session: access.session)
+            await stillModel.load(recording: recording, at: seconds, store: store)
         } catch is CancellationError { }
-        catch { if !Task.isCancelled { stillError = "Could not display this video frame." } }
+        catch { if access.validate(), !Task.isCancelled { self.error = error.localizedDescription } }
     }
 }

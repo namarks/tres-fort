@@ -15,7 +15,7 @@ enum StationExercise: String, CaseIterable, Identifiable {
 
     var guidance: String {
         switch self {
-        case .squat: return "Show your hip, knee and ankle from the side. Stand tall, then squat and stand."
+        case .squat: return "Keep your hips, knees and ankles visible. Stand tall, then squat and stand. Try front-facing and side views in separate tests."
         case .curl: return "Show your shoulder, elbow and wrist from the side. Lower your arm, then lift and lower."
         case .benchPress: return "Show your shoulder, elbow and wrist from the side. Start with arms extended, then lower and press."
         }
@@ -68,6 +68,7 @@ struct StationRepCounter {
     private var selectedSide: Side?
     private var phase: Phase = .seekingStart
     private var endpointCandidate: EndpointCandidate?
+    private var standingSideCandidate: (side: Side, since: TimeInterval)?
 
 #if DEBUG
     private var diagnosticTimestamp: TimeInterval?
@@ -96,6 +97,7 @@ struct StationRepCounter {
     private static let endpointDwell: TimeInterval = 0.18
     private static let minimumCycleDuration: TimeInterval = 0.55
     private static let maximumSampleGap: TimeInterval = 0.5
+    private static let maximumStandingSideAngleDifference = 10.0
 
     init(exercise: StationExercise) {
         self.exercise = exercise
@@ -139,7 +141,7 @@ struct StationRepCounter {
                 loseTracking(.trackingLost)
                 return
             }
-            measurement = current
+            measurement = standingMeasurement(sample, current: current)
         } else {
             let candidates = Side.allCases.compactMap { measure(sample, side: $0) }
             guard let best = candidates.max(by: { $0.confidence < $1.confidence }) else {
@@ -196,6 +198,32 @@ struct StationRepCounter {
         selectedSide = nil
         phase = .seekingStart
         endpointCandidate = nil
+        standingSideCandidate = nil
+    }
+
+    private mutating func standingMeasurement(_ sample: StationPoseSample,
+                                              current: Measurement) -> Measurement {
+        // A turn can hide the selected limb. Change sides only between cycles,
+        // while both limbs independently show a matching, sustained extension.
+        // Missing selected joints still take the loss path above.
+        guard case .armed(startedAt: nil) = phase,
+              current.angle >= thresholds.extendedEnter,
+              let alternate = measure(sample, side: current.side == .left ? .right : .left),
+              alternate.confidence > current.confidence,
+              alternate.angle >= thresholds.extendedEnter,
+              abs(alternate.angle - current.angle) <= Self.maximumStandingSideAngleDifference else {
+            standingSideCandidate = nil
+            return current
+        }
+        if standingSideCandidate?.side != alternate.side {
+            standingSideCandidate = (alternate.side, sample.timestamp)
+        }
+        guard let candidate = standingSideCandidate,
+              sample.timestamp - candidate.since >= Self.endpointDwell else { return current }
+        selectedSide = alternate.side
+        standingSideCandidate = nil
+        endpointCandidate = EndpointCandidate(endpoint: .extended, since: candidate.since)
+        return alternate
     }
 
     private mutating func stableEndpoint(angle: Double, timestamp: TimeInterval) -> EndpointCandidate? {

@@ -3,6 +3,14 @@ import ImageIO
 import XCTest
 @testable import TresFort
 
+// Tests opt into a named account and a disposable base directory. Production
+// has no unscoped/default constructor for saved Station recordings.
+extension StationRecordingStore {
+    convenience init(rootURL: URL) throws {
+        try self.init(session: StationSessionGate(accountID: "station-recording-test", epoch: 0), baseURL: rootURL)
+    }
+}
+
 final class StationRecordingTests: XCTestCase {
     private var roots: [URL] = []
 
@@ -51,7 +59,7 @@ final class StationRecordingTests: XCTestCase {
         try store.delete(id: first.id)
         try store.delete(id: first.id)
         XCTAssertEqual(try store.list().map(\.id), [second.id])
-        XCTAssertFalse(FileManager.default.fileExists(atPath: store.videoURL(for: first.id).path))
+        XCTAssertFalse(try FileManager.default.fileExists(atPath: store.videoURL(for: first.id).path))
     }
 
     func testIncompletePackageIsNotListedAndSecondStoreDoesNotDeleteActiveWriter() throws {
@@ -70,8 +78,9 @@ final class StationRecordingTests: XCTestCase {
 
     func testFirstStoreRemovesOnlyRecognizedCrashLeftoversAndExcludesBackup() throws {
         let url = root()
-        let pending = url.appendingPathComponent(".pending-\(UUID())")
-        let unrelated = url.appendingPathComponent(".pending-user-file")
+        let scoped = try StationRecordingStore.accountDirectory(accountID: "station-recording-test", baseURL: url)
+        let pending = scoped.appendingPathComponent(".pending-\(UUID())")
+        let unrelated = scoped.appendingPathComponent(".pending-user-file")
         try FileManager.default.createDirectory(at: pending, withIntermediateDirectories: true)
         try Data([1]).write(to: unrelated)
         let store = try StationRecordingStore(rootURL: url)
@@ -237,7 +246,7 @@ final class StationRecordingTests: XCTestCase {
         XCTAssertEqual(rows.first?.timestampSeconds, 0)
         XCTAssertEqual(try store.load(id: saved.id), saved)
 
-        let asset = AVURLAsset(url: store.videoURL(for: saved.id))
+        let asset = try AVURLAsset(url: store.videoURL(for: saved.id))
         let videoTracks = try await asset.loadTracks(withMediaType: .video)
         let audioTracks = try await asset.loadTracks(withMediaType: .audio)
         XCTAssertTrue(audioTracks.isEmpty)

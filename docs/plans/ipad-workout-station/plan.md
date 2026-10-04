@@ -14,16 +14,15 @@ may turn detections into durable workout actions.
 - [ ] **P0 — Deliver the observation-only Station Mode comparison**
   - Enable native iPad support and a responsive landscape/portrait display.
   - Enter from Today on iPad; request camera access only on explicit action.
-  - Process the front camera locally with Vision and experimental angle-cycle
-    counters for squat, curl and bench press. Live capture remains transient
-    unless the member explicitly starts a bounded local test recording.
-  - Feed each accepted Vision pose and timestamp to the custom baseline and
-    Apple HumanBodyActionCounter. Show both counts, Apple warm-up/coverage and
-    reporting timing, with optional manual ground truth after the trial.
-  - Bound queued work, fence late results by trial identity and make incomplete
-    coverage or inference failure visible. Stop and reset both together.
+  - Process the front camera locally with MediaPipe Full and an experimental
+    angle-cycle counter for squat, curl and bench press. Live capture remains
+    transient unless the member explicitly starts a bounded local test recording.
+  - Show the MediaPipe live count without an Apple temporal-window warm-up.
+    Retain Apple Vision in saved-video comparison on identical frames.
+  - Bound queued work, fence late results by trial and account session, and make
+    incomplete coverage or inference failure visible.
   - Keep trials isolated from SyncModel writes, outboxes, rest and progression.
-  - Reset both counters' movement history after missing joints or a pose gap;
+  - Reset movement history after missing joints or a pose gap;
     reacquire a stable view and keep the whole trial visibly partial. Additional
     people, camera interruption, rotation, backgrounding and view exit require
     an explicit restart. Never infer completion from target reps or lost tracking.
@@ -37,7 +36,8 @@ may turn detections into durable workout actions.
   - Treat the custom angle counter as a baseline, not the selected production
     algorithm. Compare it with Apple HumanBodyActionCounter in the first
     device build. Compare Apple Vision with MediaPipe Full on identical saved
-    frames before choosing a pose detector; score detection separately from
+    frames. The first owner clip supports MediaPipe as the next live prototype
+    default; broader accuracy remains unproven. Score detection separately from
     repetition logic and measure live performance separately from offline replay.
   - On an authorized device build, compare counts to manual ground truth for
     all three modes, including slow/paused/partial reps and obstructed views.
@@ -68,16 +68,16 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Finish PR #228's exact-head review and required checks for the
-record/replay slice; Nick owns merge. Source
-`7e4941efe4d190be841472154309cebe309474dc` is verified, signed and installed
-in place over Wi-Fi. The owner's 2026-10-03
-pause ended on 2026-10-04 with explicit approval to implement this testing flow.
-**Next physical trial (@owner):** Mount the iPad in the workout room, record a
-short front-facing five-squat test and a side-view control, label actual reps,
-and inspect both detectors on the same frames. Pose reliability, frontal
-counting, sustained performance and automatic workout actions remain unvalidated.
-No unattended recording or movement trial is requested.
+**Now (@agent):** Verify the MediaPipe live-default update and account-scoped
+recordings, then finish PR #228's exact-head review and required checks; Nick
+owns merge. The prior record/replay source `7e4941efe4d190be841472154309cebe309474dc`
+is installed over Wi-Fi. The owner completed and transferred one combined
+front/side squat clip. Both real native detectors ran on all 388 frames.
+**Next physical trial (@owner):** After the updated development build is verified
+and installed, test the live count with separate front-facing and side-view
+clips and save each actual count. No additional repetitions are needed for the
+current diagnosis. Sustained performance, other movements, false positives and
+automatic workout actions remain unvalidated. No unattended recording is requested.
 
 ## Approved comparison scope
 
@@ -94,14 +94,47 @@ No unattended recording or movement trial is requested.
 - The owner subsequently requested TestFlight upload while the Mac checks were
   queued. The independently reviewed source was uploaded as an internal branch
   build; repository merge still requires its configured checks and review.
-- MediaPipe Full is now the approved independent pose comparison, not a selected
-  production winner. The existing live Apple/custom counters both use Vision.
+- On 2026-10-04 the owner approved making MediaPipe Full the default live
+  tracker after the first matched native replay. Apple Vision remains a saved
+  comparison option. This is a prototype choice, not general accuracy or
+  automatic workout-action approval.
 - The owner requested direct iPad debugging to shorten iteration and identified
   front-facing squat support as a needed use case. Developer diagnostics stay
   opt-in and Debug-only: bounded numerical summaries on the local console,
   with no images, video, account identifiers, network sink or workout writes.
 
 ## Implementation evidence
+
+- First owner clip: 25.8 seconds, 388 paired frames, one person detected in every
+  frame by both models. Original shared angle-rule counts were MediaPipe 9 and
+  Apple Vision 1. The owner provisionally reported five front-facing plus five
+  sideways squats; the exported manifest contained no actual-rep label. These
+  are local numeric results, without independent visual ground-truth annotation.
+- Replaying the actual Swift counter isolated a missed transition cycle: the
+  locked right knee fell below the 0.6 admission cutoff at 13.600 seconds while
+  all three left-leg joints remained clear. The new rule allows a better-scored
+  limb only between cycles, after both limbs agree in extension for 0.18 seconds.
+  It keeps the confidence threshold and rejects mid-cycle handoffs. The same
+  clip now yields MediaPipe 10, Apple 1. This supports the diagnosis on one clip;
+  it does not establish general frontal accuracy or form/depth assessment.
+- Native offline median inference was 25.7 ms for MediaPipe and 6.3 ms for Apple.
+  MediaPipe timing includes orientation. These timings do not establish live
+  throughput, battery or thermal behavior. Raw videos/landmarks remain outside
+  Git in ignored `.artifacts/station-trials/`; only aggregates are documented.
+- Recordings now require an account namespace and revocable feature-session
+  capability. Sign-out/account changes fence camera, recording completion,
+  replay, still images and sharing; deletion erases only that account's clips.
+  Unattributed clips from the earlier prototype are left untouched and hidden,
+  never adopted by the next signed-in account. The owner's original exported
+  test is preserved on the Mac. New measurement metadata names its detector;
+  MediaPipe timing is never exported as Vision timing.
+- Returning-account recognition now checks saved training profiles, group
+  membership and explicit integration history when training is empty. A member
+  who previously skipped everything has no durable server completion marker;
+  after a successful empty-account read the welcome screen offers Continue to
+  app. Failed reads and unfinished local drafts cannot use that bypass.
+
+Earlier build evidence (historical, superseded where stated above):
 
 - On 2026-10-04 the owner unplugged the iPad and CoreDevice verified an active
   `localNetwork` connection. Bounded silent recording, aligned measurement
@@ -129,8 +162,8 @@ No unattended recording or movement trial is requested.
   and model hashes, signatures and installation receipt are retained in
   `.artifacts/station-device/record-replay-build-source.json`,
   `record-replay-signed-verification.json` and `record-replay-install.json`.
-  No camera or recording was started by the agent; a new owner-participated
-  clip and native replay remain to be evaluated.
+  No camera or recording was started by the agent. The owner subsequently
+  recorded and replayed the clip summarized above.
 - Native iPad layout, opt-in local capture and both isolated trial counters are
   implemented. Each trial locks the initially visible exercise-relevant limb
   (hip/knee/ankle or shoulder/elbow/wrist) for both counters. Confidence 0.6 and
@@ -265,18 +298,15 @@ No unattended recording or movement trial is requested.
 
 - Entering Station Mode does not start a workout or request camera access.
 - Exercise selection, trial start/stop and all detections cannot write a set.
-- The custom counter requires a stable extended position, flexion and return
-  to extension on one visible side. Apple supplies a separate fractional
-  estimate from temporal pose windows. Neither result is a form, depth, safety
-  or training-quality assessment.
-- Apple's first window needs 90 poses and then advances every five. Normal stop
-  drains queued windows for up to five seconds; an uncovered final 1–4 poses,
-  tracking loss or engine failure leaves the trial visibly incomplete. No
-  synthetic poses fill the tail and no missing estimate is presented as zero.
+- The live MediaPipe angle counter requires a stable extended position, flexion
+  and return. It is an advisory count, not a form, depth or safety assessment.
+- Saved replay feeds identical decoded frames to both pose detectors and uses
+  the same cycle rule. The retained legacy Apple HumanBodyActionCounter code
+  and its tests are not part of the live screen or saved pose-detector comparison.
 - Low-confidence joints, multiple people and camera gaps cannot bridge a rep.
-- Missing joints and camera gaps reacquire with fresh cycle/window state after
-  a stable pose. The trial remains incomplete even after counting resumes;
-  multiple people still require an explicit new comparison.
+  Tracking loss starts a fresh cycle; counts remain visibly partial. A better
+  limb may take over only while both limbs agree in a stable extended position.
+  Multiple people require an explicit new test.
 - Rotation invalidates the current trial; returning to the foreground requires
   explicit camera/trial restart. Exiting releases camera and idle-timer policy.
 - All station controls remain reachable at accessibility sizes and in portrait.
@@ -285,11 +315,11 @@ No unattended recording or movement trial is requested.
 
 ## Algorithm comparison before assisted logging
 
-The prototype reuses Apple Vision for pose estimation but implements its own
-exercise-specific angle-cycle counter. No comparison has established that this
-counter, or Vision, is the best available choice. Apple is approved as the first
-counter comparison engine. MediaPipe Full is the approved independent pose
-comparison; RepNet remains a later candidate. No production winner is selected:
+The prototype now uses MediaPipe Full for live pose estimation and its own
+exercise-specific angle-cycle counter. The first matched owner clip favored
+MediaPipe's joint tracking for this setup; it does not establish a universally
+best detector or counter. Apple Vision remains available for saved comparison.
+The following remain benchmark candidates before assisted logging:
 
 1. **Apple HumanBodyActionCounter:** pretrained repetition counting and an
    official native sample; test its temporal-window latency and treatment of

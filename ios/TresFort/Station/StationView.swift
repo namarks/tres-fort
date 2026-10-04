@@ -1,16 +1,35 @@
 import SwiftUI
 import Combine
 
+/// The entry owns one immutable account/epoch capability for this presentation.
+/// AuthModel is reduced to a validator and boundary registration at the caller.
+struct StationEntryView: View {
+    let workoutName: String?
+    @StateObject private var access: StationAccess
+
+    init(workoutName: String?, accountID: String?, epoch: UInt64,
+         isCurrentSession: @escaping @MainActor () -> Bool,
+         observeBoundary: @escaping (@escaping () -> Bool) -> Void) {
+        self.workoutName = workoutName
+        _access = StateObject(wrappedValue: StationAccess(accountID: accountID, epoch: epoch,
+                                                       isCurrentSession: isCurrentSession,
+                                                       observeBoundary: observeBoundary))
+    }
+
+    var body: some View { StationView(workoutName: workoutName, access: access) }
+}
+
 /// An observation-only trial. This view receives a display string, never a
 /// SyncModel, API client, outbox or binding to the workout's mutable state.
 struct StationView: View {
     let workoutName: String?
+    @ObservedObject var access: StationAccess
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @StateObject private var camera = StationCamera()
+    @StateObject private var camera: StationCamera
     @State private var exercise: StationExercise = .squat
-    @StateObject private var comparison = StationComparisonModel()
+    @StateObject private var comparison = StationLiveModel()
 #if DEBUG
     @StateObject private var diagnostics = StationDiagnostics()
 #endif
@@ -22,7 +41,15 @@ struct StationView: View {
     @State private var countdownTask: Task<Void, Never>?
     @State private var showSavedTests = false
 
+    init(workoutName: String?, access: StationAccess) {
+        self.workoutName = workoutName
+        self.access = access
+        _camera = StateObject(wrappedValue: StationCamera(access: access))
+    }
+
     var body: some View {
+        Group {
+        if access.isActive {
         NavigationStack {
             GeometryReader { geometry in
                 ScrollView {
@@ -60,8 +87,25 @@ struct StationView: View {
             }
             .toolbarColorScheme(.dark, for: .navigationBar)
         }
+        } else {
+            ContentUnavailableView("Account session ended", systemImage: "lock")
+        }
+        }
         .preferredColorScheme(.dark)
-        .onAppear { previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled }
+        .onAppear {
+            previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
+            if !access.validate() { dismiss() }
+        }
+        .onReceive(access.$isActive) { active in
+            guard !active else { return }
+            cancelCountdown()
+            comparison.reset(exercise: exercise)
+            actualReps = ""
+            hasRunTrial = false
+            showSavedTests = false
+            camera.stop()
+            dismiss()
+        }
         .onDisappear {
             cancelCountdown()
 #if DEBUG
@@ -74,7 +118,7 @@ struct StationView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase != .active else { return }
             cancelCountdown()
-            cancelComparison("Comparison stopped when the app became inactive.")
+            cancelComparison("Tracking stopped when the app became inactive.")
             // The system permission alert temporarily makes this scene inactive.
             // Keep that request alive; actual backgrounding always cancels it.
             if phase == .inactive && camera.state == .requestingPermission { return }
@@ -90,31 +134,38 @@ struct StationView: View {
                 ? true : previousIdleTimerDisabled
         }
         .onReceive(camera.$latestFrame) { frame in
-#if DEBUG
-            diagnostics.observe(frame: frame, model: comparison)
-#endif
-            guard comparison.state.isCollecting else { return }
-            guard camera.state == .running, let frame else {
-                cancelComparison("Camera view changed. Start a new comparison.")
-                return
+            guard access.validate() else { return }
+            if comparison.state.isCollecting {
+                if camera.state == .running, let frame { comparison.process(frame) }
+                else { cancelComparison("Camera view changed. Start a new test.") }
             }
-            comparison.process(frame)
+#if DEBUG
+            diagnostics.observeLive(frame: frame, snapshot: comparison.diagnosticSnapshot)
+#endif
         }
-        .sheet(isPresented: $showSavedTests) { StationRecordingsView() }
+        .onChange(of: camera.recordingState) { previous, current in
+            // Saving may take time while preview frames keep arriving. End the
+            // recorded trial at capture stop, not after file finalization.
+            if case .recording = previous {
+                if case .recording = current { return }
+                comparison.stop()
+            }
+        }
+        .sheet(isPresented: $showSavedTests) { StationRecordingsView(access: access) }
     }
 
     private func cancelComparison(_ reason: String) {
-        if comparison.state.isCollecting || comparison.state.isFinishing {
+        if comparison.state.isCollecting {
             comparison.invalidate(reason: reason)
         }
     }
 
     private var heading: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("COMPARE COUNTERS")
+            Text("MOVEMENT TRACKING")
                 .font(Theme.display(44)).foregroundStyle(Theme.text)
                 .accessibilityAddTraits(.isHeader)
-            Text("Two live counters using Apple's tracking. Saved tests compare Apple and MediaPipe tracking.")
+            Text("MediaPipe tracks your movement live. Compare Apple and MediaPipe on the same recording in Saved tests.")
                 .font(.title3).foregroundStyle(Theme.muted)
             if let workoutName {
                 Text("Today's workout · \(workoutName)")
@@ -243,18 +294,16 @@ struct StationView: View {
             Text(exercise.title.uppercased())
                 .font(Theme.display(30)).foregroundStyle(Theme.text)
                 .accessibilityIdentifier("station.movement")
-            if dynamicTypeSize.isAccessibilitySize {
-                VStack(spacing: 16) { countTiles }
-            } else {
-                HStack(alignment: .top, spacing: 12) { countTiles }
-            }
+            countTile(title: "MediaPipe", value: String(comparison.count),
+                      detail: comparison.state.isCollecting ? comparison.status.message : "Complete movement cycles",
+                      identifier: "station.repCount", spokenValue: "MediaPipe: \(comparison.count) reps")
             Text(comparison.state.message)
                 .font(.headline).foregroundStyle(Theme.muted)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("station.tracking")
             if comparison.state.isCollecting {
-                Text(comparison.readinessMessage)
+                Text("Start in the extended position, then complete the movement.")
                     .font(.subheadline).foregroundStyle(Theme.text)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -266,12 +315,6 @@ struct StationView: View {
                     .multilineTextAlignment(.center)
                     .accessibilityIdentifier("station.partialCoverage")
             }
-            if comparison.state == .warmingUp {
-                ProgressView(value: Double(comparison.metrics.windowProgress),
-                             total: Double(comparison.metrics.windowFrames))
-                    .tint(Theme.accent)
-                    .accessibilityLabel("Apple counter warm-up")
-            }
             Button {
                 actualRepsFocused = false
                 if comparison.state.isCollecting {
@@ -282,13 +325,12 @@ struct StationView: View {
                     comparison.start(exercise: exercise)
                 }
             } label: {
-                Text(comparison.state.isFinishing ? "Finishing Apple…" :
-                     comparison.state.isCollecting ? "Stop comparison" :
-                     hasRunTrial ? "New comparison" : "Start comparison")
+                Text(comparison.state.isCollecting ? "Stop tracking" :
+                     hasRunTrial ? "New tracking test" : "Start tracking")
                     .font(.headline).frame(maxWidth: .infinity, minHeight: 54)
             }
             .buttonStyle(.borderedProminent).tint(Theme.accent).foregroundStyle(Theme.bg)
-            .disabled(camera.state != .running || comparison.state.isFinishing || recordingBusy)
+            .disabled(camera.state != .running || recordingBusy)
             .accessibilityIdentifier("station.trial")
 
             if hasRunTrial && comparison.state.isTerminal { referenceCount }
@@ -300,16 +342,6 @@ struct StationView: View {
         }
         .padding(20).frame(maxWidth: .infinity)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 20))
-    }
-
-    @ViewBuilder private var countTiles: some View {
-        countTile(title: "Custom", value: String(comparison.customCount),
-                  detail: comparison.state.isCollecting ? comparison.customStatus.message : "Complete movement cycles", identifier: "station.repCount",
-                  spokenValue: "Custom counter: \(comparison.customCount) reps")
-        countTile(title: "Apple estimate", value: comparison.appleCount.map { String(format: "%.1f", $0) } ?? "—",
-                  detail: "May update later", identifier: "station.appleCount",
-                  spokenValue: comparison.appleCount.map { String(format: "Apple estimate: %.1f reps", $0) }
-                    ?? "Apple estimate: awaiting result")
     }
 
     private func countTile(title: String, value: String, detail: String,
@@ -341,13 +373,9 @@ struct StationView: View {
                     if value != digits { actualReps = digits }
                 }
             if let actual = Int(actualReps) {
-                Text("Custom difference: \(comparison.customCount - actual, specifier: "%+d")")
+                Text("MediaPipe difference: \(comparison.count - actual, specifier: "%+d")")
                     .accessibilityIdentifier("station.customDifference")
-                if let apple = comparison.appleCount {
-                    Text("Apple difference: \(Double(apple) - Double(actual), specifier: "%+.1f")")
-                        .accessibilityIdentifier("station.appleDifference")
-                }
-                if comparison.state != .finished {
+                if comparison.hasIncompleteCoverage || comparison.state != .finished {
                     Text("This trial is incomplete. Differences include unobserved movement.")
                         .foregroundStyle(Theme.muted)
                 }
@@ -363,18 +391,14 @@ struct StationView: View {
     private var timingDetails: some View {
         DisclosureGroup("Timing and coverage") {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Same input: \(comparison.metrics.acceptedFrames) poses")
-                Text("Apple coverage: \(comparison.metrics.appleCoveredFrames) poses")
-                if let fps = comparison.metrics.acceptedFPS {
+                Text("Camera poses: \(comparison.observedFrames)")
+                if let fps = comparison.observedFPS {
                     Text("Observed pose rate: \(fps, specifier: "%.1f") fps")
                 }
-                if let lag = comparison.metrics.appleSourceLagSeconds {
-                    Text("Apple coverage behind input: \(lag, specifier: "%.1f") s")
+                if let duration = comparison.inferenceMilliseconds {
+                    Text("Latest MediaPipe inference: \(duration, specifier: "%.0f") ms")
                 }
-                if let duration = comparison.metrics.appleProcessingMilliseconds {
-                    Text("Latest Apple analysis: \(duration, specifier: "%.0f") ms")
-                }
-                Text("Coverage delay measures how far Apple's result trails the incoming poses. It is not a measurement of full camera-to-screen latency.")
+                Text("Inference includes orientation and pose tracking. It is not full camera-to-screen latency.")
                     .foregroundStyle(Theme.muted)
             }
             .font(.caption).frame(maxWidth: .infinity, alignment: .leading)
@@ -401,7 +425,7 @@ struct StationView: View {
     private var recordingPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("REPEATABLE CAMERA TEST").font(Theme.mono(12, .bold))
-            Text("Record up to 45 seconds of silent video and tracking measurements. Try front-facing squats here; the live angle counter above still needs a side view.")
+            Text("Record up to 45 seconds of silent video and tracking measurements. Try front-facing and sideways squats in separate tests, then save the actual count for each.")
                 .font(.subheadline).foregroundStyle(Theme.muted)
             if let countdown {
                 Text("Recording starts in \(countdown)…").font(.title.bold()).monospacedDigit()
@@ -441,7 +465,7 @@ struct StationView: View {
 
     private var recordButton: some View {
         Button("Record test", systemImage: "record.circle") {
-            cancelComparison("Counter comparison stopped for a recorded test.")
+            cancelComparison("Starting a new recorded test.")
             countdown = 5
             let selectedExercise = exercise
             countdownTask = Task { @MainActor in
@@ -455,6 +479,9 @@ struct StationView: View {
                         return
                     }
                     countdown = nil
+                    hasRunTrial = true
+                    actualReps = ""
+                    comparison.start(exercise: selectedExercise)
                     camera.startRecording(exercise: selectedExercise)
                 } catch { }
             }

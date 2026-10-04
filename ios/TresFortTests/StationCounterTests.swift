@@ -164,7 +164,7 @@ final class StationCounterTests: XCTestCase {
         XCTAssertEqual(counter.count, 1)
     }
 
-    func testHigherConfidenceOtherSideDoesNotReplaceSelectedSide() {
+    func testOtherSideMovementCannotBeSplicedIntoStationarySelectedSide() {
         var counter = StationRepCounter(exercise: .curl)
         var time = 0.0
         feed([170, 170, 170], to: &counter, time: &time)
@@ -177,6 +177,91 @@ final class StationCounterTests: XCTestCase {
         }
         XCTAssertEqual(counter.count, 0)
         XCTAssertEqual(counter.status, .ready)
+    }
+
+    func testSustainedMatchingExtensionCanSelectTheClearerSideBetweenCycles() {
+        for exercise in StationExercise.allCases {
+            var counter = StationRepCounter(exercise: exercise)
+            var time = 0.0
+            feed([170, 170, 170], to: &counter, time: &time)
+            for _ in 0..<3 {
+                counter.process(bothSides(leftAngle: 170, rightAngle: 175, time: time,
+                                          leftConfidence: 0.7, rightConfidence: 0.95))
+                time += 0.1
+            }
+            XCTAssertEqual(counter.count, 0)
+            XCTAssertEqual(counter.status, .ready)
+            // The former side can disappear without discarding the new cycle.
+            feed(cycle, to: &counter, time: &time, side: .right)
+            XCTAssertEqual(counter.count, 1, exercise.title)
+        }
+    }
+
+    func testBriefStandingConfidenceAdvantageCannotChangeSides() {
+        var counter = StationRepCounter(exercise: .squat)
+        var time = 0.0
+        feed([170, 170, 170], to: &counter, time: &time)
+        counter.process(bothSides(leftAngle: 170, rightAngle: 170, time: time,
+                                  leftConfidence: 0.7, rightConfidence: 1))
+        time += 0.1
+        feed([170], to: &counter, time: &time, side: .right)
+        XCTAssertEqual(counter.status, .trackingLost)
+        XCTAssertEqual(counter.count, 0)
+    }
+
+    func testStandingAngleMismatchCannotChangeSides() {
+        var counter = StationRepCounter(exercise: .squat)
+        var time = 0.0
+        feed([165, 165, 165], to: &counter, time: &time)
+        XCTAssertEqual(counter.status, .ready)
+        for _ in 0..<5 {
+            counter.process(bothSides(leftAngle: 165, rightAngle: 180, time: time,
+                                      leftConfidence: 0.7, rightConfidence: 1))
+            time += 0.1
+        }
+        XCTAssertEqual(counter.status, .ready)
+        // Both angles pass standing entry, but their disagreement blocks handoff.
+        feed([170], to: &counter, time: &time, side: .right)
+        XCTAssertEqual(counter.status, .trackingLost)
+        XCTAssertEqual(counter.count, 0)
+    }
+
+    func testReturnToStandingCannotContributeToSideHandoffDwell() {
+        for completeCycle in [false, true] {
+            var counter = StationRepCounter(exercise: .squat)
+            var time = 0.0
+            feed([170, 170, 170], to: &counter, time: &time)
+            feed(completeCycle ? [130, 100, 100, 100, 100, 100, 100] : [130, 130, 130],
+                 to: &counter, time: &time)
+            for _ in 0..<3 {
+                counter.process(bothSides(leftAngle: 170, rightAngle: 170, time: time,
+                                          leftConfidence: 0.7, rightConfidence: 1))
+                time += 0.1
+            }
+            XCTAssertEqual(counter.count, completeCycle ? 1 : 0)
+            XCTAssertEqual(counter.status, .ready)
+            feed([170], to: &counter, time: &time, side: .right)
+            XCTAssertEqual(counter.status, .trackingLost,
+                           "The returning limb must finish before handoff dwell can start")
+        }
+    }
+
+    func testTrackingLossClearsAPendingStandingSideHandoff() {
+        var counter = StationRepCounter(exercise: .squat)
+        var time = 0.0
+        feed([170, 170, 170], to: &counter, time: &time)
+        counter.process(bothSides(leftAngle: 170, rightAngle: 170, time: time,
+                                  leftConfidence: 0.7, rightConfidence: 1))
+        time += 0.1
+        counter.process(sample(angle: 170, time: time, personCount: 0))
+        time += 0.1
+        feed([170, 170, 170], to: &counter, time: &time)
+        counter.process(bothSides(leftAngle: 170, rightAngle: 170, time: time,
+                                  leftConfidence: 0.7, rightConfidence: 1))
+        time += 0.1
+        feed([170], to: &counter, time: &time, side: .right)
+        XCTAssertEqual(counter.status, .trackingLost)
+        XCTAssertEqual(counter.count, 0)
     }
 
     func testDuplicateAndStaleSamplesDoNotAdvanceOrInvalidateNewerState() {
@@ -256,6 +341,14 @@ final class StationCounterTests: XCTestCase {
             : [.rightShoulder: first, .rightElbow: pivot, .rightWrist: last,
                .rightHip: first, .rightKnee: pivot, .rightAnkle: last]
         return StationPoseSample(timestamp: time, joints: joints, personCount: personCount)
+    }
+
+    private func bothSides(leftAngle: Double, rightAngle: Double, time: Double,
+                           leftConfidence: Float, rightConfidence: Float) -> StationPoseSample {
+        var joints = sample(angle: leftAngle, time: time, confidence: leftConfidence).joints
+        joints.merge(sample(angle: rightAngle, time: time, side: .right,
+                            confidence: rightConfidence).joints, uniquingKeysWith: { _, right in right })
+        return StationPoseSample(timestamp: time, joints: joints, personCount: 1)
     }
 
     private func feed(_ angles: [Double], to counter: inout StationRepCounter,

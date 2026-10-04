@@ -47,6 +47,7 @@ final class StationReplayTests: XCTestCase {
         // decoding/alignment integration executable using an explicit Apple fake;
         // the native-only test below exercises the real Vision request on device.
         let report = try await StationReplayWorker.run(recording: recording, videoURL: store.videoURL(for: recording.id),
+                                                       session: store.session,
                                                        appleDetection: { pixels, orientation in
             XCTAssertEqual(CVPixelBufferGetWidth(pixels), 640)
             XCTAssertEqual(CVPixelBufferGetHeight(pixels), 480)
@@ -74,7 +75,7 @@ final class StationReplayTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try StationRecordingStore(rootURL: root)
         let recording = try await makeRecording(store: store)
-        let report = try await StationReplayWorker.run(recording: recording, videoURL: store.videoURL(for: recording.id)) { _ in }
+        let report = try await StationReplayWorker.run(recording: recording, videoURL: store.videoURL(for: recording.id), session: store.session) { _ in }
         XCTAssertEqual(report.frames.count, recording.frameCount)
         XCTAssertTrue(report.frames.allSatisfy { $0.apple.personCount == 0 && $0.mediaPipe.personCount == 0 })
 #endif

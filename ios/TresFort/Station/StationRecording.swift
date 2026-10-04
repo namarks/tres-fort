@@ -1,4 +1,5 @@
 import AVFoundation
+import CryptoKit
 import Foundation
 import ImageIO
 
@@ -38,6 +39,7 @@ struct StationRecording: Codable, Identifiable, Equatable {
     let finishReason: StationRecordingFinishReason
     let appBuild: String
     var actualReps: Int?
+    var detector: StationPoseDetector? = nil
 
     var exercise: StationExercise { StationExercise(rawValue: exerciseRawValue) ?? .squat }
     var imageOrientation: CGImagePropertyOrientation { CGImagePropertyOrientation(rawValue: orientation) ?? .up }
@@ -62,7 +64,9 @@ struct StationRecordingMeasurement: Codable, Equatable {
     let timestampSeconds: Double
     let sourceTimestampSeconds: Double
     let personCount: Int
-    let visionMilliseconds: Double
+    let visionMilliseconds: Double?
+    var detector: StationPoseDetector?
+    var inferenceMilliseconds: Double?
     let imageAspectRatio: Double
     let joints: [String: Joint]
 
@@ -70,9 +74,11 @@ struct StationRecordingMeasurement: Codable, Equatable {
         self.timestampSeconds = timestampSeconds
         sourceTimestampSeconds = frame.sample.timestamp
         personCount = frame.sample.personCount
-        visionMilliseconds = frame.visionMilliseconds
+        detector = frame.detector
+        inferenceMilliseconds = frame.inferenceMilliseconds
+        visionMilliseconds = frame.detector == .appleVision ? frame.inferenceMilliseconds : nil
         imageAspectRatio = frame.imageAspectRatio
-        // Include every joint, even when Vision returned no usable coordinate.
+        // Include every joint, even when tracking returned no usable coordinate.
         // Missing points stay null rather than appearing as a confident origin.
         joints = Dictionary(uniqueKeysWithValues: StationJoint.allCases.map { joint in
             let point = frame.sample.joints[joint]
@@ -109,11 +115,12 @@ final class StationRecordingStore: @unchecked Sendable {
     private static var initializedRoots: Set<String> = []
 
     let rootURL: URL
+    let session: StationSessionGate
 
-    init(rootURL: URL? = nil) throws {
-        self.rootURL = try rootURL ?? FileManager.default.url(
-            for: .applicationSupportDirectory, in: .userDomainMask,
-            appropriateFor: nil, create: true).appendingPathComponent("StationRecordings", isDirectory: true)
+    init(session: StationSessionGate, baseURL: URL? = nil) throws {
+        self.session = session
+        rootURL = try Self.accountDirectory(accountID: session.accountID, baseURL: baseURL)
+        try session.withAccess {
         try FileManager.default.createDirectory(at: self.rootURL, withIntermediateDirectories: true,
                                                attributes: [.protectionKey: FileProtectionType.complete])
         var localRoot = self.rootURL
@@ -133,9 +140,31 @@ final class StationRecordingStore: @unchecked Sendable {
             }
             Self.initializedRoots.insert(self.rootURL.path)
         }
+        }
+    }
+
+    /// Unscoped prototype clips remain untouched and are never attributed to
+    /// whichever account happens to sign in first after this upgrade.
+    static func accountDirectory(accountID: String, baseURL: URL? = nil) throws -> URL {
+        guard let base = baseURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?.appendingPathComponent("StationRecordings", isDirectory: true) else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        let digest = SHA256.hash(data: Data(accountID.utf8)).map { String(format: "%02x", $0) }.joined()
+        return base.appendingPathComponent("accounts", isDirectory: true).appendingPathComponent(digest, isDirectory: true)
+    }
+
+    @MainActor
+    static func deleteAccountRecordings(accountID: String, baseURL: URL? = nil) throws {
+        StationAccess.invalidateAccount(accountID)
+        try StationSessionGate.revokeAccount(accountID) {
+            let root = try accountDirectory(accountID: accountID, baseURL: baseURL)
+            if FileManager.default.fileExists(atPath: root.path) { try FileManager.default.removeItem(at: root) }
+        }
     }
 
     func list() throws -> [StationRecording] {
+        try session.withAccess {
         try FileManager.default.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: nil)
             .compactMap { url -> StationRecording? in
                 guard let id = UUID(uuidString: url.lastPathComponent) else { return nil }
@@ -145,10 +174,12 @@ final class StationRecordingStore: @unchecked Sendable {
                 catch { throw StationRecordingError.damagedRecording(id) }
             }
             .sorted { $0.createdAt > $1.createdAt }
+        }
     }
 
     func load(id: UUID) throws -> StationRecording {
-        let url = manifestURL(for: id)
+        try session.withAccess {
+        let url = try manifestURL(for: id)
         guard FileManager.default.fileExists(atPath: url.path) else { throw StationRecordingError.missingRecording }
         let recording = try JSONDecoder().decode(StationRecording.self, from: Data(contentsOf: url))
         guard recording.schemaVersion == 1, recording.id == id,
@@ -161,36 +192,63 @@ final class StationRecordingStore: @unchecked Sendable {
               StationExercise(rawValue: recording.exerciseRawValue) != nil,
               recording.actualReps == nil || (0...1_000).contains(recording.actualReps!),
               recording.imageAspectRatio.isFinite, recording.imageAspectRatio > 0,
-              FileManager.default.fileExists(atPath: videoURL(for: id).path),
-              FileManager.default.fileExists(atPath: measurementsURL(for: id).path) else {
+              FileManager.default.fileExists(atPath: try videoURL(for: id).path),
+              FileManager.default.fileExists(atPath: try measurementsURL(for: id).path) else {
             throw StationRecordingError.invalidManifest
         }
         let rotates = recording.imageOrientation == .left || recording.imageOrientation == .right
         let expectedAspect = rotates ? Double(recording.height) / Double(recording.width) : Double(recording.width) / Double(recording.height)
         guard abs(recording.imageAspectRatio - expectedAspect) < 0.000001 else { throw StationRecordingError.invalidManifest }
         return recording
+        }
     }
 
     func delete(id: UUID) throws {
-        let url = directoryURL(for: id)
+        try session.withAccess {
+        let url = try directoryURL(for: id)
         if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+        }
     }
 
     @discardableResult
     func updateActualReps(_ reps: Int?, for id: UUID) throws -> StationRecording {
+        try session.withAccess {
         guard reps == nil || (0...1_000).contains(reps!) else { throw StationRecordingError.invalidReps }
         var recording = try load(id: id)
         recording.actualReps = reps
         try JSONEncoder().encode(recording).write(to: manifestURL(for: id), options: [.atomic, .completeFileProtection])
         return recording
+        }
     }
 
-    func directoryURL(for id: UUID) -> URL { rootURL.appendingPathComponent(id.uuidString, isDirectory: true) }
-    func videoURL(for id: UUID) -> URL { directoryURL(for: id).appendingPathComponent("clip.mov") }
-    func measurementsURL(for id: UUID) -> URL { directoryURL(for: id).appendingPathComponent("measurements.jsonl") }
-    func manifestURL(for id: UUID) -> URL { directoryURL(for: id).appendingPathComponent("manifest.json") }
+    func directoryURL(for id: UUID) throws -> URL { try session.withAccess { rootURL.appendingPathComponent(id.uuidString, isDirectory: true) } }
+    func videoURL(for id: UUID) throws -> URL { try directoryURL(for: id).appendingPathComponent("clip.mov") }
+    func measurementsURL(for id: UUID) throws -> URL { try directoryURL(for: id).appendingPathComponent("measurements.jsonl") }
+    func manifestURL(for id: UUID) throws -> URL { try directoryURL(for: id).appendingPathComponent("manifest.json") }
+
+    func shareURLs(for id: UUID) throws -> [URL] {
+        try session.withAccess {
+            _ = try load(id: id)
+            var urls = try [videoURL(for: id), measurementsURL(for: id), manifestURL(for: id)]
+            let comparison = try directoryURL(for: id).appendingPathComponent("comparison.json")
+            if FileManager.default.fileExists(atPath: comparison.path) { urls.append(comparison) }
+            return urls
+        }
+    }
+
+    func saveComparison(_ report: StationReplayReport, for id: UUID) throws {
+        try session.withAccess {
+            _ = try load(id: id)
+            guard report.recordingID == id else { throw StationRecordingError.invalidManifest }
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            try encoder.encode(report).write(to: directoryURL(for: id).appendingPathComponent("comparison.json"),
+                                             options: [.atomic, .completeFileProtection])
+        }
+    }
 
     func prepare(id: UUID) throws -> URL {
+        try session.withAccess {
         Self.initializationLock.lock()
         defer { Self.initializationLock.unlock() }
         let reservedCount = try FileManager.default.contentsOfDirectory(at: rootURL, includingPropertiesForKeys: nil)
@@ -213,17 +271,20 @@ final class StationRecordingStore: @unchecked Sendable {
             throw error
         }
         return url
+        }
     }
 
     func publish(_ recording: StationRecording) throws {
+        try session.withAccess {
         let pending = pendingURL(for: recording.id)
         try JSONEncoder().encode(recording).write(to: pending.appendingPathComponent("manifest.json"),
                                                   options: [.atomic, .completeFileProtection])
         try FileManager.default.moveItem(at: pending, to: directoryURL(for: recording.id))
+        }
     }
 
     func discardPending(id: UUID) {
-        try? FileManager.default.removeItem(at: pendingURL(for: id))
+        session.cleanup { try? FileManager.default.removeItem(at: pendingURL(for: id)) }
     }
 
     private func pendingURL(for id: UUID) -> URL { rootURL.appendingPathComponent(".pending-\(id.uuidString)", isDirectory: true) }
@@ -270,6 +331,7 @@ final class StationRecordingWriter {
     private var adaptor: AVAssetWriterInputPixelBufferAdaptor?
     private(set) var timeline = StationRecordingTimeline()
     private var droppedFrames = 0
+    private var detector: StationPoseDetector?
     private var orientation: CGImagePropertyOrientation = .up
     private var width = 0
     private var height = 0
@@ -300,6 +362,7 @@ final class StationRecordingWriter {
     @discardableResult
     func append(pixelBuffer: CVPixelBuffer, time: CMTime, orientation: CGImagePropertyOrientation,
                 frame: StationComparisonFrame) throws -> Bool {
+        try store.session.withAccess {
         guard !finishing, !terminal else { return false }
         if writer == nil { try configure(pixelBuffer: pixelBuffer, orientation: orientation, aspect: frame.imageAspectRatio) }
         guard let writer, let input, let adaptor, writer.status == .writing else {
@@ -318,14 +381,21 @@ final class StationRecordingWriter {
         // Any measurement write failure discards the entire package, so a saved
         // package never contains a video/measurement count mismatch.
         try measurements.write(contentsOf: row)
+        detector = detector ?? frame.detector
         timeline.accept(time)
         return true
+        }
     }
 
     func finish(reason: StationRecordingFinishReason, queue: DispatchQueue,
                 completion: @escaping (Result<StationRecording, Error>) -> Void) {
         guard !finishing, !terminal else { return }
         finishing = true
+        guard store.session.isActive else {
+            cancel()
+            completion(.failure(StationAccessError.sessionEnded))
+            return
+        }
         guard let writer, let input, timeline.frameCount > 0 else {
             cancel()
             completion(.failure(StationRecordingError.noFrames))
@@ -343,7 +413,7 @@ final class StationRecordingWriter {
                         durationSeconds: timeline.duration, frameCount: timeline.frameCount,
                         droppedFrameCount: droppedFrames, orientation: orientation.rawValue,
                         width: width, height: height, imageAspectRatio: aspect, finishReason: reason,
-                        appBuild: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown", actualReps: nil)
+                        appBuild: Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown", actualReps: nil, detector: detector)
                     try store.publish(recording)
                     terminal = true
                     completion(.success(recording))
@@ -358,7 +428,7 @@ final class StationRecordingWriter {
     func cancel() {
         guard !terminal else { return }
         terminal = true
-        writer?.cancelWriting()
+        if let writer, writer.status == .writing || writer.status == .unknown { writer.cancelWriting() }
         try? measurements.close()
         store.discardPending(id: id)
     }

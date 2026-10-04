@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import SwiftUI
 
-/// Setup feedback uses the same confidence requirement as the two counters.
+/// Setup feedback uses the same confidence requirement as the cycle counter.
 /// Lower-confidence points are shown in orange so an empty count has context.
 struct StationPoseFeedback {
     let sample: StationPoseSample?
@@ -23,7 +23,7 @@ struct StationPoseFeedback {
         guard let sample else { return "Waiting for the camera…" }
         if sample.personCount > 1 { return "Keep just one person in view." }
         let joints = exercise == .squat ? "hip, knee and ankle" : "shoulder, elbow and wrist"
-        if sample.personCount == 0 { return "Step into view. Show your \(joints) from the side." }
+        if sample.personCount == 0 { return "Step into view. Keep your \(joints) visible." }
         if isReady { return "Your \(joints) are visible. Hold your starting position." }
         return "Move back or adjust the iPad until your \(joints) are clear on one side."
     }

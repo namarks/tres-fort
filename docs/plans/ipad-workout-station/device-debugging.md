@@ -19,14 +19,14 @@ The owner confirmed unplugging and this network transport was verified on
 For a reusable trial, enable the camera in Station, choose the movement, then
 tap **Record test**. After the five-second countdown, do five manually counted
 reps, then tap **Stop and save test** (automatic limit: 45 seconds). The recorder
-captures silent video and one measurement row for each successfully encoded
+uses MediaPipe live tracking and captures silent video and one measurement row for each successfully encoded
 processed camera frame. Camera shutdown or rotation ends a partial clip; no
 recording resumes automatically. Twenty clips maximum, with explicit deletion.
 
 Open **Saved tests**, select the clip and save its actual rep count. **Compare
 Apple and MediaPipe** decodes each frame once and runs both detectors on those
 pixels with the same orientation/time, then shows synchronized frame scrubbing.
-The replay's two angle-cycle counts use the same existing side-view rule; they
+The replay's two angle-cycle counts use the same experimental 2D rule; they
 are not Apple's HumanBodyActionCounter or a validated frontal squat counter.
 Pose reliability, count errors and live/thermal performance are separate tests.
 
@@ -35,7 +35,11 @@ and completed comparison through the system share sheet (for example AirDrop to
 the Mac). MediaPipe output includes all 33 image/world landmarks and exact model
 metadata. Inferred world coordinates are not depth-sensor measurements. Files
 stay in Application Support excluded from backup until manually shared or deleted;
-they are not placed in Photos or the workout sync. Deleting a test removes its
+they are scoped to the signed-in account and are not placed in Photos or the workout sync.
+Sign-out revokes active readers and writers; account deletion removes its saved
+clips. Unattributed clips from the earlier unscoped prototype are hidden and
+left untouched, not assigned to the next account. The original owner trial has
+already been exported to the Mac. Deleting a test removes its
 local video and measurements, not copies already shared elsewhere.
 
 The dependency is pinned and SHA-verified during XcodeGen generation; see

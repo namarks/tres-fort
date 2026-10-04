@@ -138,7 +138,7 @@ final class MemberActivationJourneyTests: XCTestCase {
         if UIDevice.current.userInterfaceIdiom == .pad {
             tap(app.buttons["today.station"], in: app)
             XCTAssertTrue(app.buttons["station.enableCamera"].waitForExistence(timeout: 5))
-            XCTAssertEqual(app.staticTexts["station.repCount"].label, "Custom counter: 0 reps")
+            XCTAssertEqual(app.staticTexts["station.repCount"].label, "MediaPipe: 0 reps")
             tap(app.buttons["station.done"], in: app)
             assertExistingTraining(app)
             assertReturningRequestsDidNotMutateSetup(app)

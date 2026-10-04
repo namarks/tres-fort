@@ -67,7 +67,7 @@ elif [[ -n "$ci_shard" ]]; then
   # partition test checks all selectors against real suites without overlap.
   full_second=(TrainingJourneyTests WorkoutFeedbackJourneyTests)
   full_third=(TodayNavigationJourneyTests IntervalsConnectionJourneyTests ExerciseDiscoveryJourneyTests)
-  full_fourth=(MemberActivationJourneyTests FreestyleJourneyTests)
+  full_fourth=(MemberActivationJourneyTests PlanlessAccountJourneyTests FreestyleJourneyTests)
   full_fifth=(UIActionJourneyTests HistoryJourneyTests ExerciseGroupJourneyTests ExerciseInformationJourneyTests)
   full_sixth=(WorkoutLibraryJourneyTests WeeklyScheduleJourneyTests RunnerStreamlineJourneyTests)
   if [[ "$ci_shard" == 1 ]]; then

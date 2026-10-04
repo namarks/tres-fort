@@ -337,7 +337,14 @@ struct TodayView: View {
                 WorkoutFeedbackSheet(sync: sync, target: item.target, finishAfterSave: true)
             }
             .fullScreenCover(isPresented: $showStation) {
-                StationView(workoutName: sync.selectedDay?.name)
+                let accountID = auth.userID
+                let epoch = auth.featureSessionEpoch
+                StationEntryView(workoutName: sync.selectedDay?.name, accountID: accountID, epoch: epoch,
+                    isCurrentSession: { [weak stationAuth = auth] in
+                        stationAuth?.isCurrentFeatureSession(accountID: accountID, epoch: epoch) == true
+                    }, observeBoundary: { [weak stationAuth = auth] observer in
+                        _ = stationAuth?.observeFeatureSessionBoundary(observer)
+                    })
                     .environment(\.dynamicTypeSize, dynamicTypeSize)
             }
             .sheet(item: $previewTarget) { target in

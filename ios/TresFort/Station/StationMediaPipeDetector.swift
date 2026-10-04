@@ -31,8 +31,8 @@ struct StationMediaPipeDetection: Sendable {
     let inferenceMilliseconds: Double
 }
 
-/// One instance per replay. Use a background serial context and strictly
-/// increasing clip timestamps. A lock also prevents concurrent SDK invocations.
+/// One instance per camera run or replay. Use a background serial context and strictly
+/// increasing frame timestamps. A lock also prevents concurrent SDK invocations.
 /// No source frames or SDK result objects escape this synchronous adapter.
 final class StationMediaPipeDetector {
     static let runtimeVersion = "0.10.21"
@@ -46,8 +46,8 @@ final class StationMediaPipeDetector {
             switch self {
             case .missingModel: return "The MediaPipe Full model is missing from this build."
             case .incorrectModel: return "The MediaPipe Full model does not match the pinned version."
-            case .unsupportedPixelFormat: return "MediaPipe replay requires BGRA video frames."
-            case .invalidTimestamp: return "Replay frame timestamps must increase. Start a new detector for each replay."
+            case .unsupportedPixelFormat: return "MediaPipe requires BGRA video frames."
+            case .invalidTimestamp: return "Frame timestamps must increase. Restart tracking to try again."
             case .bufferAllocation: return "A video frame could not be prepared for MediaPipe."
             }
         }

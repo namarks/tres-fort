@@ -62,9 +62,10 @@ enum StationReplayError: LocalizedError {
 /// Both detectors see each decoded, unrotated frame with the same orientation
 /// and source time. Offline speed is deliberately not presented as live FPS.
 enum StationReplayWorker {
-    static func run(recording: StationRecording, videoURL: URL,
+    static func run(recording: StationRecording, videoURL: URL, session: StationSessionGate,
                     appleDetection: ((CVPixelBuffer, CGImagePropertyOrientation) throws -> StationReplayPose)? = nil,
                     progress: @escaping @Sendable (Int) -> Void) async throws -> StationReplayReport {
+        try session.requireActive()
         guard let orientation = CGImagePropertyOrientation(rawValue: recording.orientation),
               recording.durationSeconds <= 46, recording.frameCount <= 1_400,
               recording.width > 0, recording.height > 0 else { throw StationReplayError.invalidRecording }
@@ -73,6 +74,7 @@ enum StationReplayWorker {
             throw StationReplayError.noFrames
         }
         try Task.checkCancellation()
+        try session.requireActive()
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
             kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA
@@ -80,7 +82,7 @@ enum StationReplayWorker {
         output.alwaysCopiesSampleData = false
         guard reader.canAdd(output) else { throw StationReplayError.readFailed }
         reader.add(output)
-        guard reader.startReading() else { throw reader.error ?? StationReplayError.readFailed }
+        guard try session.withAccess({ reader.startReading() }) else { throw reader.error ?? StationReplayError.readFailed }
         defer { reader.cancelReading() }
         let vision = VNDetectHumanBodyPoseRequest()
         let mediaPipe = try StationMediaPipeDetector()
@@ -89,8 +91,9 @@ enum StationReplayWorker {
         var mediaPipeCounter = StationRepCounter(exercise: recording.exercise)
         var previousTimestamp = -Double.infinity
         var previousMilliseconds = -1
-        while let buffer = output.copyNextSampleBuffer() {
+        while let buffer = try session.withAccess({ output.copyNextSampleBuffer() }) {
             try Task.checkCancellation()
+            try session.requireActive()
             guard frames.count < 1_400 else { throw StationReplayError.invalidRecording }
             let frame: StationReplayFrame = try autoreleasepool {
                 let timestamp = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(buffer))
@@ -115,10 +118,12 @@ enum StationReplayWorker {
                                           mediaPipeLandmarks: result.poses, mediaPipeWorldLandmarks: result.worldPoses,
                                           appleCycles: appleCounter.count, mediaPipeCycles: mediaPipeCounter.count)
             }
+            try session.requireActive()
             frames.append(frame)
             if frames.count.isMultiple(of: 15) { progress(frames.count) }
         }
         try Task.checkCancellation()
+        try session.requireActive()
         guard reader.status == .completed else { throw reader.error ?? StationReplayError.readFailed }
         guard !frames.isEmpty, frames.count == recording.frameCount else { throw StationReplayError.readFailed }
         return StationReplayReport(schemaVersion: 1, recordingID: recording.id, createdAt: Date(),
@@ -188,51 +193,71 @@ enum StationReplayWorker {
 
 @MainActor
 final class StationReplayModel: ObservableObject {
+    typealias Runner = @Sendable (StationRecording, URL, StationSessionGate, @escaping @Sendable (Int) -> Void) async throws -> StationReplayReport
     @Published private(set) var report: StationReplayReport?
     @Published private(set) var completedFrames = 0
     @Published private(set) var isRunning = false
     @Published private(set) var error: String?
     private var task: Task<Void, Never>?
     private var generation = UUID()
+    private let access: StationAccess
+    private let runner: Runner
 
-    func start(recording: StationRecording, store: StationRecordingStore) {
+    init(access: StationAccess, runner: @escaping Runner = { recording, url, session, progress in
+        try await StationReplayWorker.run(recording: recording, videoURL: url, session: session, progress: progress)
+    }) {
+        self.access = access
+        self.runner = runner
+        access.observeInvalidation { [weak self] in
+            guard let self else { return false }
+            self.clear()
+            return true
+        }
+    }
+
+    @discardableResult
+    func start(recording: StationRecording, store: StationRecordingStore) -> Task<Void, Never>? {
         cancel()
         report = nil
         error = nil
         completedFrames = 0
+        guard access.validate(), store.session === access.session else { return nil }
+        let url: URL
+        do { _ = try store.load(id: recording.id); url = try store.videoURL(for: recording.id) }
+        catch { self.error = error.localizedDescription; return nil }
         isRunning = true
         let token = generation
-        let url = store.videoURL(for: recording.id)
-        let reportURL = store.directoryURL(for: recording.id).appendingPathComponent("comparison.json")
+        let session = access.session
+        let runner = self.runner
         let progress: @Sendable (Int) -> Void = { [weak self] count in
             guard let model = self else { return }
             Task { @MainActor in
-                guard model.generation == token else { return }
+                guard model.access.validate(), model.generation == token else { return }
                 model.completedFrames = count
             }
         }
         task = Task { [weak self] in
             let worker = Task.detached(priority: .userInitiated) {
-                try await StationReplayWorker.run(recording: recording, videoURL: url, progress: progress)
+                try session.requireActive()
+                return try await runner(recording, url, session, progress)
             }
             do {
                 let report = try await withTaskCancellationHandler { try await worker.value }
                     onCancel: { worker.cancel() }
                 try Task.checkCancellation()
-                guard let self, self.generation == token else { return }
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.sortedKeys]
-                try encoder.encode(report).write(to: reportURL, options: [.atomic, .completeFileProtection])
+                guard let self, self.access.validate(), self.generation == token else { return }
+                try store.saveComparison(report, for: recording.id)
                 self.report = report
                 self.completedFrames = report.frames.count
                 self.isRunning = false
             } catch is CancellationError { }
             catch {
-                guard let self, self.generation == token else { return }
+                guard let self, self.access.validate(), self.generation == token else { return }
                 self.error = error.localizedDescription
                 self.isRunning = false
             }
         }
+        return task
     }
 
     func cancel() {
@@ -240,6 +265,13 @@ final class StationReplayModel: ObservableObject {
         task?.cancel()
         task = nil
         isRunning = false
+    }
+
+    func clear() {
+        cancel()
+        report = nil
+        error = nil
+        completedFrames = 0
     }
 
     deinit { task?.cancel() }

@@ -12,6 +12,7 @@ final class StationLinkController: ObservableObject {
     @Published private(set) var progress: StationLinkProgress?
     @Published private(set) var stationState: StationLinkStationState?
     @Published private(set) var proposal: StationLinkProposal?
+    @Published private(set) var lastLogged: StationLinkLoggedSet?
 
     private let transport: StationLinkTransport
     private var seenEvents: Set<UUID> = []
@@ -54,6 +55,7 @@ final class StationLinkController: ObservableObject {
         request(nil)
         transport.stop()
         proposal = nil
+        lastLogged = nil
         seenEvents.removeAll()
     }
 
@@ -99,7 +101,12 @@ final class StationLinkController: ObservableObject {
         if proposal?.eventID == eventID { proposal = nil }
     }
 
-    func receive(_ message: StationLinkMessage, now: Date = Date()) {
+    /// A Station count was logged; it stays undoable until the next count.
+    func recordLogged(_ logged: StationLinkLoggedSet) { lastLogged = logged }
+
+    func clearLogged() { lastLogged = nil }
+
+    func receive(_ message: StationLinkMessage) {
         switch message {
         case .progress(let value):
             guard value.armID == arm?.armID else { return }
@@ -107,8 +114,9 @@ final class StationLinkController: ObservableObject {
         case .completion(let completion):
             guard proposal == nil,
                   let next = StationLinkPolicy.proposal(for: completion, arm: arm,
-                                                        seenEvents: seenEvents, now: now) else { return }
+                                                        seenEvents: seenEvents) else { return }
             seenEvents.insert(completion.eventID)
+            lastLogged = nil
             proposal = next
         case .station(let state, let armID):
             guard armID == nil || armID == arm?.armID else { return }

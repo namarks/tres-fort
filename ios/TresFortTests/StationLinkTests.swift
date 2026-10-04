@@ -92,25 +92,24 @@ final class StationLinkTests: XCTestCase {
     func testCompletionsForOtherSetsDuplicatesAndPartialCountsAreGuarded() {
         let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 1, exercise: .squat,
                                  exerciseName: "Back Squat", targetReps: 5)
-        let now = Date(timeIntervalSince1970: 1000)
         let stale = StationLinkCompletion(armID: UUID(), eventID: UUID(), reps: 5, leftCount: nil, rightCount: nil, partial: false)
-        XCTAssertNil(StationLinkPolicy.proposal(for: stale, arm: arm, seenEvents: [], now: now))
-        XCTAssertNil(StationLinkPolicy.proposal(for: completion(arm), arm: nil, seenEvents: [], now: now))
-        XCTAssertNil(StationLinkPolicy.proposal(for: completion(arm, reps: 0), arm: arm, seenEvents: [], now: now))
+        XCTAssertNil(StationLinkPolicy.proposal(for: stale, arm: arm, seenEvents: []))
+        XCTAssertNil(StationLinkPolicy.proposal(for: completion(arm), arm: nil, seenEvents: []))
+        XCTAssertNil(StationLinkPolicy.proposal(for: completion(arm, reps: 0), arm: arm, seenEvents: []))
         let seen = completion(arm)
-        XCTAssertNil(StationLinkPolicy.proposal(for: seen, arm: arm, seenEvents: [seen.eventID], now: now))
+        XCTAssertNil(StationLinkPolicy.proposal(for: seen, arm: arm, seenEvents: [seen.eventID]))
 
-        let full = StationLinkPolicy.proposal(for: completion(arm, reps: 6), arm: arm, seenEvents: [], now: now)
+        let full = StationLinkPolicy.proposal(for: completion(arm, reps: 6), arm: arm, seenEvents: [])
         XCTAssertEqual(full?.reps, 6)
-        XCTAssertEqual(full?.deadline, now.addingTimeInterval(StationLink.countdownSeconds))
-        let partial = StationLinkPolicy.proposal(for: completion(arm, partial: true), arm: arm, seenEvents: [], now: now)
-        XCTAssertNil(partial?.deadline, "A partial count waits for a tap")
+        XCTAssertEqual(full?.logsAutomatically, true)
+        let partial = StationLinkPolicy.proposal(for: completion(arm, partial: true), arm: arm, seenEvents: [])
+        XCTAssertEqual(partial?.logsAutomatically, false, "A partial count waits for a tap")
     }
 
     func testProposalLogsOnlyIntoTheSlotAndSetItWasCountedFor() throws {
         let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 2, exercise: .squat,
                                  exerciseName: "Back Squat", targetReps: 5)
-        let proposal = try XCTUnwrap(StationLinkPolicy.proposal(for: completion(arm), arm: arm, seenEvents: [], now: Date()))
+        let proposal = try XCTUnwrap(StationLinkPolicy.proposal(for: completion(arm), arm: arm, seenEvents: []))
         XCTAssertTrue(StationLinkPolicy.canCommit(proposal, currentSlotID: "s", currentSetNumber: 2, entryBlocked: false))
         XCTAssertFalse(StationLinkPolicy.canCommit(proposal, currentSlotID: "s", currentSetNumber: 3, entryBlocked: false))
         XCTAssertFalse(StationLinkPolicy.canCommit(proposal, currentSlotID: "other", currentSetNumber: 2, entryBlocked: false))
@@ -128,7 +127,7 @@ final class StationLinkTests: XCTestCase {
         XCTAssertEqual(controller.proposal?.reps, 7)
         XCTAssertEqual(controller.proposal?.setNumber, 1)
 
-        // Logged by hand: the runner advanced to set 2 before the countdown ran.
+        // Logged by hand: the runner advanced to set 2 before the count was used.
         controller.request(target(set: 2))
         XCTAssertNil(controller.proposal)
         let second = try XCTUnwrap(controller.arm)
@@ -163,11 +162,29 @@ final class StationLinkTests: XCTestCase {
         let arm = try XCTUnwrap(controller.arm)
         let event = completion(arm, reps: 8)
         controller.receive(.completion(event))
-        XCTAssertNotNil(controller.proposal?.deadline)
+        XCTAssertEqual(controller.proposal?.logsAutomatically, true)
         controller.finishProposal(event.eventID)
         XCTAssertNil(controller.proposal)
         XCTAssertEqual(controller.arm?.armID, arm.armID)
         controller.receive(.completion(event))
+        XCTAssertNil(controller.proposal)
+    }
+
+    func testLoggedSetStaysUndoableUntilTheNextCount() throws {
+        let controller = StationLinkController()
+        controller.request(target())
+        let logged = StationLinkLoggedSet(setID: "set-1", slotID: "slot-1", setNumber: 1, reps: 8)
+        controller.recordLogged(logged)
+        controller.request(nil)
+        XCTAssertEqual(controller.lastLogged, logged, "Undo stays available through rest")
+        controller.request(target(set: 2))
+        XCTAssertEqual(controller.lastLogged, logged)
+        let next = try XCTUnwrap(controller.arm)
+        controller.receive(.completion(completion(next, reps: 6)))
+        XCTAssertNil(controller.lastLogged)
+        XCTAssertEqual(controller.proposal?.reps, 6)
+        controller.clearLogged()
+        controller.stop()
         XCTAssertNil(controller.proposal)
     }
 

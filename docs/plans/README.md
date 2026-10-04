@@ -113,8 +113,8 @@ AI coaching.
 
 - [iPad workout station](ipad-workout-station/plan.md) — camera trial and large
   workout display; an opt-in iPhone link now lets the iPad's count log the
-  current set after a cancellable countdown. Paired-device validation comes
-  before relying on it or enabling fully automatic progression.
+  current set instantly, with Undo. Paired-device validation and measured
+  accuracy come before relying on it beyond an opt-in trial.
 
 - [Member activation and adherence](member-activation-and-adherence/plan.md) —
   **paused**; first-workout entry and starters are delivered. Reminders/widgets,

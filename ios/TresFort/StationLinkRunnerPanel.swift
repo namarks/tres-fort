@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Runner strip for a linked iPad Station. It arms the iPad for the current
 /// set once rest is over, shows the live count and turns a finished count into
-/// the ordinary LOG SET action: a cancellable countdown, or a tap when partial.
+/// the ordinary LOG SET action at once (with Undo), or on a tap when partial.
 struct StationLinkRunnerPanel: View {
     @ObservedObject var sync: SyncModel
     @ObservedObject var link: StationLinkController
@@ -15,7 +15,11 @@ struct StationLinkRunnerPanel: View {
             content(target: target)
                 .task(id: target) { link.request(target) }
         }
-        .task(id: link.proposal?.eventID) { await runCountdown() }
+        .task(id: link.proposal?.eventID) { await logAutomatically() }
+        // Undo belongs to the iPad's set only until another set is logged.
+        .onChange(of: sync.lastRunnerSetID) { _, setID in
+            if let logged = link.lastLogged, logged.setID != setID { link.clearLogged() }
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("runner.station")
     }
@@ -33,13 +37,16 @@ struct StationLinkRunnerPanel: View {
 
     @ViewBuilder
     private func content(target: StationLinkTarget?) -> some View {
-        if let proposal = link.proposal {
+        if let proposal = link.proposal, !proposal.logsAutomatically {
             proposalView(proposal)
         } else {
-            Label(statusText(target: target), systemImage: "ipad.landscape")
-                .font(.footnote).foregroundStyle(link.isConnected ? Theme.text : Theme.muted)
-                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
-                .accessibilityIdentifier("runner.station.status")
+            VStack(alignment: .leading, spacing: 4) {
+                if let logged = link.lastLogged { undoRow(logged) }
+                Label(statusText(target: target), systemImage: "ipad.landscape")
+                    .font(.footnote).foregroundStyle(link.isConnected ? Theme.text : Theme.muted)
+                    .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                    .accessibilityIdentifier("runner.station.status")
+            }
         }
     }
 
@@ -61,20 +68,32 @@ struct StationLinkRunnerPanel: View {
         return count == 1 ? "1 rep" : "\(count) reps"
     }
 
+    private func undoRow(_ logged: StationLinkLoggedSet) -> some View {
+        HStack {
+            Text("iPad logged \(logged.reps) \(logged.reps == 1 ? "rep" : "reps")")
+                .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
+                .accessibilityIdentifier("runner.station.logged")
+            Spacer()
+            Button("Undo") { Task { await undo(logged) } }
+                .font(.subheadline.weight(.semibold))
+                .frame(minWidth: 44, minHeight: 44)
+                .accessibilityLabel("Undo set logged from iPad")
+                .accessibilityIdentifier("runner.station.undo")
+        }
+    }
+
     private func proposalView(_ proposal: StationLinkProposal) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            TimelineView(.periodic(from: .now, by: 0.25)) { context in
-                Text(headline(proposal, now: context.date))
-                    .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("runner.station.proposal")
-            }
+            Text(headline(proposal))
+                .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.text)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("runner.station.proposal")
             if proposal.partial {
                 Text("Tracking was interrupted, so check the count before logging.")
                     .font(.caption).foregroundStyle(.orange)
             }
             HStack(spacing: 10) {
-                Button(logTitle(proposal)) {
+                Button("Log \(proposal.reps)") {
                     Task { await commit(proposal) }
                 }
                 .buttonStyle(.borderedProminent).tint(Theme.accent).foregroundStyle(.black)
@@ -98,27 +117,16 @@ struct StationLinkRunnerPanel: View {
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12))
     }
 
-    private func logTitle(_ proposal: StationLinkProposal) -> String {
-        proposal.deadline == nil ? "Log \(proposal.reps)" : "Log now"
+    private func headline(_ proposal: StationLinkProposal) -> String {
+        if let left = proposal.leftCount, let right = proposal.rightCount {
+            return "iPad counted \(proposal.reps) (L \(left) · R \(right))"
+        }
+        return "iPad counted \(proposal.reps) \(proposal.reps == 1 ? "rep" : "reps")"
     }
 
-    private func headline(_ proposal: StationLinkProposal, now: Date) -> String {
-        let counted = proposal.leftCount != nil && proposal.rightCount != nil
-            ? "iPad counted \(proposal.reps) (L \(proposal.leftCount ?? 0) · R \(proposal.rightCount ?? 0))"
-            : "iPad counted \(proposal.reps) \(proposal.reps == 1 ? "rep" : "reps")"
-        guard let deadline = proposal.deadline else { return counted }
-        let remaining = max(0, Int(ceil(deadline.timeIntervalSince(now))))
-        return "\(counted) · logging in \(remaining)s"
-    }
-
-    private func runCountdown() async {
-        guard let proposal = link.proposal, let deadline = proposal.deadline else { return }
-        let wait = deadline.timeIntervalSinceNow
-        if wait > 0 { try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000)) }
-        // Edit or Not right removes the proposal; never log either.
-        guard !Task.isCancelled, let current = link.proposal,
-              current.eventID == proposal.eventID, current.deadline != nil else { return }
-        await commit(current)
+    private func logAutomatically() async {
+        guard let proposal = link.proposal, proposal.logsAutomatically else { return }
+        await commit(proposal)
     }
 
     /// The count enters the same guarded path as LOG SET: the exact slot and
@@ -129,7 +137,30 @@ struct StationLinkRunnerPanel: View {
               StationLinkPolicy.canCommit(proposal, currentSlotID: current.id,
                                           currentSetNumber: sync.currentPhysicalSetNumber,
                                           entryBlocked: sync.isSetEntryBlocked(current)) else { return }
+        let previous = sync.lastRunnerSetID
         sync.setReps(proposal.reps)
         await sync.logCurrentSet(expected: current, expectedSetNumber: proposal.setNumber)
+        guard let setID = sync.lastRunnerSetID, setID != previous else { return }
+        link.recordLogged(StationLinkLoggedSet(setID: setID, slotID: proposal.slotID,
+                                               setNumber: proposal.setNumber, reps: proposal.reps))
+    }
+
+    /// Undo removes the logged set through the ordinary correction path, ends
+    /// rest and returns to that slot so the iPad counts the set again.
+    private func undo(_ logged: StationLinkLoggedSet) async {
+        link.clearLogged()
+        if let set = sync.sets.first(where: { $0.id == logged.setID && $0.deleted_at == nil }) {
+            guard sync.enqueueCorrection(set: set, values: nil) else { return }
+        } else if let pending = sync.setOutbox.pending.first(where: { $0.id == logged.setID }) {
+            guard sync.enqueueCorrection(pending: pending, values: nil) else { return }
+        } else {
+            return
+        }
+        if sync.restEndDate != nil { sync.skipRest() }
+        if sync.currentExercise?.id != logged.slotID,
+           let index = sync.exercises.firstIndex(where: { $0.id == logged.slotID }) {
+            sync.jump(to: index)
+        }
+        await sync.drainWorkoutWriteOutboxes()
     }
 }

@@ -12,8 +12,6 @@ enum StationLink {
     /// Seconds the count must hold steady, outside a rep, before the iPad
     /// reports the set finished. Target reps never end a set on their own.
     static let settleSeconds: TimeInterval = 4
-    /// Hands-free confirmation window on the iPhone before a counted set logs.
-    static let countdownSeconds: TimeInterval = 5
     static let enabledDefaultsKey = "stationLinkEnabled"
 
     /// Discovery advertises only a one-way account tag, never the account ID.
@@ -107,7 +105,8 @@ struct StationLinkTarget: Equatable {
     let targetReps: Int
 }
 
-/// A finished count waiting on the iPhone. Partial counts never auto-log.
+/// A finished count on the iPhone. A complete count logs at once (the owner
+/// chose instant logging with undo); a partial count never auto-logs.
 struct StationLinkProposal: Equatable, Identifiable {
     let eventID: UUID
     let slotID: String
@@ -117,24 +116,30 @@ struct StationLinkProposal: Equatable, Identifiable {
     let leftCount: Int?
     let rightCount: Int?
     let partial: Bool
-    /// When the countdown logs the set; nil means the member must tap.
-    let deadline: Date?
+    let logsAutomatically: Bool
     var id: UUID { eventID }
+}
+
+/// The last set a Station count logged, kept so the member can undo it.
+struct StationLinkLoggedSet: Equatable {
+    let setID: String
+    let slotID: String
+    let setNumber: Int
+    let reps: Int
 }
 
 enum StationLinkPolicy {
     /// Accept a completion only for the currently armed set, only once, and
     /// only with a usable rep count.
     static func proposal(for completion: StationLinkCompletion, arm: StationLinkArm?,
-                         seenEvents: Set<UUID>, now: Date) -> StationLinkProposal? {
+                         seenEvents: Set<UUID>) -> StationLinkProposal? {
         guard let arm, completion.armID == arm.armID, !seenEvents.contains(completion.eventID),
               completion.reps > 0, completion.reps < 1000 else { return nil }
         return StationLinkProposal(
             eventID: completion.eventID, slotID: arm.slotID, setNumber: arm.setNumber,
             exerciseName: arm.exerciseName, reps: completion.reps,
             leftCount: completion.leftCount, rightCount: completion.rightCount,
-            partial: completion.partial,
-            deadline: completion.partial ? nil : now.addingTimeInterval(StationLink.countdownSeconds))
+            partial: completion.partial, logsAutomatically: !completion.partial)
     }
 
     /// A proposal may log only into the exact slot and set it was counted for.

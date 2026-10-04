@@ -62,14 +62,15 @@ may turn detections into durable workout actions.
     no server). The iPhone arms the current countable set once rest is over;
     every distinct slot/set gets a fresh arm ID. The iPad counts that set and
     reports a finished count once it holds steady for four seconds outside a
-    rep; target reps never end a set. The iPhone shows a five-second
-    cancellable countdown, then logs through the ordinary guarded LOG SET path
+    rep; target reps never end a set. The owner chose instant logging: the
+    iPhone logs that count at once through the ordinary guarded LOG SET path
     for that exact slot and set, which starts rest and advances the runner.
-    Partial counts, other sets, duplicate events and unsupported movements
-    never auto-log. Edit moves the count into the rep control for LOG SET;
-    Not right re-counts the same set.
-  - Remaining: verify the link, countdown and fallback on the paired iPhone and
-    iPad, and record miscounts and corrections from real sets.
+    Undo stays available until the next count; it deletes the set through the
+    correction path, ends rest and returns to the slot. Partial counts, other
+    sets, duplicate events and unsupported movements never auto-log; a partial
+    count offers Log, Edit (into the rep control) or Not right (re-count).
+  - Remaining: verify the link, instant logging, Undo and fallback on the
+    paired iPhone and iPad, and record miscounts and corrections from real sets.
 - [ ] **P3 — Enable measured automatic progression**
   - Establish explicit acceptance thresholds for premature completion, exact
     counts and required corrections; validate them before enabling auto-log.
@@ -80,7 +81,7 @@ may turn detections into durable workout actions.
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P1 | gated_by | external:owner-ipad-station-device-build | Corrective internal build 46 is verified available to Testers; the owner must evaluate framing and counting on the actual iPad. |
-| P2 | gated_by | external:owner-ipad-station-linked-device-trial | The owner requested iPhone-controlled assisted logging on 2026-10-04; the paired iPhone/iPad trial must show the link, countdown and manual fallback work before P2 is complete. |
+| P2 | gated_by | external:owner-ipad-station-linked-device-trial | The owner requested iPhone-controlled assisted logging on 2026-10-04; the paired iPhone/iPad trial must show the link, instant logging with Undo and manual fallback work before P2 is complete. |
 | P3 | gated_by | external:owner-ipad-station-automation-criteria | Automation needs explicit measured quality criteria and activation authority. |
 
 ## Next step
@@ -94,7 +95,7 @@ on the paired iPad; the linked build is not yet on either device.
 iPhone and the iPad, turn on "Count reps with iPad Station" in the iPhone
 runner menu and "Count sets for my iPhone workout" on the iPad, then run a few
 squat sets. Note each counted versus actual rep total, any set that logged
-wrongly, and whether the countdown, Edit and Not right were usable mid-workout.
+wrongly, and whether Undo was quick enough to fix a miscount mid-workout.
 Separate front-facing and side-view squat clips remain useful for the counter.
 Sustained performance, other movements and fully automatic logging remain
 unvalidated. No unattended recording is requested.
@@ -120,9 +121,10 @@ unvalidated. No unattended recording is requested.
   automatic workout-action approval.
 - On 2026-10-04 the owner asked for the iPhone to know when an iPad Station
   is available and to progress and finish sets from the iPad's count. This
-  authorizes the opt-in local link and assisted logging on the iPhone with a
-  cancellable countdown, not fully automatic logging (P3), backend changes or
-  client distribution.
+  authorizes the opt-in local link. Asked how a counted set should log, the
+  owner chose instant logging with Undo over a countdown or a tap. This is an
+  opt-in trial setting; P3's measured acceptance thresholds remain unmet, and
+  no backend change or client distribution is authorized.
 - The owner requested direct iPad debugging to shorten iteration and identified
   front-facing squat support as a needed use case. Developer diagnostics stay
   opt-in and Debug-only: bounded numerical summaries on the local console,
@@ -369,7 +371,7 @@ Earlier build evidence (historical, superseded where stated above):
 - Entering Station Mode does not start a workout or request camera access.
 - The iPad cannot write a set. Only an armed count sent over the opt-in link
   can reach the iPhone, which logs it through LOG SET for the exact armed slot
-  and set after a cancellable countdown, or on a tap when tracking was partial.
+  and set at once with Undo, or on a tap when tracking was partial.
 - Neither device browses or advertises on the local network until its member
   turns the link on; the iPhone stays awake only while connected.
 - The live MediaPipe angle counter requires a stable extended position, flexion

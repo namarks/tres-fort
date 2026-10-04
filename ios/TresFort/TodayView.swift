@@ -218,6 +218,15 @@ struct TodayView: View {
     @State private var isPreparingWorkoutStart = false
     @State private var showFreestyle = false
     @State private var showStation = false
+    /// iPhone end of the iPad Station link; it browses only while a workout
+    /// runs with the setting on, so the local network prompt is opt-in.
+    @StateObject private var stationLink = StationLinkController()
+    @AppStorage(StationLink.enabledDefaultsKey) private var stationLinkEnabled = false
+    private var stationLinkAccount: String? {
+        guard stationLinkEnabled, sync.running, !sync.finished,
+              UIDevice.current.userInterfaceIdiom == .phone else { return nil }
+        return auth.userID
+    }
 
     var body: some View {
         let fullRestOverlayVisible = sync.restEndDate != nil && restExpanded && (workoutFocused || sync.finished)
@@ -384,6 +393,9 @@ struct TodayView: View {
         }
         .preferredColorScheme(.dark)
         .task(id: sync.canChooseStarterWorkout) { await loadStarterAvailability() }
+        .task(id: stationLinkAccount) {
+            if let account = stationLinkAccount { stationLink.start(accountID: account) } else { stationLink.stop() }
+        }
         .onChange(of: sync.restEndDate) { if sync.restEndDate == nil { restExpanded = false } }
         .onChange(of: sync.running) { if !sync.running { isLocallyMinimized = false } }
     }
@@ -447,7 +459,7 @@ struct TodayView: View {
             .clipShape(RoundedRectangle(cornerRadius: 16)).padding(20)
             Spacer()
         } else if sync.running {
-            RunnerView(sync: sync, auth: auth, onExpandRest: { restExpanded = true })
+            RunnerView(sync: sync, auth: auth, stationLink: stationLink, onExpandRest: { restExpanded = true })
         } else if sync.plan == nil && !sync.canCreateRoutine {
             PlanLoadRecoveryView(sync: sync)
         } else if sync.canChooseStarterWorkout && !sync.todayIsCompleted {
@@ -817,6 +829,7 @@ private struct RunnerView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
+    @ObservedObject var stationLink: StationLinkController
     var onExpandRest: (() -> Void)? = nil
 
     /// Tap-to-edit on the big weight number → decimal-pad sheet. Persists
@@ -838,6 +851,8 @@ private struct RunnerView: View {
     @State private var valueDraft: SetValueDraft?
     @State private var weightPrescription: RunnerPrescription?
     @AppStorage(RestCue.defaultsKey) private var timerCuesEnabled = true
+    @AppStorage(StationLink.enabledDefaultsKey) private var stationLinkEnabled = false
+    private var showsStationLink: Bool { UIDevice.current.userInterfaceIdiom == .phone }
 
     @State private var showingOutline = false
     @State private var loadRevealedFor: Set<String> = []
@@ -973,6 +988,9 @@ private struct RunnerView: View {
                 // Reserve layout without mounting an empty correction view or
                 // a Color-backed container, which SwiftUI exposes to AX audits.
                 Spacer(minLength: 0).frame(height: 44)
+            }
+            if showsStationLink && stationLinkEnabled {
+                StationLinkRunnerPanel(sync: sync, link: stationLink, ex: ex)
             }
             RunnerSetAction(sync: sync, ex: ex)
         }
@@ -1160,6 +1178,11 @@ private struct RunnerView: View {
             Toggle("Timer sounds", isOn: $timerCuesEnabled)
                 .tint(Theme.accent).frame(minHeight: 44)
                 .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
+            if showsStationLink {
+                Toggle("Count reps with iPad Station", isOn: $stationLinkEnabled)
+                    .tint(Theme.accent).frame(minHeight: 44)
+                    .accessibilityIdentifier("runner.stationLink")
+            }
             if ex.exercise_modality == "barbell" {
                 NavigationLink("Plates & warm-up guide") {
                     BarbellLoadingView(target: sync.weight, unit: ex.targetWeightUnit)

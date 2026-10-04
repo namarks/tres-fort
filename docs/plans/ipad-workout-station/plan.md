@@ -56,6 +56,20 @@ may turn detections into durable workout actions.
     stable event identity before observations can enter the existing set path.
   - Add confirmed set completion, rest and progression with easy correction;
     choose a hands-free confirmation mechanism based on the physical trial.
+  - Repository slice (owner-requested 2026-10-04): the iPhone runner is the
+    only controller. An opt-in, encrypted local MultipeerConnectivity link pairs
+    it with an iPad Station signed in to the same account (one-way account tag,
+    no server). The iPhone arms the current countable set once rest is over;
+    every distinct slot/set gets a fresh arm ID. The iPad counts that set and
+    reports a finished count once it holds steady for four seconds outside a
+    rep; target reps never end a set. The iPhone shows a five-second
+    cancellable countdown, then logs through the ordinary guarded LOG SET path
+    for that exact slot and set, which starts rest and advances the runner.
+    Partial counts, other sets, duplicate events and unsupported movements
+    never auto-log. Edit moves the count into the rep control for LOG SET;
+    Not right re-counts the same set.
+  - Remaining: verify the link, countdown and fallback on the paired iPhone and
+    iPad, and record miscounts and corrections from real sets.
 - [ ] **P3 — Enable measured automatic progression**
   - Establish explicit acceptance thresholds for premature completion, exact
     counts and required corrections; validate them before enabling auto-log.
@@ -66,24 +80,24 @@ may turn detections into durable workout actions.
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P1 | gated_by | external:owner-ipad-station-device-build | Corrective internal build 46 is verified available to Testers; the owner must evaluate framing and counting on the actual iPad. |
-| P2 | gated_by | external:owner-ipad-station-write-contract | Confirm the supported movements, correction UX and multi-device controller policy before enabling workout writes. |
+| P2 | gated_by | external:owner-ipad-station-linked-device-trial | The owner requested iPhone-controlled assisted logging on 2026-10-04; the paired iPhone/iPad trial must show the link, countdown and manual fallback work before P2 is complete. |
 | P3 | gated_by | external:owner-ipad-station-automation-criteria | Automation needs explicit measured quality criteria and activation authority. |
 
 ## Next step
 
-**Now (@agent):** Finish PR #228's exact-head review and required checks;
-Nick owns merge. The independent-arm curl correction is locally verified.
-After the gates, rebuild the current source to include the saved-replay identity
-fix; install when the owner confirms the camera is off and the iPad is unlocked.
-MediaPipe live source `23ef59f6bade9f464d79c9d59564badd97de5722` is
-signed, verified and installed in place over the paired iPad's active Wi-Fi
-connection. The owner completed and transferred one combined front/side squat
-clip; both real native detectors ran on all 388 frames. The live-default change,
-account-scoped recordings and returning-account follow-up are locally verified.
-**Next physical trial (@owner):** Use the installed development build to test the live count with separate front-facing and side-view
-clips and save each actual count. No additional repetitions are needed for the
-current diagnosis. Sustained performance, other movements, false positives and
-automatic workout actions remain unvalidated. No unattended recording is requested.
+**Now (@agent):** Drive the linked assisted-logging PR (iPhone runner as the
+only controller, iPad counts the armed set) through exact-head review and the
+required checks; Nick owns merge. PR #228's observation-only Station merged.
+MediaPipe live source `23ef59f6bade9f464d79c9d59564badd97de5722` is installed
+on the paired iPad; the linked build is not yet on either device.
+**Next physical trial (@owner):** With a build containing the link on both the
+iPhone and the iPad, turn on "Count reps with iPad Station" in the iPhone
+runner menu and "Count sets for my iPhone workout" on the iPad, then run a few
+squat sets. Note each counted versus actual rep total, any set that logged
+wrongly, and whether the countdown, Edit and Not right were usable mid-workout.
+Separate front-facing and side-view squat clips remain useful for the counter.
+Sustained performance, other movements and fully automatic logging remain
+unvalidated. No unattended recording is requested.
 
 ## Approved comparison scope
 
@@ -104,6 +118,11 @@ automatic workout actions remain unvalidated. No unattended recording is request
   tracker after the first matched native replay. Apple Vision remains a saved
   comparison option. This is a prototype choice, not general accuracy or
   automatic workout-action approval.
+- On 2026-10-04 the owner asked for the iPhone to know when an iPad Station
+  is available and to progress and finish sets from the iPad's count. This
+  authorizes the opt-in local link and assisted logging on the iPhone with a
+  cancellable countdown, not fully automatic logging (P3), backend changes or
+  client distribution.
 - The owner requested direct iPad debugging to shorten iteration and identified
   front-facing squat support as a needed use case. Developer diagnostics stay
   opt-in and Debug-only: bounded numerical summaries on the local console,
@@ -348,7 +367,11 @@ Earlier build evidence (historical, superseded where stated above):
 ## Acceptance and verification
 
 - Entering Station Mode does not start a workout or request camera access.
-- Exercise selection, trial start/stop and all detections cannot write a set.
+- The iPad cannot write a set. Only an armed count sent over the opt-in link
+  can reach the iPhone, which logs it through LOG SET for the exact armed slot
+  and set after a cancellable countdown, or on a tap when tracking was partial.
+- Neither device browses or advertises on the local network until its member
+  turns the link on; the iPhone stays awake only while connected.
 - The live MediaPipe angle counter requires a stable extended position, flexion
   and return. It is an advisory count, not a form, depth or safety assessment.
 - Saved replay feeds identical decoded frames to both pose detectors and uses

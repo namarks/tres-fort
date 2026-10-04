@@ -112,8 +112,9 @@ Let a person create and execute a workout confidently, whether or not they use
 AI coaching.
 
 - [iPad workout station](ipad-workout-station/plan.md) — camera trial and large
-  workout display, followed by physical-device validation before assisted or
-  automatic set progression.
+  workout display; an opt-in iPhone link now lets the iPad's count log the
+  current set after a cancellable countdown. Paired-device validation comes
+  before relying on it or enabling fully automatic progression.
 
 - [Member activation and adherence](member-activation-and-adherence/plan.md) —
   **paused**; first-workout entry and starters are delivered. Reminders/widgets,

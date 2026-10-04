@@ -1,0 +1,231 @@
+import XCTest
+@testable import TresFort
+
+@MainActor
+final class StationLinkTests: XCTestCase {
+    private func target(slot: String = "slot-1", set: Int = 1, reps: Int = 8) -> StationLinkTarget {
+        StationLinkTarget(slotID: slot, setNumber: set, exercise: .squat, exerciseName: "Back Squat", targetReps: reps)
+    }
+
+    private func completion(_ arm: StationLinkArm, reps: Int = 8, partial: Bool = false,
+                            event: UUID = UUID()) -> StationLinkCompletion {
+        StationLinkCompletion(armID: arm.armID, eventID: event, reps: reps,
+                              leftCount: nil, rightCount: nil, partial: partial)
+    }
+
+    // MARK: pairing and protocol
+
+    func testAccountTagIsStablePerAccountAndHidesTheAccountID() {
+        let account = "8C1F6A64-1E2B-4D0B-9F52-1B8D1D4A0C11"
+        let tag = StationLink.accountTag(for: account)
+        XCTAssertEqual(tag, StationLink.accountTag(for: account))
+        XCTAssertNotEqual(tag, StationLink.accountTag(for: "another-account"))
+        XCTAssertEqual(tag.count, 24)
+        XCTAssertFalse(tag.contains(account.lowercased().prefix(8)))
+        XCTAssertLessThanOrEqual(StationLink.serviceType.count, 15)
+    }
+
+    func testMessagesRoundTripAndRejectOtherProtocolVersions() throws {
+        let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 2, exercise: .curl,
+                                 exerciseName: "Dumbbell Curl", targetReps: 10)
+        let messages: [StationLinkMessage] = [
+            .arm(arm), .disarm(armID: arm.armID),
+            .progress(StationLinkProgress(armID: arm.armID, count: 3, leftCount: 3, rightCount: 2, status: "Tracking")),
+            .completion(completion(arm, reps: 9)), .station(.cameraOff, armID: nil),
+        ]
+        for message in messages {
+            XCTAssertEqual(StationLinkMessage.decode(try message.encoded()), message)
+        }
+        let future = Data(#"{"version":99,"message":{"disarm":{"armID":"\#(arm.armID.uuidString)"}}}"#.utf8)
+        XCTAssertNil(StationLinkMessage.decode(future))
+        XCTAssertNil(StationLinkMessage.decode(Data("not json".utf8)))
+    }
+
+    func testOnlyCountableMovementsMatch() {
+        XCTAssertEqual(StationExercise.match(exerciseName: "Back Squat"), .squat)
+        XCTAssertEqual(StationExercise.match(exerciseName: "Goblet squat"), .squat)
+        XCTAssertEqual(StationExercise.match(exerciseName: "Barbell Bench Press"), .benchPress)
+        XCTAssertEqual(StationExercise.match(exerciseName: "Incline Dumbbell Bench Press"), .benchPress)
+        XCTAssertEqual(StationExercise.match(exerciseName: "Hammer Curl"), .curl)
+        XCTAssertNil(StationExercise.match(exerciseName: "Bulgarian Split Squat"))
+        XCTAssertNil(StationExercise.match(exerciseName: "Jump Squat"))
+        XCTAssertNil(StationExercise.match(exerciseName: "Lying Leg Curl"))
+        XCTAssertNil(StationExercise.match(exerciseName: "Wrist Curl"))
+        XCTAssertNil(StationExercise.match(exerciseName: "Deadlift"))
+        XCTAssertNil(StationExercise.match(exerciseName: "Squat hold", modality: "timed"))
+    }
+
+    // MARK: set end on the iPad
+
+    func testSetEndsOnlyAfterTheCountHoldsSteadyAndNeverAtTargetAlone() {
+        var detector = StationSetEndDetector()
+        XCTAssertFalse(detector.observe(count: 0, status: .ready, at: 0))
+        XCTAssertFalse(detector.observe(count: 0, status: .ready, at: 10), "No reps never finishes a set")
+        for (index, time) in [11.0, 13, 15, 17, 19, 21, 23, 25].enumerated() {
+            XCTAssertFalse(detector.observe(count: index + 1, status: .ready, at: time))
+        }
+        XCTAssertFalse(detector.observe(count: 8, status: .ready, at: 28.9))
+        XCTAssertTrue(detector.observe(count: 8, status: .ready, at: 29.1))
+        XCTAssertFalse(detector.observe(count: 8, status: .ready, at: 40), "Finishes exactly once")
+    }
+
+    func testSetDoesNotEndMidRepOrWithAnotherPersonInView() {
+        var detector = StationSetEndDetector()
+        _ = detector.observe(count: 0, status: .ready, at: 0)
+        _ = detector.observe(count: 3, status: .ready, at: 1)
+        XCTAssertFalse(detector.observe(count: 3, status: .moving, at: 6))
+        XCTAssertFalse(detector.observe(count: 3, status: .multiplePeople, at: 7))
+        XCTAssertTrue(detector.observe(count: 3, status: .trackingLost, at: 8))
+    }
+
+    func testAnExtraRepRestartsTheSettleWindow() {
+        var detector = StationSetEndDetector()
+        _ = detector.observe(count: 0, status: .ready, at: 0)
+        _ = detector.observe(count: 5, status: .ready, at: 1)
+        XCTAssertFalse(detector.observe(count: 6, status: .ready, at: 4.5))
+        XCTAssertFalse(detector.observe(count: 6, status: .ready, at: 8))
+        XCTAssertTrue(detector.observe(count: 6, status: .ready, at: 8.6))
+    }
+
+    // MARK: iPhone acceptance
+
+    func testCompletionsForOtherSetsDuplicatesAndPartialCountsAreGuarded() {
+        let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 1, exercise: .squat,
+                                 exerciseName: "Back Squat", targetReps: 5)
+        let now = Date(timeIntervalSince1970: 1000)
+        let stale = StationLinkCompletion(armID: UUID(), eventID: UUID(), reps: 5, leftCount: nil, rightCount: nil, partial: false)
+        XCTAssertNil(StationLinkPolicy.proposal(for: stale, arm: arm, seenEvents: [], now: now))
+        XCTAssertNil(StationLinkPolicy.proposal(for: completion(arm), arm: nil, seenEvents: [], now: now))
+        XCTAssertNil(StationLinkPolicy.proposal(for: completion(arm, reps: 0), arm: arm, seenEvents: [], now: now))
+        let seen = completion(arm)
+        XCTAssertNil(StationLinkPolicy.proposal(for: seen, arm: arm, seenEvents: [seen.eventID], now: now))
+
+        let full = StationLinkPolicy.proposal(for: completion(arm, reps: 6), arm: arm, seenEvents: [], now: now)
+        XCTAssertEqual(full?.reps, 6)
+        XCTAssertEqual(full?.deadline, now.addingTimeInterval(StationLink.countdownSeconds))
+        let partial = StationLinkPolicy.proposal(for: completion(arm, partial: true), arm: arm, seenEvents: [], now: now)
+        XCTAssertNil(partial?.deadline, "A partial count waits for a tap")
+    }
+
+    func testProposalLogsOnlyIntoTheSlotAndSetItWasCountedFor() throws {
+        let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 2, exercise: .squat,
+                                 exerciseName: "Back Squat", targetReps: 5)
+        let proposal = try XCTUnwrap(StationLinkPolicy.proposal(for: completion(arm), arm: arm, seenEvents: [], now: Date()))
+        XCTAssertTrue(StationLinkPolicy.canCommit(proposal, currentSlotID: "s", currentSetNumber: 2, entryBlocked: false))
+        XCTAssertFalse(StationLinkPolicy.canCommit(proposal, currentSlotID: "s", currentSetNumber: 3, entryBlocked: false))
+        XCTAssertFalse(StationLinkPolicy.canCommit(proposal, currentSlotID: "other", currentSetNumber: 2, entryBlocked: false))
+        XCTAssertFalse(StationLinkPolicy.canCommit(proposal, currentSlotID: "s", currentSetNumber: 2, entryBlocked: true))
+    }
+
+    func testControllerArmsEachSetFreshlyAndDropsCountsWhenTheRunnerMovesOn() throws {
+        let controller = StationLinkController()
+        controller.request(target(set: 1))
+        let first = try XCTUnwrap(controller.arm)
+        controller.request(target(set: 1))
+        XCTAssertEqual(controller.arm?.armID, first.armID, "An unchanged target keeps its arm")
+
+        controller.receive(.completion(completion(first, reps: 7)))
+        XCTAssertEqual(controller.proposal?.reps, 7)
+        XCTAssertEqual(controller.proposal?.setNumber, 1)
+
+        // Logged by hand: the runner advanced to set 2 before the countdown ran.
+        controller.request(target(set: 2))
+        XCTAssertNil(controller.proposal)
+        let second = try XCTUnwrap(controller.arm)
+        XCTAssertNotEqual(second.armID, first.armID)
+        controller.receive(.completion(completion(first, reps: 7)))
+        XCTAssertNil(controller.proposal, "A late count for set 1 cannot land on set 2")
+
+        controller.request(nil)
+        XCTAssertNil(controller.arm)
+    }
+
+    func testDismissedCountIsNeverReplayedAndTheSetIsCountedAgain() throws {
+        let controller = StationLinkController()
+        controller.request(target())
+        let arm = try XCTUnwrap(controller.arm)
+        let event = completion(arm, reps: 4)
+        controller.receive(.completion(event))
+        controller.dismissProposal()
+        XCTAssertNil(controller.proposal)
+        let fresh = try XCTUnwrap(controller.arm)
+        XCTAssertNotEqual(fresh.armID, arm.armID)
+        XCTAssertEqual(fresh.setNumber, arm.setNumber)
+        controller.receive(.completion(event))
+        XCTAssertNil(controller.proposal)
+        controller.receive(.completion(completion(fresh, reps: 5)))
+        XCTAssertEqual(controller.proposal?.reps, 5)
+    }
+
+    func testFinishedProposalIsNotReofferedAndKeepsTheArm() throws {
+        let controller = StationLinkController()
+        controller.request(target())
+        let arm = try XCTUnwrap(controller.arm)
+        let event = completion(arm, reps: 8)
+        controller.receive(.completion(event))
+        XCTAssertNotNil(controller.proposal?.deadline)
+        controller.finishProposal(event.eventID)
+        XCTAssertNil(controller.proposal)
+        XCTAssertEqual(controller.arm?.armID, arm.armID)
+        controller.receive(.completion(event))
+        XCTAssertNil(controller.proposal)
+    }
+
+    func testProgressFromAnotherArmIsIgnored() throws {
+        let controller = StationLinkController()
+        controller.request(target())
+        let arm = try XCTUnwrap(controller.arm)
+        controller.receive(.progress(StationLinkProgress(armID: UUID(), count: 9, leftCount: nil, rightCount: nil, status: "Ready")))
+        XCTAssertNil(controller.progress)
+        controller.receive(.progress(StationLinkProgress(armID: arm.armID, count: 2, leftCount: nil, rightCount: nil, status: "Ready")))
+        XCTAssertEqual(controller.progress?.count, 2)
+    }
+
+    // MARK: iPad station
+
+    func testStationCountsOnlyTheArmedSetAndReportsOnce() {
+        let station = StationLinkStation()
+        let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 1, exercise: .squat,
+                                 exerciseName: "Back Squat", targetReps: 3)
+        XCTAssertFalse(station.observe(count: 1, leftCount: nil, rightCount: nil, status: .ready, partial: false, at: 0))
+        station.receive(.arm(arm))
+        XCTAssertEqual(station.arm, arm)
+        XCTAssertFalse(station.isCounting, "Counting waits for the camera trial to start")
+        station.beginCounting()
+        XCTAssertTrue(station.isCounting)
+        XCTAssertFalse(station.observe(count: 0, leftCount: nil, rightCount: nil, status: .ready, partial: false, at: 0))
+        XCTAssertFalse(station.observe(count: 3, leftCount: nil, rightCount: nil, status: .ready, partial: false, at: 5))
+        XCTAssertTrue(station.observe(count: 3, leftCount: nil, rightCount: nil, status: .ready, partial: false, at: 9.5))
+        XCTAssertFalse(station.isCounting)
+        XCTAssertFalse(station.observe(count: 3, leftCount: nil, rightCount: nil, status: .ready, partial: false, at: 20))
+
+        station.receive(.disarm(armID: UUID()))
+        XCTAssertEqual(station.arm, arm, "Only the current arm can be withdrawn")
+        station.receive(.disarm(armID: arm.armID))
+        XCTAssertNil(station.arm)
+    }
+
+    func testStationIgnoresCountsAndCompletionsFromPeers() {
+        let station = StationLinkStation()
+        let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 1, exercise: .curl,
+                                 exerciseName: "Curl", targetReps: 3)
+        station.receive(.completion(completion(arm)))
+        station.receive(.progress(StationLinkProgress(armID: arm.armID, count: 1, leftCount: 1, rightCount: 0, status: "Ready")))
+        XCTAssertNil(station.arm)
+        XCTAssertFalse(station.isCounting)
+    }
+
+    func testAbandonedOrEmptyTrialStopsWithoutACount() {
+        let station = StationLinkStation()
+        let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 1, exercise: .squat,
+                                 exerciseName: "Back Squat", targetReps: 3)
+        station.receive(.arm(arm))
+        station.beginCounting()
+        station.trialEnded(count: 0, leftCount: nil, rightCount: nil, partial: true)
+        XCTAssertFalse(station.isCounting)
+        station.beginCounting()
+        station.abandon()
+        XCTAssertFalse(station.isCounting)
+        XCTAssertEqual(station.arm, arm)
+    }
+}

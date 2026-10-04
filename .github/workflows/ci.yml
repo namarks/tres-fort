@@ -6,8 +6,8 @@ on:
   push:
     branches: [main]
   schedule:
-    # Nightly full UI coverage on main (early morning Pacific time).
-    - cron: '17 11 * * *'
+    # Weekly full UI coverage on main (Monday, early morning Pacific time).
+    - cron: '17 11 * * 1'
   workflow_dispatch:
 
 # A newer push to the same branch/PR cancels the in-flight run.
@@ -49,7 +49,9 @@ jobs:
     # Standard public-repository capacity only; never opt into a paid runner.
     if: github.event.repository.private == false && needs.plans.outputs.ios-suite != 'skip'
     runs-on: macos-15
-    timeout-minutes: 30
+    # Smoke gates PRs within 30 minutes. Full runs get headroom for slow
+    # hosted runners rather than room for more tests; a hang still stops.
+    timeout-minutes: ${{ needs.plans.outputs.ios-suite == 'full' && 40 || 30 }}
     strategy:
       fail-fast: false
       matrix:

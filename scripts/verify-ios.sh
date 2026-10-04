@@ -40,7 +40,7 @@ if [[ "$ui_suite" == smoke ]]; then
   [[ -z "$ci_shard" || "$ci_shard" == 1 || "$ci_shard" == 2 ]] || { echo 'Smoke coverage uses shards 1 and 2' >&2; exit 2; }
   # Bound the PR gate to twelve representative journeys. Select methods, never
   # whole UI classes: adding a regression must not silently grow the smoke run.
-  # Every unit test still runs; all UI methods remain in nightly/manual full runs.
+  # Every unit test still runs; all UI methods remain in weekly/manual full runs.
   if [[ -z "$ci_shard" || "$ci_shard" == 1 ]]; then
     test_args+=("-only-testing:TresFortTests")
     for method in testMixedSportSetupCreatesFirstWorkoutAndKeepsProfile \
@@ -61,7 +61,8 @@ if [[ "$ui_suite" == smoke ]]; then
     test_args+=("-only-testing:TresFortUITests/GroupSafetyJourneyTests/testReportFallbackBlockAndUnblock")
   fi
 elif [[ -n "$ci_shard" ]]; then
-  # Keep full-suite jobs below the 30-minute budget, including a cold build.
+  # Keep full-suite jobs near 30 minutes, including a cold build. The CI
+  # limit for full runs is 40 minutes only as headroom for slow runners.
   # Shard 1 runs units and the complement, so new classes stay covered. The
   # partition test checks all selectors against real suites without overlap.
   full_second=(TrainingJourneyTests WorkoutFeedbackJourneyTests)

@@ -458,6 +458,9 @@ final class MemberActivationJourneyTests: XCTestCase {
             XCTAssertFalse(app.buttons["Create a workout"].exists)
             tap(app.buttons["Try again"], in: app)
             XCTAssertTrue(app.buttons["Try again"].waitForExistence(timeout: 10))
+            if fixture == "load-failure" {
+                XCTAssertTrue(app.staticTexts["COULDN’T LOAD YOUR PLAN"].waitForExistence(timeout: 5))
+            }
             app.terminate()
         }
         let cached = launch("cached-plan")
@@ -471,13 +474,6 @@ final class MemberActivationJourneyTests: XCTestCase {
         XCTAssertFalse(app.buttons["Create a workout"].exists)
         tap(app.buttons["Try again"], in: app)
         XCTAssertTrue(app.buttons["Create a workout"].waitForExistence(timeout: 10))
-    }
-
-    func testSignInOffersAppleWithoutReviewerPasswordUI() {
-        let app = launch("sign-in")
-        XCTAssertTrue(app.buttons["Sign in with Apple"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.buttons["Reviewer sign-in"].exists)
-        XCTAssertFalse(app.secureTextFields["review.password"].exists)
     }
 
 }

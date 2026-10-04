@@ -1,0 +1,26 @@
+{
+  "runtime_version": "0.10.21",
+  "model_identifier": "pose_landmarker_full/float16/1",
+  "artifacts": [
+    {
+      "name": "MediaPipeTasksVision",
+      "filename": "MediaPipeTasksVision-0.10.21.tar.gz",
+      "url": "https://dl.google.com/cpdc/20250131-063213/MediaPipeTasksVision-0.10.21.tar.gz",
+      "sha256": "5191fca73bcb9883770c5b987d812b15fcfbffd0bcd46d64a91adf5e89dda91f",
+      "podspec": "https://raw.githubusercontent.com/CocoaPods/Specs/master/Specs/9/9/0/MediaPipeTasksVision/0.10.21/MediaPipeTasksVision.podspec.json"
+    },
+    {
+      "name": "MediaPipeTasksCommon",
+      "filename": "MediaPipeTasksCommon-0.10.21.tar.gz",
+      "url": "https://dl.google.com/cpdc/20250131-063213/MediaPipeTasksCommon-0.10.21.tar.gz",
+      "sha256": "1cb1eed8e9eb7868a93fa3c3ce3a341e352620158f29f9799800376f651bd004",
+      "podspec": "https://raw.githubusercontent.com/CocoaPods/Specs/master/Specs/a/4/f/MediaPipeTasksCommon/0.10.21/MediaPipeTasksCommon.podspec.json"
+    },
+    {
+      "name": "pose_landmarker_full",
+      "filename": "pose_landmarker_full.task",
+      "url": "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task",
+      "sha256": "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1"
+    }
+  ]
+}

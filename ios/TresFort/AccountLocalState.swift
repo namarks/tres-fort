@@ -136,6 +136,8 @@ enum AccountLocalState {
             healthResetPendingKey(userID: userID),
         ]
         var erased = true
+        do { try StationRecordingStore.deleteAccountRecordings(accountID: userID) }
+        catch { erased = false }
         for key in protectedKeys {
             if !defaults.eraseAfterAccountDeletion(forKey: key) { erased = false }
         }

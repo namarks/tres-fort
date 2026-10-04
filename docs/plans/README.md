@@ -111,6 +111,10 @@ remains a separately authorized release follow-up.
 Let a person create and execute a workout confidently, whether or not they use
 AI coaching.
 
+- [iPad workout station](ipad-workout-station/plan.md) — camera trial and large
+  workout display, followed by physical-device validation before assisted or
+  automatic set progression.
+
 - [Member activation and adherence](member-activation-and-adherence/plan.md) —
   **paused**; first-workout entry and starters are delivered. Reminders/widgets,
   compact upcoming sessions and actionable progress empty states remain future

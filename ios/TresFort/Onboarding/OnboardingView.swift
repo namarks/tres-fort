@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// First-run guided setup, shown once right after a brand-new sign-in (see
-/// `AuthModel.onboardingComplete`). Returning users and existing installs are
-/// grandfathered past it on update.
+/// Optional guidance when the server has no evidence of prior setup, or this
+/// installation has an unfinished draft. An empty account may be returning;
+/// the welcome screen does not infer whether the member is new.
 ///
 /// Every step is OPTIONAL — onboarding guides, it never gates. The same
 /// actions (join a group, connect intervals.icu) live in the Group + Profile
@@ -64,7 +64,11 @@ struct OnboardingView: View {
         switch step {
         case .welcome:
             WelcomeStep(invitePending: auth.pendingInviteCode != nil,
-                        onContinue: { showTrainingSetup = true })
+                        onContinue: { showTrainingSetup = true },
+                        onEnter: auth.canContinueWithoutSetup ? {
+                            guard flow.isCurrent(checkpoint) else { return }
+                            auth.continueWithoutSetup()
+                        } : nil)
         case .group:
             JoinGroupStep(groupModel: groupModel,
                           onDone: { advance(from: checkpoint) },
@@ -91,6 +95,7 @@ struct OnboardingView: View {
 private struct WelcomeStep: View {
     let invitePending: Bool
     let onContinue: () -> Void
+    let onEnter: (() -> Void)?
 
     var body: some View {
         VStack(spacing: 22) {
@@ -116,6 +121,10 @@ private struct WelcomeStep: View {
                     .font(.footnote).foregroundStyle(Theme.text)
             }
             OnboardingPrimaryButton("Get started", action: onContinue)
+            if let onEnter {
+                OnboardingSkipButton("Continue to app", action: onEnter)
+                    .accessibilityIdentifier("onboarding.continueToApp")
+            }
         }
     }
 }

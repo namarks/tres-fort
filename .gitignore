@@ -11,6 +11,7 @@ coverage/
 ios/*.xcodeproj/
 ios/DerivedData/
 ios/build/
+ios/.dependencies/
 *.xcuserstate
 .swiftpm/
 

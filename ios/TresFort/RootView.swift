@@ -17,8 +17,15 @@ struct RootView: View {
                     MainTabView(auth: model, defaults: defaults, now: now, weightReader: weightReader)
                         .id("\(model.featureSessionEpoch)-\(defaults.recoveryGeneration)")
                 } else {
-                    OnboardingView(auth: model, defaults: defaults)
-                        .id("\(model.featureSessionEpoch)-\(defaults.recoveryGeneration)")
+                    switch model.onboardingResolution {
+                    case .needsSetup:
+                        OnboardingView(auth: model, defaults: defaults)
+                            .id("\(model.featureSessionEpoch)-\(defaults.recoveryGeneration)")
+                    case .unresolved, .checking:
+                        accountCheck(error: nil)
+                    case .failed(let message):
+                        accountCheck(error: message)
+                    }
                 }
             default:
                 ZStack {
@@ -74,6 +81,10 @@ struct RootView: View {
             // the app paused; disk/corruption failures still show the banner.
             if phase == .active { defaults.retry(userID: model.userID) }
         }
+        .task(id: "\(model.featureSessionEpoch)-\(defaults.recoveryGeneration)-\(model.phase == .signedIn)-\(model.onboardingResolutionRevision)") {
+            guard model.phase == .signedIn else { return }
+            await model.resolveOnboarding()
+        }
         // ActivityKit restores records independently of authentication and
         // onboarding. RootView is always mounted, so process-death cleanup also
         // runs for signed-out, expired-credential, and first-run launches.
@@ -114,6 +125,45 @@ struct RootView: View {
 
     private var signedOut: some View {
         SignedOutView(model: model)
+    }
+
+    private func accountCheck(error: String?) -> some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            GeometryReader { geometry in
+                ScrollView {
+                    VStack(spacing: 24) {
+                        Text("TRÈS FORT")
+                            .font(Theme.display(40)).tracking(2)
+                        if let error {
+                            Text("Couldn’t load your account")
+                                .font(.title2.bold())
+                            Text(error)
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier("onboarding.resolve.error")
+                            Button("Retry") {
+                                Task { await model.resolveOnboarding() }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .frame(minHeight: 48)
+                            .accessibilityIdentifier("onboarding.resolve.retry")
+                            Button("Sign out") { model.signOut() }
+                                .frame(minHeight: 44)
+                                .accessibilityIdentifier("onboarding.resolve.signOut")
+                        } else {
+                            ProgressView("Looking for your existing workouts…")
+                                .tint(.white)
+                                .accessibilityIdentifier("onboarding.resolve.checking")
+                        }
+                    }
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.white)
+                    .padding(32)
+                    .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
     }
 }
 

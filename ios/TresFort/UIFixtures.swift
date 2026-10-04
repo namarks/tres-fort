@@ -21,6 +21,7 @@ enum UIFixtureScenario: String, CaseIterable {
     case planChanges = "plan-changes"
     case activationOwner = "activation-owner", activationInvite = "activation-invite"
     case activationManual = "activation-manual", activationCoach = "activation-coach"
+    case activationReturning = "activation-returning", activationReturningRetry = "activation-returning-retry"
     case serverFailure = "server-failure", cachedEmpty = "cached-empty", cachedPlan = "cached-plan"
     var isActivation: Bool { rawValue.hasPrefix("activation-") }
     case historySmall = "history-small", historyLarge = "history-large"
@@ -109,6 +110,7 @@ struct UIFixtureView: View {
     @ObservedObject var auth: AuthModel
     let scenario: UIFixtureScenario
     @State private var openedURL: URL?
+    @ObservedObject private var requestEvidence = UIFixtureRequestEvidence.shared
     @State private var clockStartedAt = ProcessInfo.processInfo.systemUptime
 
     private var appStoreClock: () -> Date {
@@ -141,6 +143,7 @@ struct UIFixtureView: View {
                     Text("SYNTHETIC · \(scenario.rawValue)")
                         .font(.caption).dynamicTypeSize(.large)
                         .accessibilityIdentifier("fixture.scenario")
+                        .accessibilityValue(Text(verbatim: requestEvidence.value))
                     if ProcessInfo.processInfo.environment["TRESFORT_UI_CAPTURE_LINKS"] == "1", let openedURL {
                         Text(openedURL.absoluteString).font(.caption2).lineLimit(1)
                             .accessibilityIdentifier("fixture.opened-url")
@@ -175,6 +178,25 @@ struct UIFixtureView: View {
         })
         .environment(\.dynamicTypeSize,
             ProcessInfo.processInfo.environment["TRESFORT_UI_LARGE_TEXT"] == "1" ? .accessibility5 : systemDynamicTypeSize)
+    }
+}
+
+/// Debug-only observations of requests made through the real authentication
+/// and RootView paths. Counts include failed attempts, so a recovery test can
+/// prove it never silently tried to replace existing training data.
+@MainActor
+private final class UIFixtureRequestEvidence: ObservableObject {
+    static let shared = UIFixtureRequestEvidence()
+    @Published private(set) var value = "signIn:0;state:0;profileWrites:0;starterWrites:0;workoutWrites:0"
+    private var signIn = 0, state = 0, profileWrites = 0, starterWrites = 0, workoutWrites = 0
+
+    func record(method: String, path: String) {
+        if method == "POST" && path == "/auth/apple" { signIn += 1 }
+        if method == "GET" && path == "/api/state" { state += 1 }
+        if method == "PUT" && path == "/api/me/training-profile" { profileWrites += 1 }
+        if method == "POST" && path.hasPrefix("/api/starter-workouts/") { starterWrites += 1 }
+        if method == "POST" && path == "/api/workouts" { workoutWrites += 1 }
+        value = "signIn:\(signIn);state:\(state);profileWrites:\(profileWrites);starterWrites:\(starterWrites);workoutWrites:\(workoutWrites)"
     }
 }
 
@@ -269,6 +291,10 @@ final class UIFixtureProtocol: URLProtocol {
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
+        if UIFixtureScenario.selected?.isActivation == true {
+            let method = request.httpMethod ?? "GET", path = request.url?.path ?? ""
+            Task { @MainActor in UIFixtureRequestEvidence.shared.record(method: method, path: path) }
+        }
         // An unanswered read proves Skip does not depend on transport timeout.
         if request.url?.path == "/api/me/training-profile",
            ProcessInfo.processInfo.environment["TRESFORT_UI_PENDING_TRAINING_PROFILE"] == "1" { return }
@@ -638,7 +664,7 @@ private struct UIFixtureServer {
                 throw URLError(.notConnectedToInternet)
             }
             if [.loadFailure, .cachedEmpty, .cachedPlan].contains(scenario) { throw URLError(.notConnectedToInternet) }
-            if scenario == .serverFailure && stateAttempts == 1 {
+            if [.serverFailure, .activationReturningRetry].contains(scenario) && stateAttempts == 1 {
                 status = 500; response = ["error": "synthetic_server_failure"]; break
             }
             if scenario == .groups {

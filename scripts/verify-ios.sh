@@ -67,7 +67,7 @@ elif [[ -n "$ci_shard" ]]; then
   # partition test checks all selectors against real suites without overlap.
   full_second=(TrainingJourneyTests WorkoutFeedbackJourneyTests)
   full_third=(TodayNavigationJourneyTests IntervalsConnectionJourneyTests ExerciseDiscoveryJourneyTests)
-  full_fourth=(MemberActivationJourneyTests FreestyleJourneyTests)
+  full_fourth=(MemberActivationJourneyTests PlanlessAccountJourneyTests FreestyleJourneyTests)
   full_fifth=(UIActionJourneyTests HistoryJourneyTests ExerciseGroupJourneyTests ExerciseInformationJourneyTests)
   full_sixth=(WorkoutLibraryJourneyTests WeeklyScheduleJourneyTests RunnerStreamlineJourneyTests)
   if [[ "$ci_shard" == 1 ]]; then
@@ -166,7 +166,8 @@ PY
   git -C "$repo_root" rev-parse HEAD
   git -C "$repo_root" status --short
 } >"$recording_root/environment.log"
-xcodegen generate --spec "$scratch/ios/project.yml" >"$recording_root/xcodegen.log" 2>&1
+TRESFORT_MEDIAPIPE_CACHE="${TRESFORT_MEDIAPIPE_CACHE:-$repo_root/.artifacts/mediapipe-downloads}" \
+  xcodegen generate --spec "$scratch/ios/project.yml" >"$recording_root/xcodegen.log" 2>&1
 simulator="$(xcrun simctl create "TresFort verification $(basename "$scratch")" "$device" "$runtime")"
 echo "Verifying TresFort on $runtime / $device ($simulator)"
 xcrun simctl boot "$simulator" >"$recording_root/boot.log" 2>&1

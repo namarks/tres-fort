@@ -46,14 +46,13 @@ struct BodyWeightView: View {
                     }
                 }
                 Section {
-                    if let error = model.errorMessage {
-                        Text(error).foregroundStyle(.orange)
-                    }
                     if model.isBusy {
                         HStack {
                             ProgressView()
                             Text(model.isConnecting ? "Requesting access…" : "Reading weight…")
                         }
+                    } else if model.failure != nil {
+                        BodyWeightRecoveryView(model: model)
                     } else {
                         Button("Refresh weight") { Task { await model.refresh() } }
                         .accessibilityIdentifier("weight.connectOrRefresh")

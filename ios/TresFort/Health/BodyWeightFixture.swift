@@ -1,13 +1,28 @@
 #if DEBUG && targetEnvironment(simulator)
+import HealthKit
 import SwiftUI
 
 @MainActor
 final class FixtureWeightReader: BodyWeightReading {
     let isAvailable = true
     private var reads = 0
-    func requestAuthorization() async throws {}
+    private var authorizationRequests = 0
+    private var failure: String? { ProcessInfo.processInfo.environment["TRESFORT_UI_WEIGHT_FAILURE"] }
+
+    func requestAuthorization() async throws { authorizationRequests += 1 }
     func read(from: Date, through: Date) async throws -> [BodyWeightMeasurement] {
         reads += 1
+        // Synthetic recovery fixtures exercise the same authorization and read
+        // protocol as HealthKit without reading personal health data.
+        if failure == "reconnect" && authorizationRequests < 2 {
+            throw URLError(.cannotLoadFromNetwork)
+        }
+        if failure == "locked" && reads == 1 {
+            throw NSError(domain: HKErrorDomain, code: HKError.Code.errorDatabaseInaccessible.rawValue)
+        }
+        if failure == "restricted" {
+            throw NSError(domain: HKErrorDomain, code: HKError.Code.errorHealthDataRestricted.rawValue)
+        }
         if ProcessInfo.processInfo.environment["TRESFORT_UI_WEIGHT_EMPTY"] == "1" || (ProcessInfo.processInfo.environment["TRESFORT_UI_WEIGHT_CLEAR_ON_REFRESH"] == "1" && reads > 1) { return [] }
         return (0..<20).map { day in
             BodyWeightMeasurement(id: UUID(),

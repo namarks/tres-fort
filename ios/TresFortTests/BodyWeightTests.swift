@@ -1,3 +1,4 @@
+import HealthKit
 import XCTest
 @testable import TresFort
 
@@ -114,6 +115,8 @@ final class BodyWeightModelTests: XCTestCase {
         await h.model.connect()
         XCTAssertTrue(h.model.enabled)
         XCTAssertNil(h.model.history?.latest)
+        XCTAssertNil(h.model.failure, "HealthKit intentionally represents denied reads as empty results")
+        XCTAssertNil(h.model.errorMessage)
         XCTAssertFalse(h.defaults.bool(forKey: AccountLocalState.healthEnabledKey(userID: "weight-user")))
         h.reader.result = [reading(80)]
         await h.model.refresh()
@@ -131,7 +134,9 @@ final class BodyWeightModelTests: XCTestCase {
         XCTAssertFalse(h.model.enabled)
         XCTAssertFalse(h.model.isBusy)
         XCTAssertEqual(h.reader.reads, 0)
-        XCTAssertNotNil(h.model.errorMessage)
+        XCTAssertEqual(h.model.failure, .connection)
+        XCTAssertEqual(h.model.failure?.recovery, .reconnect)
+        XCTAssertFalse(h.model.errorMessage?.localizedCaseInsensitiveContains("unlock") ?? true)
     }
 
     func testUnavailableHealthDoesNotRequestOrRead() async {
@@ -227,6 +232,188 @@ final class BodyWeightModelTests: XCTestCase {
         XCTAssertNil(h.model.history)
         XCTAssertNotNil(h.model.errorMessage)
         XCTAssertFalse(h.model.isBusy)
+    }
+
+    func testHealthKitReadErrorsChooseSpecificRecoveryWithoutGuessingFromOtherDomains() async {
+        let cases: [(HKError.Code, BodyWeightFailure)] = [
+            (.errorDatabaseInaccessible, .locked),
+            (.errorAuthorizationNotDetermined, .accessRequired),
+            (.errorAuthorizationDenied, .accessRequired),
+            (.errorHealthDataRestricted, .restricted),
+            (.errorHealthDataUnavailable, .unavailable),
+        ]
+        for (code, failure) in cases {
+            let h = harness()
+            h.reader.readHandler = { throw NSError(domain: HKErrorDomain, code: code.rawValue) }
+            await h.model.connect()
+            XCTAssertEqual(h.model.failure, failure, "HealthKit error \(code)")
+            XCTAssertNil(h.model.history)
+            XCTAssertTrue(h.model.enabled)
+            XCTAssertFalse(h.model.isBusy)
+        }
+
+        let otherDomain = harness()
+        otherDomain.reader.readHandler = {
+            throw NSError(domain: "SyntheticNonHealthError", code: HKError.Code.errorDatabaseInaccessible.rawValue)
+        }
+        await otherDomain.model.connect()
+        XCTAssertEqual(otherDomain.model.failure, .read)
+        XCTAssertEqual(otherDomain.model.failure?.recovery, .reconnect)
+        XCTAssertFalse(otherDomain.model.errorMessage?.localizedCaseInsensitiveContains("unlock") ?? true)
+    }
+
+    func testHealthKitAuthorizationErrorsRetainTheirSpecificRecovery() async {
+        let cases: [(HKError.Code, BodyWeightFailure)] = [
+            (.errorDatabaseInaccessible, .locked),
+            (.errorAuthorizationNotDetermined, .accessRequired),
+            (.errorAuthorizationDenied, .accessRequired),
+            (.errorHealthDataRestricted, .restricted),
+            (.errorHealthDataUnavailable, .unavailable),
+        ]
+        for (code, failure) in cases {
+            let h = harness()
+            h.reader.authorizationError = NSError(domain: HKErrorDomain, code: code.rawValue)
+            await h.model.connect()
+            XCTAssertEqual(h.model.failure, failure, "HealthKit error \(code)")
+            XCTAssertFalse(h.model.enabled)
+            XCTAssertEqual(h.reader.reads, 0)
+        }
+    }
+
+    func testReconnectAfterReadFailureRequestsAccessAgainWithoutDisablingWeight() async {
+        let h = harness()
+        h.reader.readHandler = { throw URLError(.cannotLoadFromNetwork) }
+        await h.model.connect()
+        XCTAssertEqual(h.model.failure, .read)
+        XCTAssertTrue(h.model.enabled)
+        h.reader.readHandler = nil
+        h.reader.result = [reading(80)]
+
+        await h.model.recover()
+
+        XCTAssertEqual(h.reader.requests, 2, "Recovery must repeat authorization, not just the failed read")
+        XCTAssertEqual(h.reader.reads, 2)
+        XCTAssertEqual(h.model.history?.latest?.kilograms, 80)
+        XCTAssertNil(h.model.failure)
+        XCTAssertNil(h.model.errorMessage)
+        XCTAssertTrue(h.model.enabled)
+        XCTAssertTrue(h.defaults.bool(forKey: AccountLocalState.bodyWeightEnabledKey(userID: "weight-user")))
+        XCTAssertFalse(h.model.isBusy)
+    }
+
+    func testFailedReconnectPreservesExistingOptIn() async {
+        let h = harness()
+        h.reader.readHandler = { throw URLError(.cannotLoadFromNetwork) }
+        await h.model.connect()
+        h.reader.authorizationError = URLError(.cancelled)
+
+        await h.model.recover()
+
+        XCTAssertEqual(h.reader.requests, 2)
+        XCTAssertEqual(h.reader.reads, 1)
+        XCTAssertEqual(h.model.failure, .connection)
+        XCTAssertEqual(h.model.failure?.recovery, .reconnect)
+        XCTAssertTrue(h.model.enabled)
+        XCTAssertTrue(h.defaults.bool(forKey: AccountLocalState.bodyWeightEnabledKey(userID: "weight-user")))
+        XCTAssertNil(h.model.history)
+        XCTAssertFalse(h.model.isBusy)
+    }
+
+    func testLockedReadRecoversByRetryWithoutRequestingAuthorizationAgain() async {
+        let h = harness()
+        h.reader.readHandler = {
+            throw NSError(domain: HKErrorDomain, code: HKError.Code.errorDatabaseInaccessible.rawValue)
+        }
+        await h.model.connect()
+        XCTAssertEqual(h.model.failure, .locked)
+        XCTAssertEqual(h.model.failure?.recovery, .retry)
+        XCTAssertTrue(h.model.errorMessage?.localizedCaseInsensitiveContains("unlock") ?? false)
+        h.reader.readHandler = nil
+        h.reader.result = [reading(80)]
+
+        await h.model.recover()
+
+        XCTAssertEqual(h.reader.requests, 1)
+        XCTAssertEqual(h.model.history?.latest?.kilograms, 80)
+        XCTAssertNil(h.model.failure)
+    }
+
+    func testLockedInitialAuthorizationRetriesAuthorizationBeforeAnyRead() async {
+        let h = harness()
+        h.reader.authorizationError = NSError(domain: HKErrorDomain,
+            code: HKError.Code.errorDatabaseInaccessible.rawValue)
+        await h.model.connect()
+        XCTAssertEqual(h.model.failure, .locked)
+        XCTAssertFalse(h.model.enabled)
+        XCTAssertEqual(h.reader.reads, 0)
+        h.reader.authorizationError = nil
+        h.reader.result = [reading(80)]
+
+        await h.model.recover()
+
+        XCTAssertEqual(h.reader.requests, 2)
+        XCTAssertEqual(h.reader.reads, 1)
+        XCTAssertTrue(h.model.enabled)
+        XCTAssertEqual(h.model.history?.latest?.kilograms, 80)
+        XCTAssertNil(h.model.failure)
+    }
+
+    func testDisconnectDuringReconnectClearsFailureAndRejectsLateAuthorization() async {
+        let h = harness()
+        h.reader.readHandler = { throw URLError(.cannotLoadFromNetwork) }
+        await h.model.connect()
+        let started = expectation(description: "Recovery authorization started")
+        var pending: CheckedContinuation<Void, Error>?
+        h.reader.authorizeHandler = {
+            try await withCheckedThrowingContinuation { continuation in
+                pending = continuation
+                started.fulfill()
+            }
+        }
+        let recovery = Task { await h.model.recover() }
+        await fulfillment(of: [started], timeout: 2)
+        XCTAssertNil(h.model.failure, "A stale error must not remain while recovery is in progress")
+        XCTAssertTrue(h.model.isConnecting)
+        h.model.disconnect()
+        pending?.resume()
+        await recovery.value
+
+        XCTAssertFalse(h.model.enabled)
+        XCTAssertFalse(h.model.isBusy)
+        XCTAssertNil(h.model.failure)
+        XCTAssertNil(h.model.history)
+        XCTAssertEqual(h.reader.reads, 1, "An obsolete recovery must not restart the weight query")
+        XCTAssertFalse(h.defaults.bool(forKey: AccountLocalState.bodyWeightEnabledKey(userID: "weight-user")))
+    }
+
+    func testSignOutDuringReconnectCannotPublishMeasurementsIntoReplacementSession() async {
+        let h = harness()
+        h.reader.readHandler = { throw URLError(.cannotLoadFromNetwork) }
+        await h.model.connect()
+        let started = expectation(description: "Recovery authorization started")
+        var pending: CheckedContinuation<Void, Error>?
+        h.reader.authorizeHandler = {
+            try await withCheckedThrowingContinuation { continuation in
+                pending = continuation
+                started.fulfill()
+            }
+        }
+        h.reader.readHandler = nil
+        h.reader.result = [reading(80)]
+        let recovery = Task { await h.model.recover() }
+        await fulfillment(of: [started], timeout: 2)
+        h.auth.signOut()
+        h.auth.userID = "replacement-user"
+        h.auth.jwt = "replacement-synthetic-bearer"
+        pending?.resume()
+        await recovery.value
+
+        XCTAssertFalse(h.model.enabled)
+        XCTAssertFalse(h.model.isBusy)
+        XCTAssertNil(h.model.failure)
+        XCTAssertNil(h.model.history)
+        XCTAssertEqual(h.reader.reads, 1)
+        XCTAssertFalse(h.defaults.bool(forKey: AccountLocalState.bodyWeightEnabledKey(userID: "replacement-user")))
     }
 
     func testAccountDeletionCleanupRemovesWeightPreference() async {

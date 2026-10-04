@@ -46,6 +46,64 @@ final class HealthKitBodyWeightReader: BodyWeightReading {
     }
 }
 
+/// Keep only an actionable category; raw HealthKit errors may contain private details.
+enum BodyWeightFailure: Equatable {
+    case locked, accessRequired, restricted, unavailable, connection, read
+
+    enum Recovery { case reconnect, retry, none }
+
+    init(_ error: Error, requestingAuthorization: Bool = false) {
+        let error = error as NSError
+        if error.domain == HKErrorDomain {
+            switch HKError.Code(rawValue: error.code) {
+            case .errorDatabaseInaccessible: self = .locked
+            case .errorAuthorizationNotDetermined, .errorAuthorizationDenied: self = .accessRequired
+            case .errorHealthDataRestricted: self = .restricted
+            case .errorHealthDataUnavailable: self = .unavailable
+            default: self = requestingAuthorization ? .connection : .read
+            }
+        } else {
+            self = requestingAuthorization ? .connection : .read
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .locked: "Unlock to read weight"
+        case .accessRequired: "Review weight access"
+        case .restricted: "Health access is restricted"
+        case .unavailable: "Apple Health is unavailable"
+        case .connection: "Couldn’t connect to Apple Health"
+        case .read: "Couldn’t read weight"
+        }
+    }
+
+    var message: String {
+        switch self {
+        case .locked:
+            "Apple Health couldn’t read your weight while this iPhone was locked. Unlock it, then try again."
+        case .accessRequired:
+            "Reconnect to review weight access. If Weight is turned off in Health, enable it there and try again."
+        case .restricted:
+            "This iPhone restricts access to Health data. Check Screen Time or device-management restrictions in Settings."
+        case .unavailable:
+            "Apple Health couldn’t provide data on this iPhone. Try again when Health is available."
+        case .connection:
+            "The weight access request didn’t finish. Try reconnecting again."
+        case .read:
+            "Apple Health couldn’t provide your weight. Reconnect to request access again and retry the read."
+        }
+    }
+
+    var recovery: Recovery {
+        switch self {
+        case .accessRequired, .connection, .read: .reconnect
+        case .locked, .unavailable: .retry
+        case .restricted: .none
+        }
+    }
+}
+
 /// A separate opt-in from workout sync. Only the preference is persisted;
 /// weight samples never enter the API, outbox, account export, or group feed.
 @MainActor
@@ -54,7 +112,8 @@ final class BodyWeightModel: ObservableObject {
     @Published private(set) var isConnecting = false
     @Published private(set) var isReading = false
     @Published private(set) var history: BodyWeightHistory?
-    @Published private(set) var errorMessage: String?
+    @Published private(set) var failure: BodyWeightFailure?
+    var errorMessage: String? { failure?.message }
 
     private let reader: any BodyWeightReading
     private unowned let auth: AuthModel
@@ -96,6 +155,7 @@ final class BodyWeightModel: ObservableObject {
     func connect() async {
         guard isAvailable, isCurrent, !isBusy else { return }
         isConnecting = true
+        failure = nil
         let ticket = generation
         defer { if ticket == generation { isConnecting = false } }
         do {
@@ -108,7 +168,7 @@ final class BodyWeightModel: ObservableObject {
             await refresh()
         } catch {
             guard ticket == generation, isCurrent else { return }
-            errorMessage = "Couldn’t request weight access. Please try again."
+            failure = BodyWeightFailure(error, requestingAuthorization: true)
         }
     }
 
@@ -116,7 +176,7 @@ final class BodyWeightModel: ObservableObject {
         guard isCurrent else { clearDisplay(); return }
         guard enabled, isAvailable, !isBusy else { return }
         isReading = true
-        errorMessage = nil
+        failure = nil
         let ticket = generation
         defer { if ticket == generation { isReading = false } }
         let date = now()
@@ -131,7 +191,21 @@ final class BodyWeightModel: ObservableObject {
         } catch {
             guard ticket == generation, isCurrent else { return }
             history = nil
-            errorMessage = "Couldn’t read weight from Apple Health. Unlock your iPhone and try again."
+            failure = BodyWeightFailure(error)
+        }
+    }
+
+    func recover() async {
+        guard let failure else { return }
+        switch failure.recovery {
+        case .reconnect:
+            // Re-request access without opting out or changing stored intent.
+            await connect()
+        case .retry:
+            if enabled { await refresh() }
+            else { await connect() }
+        case .none:
+            break
         }
     }
 
@@ -147,7 +221,7 @@ final class BodyWeightModel: ObservableObject {
     private func clearDisplay() {
         generation &+= 1
         history = nil
-        errorMessage = nil
+        failure = nil
         isConnecting = false
         isReading = false
     }

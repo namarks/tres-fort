@@ -112,6 +112,16 @@ final class StationLinkController: ObservableObject {
         if proposal?.eventID == eventID { proposal = nil }
     }
 
+    /// Saving the count failed: keep it on screen for a tap instead of
+    /// logging it again on its own.
+    func holdProposal(_ eventID: UUID) {
+        guard let proposal, proposal.eventID == eventID, proposal.logsAutomatically else { return }
+        self.proposal = StationLinkProposal(
+            eventID: proposal.eventID, slotID: proposal.slotID, setNumber: proposal.setNumber,
+            exerciseName: proposal.exerciseName, reps: proposal.reps, leftCount: proposal.leftCount,
+            rightCount: proposal.rightCount, partial: proposal.partial, logsAutomatically: false)
+    }
+
     /// A Station count was logged; it stays undoable until the next count.
     func recordLogged(_ logged: StationLinkLoggedSet) { lastLogged = logged }
 

@@ -79,6 +79,9 @@ struct StationLinkRunnerPanel: View {
             if proposal.partial {
                 Text("Tracking was interrupted, so check the count before logging.")
                     .font(.caption).foregroundStyle(.orange)
+            } else {
+                Text("The set wasn't saved. Try again or edit it.")
+                    .font(.caption).foregroundStyle(.orange)
             }
             HStack(spacing: 10) {
                 Button("Log \(proposal.reps)") {
@@ -120,15 +123,22 @@ struct StationLinkRunnerPanel: View {
     /// The count enters the same guarded path as LOG SET: the exact slot and
     /// set it was counted for, or nothing.
     private func commit(_ proposal: StationLinkProposal) async {
-        defer { link.finishProposal(proposal.eventID) }
         guard let current = sync.currentExercise,
               StationLinkPolicy.canCommit(proposal, currentSlotID: current.id,
                                           currentSetNumber: sync.currentPhysicalSetNumber,
-                                          entryBlocked: sync.isSetEntryBlocked(current)) else { return }
+                                          entryBlocked: sync.isSetEntryBlocked(current)) else {
+            link.finishProposal(proposal.eventID)
+            return
+        }
         let previous = sync.lastRunnerSetID
         sync.setReps(proposal.reps)
         await sync.logCurrentSet(expected: current, expectedSetNumber: proposal.setNumber)
-        guard let setID = sync.lastRunnerSetID, setID != previous else { return }
+        guard let setID = sync.lastRunnerSetID, setID != previous else {
+            // The set wasn't saved: keep the count on screen to try again.
+            link.holdProposal(proposal.eventID)
+            return
+        }
+        link.finishProposal(proposal.eventID)
         link.recordLogged(StationLinkLoggedSet(setID: setID, slotID: proposal.slotID,
                                                setNumber: proposal.setNumber, reps: proposal.reps))
     }
@@ -157,14 +167,18 @@ struct StationLinkUndoRow: View {
     }
 
     private func undo() async {
-        link.clearLogged()
+        let queued: Bool
         if let set = sync.sets.first(where: { $0.id == logged.setID && $0.deleted_at == nil }) {
-            guard sync.enqueueCorrection(set: set, values: nil) else { return }
+            queued = sync.enqueueCorrection(set: set, values: nil)
         } else if let pending = sync.setOutbox.pending.first(where: { $0.id == logged.setID }) {
-            guard sync.enqueueCorrection(pending: pending, values: nil) else { return }
+            queued = sync.enqueueCorrection(pending: pending, values: nil)
         } else {
+            link.clearLogged() // already gone
             return
         }
+        // Undo stays offered until the deletion is safely queued.
+        guard queued else { return }
+        link.clearLogged()
         if sync.restEndDate != nil { sync.skipRest() }
         // Jumping also reopens final review when the undone set was the last.
         if sync.finished || sync.currentExercise?.id != logged.slotID,

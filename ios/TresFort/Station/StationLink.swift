@@ -47,6 +47,50 @@ enum StationLink {
     private static func proofMessage(_ role: String, _ challenger: Data, _ responder: Data) -> Data {
         Data("tres-fort:station-link:proof:\(role):".utf8) + challenger + responder
     }
+
+    /// A key for one authenticated connection, bound to both of its nonces.
+    /// A relay can pass the challenge along, but without the account key it
+    /// cannot derive this, so it can forward sealed messages and nothing more.
+    static func sessionKey(key: Data, controllerNonce: Data, stationNonce: Data) -> Data {
+        Data(HMAC<SHA256>.authenticationCode(
+            for: Data("tres-fort:station-link:session:".utf8) + controllerNonce + stationNonce,
+            using: SymmetricKey(data: key)))
+    }
+
+    /// Seals an app message for the authenticated peer. The MAC binds the
+    /// sender's role and a per-direction counter that starts at 1, so a
+    /// message can be neither forged, reflected, nor replayed.
+    static func seal(_ message: StationLinkMessage, sessionKey: Data, senderRole: String,
+                     counter: UInt64) -> Data? {
+        guard let body = try? message.encoded() else { return nil }
+        let mac = Data(HMAC<SHA256>.authenticationCode(
+            for: sealedMessage(senderRole, counter, body), using: SymmetricKey(data: sessionKey)))
+        return try? JSONEncoder().encode(StationLinkSealedFrame(sealed: body, counter: counter, mac: mac))
+    }
+
+    /// Opens a sealed message only when its MAC holds for the expected sender
+    /// and its counter is newer than the last one accepted.
+    static func open(_ data: Data, sessionKey: Data, senderRole: String,
+                     after lastCounter: UInt64) -> (message: StationLinkMessage, counter: UInt64)? {
+        guard let frame = try? JSONDecoder().decode(StationLinkSealedFrame.self, from: data),
+              frame.counter > lastCounter,
+              HMAC<SHA256>.isValidAuthenticationCode(
+                frame.mac, authenticating: sealedMessage(senderRole, frame.counter, frame.sealed),
+                using: SymmetricKey(data: sessionKey)),
+              let message = StationLinkMessage.decode(frame.sealed) else { return nil }
+        return (message, frame.counter)
+    }
+
+    private static func sealedMessage(_ role: String, _ counter: UInt64, _ body: Data) -> Data {
+        Data("tres-fort:station-link:message:\(role):".utf8)
+            + withUnsafeBytes(of: counter.bigEndian) { Data($0) } + body
+    }
+}
+
+private struct StationLinkSealedFrame: Codable {
+    let sealed: Data
+    let counter: UInt64
+    let mac: Data
 }
 
 extension StationExercise: Codable {

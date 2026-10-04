@@ -62,7 +62,11 @@ may turn detections into durable workout actions.
     per-account link key once (`GET /api/me/station-link-key`, derived, not
     stored, and cached in the device Keychain); a mutual challenge-response
     proves both hold it before any message is trusted, because the discovery
-    tag is public (owner chose this over code matching). The iPhone arms the current countable set once rest is over;
+    tag is public (owner chose this over code matching). Every later message is
+    sealed with a key bound to that connection's nonces, with a direction and
+    counter, so a relay cannot forge, replay or reflect one. The iPhone arms
+    the current countable set once rest is over, and only while the workout is
+    open rather than minimized;
     every distinct slot/set gets a fresh arm ID. The iPad counts that set and
     reports a finished count once it holds steady for four seconds outside a
     rep; target reps never end a set. The owner chose instant logging: the
@@ -71,7 +75,8 @@ may turn detections into durable workout actions.
     Undo stays available until the next count; it deletes the set through the
     correction path, ends rest and returns to the slot. Partial counts, other
     sets, duplicate events and unsupported movements never auto-log; a partial
-    count offers Log, Edit (into the rep control) or Not right (re-count).
+    count offers Log, Edit (into the rep control) or Not right (re-count), and
+    so does a count whose set could not be saved.
   - Remaining: verify the link, instant logging, Undo and fallback on the
     paired iPhone and iPad, and record miscounts and corrections from real sets.
 - [ ] **P3 — Enable measured automatic progression**

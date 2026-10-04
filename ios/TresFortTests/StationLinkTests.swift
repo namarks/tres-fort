@@ -47,6 +47,34 @@ final class StationLinkTests: XCTestCase {
                                           challengerNonce: Data(), responderNonce: ipadNonce))
     }
 
+    func testSealedMessagesCannotBeForgedReflectedOrReplayed() throws {
+        let key = Data(repeating: 1, count: 32)
+        let phoneNonce = StationLink.newNonce(), ipadNonce = StationLink.newNonce()
+        let sessionKey = StationLink.sessionKey(key: key, controllerNonce: phoneNonce, stationNonce: ipadNonce)
+        XCTAssertNotEqual(sessionKey, StationLink.sessionKey(key: Data(repeating: 2, count: 32),
+                                                             controllerNonce: phoneNonce, stationNonce: ipadNonce),
+                          "A relay that only forwarded the challenge cannot derive the session key")
+        let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 1, exercise: .squat,
+                                 exerciseName: "Back Squat", targetReps: 5)
+        let sealed = try XCTUnwrap(StationLink.seal(.arm(arm), sessionKey: sessionKey,
+                                                    senderRole: "controller", counter: 1))
+        let opened = try XCTUnwrap(StationLink.open(sealed, sessionKey: sessionKey,
+                                                    senderRole: "controller", after: 0))
+        XCTAssertEqual(opened.message, .arm(arm))
+        XCTAssertEqual(opened.counter, 1)
+        XCTAssertNil(StationLink.open(sealed, sessionKey: sessionKey, senderRole: "controller", after: 1),
+                     "A message cannot be replayed")
+        XCTAssertNil(StationLink.open(sealed, sessionKey: sessionKey, senderRole: "station", after: 0),
+                     "A message cannot be reflected back to its sender")
+        let forged = try XCTUnwrap(StationLink.seal(.completion(completion(arm)),
+                                                    sessionKey: Data(repeating: 9, count: 32),
+                                                    senderRole: "station", counter: 2))
+        XCTAssertNil(StationLink.open(forged, sessionKey: sessionKey, senderRole: "station", after: 0))
+        XCTAssertNil(StationLink.open(try StationLinkMessage.completion(completion(arm)).encoded(),
+                                      sessionKey: sessionKey, senderRole: "station", after: 0),
+                     "An unsealed message is never accepted after the handshake")
+    }
+
     func testMessagesRoundTripAndRejectOtherProtocolVersions() throws {
         let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 2, exercise: .curl,
                                  exerciseName: "Dumbbell Curl", targetReps: 10)
@@ -190,6 +218,21 @@ final class StationLinkTests: XCTestCase {
         XCTAssertNil(controller.proposal)
         XCTAssertEqual(controller.arm?.armID, arm.armID)
         controller.receive(.completion(event))
+        XCTAssertNil(controller.proposal)
+    }
+
+    func testUnsavedCountWaitsForATapInsteadOfVanishing() throws {
+        let controller = StationLinkController()
+        controller.request(target())
+        let arm = try XCTUnwrap(controller.arm)
+        let event = completion(arm, reps: 8)
+        controller.receive(.completion(event))
+        controller.holdProposal(event.eventID)
+        XCTAssertEqual(controller.proposal?.eventID, event.eventID)
+        XCTAssertEqual(controller.proposal?.logsAutomatically, false)
+        XCTAssertEqual(controller.proposal?.reps, 8)
+        XCTAssertEqual(controller.arm?.armID, arm.armID)
+        controller.finishProposal(event.eventID)
         XCTAssertNil(controller.proposal)
     }
 

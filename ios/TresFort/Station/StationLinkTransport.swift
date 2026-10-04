@@ -6,7 +6,9 @@ import UIKit
 /// same account. No internet is needed once both hold the account's link key.
 /// The iPad advertises; the iPhone browses. A peer is trusted only after a
 /// mutual challenge-response proves it holds the same key; until then nothing
-/// it sends is delivered and nothing is sent to it.
+/// it sends is delivered and nothing is sent to it. After that, every message
+/// is sealed with a key bound to this connection's nonces, so a relay that
+/// passed the challenge along still cannot forge, replay or reflect one.
 @MainActor
 final class StationLinkTransport: NSObject, ObservableObject {
     enum Role: String { case station, controller }
@@ -33,6 +35,9 @@ final class StationLinkTransport: NSObject, ObservableObject {
     private var sentProof = false
     private var peerVerified = false
     private var trustedPeer: MCPeerID?
+    private var sessionKey: Data?
+    private var sentCounter: UInt64 = 0
+    private var receivedCounter: UInt64 = 0
 
     init(role: Role) {
         self.role = role
@@ -85,12 +90,17 @@ final class StationLinkTransport: NSObject, ObservableObject {
         connection = .off
     }
 
-    /// Sends only to the authenticated peer.
+    /// Sends only to the authenticated peer, sealed for this connection.
     func send(_ message: StationLinkMessage) {
-        guard let trustedPeer else { return }
-        transmit(message, to: trustedPeer)
+        guard let session, let trustedPeer, let sessionKey,
+              session.connectedPeers.contains(trustedPeer) else { return }
+        sentCounter += 1
+        guard let data = StationLink.seal(message, sessionKey: sessionKey, senderRole: role.rawValue,
+                                          counter: sentCounter) else { return }
+        try? session.send(data, toPeers: [trustedPeer], with: .reliable)
     }
 
+    /// Handshake messages only; they carry nothing the other side acts on.
     private func transmit(_ message: StationLinkMessage, to peer: MCPeerID) {
         guard let session, session.connectedPeers.contains(peer),
               let data = try? message.encoded() else { return }
@@ -104,6 +114,9 @@ final class StationLinkTransport: NSObject, ObservableObject {
         sentProof = false
         peerVerified = false
         trustedPeer = nil
+        sessionKey = nil
+        sentCounter = 0
+        receivedCounter = 0
     }
 
     private func reject(_ source: MCSession) {
@@ -161,14 +174,22 @@ final class StationLinkTransport: NSObject, ObservableObject {
     }
 
     private func handle(data: Data, from peer: MCPeerID, source: MCSession) {
-        guard source === session, let key, let message = StationLinkMessage.decode(data) else { return }
+        guard source === session, let key else { return }
         if peer == trustedPeer {
-            switch message {
+            guard let sessionKey,
+                  let opened = StationLink.open(data, sessionKey: sessionKey, senderRole: peerRole.rawValue,
+                                                after: receivedCounter) else {
+                reject(source) // forged, replayed or reflected
+                return
+            }
+            receivedCounter = opened.counter
+            switch opened.message {
             case .challenge, .proof: return
-            default: onMessage?(message)
+            default: onMessage?(opened.message)
             }
             return
         }
+        guard let message = StationLinkMessage.decode(data) else { return }
         // Data can be delivered before this side's connected callback runs.
         if candidate == nil, source.connectedPeers.contains(peer) { adopt(peer, in: source) }
         guard peer == candidate else { return }
@@ -192,7 +213,11 @@ final class StationLinkTransport: NSObject, ObservableObject {
         default:
             return // nothing else is accepted before authentication
         }
-        if sentProof, peerVerified {
+        if sentProof, peerVerified, let ownNonce, let peerNonce {
+            let controllerNonce = role == .controller ? ownNonce : peerNonce
+            let stationNonce = role == .controller ? peerNonce : ownNonce
+            sessionKey = StationLink.sessionKey(key: key, controllerNonce: controllerNonce,
+                                                stationNonce: stationNonce)
             trustedPeer = peer
             connection = .connected(peer.displayName)
             onConnect?()
@@ -219,13 +244,21 @@ final class StationLinkTransport: NSObject, ObservableObject {
     }
 }
 
+extension StationLinkTransport {
+    /// Delegate callbacks hop to the main queue in arrival order: the sealed
+    /// counter must see messages in the order the peer sent them.
+    nonisolated private func onMain(_ work: @escaping @MainActor (StationLinkTransport) -> Void) {
+        DispatchQueue.main.async { MainActor.assumeIsolated { work(self) } }
+    }
+}
+
 extension StationLinkTransport: MCSessionDelegate {
     nonisolated func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
-        Task { @MainActor in self.handle(state: state, peer: peerID, from: session) }
+        onMain { $0.handle(state: state, peer: peerID, from: session) }
     }
 
     nonisolated func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
-        Task { @MainActor in self.handle(data: data, from: peerID, source: session) }
+        onMain { $0.handle(data: data, from: peerID, source: session) }
     }
 
     nonisolated func session(_ session: MCSession, didReceive stream: InputStream,
@@ -245,15 +278,15 @@ extension StationLinkTransport: MCSessionDelegate {
 extension StationLinkTransport: MCNearbyServiceBrowserDelegate {
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID,
                              withDiscoveryInfo info: [String: String]?) {
-        Task { @MainActor in self.handleFound(peer: peerID, info: info, from: browser) }
+        onMain { $0.handleFound(peer: peerID, info: info, from: browser) }
     }
 
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
-        Task { @MainActor in self.invited.remove(peerID) }
+        onMain { _ = $0.invited.remove(peerID) }
     }
 
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: Error) {
-        Task { @MainActor in if browser === self.browser { self.connection = .off } }
+        onMain { if browser === $0.browser { $0.connection = .off } }
     }
 }
 
@@ -261,12 +294,10 @@ extension StationLinkTransport: MCNearbyServiceAdvertiserDelegate {
     nonisolated func advertiser(_ advertiser: MCNearbyServiceAdvertiser,
                                 didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?,
                                 invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-        Task { @MainActor in
-            self.handleInvitation(from: peerID, context: context, from: advertiser, reply: invitationHandler)
-        }
+        onMain { $0.handleInvitation(from: peerID, context: context, from: advertiser, reply: invitationHandler) }
     }
 
     nonisolated func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
-        Task { @MainActor in if advertiser === self.advertiser { self.connection = .off } }
+        onMain { if advertiser === $0.advertiser { $0.connection = .off } }
     }
 }

@@ -1,8 +1,46 @@
 # Direct iPad iteration
 
 Use a development build on the owner's connected iPad to inspect tracking while
-the owner moves. This is an observation-only trial. Camera images are neither
-recorded nor uploaded, and Station Mode cannot log or advance workout sets.
+the owner moves. This is an observation-only trial. Live camera images remain
+transient unless the owner explicitly starts **Record test**. Local tests can
+be shared manually; no automatic upload exists. Station Mode cannot log or
+advance workout sets.
+
+## Wireless testing and repeatable clips
+
+After initial cable pairing, unplug the iPad and keep it unlocked on the same
+local network as the Mac. Read `devicectl list devices` JSON and verify
+`connectionProperties.transportType == localNetwork` and `tunnelState == connected`
+before claiming wireless availability. Xcode 27 uses Device Hub; no new account
+or cable connection is required for an already paired device on a working network.
+The owner confirmed unplugging and this network transport was verified on
+2026-10-04. Recheck before each install; Wi-Fi reachability can change by room.
+
+For a reusable trial, enable the camera in Station, choose the movement, then
+tap **Record test**. After the five-second countdown, do five manually counted
+reps, then tap **Stop and save test** (automatic limit: 45 seconds). The recorder
+captures silent video and one measurement row for each successfully encoded
+processed camera frame. Camera shutdown or rotation ends a partial clip; no
+recording resumes automatically. Twenty clips maximum, with explicit deletion.
+
+Open **Saved tests**, select the clip and save its actual rep count. **Compare
+Apple and MediaPipe** decodes each frame once and runs both detectors on those
+pixels with the same orientation/time, then shows synchronized frame scrubbing.
+The replay's two angle-cycle counts use the same existing side-view rule; they
+are not Apple's HumanBodyActionCounter or a validated frontal squat counter.
+Pose reliability, count errors and live/thermal performance are separate tests.
+
+**Share this test** exposes the selected clip, manifest, original measurements
+and completed comparison through the system share sheet (for example AirDrop to
+the Mac). MediaPipe output includes all 33 image/world landmarks and exact model
+metadata. Inferred world coordinates are not depth-sensor measurements. Files
+stay in Application Support excluded from backup until manually shared or deleted;
+they are not placed in Photos or the workout sync. Deleting a test removes its
+local video and measurements, not copies already shared elsewhere.
+
+The dependency is pinned and SHA-verified during XcodeGen generation; see
+[dependency setup](../../../ios/Dependencies/README.md). No model download runs
+on the iPad. Saved clips allow development without another physical trial.
 
 ## Setup and installation
 

@@ -18,6 +18,9 @@ struct StationView: View {
     @FocusState private var actualRepsFocused: Bool
     @State private var hasRunTrial = false
     @State private var previousIdleTimerDisabled = false
+    @State private var countdown: Int?
+    @State private var countdownTask: Task<Void, Never>?
+    @State private var showSavedTests = false
 
     var body: some View {
         NavigationStack {
@@ -35,6 +38,7 @@ struct StationView: View {
                             counterPanel
                             cameraPanel
                         }
+                        recordingPanel
 #if DEBUG
                         diagnosticPanel
 #endif
@@ -59,6 +63,7 @@ struct StationView: View {
         .preferredColorScheme(.dark)
         .onAppear { previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled }
         .onDisappear {
+            cancelCountdown()
 #if DEBUG
             diagnostics.isEnabled = false
 #endif
@@ -68,6 +73,7 @@ struct StationView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase != .active else { return }
+            cancelCountdown()
             cancelComparison("Comparison stopped when the app became inactive.")
             // The system permission alert temporarily makes this scene inactive.
             // Keep that request alive; actual backgrounding always cancels it.
@@ -77,6 +83,7 @@ struct StationView: View {
         }
         .onChange(of: camera.state) { _, state in
             if state != .running {
+                cancelCountdown()
                 cancelComparison("Camera stopped. Results cover only part of this trial.")
             }
             UIApplication.shared.isIdleTimerDisabled = state == .running
@@ -93,6 +100,7 @@ struct StationView: View {
             }
             comparison.process(frame)
         }
+        .sheet(isPresented: $showSavedTests) { StationRecordingsView() }
     }
 
     private func cancelComparison(_ reason: String) {
@@ -106,7 +114,7 @@ struct StationView: View {
             Text("COMPARE COUNTERS")
                 .font(Theme.display(44)).foregroundStyle(Theme.text)
                 .accessibilityAddTraits(.isHeader)
-            Text("One camera. The same movements. Two independent counts.")
+            Text("Two live counters using Apple's tracking. Saved tests compare Apple and MediaPipe tracking.")
                 .font(.title3).foregroundStyle(Theme.muted)
             if let workoutName {
                 Text("Today's workout · \(workoutName)")
@@ -145,6 +153,7 @@ struct StationView: View {
             .buttonStyle(.plain)
             .accessibilityAddTraits(exercise == option ? [.isSelected] : [])
             .accessibilityIdentifier("station.exercise.\(option.rawValue)")
+            .disabled(recordingBusy)
         }
     }
 
@@ -279,7 +288,7 @@ struct StationView: View {
                     .font(.headline).frame(maxWidth: .infinity, minHeight: 54)
             }
             .buttonStyle(.borderedProminent).tint(Theme.accent).foregroundStyle(Theme.bg)
-            .disabled(camera.state != .running || comparison.state.isFinishing)
+            .disabled(camera.state != .running || comparison.state.isFinishing || recordingBusy)
             .accessibilityIdentifier("station.trial")
 
             if hasRunTrial && comparison.state.isTerminal { referenceCount }
@@ -376,9 +385,89 @@ struct StationView: View {
     }
 
     private var privacyNote: some View {
-        Label("Video stays on this iPad. Nothing is recorded or uploaded.", systemImage: "lock.shield")
+        Label("Live video is not saved unless you choose Record test. Saved tests stay on this iPad until you share or delete them. No automatic uploads.", systemImage: "lock.shield")
             .font(.footnote).foregroundStyle(Theme.muted)
             .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var recordingBusy: Bool {
+        if countdown != nil { return true }
+        switch camera.recordingState {
+        case .recording, .finishing: return true
+        default: return false
+        }
+    }
+
+    private var recordingPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("REPEATABLE CAMERA TEST").font(Theme.mono(12, .bold))
+            Text("Record up to 45 seconds of silent video and tracking measurements. Try front-facing squats here; the live angle counter above still needs a side view.")
+                .font(.subheadline).foregroundStyle(Theme.muted)
+            if let countdown {
+                Text("Recording starts in \(countdown)…").font(.title.bold()).monospacedDigit()
+                Button("Cancel countdown") { cancelCountdown() }
+            } else {
+                switch camera.recordingState {
+                case .recording(let elapsed):
+                    Text("Recording · \(elapsed, specifier: "%.0f") / 45 seconds")
+                        .font(.title2.bold()).foregroundStyle(.red).monospacedDigit()
+                    Button("Stop and save test", systemImage: "stop.circle.fill") { camera.stopRecording() }
+                        .buttonStyle(.borderedProminent)
+                case .finishing:
+                    ProgressView("Saving test…")
+                case .saved:
+                    Label("Test saved on this iPad", systemImage: "checkmark.circle")
+                    recordButton
+                case .failed(let message):
+                    Text(message).foregroundStyle(.red)
+                    recordButton
+                case .idle:
+                    recordButton
+                }
+            }
+            Button("Saved tests · compare and share", systemImage: "rectangle.stack") {
+                cancelCountdown()
+                cancelComparison("Camera stopped to review saved tests.")
+                camera.stop()
+                showSavedTests = true
+            }
+            .disabled(recordingBusy)
+            .accessibilityIdentifier("station.savedTests")
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var recordButton: some View {
+        Button("Record test", systemImage: "record.circle") {
+            cancelComparison("Counter comparison stopped for a recorded test.")
+            countdown = 5
+            let selectedExercise = exercise
+            countdownTask = Task { @MainActor in
+                do {
+                    for remaining in (1...5).reversed() {
+                        countdown = remaining
+                        try await Task.sleep(for: .seconds(1))
+                    }
+                    guard !Task.isCancelled, camera.state == .running, scenePhase == .active else {
+                        countdown = nil
+                        return
+                    }
+                    countdown = nil
+                    camera.startRecording(exercise: selectedExercise)
+                } catch { }
+            }
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(camera.state != .running)
+        .accessibilityIdentifier("station.recordTest")
+    }
+
+    private func cancelCountdown() {
+        countdownTask?.cancel()
+        countdownTask = nil
+        countdown = nil
     }
 
 #if DEBUG

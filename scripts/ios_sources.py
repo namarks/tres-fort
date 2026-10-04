@@ -5,7 +5,7 @@ from pathlib import Path
 import shutil
 
 IGNORE = shutil.ignore_patterns(
-    '*.xcodeproj', 'DerivedData', 'build', '.bundle', 'vendor', 'fastlane',
+    '*.xcodeproj', 'DerivedData', 'build', '.bundle', '.dependencies', 'vendor', 'fastlane',
     '*.xcuserstate', '.DS_Store', '.api_key.json')
 
 

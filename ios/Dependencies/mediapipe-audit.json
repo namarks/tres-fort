@@ -1,0 +1,27 @@
+{
+  "runtime_version": "0.10.21",
+  "reviewed_sources": [
+    {
+      "url": "https://raw.githubusercontent.com/google-ai-edge/mediapipe/v0.10.21/mediapipe/tasks/cc/core/task_runner.cc",
+      "sha256": "bfb28303d5843d0d23643413edbe602c9419e0afbce2179249399a1bc5fc5eed"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/google-ai-edge/mediapipe/v0.10.21/mediapipe/tasks/ios/core/sources/MPPTaskRunner.mm",
+      "sha256": "113d9be3e86cf509be40c94c273b3f33b071aa465745b376925c55438e7de937"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/google-ai-edge/mediapipe/v0.10.21/mediapipe/tasks/ios/vision/core/sources/MPPVisionTaskRunner.mm",
+      "sha256": "b9993c264032ea0831edeea2b57716814c50db292801fb1c36eaa6daddc72e38"
+    }
+  ],
+  "binary_sha256": {
+    "MediaPipeTasksCommon/frameworks/MediaPipeTasksCommon.xcframework/ios-arm64/MediaPipeTasksCommon.framework/MediaPipeTasksCommon": "b176e9349561e5e65c2ef6111704b9c046258f280f0a909f86f6a65032442eb2",
+    "MediaPipeTasksCommon/frameworks/MediaPipeTasksCommon.xcframework/ios-arm64_x86_64-simulator/MediaPipeTasksCommon.framework/MediaPipeTasksCommon": "4ccf1d0cd0637a8c81bac2f4506d59814c2c799ee6e4e7b1e62b126c59f3f1ce",
+    "MediaPipeTasksCommon/frameworks/graph_libraries/libMediaPipeTasksCommon_device_graph.a": "c54bebf7cef406592d75029acbb49c34c1fad9fed1510b1c4eafbaad8ca9b51e",
+    "MediaPipeTasksCommon/frameworks/graph_libraries/libMediaPipeTasksCommon_simulator_graph.a": "fc011d12366ed656f82ab2e0fcd40d8d8a929bf7ef28e9dc1f98e3c152071485",
+    "MediaPipeTasksVision/frameworks/MediaPipeTasksVision.xcframework/ios-arm64/MediaPipeTasksVision.framework/MediaPipeTasksVision": "2b34652879c5387dbb0c5abdd236deb2eb1812e7b38924724a2d74f30495b13e",
+    "MediaPipeTasksVision/frameworks/MediaPipeTasksVision.xcframework/ios-arm64_x86_64-simulator/MediaPipeTasksVision.framework/MediaPipeTasksVision": "f804a8bd57ae689aa0a344f0adc93d631ce28339bba0f5051a578aa87d4c05b2"
+  },
+  "scope": "Official pinned iOS archive binaries and matched tagged Create/Process/Close source path. No supported telemetry-disable option was found for 1.0.0; it is not used.",
+  "evidence": "0.10.21 iOS MPPTaskRunner delegates to TaskRunner Create/Process/Close, whose source runs CalculatorGraph without Tasks logging. All six packaged binary slices/archives audited; expected runner symbols present, no Tasks logger, Clearcut uploader or networking import symbols. Hash pins prevent unaudited binary/call-path changes. Symbol absence alone is not a universal guarantee against network activity."
+}

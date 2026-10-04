@@ -89,6 +89,24 @@ final class StationJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["today.station"].waitForExistence(timeout: 5))
     }
 
+    func testSavedTestsAreReachableWithoutCameraOrWorkoutWrites() {
+        let app = launch()
+        app.buttons["today.station"].tap()
+        let record = app.buttons["station.recordTest"]
+        let saved = app.buttons["station.savedTests"]
+        for _ in 0..<8 where !saved.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(record.exists)
+        XCTAssertFalse(record.isEnabled)
+        XCTAssertTrue(saved.isHittable)
+        saved.tap()
+        XCTAssertTrue(app.navigationBars["Saved tests"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No saved tests"].exists)
+        app.navigationBars["Saved tests"].buttons["Done"].tap()
+        app.buttons["station.done"].tap()
+        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["LOG SET 1"].exists)
+    }
+
     private func capture(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name

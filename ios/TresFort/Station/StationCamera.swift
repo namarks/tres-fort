@@ -78,7 +78,8 @@ enum StationCameraState: Equatable {
     }
 }
 
-/// Capture is opt-in and transient. This type never records, stores, or sends images.
+/// Camera capture and local test recording each require an explicit control.
+/// Saved test packages remain on this device until the user shares or deletes them.
 @MainActor
 final class StationCamera: ObservableObject {
     let session: AVCaptureSession
@@ -86,12 +87,15 @@ final class StationCamera: ObservableObject {
     @Published private(set) var latestPose: StationPoseSample?
     @Published private(set) var latestFrame: StationComparisonFrame?
     @Published private(set) var framingDescription = "Front camera"
+    @Published private(set) var recordingState: StationRecordingState = .idle
+    @Published private(set) var completedRecording: StationRecording?
 
     private let capture: StationCaptureWorker
     private var run: StationCaptureRun?
     private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
     private var rotationObservation: NSKeyValueObservation?
     private var imageOrientation: CGImagePropertyOrientation = .up
+    private var recordingID: UUID?
 
     init() {
         let session = AVCaptureSession()
@@ -145,6 +149,32 @@ final class StationCamera: ObservableObject {
         latestFrame = nil
         state = .idle
         capture.stop()
+    }
+
+    /// The view supplies the countdown; this method never starts the camera.
+    func startRecording(exercise: StationExercise) {
+        guard state == .running, let run, run.isActive, !recordingState.isBusy else { return }
+        let id = UUID()
+        recordingID = id
+        completedRecording = nil
+        recordingState = .recording(elapsed: 0)
+        capture.startRecording(exercise: exercise, run: run) { [weak self] event in
+            guard let self, self.recordingID == id else { return }
+            switch event {
+            case .elapsed(let elapsed): self.recordingState = .recording(elapsed: elapsed)
+            case .finishing: self.recordingState = .finishing
+            case .completed(let recording):
+                self.completedRecording = recording
+                self.recordingState = .saved
+            case .failed(let message): self.recordingState = .failed(message)
+            }
+        }
+    }
+
+    func stopRecording() {
+        guard case .recording = recordingState else { return }
+        recordingState = .finishing
+        capture.stopRecording()
     }
 
     private func prepare(_ run: StationCaptureRun) {
@@ -267,8 +297,13 @@ private enum StationCaptureEvent {
     case ended(StationCameraState)
 }
 
+private enum StationRecordingEvent {
+    case elapsed(TimeInterval), finishing, completed(StationRecording), failed(String)
+}
+
 /// All session mutations and inference occur on this serial queue. Only value
-/// snapshots leave it; neither a sample buffer nor a pixel buffer is retained.
+/// snapshots leave it. During explicit recording the video encoder consumes
+/// pixels here; no sample buffer or pixel buffer is handed to the main queue.
 private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     private let session: AVCaptureSession
     private let queue = DispatchQueue(label: "com.nmarkspdx.tresfort.station.capture", qos: .userInitiated)
@@ -283,6 +318,11 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
     private var orientationRevision: UInt64 = 0
     private var lastFrameTime: TimeInterval?
     private var previousCenterStage: (mode: AVCaptureDevice.CenterStageControlMode, enabled: Bool)?
+    private var recording: StationRecordingWriter?
+    private var recordingHandler: (@MainActor (StationRecordingEvent) -> Void)?
+    private var recordingTimeout: DispatchWorkItem?
+    private var recordingStartedAt: TimeInterval?
+    private var recordingFinishing = false
 
     init(session: AVCaptureSession) {
         self.session = session
@@ -335,6 +375,7 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
     func setOrientation(_ orientation: CGImagePropertyOrientation, revision: UInt64, run: StationCaptureRun) {
         queue.async { [self] in
             guard self.run === run, run.isActive else { return }
+            finishRecording(reason: .orientationChanged)
             self.orientation = orientation
             orientationRevision = revision
             lastFrameTime = nil
@@ -343,6 +384,72 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
 
     func stop() {
         queue.async { [self] in stopOnQueue() }
+    }
+
+    func startRecording(exercise: StationExercise, run: StationCaptureRun,
+                        handler: @escaping @MainActor (StationRecordingEvent) -> Void) {
+        queue.async { [self] in
+            guard self.run === run, run.isActive, session.isRunning, recording == nil else {
+                DispatchQueue.main.async { handler(.failed("The camera is not ready to record. Try again.")) }
+                return
+            }
+            recordingHandler = handler
+            do {
+                let writer = try StationRecordingWriter(exercise: exercise, store: StationRecordingStore())
+                recording = writer
+                recordingFinishing = false
+                recordingStartedAt = ProcessInfo.processInfo.systemUptime
+                let id = writer.id
+                let timeout = DispatchWorkItem { [weak self] in
+                    guard let self, self.recording?.id == id else { return }
+                    self.finishRecording(reason: .durationLimit)
+                }
+                recordingTimeout = timeout
+                queue.asyncAfter(deadline: .now() + StationRecordingStore.maximumDuration, execute: timeout)
+            } catch {
+                emitRecording(.failed(error.localizedDescription))
+                recordingHandler = nil
+            }
+        }
+    }
+
+    func stopRecording() {
+        queue.async { [self] in finishRecording(reason: .userStopped) }
+    }
+
+    private func finishRecording(reason: StationRecordingFinishReason) {
+        guard let recording, !recordingFinishing else { return }
+        recordingFinishing = true
+        recordingTimeout?.cancel()
+        recordingTimeout = nil
+        emitRecording(.finishing)
+        recording.finish(reason: reason, queue: queue) { [weak self] result in
+            guard let self, self.recording === recording else { return }
+            self.recording = nil
+            self.recordingStartedAt = nil
+            self.recordingFinishing = false
+            switch result {
+            case .success(let saved): self.emitRecording(.completed(saved))
+            case .failure(let error): self.emitRecording(.failed(error.localizedDescription))
+            }
+            self.recordingHandler = nil
+        }
+    }
+
+    private func failRecording(_ error: Error) {
+        recordingTimeout?.cancel()
+        recordingTimeout = nil
+        recording?.cancel()
+        recording = nil
+        recordingStartedAt = nil
+        recordingFinishing = false
+        emitRecording(.failed(error.localizedDescription))
+        recordingHandler = nil
+    }
+
+    private func emitRecording(_ event: StationRecordingEvent) {
+        guard let recordingHandler else { return }
+        DispatchQueue.main.async { recordingHandler(event) }
     }
 
     private func configure() throws -> AVCaptureDevice? {
@@ -442,6 +549,7 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
     }
 
     private func stopOnQueue() {
+        finishRecording(reason: .cameraStopped)
         run?.cancel()
         run = nil
         eventHandler = nil
@@ -509,6 +617,21 @@ private final class StationCaptureWorker: NSObject, AVCaptureVideoDataOutputSamp
                 let frame = StationComparisonFrame(sample: sample, applePose: applePose,
                                                    visionMilliseconds: visionMilliseconds,
                                                    imageAspectRatio: uprightAspect)
+                // A rotation invalidates this frame immediately, before the queued
+                // orientation update can close the current recording.
+                if run.orientationRevision == frameRevision, let recording, !recordingFinishing {
+                    let elapsed = recordingStartedAt.map { ProcessInfo.processInfo.systemUptime - $0 } ?? 0
+                    if elapsed >= StationRecordingStore.maximumDuration {
+                        finishRecording(reason: .durationLimit)
+                    } else {
+                        do {
+                            try recording.append(pixelBuffer: pixelBuffer, time: time, orientation: orientation, frame: frame)
+                            emitRecording(.elapsed(min(elapsed, StationRecordingStore.maximumDuration)))
+                        } catch {
+                            failRecording(error)
+                        }
+                    }
+                }
                 emit(.pose(frame, revision: frameRevision), run: run)
             } catch {
                 end(.failed("Movement tracking stopped. Start again to retry."), run: run)

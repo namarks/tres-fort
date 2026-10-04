@@ -1,6 +1,6 @@
 # iPad Workout Station
 
-Slug: ipad-workout-station · Status: active · Updated: 2026-10-03 · Theme: gym-floor
+Slug: ipad-workout-station · Status: active · Updated: 2026-10-04 · Theme: gym-floor
 
 ## Goal
 
@@ -15,7 +15,8 @@ may turn detections into durable workout actions.
   - Enable native iPad support and a responsive landscape/portrait display.
   - Enter from Today on iPad; request camera access only on explicit action.
   - Process the front camera locally with Vision and experimental angle-cycle
-    counters for squat, curl and bench press. Do not record or upload frames.
+    counters for squat, curl and bench press. Live capture remains transient
+    unless the member explicitly starts a bounded local test recording.
   - Feed each accepted Vision pose and timestamp to the custom baseline and
     Apple HumanBodyActionCounter. Show both counts, Apple warm-up/coverage and
     reporting timing, with optional manual ground truth after the trial.
@@ -26,13 +27,18 @@ may turn detections into durable workout actions.
     reacquire a stable view and keep the whole trial visibly partial. Additional
     people, camera interruption, rotation, backgrounding and view exit require
     an explicit restart. Never infer completion from target reps or lost tracking.
+  - Add explicit silent local test recording (five-second countdown, at most
+    45 seconds, no automatic upload/backup), aligned per-frame measurements,
+    count labels, selected sharing and deletion. Replay the same decoded frames
+    through Apple Vision and MediaPipe Full with synchronized frame inspection.
   - Verify deterministic counting/loss scenarios, iPad navigation/layout and
     iPhone regressions; complete exact-head review and repository checks.
 - [ ] **P1 — Compare existing counters and validate the mounted iPad**
   - Treat the custom angle counter as a baseline, not the selected production
     algorithm. Compare it with Apple HumanBodyActionCounter in the first
-    device build. Consider the MediaPipe reference pipeline if pose quality
-    limits the results; it is not part of the first comparison build.
+    device build. Compare Apple Vision with MediaPipe Full on identical saved
+    frames before choosing a pose detector; score detection separately from
+    repetition logic and measure live performance separately from offline replay.
   - On an authorized device build, compare counts to manual ground truth for
     all three modes, including slow/paused/partial reps and obstructed views.
   - Evaluate landscape camera placement, screen readability, tracking recovery,
@@ -62,45 +68,16 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@owner):** Tracking work is paused at the owner's request (2026-10-03).
-Resume when the owner returns; no further physical trial or unattended tracking
-is requested.
-**On resumption (@agent):** Continue P0 delivery from local merge commit
-`b37c648e283c91c3eba8bd1fe5388bfd830b077b`: the Vision request-reuse fix and
-main-branch conflict resolution are committed locally but not pushed. Exact-head
-local review is clean; 17 unit and six iPad UI checks passed, and the signed
-Debug device build passed. That latest build has not been installed. The iPad
-has the earlier diagnostic-display update from `3c72d305150b694315887690838be0ef9f64ec10`.
-Refresh remote review/CI, push the reviewed fixes after checking branch state,
-answer/resolve the addressed review threads and request exact-head review.
-**Next physical trial (@owner):** Participate in a controlled pose-reliability
-comparison before tuning frontal rep counting; P1 cannot run unattended.
-The Debug build is signed, verified, installed in place and launched with its
-console attached. iPadOS 26.7.1, enabled Developer Mode and usable developer
-services are verified. The existing App Store Connect release key refreshed
-both development profiles without another Apple account login; both signatures
-match the pre-existing development certificate. The owner confirmed the existing
-account/workout is visible and enabled the Station camera and measurement stream.
-Live numeric output is working. The owner completed five front-facing squats and
-confirmed the whole body, including both feet, stayed inside the preview.
-Standing samples isolate ankles below the prototype's 0.6 cutoff; movement
-samples also include low-confidence hips and no-person detections. The trial
-ran with counting stopped to inspect raw input, so there is no counter score.
-Preserve every emitted diagnostic sample for the next controlled comparison;
-the first host filter decimated the app's 2 Hz output to about 0.5 Hz and cannot
-establish an exact movement-by-movement trajectory. Assess a side-view control
-and alternative pose estimation if frontal losses persist before choosing a
-frontal counter or relaxing admission. No further reps are currently requested.
-The owner reports improved but still inadequate tracking in internal build
-1.0 (46). Use opt-in
-numeric diagnostics to inspect rejected poses, counter phases and repeated
-Apple warm-up resets during manually counted movements, including front-facing
-squats. Counting quality and any frontal algorithm remain unvalidated.
-Follow the [direct-device procedure](device-debugging.md); the existing
-development identity and refreshed profiles are verified for this iPad.
-Complete P0 repository delivery only after configured CI and exact-head review
-pass; an internal TestFlight upload does not satisfy merge gates. The later
-workout-write and automation gates remain in force.
+**Now (@agent):** Complete the owner-approved record/replay slice and MediaPipe
+integration, verify local simulator and signed device builds, and deliver the
+updated Debug app over the paired wireless connection. Then refresh PR #228's
+exact-head review and required checks; Nick owns merge. The owner's 2026-10-03
+pause ended on 2026-10-04 with explicit approval to implement this testing flow.
+**Next physical trial (@owner):** Mount the iPad in the workout room, record a
+short front-facing five-squat test and a side-view control, label actual reps,
+and inspect both detectors on the same frames. Pose reliability, frontal
+counting, sustained performance and automatic workout actions remain unvalidated.
+No unattended recording or movement trial is requested.
 
 ## Approved comparison scope
 
@@ -108,11 +85,17 @@ workout-write and automation gates remain in force.
   the custom counter and Apple counter side by side on the same movements.
 - This authorizes comparison implementation and the internal device-test build.
   It does not authorize public App Store release, backend deployment, workout
-  logging, automatic progression or video storage/upload.
+  logging, automatic progression or video storage/upload in that first build.
+- On 2026-10-04 the owner approved wireless debugging plus explicit short, silent
+  local test recordings, manually selected transfer and deletion, and replay
+  through Apple Vision and MediaPipe Full. This supersedes the initial no-storage
+  boundary only for user-started test clips; no automatic upload or cloud backup
+  is included. No backend or workout mutation authority is added.
 - The owner subsequently requested TestFlight upload while the Mac checks were
   queued. The independently reviewed source was uploaded as an internal branch
   build; repository merge still requires its configured checks and review.
-- MediaPipe remains a later candidate, not an included dependency.
+- MediaPipe Full is now the approved independent pose comparison, not a selected
+  production winner. The existing live Apple/custom counters both use Vision.
 - The owner requested direct iPad debugging to shorten iteration and identified
   front-facing squat support as a needed use case. Developer diagnostics stay
   opt-in and Debug-only: bounded numerical summaries on the local console,
@@ -120,6 +103,26 @@ workout-write and automation gates remain in force.
 
 ## Implementation evidence
 
+- On 2026-10-04 the owner unplugged the iPad and CoreDevice verified an active
+  `localNetwork` connection. Bounded silent recording, aligned measurement
+  packages, count labels, deletion/sharing and same-frame Apple/MediaPipe replay
+  are implemented. The shared angle rule remains a side-view baseline.
+- MediaPipe Full float16 v1 is pinned with SDK 0.10.21 after an independent
+  source/binary review. The current 1.0.0 binary contains a metrics uploader and
+  is excluded. Project generation verifies download hashes, the six audited
+  binaries and their runner/network symbols; see the
+  [dependency rationale](../../../ios/Dependencies/README.md).
+- Recording, replay, MediaPipe, existing counters and four Station interface
+  journeys passed on the A16 simulator: 58 unit tests passed, one native-only
+  test skipped, four UI tests passed. Evidence:
+  `.artifacts/ios/tres-fort-ios.Ctq3qd/Tests.xcresult`. The iOS 26.2 simulator
+  omits Apple's human-pose weights, so the pipeline test injects a clearly named
+  Apple detector while executing real MediaPipe. A separate physical-device
+  test exercises both real models. No native replay or movement accuracy result
+  is inferred from the simulator checks. Seven dependency, 12 harness and seven
+  CI-scope checks pass. Local independent review has no remaining blocking
+  findings. The signed Debug device build and both identity/profile checks pass;
+  see `.artifacts/station-device/record-replay-signed-build.log`.
 - Native iPad layout, opt-in local capture and both isolated trial counters are
   implemented. Each trial locks the initially visible exercise-relevant limb
   (hip/knee/ankle or shoulder/elbow/wrist) for both counters. Confidence 0.6 and
@@ -277,8 +280,8 @@ workout-write and automation gates remain in force.
 The prototype reuses Apple Vision for pose estimation but implements its own
 exercise-specific angle-cycle counter. No comparison has established that this
 counter, or Vision, is the best available choice. Apple is approved as the first
-comparison engine. MediaPipe and RepNet remain candidates for later evaluation;
-no production winner is selected:
+counter comparison engine. MediaPipe Full is the approved independent pose
+comparison; RepNet remains a later candidate. No production winner is selected:
 
 1. **Apple HumanBodyActionCounter:** pretrained repetition counting and an
    official native sample; test its temporal-window latency and treatment of
@@ -297,7 +300,8 @@ no production winner is selected:
 Compare complete-set exact counts, false counts during setup/rest/partial reps,
 slow and paused lifts, bench/rack occlusion, tracking loss and recovery, latency,
 thermal/power cost and camera placement effort. Use permitted labeled inputs and
-live manual ground truth; the current no-recording/no-upload behavior remains.
+live manual ground truth. Only explicitly started test clips are retained locally;
+automatic upload remains absent.
 Evaluate pose tracking separately from repetition logic so a better detector is
 not confused with a better counter. Selection must follow results on the A16
 station and supported exercises, not generic pose benchmarks or demo claims.
@@ -318,8 +322,8 @@ Sources checked 2026-10-03:
 - Current runner ownership protects a process/local persistence namespace.
   Distinct set UUIDs from two devices can represent one physical set twice;
   existing idempotency is not a cross-device controller lock.
-- No backend, database, provider or video-retention change is part of this
-  work. Client distribution is limited to the approved internal comparison
+- No backend, database or provider change is part of this work. Bounded local
+  test retention is owner-approved; client distribution is limited to the internal comparison
   build. Do not store account emails, receipts or purchase identifiers in
   repository evidence.
 - Sources: [Apple Vision body pose](https://developer.apple.com/documentation/vision/detecting-human-body-poses-in-images),

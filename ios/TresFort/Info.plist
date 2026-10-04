@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>NSCameraUsageDescription</key>
-    <string>Count exercise repetitions in Station Mode on this device. Video is not recorded or uploaded.</string>
+    <string>Track exercise movements on this device. Record test saves an optional silent clip locally for comparison; share or delete it from Saved tests.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Record optional workout feedback for an editable transcript. Audio is discarded.</string>
     <key>NSSpeechRecognitionUsageDescription</key>

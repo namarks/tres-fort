@@ -85,7 +85,7 @@ jobs:
         run: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPhone-17 --ui-suite "$IOS_UI_SUITE" --ci-shard ${{ matrix.shard }}
       - name: iPad Station build and tests
         if: matrix.shard == 'station'
-        run: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPad-A16 --only-testing TresFortTests/StationCounterTests --only-testing TresFortTests/StationDiagnosticsTests --only-testing TresFortTests/StationComparisonTests --only-testing TresFortTests/StationCameraConfigurationTests --only-testing TresFortTests/StationPoseFeedbackTests --only-testing TresFortUITests/StationJourneyTests --only-testing TresFortUITests/MemberActivationJourneyTests/testFreshDeviceSignInRestoresExistingTrainingAndStation --only-testing TresFortUITests/MemberActivationJourneyTests/testFreshDeviceStateFailureRetriesWithoutOfferingNewAccountSetup --only-testing TresFortUITests/MemberActivationJourneyTests/testFreshDeviceConfirmedEmptyAccountStillOffersSetup
+        run: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPad-A16 --only-testing TresFortTests/StationCounterTests --only-testing TresFortTests/StationRecordingTests --only-testing TresFortTests/StationReplayTests --only-testing TresFortTests/StationMediaPipeDetectorTests --only-testing TresFortTests/StationDiagnosticsTests --only-testing TresFortTests/StationComparisonTests --only-testing TresFortTests/StationCameraConfigurationTests --only-testing TresFortTests/StationPoseFeedbackTests --only-testing TresFortUITests/StationJourneyTests --only-testing TresFortUITests/MemberActivationJourneyTests/testFreshDeviceSignInRestoresExistingTrainingAndStation --only-testing TresFortUITests/MemberActivationJourneyTests/testFreshDeviceStateFailureRetriesWithoutOfferingNewAccountSetup --only-testing TresFortUITests/MemberActivationJourneyTests/testFreshDeviceConfirmedEmptyAccountStillOffersSetup
       - name: Retain synthetic screenshots and test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -140,6 +140,7 @@ jobs:
           python3 test/verify-ios.test.py
           python3 -B -O test/app-store-assets.test.py
           python3 -B test/ci-ios-scope.test.py
+          python3 -B test/mediapipe-dependencies.test.py
           ruby test/submit-for-review.test.rb
 
       - name: Typecheck

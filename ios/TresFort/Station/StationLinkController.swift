@@ -18,6 +18,7 @@ final class StationLinkController: ObservableObject {
 
     private let transport: StationLinkTransport
     private var seenEvents: Set<UUID> = []
+    private var completedArmID: UUID?
     private var cancellable: AnyCancellable?
     /// The phone must stay awake to receive counts; restore the prior policy.
     private var previousIdleTimerDisabled: Bool?
@@ -42,15 +43,22 @@ final class StationLinkController: ObservableObject {
             }
         }
         self.transport.onMessage = { [weak self] in self?.receive($0) }
-        // A fresh connection learns the current arm, if any. While a count
-        // waits for a tap the iPad stays idle, so it isn't counted twice.
+        // A fresh connection learns the current arm, if any.
         self.transport.onConnect = { [weak self] in
-            guard let self, self.proposal == nil, let arm = self.arm else { return }
+            guard let self, let arm = self.armToResend else { return }
             self.transport.send(.arm(arm))
         }
     }
 
     var isConnected: Bool { connection.isConnected }
+
+    /// The arm a reconnected iPad should count, if any. An arm whose count
+    /// already arrived (waiting for a tap, handed to Edit, or logged) is spent:
+    /// only a new set or "Not right" asks the iPad to count again.
+    var armToResend: StationLinkArm? {
+        guard proposal == nil, let arm, arm.armID != completedArmID else { return nil }
+        return arm
+    }
 
     func start(key: Data) {
         needsKey = false
@@ -145,6 +153,7 @@ final class StationLinkController: ObservableObject {
                   let next = StationLinkPolicy.proposal(for: completion, arm: arm,
                                                         seenEvents: seenEvents) else { return }
             seenEvents.insert(completion.eventID)
+            completedArmID = completion.armID
             lastLogged = nil
             proposal = next
         case .station(let state, let armID):

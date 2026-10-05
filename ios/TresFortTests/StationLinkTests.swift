@@ -280,6 +280,20 @@ final class StationLinkTests: XCTestCase {
         XCTAssertEqual(controller.proposal?.reps, 6, "Resuming on the same set keeps it")
     }
 
+    func testAReconnectedIPadIsNotReArmedForASpentSet() throws {
+        let controller = StationLinkController()
+        controller.request(target())
+        let arm = try XCTUnwrap(controller.arm)
+        XCTAssertEqual(controller.armToResend?.armID, arm.armID)
+        let event = completion(arm, reps: 5, partial: true)
+        controller.receive(.completion(event))
+        XCTAssertNil(controller.armToResend, "A count waiting for a tap keeps the iPad idle")
+        controller.finishProposal(event.eventID) // Edit hands the count to LOG SET
+        XCTAssertNil(controller.armToResend, "An edited set is not counted again")
+        controller.request(target(set: 2))
+        XCTAssertNotNil(controller.armToResend, "The next set is armed")
+    }
+
     func testUnsavedCountWaitsForATapInsteadOfVanishing() throws {
         let controller = StationLinkController()
         controller.request(target())

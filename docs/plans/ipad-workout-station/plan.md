@@ -93,8 +93,9 @@ may turn detections into durable workout actions.
 
 **Now (@agent):** Complete exact-head review and repository checks for
 [PR #235](https://github.com/namarks/tres-fort/pull/235), including the review
-correction that makes Station use today's resolved workout and hold duration
-unless an active runner overrides it. The owner explicitly approved publication
+corrections that make Station use today's resolved workout and hold duration
+unless an active runner overrides it, and restart hold acquisition when the
+person is still moving through accepted geometry. The owner explicitly approved publication
 to `namarks/tres-fort` on 2026-10-04; Nick owns merge. The implementation is on
 `codex/catalog-camera-profiles`. This branch incorporates the merged Today
 calendar work (PR #233) and curl-confidence/replay-coverage fix (PR #234) through
@@ -162,6 +163,13 @@ No unattended recording is requested.
 - After incorporating PR #233 and PR #234, the combined branch passed 87
   affected unit cases (one native-only Apple replay skip) and all five Station
   iPad UI journeys. Evidence: `.artifacts/ios/tres-fort-ios.JJEKvK/Tests.xcresult`.
+- The hold-acquisition review fix compares each frame against the dwell's
+  initial pose, restarting after movement beyond a body-scaled jitter tolerance.
+  Slow descent through valid wall-sit geometry cannot start or resume timing.
+  The disposable iPad simulator passed 13 focused unit tests and all five
+  Station UI journeys, including slow descent, reacquisition and small jitter
+  at different body scales. Evidence:
+  `.artifacts/ios/tres-fort-ios.25IyGy/Tests.xcresult`.
 - Exact-head remote review identified that saved comparisons lacked the live
   partial-coverage warning. Reports now persist optional per-detector coverage
   flags, latched on aggregate or either arm's tracking loss; newly produced

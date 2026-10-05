@@ -22,6 +22,55 @@ final class StationHoldTimerTests: XCTestCase {
         }
     }
 
+    func testSlowWallSitDescentRestartsAcquisitionAndReacquisition() {
+        for reacquiring in [false, true] {
+            var timer = StationHoldTimer(kind: .wallSit, targetSeconds: 30)
+            timer.start()
+            if reacquiring {
+                feed(&timer, .wallSit, from: 0, through: 2)
+                timer.process(.init(timestamp: 2.25, joints: [:], personCount: 0))
+            }
+            let start = reacquiring ? 2.5 : 0.0
+            let credited = timer.elapsed
+            // Each 0.01 step is smaller than the jitter allowance, but the
+            // accumulated descent must not qualify as a steady one-second hold.
+            for frame in 0...12 {
+                let sample = loweringWallSit(at: start + Double(frame) * 0.25, offset: 0.06 - Double(frame) * 0.01)
+                timer.process(sample)
+                XCTAssertEqual(timer.state, .stabilizing, "Every frame remains valid wall-sit geometry")
+                XCTAssertEqual(timer.elapsed, credited)
+            }
+            for frame in 1...3 {
+                timer.process(loweringWallSit(at: start + 3 + Double(frame) * 0.25, offset: -0.06))
+                XCTAssertEqual(timer.state, .stabilizing)
+            }
+            timer.process(loweringWallSit(at: start + 4, offset: -0.06))
+            XCTAssertEqual(timer.state, .holding)
+            XCTAssertEqual(timer.elapsed, credited, "Settling time is never credited")
+            timer.process(loweringWallSit(at: start + 4.25, offset: -0.06))
+            XCTAssertEqual(timer.elapsed, credited + 0.25)
+        }
+    }
+
+    func testSmallPoseJitterAllowsAcquisitionAtDifferentBodyScales() {
+        for kind in [StationHoldKind.plank, .wallSit] {
+            for scale in [0.5, 1.0] {
+                var timer = StationHoldTimer(kind: kind, targetSeconds: 30)
+                timer.start()
+                for frame in 0...4 {
+                    let sample = pose(kind, at: Double(frame) * 0.25)
+                    let jitter = frame.isMultiple(of: 2) ? 0.002 : -0.002
+                    let joints = sample.joints.mapValues {
+                        StationJointPoint(x: ($0.x + jitter) * scale, y: ($0.y - jitter) * scale, confidence: $0.confidence)
+                    }
+                    timer.process(.init(timestamp: sample.timestamp, joints: joints, personCount: 1))
+                }
+                XCTAssertEqual(timer.state, .holding)
+                XCTAssertEqual(timer.elapsed, 0)
+            }
+        }
+    }
+
     func testLostJointsPositionAndCaptureGapsPauseWithoutCreditingUnseenTime() {
         for interruption in 0...3 {
             var timer = StationHoldTimer(kind: .plank, targetSeconds: 30)
@@ -122,6 +171,16 @@ final class StationHoldTimerTests: XCTestCase {
         timer.process(pose(.plank, at: 2.25))
         XCTAssertEqual(timer.elapsed, 1)
         XCTAssertEqual(timer.state, .stopped)
+    }
+
+    private func loweringWallSit(at time: Double, offset: Double) -> StationPoseSample {
+        let sample = pose(.wallSit, at: time)
+        var joints = sample.joints
+        for joint in [StationJoint.leftShoulder, .leftHip] {
+            let point = joints[joint]!
+            joints[joint] = .init(x: point.x, y: point.y + offset, confidence: point.confidence)
+        }
+        return .init(timestamp: time, joints: joints, personCount: 1)
     }
 
     private func feed(_ timer: inout StationHoldTimer, _ kind: StationHoldKind, from: Double, through: Double) {

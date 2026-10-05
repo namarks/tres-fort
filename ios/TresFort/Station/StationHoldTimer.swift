@@ -37,7 +37,7 @@ struct StationHoldTimer {
     private(set) var state: State = .idle
     private(set) var wasInterrupted = false
     private var lastTimestamp: TimeInterval?
-    private var stableSince: TimeInterval?
+    private var acquisitionPose: StationPoseSample?
     private var selectedSide: Side?
     private enum Side: CaseIterable { case left, right }
     var remaining: TimeInterval { max(0, Double(targetSeconds) - elapsed) }
@@ -57,7 +57,7 @@ struct StationHoldTimer {
         guard isActive else { return }
         state = .invalidated
         wasInterrupted = true
-        stableSince = nil
+        acquisitionPose = nil
         selectedSide = nil
     }
 
@@ -87,23 +87,42 @@ struct StationHoldTimer {
             if remaining <= 0 { state = .reached }
             return
         }
-        stableSince = stableSince ?? sample.timestamp
+        // Compare with the start of the dwell, not the preceding frame: slow
+        // movement through otherwise valid geometry must restart acquisition.
+        if acquisitionPose.map({ isSteady(sample, relativeTo: $0, side: side) }) != true {
+            acquisitionPose = sample
+        }
         // The one-second setup dwell is not credited as observed hold time.
-        state = sample.timestamp - stableSince! >= 1 ? .holding : .stabilizing
+        state = sample.timestamp - acquisitionPose!.timestamp >= 1 ? .holding : .stabilizing
     }
 
     private mutating func pause() {
         if state == .holding || elapsed > 0 { wasInterrupted = true }
         state = elapsed > 0 || wasInterrupted ? .paused : .seeking
-        stableSince = nil
+        acquisitionPose = nil
         selectedSide = nil
     }
 
-    private func recognizes(_ sample: StationPoseSample, side: Side) -> Bool {
+    private func requiredJoints(for side: Side) -> [StationJoint] {
         let names: [StationJoint] = side == .left
             ? [.leftShoulder, .leftHip, .leftKnee, .leftAnkle, .leftElbow, .leftWrist]
             : [.rightShoulder, .rightHip, .rightKnee, .rightAnkle, .rightElbow, .rightWrist]
-        let required = kind == .plank ? names : Array(names.prefix(4))
+        return kind == .plank ? names : Array(names.prefix(4))
+    }
+
+    private func isSteady(_ sample: StationPoseSample, relativeTo anchor: StationPoseSample, side: Side) -> Bool {
+        let required = requiredJoints(for: side)
+        guard let shoulder = anchor.joints[required[0]], let hip = anchor.joints[required[1]] else { return false }
+        // Experimental, body-scaled jitter allowance, fixed for this dwell.
+        let tolerance = distance(shoulder, hip) * 0.05
+        return required.allSatisfy { joint in
+            guard let point = sample.joints[joint], let reference = anchor.joints[joint] else { return false }
+            return distance(point, reference) <= tolerance
+        }
+    }
+
+    private func recognizes(_ sample: StationPoseSample, side: Side) -> Bool {
+        let required = requiredJoints(for: side)
         let points = required.compactMap { sample.joints[$0] }
         guard points.count == required.count, points.allSatisfy({
             $0.x.isFinite && $0.y.isFinite && $0.confidence.isFinite

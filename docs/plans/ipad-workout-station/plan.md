@@ -25,6 +25,13 @@ may turn detections into durable workout actions.
     and saved replay. Save actual counts per arm; never double bilateral reps
     into one displayed total or assign an old unspecified label to an arm.
   - Keep trials isolated from SyncModel writes, outboxes, rest and progression.
+  - Audit every catalog ID into a reusable rep/hold candidate profile or an
+    explicit manual fallback. Selecting a workout/catalog exercise resolves its
+    profile; only explicitly implemented experiments can start tracking.
+  - Add observation-only forearm-plank and wall-sit countdown experiments:
+    stable pose acquisition, observed-time accumulation, pause/reacquisition,
+    terminal interruption and no automatic set completion. See the
+    [catalog audit and hold contract](catalog-tracking.md).
   - Reset movement history after missing joints or a pose gap. For curls only,
     allow one low-confidence observation between reliable measurements no more
     than 0.15 seconds apart; discard its angle and restart endpoint dwell.
@@ -39,6 +46,12 @@ may turn detections into durable workout actions.
   - Verify deterministic counting/loss scenarios, iPad navigation/layout and
     iPhone regressions; complete exact-head review and repository checks.
 - [ ] **P1 — Compare existing counters and validate the mounted iPad**
+  - Evaluate broader reuse through PoseFit's exercise rules and a TransRAC
+    counting benchmark before expanding custom detectors. The
+    [source survey](catalog-tracking.md#existing-implementations-and-datasets)
+    records model availability, mobile adaptation and FLAG3D's research-only
+    terms, plus native SDK comparators. Keep the mapping independent of the
+    selected engine; no external SDK or dataset is imported by this slice.
   - Treat the custom angle counter as a baseline, not the selected production
     algorithm. Compare it with Apple HumanBodyActionCounter in the first
     device build. Compare Apple Vision with MediaPipe Full on identical saved
@@ -59,6 +72,10 @@ may turn detections into durable workout actions.
     [generic counter evidence](#generic-3d-counter).
   - Record count errors, corrections and setup/repositioning effort. Select the
     supported movements/angles from observed evidence, not assumed accuracy.
+  - Validate each mapped variant before expanding experiment availability.
+    For holds, measure false starts during setup/lying/rest, target timing,
+    interrupted holds and reacquisition; joint geometry cannot prove contact,
+    load-bearing or form quality.
 - [ ] **P2 — Add assisted set completion and correction**
   - Define one authoritative workout controller, stale-event rejection and a
     stable event identity before observations can enter the existing set path.
@@ -106,13 +123,26 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Drive the linked assisted-logging PR (iPhone runner as the
-only controller, iPad counts the armed set) through exact-head review and the
-required checks; Nick owns merge. The bounded curl-confidence fix (PR #234) and
-PR #228's observation-only Station have merged; PR #228 merged before its full
-iOS gate passed. Merged source `e15d53b` remains installed; neither the curl
-fix nor the linked build is installed. The old test-readiness follow-up
-`472221a` is separate and not included here.
+**Now (@agent):** Complete exact-head review and repository checks for
+[PR #235](https://github.com/namarks/tres-fort/pull/235), including the review
+corrections that make Station use today's resolved workout and hold duration
+unless an active runner overrides it, and restart hold acquisition when the
+person is still moving through accepted geometry. The owner explicitly approved publication
+to `namarks/tres-fort` on 2026-10-04; Nick owns merge. The implementation is on
+`codex/catalog-camera-profiles`. This branch incorporates the merged Today
+calendar work (PR #233), curl-confidence/replay-coverage fix (PR #234),
+linked assisted logging (PR #232) and the replay-only generic 3D counter
+(PR #236) through `fd2dd89` on `origin/main`. With the
+link on, an armed iPhone set switches the iPad from a hold or catalog selection
+to that set's rep counter; choosing any exercise by hand on the iPad abandons
+the armed set, which stays manual on the iPhone.
+The audit covers all 280 exercises: 193 rep candidates, 15 hold candidates and
+72 manual fallbacks. Fifteen entries explicitly select a current experimental
+mode; profile membership alone never enables a counter. Real accuracy remains
+unvalidated, and no physical build installation is part of this slice.
+Merged source `e15d53b` remains installed; neither the curl fix, the linked
+build nor the catalog slice is installed. The old test-readiness follow-up
+`472221a` is separate. PR #228 merged before its full iOS gate passed.
 **Next physical trial (@owner):** Deploy the Worker with the link-key route
 (both devices must fetch the key online once), then, with a build containing
 the curl fix and the link on both the iPhone and the iPad, turn on "Count reps
@@ -125,13 +155,17 @@ are awaiting owner clarification. Separate front-facing and side-view squat
 clips remain useful for the counter. Sustained performance, other movements,
 false positives and fully automatic logging remain unvalidated. No unattended
 recording is requested.
-**Parallel (@agent):** The replay-only generic 3D counter is in review on its
-own branch; see [generic 3D counter](#generic-3d-counter). After it merges,
-the owner can rerun saved comparisons (including the mixed front/side squat
+**Generic counter (@owner):** The replay-only generic 3D counter merged in
+PR #236; see [generic 3D counter](#generic-3d-counter). With a build that
+contains it, rerun saved comparisons (including the mixed front/side squat
 clip) and label actual reps; no new recording format or live change is needed.
 
 ## Approved comparison scope
 
+- On 2026-10-04 the owner requested a full catalog tracking audit and reusable
+  mappings, including pose-triggered hold countdowns. This adds an in-app
+  coverage browser and local plank/wall-sit experiments. It does not activate
+  workout writes, progression, background recording or distribution.
 - On 2026-10-03 the owner approved making the first device-test build compare
   the custom counter and Apple counter side by side on the same movements.
 - This authorizes comparison implementation and the internal device-test build.
@@ -169,6 +203,32 @@ clip) and label actual reps; no new recording format or live change is needed.
 
 ## Implementation evidence
 
+- Catalog mapping and hold countdowns: all 280 migrated IDs are covered exactly
+  once, with 45 reusable profiles and explicit manual reasons. The local D1
+  coverage contract, typecheck, plan graph and all 1,189 backend tests pass.
+  A disposable iPad A16 simulator passed 38 Station unit tests and five UI
+  journeys. After the target-control correction, the final build passed all
+  ten new unit tests and the hold/catalog UI journey, including target editing
+  and reset. Evidence: `.artifacts/catalog-backend-tests.log` and
+  `.artifacts/ios/tres-fort-ios.m6qJsn/Tests.xcresult` (earlier regression suite:
+  `.artifacts/ios/tres-fort-ios.WsMURa/Tests.xcresult`). These prove software
+  behavior and layout, not physical camera accuracy. No iPad installation or
+  workout writes occurred in this slice.
+- The PR #235 review correction resolves Station context from today's displayed
+  workout, retaining an active runner override. A disposable iPad simulator
+  passed the schedule/override/rest-day regression, all ten hold/catalog unit
+  tests and all five Station UI journeys. Evidence:
+  `.artifacts/ios/tres-fort-ios.jH64VJ/Tests.xcresult`.
+- After incorporating PR #233 and PR #234, the combined branch passed 87
+  affected unit cases (one native-only Apple replay skip) and all five Station
+  iPad UI journeys. Evidence: `.artifacts/ios/tres-fort-ios.JJEKvK/Tests.xcresult`.
+- The hold-acquisition review fix compares each frame against the dwell's
+  initial pose, restarting after movement beyond a body-scaled jitter tolerance.
+  Slow descent through valid wall-sit geometry cannot start or resume timing.
+  The disposable iPad simulator passed 13 focused unit tests and all five
+  Station UI journeys, including slow descent, reacquisition and small jitter
+  at different body scales. Evidence:
+  `.artifacts/ios/tres-fort-ios.25IyGy/Tests.xcresult`.
 - Exact-head remote review identified that saved comparisons lacked the live
   partial-coverage warning. Reports now persist optional per-detector coverage
   flags, latched on aggregate or either arm's tracking loss; newly produced
@@ -543,8 +603,9 @@ Sources checked 2026-10-03:
 
 - Approved prototype target: 11-inch iPad (A16). Use its built-in front camera
   first; external UVC input is deferred until placement evidence requires it.
-- The counter and view receive no workout mutation capability. A workout title
-  is read-only context, not an armed prescription or automatic exercise match.
+- The counter and view receive no workout mutation capability. Workout/catalog
+  selections carry immutable display values and an optional duration only.
+  Choosing an exercise resolves a profile but does not arm the camera or trial.
 - Current runner ownership protects a process/local persistence namespace.
   Distinct set UUIDs from two devices can represent one physical set twice;
   existing idempotency is not a cross-device controller lock.

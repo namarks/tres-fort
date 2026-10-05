@@ -110,6 +110,36 @@ final class StationJourneyTests: XCTestCase {
         XCTAssertFalse(app.buttons["LOG SET 1"].exists)
     }
 
+    func testHoldSetupAndUnknownCatalogExerciseStayObservationOnly() {
+        let app = launch()
+        app.buttons["today.station"].tap()
+        let plank = app.buttons["station.exercise.plank"]
+        XCTAssertTrue(plank.waitForExistence(timeout: 5))
+        plank.tap()
+        XCTAssertEqual(app.staticTexts["station.holdRemaining"].label, "30 seconds remaining")
+        XCTAssertFalse(app.buttons["station.holdTrial"].isEnabled)
+        XCTAssertFalse(app.staticTexts["station.repCount"].exists)
+        XCTAssertFalse(app.buttons["station.recordTest"].exists)
+        app.buttons["station.holdTarget-Increment"].tap()
+        XCTAssertEqual(app.staticTexts["station.holdRemaining"].label, "35 seconds remaining")
+        plank.tap()
+        XCTAssertEqual(app.staticTexts["station.holdRemaining"].label, "30 seconds remaining")
+        capture("ipad-station-hold-setup")
+        app.buttons["station.exercise.wallSit"].tap()
+        XCTAssertEqual(app.staticTexts["station.movement"].label, "WALL SIT")
+        app.buttons["station.catalog"].tap()
+        let unknown = app.buttons["station.catalog.a-squat"]
+        XCTAssertTrue(unknown.waitForExistence(timeout: 5))
+        unknown.tap()
+        XCTAssertEqual(app.staticTexts["station.catalogStatus"].label, "Manual tracking")
+        XCTAssertFalse(app.buttons["station.enableCamera"].exists)
+        XCTAssertFalse(app.buttons["station.holdTrial"].exists)
+        XCTAssertFalse(app.buttons["station.trial"].exists)
+        app.buttons["station.done"].tap()
+        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["LOG SET 1"].exists)
+    }
+
     private func capture(_ name: String) {
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = name

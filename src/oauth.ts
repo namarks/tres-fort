@@ -113,15 +113,21 @@ oauthRoutes.use('/oauth/token', cors());
 
 // ---- discovery -----------------------------------------------------------
 
-oauthRoutes.get('/.well-known/oauth-protected-resource', (c) => {
-  const o = origin(c.req.url);
-  return c.json({
-    resource: `${o}/mcp`,
-    authorization_servers: [o],
-    bearer_methods_supported: ['header'],
-    scopes_supported: ['mcp'],
-  });
+const resourceMetadata = (o: string) => ({
+  resource: `${o}/mcp`,
+  authorization_servers: [o],
+  bearer_methods_supported: ['header'],
+  scopes_supported: ['mcp'],
 });
+
+oauthRoutes.get('/.well-known/oauth-protected-resource', (c) =>
+  c.json(resourceMetadata(origin(c.req.url))),
+);
+// RFC 9728 section 3.1: clients that derive the metadata URL from the
+// resource insert its path after the well-known prefix.
+oauthRoutes.get('/.well-known/oauth-protected-resource/mcp', (c) =>
+  c.json(resourceMetadata(origin(c.req.url))),
+);
 
 const asMetadata = (o: string) => ({
   issuer: o,
@@ -150,8 +156,16 @@ oauthRoutes.post('/oauth/register', async (c) => {
     .json<{ redirect_uris?: string[]; client_name?: string }>()
     .catch(() => ({}) as { redirect_uris?: string[]; client_name?: string });
   const redirects = Array.isArray(b.redirect_uris) ? b.redirect_uris : [];
-  if (b.client_name !== undefined && (typeof b.client_name !== 'string' || b.client_name.length > 200)) return c.json({ error: 'invalid_client_metadata' }, 400);
-  if (redirects.length === 0 || redirects.length > 10 || !redirects.every(uri => typeof uri === 'string' && uri.length <= 2048)) return c.json({ error: 'invalid_redirect_uri' }, 400);
+  if (b.client_name !== undefined && (typeof b.client_name !== 'string' || b.client_name.length > 200)) {
+    logOAuthRefusal('register', 'invalid_client_metadata');
+    return c.json({ error: 'invalid_client_metadata' }, 400);
+  }
+  if (redirects.length === 0 || redirects.length > 10 || !redirects.every(uri => typeof uri === 'string' && uri.length <= 2048)) {
+    logOAuthRefusal('register', 'invalid_redirect_uri', {
+      client_name: b.client_name, redirect_uris: redirects.length > 0 ? JSON.stringify(redirects.slice(0, 3)) : 'none',
+    });
+    return c.json({ error: 'invalid_redirect_uri' }, 400);
+  }
   const clientId = rand();
   await c.env.DB.prepare(
     'INSERT INTO oauth_clients (client_id, client_secret, redirect_uris, client_name, created_at) VALUES (?1, NULL, ?2, ?3, ?4)',
@@ -172,6 +186,26 @@ oauthRoutes.post('/oauth/register', async (c) => {
 });
 
 // ---- authorize (per-user consent gate) -----------------------------------
+
+// `mcp` is the only grant. Some hosts also request `offline_access` (OpenAI's
+// connector guidance asks for it); refresh tokens are always issued, so it is
+// accepted as a companion to `mcp`, never in place of it, and the stored grant
+// stays exactly `mcp`. Anything else is refused.
+function scopeAccepted(scope: string | undefined): boolean {
+  if (!scope) return true;
+  if (scope.length > 100) return false;
+  const tokens = scope.split(' ').filter(Boolean);
+  return tokens.includes('mcp') && tokens.every(t => t === 'mcp' || t === 'offline_access');
+}
+
+// Refused OAuth requests are otherwise invisible from the provider side. Log
+// why (visible in `wrangler tail`) with request metadata only: never codes,
+// verifiers, connect codes, tokens or state.
+function logOAuthRefusal(route: string, reason: string, detail: Record<string, string | undefined> = {}) {
+  const fields: Record<string, string> = {};
+  for (const [k, v] of Object.entries(detail)) if (v) fields[k] = v.slice(0, 300);
+  console.warn({ event: 'oauth_refused', route, reason, ...fields });
+}
 
 function loopbackRedirectWithoutPort(uri: string): string | null {
   // RFC 8252 section 7.3: native clients choose an available loopback port at
@@ -196,6 +230,20 @@ function redirectAllowed(allowed: string[], requested: string): boolean {
 function escapeHtml(value: string): string {
   return value.replace(/&/g, '&amp;').replace(/</g, '&lt;')
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// Name who receives the data from the return address the client registered,
+// never from its self-reported name. Mirrors the iOS approval screen.
+function recipientFor(redirectUri: string): string {
+  let url: URL;
+  try { url = new URL(redirectUri); } catch { return 'The connecting app and its configured model provider'; }
+  if (loopbackRedirectWithoutPort(redirectUri)) return 'An app on this computer and its configured model provider';
+  const host = url.protocol === 'https:' && !url.username && !url.password ? url.hostname.toLowerCase() : '';
+  const within = (domain: string) => host === domain || host.endsWith('.' + domain);
+  if (within('claude.ai') || within('anthropic.com')) return 'Claude, operated by Anthropic';
+  if (within('chatgpt.com') || within('openai.com')) return 'ChatGPT, operated by OpenAI';
+  if (within('meta.ai') || within('meta.com')) return 'Meta AI, operated by Meta';
+  return host ? `The app at ${host} and its configured model provider` : 'The connecting app and its configured model provider';
 }
 
 function consentPolicy(callback: URL): string {
@@ -228,6 +276,7 @@ border-radius:8px;font-weight:600;font-size:15px;cursor:pointer}
 <h1>Connect Très Fort</h1>
 ${mobileRequest ? `<p><a href="https://tresfort.app/coach/authorize?request=${mobileRequest}">Open Très Fort to review access</a></p><p>On iPhone, approve in the signed-in Très Fort app. The request expires in 10 minutes. If the app does not open, use the connect-code option below.</p>` : ''}
 <details${mobileRequest ? '' : ' open'}><summary>Use a connect code</summary><p>Paste your connect code to link your AI app to your training. Get it in the Très Fort app under Profile → Coach.</p>
+<p>Your data goes to: <strong>${escapeHtml(recipientFor(params.redirect_uri ?? ''))}</strong>, based on the return address this app registered. They process it under their own terms and privacy policy.</p>
 <p>App name supplied by the connecting client: <strong>${escapeHtml(clientName || 'AI app')}</strong>. Only continue if you started this connection in an app you trust.</p>
 <p>Allowing access lets this app and its configured AI provider read your training profile and plan, workout history, saved feedback and available group information, including imported Apple Health and Intervals.icu workouts. It also lets the app change your plan and record training updates.</p>
 <p>You can disconnect all AI apps in Profile to stop future access through these connections. This does not delete information already retrieved into AI conversations. The Apple Health group-sharing switch does not limit your own coach’s access. Review the <a href="https://tresfort.app/privacy">Très Fort privacy policy</a> and your chosen app and model provider’s privacy policies before approving.</p>
@@ -244,29 +293,36 @@ async function loadClient(env: Env, clientId: string) {
 
 oauthRoutes.get('/oauth/authorize', async (c) => {
   const q = c.req.query();
-  if (q.resource && q.resource !== `${origin(c.req.url)}/mcp`) return c.json({ error: 'invalid_target' }, 400);
-  if (q.scope && q.scope !== 'mcp') return c.json({ error: 'invalid_scope' }, 400);
-  const client = q.client_id ? await loadClient(c.env, q.client_id) : null;
-  if (!client) return c.text('invalid client_id', 400);
+  let client: Awaited<ReturnType<typeof loadClient>> = null;
+  const refuse = (reason: string) => logOAuthRefusal('authorize', reason, {
+    client_name: client?.client_name ?? undefined, redirect_uri: q.redirect_uri, scope: q.scope, resource: q.resource,
+    response_type: q.response_type, code_challenge_method: q.code_challenge_method,
+  });
+  if (q.resource && q.resource !== `${origin(c.req.url)}/mcp`) { refuse('invalid_target'); return c.json({ error: 'invalid_target' }, 400); }
+  if (!scopeAccepted(q.scope)) { refuse('invalid_scope'); return c.json({ error: 'invalid_scope' }, 400); }
+  client = q.client_id ? await loadClient(c.env, q.client_id) : null;
+  if (!client) { refuse('invalid_client_id'); return c.text('invalid client_id', 400); }
   const allowed: string[] = JSON.parse(client.redirect_uris);
   if (!q.redirect_uri || !redirectAllowed(allowed, q.redirect_uri)) {
+    refuse('invalid_redirect_uri');
     return c.text('invalid redirect_uri', 400);
   }
-  if (q.response_type !== 'code') return c.text('unsupported_response_type', 400);
+  if (q.response_type !== 'code') { refuse('unsupported_response_type'); return c.text('unsupported_response_type', 400); }
   if (q.code_challenge_method !== 'S256' || !q.code_challenge) {
+    refuse('pkce_required');
     return c.text('PKCE S256 required', 400);
   }
   c.header('Cache-Control', 'no-store');
   c.header('Referrer-Policy', 'no-referrer');
   let callback: URL;
-  try { callback = new URL(q.redirect_uri); } catch { return c.text('invalid redirect_uri', 400); }
+  try { callback = new URL(q.redirect_uri); } catch { refuse('invalid_redirect_uri'); return c.text('invalid redirect_uri', 400); }
   c.header('Content-Security-Policy', consentPolicy(callback));
   // Only HTTPS callbacks can complete on the phone. Desktop loopback clients
   // retain the existing consent form. A request ID never grants access.
   let mobileRequest: string | undefined;
   if (callback?.protocol === 'https:' && !callback.username && !callback.password && !callback.hash
       && /^[A-Za-z0-9_-]{43}$/.test(q.code_challenge)
-      && (!q.scope || q.scope === 'mcp')
+      && scopeAccepted(q.scope)
       && (!q.resource || q.resource === `${origin(c.req.url)}/mcp`)
       && q.redirect_uri.length <= 2048 && (q.state?.length ?? 0) <= 2048) {
     mobileRequest = rand();
@@ -283,7 +339,7 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
       code_challenge: q.code_challenge ?? '',
       code_challenge_method: 'S256',
       state: q.state ?? '',
-      scope: q.scope ?? 'mcp',
+      scope: 'mcp',
       resource: q.resource ?? '',
     }, client.client_name, undefined, mobileRequest),
   );
@@ -292,15 +348,18 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
 oauthRoutes.post('/oauth/authorize', async (c) => {
   const form = await c.req.formData();
   const f = (k: string) => String(form.get(k) ?? '');
-  if (f('resource') && f('resource') !== `${origin(c.req.url)}/mcp`) return c.json({ error: 'invalid_target' }, 400);
-  if (f('scope') && f('scope') !== 'mcp') return c.json({ error: 'invalid_scope' }, 400);
-  if ((f('code_challenge_method') && f('code_challenge_method') !== 'S256') || !f('code_challenge')) return c.text('PKCE S256 required', 400);
+  const refuse = (reason: string) => logOAuthRefusal('authorize_submit', reason, {
+    redirect_uri: f('redirect_uri'), scope: f('scope'), resource: f('resource'),
+  });
+  if (f('resource') && f('resource') !== `${origin(c.req.url)}/mcp`) { refuse('invalid_target'); return c.json({ error: 'invalid_target' }, 400); }
+  if (!scopeAccepted(f('scope'))) { refuse('invalid_scope'); return c.json({ error: 'invalid_scope' }, 400); }
+  if ((f('code_challenge_method') && f('code_challenge_method') !== 'S256') || !f('code_challenge')) { refuse('pkce_required'); return c.text('PKCE S256 required', 400); }
   const client = await loadClient(c.env, f('client_id'));
-  if (!client) return c.text('invalid client_id', 400);
+  if (!client) { refuse('invalid_client_id'); return c.text('invalid client_id', 400); }
   const allowed: string[] = JSON.parse(client.redirect_uris);
-  if (!redirectAllowed(allowed, f('redirect_uri'))) return c.text('invalid redirect_uri', 400);
+  if (!redirectAllowed(allowed, f('redirect_uri'))) { refuse('invalid_redirect_uri'); return c.text('invalid redirect_uri', 400); }
   let callback: URL;
-  try { callback = new URL(f('redirect_uri')); } catch { return c.text('invalid redirect_uri', 400); }
+  try { callback = new URL(f('redirect_uri')); } catch { refuse('invalid_redirect_uri'); return c.text('invalid redirect_uri', 400); }
   c.header('Cache-Control', 'no-store');
   c.header('Referrer-Policy', 'no-referrer');
   c.header('Content-Security-Policy', consentPolicy(callback));
@@ -311,7 +370,7 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
     code_challenge: f('code_challenge'),
     code_challenge_method: 'S256',
     state: f('state'),
-    scope: f('scope'),
+    scope: 'mcp',
     resource: f('resource'),
   };
   // Resolve WHICH user is connecting: the owner via OWNER_AUTH_PASSPHRASE, or
@@ -328,12 +387,14 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
     userId = await findUserByMcpPassphrase(c.env.DB, pass);
   }
   if (!userId) {
+    logOAuthRefusal('authorize_submit', pass ? 'connect_code_mismatch' : 'connect_code_missing', { client_name: client.client_name ?? undefined });
     return c.html(
       consentPage(params, client.client_name, 'That code did not match — open Très Fort → Profile → Coach to copy the current one.'),
       401,
     );
   }
   if (await isAccountDeletionInProgress(c.env.DB, userId)) {
+    refuse('account_deletion_in_progress');
     return c.html(
       consentPage(params, client.client_name, 'That account is being deleted and cannot be connected.'),
       401,
@@ -360,7 +421,7 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
       params.redirect_uri,
       params.code_challenge,
       'S256',
-      params.scope || 'mcp',
+      'mcp',
       params.resource || null,
       Date.now() + CODE_TTL_MS,
       Date.now(),
@@ -368,6 +429,7 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
     )
     .run();
   if (inserted.meta.changes !== 1) {
+    refuse('account_unavailable');
     return c.html(
       consentPage(params, client.client_name, 'That account is being deleted and cannot be connected.'),
       401,
@@ -394,20 +456,26 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
 oauthRoutes.post('/oauth/token', async (c) => {
   const form = await c.req.formData();
   const f = (k: string) => String(form.get(k) ?? '');
-  if (f('resource') && f('resource') !== `${origin(c.req.url)}/mcp`) return c.json({ error: 'invalid_target' }, 400);
-  if (f('scope') && f('scope') !== 'mcp') return c.json({ error: 'invalid_scope' }, 400);
   const grant = f('grant_type');
+  const refuse = (reason: string) => logOAuthRefusal('token', reason, {
+    grant_type: grant, client_id: f('client_id'), redirect_uri: f('redirect_uri'), scope: f('scope'), resource: f('resource'),
+    client_auth: c.req.header('Authorization')?.split(' ')[0],
+  });
+  if (f('resource') && f('resource') !== `${origin(c.req.url)}/mcp`) { refuse('invalid_target'); return c.json({ error: 'invalid_target' }, 400); }
+  if (!scopeAccepted(f('scope'))) { refuse('invalid_scope'); return c.json({ error: 'invalid_scope' }, 400); }
 
   if (grant === 'authorization_code') {
     const code = await c.env.DB.prepare('SELECT * FROM oauth_codes WHERE code = ?1')
       .bind(f('code'))
       .first<any>();
-    if (!code) return c.json({ error: 'invalid_grant' }, 400);
-    if (code.expires_at < Date.now()) return c.json({ error: 'invalid_grant' }, 400);
+    if (!code) { refuse('code_unknown_or_used'); return c.json({ error: 'invalid_grant' }, 400); }
+    if (code.expires_at < Date.now()) { refuse('code_expired'); return c.json({ error: 'invalid_grant' }, 400); }
     if (code.client_id !== f('client_id') || code.redirect_uri !== f('redirect_uri')) {
+      refuse(code.client_id !== f('client_id') ? 'code_client_mismatch' : 'code_redirect_mismatch');
       return c.json({ error: 'invalid_grant' }, 400);
     }
     if ((await s256(f('code_verifier'))) !== code.code_challenge) {
+      refuse('pkce_mismatch');
       return c.json({ error: 'invalid_grant', detail: 'pkce' }, 400);
     }
     const tokens = await redeemOAuthAuthorizationCode(c.env.DB, {
@@ -418,8 +486,8 @@ oauthRoutes.post('/oauth/token', async (c) => {
       grant_id: crypto.randomUUID(),
       owner_apple_sub: c.env.OWNER_APPLE_SUB,
     }).catch(() => undefined);
-    if (tokens === undefined) return c.json({ error: 'server_error' }, 500);
-    if (!tokens) return c.json({ error: 'invalid_grant' }, 400);
+    if (tokens === undefined) { refuse('code_redemption_failed'); return c.json({ error: 'server_error' }, 500); }
+    if (!tokens) { refuse('code_redemption_rejected'); return c.json({ error: 'invalid_grant' }, 400); }
     return c.json({
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
@@ -444,9 +512,11 @@ oauthRoutes.post('/oauth/token', async (c) => {
           c.env.OWNER_APPLE_SUB,
         );
       }
+      refuse('refresh_unknown_or_used');
       return c.json({ error: 'invalid_grant' }, 400);
     }
     if (!f('client_id') || row.client_id !== f('client_id')) {
+      refuse('refresh_client_mismatch');
       return c.json({ error: 'invalid_grant' }, 400);
     }
     const tokens = await refreshOAuthGrant(c.env.DB, {
@@ -460,8 +530,8 @@ oauthRoutes.post('/oauth/token', async (c) => {
       consumed_refresh_sha256: await sha256Hex(f('refresh_token')),
       owner_apple_sub: c.env.OWNER_APPLE_SUB,
     }).catch(() => undefined);
-    if (tokens === undefined) return c.json({ error: 'server_error' }, 500);
-    if (!tokens) return c.json({ error: 'invalid_grant' }, 400);
+    if (tokens === undefined) { refuse('refresh_failed'); return c.json({ error: 'server_error' }, 500); }
+    if (!tokens) { refuse('refresh_rejected'); return c.json({ error: 'invalid_grant' }, 400); }
     return c.json({
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
@@ -471,6 +541,7 @@ oauthRoutes.post('/oauth/token', async (c) => {
     });
   }
 
+  refuse('unsupported_grant_type');
   return c.json({ error: 'unsupported_grant_type' }, 400);
 });
 

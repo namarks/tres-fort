@@ -9,7 +9,7 @@
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Très Fort",
-    "shortDescription": "Plan training with your workout history.",
+    "shortDescription": "Plan training from your log",
     "longDescription": "Connect your Très Fort account to review training, adapt workouts and save plan changes. Conversations stay in your AI app. Uses your existing supported AI account or subscription; Très Fort does not supply model usage.",
     "developerName": "Nicholas Marks",
     "category": "Productivity",

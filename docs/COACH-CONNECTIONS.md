@@ -104,8 +104,10 @@ No provider API credentials are stored or forwarded by Très Fort.
   individual model health. **Disconnect all AI apps** revokes that account's
   grants, including old Claude grants, without deleting training data or another
   member's access. Rotating a connect code alone does not revoke existing grants.
-- Consent identifies the self-reported app name as such and explains access by
-  the app and its configured model provider. Retrieved data remains subject to
+- Consent names who receives the data from the client's registered return
+  address (Claude/Anthropic, ChatGPT/OpenAI, Meta AI/Meta, a local app, or the
+  return host), never from its self-reported name, which is labelled as such.
+  It explains access by the app and its configured model provider. Retrieved data remains subject to
   those providers' policies after disconnect. Apple Health group sharing is
   separate from the member's own authorized coach access.
 

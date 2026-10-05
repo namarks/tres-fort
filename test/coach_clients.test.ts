@@ -6,11 +6,15 @@ import { createPlan, setUserMcpPassphrase } from '../src/db';
 const BASE = 'https://tres-fort.test';
 const MEMBER = '74794029-c461-43b4-9021-5f29d544dc60';
 const OTHER = '7a56e10e-4120-41d0-a1d1-f508f0c736aa';
+const LOCAL = 'An app on this computer and its configured model provider';
 const clients = [
-  { name: 'Codex', redirect: 'http://127.0.0.1:45213/callback/tres-fort-test', registeredRedirect: 'http://127.0.0.1/callback/tres-fort-test' },
-  { name: 'IPv6 native app', redirect: 'http://[::1]:45213/callback/tres-fort-test', registeredRedirect: 'http://[::1]/callback/tres-fort-test' },
-  { name: 'Claude', redirect: 'https://claude.ai/api/mcp/auth_callback' },
-  { name: 'Other AI app', redirect: 'http://127.0.0.1:39117/oauth/callback' },
+  { name: 'Codex', redirect: 'http://127.0.0.1:45213/callback/tres-fort-test', registeredRedirect: 'http://127.0.0.1/callback/tres-fort-test', recipient: LOCAL },
+  { name: 'IPv6 native app', redirect: 'http://[::1]:45213/callback/tres-fort-test', registeredRedirect: 'http://[::1]/callback/tres-fort-test', recipient: LOCAL },
+  { name: 'Claude', redirect: 'https://claude.ai/api/mcp/auth_callback', recipient: 'Claude, operated by Anthropic' },
+  // Meta Muse signs in from its hosted browser; hosts may add offline_access.
+  { name: 'Meta Muse', redirect: 'https://agent.meta.ai/api/hatch/oauth/callback', scope: 'mcp offline_access', recipient: 'Meta AI, operated by Meta' },
+  { name: 'ChatGPT', redirect: 'https://chatgpt.com/connector/oauth/synthetic-callback', scope: 'offline_access mcp', recipient: 'ChatGPT, operated by OpenAI' },
+  { name: 'Other AI app', redirect: 'http://127.0.0.1:39117/oauth/callback', recipient: LOCAL },
 ];
 type Connection = { access_token: string; refresh_token: string; client_id: string };
 const connections = new Map<string, Connection>();
@@ -18,7 +22,7 @@ let otherConnection: Connection;
 let jwt: string;
 let otherJwt: string;
 
-async function connect(name: string, redirect: string, passphrase: string, registeredRedirect = redirect): Promise<Connection> {
+async function connect(name: string, redirect: string, passphrase: string, registeredRedirect = redirect, scope = 'mcp', recipient = LOCAL): Promise<Connection> {
   const registration = await SELF.fetch(`${BASE}/oauth/register`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ client_name: name, redirect_uris: [registeredRedirect] }),
@@ -31,7 +35,7 @@ async function connect(name: string, redirect: string, passphrase: string, regis
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const params = new URLSearchParams({
     client_id, redirect_uri: redirect, response_type: 'code',
-    code_challenge: challenge, code_challenge_method: 'S256', scope: 'mcp',
+    code_challenge: challenge, code_challenge_method: 'S256', scope,
     resource: `${BASE}/mcp`, state: 'state&<literal>',
   });
   const page = await SELF.fetch(`${BASE}/oauth/authorize?${params}`);
@@ -42,8 +46,10 @@ async function connect(name: string, redirect: string, passphrase: string, regis
   const html = await page.text();
   expect(html).toContain('this app and its configured AI provider');
   expect(html).toContain('App name supplied by the connecting client');
+  expect(html).toContain(`Your data goes to: <strong>${recipient}</strong>`);
   expect(html).toContain('value="state&amp;&lt;literal&gt;"');
-  expect(html).not.toContain('operated by Anthropic');
+  // Only a registered Claude return address may name Anthropic; never the self-reported name.
+  if (!recipient.startsWith('Claude')) expect(html).not.toContain('operated by Anthropic');
   params.set('passphrase', passphrase);
   const authorized = await SELF.fetch(`${BASE}/oauth/authorize`, {
     method: 'POST', body: params, redirect: 'manual',
@@ -79,7 +85,9 @@ async function connect(name: string, redirect: string, passphrase: string, regis
     }),
   });
   expect(exchanged.status).toBe(200);
-  return { ...(await exchanged.json<Omit<Connection, 'client_id'>>()), client_id };
+  const tokens = await exchanged.json<Omit<Connection, 'client_id'> & { scope: string }>();
+  expect(tokens.scope).toBe('mcp');
+  return { access_token: tokens.access_token, refresh_token: tokens.refresh_token, client_id };
 }
 
 async function rpc(access: string, method: string, params = {}) {
@@ -111,7 +119,7 @@ beforeAll(async () => {
   jwt = await issueAppJwt(MEMBER, env.APP_JWT_SECRET);
   otherJwt = await issueAppJwt(OTHER, env.APP_JWT_SECRET);
   for (const client of clients) {
-    connections.set(client.name, await connect(client.name, client.redirect, `synthetic-code-${MEMBER}`, client.registeredRedirect));
+    connections.set(client.name, await connect(client.name, client.redirect, `synthetic-code-${MEMBER}`, client.registeredRedirect, client.scope, client.recipient));
   }
   otherConnection = await connect('Another member’s app', 'http://127.0.0.1:41234/callback', `synthetic-code-${OTHER}`);
 });
@@ -230,6 +238,25 @@ describe('external AI client compatibility', () => {
     expect((await profile()).coach.connected).toBe(false);
     expect((await profile(otherJwt)).coach.connected).toBe(true);
     expect(await env.DB.prepare('SELECT name FROM plans WHERE user_id = ?1').bind(MEMBER).first('name')).toBe('Member plan');
+  });
+
+  it('names the recipient from the registered return address, not the self-reported name', async () => {
+    for (const [redirect, expected] of <[string, string][]>[
+      ['https://claude.ai.example/cb', 'The app at claude.ai.example and its configured model provider'],
+      ['https://evilmeta.ai/cb', 'The app at evilmeta.ai and its configured model provider'],
+      ['https://chat.openai.com/aip/callback', 'ChatGPT, operated by OpenAI'],
+    ]) {
+      const reg = await (await SELF.fetch(`${BASE}/oauth/register`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ client_name: 'Claude', redirect_uris: [redirect] }),
+      })).json<{ client_id: string }>();
+      const html = await (await SELF.fetch(`${BASE}/oauth/authorize?` + new URLSearchParams({
+        client_id: reg.client_id, redirect_uri: redirect, response_type: 'code',
+        code_challenge: 'test', code_challenge_method: 'S256',
+      }))).text();
+      expect(html).toContain(`Your data goes to: <strong>${expected}</strong>`);
+      if (!expected.startsWith('Claude')) expect(html).not.toContain('operated by Anthropic');
+    }
   });
 
   it('escapes self-reported client names on consent and error pages', async () => {

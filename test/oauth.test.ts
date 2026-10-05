@@ -98,6 +98,56 @@ describe('oauth discovery', () => {
     expect(r.headers.get('access-control-allow-origin')).toBe('*');
   });
 
+  it('serves the same metadata at the RFC 9728 path-inserted location', async () => {
+    const r = await SELF.fetch(`${BASE}/.well-known/oauth-protected-resource/mcp`);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual(
+      await (await SELF.fetch(`${BASE}/.well-known/oauth-protected-resource`)).json(),
+    );
+    expect(r.headers.get('access-control-allow-origin')).toBe('*');
+  });
+
+  it('accepts offline_access beside mcp and refuses any other scope', async () => {
+    const redirect = 'https://agent.meta.ai/api/hatch/oauth/callback';
+    const { client_id } = await (
+      await SELF.fetch(`${BASE}/oauth/register`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ redirect_uris: [redirect], client_name: 'Meta Muse' }),
+      })
+    ).json<{ client_id: string }>();
+    const { challenge } = await pkce();
+    const authorize = (scope: string) => SELF.fetch(`${BASE}/oauth/authorize?` + new URLSearchParams({
+      response_type: 'code', client_id, redirect_uri: redirect, code_challenge: challenge,
+      code_challenge_method: 'S256', scope, resource: `${BASE}/mcp`,
+    }));
+    for (const scope of ['mcp offline_access', 'offline_access mcp', 'mcp']) {
+      const page = await authorize(scope);
+      expect(page.status).toBe(200);
+      const html = await page.text();
+      expect(html).toContain('name="scope" value="mcp"');
+      expect(html).toContain('Open Très Fort to review access');
+    }
+    for (const scope of ['openid', 'offline_access', 'mcp admin', 'mcp,offline_access', 'mcp ' + 'offline_access '.repeat(20)]) {
+      const r = await authorize(scope);
+      expect(r.status).toBe(400);
+      expect(await r.json()).toEqual({ error: 'invalid_scope' });
+    }
+    const submit = new FormData();
+    submit.set('client_id', client_id);
+    submit.set('redirect_uri', redirect);
+    submit.set('code_challenge', challenge);
+    submit.set('scope', 'mcp email');
+    submit.set('passphrase', 'test-pass');
+    expect((await SELF.fetch(`${BASE}/oauth/authorize`, { method: 'POST', body: submit })).status).toBe(400);
+    const token = new FormData();
+    token.set('grant_type', 'refresh_token');
+    token.set('refresh_token', 'unknown');
+    token.set('scope', 'openid');
+    expect(await (await SELF.fetch(`${BASE}/oauth/token`, { method: 'POST', body: token })).json())
+      .toEqual({ error: 'invalid_scope' });
+  });
+
   it('AS metadata advertises PKCE + endpoints', async () => {
     const j = await (await SELF.fetch(`${BASE}/.well-known/oauth-authorization-server`)).json<any>();
     expect(j.issuer).toBe(BASE);

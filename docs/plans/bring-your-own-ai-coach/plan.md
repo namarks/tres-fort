@@ -1,6 +1,6 @@
 # Bring Your Own AI Coach
 
-Slug: bring-your-own-ai-coach · Status: gated · Updated: 2026-09-18 · Theme: coaching
+Slug: bring-your-own-ai-coach · Status: gated · Updated: 2026-10-05 · Theme: coaching
 
 ## Goal
 
@@ -88,6 +88,11 @@ Repository delivery and actual provider connection/release evidence remain disti
   - After provider approval/publication produces an actual install URL, wire
     that URL into the app and verify install, approval, coaching read/write,
     iOS sync and disconnect on iPhone. No placeholder install URL is shipped.
+  - Rechecked against the portal checklist 2026-10-05: the short description now
+    fits its 30-character limit and the HTTPS support URL is set. Still needed
+    from the owner: verification, published terms URL, a demo video, the review
+    account and the domain-challenge release. See the
+    [submission worksheet](../../../plugins/tres-fort/submission.md).
 
 - [ ] **P5 — Request a coaching change from its workout context**
   - [ ] **(a) Prototype the request, proposal and return journey**
@@ -155,6 +160,12 @@ checks. Claude's install link and native approval are released, but their full
 physical-iPhone round trip has not been verified. Codex's direct connection still
 uses the desktop setup; a phone-only hosted install requires P4 publication.
 
+**Also now (@owner):** Try Meta Muse (a custom connector created in chat) and
+ChatGPT developer mode, then check whether a dot can use that connection. The
+sign-in hardening for those hosts (accepting `offline_access`, path-inserted
+discovery, logging refused OAuth requests for `wrangler tail`) must be released
+under owner authority before it applies in production.
+
 **Release complete (2026-09-14 Pacific):** The owner authorized the latest
 production and TestFlight release. Worker version
 `92adb0e0-28bd-4952-81ad-b09029f75ac9` serves the reviewed source at 100% traffic;
@@ -171,6 +182,15 @@ Codex install still does. P3 landed in [PR #191](https://github.com/namarks/tres
 P3.1 landed in [PR #207](https://github.com/namarks/tres-fort/pull/207).
 
 ## Notes / open questions
+
+- 2026-10-05: Meta Muse and ChatGPT Dots were requested as coaching hosts.
+  Muse adds a remote MCP connector from a chat prompt and signs in from Meta's
+  hosted browser, so the connect code is its approval path. Dots use apps
+  enabled on the member's ChatGPT account; OpenAI does not say whether
+  developer-mode apps qualify, and its developer-mode page limits Pro to
+  read/fetch. Neither host is verified. The connection guide adds a host only
+  after a real connection reads the brief and makes a harmless write. If Dots
+  need a published plugin, P4 is the route.
 
 - P5 is a planned follow-up, separate from P2 device verification and P4 plugin
   publication. The highest-priority non-AI work is library P0.5(a)/(b); evaluate

@@ -25,6 +25,11 @@ final class TodayNavigationJourneyTests: XCTestCase {
         for _ in 0..<6 where !element.isHittable { app.swipeUp() }
         XCTAssertTrue(element.isHittable); element.tap()
     }
+    /// The calendar lives behind Today's week strip.
+    private func openCalendar(in app: XCUIApplication) {
+        tap(app.tabBars.buttons["Today"], in: app)
+        tap(app.buttons["today.calendar"], in: app)
+    }
     /// A tap that lands while the review screen is still animating in can
     /// leave the name field without keyboard focus. Retry the tap until it
     /// has focus, then type.
@@ -83,7 +88,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
 
     func testCalendarMovesAndRemovesOneDateWithoutChangingWeeklySchedule() {
         let app = launch()
-        tap(app.tabBars.buttons["Calendar"], in: app)
+        openCalendar(in: app)
         tap(app.buttons["calendar.date.2026-09-08"], in: app)
         tap(app.buttons["calendar.dateActions"], in: app)
         tap(app.buttons["calendar.moveWorkout"], in: app)
@@ -165,7 +170,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
         capture("library-prescribed-weights")
         tap(app.navigationBars["Strength A"].buttons["Done"], in: app)
         tap(app.navigationBars["Workouts"].buttons["Done"], in: app)
-        tap(app.tabBars.buttons["Calendar"], in: app)
+        openCalendar(in: app)
         tap(app.buttons["calendar.date.2026-09-08"], in: app)
         XCTAssertTrue(app.staticTexts["2×8 · 25 lb each hand"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["2×8 · 45 lb"].exists)
@@ -174,7 +179,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
 
     func testCalendarPrioritizesGroupedWorkoutAndMatchesLibraryPreview() throws {
         let app = try launchGroupedPreview()
-        tap(app.tabBars.buttons["Calendar"], in: app)
+        openCalendar(in: app)
         tap(app.buttons["calendar.date.2026-09-08"], in: app)
         XCTAssertTrue(app.staticTexts["Superset A"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["STRENGTH A"].exists)
@@ -234,7 +239,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
 
     func testCalendarPickerSchedulesOnlySelectedDateWithoutManagementTools() {
         let app = launch()
-        tap(app.tabBars.buttons["Calendar"], in: app)
+        openCalendar(in: app)
         tap(app.buttons["calendar.date.2026-09-09"], in: app)
         XCTAssertFalse(app.buttons["calendar.startWorkout"].exists, "Future workouts cannot be started")
         tap(app.buttons["calendar.dateActions"], in: app)
@@ -307,7 +312,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
 
     func testCalendarStartsAndContinuesTheSameTodaysWorkout() {
         let app = launch()
-        tap(app.tabBars.buttons["Calendar"], in: app)
+        openCalendar(in: app)
         tap(app.buttons["calendar.date.2026-09-08"], in: app)
         let start = app.buttons["calendar.startWorkout"]
         XCTAssertEqual(start.label, "Start workout")
@@ -317,19 +322,19 @@ final class TodayNavigationJourneyTests: XCTestCase {
         tap(app.buttons["LOG SET 1"], in: app)
         XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
         tap(app.buttons["runner.minimize"], in: app)
-        tap(app.tabBars.buttons["Calendar"], in: app)
+        openCalendar(in: app)
         tap(app.buttons["calendar.date.2026-09-08"], in: app)
         XCTAssertEqual(app.buttons["calendar.startWorkout"].label, "Continue workout")
         tap(app.buttons["calendar.startWorkout"], in: app)
         XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.staticTexts["runner.exerciseTitle"].label, exerciseName)
-        XCTAssertFalse(app.tabBars.buttons["Calendar"].isHittable)
+        XCTAssertFalse(app.tabBars.buttons["Today"].isHittable)
         capture("calendar-continued-workout")
     }
 
     func testCalendarStartPreparesRestNotificationsBeforeLogging() {
         let app = launch(restCues: true)
-        tap(app.tabBars.buttons["Calendar"], in: app)
+        openCalendar(in: app)
         tap(app.buttons["calendar.date.2026-09-08"], in: app)
         tap(app.buttons["calendar.startWorkout"], in: app)
         // The OS prompts only once per installation. A fresh simulator must
@@ -346,7 +351,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
 
     func testCalendarCanRemoveAPlannedDateWithoutASavedWorkoutIdentity() {
         let app = launch(unassignedDate: true)
-        tap(app.tabBars.buttons["Calendar"], in: app)
+        openCalendar(in: app)
         tap(app.buttons["calendar.date.2026-09-09"], in: app)
         tap(app.buttons["calendar.dateActions"], in: app)
         XCTAssertFalse(app.buttons["calendar.moveWorkout"].exists)
@@ -360,7 +365,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
 
     func testCalendarMoveConflictRefreshesAndAllowsARevisedRequest() {
         let app = launch(moveConflict: true)
-        tap(app.tabBars.buttons["Calendar"], in: app)
+        openCalendar(in: app)
         tap(app.buttons["calendar.date.2026-09-08"], in: app)
         tap(app.buttons["calendar.dateActions"], in: app)
         tap(app.buttons["calendar.moveWorkout"], in: app)

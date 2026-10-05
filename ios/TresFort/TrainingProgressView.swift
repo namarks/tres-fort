@@ -166,7 +166,7 @@ struct WorkoutConsistencyView: View {
                     .accessibilityIdentifier("consistency.total")
                 WorkoutConsistencyChart(weeks: summary.weeks).frame(height: 180)
             } footer: {
-                Text("Completed Très Fort workouts by workout date. Weeks run Monday–Sunday; the highlighted current week is still in progress. Activities imported from other apps or logged separately are on Calendar.")
+                Text("Completed Très Fort workouts by workout date. Weeks run Monday–Sunday; the highlighted current week is still in progress. Activities imported from other apps or logged separately are in the calendar on Today.")
             }
             Section("By week") {
                 ForEach(summary.weeks.reversed()) { week in

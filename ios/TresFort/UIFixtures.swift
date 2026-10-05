@@ -236,7 +236,7 @@ private struct UIFixtureTrainingView: View {
                 }
             } else if scenario.isHistory {
                 TabView {
-                    HistoryView(sync: sync).tabItem { Label("Calendar", systemImage: "calendar") }
+                    NavigationStack { HistoryView(sync: sync) }.tabItem { Label("Calendar", systemImage: "calendar") }
                     TrainingProgressView(sync: sync).tabItem { Label("Progress", systemImage: "chart.xyaxis.line") }
                 }
             } else {

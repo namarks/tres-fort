@@ -116,9 +116,9 @@ AI coaching.
   automatic set progression.
 
 - [Member activation and adherence](member-activation-and-adherence/plan.md) —
-  **paused**; first-workout entry and starters are delivered. Reminders/widgets,
-  compact upcoming sessions and actionable progress empty states remain future
-  slices.
+  **paused**; first-workout entry, starters and the upcoming-sessions week on
+  Today (which replaced the Calendar tab) are delivered. Reminders/widgets and
+  actionable progress empty states remain future slices.
 - [Workout library](workout-library/plan.md) — **gated**; present
   reusable workouts as the primary object, let a member drop one onto any
   date, add tags and archive, and support a freestyle session that can be

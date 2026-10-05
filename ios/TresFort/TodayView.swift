@@ -428,7 +428,7 @@ struct TodayView: View {
         .onChange(of: sync.running) { if !sync.running { isLocallyMinimized = false } }
         // Only the open runner logs counts, so a minimized workout is not armed;
         // resuming arms the current set again.
-        .onChange(of: workoutFocused) { _, focused in if !focused { stationLink.request(nil) } }
+        .onChange(of: workoutFocused) { _, focused in if !focused { stationLink.pause() } }
     }
 
     /// Queue only after the setup sheet has dismissed. The member-entry route

@@ -113,6 +113,7 @@ struct StationView: View {
         .onReceive(access.$isActive) { active in
             guard !active else { return }
             cancelCountdown()
+            linkRequest = nil
             link.stop()
             linkedArmID = nil
             comparison.reset(exercise: exercise)
@@ -124,6 +125,7 @@ struct StationView: View {
         }
         .onDisappear {
             cancelCountdown()
+            linkRequest = nil
             link.stop()
 #if DEBUG
             diagnostics.isEnabled = false
@@ -232,8 +234,9 @@ struct StationView: View {
     private var linkPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("COUNT FOR MY IPHONE").font(Theme.mono(12, .bold))
+            // On from the tap, while the key loads, so turning it off cancels.
             Toggle("Count sets for my iPhone workout", isOn: Binding(
-                get: { link.isEnabled },
+                get: { link.isEnabled || linkRequest != nil },
                 set: { enabled in
                     guard enabled else { linkRequest = nil; link.stop(); return }
                     guard access.validate() else { return }
@@ -243,6 +246,7 @@ struct StationView: View {
                         let key = await loadLinkKey()
                         guard access.validate(), linkRequest == request else { return }
                         link.enable(key: key)
+                        if !link.isEnabled { linkRequest = nil } // no key: show off, with why
                     }
                 }))
                 .tint(Theme.accent)

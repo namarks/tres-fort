@@ -90,6 +90,13 @@ final class StationLinkController: ObservableObject {
         transport.send(.arm(next))
     }
 
+    /// The runner was minimized: disarm the iPad, but keep a finished count
+    /// that waits for a tap (the iPad is already stopped) until it returns.
+    func pause() {
+        guard proposal == nil else { return }
+        request(nil)
+    }
+
     /// The member rejected the count. The set stays manual and the iPad
     /// counts the same set again under a fresh arm.
     func dismissProposal() {

@@ -265,6 +265,21 @@ final class StationLinkTests: XCTestCase {
         XCTAssertNil(controller.proposal)
     }
 
+    func testMinimizingDisarmsButKeepsACountWaitingForATap() throws {
+        let controller = StationLinkController()
+        controller.request(target())
+        controller.pause()
+        XCTAssertNil(controller.arm, "A minimized runner leaves the iPad unarmed")
+
+        controller.request(target())
+        let arm = try XCTUnwrap(controller.arm)
+        controller.receive(.completion(completion(arm, reps: 6, partial: true)))
+        controller.pause()
+        XCTAssertEqual(controller.proposal?.reps, 6, "The counted set survives minimizing")
+        controller.request(target())
+        XCTAssertEqual(controller.proposal?.reps, 6, "Resuming on the same set keeps it")
+    }
+
     func testUnsavedCountWaitsForATapInsteadOfVanishing() throws {
         let controller = StationLinkController()
         controller.request(target())

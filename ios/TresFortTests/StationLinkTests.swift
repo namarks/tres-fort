@@ -440,5 +440,25 @@ final class StationLinkTests: XCTestCase {
         station.abandon()
         XCTAssertFalse(station.isCounting)
         XCTAssertEqual(station.arm, arm)
+        XCTAssertEqual(station.manualArmID, arm.armID)
+    }
+
+    func testChoosingAMovementAfterAnEmptyTrialKeepsTheSetManual() {
+        let station = StationLinkStation()
+        let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 1, exercise: .squat,
+                                 exerciseName: "Back Squat", targetReps: 3)
+        station.receive(.arm(arm))
+        station.beginCounting()
+        XCTAssertFalse(station.trialEnded(count: 0, leftCount: nil, rightCount: nil, partial: true))
+        station.abandon()
+        XCTAssertEqual(station.manualArmID, arm.armID, "An empty trial taken over by hand is manual too")
+        XCTAssertNil(station.armToCount)
+        station.beginCounting()
+        XCTAssertFalse(station.isCounting, "A manual set is not counted again")
+        let next = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 2, exercise: .squat,
+                                  exerciseName: "Back Squat", targetReps: 3)
+        station.receive(.arm(next))
+        XCTAssertNil(station.manualArmID)
+        XCTAssertEqual(station.armToCount, next)
     }
 }

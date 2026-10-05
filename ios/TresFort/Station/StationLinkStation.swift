@@ -8,6 +8,9 @@ import Foundation
 final class StationLinkStation: ObservableObject {
     @Published private(set) var connection: StationLinkTransport.Connection = .off
     @Published private(set) var arm: StationLinkArm?
+    /// The arm the member took over by hand. It stays manual here, as on the
+    /// iPhone, until a new set is armed.
+    @Published private(set) var manualArmID: UUID?
     @Published private(set) var isCounting = false
     @Published private(set) var isEnabled = false
     /// No link key yet: the iPad must reach the server once to set up.
@@ -63,9 +66,15 @@ final class StationLinkStation: ObservableObject {
         }
     }
 
+    /// The arm the iPad may still count: none once taken over by hand.
+    var armToCount: StationLinkArm? {
+        guard let arm, arm.armID != manualArmID else { return nil }
+        return arm
+    }
+
     /// The view started a fresh trial for the current arm.
     func beginCounting() {
-        guard let arm else { return }
+        guard let arm = armToCount else { return }
         detector.reset()
         lastProgress = nil
         isCounting = true
@@ -111,10 +120,12 @@ final class StationLinkStation: ObservableObject {
     }
 
     /// The member took over the iPad by hand; the iPhone keeps the set manual.
+    /// This holds for an arm that never counted, or stopped with no reps.
     func abandon() {
-        guard isCounting else { return }
+        guard let arm = armToCount else { return }
         isCounting = false
-        report(.manual)
+        manualArmID = arm.armID
+        report(.manual, armID: arm.armID)
     }
 
     private func complete(count: Int, leftCount: Int?, rightCount: Int?, partial: Bool) {
@@ -127,6 +138,7 @@ final class StationLinkStation: ObservableObject {
 
     private func withdraw() {
         arm = nil
+        manualArmID = nil
         isCounting = false
         lastProgress = nil
         detector.reset()

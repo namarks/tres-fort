@@ -148,7 +148,7 @@ struct StationView: View {
             if state != .running {
                 cancelCountdown()
                 cancelComparison("Camera stopped. Results cover only part of this trial.")
-            } else if let arm = link.arm, linkedArmID != arm.armID {
+            } else if let arm = link.armToCount, linkedArmID != arm.armID {
                 startLinkedTrial(arm)
             }
             UIApplication.shared.isIdleTimerDisabled = state == .running
@@ -209,7 +209,7 @@ struct StationView: View {
     }
 
     private func startLinkedTrial(_ arm: StationLinkArm) {
-        guard access.validate(), link.arm?.armID == arm.armID, linkedArmID != arm.armID else { return }
+        guard access.validate(), link.armToCount?.armID == arm.armID, linkedArmID != arm.armID else { return }
         guard camera.state == .running, !recordingBusy, !showSavedTests else {
             link.report(camera.state == .running ? .stopped : .cameraOff, armID: arm.armID)
             return
@@ -273,6 +273,7 @@ struct StationView: View {
         case .connected(let name):
             guard let arm = link.arm else { return "Connected to \(name). Waiting for your next set." }
             let state = link.isCounting ? "Counting"
+                : link.manualArmID == arm.armID ? "Log this set on your iPhone"
                 : linkedArmID == arm.armID ? "Sent to your iPhone"
                 : camera.state == .running ? "Not counting" : "Turn on the camera to count"
             return "Connected to \(name) · \(arm.exerciseName), set \(arm.setNumber) · \(state)"
@@ -313,9 +314,9 @@ struct StationView: View {
     @ViewBuilder private var exerciseButtons: some View {
         ForEach(StationExercise.allCases) { option in
             Button {
-                // Taking over by hand ends this arm here; linkedArmID stays so
-                // the camera or Start tracking can't silently re-link it.
-                if linkedArmID != nil { link.abandon() }
+                // Taking over by hand ends the armed set here, counted or not,
+                // so the camera or Start tracking can't silently re-link it.
+                link.abandon()
                 hasRunTrial = false
                 actualReps = ""
                 actualRepsFocused = false
@@ -458,7 +459,7 @@ struct StationView: View {
                 actualRepsFocused = false
                 if comparison.state.isCollecting {
                     comparison.stop()
-                } else if let arm = link.arm, linkedArmID == nil {
+                } else if let arm = link.armToCount, linkedArmID == nil {
                     startLinkedTrial(arm)
                 } else {
                     actualReps = ""

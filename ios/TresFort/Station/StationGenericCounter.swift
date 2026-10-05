@@ -81,9 +81,13 @@ struct StationGenericCounter {
     /// is pending it is the current best candidate, so a count is never shown
     /// without its signal, even when a clip ends inside the lock window.
     var lockedSignal: String? { chosen.map { trackers[$0].signal.name } }
-    /// True when the chosen signal's joints were missing on a frame where the
-    /// person was otherwise tracked, so it may have missed a repetition.
-    var chosenSignalMissedData: Bool { chosen.map { trackers[$0].missedData } ?? false }
+    /// True when joints were missing on a frame where the person was otherwise
+    /// tracked: the chosen signal's joints once there is one, else any candidate's,
+    /// so an unobservable movement is never shown as a reliable zero.
+    var missedSignalData: Bool {
+        if let chosen { return trackers[chosen].missedData }
+        return trackers.contains { $0.missedData }
+    }
 
     private var trackers: [Tracker]
     private var locked: Int?
@@ -315,7 +319,7 @@ struct StationGenericMovementCounter {
     }
 
     private static func hasTrackingLoss(_ counter: StationGenericCounter) -> Bool {
-        counter.status == .trackingLost || counter.chosenSignalMissedData
+        counter.status == .trackingLost || counter.missedSignalData
     }
 
     var signalDescription: String? {

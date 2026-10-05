@@ -181,13 +181,13 @@ final class StationGenericCounterTests: XCTestCase {
         let hiddenAnkles = countSquats(start, hide: { $0 < 0.5 ? [27, 28] : [] })
         XCTAssertEqual(hiddenAnkles.count, 5)
         XCTAssertTrue(["leftKnee", "rightKnee"].contains(hiddenAnkles.lockedSignal ?? ""))
-        XCTAssertTrue(hiddenAnkles.chosenSignalMissedData)
+        XCTAssertTrue(hiddenAnkles.missedSignalData)
         XCTAssertNotEqual(hiddenAnkles.status, .trackingLost)
 
         // Hiding only the hips' shoulder joints leaves the chosen knee complete.
         let hiddenShoulders = countSquats(start, hide: { $0 < 0.5 ? [11, 12] : [] })
         XCTAssertEqual(hiddenShoulders.count, 5)
-        XCTAssertFalse(hiddenShoulders.chosenSignalMissedData)
+        XCTAssertFalse(hiddenShoulders.missedSignalData)
 
         var movement = StationGenericMovementCounter(exercise: .squat)
         var noise = SeededNoise(seed: 8)
@@ -283,7 +283,23 @@ final class StationGenericCounterTests: XCTestCase {
             XCTAssertEqual(counter.leftCount, left, "left of \(left)/\(right)")
             XCTAssertEqual(counter.rightCount, right, "right of \(left)/\(right)")
             XCTAssertEqual(counter.count, max(left, right))
+            XCTAssertFalse(counter.hasTrackingLoss, "\(left)/\(right)")
         }
+    }
+
+    func testObscuredArmIsNotReportedAsACompleteZero() {
+        // The left wrist is never confidently seen, so the left elbow cannot be
+        // measured while the still left shoulder keeps that arm "ready".
+        var counter = StationGenericMovementCounter(exercise: .curl)
+        var noise = SeededNoise(seed: 9)
+        for sample in curlSeries(left: 3, right: 3) {
+            let pose = SyntheticPose(leftCurl: sample.left, rightCurl: sample.right, hiddenJoints: [15])
+            counter.process(StationWorldPoseSample(timestamp: sample.time, landmarks: pose.landmarks(noise: &noise),
+                                                   personCount: 1))
+        }
+        XCTAssertEqual(counter.leftCount, 0)
+        XCTAssertEqual(counter.rightCount, 3)
+        XCTAssertTrue(counter.hasTrackingLoss)
     }
 
     func testPressingMovementCountsWithTheUpperBodyHint() {

@@ -42,9 +42,10 @@ final class StationLinkController: ObservableObject {
             }
         }
         self.transport.onMessage = { [weak self] in self?.receive($0) }
-        // A fresh connection learns the current arm, if any.
+        // A fresh connection learns the current arm, if any. While a count
+        // waits for a tap the iPad stays idle, so it isn't counted twice.
         self.transport.onConnect = { [weak self] in
-            guard let self, let arm = self.arm else { return }
+            guard let self, self.proposal == nil, let arm = self.arm else { return }
             self.transport.send(.arm(arm))
         }
     }

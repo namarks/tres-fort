@@ -158,13 +158,18 @@ first set. Starting the session in the same write is what pins the workout:
 plan writers already refuse to archive, delete or restore a workout with an
 in-progress session, so a coach or another device cannot pull it away between
 Start and the first set, exactly as for any running solo workout. Slot edits
-are not covered by that guard today: `update_exercise`, `swap_exercise`,
-`delete_exercise`, `add_exercise` and `adjust_today` may change a running solo
-workout's slots. A dual workout cannot allow that, because its steps are named
-by slot IDs on both sides. So the Start write also marks the session as a dual
-session (a nullable column on `sessions`, P0's only schema change), and those
-slot writers refuse, with `active_workout`, any change to the slots of a
-workout an in-progress dual session uses. The coach sees the refusal and can
+are not covered by that guard today: several writers may change a running solo
+workout's slots, order, groups or rest. A dual workout cannot allow that,
+because its steps are named by slot IDs on both sides and its rests come from
+the handoff. So the Start write also marks the session as a dual session (a
+nullable column on `sessions`, P0's only schema change), and every plan writer
+that would change, regroup or rebuild a slot of a workout an in-progress dual
+session uses refuses with `active_workout`. Today that is `update_exercise`,
+`swap_exercise`, `delete_exercise`, `add_exercise`, `adjust_today`,
+`group_exercises`, `ungroup_exercises`, `update_workout` and `update_plan`
+(which rebuilds every slot with new IDs, so it is refused while any dual
+session on that plan is in progress). P0's tests enumerate the plan writers so
+a new one cannot skip the fence. The coach sees the refusal and can
 make the change after the workout; solo workouts keep today's behavior. Dual mode,
 and the first armed set, begin only after both phones have acknowledged. A
 started session with no logged set does not trip the one-session gate above
@@ -252,9 +257,14 @@ acknowledgement arrives the join secret is dead. If the partner's connection
 drops, the phone reconnects with the
 same challenge-response keyed by the resume key, so only the phone that was
 allowed can take the lane back; a device that copied the QR code has no
-resume key. The host's lane is bound the same way: when the host taps "Train
-together", the iPad sends the host's phone, over its sealed connection, its own
-fresh resume key. The account link key is shared by every phone signed in to
+resume key. The host's lane is bound the other way round, because the host
+has no join secret to fall back on: when the host taps "Train together", the
+host's phone generates the lane's resume key, stores it in its Keychain first,
+and then sends it to the iPad over its sealed connection; the iPad
+acknowledges. The phone therefore always holds the key before the iPad does. If
+the host's link drops before the iPad has the key, the iPad abandons the
+setup, since nothing has been written before Start, and the host taps "Train
+together" again. The account link key is shared by every phone signed in to
 that account, so it only proves the account; it opens an ordinary Station
 connection but cannot take the host's lane. Each phone stores its lane's resume
 key in the Keychain, scoped to its account and this dual workout. With its

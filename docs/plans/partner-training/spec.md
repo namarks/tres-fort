@@ -85,17 +85,24 @@ phone cannot take the lane. The other member can tap
 had stopped. If the iPad itself is lost, both phones carry on alone from their
 own last logged set, as normal workouts.
 
-A phone's own record wins after a reconnect. While a lane is dropped, its phone
-can keep logging, undoing or skipping offline, so the iPad's view of that lane
-may be stale. On every connect and reconnect, before any other message, each
-phone sends a lane snapshot: for every step in the frozen sequence, logged,
-skipped or not yet done, read from its durable runner checkpoint (sets still
-waiting in its outbox count as logged). The iPad replaces that lane's state with
-the snapshot and recomputes the shared phase from both lanes: lifting the
-earliest step either lane has not finished, or resting after the last step both
-have finished. A rest that was running restarts in full rather than resuming,
-and the iPad never treats an acknowledgement it saw before the drop as current
-once a snapshot says otherwise.
+A phone's own record wins for its lane after a reconnect; the iPad's own
+record wins for the shared phase. While a lane is dropped, its phone stays on
+the shared step it last saw: it can log, correct, undo or skip that step, but
+does not arm the next one until it reconnects or its member ends the dual
+workout. On every connect and reconnect, before any other message, each phone
+sends a lane snapshot: for every step in the frozen sequence, logged, skipped
+or not yet done, read from its durable runner checkpoint (sets still waiting in
+its outbox count as logged). The iPad replaces that lane's state with the
+snapshot. It never discards its own phase record during a phone drop: the last
+released step R and, while resting, the rest timer for step R+1 (the iPad lives
+for the whole dual workout, so these never need to come from a phone). It then
+recomputes the phase. Let F be the last step both lanes have finished in order.
+If F is below R, an offline Undo rewound the pair: R becomes F, any rest stops
+and the pair lifts F+1. If F equals R, the pair lifts R+1. If F is R+1, the pair
+is resting after R+1, and the rest that was already running keeps its time
+(it starts now if it had not started). Because a dropped phone cannot move
+past the shared step, F is never more than R+1. An acknowledgement the iPad saw
+before the drop no longer counts once a snapshot says otherwise.
 
 Rejected: the iPad logging for both people. It would need a second signed-in
 account on one device and a second offline outbox, and it breaks the rule that
@@ -105,9 +112,9 @@ only the phone writes.
 
 Today a member can hold only one strength session per date
 (`ux_session_user_date`; `workouts-and-multi-session#P1` lifts that). Until
-then, a dual workout uses each member's session for that date. A planned but
-unstarted session is replaced, as the existing "train a different day"
-choice does. If either member has already started a strength session that
+then, a dual workout uses each member's session for that date. A planned
+session, or an opened one with no logged set, is replaced by the Start write,
+as the existing "train a different day" choice does. If either member has already started a strength session that
 date (it has a logged set) or finished one, the iPad says so before the
 partner is allowed in, and the dual workout cannot start. Once multi-session
 days ship, the dual workout becomes an additional session instead.
@@ -115,37 +122,42 @@ days ship, the dual workout becomes an additional session instead.
 ### Starting together
 
 The handoff names the host's workout as it was reviewed: plan ID, plan version
-and the workout's slot list. Each phone's date assignment on Start
+and the workout's slot list. Each phone's Start write
 carries the plan ID and version it reviewed, and the Worker checks them in the
-same write as the assignment (P0 adds optional `expected_plan_id` /
-`expected_version` to the date-assignment route, which today checks only
-`expected_attempt`). The host's come from the handoff. The partner's come from
+same write (P0 adds a Start write that assigns the workout to the date and
+starts that session together, checking `expected_attempt` plus
+`expected_plan_id` / `expected_version`; today's date-assignment route checks
+only `expected_attempt` and leaves the session planned). The host's come from the handoff. The partner's come from
 the result of the create that saved their copy, so a coach or another device
 editing the partner's plan between that save and Start is caught the same way.
-If the host's plan changed since the handoff, the assignment is refused
+If the host's plan changed since the handoff, the Start write is refused
 atomically, the iPad sends the partner the current workout, and the partner
 reviews "Your weights" again before Start. If the partner's own plan changed,
 their phone reloads its copy, rebuilds the slot map, and the partner reviews
-"Your weights" again; a copy that was removed is saved again. Once both have started, the step sequence is fixed from that
-handoff; a later plan edit applies to future workouts, not to this one.
+"Your weights" again; a copy that was removed is saved again. Once both
+have started, the step sequence is fixed from that handoff; a later plan edit
+applies to future workouts, not to this one.
 
-Each phone writes its own date assignment, so "Start together" cannot be one
-atomic write across two accounts. It is two-phase instead. On Start, each
-phone saves its copy if needed and assigns the workout to that date through the
-existing `set_planned_session` path with its observed `expected_attempt` and
-reviewed plan version, then
-reports success or failure to the iPad. Dual mode, and the first armed set,
-begin only after both phones have acknowledged. An assignment with no logged
-set is not a started session, so a failure on one side leaves nothing that
-blocks a retry: the iPad shows which phone failed and offers **Try again** or
-**Cancel**. Trying again repeats both sides' assignments, each with the plan
-version it reviewed, and dual mode begins only when both succeed in that same
-round; an identical assignment is already idempotent, so the side that had
-succeeded simply succeeds again. If a coach or another device changed either
-plan while the pair waited, that side's repeat is refused like any stale
-Start, and the partner reviews "Your weights" again. Cancel ends the dual workout before any set; each
-member keeps an ordinary planned session for that date that they can run alone
-or change as usual.
+Each phone writes its own Start, so "Start together" cannot be one atomic
+write across two accounts. It is two-phase instead. On Start, each phone saves
+its copy if needed, then makes one write that assigns the workout to that date
+and starts that session (planned to in progress), checked against its observed
+`expected_attempt` and its reviewed plan ID and version, and reports success
+or failure to the iPad. Starting the session in the same write is what pins
+the workout: plan writers already refuse to archive, delete or restore a
+workout with an in-progress session, so a coach or another device cannot pull
+it away between Start and the first set, exactly as for any running solo
+workout. Dual mode, and the first armed set, begin only after both phones have
+acknowledged. A started session with no logged set does not trip the
+one-session gate above for this same dual workout, so a failure on one side
+does not block a retry: the iPad shows which phone failed and offers **Try
+again** or **Cancel**. Trying again repeats both sides' Start writes, each with
+the attempt and plan version it reviewed; an identical Start is idempotent, so
+the side that had succeeded succeeds again, and dual mode begins only when both
+succeed in that same round. If either side is refused because its plan changed,
+or the pair taps **Cancel**, each side that had started discards its empty
+session through the existing discard path, which leaves the date free to start
+again; after a refusal the partner then reviews "Your weights" again.
 
 ### Same structure, personal loads
 
@@ -295,5 +307,6 @@ prototype (PR #236) handles one person at a time.
   and lane identity on arm and count messages.
 - Worker: one idempotent, atomic create of a workout with full slots, which
   also creates the member's plan when they have none and returns the committed
-  plan ID and version, and an optional plan
-  version check on the date assignment (P0). No new tables.
+  plan ID and version, and one Start write that assigns the workout to the
+  date and starts that session, checked against the attempt and the reviewed
+  plan version (P0). No new tables.

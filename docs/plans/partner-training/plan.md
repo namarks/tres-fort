@@ -48,15 +48,16 @@ The design and the choices behind each phase are in [spec.md](spec.md).
   - Until multi-session days ship, refuse to start when either member already
     has a started (any logged set) or finished strength session that date, and
     say so on the iPad; an unstarted planned session is replaced as today.
-  - Start in two phases: each phone assigns the workout to the date and
-    acknowledges to the iPad, and dual mode begins only after both succeed. A
-    retry repeats both sides' assignments, and dual mode begins only when both
-    succeed in that round; Cancel leaves each member an ordinary planned
-    session. Each phone's date assignment checks, in the same write, the plan
-    ID and version it reviewed: the host's from the handoff, the partner's from
-    the create that saved their copy. If either plan changed, the partner
-    reviews the current workout again. The step sequence is fixed once
-    both have started.
+  - Start in two phases: each phone makes one write that assigns the workout
+    to the date and starts that session, then acknowledges to the iPad; dual
+    mode begins only after both succeed. Starting the session pins the workout,
+    since plan writers already refuse to archive, delete or restore a workout
+    that is in progress. Each Start write also checks the plan ID and version
+    its phone reviewed: the host's from the handoff, the partner's from the
+    create that saved their copy. Try again repeats both sides, and dual mode
+    begins only when both succeed in that round; a refusal or Cancel discards
+    each side's empty session, and after a changed plan the partner reviews the
+    current workout again. The step sequence is fixed once both have started.
   - The iPad holds the shared step: both phones arm the same exercise and set;
     once both have logged it, the pair rests for that step's handed-off rest
     (or taps Skip rest) before the next step is armed for both.
@@ -73,10 +74,11 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     proven by a per-lane resume key (the host's issued on "Train together", the
     partner's on Allow) and kept in that phone's Keychain until the lane
     closes; another phone on the host's account cannot take the host's lane.
-    The slot map and step sequence persist with each runner checkpoint. On
-    every connect and reconnect, each phone first sends its lane state for
-    every step from its durable checkpoint, and the iPad adopts it and
-    recomputes the shared step. The other member can choose "Continue
+    The slot map and step sequence persist with each runner checkpoint. A
+    dropped phone stays on the shared step it last saw. On every connect and
+    reconnect, each phone first sends its lane state for every step from its
+    durable checkpoint; the iPad adopts it and recomputes the shared step
+    against its own record of released steps and the running rest. The other member can choose "Continue
     alone".
     If the iPad is lost, each phone continues as a normal solo workout.
   - Keep the iPad free of partner data afterwards; disable test recording during

@@ -50,7 +50,8 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     say so on the iPad; an unstarted planned session is replaced as today.
   - Start in two phases: each phone assigns the workout to the date and
     acknowledges to the iPad, and dual mode begins only after both succeed. A
-    failed side can retry; Cancel leaves each member an ordinary planned
+    retry repeats both sides' assignments, and dual mode begins only when both
+    succeed in that round; Cancel leaves each member an ordinary planned
     session. Each phone's date assignment checks, in the same write, the plan
     ID and version it reviewed: the host's from the handoff, the partner's from
     the create that saved their copy. If either plan changed, the partner
@@ -69,11 +70,13 @@ The design and the choices behind each phase are in [spec.md](spec.md).
   - Show two lanes on the iPad (name, weight, reps, logged state). Either person
     can stop; their lane closes for good and leaves the step quorum, so the
     other continues alone. A dropped phone's lane waits for that same phone,
-    proven by a per-lane resume key issued on Allow and kept in the partner's
-    Keychain until the lane closes; the slot map and step sequence persist
-    with its runner checkpoint. On every connect and reconnect, each phone first sends its lane
-    state for every step from its durable checkpoint, and the iPad adopts it
-    and recomputes the shared step. The other member can choose "Continue
+    proven by a per-lane resume key (the host's issued on "Train together", the
+    partner's on Allow) and kept in that phone's Keychain until the lane
+    closes; another phone on the host's account cannot take the host's lane.
+    The slot map and step sequence persist with each runner checkpoint. On
+    every connect and reconnect, each phone first sends its lane state for
+    every step from its durable checkpoint, and the iPad adopts it and
+    recomputes the shared step. The other member can choose "Continue
     alone".
     If the iPad is lost, each phone continues as a normal solo workout.
   - Keep the iPad free of partner data afterwards; disable test recording during

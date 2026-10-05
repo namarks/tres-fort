@@ -138,8 +138,12 @@ reports success or failure to the iPad. Dual mode, and the first armed set,
 begin only after both phones have acknowledged. An assignment with no logged
 set is not a started session, so a failure on one side leaves nothing that
 blocks a retry: the iPad shows which phone failed and offers **Try again** or
-**Cancel**. Trying again repeats only the failed side; an identical assignment
-is already idempotent. Cancel ends the dual workout before any set; each
+**Cancel**. Trying again repeats both sides' assignments, each with the plan
+version it reviewed, and dual mode begins only when both succeed in that same
+round; an identical assignment is already idempotent, so the side that had
+succeeded simply succeeds again. If a coach or another device changed either
+plan while the pair waited, that side's repeat is refused like any stale
+Start, and the partner reviews "Your weights" again. Cancel ends the dual workout before any set; each
 member keeps an ordinary planned session for that date that they can run alone
 or change as usual.
 
@@ -172,15 +176,18 @@ connection, a fresh random 256-bit resume key for this lane. The join secret is
 then dead. If the partner's connection drops, the phone reconnects with the
 same challenge-response keyed by the resume key, so only the phone that was
 allowed can take the lane back; a device that copied the QR code has no
-resume key. The host's phone reconnects with the account link key as today.
-The partner's phone stores its resume key in the Keychain, scoped to its
-account and this dual workout. With its runner checkpoint (account-scoped, as
-today) it also stores the dual workout ID, the frozen step sequence and the
-host-slot-to-own-slot map. After the app is closed or evicted, the phone
+resume key. The host's lane is bound the same way: when the host taps "Train
+together", the iPad sends the host's phone, over its sealed connection, its own
+fresh resume key. The account link key is shared by every phone signed in to
+that account, so it only proves the account; it opens an ordinary Station
+connection but cannot take the host's lane. Each phone stores its lane's resume
+key in the Keychain, scoped to its account and this dual workout. With its
+runner checkpoint (account-scoped, as today) each phone also stores the dual workout ID, the frozen step sequence and the
+host-slot-to-own-slot map (the host's map is the identity). After the app is closed or evicted, the phone
 restores its runner, reconnects with the resume key and interprets every
 resumed message through the stored map. The key is
 deleted when the lane closes, the dual workout ends, or the member signs out.
-The iPad holds its copy only in memory; if the iPad app is closed, the dual
+The iPad holds its copies only in memory; if the iPad app is closed, the dual
 workout ends and both phones continue alone.
 
 This needs no server change, no shared group and no deployment. A bystander who

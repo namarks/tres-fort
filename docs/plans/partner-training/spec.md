@@ -20,8 +20,8 @@ Supporting design for [plan.md](plan.md). The plan owns status and next step.
    to join" with **Allow** and **Not now**; Nick taps Allow.
 3. Alex's phone shows **Your weights** for Nick's workout. Each exercise is
    filled with Alex's own most recent working weight for that exercise, in the
-   unit Alex logged it in. An exercise Alex has never logged shows Nick's
-   target with a "Check" badge. Alex may change any weight or rep target.
+   unit Alex logged it in. An exercise Alex has never logged, and any warm-up,
+   shows Nick's target with a "Check" badge. Alex may change any weight or rep target.
 4. Each person stands in their spot; the iPad shows who is on the left and who
    is on the right, with a swap button. Either person taps **Start together**
    once both are ready. From this point no one else can join.
@@ -118,12 +118,14 @@ prescription field the plan tree keeps for a slot, the same fields
 weight and unit, RPE, rest, warm-up flag, cues, progression, and superset or
 circuit membership with group rest and transition times.
 
-The partner's phone picks starting weights from the partner's own history:
-the most recent working (non-warm-up) set for the same catalog exercise, kept
-in its own unit. If none exists, it shows the host's target and unit, marked
-"Check". Weights are never converted or scaled from the host's numbers, in line
-with the repository rule against extrapolating loads across people or
-exercises.
+The partner's phone picks starting weights for working slots from the
+partner's own history: the most recent working (non-warm-up) set for the same
+catalog exercise, kept in its own unit. If none exists, it shows the host's
+target and unit, marked "Check". Warm-up slots (`is_warmup`) are never filled
+from working-set history, which could turn a 45 lb ramp-up into a 225 lb set;
+they keep the host's target and unit, marked "Check". Weights are never
+converted or scaled from the host's numbers, in line with the repository rule
+against extrapolating loads across people or exercises.
 
 The handoff is a template, not identities. The partner's copy gets fresh slot
 IDs and fresh group IDs, one new group ID per host group, so every superset or

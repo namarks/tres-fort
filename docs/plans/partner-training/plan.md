@@ -36,8 +36,9 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     keyed by the join secret. Starting the workout ends joining.
   - The partner's phone receives the host's workout over the sealed link with
     every writable slot field and its supersets or circuits, and opens "Your
-    weights": each exercise uses the partner's own most recent working weight
-    and unit, else the host's target marked "Check".
+    weights": each working slot uses the partner's own most recent working
+    weight and unit, else the host's target marked "Check"; warm-up slots keep
+    the host's target, marked "Check".
   - Save the partner's copy to their library in one atomic create of a workout
     with full slots through the shared plan writer, with fresh slot and group
     IDs that keep each superset's members, then open their runner.

@@ -63,6 +63,7 @@ struct StationLinkRunnerPanel: View {
         }
         if let progress = link.progress { return "iPad counting · \(countText(progress.count, progress.leftCount, progress.rightCount))" }
         if link.stationState == .cameraOff { return "iPad connected · turn on its camera" }
+        if link.stationState == .manual { return "iPad stopped · log this set yourself" }
         return "iPad connected · ready to count"
     }
 

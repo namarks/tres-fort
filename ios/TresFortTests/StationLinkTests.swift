@@ -310,6 +310,18 @@ final class StationLinkTests: XCTestCase {
         XCTAssertNotNil(controller.armToResend, "The next set is armed")
     }
 
+    func testASetTakenOverOnTheIPadIsNotReArmedOnReconnect() throws {
+        let controller = StationLinkController()
+        controller.request(target())
+        let arm = try XCTUnwrap(controller.arm)
+        controller.receive(.station(.stopped, armID: arm.armID))
+        XCTAssertEqual(controller.armToResend?.armID, arm.armID, "An empty stop can be retried")
+        controller.receive(.station(.manual, armID: arm.armID))
+        XCTAssertNil(controller.armToResend, "A manual takeover stays manual")
+        controller.request(target(set: 2))
+        XCTAssertNotNil(controller.armToResend)
+    }
+
     func testUndoRecountsASpentArmOnTheSameSet() throws {
         let controller = StationLinkController()
         controller.request(target())

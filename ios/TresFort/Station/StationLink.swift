@@ -156,7 +156,8 @@ struct StationLinkCompletion: Codable, Equatable {
 }
 
 enum StationLinkStationState: String, Codable, Equatable {
-    case ready, cameraOff, counting, stopped
+    /// `manual`: the member took the armed set over on the iPad by hand.
+    case ready, cameraOff, counting, stopped, manual
 }
 
 enum StationLinkMessage: Codable, Equatable {

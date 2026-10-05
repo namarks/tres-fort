@@ -171,6 +171,8 @@ final class StationLinkController: ObservableObject {
         case .station(let state, let armID):
             guard armID == nil || armID == arm?.armID else { return }
             stationState = state
+            // A set taken over by hand stays manual, even across a reconnect.
+            if state == .manual, let armID { completedArmID = armID }
         case .arm, .disarm, .challenge, .proof:
             break // only the iPhone arms sets; the transport authenticates
         }

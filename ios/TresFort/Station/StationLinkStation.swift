@@ -114,7 +114,7 @@ final class StationLinkStation: ObservableObject {
     func abandon() {
         guard isCounting else { return }
         isCounting = false
-        report(.stopped)
+        report(.manual)
     }
 
     private func complete(count: Int, leftCount: Int?, rightCount: Int?, partial: Bool) {

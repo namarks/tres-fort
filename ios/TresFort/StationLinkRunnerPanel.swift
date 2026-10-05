@@ -130,6 +130,7 @@ struct StationLinkRunnerPanel: View {
         guard let current = sync.currentExercise,
               StationLinkPolicy.canCommit(proposal, currentSlotID: current.id,
                                           currentSetNumber: sync.currentPhysicalSetNumber,
+                                          currentExerciseName: current.exercise_name,
                                           entryBlocked: sync.isSetEntryBlocked(current)) else {
             link.finishProposal(proposal.eventID)
             return

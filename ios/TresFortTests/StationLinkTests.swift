@@ -205,10 +205,26 @@ final class StationLinkTests: XCTestCase {
         let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 2, exercise: .squat,
                                  exerciseName: "Back Squat", targetReps: 5)
         let proposal = try XCTUnwrap(StationLinkPolicy.proposal(for: completion(arm), arm: arm, seenEvents: []))
-        XCTAssertTrue(StationLinkPolicy.canCommit(proposal, currentSlotID: "s", currentSetNumber: 2, entryBlocked: false))
-        XCTAssertFalse(StationLinkPolicy.canCommit(proposal, currentSlotID: "s", currentSetNumber: 3, entryBlocked: false))
-        XCTAssertFalse(StationLinkPolicy.canCommit(proposal, currentSlotID: "other", currentSetNumber: 2, entryBlocked: false))
-        XCTAssertFalse(StationLinkPolicy.canCommit(proposal, currentSlotID: "s", currentSetNumber: 2, entryBlocked: true))
+        XCTAssertTrue(StationLinkPolicy.canCommit(proposal, currentSlotID: "s", currentSetNumber: 2, currentExerciseName: "Back Squat", entryBlocked: false))
+        XCTAssertFalse(StationLinkPolicy.canCommit(proposal, currentSlotID: "s", currentSetNumber: 3, currentExerciseName: "Back Squat", entryBlocked: false))
+        XCTAssertFalse(StationLinkPolicy.canCommit(proposal, currentSlotID: "other", currentSetNumber: 2, currentExerciseName: "Back Squat", entryBlocked: false))
+        XCTAssertFalse(StationLinkPolicy.canCommit(proposal, currentSlotID: "s", currentSetNumber: 2, currentExerciseName: "Back Squat", entryBlocked: true))
+        XCTAssertFalse(StationLinkPolicy.canCommit(proposal, currentSlotID: "s", currentSetNumber: 2,
+                                                   currentExerciseName: "Front Squat", entryBlocked: false),
+                       "A swap in the same slot never takes the old exercise's count")
+    }
+
+    func testSwappingTheExerciseInASlotReArmsAndDropsItsCount() throws {
+        let controller = StationLinkController()
+        controller.request(target())
+        let arm = try XCTUnwrap(controller.arm)
+        controller.receive(.completion(completion(arm, reps: 5, partial: true)))
+        XCTAssertNotNil(controller.proposal)
+        controller.request(StationLinkTarget(slotID: "slot-1", setNumber: 1, exercise: .squat,
+                                             exerciseName: "Front Squat", targetReps: 8))
+        XCTAssertNil(controller.proposal)
+        XCTAssertNotEqual(controller.arm?.armID, arm.armID)
+        XCTAssertEqual(controller.arm?.exerciseName, "Front Squat")
     }
 
     func testControllerArmsEachSetFreshlyAndDropsCountsWhenTheRunnerMovesOn() throws {

@@ -83,7 +83,8 @@ final class StationLinkController: ObservableObject {
     /// While a proposal waits, the arm is kept so the iPad doesn't count rest.
     func request(_ target: StationLinkTarget?) {
         if StationLinkPolicy.arm(arm, matches: target) { return }
-        if let proposal, target?.slotID != proposal.slotID || target?.setNumber != proposal.setNumber {
+        if let proposal, target?.slotID != proposal.slotID || target?.setNumber != proposal.setNumber
+            || target?.exerciseName != proposal.exerciseName {
             // The runner moved on (logged by hand, skipped, navigated): a count
             // for the previous set must not follow it.
             seenEvents.insert(proposal.eventID)

@@ -239,17 +239,20 @@ enum StationLinkPolicy {
             logsAutomatically: !completion.partial && completion.leftCount == completion.rightCount)
     }
 
-    /// A proposal may log only into the exact slot and set it was counted for.
+    /// A proposal may log only into the exact slot, set and exercise it was
+    /// counted for (a swap keeps the slot ID, so the exercise is checked too).
     static func canCommit(_ proposal: StationLinkProposal, currentSlotID: String?,
-                          currentSetNumber: Int, entryBlocked: Bool) -> Bool {
-        proposal.slotID == currentSlotID && proposal.setNumber == currentSetNumber && !entryBlocked
+                          currentSetNumber: Int, currentExerciseName: String?, entryBlocked: Bool) -> Bool {
+        proposal.slotID == currentSlotID && proposal.setNumber == currentSetNumber
+            && proposal.exerciseName == currentExerciseName && !entryBlocked
     }
 
     /// Whether an existing arm still describes the requested target.
     static func arm(_ arm: StationLinkArm?, matches target: StationLinkTarget?) -> Bool {
         guard let arm, let target else { return arm == nil && target == nil }
         return arm.slotID == target.slotID && arm.setNumber == target.setNumber
-            && arm.exercise == target.exercise && arm.targetReps == target.targetReps
+            && arm.exercise == target.exercise && arm.exerciseName == target.exerciseName
+            && arm.targetReps == target.targetReps
     }
 }
 

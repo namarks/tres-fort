@@ -92,7 +92,9 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     dropped phone stays on the shared step it last saw. On every connect and
     reconnect, each phone first sends its lane state for every step from its
     durable checkpoint; the iPad adopts it and recomputes the shared step
-    against its own record of released steps and the running rest. The other member can choose "Continue
+    against its own record of released steps and the running rest. A queued
+    set counts as logged; if the Worker later rejects it, that phone reports
+    it like an Undo and the pair rewinds to it. The other member can choose "Continue
     alone".
     If the iPad is lost, each phone continues as a normal solo workout.
   - Keep the iPad free of partner data afterwards; disable test recording during

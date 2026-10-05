@@ -101,8 +101,19 @@ If F is below R, an offline Undo rewound the pair: R becomes F, any rest stops
 and the pair lifts F+1. If F equals R, the pair lifts R+1. If F is R+1, the pair
 is resting after R+1, and the rest that was already running keeps its time
 (it starts now if it had not started). Because a dropped phone cannot move
-past the shared step, F is never more than R+1. An acknowledgement the iPad saw
-before the drop no longer counts once a snapshot says otherwise.
+past the shared step, F is never more than R+1, except after a rewind: the iPad
+also keeps the highest step it has ever released, and once both lanes have
+again finished every step up to it, those steps are released at once without
+repeating their rests. An acknowledgement the iPad saw before the drop no
+longer counts once a snapshot says otherwise.
+
+A set waiting in a phone's outbox counts as logged, so a weak gym connection
+never holds the pair. If the Worker later rejects a queued set (for example an
+attempt conflict the outbox cannot retry), the phone treats it exactly like an
+Undo of that set: its lane reports the step as not done, the iPad rewinds as
+above, and that member logs the set again, or skips it, before the pair moves
+past it. The other lane's sets stay logged. The phone shows why the set was
+rejected, so the rewind is never silent.
 
 Rejected: the iPad logging for both people. It would need a second signed-in
 account on one device and a second offline outbox, and it breaks the rule that

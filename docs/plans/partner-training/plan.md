@@ -51,7 +51,9 @@ The design and the choices behind each phase are in [spec.md](spec.md).
   - Start in two phases: each phone assigns the workout to the date and
     acknowledges to the iPad, and dual mode begins only after both succeed. A
     failed side can retry; Cancel leaves each member an ordinary planned
-    session.
+    session. The handoff carries the host's plan version; if the host's plan
+    changed before Start, the partner reviews the current workout again. The
+    step sequence is fixed once both have started.
   - The iPad holds the shared step: both phones arm the same exercise and set,
     rest starts once both have logged it, and the next set starts for both.
     Steps are named by host slot ID and set number, which the partner's phone
@@ -64,7 +66,8 @@ The design and the choices behind each phase are in [spec.md](spec.md).
   - Show two lanes on the iPad (name, weight, reps, logged state). Either person
     can stop; their lane closes for good and leaves the step quorum, so the
     other continues alone. A dropped phone's lane waits for that same phone,
-    proven by a per-lane resume key issued on Allow, and the other member can
+    proven by a per-lane resume key issued on Allow and kept in the partner's
+    Keychain until the lane closes, and the other member can
     choose "Continue alone". If the iPad is lost, each phone continues as a
     normal solo workout.
   - Keep the iPad free of partner data afterwards; disable test recording during

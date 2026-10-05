@@ -93,6 +93,14 @@ days ship, the dual workout becomes an additional session instead.
 
 ### Starting together
 
+The handoff names the host's workout as it was reviewed: plan ID, plan version
+and the workout's slot list. The host's phone checks that version again when
+it assigns the date on Start. If a coach or another device changed the plan
+since the handoff, the host's assignment is refused, the iPad sends the
+partner the current workout, and the partner reviews "Your weights" again
+before Start. Once both have started, the step sequence is fixed from that
+handoff; a later plan edit applies to future workouts, not to this one.
+
 Each phone writes its own date assignment, so "Start together" cannot be one
 atomic write across two accounts. It is two-phase instead. On Start, each
 phone saves its copy if needed and assigns the workout to that date through the
@@ -136,7 +144,12 @@ then dead. If the partner's connection drops, the phone reconnects with the
 same challenge-response keyed by the resume key, so only the phone that was
 allowed can take the lane back; a device that copied the QR code has no
 resume key. The host's phone reconnects with the account link key as today.
-Both keys live only in memory and are forgotten when the dual workout ends.
+The partner's phone stores its resume key in the Keychain, scoped to its
+account and this dual workout, so it survives the app being closed or evicted
+and the phone can reclaim its lane after restoring its runner. The key is
+deleted when the lane closes, the dual workout ends, or the member signs out.
+The iPad holds its copy only in memory; if the iPad app is closed, the dual
+workout ends and both phones continue alone.
 
 This needs no server change, no shared group and no deployment. A bystander who
 photographs the code still needs the host to tap Allow, and the code is dead

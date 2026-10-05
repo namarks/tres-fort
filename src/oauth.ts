@@ -300,7 +300,7 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
   c.header('Cache-Control', 'no-store');
   c.header('Referrer-Policy', 'no-referrer');
   let callback: URL;
-  try { callback = new URL(q.redirect_uri); } catch { return c.text('invalid redirect_uri', 400); }
+  try { callback = new URL(q.redirect_uri); } catch { refuse('invalid_redirect_uri'); return c.text('invalid redirect_uri', 400); }
   c.header('Content-Security-Policy', consentPolicy(callback));
   // Only HTTPS callbacks can complete on the phone. Desktop loopback clients
   // retain the existing consent form. A request ID never grants access.
@@ -344,7 +344,7 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
   const allowed: string[] = JSON.parse(client.redirect_uris);
   if (!redirectAllowed(allowed, f('redirect_uri'))) { refuse('invalid_redirect_uri'); return c.text('invalid redirect_uri', 400); }
   let callback: URL;
-  try { callback = new URL(f('redirect_uri')); } catch { return c.text('invalid redirect_uri', 400); }
+  try { callback = new URL(f('redirect_uri')); } catch { refuse('invalid_redirect_uri'); return c.text('invalid redirect_uri', 400); }
   c.header('Cache-Control', 'no-store');
   c.header('Referrer-Policy', 'no-referrer');
   c.header('Content-Security-Policy', consentPolicy(callback));
@@ -379,6 +379,7 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
     );
   }
   if (await isAccountDeletionInProgress(c.env.DB, userId)) {
+    refuse('account_deletion_in_progress');
     return c.html(
       consentPage(params, client.client_name, 'That account is being deleted and cannot be connected.'),
       401,
@@ -413,6 +414,7 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
     )
     .run();
   if (inserted.meta.changes !== 1) {
+    refuse('account_unavailable');
     return c.html(
       consentPage(params, client.client_name, 'That account is being deleted and cannot be connected.'),
       401,
@@ -469,8 +471,8 @@ oauthRoutes.post('/oauth/token', async (c) => {
       grant_id: crypto.randomUUID(),
       owner_apple_sub: c.env.OWNER_APPLE_SUB,
     }).catch(() => undefined);
-    if (tokens === undefined) return c.json({ error: 'server_error' }, 500);
-    if (!tokens) return c.json({ error: 'invalid_grant' }, 400);
+    if (tokens === undefined) { refuse('code_redemption_failed'); return c.json({ error: 'server_error' }, 500); }
+    if (!tokens) { refuse('code_redemption_rejected'); return c.json({ error: 'invalid_grant' }, 400); }
     return c.json({
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,
@@ -513,8 +515,8 @@ oauthRoutes.post('/oauth/token', async (c) => {
       consumed_refresh_sha256: await sha256Hex(f('refresh_token')),
       owner_apple_sub: c.env.OWNER_APPLE_SUB,
     }).catch(() => undefined);
-    if (tokens === undefined) return c.json({ error: 'server_error' }, 500);
-    if (!tokens) return c.json({ error: 'invalid_grant' }, 400);
+    if (tokens === undefined) { refuse('refresh_failed'); return c.json({ error: 'server_error' }, 500); }
+    if (!tokens) { refuse('refresh_rejected'); return c.json({ error: 'invalid_grant' }, 400); }
     return c.json({
       access_token: tokens.access_token,
       refresh_token: tokens.refresh_token,

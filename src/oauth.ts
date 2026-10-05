@@ -232,6 +232,20 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// Name who receives the data from the return address the client registered,
+// never from its self-reported name. Mirrors the iOS approval screen.
+function recipientFor(redirectUri: string): string {
+  let url: URL;
+  try { url = new URL(redirectUri); } catch { return 'The connecting app and its configured model provider'; }
+  if (loopbackRedirectWithoutPort(redirectUri)) return 'An app on this computer and its configured model provider';
+  const host = url.protocol === 'https:' && !url.username && !url.password ? url.hostname.toLowerCase() : '';
+  const within = (domain: string) => host === domain || host.endsWith('.' + domain);
+  if (within('claude.ai') || within('anthropic.com')) return 'Claude, operated by Anthropic';
+  if (within('chatgpt.com') || within('openai.com')) return 'ChatGPT, operated by OpenAI';
+  if (within('meta.ai') || within('meta.com')) return 'Meta AI, operated by Meta';
+  return host ? `The app at ${host} and its configured model provider` : 'The connecting app and its configured model provider';
+}
+
 function consentPolicy(callback: URL): string {
   // Chromium checks the POST redirect against form-action. CSP cannot express
   // IPv6 literal sources, so those callbacks use a separate navigation page.
@@ -262,6 +276,7 @@ border-radius:8px;font-weight:600;font-size:15px;cursor:pointer}
 <h1>Connect Très Fort</h1>
 ${mobileRequest ? `<p><a href="https://tresfort.app/coach/authorize?request=${mobileRequest}">Open Très Fort to review access</a></p><p>On iPhone, approve in the signed-in Très Fort app. The request expires in 10 minutes. If the app does not open, use the connect-code option below.</p>` : ''}
 <details${mobileRequest ? '' : ' open'}><summary>Use a connect code</summary><p>Paste your connect code to link your AI app to your training. Get it in the Très Fort app under Profile → Coach.</p>
+<p>Your data goes to: <strong>${escapeHtml(recipientFor(params.redirect_uri ?? ''))}</strong>, based on the return address this app registered. They process it under their own terms and privacy policy.</p>
 <p>App name supplied by the connecting client: <strong>${escapeHtml(clientName || 'AI app')}</strong>. Only continue if you started this connection in an app you trust.</p>
 <p>Allowing access lets this app and its configured AI provider read your training profile and plan, workout history, saved feedback and available group information, including imported Apple Health and Intervals.icu workouts. It also lets the app change your plan and record training updates.</p>
 <p>You can disconnect all AI apps in Profile to stop future access through these connections. This does not delete information already retrieved into AI conversations. The Apple Health group-sharing switch does not limit your own coach’s access. Review the <a href="https://tresfort.app/privacy">Très Fort privacy policy</a> and your chosen app and model provider’s privacy policies before approving.</p>

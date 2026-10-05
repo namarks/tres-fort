@@ -50,6 +50,14 @@ derived from each lane's acknowledged sets, never advanced by a timer or a
 single message: it is the earliest set that is not yet logged or skipped in
 both lanes, and rest runs only while both lanes have that set logged.
 
+A step is named by the host's slot ID and the set number, never by exercise:
+a workout can hold the same exercise twice (a warm-up squat and a working
+squat), and the partner's copy has its own slot IDs. When the partner's phone
+saves its copy, it keeps a map from each host slot ID to its own slot ID.
+Every arm, log, skip and Undo message carries the host slot ID and set number;
+the partner's phone translates through the map, so one slot's acknowledgement
+can never satisfy another.
+
 Undo therefore rewinds without a special case. When a phone's Undo deletes its
 set, that lane reports the set as no longer logged; the step returns to that
 set, rest stops, and only that phone re-arms it. The other lane's logged set

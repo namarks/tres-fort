@@ -54,11 +54,13 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     session.
   - The iPad holds the shared step: both phones arm the same exercise and set,
     rest starts once both have logged it, and the next set starts for both.
-    The step is derived from both lanes' acknowledged sets, so an Undo on
-    either phone rewinds it to that set and stops rest while the other lane's
-    set stays logged.
-    Swap, add, reorder and remove are off during a dual workout; a skip applies
-    to both. Each person logs, corrects and undoes their own sets by hand.
+    Steps are named by host slot ID and set number, which the partner's phone
+    maps to its own copy's slots, so duplicate exercises never share an
+    acknowledgement. The step is derived from both lanes' acknowledged sets,
+    so an Undo on either phone rewinds it to that set and stops rest while the
+    other lane's set stays logged. Swap, add, reorder and remove are off during
+    a dual workout; a skip applies to both. Each person logs, corrects and
+    undoes their own sets by hand.
   - Show two lanes on the iPad (name, weight, reps, logged state). Either person
     can stop; their lane closes for good and leaves the step quorum, so the
     other continues alone. A dropped phone's lane waits for that same phone,

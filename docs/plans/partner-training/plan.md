@@ -47,9 +47,11 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     created in the same write.
   - Until multi-session days ship, refuse to start when either member already
     has a started (any logged set) or finished strength session that date, and
-    say so on the iPad; an unstarted planned session is replaced as today.
+    say so on the iPad; a planned session, or an opened one with no
+    logged set, is replaced.
   - Start in two phases: each phone makes one write that assigns the workout
-    to the date and starts that session, then acknowledges to the iPad; dual
+    to the date, starts that session and records its reviewed starting
+    prescriptions, then acknowledges to the iPad; dual
     mode begins only after both succeed. Starting the session pins the workout,
     since plan writers already refuse to archive, delete or restore a workout
     that is in progress. Each Start write also checks the plan ID and version
@@ -57,7 +59,10 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     create that saved their copy. Try again repeats both sides, and dual mode
     begins only when both succeed in that round; a refusal or Cancel discards
     each side's empty session, and after a changed plan the partner reviews the
-    current workout again. The step sequence is fixed once both have started.
+    current workout again. Each phone keeps its pending Start in its runner
+    checkpoint and resolves it itself if the iPad never learned the outcome:
+    it discards on a cancelled start, or offers to continue alone or discard if
+    the iPad is gone. The step sequence is fixed once both have started.
   - The iPad holds the shared step: both phones arm the same exercise and set;
     once both have logged it, the pair rests for that step's handed-off rest
     (or taps Skip rest) before the next step is armed for both.

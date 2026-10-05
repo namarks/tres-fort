@@ -140,24 +140,44 @@ applies to future workouts, not to this one.
 
 Each phone writes its own Start, so "Start together" cannot be one atomic
 write across two accounts. It is two-phase instead. On Start, each phone saves
-its copy if needed, then makes one write that assigns the workout to that date
-and starts that session (planned to in progress), checked against its observed
-`expected_attempt` and its reviewed plan ID and version, and reports success
-or failure to the iPad. Starting the session in the same write is what pins
-the workout: plan writers already refuse to archive, delete or restore a
-workout with an in-progress session, so a coach or another device cannot pull
-it away between Start and the first set, exactly as for any running solo
-workout. Dual mode, and the first armed set, begin only after both phones have
-acknowledged. A started session with no logged set does not trip the
-one-session gate above for this same dual workout, so a failure on one side
-does not block a retry: the iPad shows which phone failed and offers **Try
-again** or **Cancel**. Trying again repeats both sides' Start writes, each with
-the attempt and plan version it reviewed; an identical Start is idempotent, so
-the side that had succeeded succeeds again, and dual mode begins only when both
-succeed in that same round. If either side is refused because its plan changed,
-or the pair taps **Cancel**, each side that had started discards its empty
-session through the existing discard path, which leaves the date free to start
-again; after a refusal the partner then reviews "Your weights" again.
+its copy if needed, then makes one write that assigns the workout to that date,
+starts that session (planned to in progress) and records the session's
+starting prescriptions (`runner_targets`) from the workout it reviewed. That
+write is checked against its observed `expected_attempt` and its reviewed plan
+ID and version, and the phone reports success or failure to the iPad. Today the
+first logged set records `runner_targets` only while the session is still
+planned, so the Start write must record them itself; summaries and recovery
+then read the reviewed prescriptions even if a coach edits the plan before the
+first set. Starting the session in the same write is what pins the workout:
+plan writers already refuse to archive, delete or restore a workout with an
+in-progress session, so a coach or another device cannot pull it away between
+Start and the first set, exactly as for any running solo workout. Dual mode,
+and the first armed set, begin only after both phones have acknowledged. A
+started session with no logged set does not trip the one-session gate above
+for this same dual workout, so a failure on one side does not block a retry:
+the iPad shows which phone failed and offers **Try again** or **Cancel**.
+Trying again repeats both sides' Start writes, each with the attempt and plan
+version it reviewed; an identical Start is idempotent, so the side that had
+succeeded succeeds again, and dual mode begins only when both succeed in that
+same round. If either side is refused because its plan changed, or the pair
+taps **Cancel**, each side that had started discards its empty session through
+the existing discard path, which leaves the date free to start again; after a
+refusal the partner then reviews "Your weights" again.
+
+Each phone owns the outcome of its own Start, because the iPad cannot write to
+either account. Before sending the Start write, the phone records a pending
+dual start (the dual workout ID, session ID and attempt) in its runner
+checkpoint, and it clears that record only when the iPad confirms that dual mode
+began, or after it has discarded its own empty session. If its link drops with
+a Start whose outcome the iPad never learned, the phone resolves it itself. On
+reconnect the iPad tells it whether the dual workout began, is still waiting,
+or was cancelled, and a cancelled start is discarded by the phone. If the phone
+cannot reach the iPad again (the iPad was closed, or the member walks away),
+its own screen offers to continue the started workout alone or discard it, so
+an unacknowledged Start never leaves an empty session that only the iPad knows
+about. An empty started session left this way is the same as a workout a member
+opened and never logged today: the one-session gate replaces it, and the member
+can resume or discard it.
 
 ### Same structure, personal loads
 
@@ -308,5 +328,5 @@ prototype (PR #236) handles one person at a time.
 - Worker: one idempotent, atomic create of a workout with full slots, which
   also creates the member's plan when they have none and returns the committed
   plan ID and version, and one Start write that assigns the workout to the
-  date and starts that session, checked against the attempt and the reviewed
-  plan version (P0). No new tables.
+  date, starts that session and records its reviewed starting prescriptions,
+  checked against the attempt and the reviewed plan version (P0). No new tables.

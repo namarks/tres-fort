@@ -67,19 +67,25 @@ struct StationAngleSignal: Equatable {
 }
 
 /// Experimental exercise-agnostic counter for saved-clip replay. It follows every
-/// 3D joint angle in the hinted region, and the first one to complete a clear
-/// out-and-back cycle becomes the set's signal. That first cycle also sets the
-/// reference amplitude and direction for later cycles. There is no per-exercise
+/// 3D joint angle in the hinted region. When the first clear out-and-back cycle
+/// completes, the largest cycle completed within a short window becomes the
+/// set's signal; it also sets the reference amplitude and direction for later
+/// cycles. There is no per-exercise
 /// angle threshold and no required camera view. Counts are advisory estimates;
 /// this type has no logging, rest or completion behavior.
 struct StationGenericCounter {
-    private(set) var count = 0
+    /// Includes a first cycle whose signal choice is still pending.
+    var count: Int { completedCycles + (pendingLock == nil ? 0 : 1) }
     private(set) var status: StationTrackingStatus = .seekingPosition
     /// The signal chosen by the first completed cycle, if any.
     var lockedSignal: String? { locked.map { trackers[$0].signal.name } }
 
     private var trackers: [Tracker]
     private var locked: Int?
+    private var completedCycles = 0
+    /// Joints that move together (knee and hip in a squat) finish their first
+    /// cycles a few frames apart. Wait briefly so the largest one is chosen.
+    private var pendingLock: (since: TimeInterval, completed: Set<Int>)?
     private var lastTimestamp: TimeInterval?
 
     static let minimumConfidence: Float = 0.6
@@ -92,6 +98,8 @@ struct StationGenericCounter {
     static let minimumAmplitude = 30.0
     /// After calibration a cycle must reach this share of the first cycle's amplitude.
     static let calibratedAmplitudeShare = 0.6
+    /// Shorter than the minimum cycle, so no candidate can finish twice inside it.
+    static let lockWindow: TimeInterval = 0.3
 
     init(region: StationBodyRegion, side: StationBodySide? = nil) {
         trackers = StationAngleSignal.candidates(region: region, side: side).map { Tracker(signal: $0) }
@@ -122,7 +130,7 @@ struct StationGenericCounter {
                 status = .trackingLost
                 return
             }
-            if trackers[locked].process(angle: angle, at: sample.timestamp) { count += 1 }
+            if trackers[locked].process(angle: angle, at: sample.timestamp) { completedCycles += 1 }
             status = trackers[locked].status
             return
         }
@@ -137,14 +145,19 @@ struct StationGenericCounter {
             visible = true
             if trackers[index].process(angle: angle, at: sample.timestamp) { completed.append(index) }
         }
-        guard visible else {
-            status = .trackingLost
+        if !completed.isEmpty {
+            let since = pendingLock?.since ?? sample.timestamp
+            pendingLock = (since: since, completed: (pendingLock?.completed ?? []).union(completed))
+        }
+        if let pendingLock, sample.timestamp - pendingLock.since >= Self.lockWindow {
+            finishLock()
+        }
+        if let locked {
+            status = trackers[locked].status
             return
         }
-        if let first = completed.max(by: { (trackers[$0].amplitude ?? 0) < (trackers[$1].amplitude ?? 0) }) {
-            locked = first
-            count += 1
-            status = trackers[first].status
+        guard visible else {
+            status = .trackingLost
             return
         }
         let statuses = trackers.map(\.status)
@@ -152,14 +165,32 @@ struct StationGenericCounter {
     }
 
     private mutating func loseTracking(_ status: StationTrackingStatus) {
+        // A cycle that already completed still counts; settle its signal now.
+        finishLock()
         self.status = status
         for index in trackers.indices { trackers[index].reset() }
+    }
+
+    private mutating func finishLock() {
+        guard let pendingLock else { return }
+        let best = pendingLock.completed.max { left, right in
+            let leftAmplitude = trackers[left].amplitude ?? 0
+            let rightAmplitude = trackers[right].amplitude ?? 0
+            return leftAmplitude == rightAmplitude ? left > right : leftAmplitude < rightAmplitude
+        }
+        self.pendingLock = nil
+        guard let best else { return }
+        locked = best
+        completedCycles += 1
     }
 
     private struct Tracker {
         let signal: StationAngleSignal
         private(set) var amplitude: Double?
         private var direction: Double?
+        /// The resting angle of the first completed cycle. Reacquisition returns
+        /// to it, so a pause at the far end of a rep can never become the rest.
+        private var calibratedRest: Double?
         private var smoothed: Double?
         private var rest: Double?
         private var restCandidate: (value: Double, since: TimeInterval)?
@@ -173,7 +204,8 @@ struct StationGenericCounter {
         }
 
         /// Restarts the current cycle and rest position. Calibration survives,
-        /// so a member who steps out of view keeps the set's reference rep.
+        /// so a member who steps out of view keeps the set's reference rep and
+        /// resumes only once back near its resting angle.
         mutating func reset() {
             smoothed = nil
             rest = nil
@@ -193,7 +225,9 @@ struct StationGenericCounter {
             let value = smoothed.map { 0.5 * $0 + 0.5 * raw } ?? raw
             smoothed = value
             guard let rest else {
-                if let candidate = restCandidate, abs(value - candidate.value) <= StationGenericCounter.restStillness {
+                if let calibratedRest {
+                    if abs(value - calibratedRest) <= returnTolerance { self.rest = calibratedRest }
+                } else if let candidate = restCandidate, abs(value - candidate.value) <= StationGenericCounter.restStillness {
                     if timestamp - candidate.since >= StationGenericCounter.restDwell { self.rest = candidate.value }
                 } else {
                     restCandidate = (value: value, since: timestamp)
@@ -202,11 +236,9 @@ struct StationGenericCounter {
             }
             let offset = value - rest
             guard let current = excursion else {
+                // The rest angle stays fixed: following it would absorb a slow rep.
                 if abs(offset) >= departure {
                     excursion = (startedAt: timestamp, sign: offset > 0 ? 1.0 : -1.0, extreme: value)
-                } else {
-                    // Follow slow drift of the resting position between cycles.
-                    self.rest = 0.9 * rest + 0.1 * value
                 }
                 return false
             }
@@ -229,6 +261,7 @@ struct StationGenericCounter {
                 // reps never move it, so a drift of short reps cannot lower the bar.
                 direction = current.sign
                 amplitude = reached
+                calibratedRest = rest
             }
             return true
         }

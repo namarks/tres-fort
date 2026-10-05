@@ -132,8 +132,38 @@ final class StationGenericCounterTests: XCTestCase {
     }
 
     func testGraduallyShrinkingRepsCannotLowerTheFirstRepReference() {
-        let scales = [1, 0.8, 0.68, 0.58, 0.5, 0.43, 0.37]
-        XCTAssertEqual(countSquats(repetitionSeries(reps: scales.count, scale: { scales[$0] })).count, 2)
+        // A moving average of accepted reps would lower the bar enough to count all seven.
+        let scales = [1, 0.9, 0.75, 0.55, 0.5, 0.45, 0.4]
+        XCTAssertEqual(countSquats(repetitionSeries(reps: scales.count, scale: { scales[$0] })).count, 3)
+    }
+
+    func testSlowRepetitionsAreNotAbsorbedIntoTheRestingPosition() {
+        XCTAssertEqual(countSquats(repetitionSeries(reps: 3, period: 8)).count, 3)
+    }
+
+    func testLossDuringDescentCannotMakeTheBottomTheNewRest() {
+        // Two reps, then joints vanish on the way down and return during a pause
+        // at the bottom. Later full reps must still count.
+        var series = repetitionSeries(reps: 2)
+        let lossStart = (series.last?.time ?? 0) + 1 / frameRate + 0.5
+        var time = (series.last?.time ?? 0) + 1 / frameRate
+        func append(_ duration: Double, _ value: (Double) -> Double) {
+            for frame in 0..<Int((duration * frameRate).rounded()) {
+                series.append((time, value(Double(frame) / frameRate)))
+                time += 1 / frameRate
+            }
+        }
+        append(1) { bump($0, period: 2) }
+        append(1) { _ in 1 }
+        append(1) { bump($0 + 1, period: 2) }
+        append(1) { _ in 0 }
+        for _ in 0..<2 {
+            append(2) { bump($0, period: 2) }
+            append(1) { _ in 0 }
+        }
+        let lowerBody: Set<Int> = [11, 12, 23, 24, 25, 26, 27, 28]
+        let counter = countSquats(series, hide: { (lossStart...lossStart + 0.3).contains($0) ? lowerBody : Set<Int>() })
+        XCTAssertEqual(counter.count, 4)
     }
 
     func testCyclesFasterThanTheMinimumDurationDoNotCount() {

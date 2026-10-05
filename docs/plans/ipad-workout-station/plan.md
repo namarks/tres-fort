@@ -402,20 +402,24 @@ Earlier build evidence (historical, superseded where stated above):
 ## Generic 3D counter
 
 - `StationGenericCounter` follows every 3D joint angle (knee, hip, elbow,
-  shoulder) in the hinted region from MediaPipe world landmarks. The first angle
-  to complete a clear out-and-back cycle (at least 30 degrees, at least 0.55
-  seconds) becomes the set's signal and sets its reference amplitude and
-  direction; later cycles must reach 60 percent of that amplitude. It reuses the
-  0.6 confidence cutoff, 0.5-second gap reset and one-person rule. Lost joints
-  restart the cycle and keep earlier counts. Curls run one counter per arm and
+  shoulder) in the hinted region from MediaPipe world landmarks. When the first
+  clear out-and-back cycle completes (at least 30 degrees, at least 0.55
+  seconds), the largest cycle finished within 0.3 seconds becomes the set's
+  signal. That first cycle fixes the reference amplitude, direction and resting
+  angle; later cycles must reach 60 percent of it, and the reference never
+  averages in later reps. The resting angle does not drift, so slow reps (up to
+  12 seconds) are not absorbed. It reuses the 0.6 confidence cutoff, 0.5-second
+  gap reset and one-person rule. Lost joints restart the cycle and keep earlier
+  counts; counting resumes only back near the reference resting angle. Curls run one counter per arm and
   never sum them. Squat uses the lower-body hint; curl and bench use upper body.
 - Saved replay records generic per-frame counts, the chosen signal, coverage
   and `genericCounterVersion` (`generic-3d-v1`) beside the existing counters.
   Older comparisons decode with the fields absent. The live screen is unchanged.
 - Synthetic 3D unit tests rotate the same squats to front, diagonal, side and
-  rear views and count five each, and cover noise, touch-and-go reps, small and
-  partial movements, too-fast cycles, joint loss, frame gaps, multiple people
-  and independent arms. Rotating a skeleton cannot change 3D angles, so these
+  rear views and count five each, and cover noise, touch-and-go and slow reps,
+  small, partial and shrinking movements, too-fast cycles, joint loss
+  (including loss on the way down with a pause at the bottom), frame gaps,
+  multiple people and independent arms. Rotating a skeleton cannot change 3D angles, so these
   tests prove the counter uses only view-independent geometry. They do not
   measure MediaPipe's depth error from a real camera, which remains the main
   risk for front-facing views. Physical accuracy is unvalidated until saved

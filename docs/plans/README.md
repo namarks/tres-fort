@@ -117,9 +117,10 @@ AI coaching.
   accuracy come before relying on it beyond an opt-in trial.
 
 - [Partner training on one iPad](partner-training/plan.md) — **planned**;
-  two members train the same workout in front of one iPad, each on their own
-  iPhone with their own weights and logging. Waits on the Station link trial
-  and an owner choice between turn-taking and side-by-side counting.
+  two members start a workout together in front of one iPad and move through
+  it set by set, each on their own iPhone with their own weights and logging.
+  Side-by-side counting comes first, turn-taking later. Waits on the Station
+  link trial and owner activation.
 - [Member activation and adherence](member-activation-and-adherence/plan.md) —
   **paused**; first-workout entry, starters and the upcoming-sessions week on
   Today (which replaced the Calendar tab) are delivered. Reminders/widgets and

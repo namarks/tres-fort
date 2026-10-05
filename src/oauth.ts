@@ -113,15 +113,21 @@ oauthRoutes.use('/oauth/token', cors());
 
 // ---- discovery -----------------------------------------------------------
 
-oauthRoutes.get('/.well-known/oauth-protected-resource', (c) => {
-  const o = origin(c.req.url);
-  return c.json({
-    resource: `${o}/mcp`,
-    authorization_servers: [o],
-    bearer_methods_supported: ['header'],
-    scopes_supported: ['mcp'],
-  });
+const resourceMetadata = (o: string) => ({
+  resource: `${o}/mcp`,
+  authorization_servers: [o],
+  bearer_methods_supported: ['header'],
+  scopes_supported: ['mcp'],
 });
+
+oauthRoutes.get('/.well-known/oauth-protected-resource', (c) =>
+  c.json(resourceMetadata(origin(c.req.url))),
+);
+// RFC 9728 section 3.1: clients that derive the metadata URL from the
+// resource insert its path after the well-known prefix.
+oauthRoutes.get('/.well-known/oauth-protected-resource/mcp', (c) =>
+  c.json(resourceMetadata(origin(c.req.url))),
+);
 
 const asMetadata = (o: string) => ({
   issuer: o,
@@ -150,8 +156,16 @@ oauthRoutes.post('/oauth/register', async (c) => {
     .json<{ redirect_uris?: string[]; client_name?: string }>()
     .catch(() => ({}) as { redirect_uris?: string[]; client_name?: string });
   const redirects = Array.isArray(b.redirect_uris) ? b.redirect_uris : [];
-  if (b.client_name !== undefined && (typeof b.client_name !== 'string' || b.client_name.length > 200)) return c.json({ error: 'invalid_client_metadata' }, 400);
-  if (redirects.length === 0 || redirects.length > 10 || !redirects.every(uri => typeof uri === 'string' && uri.length <= 2048)) return c.json({ error: 'invalid_redirect_uri' }, 400);
+  if (b.client_name !== undefined && (typeof b.client_name !== 'string' || b.client_name.length > 200)) {
+    logOAuthRefusal('register', 'invalid_client_metadata');
+    return c.json({ error: 'invalid_client_metadata' }, 400);
+  }
+  if (redirects.length === 0 || redirects.length > 10 || !redirects.every(uri => typeof uri === 'string' && uri.length <= 2048)) {
+    logOAuthRefusal('register', 'invalid_redirect_uri', {
+      client_name: b.client_name, redirect_uris: redirects.length > 0 ? JSON.stringify(redirects.slice(0, 3)) : 'none',
+    });
+    return c.json({ error: 'invalid_redirect_uri' }, 400);
+  }
   const clientId = rand();
   await c.env.DB.prepare(
     'INSERT INTO oauth_clients (client_id, client_secret, redirect_uris, client_name, created_at) VALUES (?1, NULL, ?2, ?3, ?4)',
@@ -172,6 +186,25 @@ oauthRoutes.post('/oauth/register', async (c) => {
 });
 
 // ---- authorize (per-user consent gate) -----------------------------------
+
+// `mcp` is the only grant. Some hosts also request `offline_access` (OpenAI's
+// connector guidance asks for it); refresh tokens are always issued, so it is
+// accepted and the stored grant stays exactly `mcp`. Anything else is refused.
+function scopeAccepted(scope: string | undefined): boolean {
+  if (!scope) return true;
+  if (scope.length > 100) return false;
+  const tokens = scope.split(' ').filter(Boolean);
+  return tokens.length > 0 && tokens.every(t => t === 'mcp' || t === 'offline_access');
+}
+
+// Refused OAuth requests are otherwise invisible from the provider side. Log
+// why (visible in `wrangler tail`) with request metadata only: never codes,
+// verifiers, connect codes, tokens or state.
+function logOAuthRefusal(route: string, reason: string, detail: Record<string, string | undefined> = {}) {
+  const fields: Record<string, string> = {};
+  for (const [k, v] of Object.entries(detail)) if (v) fields[k] = v.slice(0, 300);
+  console.warn({ event: 'oauth_refused', route, reason, ...fields });
+}
 
 function loopbackRedirectWithoutPort(uri: string): string | null {
   // RFC 8252 section 7.3: native clients choose an available loopback port at
@@ -244,16 +277,23 @@ async function loadClient(env: Env, clientId: string) {
 
 oauthRoutes.get('/oauth/authorize', async (c) => {
   const q = c.req.query();
-  if (q.resource && q.resource !== `${origin(c.req.url)}/mcp`) return c.json({ error: 'invalid_target' }, 400);
-  if (q.scope && q.scope !== 'mcp') return c.json({ error: 'invalid_scope' }, 400);
-  const client = q.client_id ? await loadClient(c.env, q.client_id) : null;
-  if (!client) return c.text('invalid client_id', 400);
+  let client: Awaited<ReturnType<typeof loadClient>> = null;
+  const refuse = (reason: string) => logOAuthRefusal('authorize', reason, {
+    client_name: client?.client_name ?? undefined, redirect_uri: q.redirect_uri, scope: q.scope, resource: q.resource,
+    response_type: q.response_type, code_challenge_method: q.code_challenge_method,
+  });
+  if (q.resource && q.resource !== `${origin(c.req.url)}/mcp`) { refuse('invalid_target'); return c.json({ error: 'invalid_target' }, 400); }
+  if (!scopeAccepted(q.scope)) { refuse('invalid_scope'); return c.json({ error: 'invalid_scope' }, 400); }
+  client = q.client_id ? await loadClient(c.env, q.client_id) : null;
+  if (!client) { refuse('invalid_client_id'); return c.text('invalid client_id', 400); }
   const allowed: string[] = JSON.parse(client.redirect_uris);
   if (!q.redirect_uri || !redirectAllowed(allowed, q.redirect_uri)) {
+    refuse('invalid_redirect_uri');
     return c.text('invalid redirect_uri', 400);
   }
-  if (q.response_type !== 'code') return c.text('unsupported_response_type', 400);
+  if (q.response_type !== 'code') { refuse('unsupported_response_type'); return c.text('unsupported_response_type', 400); }
   if (q.code_challenge_method !== 'S256' || !q.code_challenge) {
+    refuse('pkce_required');
     return c.text('PKCE S256 required', 400);
   }
   c.header('Cache-Control', 'no-store');
@@ -266,7 +306,7 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
   let mobileRequest: string | undefined;
   if (callback?.protocol === 'https:' && !callback.username && !callback.password && !callback.hash
       && /^[A-Za-z0-9_-]{43}$/.test(q.code_challenge)
-      && (!q.scope || q.scope === 'mcp')
+      && scopeAccepted(q.scope)
       && (!q.resource || q.resource === `${origin(c.req.url)}/mcp`)
       && q.redirect_uri.length <= 2048 && (q.state?.length ?? 0) <= 2048) {
     mobileRequest = rand();
@@ -283,7 +323,7 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
       code_challenge: q.code_challenge ?? '',
       code_challenge_method: 'S256',
       state: q.state ?? '',
-      scope: q.scope ?? 'mcp',
+      scope: 'mcp',
       resource: q.resource ?? '',
     }, client.client_name, undefined, mobileRequest),
   );
@@ -292,13 +332,16 @@ oauthRoutes.get('/oauth/authorize', async (c) => {
 oauthRoutes.post('/oauth/authorize', async (c) => {
   const form = await c.req.formData();
   const f = (k: string) => String(form.get(k) ?? '');
-  if (f('resource') && f('resource') !== `${origin(c.req.url)}/mcp`) return c.json({ error: 'invalid_target' }, 400);
-  if (f('scope') && f('scope') !== 'mcp') return c.json({ error: 'invalid_scope' }, 400);
-  if ((f('code_challenge_method') && f('code_challenge_method') !== 'S256') || !f('code_challenge')) return c.text('PKCE S256 required', 400);
+  const refuse = (reason: string) => logOAuthRefusal('authorize_submit', reason, {
+    redirect_uri: f('redirect_uri'), scope: f('scope'), resource: f('resource'),
+  });
+  if (f('resource') && f('resource') !== `${origin(c.req.url)}/mcp`) { refuse('invalid_target'); return c.json({ error: 'invalid_target' }, 400); }
+  if (!scopeAccepted(f('scope'))) { refuse('invalid_scope'); return c.json({ error: 'invalid_scope' }, 400); }
+  if ((f('code_challenge_method') && f('code_challenge_method') !== 'S256') || !f('code_challenge')) { refuse('pkce_required'); return c.text('PKCE S256 required', 400); }
   const client = await loadClient(c.env, f('client_id'));
-  if (!client) return c.text('invalid client_id', 400);
+  if (!client) { refuse('invalid_client_id'); return c.text('invalid client_id', 400); }
   const allowed: string[] = JSON.parse(client.redirect_uris);
-  if (!redirectAllowed(allowed, f('redirect_uri'))) return c.text('invalid redirect_uri', 400);
+  if (!redirectAllowed(allowed, f('redirect_uri'))) { refuse('invalid_redirect_uri'); return c.text('invalid redirect_uri', 400); }
   let callback: URL;
   try { callback = new URL(f('redirect_uri')); } catch { return c.text('invalid redirect_uri', 400); }
   c.header('Cache-Control', 'no-store');
@@ -311,7 +354,7 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
     code_challenge: f('code_challenge'),
     code_challenge_method: 'S256',
     state: f('state'),
-    scope: f('scope'),
+    scope: 'mcp',
     resource: f('resource'),
   };
   // Resolve WHICH user is connecting: the owner via OWNER_AUTH_PASSPHRASE, or
@@ -328,6 +371,7 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
     userId = await findUserByMcpPassphrase(c.env.DB, pass);
   }
   if (!userId) {
+    logOAuthRefusal('authorize_submit', pass ? 'connect_code_mismatch' : 'connect_code_missing', { client_name: client.client_name ?? undefined });
     return c.html(
       consentPage(params, client.client_name, 'That code did not match — open Très Fort → Profile → Coach to copy the current one.'),
       401,
@@ -360,7 +404,7 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
       params.redirect_uri,
       params.code_challenge,
       'S256',
-      params.scope || 'mcp',
+      'mcp',
       params.resource || null,
       Date.now() + CODE_TTL_MS,
       Date.now(),
@@ -394,20 +438,26 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
 oauthRoutes.post('/oauth/token', async (c) => {
   const form = await c.req.formData();
   const f = (k: string) => String(form.get(k) ?? '');
-  if (f('resource') && f('resource') !== `${origin(c.req.url)}/mcp`) return c.json({ error: 'invalid_target' }, 400);
-  if (f('scope') && f('scope') !== 'mcp') return c.json({ error: 'invalid_scope' }, 400);
   const grant = f('grant_type');
+  const refuse = (reason: string) => logOAuthRefusal('token', reason, {
+    grant_type: grant, client_id: f('client_id'), redirect_uri: f('redirect_uri'), scope: f('scope'), resource: f('resource'),
+    client_auth: c.req.header('Authorization')?.split(' ')[0],
+  });
+  if (f('resource') && f('resource') !== `${origin(c.req.url)}/mcp`) { refuse('invalid_target'); return c.json({ error: 'invalid_target' }, 400); }
+  if (!scopeAccepted(f('scope'))) { refuse('invalid_scope'); return c.json({ error: 'invalid_scope' }, 400); }
 
   if (grant === 'authorization_code') {
     const code = await c.env.DB.prepare('SELECT * FROM oauth_codes WHERE code = ?1')
       .bind(f('code'))
       .first<any>();
-    if (!code) return c.json({ error: 'invalid_grant' }, 400);
-    if (code.expires_at < Date.now()) return c.json({ error: 'invalid_grant' }, 400);
+    if (!code) { refuse('code_unknown_or_used'); return c.json({ error: 'invalid_grant' }, 400); }
+    if (code.expires_at < Date.now()) { refuse('code_expired'); return c.json({ error: 'invalid_grant' }, 400); }
     if (code.client_id !== f('client_id') || code.redirect_uri !== f('redirect_uri')) {
+      refuse(code.client_id !== f('client_id') ? 'code_client_mismatch' : 'code_redirect_mismatch');
       return c.json({ error: 'invalid_grant' }, 400);
     }
     if ((await s256(f('code_verifier'))) !== code.code_challenge) {
+      refuse('pkce_mismatch');
       return c.json({ error: 'invalid_grant', detail: 'pkce' }, 400);
     }
     const tokens = await redeemOAuthAuthorizationCode(c.env.DB, {
@@ -444,9 +494,11 @@ oauthRoutes.post('/oauth/token', async (c) => {
           c.env.OWNER_APPLE_SUB,
         );
       }
+      refuse('refresh_unknown_or_used');
       return c.json({ error: 'invalid_grant' }, 400);
     }
     if (!f('client_id') || row.client_id !== f('client_id')) {
+      refuse('refresh_client_mismatch');
       return c.json({ error: 'invalid_grant' }, 400);
     }
     const tokens = await refreshOAuthGrant(c.env.DB, {
@@ -471,6 +523,7 @@ oauthRoutes.post('/oauth/token', async (c) => {
     });
   }
 
+  refuse('unsupported_grant_type');
   return c.json({ error: 'unsupported_grant_type' }, 400);
 });
 

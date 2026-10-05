@@ -10,6 +10,9 @@ const clients = [
   { name: 'Codex', redirect: 'http://127.0.0.1:45213/callback/tres-fort-test', registeredRedirect: 'http://127.0.0.1/callback/tres-fort-test' },
   { name: 'IPv6 native app', redirect: 'http://[::1]:45213/callback/tres-fort-test', registeredRedirect: 'http://[::1]/callback/tres-fort-test' },
   { name: 'Claude', redirect: 'https://claude.ai/api/mcp/auth_callback' },
+  // Meta Muse signs in from its hosted browser; hosts may add offline_access.
+  { name: 'Meta Muse', redirect: 'https://agent.meta.ai/api/hatch/oauth/callback', scope: 'mcp offline_access' },
+  { name: 'ChatGPT', redirect: 'https://chatgpt.com/connector/oauth/synthetic-callback', scope: 'offline_access mcp' },
   { name: 'Other AI app', redirect: 'http://127.0.0.1:39117/oauth/callback' },
 ];
 type Connection = { access_token: string; refresh_token: string; client_id: string };
@@ -18,7 +21,7 @@ let otherConnection: Connection;
 let jwt: string;
 let otherJwt: string;
 
-async function connect(name: string, redirect: string, passphrase: string, registeredRedirect = redirect): Promise<Connection> {
+async function connect(name: string, redirect: string, passphrase: string, registeredRedirect = redirect, scope = 'mcp'): Promise<Connection> {
   const registration = await SELF.fetch(`${BASE}/oauth/register`, {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ client_name: name, redirect_uris: [registeredRedirect] }),
@@ -31,7 +34,7 @@ async function connect(name: string, redirect: string, passphrase: string, regis
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   const params = new URLSearchParams({
     client_id, redirect_uri: redirect, response_type: 'code',
-    code_challenge: challenge, code_challenge_method: 'S256', scope: 'mcp',
+    code_challenge: challenge, code_challenge_method: 'S256', scope,
     resource: `${BASE}/mcp`, state: 'state&<literal>',
   });
   const page = await SELF.fetch(`${BASE}/oauth/authorize?${params}`);
@@ -79,7 +82,9 @@ async function connect(name: string, redirect: string, passphrase: string, regis
     }),
   });
   expect(exchanged.status).toBe(200);
-  return { ...(await exchanged.json<Omit<Connection, 'client_id'>>()), client_id };
+  const tokens = await exchanged.json<Omit<Connection, 'client_id'> & { scope: string }>();
+  expect(tokens.scope).toBe('mcp');
+  return { access_token: tokens.access_token, refresh_token: tokens.refresh_token, client_id };
 }
 
 async function rpc(access: string, method: string, params = {}) {
@@ -111,7 +116,7 @@ beforeAll(async () => {
   jwt = await issueAppJwt(MEMBER, env.APP_JWT_SECRET);
   otherJwt = await issueAppJwt(OTHER, env.APP_JWT_SECRET);
   for (const client of clients) {
-    connections.set(client.name, await connect(client.name, client.redirect, `synthetic-code-${MEMBER}`, client.registeredRedirect));
+    connections.set(client.name, await connect(client.name, client.redirect, `synthetic-code-${MEMBER}`, client.registeredRedirect, client.scope));
   }
   otherConnection = await connect('Another member’s app', 'http://127.0.0.1:41234/callback', `synthetic-code-${OTHER}`);
 });

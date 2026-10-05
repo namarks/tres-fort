@@ -9,12 +9,12 @@ must be released and verified before claiming iPhone support in the listing.
 |---|---|
 | Name | Très Fort |
 | Publisher | Nicholas Marks; select the matching owner-verified identity in the portal |
-| Short description | Plan training with your workout history. |
+| Short description | Plan training from your log (portal limit: 30 characters) |
 | Long description | Connect your Très Fort account to review training, adapt workouts and save plan changes. Conversations stay in your AI app. Uses your existing supported AI account or subscription; Très Fort does not supply model usage. |
 | Category | Productivity, subject to the portal's available fitness category |
 | Logo | `assets/icon.png`, the existing Très Fort app icon |
 | Website | https://tresfort.app |
-| Support | `nick@tresfort.app`, linked on the website; use https://tresfort.app/privacy if an HTTPS support URL is required |
+| Support | https://tresfort.app/#contact (the website's contact section, which links `nick@tresfort.app`); the portal requires an HTTPS support URL |
 | Privacy | https://tresfort.app/privacy |
 | Terms | **Draft prepared at [terms-draft.md](terms-draft.md), as requested.** Review and approve before publishing; then add the verified public URL to the manifest and portal. The draft is not effective terms. |
 | Release notes | Initial external-AI coaching integration: account-scoped training reads and edits, coaching brief, explicit OAuth consent, and disconnect controls. |
@@ -29,7 +29,9 @@ ordinary training organization and review, not diagnosis or treatment.
   `https://tres-fort.nmarkspdx.workers.dev/mcp`.
 - Authentication: OAuth authorization code, PKCE S256, public client (`none`),
   dynamic client registration. One scope, `mcp`, permits the disclosed training
-  reads and writes. The accepted resource is the endpoint above.
+  reads and writes. A request may also carry `offline_access`, which is accepted
+  and grants nothing beyond `mcp` (refresh tokens are always issued). The
+  accepted resource is the endpoint above.
 - Protected resource discovery:
   `https://tres-fort.nmarkspdx.workers.dev/.well-known/oauth-protected-resource`.
 - Authorization server discovery:
@@ -65,6 +67,21 @@ Intervals.icu account. No tool accepts arbitrary network destinations or
 publishes publicly. These hints inform host confirmation; they do not replace
 explicit account consent, host write approval, tenant checks or version checks.
 
+## Remaining before submission (checked 2026-10-05)
+
+Against the current portal checklist, the package still lacks:
+
+- **Owner:** individual/business verification and Apps Management write access.
+- **Owner:** approved terms published at an HTTPS URL; then add it to the
+  portal and as `interface.termsOfServiceURL` in the manifest.
+- **Owner:** a demo video walkthrough at an accessible URL (now required).
+- **Owner:** the dedicated synthetic review account and its connect code.
+- **Owner-authorized release:** the portal's domain challenge on the MCP host.
+- Optional: listing screenshots (`interface.screenshots`).
+
+The short description now fits the 30-character limit and the HTTPS support
+URL is set above. Steps 1–8 below remain the release order.
+
 ## Review account and release steps
 
 1. Owner verifies individual/business identity and Apps Management write access
@@ -97,7 +114,7 @@ Preparing or merging these files grants no production, provider submission,
 publication, credential or spend authority. A local or synthetic test cannot
 prove directory availability or a successful real-provider callback.
 
-## Sources checked 2026-09-12
+## Sources checked 2026-09-12 (submission flow rechecked 2026-10-05)
 
 - [OpenAI submission flow](https://developers.openai.com/plugins/deploy/submission)
 - [Remote MCP review requirements](https://developers.openai.com/plugins/deploy/app-review)

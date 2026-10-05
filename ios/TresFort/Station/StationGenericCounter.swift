@@ -239,8 +239,9 @@ struct StationGenericCounter {
 
         private var departure: Double { max(12, 0.25 * (amplitude ?? 0)) }
         private var returnTolerance: Double { max(10, 0.25 * (amplitude ?? 0)) }
+        /// The absolute floor applies only until the first cycle sets the reference.
         private var requiredAmplitude: Double {
-            amplitude.map { max(StationGenericCounter.minimumAmplitude, StationGenericCounter.calibratedAmplitudeShare * $0) }
+            amplitude.map { StationGenericCounter.calibratedAmplitudeShare * $0 }
                 ?? StationGenericCounter.minimumAmplitude
         }
 

@@ -131,6 +131,13 @@ final class StationGenericCounterTests: XCTestCase {
         XCTAssertEqual(countSquats(repetitionSeries(reps: 5, scale: { $0 < 3 ? 1 : 0.4 })).count, 3)
     }
 
+    func testLowRangeReferenceUsesItsShareRatherThanTheCalibrationFloor() {
+        // A first rep of about 40 degrees, then reps of about 27 (two thirds of
+        // it, below the 30-degree floor) count; reps of about 20 (half) do not.
+        XCTAssertEqual(countSquats(repetitionSeries(reps: 5, scale: { $0 == 0 ? 1.0 / 3 : 0.225 })).count, 5)
+        XCTAssertEqual(countSquats(repetitionSeries(reps: 5, scale: { $0 == 0 ? 1.0 / 3 : 0.17 })).count, 1)
+    }
+
     func testGraduallyShrinkingRepsCannotLowerTheFirstRepReference() {
         // A moving average of accepted reps would lower the bar enough to count all seven.
         let scales = [1, 0.9, 0.75, 0.55, 0.5, 0.45, 0.4]

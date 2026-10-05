@@ -32,11 +32,11 @@ enum CoachApp: String, CaseIterable, Identifiable {
 /// the privacy policy's AI section.
 enum CoachSharing {
     static let sharedData = [
-        "Training profile: goals, activities, experience, equipment, movements to avoid and lifts you reported",
-        "Training plan, schedule and plan history",
-        "Workout history: sets, weights, reps, durations, effort and fatigue ratings",
+        "Your display name and training profile: goal, activities and weekly activity context, experience, training days and session length, equipment, movements to avoid and lifts you reported",
+        "Training plan, schedule and plan history, plus races, trips, training blocks and other coaching settings",
+        "Workout history: sessions, sets, weights, reps, durations, effort and fatigue ratings",
         "Saved workout feedback and notes",
-        "Workouts imported from Apple Health or Intervals.icu, including heart-rate summaries",
+        "Activities imported from Apple Health or Intervals.icu, including heart-rate summaries, and planned Intervals.icu events",
         "Group activity and member names visible to you",
     ]
 }

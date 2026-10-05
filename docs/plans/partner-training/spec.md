@@ -29,8 +29,9 @@ Supporting design for [plan.md](plan.md). The plan owns status and next step.
    weight and reps for each person. Both do the set, each phone logs its own
    member's set (by hand in P0, from the iPad's count in P1), and rest starts
    once both have logged. The next set starts for both together.
-6. Either person can stop. Their lane closes for the rest of the workout and the
-   other person continues alone; a closed lane is never reopened.
+6. Either person can stop. Their lane closes for the rest of the workout, the
+   iPad stops waiting for them, and the other person continues alone; a closed
+   lane is never reopened.
 
 ## Key choices
 
@@ -54,10 +55,17 @@ set, that lane reports the set as no longer logged; the step returns to that
 set, rest stops, and only that phone re-arms it. The other lane's logged set
 stays logged and acknowledged, and that lane shows "waiting for Alex" until the
 set is logged again. A correction that edits weight or reps does not move the
-step. If the iPad link is
-lost, the dual workout ends and each phone carries on alone from its own last
-logged set, as a normal workout. The same phone may reconnect after a brief
-drop; a different person or phone cannot.
+step.
+
+Stopping removes a lane from the quorum. When a member stops, their lane
+closes for the rest of the workout and the shared step then follows the
+remaining lane alone, which continues as a single-person Station workout from
+its own next unlogged set. A closed lane never reopens. If one phone's link
+drops, its lane holds and the iPad waits for that same phone to reconnect; a
+different person or phone cannot take the lane. The other member can tap
+"Continue alone" at any time, which closes the dropped lane as if that member
+had stopped. If the iPad itself is lost, both phones carry on alone from their
+own last logged set, as normal workouts.
 
 Rejected: the iPad logging for both people. It would need a second signed-in
 account on one device and a second offline outbox, and it breaks the rule that

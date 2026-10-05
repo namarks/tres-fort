@@ -53,8 +53,10 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     Swap, add, reorder and remove are off during a dual workout; a skip applies
     to both. Each person logs, corrects and undoes their own sets by hand.
   - Show two lanes on the iPad (name, weight, reps, logged state). Either person
-    can stop; their lane closes for good and the other continues alone. If the
-    iPad link is lost, each phone continues as a normal solo workout.
+    can stop; their lane closes for good and leaves the step quorum, so the
+    other continues alone. A dropped phone's lane waits for that same phone,
+    and the other member can choose "Continue alone". If the iPad is lost, each
+    phone continues as a normal solo workout.
   - Keep the iPad free of partner data afterwards; disable test recording during
     a dual workout.
 - [ ] **P1 — Count two people side by side**

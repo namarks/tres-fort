@@ -58,6 +58,9 @@ final class StationLinkTests: XCTestCase {
                                  exerciseName: "Back Squat", targetReps: 5)
         let sealed = try XCTUnwrap(StationLink.seal(.arm(arm), sessionKey: sessionKey,
                                                     senderRole: "controller", counter: 1))
+        let frame = try XCTUnwrap(JSONSerialization.jsonObject(with: sealed) as? [String: Any])
+        let ciphertext = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(frame["sealed"] as? String)))
+        XCTAssertNil(ciphertext.range(of: Data("Back Squat".utf8)), "A relay cannot read the message")
         let opened = try XCTUnwrap(StationLink.open(sealed, sessionKey: sessionKey,
                                                     senderRole: "controller", after: 0))
         XCTAssertEqual(opened.message, .arm(arm))
@@ -103,6 +106,13 @@ final class StationLinkTests: XCTestCase {
         XCTAssertNil(StationExercise.match(exerciseName: "Lying Leg Curl"))
         XCTAssertNil(StationExercise.match(exerciseName: "Wrist Curl"))
         XCTAssertNil(StationExercise.match(exerciseName: "Deadlift"))
+        XCTAssertNil(StationExercise.match(exerciseName: "Single-Arm Dumbbell Bench Press"))
+        XCTAssertNil(StationExercise.match(exerciseName: "Single-Arm Cable Curl"))
+        XCTAssertNil(StationExercise.match(exerciseName: "Alternating Dumbbell Curl"))
+        XCTAssertNil(StationExercise.match(exerciseName: "Skater Squat"))
+        XCTAssertNil(StationExercise.match(exerciseName: "Cossack Squat"))
+        XCTAssertNil(StationExercise.match(exerciseName: "Dumbbell Curl", unilateral: true),
+                     "Per-side reps stay manual whatever the name")
         XCTAssertNil(StationExercise.match(exerciseName: "Squat hold", modality: "timed"))
     }
 
@@ -127,6 +137,16 @@ final class StationLinkTests: XCTestCase {
         XCTAssertFalse(detector.observe(count: 3, status: .moving, at: 6))
         XCTAssertFalse(detector.observe(count: 3, status: .multiplePeople, at: 7))
         XCTAssertTrue(detector.observe(count: 3, status: .trackingLost, at: 8))
+    }
+
+    func testATrailingArmKeepsTheSetOpen() {
+        var detector = StationSetEndDetector()
+        _ = detector.observe(count: 0, leftCount: 0, rightCount: 0, status: .ready, at: 0)
+        _ = detector.observe(count: 5, leftCount: 5, rightCount: 3, status: .ready, at: 1)
+        XCTAssertFalse(detector.observe(count: 5, leftCount: 5, rightCount: 4, status: .ready, at: 4.5),
+                       "The other arm's rep is a change even though the shown count holds")
+        XCTAssertFalse(detector.observe(count: 5, leftCount: 5, rightCount: 4, status: .ready, at: 8))
+        XCTAssertTrue(detector.observe(count: 5, leftCount: 5, rightCount: 4, status: .ready, at: 8.6))
     }
 
     func testAnExtraRepRestartsTheSettleWindow() {

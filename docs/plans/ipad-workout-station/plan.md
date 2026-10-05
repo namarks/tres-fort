@@ -63,8 +63,10 @@ may turn detections into durable workout actions.
     stored, and cached in the device Keychain); a mutual challenge-response
     proves both hold it before any message is trusted, because the discovery
     tag is public (owner chose this over code matching). Every later message is
-    sealed with a key bound to that connection's nonces, with a direction and
-    counter, so a relay cannot forge, replay or reflect one. The iPhone arms
+    encrypted and authenticated with a key bound to that connection's nonces,
+    with a direction and counter, so a relay cannot read, forge, replay or
+    reflect one. One-side movements (per-side reps) stay manual, and a rep on
+    either curl arm keeps the set open. The iPhone arms
     the current countable set once rest is over, and only while the workout is
     open rather than minimized;
     every distinct slot/set gets a fresh arm ID. The iPad counts that set and

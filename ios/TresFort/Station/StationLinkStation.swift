@@ -89,7 +89,8 @@ final class StationLinkStation: ObservableObject {
             lastProgress = progress
             transport.send(.progress(progress))
         }
-        guard detector.observe(count: count, status: status, at: time) else { return false }
+        guard detector.observe(count: count, leftCount: leftCount, rightCount: rightCount,
+                               status: status, at: time) else { return false }
         complete(count: count, leftCount: leftCount, rightCount: rightCount, partial: partial)
         return true
     }

@@ -57,50 +57,65 @@ enum StationLink {
             using: SymmetricKey(data: key)))
     }
 
-    /// Seals an app message for the authenticated peer. The MAC binds the
-    /// sender's role and a per-direction counter that starts at 1, so a
-    /// message can be neither forged, reflected, nor replayed.
+    /// Encrypts an app message for the authenticated peer (ChaCha20-Poly1305
+    /// under the session key). The sender's role and a per-direction counter
+    /// that starts at 1 are authenticated and fix the nonce, so a relay can
+    /// neither read, forge, reflect nor replay a message.
     static func seal(_ message: StationLinkMessage, sessionKey: Data, senderRole: String,
                      counter: UInt64) -> Data? {
-        guard let body = try? message.encoded() else { return nil }
-        let mac = Data(HMAC<SHA256>.authenticationCode(
-            for: sealedMessage(senderRole, counter, body), using: SymmetricKey(data: sessionKey)))
-        return try? JSONEncoder().encode(StationLinkSealedFrame(sealed: body, counter: counter, mac: mac))
+        guard let body = try? message.encoded(),
+              let nonce = try? ChaChaPoly.Nonce(data: sealNonce(senderRole, counter)),
+              let box = try? ChaChaPoly.seal(body, using: SymmetricKey(data: sessionKey), nonce: nonce,
+                                             authenticating: sealedContext(senderRole, counter)) else { return nil }
+        return try? JSONEncoder().encode(StationLinkSealedFrame(counter: counter, sealed: box.combined))
     }
 
-    /// Opens a sealed message only when its MAC holds for the expected sender
-    /// and its counter is newer than the last one accepted.
+    /// Opens a sealed message only when it authenticates for the expected
+    /// sender and its counter is newer than the last one accepted.
     static func open(_ data: Data, sessionKey: Data, senderRole: String,
                      after lastCounter: UInt64) -> (message: StationLinkMessage, counter: UInt64)? {
         guard let frame = try? JSONDecoder().decode(StationLinkSealedFrame.self, from: data),
               frame.counter > lastCounter,
-              HMAC<SHA256>.isValidAuthenticationCode(
-                frame.mac, authenticating: sealedMessage(senderRole, frame.counter, frame.sealed),
-                using: SymmetricKey(data: sessionKey)),
-              let message = StationLinkMessage.decode(frame.sealed) else { return nil }
+              let box = try? ChaChaPoly.SealedBox(combined: frame.sealed),
+              box.nonce.withUnsafeBytes({ Data($0) }) == sealNonce(senderRole, frame.counter),
+              let body = try? ChaChaPoly.open(box, using: SymmetricKey(data: sessionKey),
+                                              authenticating: sealedContext(senderRole, frame.counter)),
+              let message = StationLinkMessage.decode(body) else { return nil }
         return (message, frame.counter)
     }
 
-    private static func sealedMessage(_ role: String, _ counter: UInt64, _ body: Data) -> Data {
-        Data("tres-fort:station-link:message:\(role):".utf8)
-            + withUnsafeBytes(of: counter.bigEndian) { Data($0) } + body
+    private static func counterBytes(_ counter: UInt64) -> Data {
+        withUnsafeBytes(of: counter.bigEndian) { Data($0) }
+    }
+
+    /// Unique per direction and counter under a key used for one connection.
+    private static func sealNonce(_ role: String, _ counter: UInt64) -> Data {
+        Data(SHA256.hash(data: Data("tres-fort:station-link:nonce:\(role)".utf8)).prefix(4))
+            + counterBytes(counter)
+    }
+
+    private static func sealedContext(_ role: String, _ counter: UInt64) -> Data {
+        Data("tres-fort:station-link:message:\(role):".utf8) + counterBytes(counter)
     }
 }
 
 private struct StationLinkSealedFrame: Codable {
-    let sealed: Data
     let counter: UInt64
-    let mac: Data
+    let sealed: Data
 }
 
 extension StationExercise: Codable {
     /// Maps a workout slot to a movement the Station can count. Anything else
     /// stays a manual set: a lookalike name must not borrow another counter.
-    static func match(exerciseName: String, modality: String? = nil) -> StationExercise? {
+    /// One-side movements prescribe reps per side, which one count can't
+    /// cover, so they stay manual too.
+    static func match(exerciseName: String, modality: String? = nil,
+                      unilateral: Bool = false) -> StationExercise? {
         let name = exerciseName.lowercased()
-        if modality == "timed" || modality == "cardio" { return nil }
+        if unilateral || modality == "timed" || modality == "cardio" { return nil }
         let excluded = ["split", "jump", "pistol", "hack", "leg press", "leg curl", "hamstring",
-                        "nordic", "wrist"]
+                        "nordic", "wrist", "single", "one-arm", "one arm", "one-leg", "one leg",
+                        "skater", "cossack", "lateral", "alternating"]
         if excluded.contains(where: { name.contains($0) }) { return nil }
         if name.contains("bench press") { return .benchPress }
         if name.contains("squat") { return .squat }
@@ -236,15 +251,20 @@ enum StationLinkPolicy {
 struct StationSetEndDetector {
     private(set) var lastCount = 0
     private(set) var hasFinished = false
+    private var lastSides: [Int?] = [nil, nil]
     private var lastChange: TimeInterval?
 
     mutating func reset() { self = Self() }
 
-    /// Returns true exactly once, when the set is judged finished.
-    mutating func observe(count: Int, status: StationTrackingStatus, at time: TimeInterval) -> Bool {
+    /// Returns true exactly once, when the set is judged finished. A rep on
+    /// either side counts as a change, so a trailing arm keeps the set open.
+    mutating func observe(count: Int, leftCount: Int? = nil, rightCount: Int? = nil,
+                          status: StationTrackingStatus, at time: TimeInterval) -> Bool {
         guard !hasFinished, time.isFinite else { return false }
-        if lastChange == nil || count != lastCount {
+        let sides = [leftCount, rightCount]
+        if lastChange == nil || count != lastCount || sides != lastSides {
             lastCount = count
+            lastSides = sides
             lastChange = time
             return false
         }

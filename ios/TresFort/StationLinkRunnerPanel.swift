@@ -30,7 +30,8 @@ struct StationLinkRunnerPanel: View {
               sync.isFreestyle || sync.runnerSetsDone(ex) < ex.target_sets,
               (sync.restEndDate.map { $0 <= now } ?? true),
               let movement = StationExercise.match(exerciseName: ex.exercise_name,
-                                                   modality: ex.exercise_modality) else { return nil }
+                                                   modality: ex.exercise_modality,
+                                                   unilateral: ex.isUnilateral) else { return nil }
         return StationLinkTarget(slotID: ex.id, setNumber: sync.currentPhysicalSetNumber,
                                  exercise: movement, exerciseName: ex.exercise_name,
                                  targetReps: ex.target_reps)

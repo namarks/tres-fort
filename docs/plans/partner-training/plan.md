@@ -51,25 +51,27 @@ The design and the choices behind each phase are in [spec.md](spec.md).
   - Start in two phases: each phone assigns the workout to the date and
     acknowledges to the iPad, and dual mode begins only after both succeed. A
     failed side can retry; Cancel leaves each member an ordinary planned
-    session. The handoff carries the host's plan version; if the host's plan
-    changed before Start, the partner reviews the current workout again. The
-    step sequence is fixed once both have started.
-  - The iPad holds the shared step: both phones arm the same exercise and set,
-    rest starts once both have logged it, and the next set starts for both.
+    session. The handoff carries the host's plan ID and version, which the
+    host's date assignment checks in the same write; if the plan changed, the
+    partner reviews the current workout again. The step sequence is fixed once
+    both have started.
+  - The iPad holds the shared step: both phones arm the same exercise and set;
+    once both have logged it, the pair rests for that step's handed-off rest
+    (or taps Skip rest) before the next step is armed for both.
     Steps are named by host slot ID and set number, which the partner's phone
     maps to its own copy's slots, so duplicate exercises never share an
-    acknowledgement. The step is derived from both lanes' acknowledged sets,
-    so an Undo on either phone rewinds it to that set and stops rest while the
-    other lane's set stays logged. Swap, add, reorder and remove are off during
+    acknowledgement. A step is released only after both acknowledgements and
+    its rest, so an Undo on either phone rewinds to that set and cancels rest
+    while the other lane's set stays logged. Swap, add, reorder and remove are off during
     a dual workout; a skip applies to both. Each person logs, corrects and
     undoes their own sets by hand.
   - Show two lanes on the iPad (name, weight, reps, logged state). Either person
     can stop; their lane closes for good and leaves the step quorum, so the
     other continues alone. A dropped phone's lane waits for that same phone,
     proven by a per-lane resume key issued on Allow and kept in the partner's
-    Keychain until the lane closes, and the other member can
-    choose "Continue alone". If the iPad is lost, each phone continues as a
-    normal solo workout.
+    Keychain until the lane closes; the slot map and step sequence persist
+    with its runner checkpoint. The other member can choose "Continue alone".
+    If the iPad is lost, each phone continues as a normal solo workout.
   - Keep the iPad free of partner data afterwards; disable test recording during
     a dual workout.
 - [ ] **P1 — Count two people side by side**

@@ -45,10 +45,18 @@ account on the partner's behalf.
 
 Moving through the workout together adds one shared piece of state: the current
 step (exercise, set, and whether the pair is resting). The iPad holds it, since
-both phones connect to it. A phone arms only the current step. The step is
-derived from each lane's acknowledged sets, never advanced by a timer or a
-single message: it is the earliest set that is not yet logged or skipped in
-both lanes, and rest runs only while both lanes have that set logged.
+both phones connect to it. A phone arms only the current step. The step
+sequence and each step's rest come from the handoff: the rest the host's
+runner would use after that set, including superset transition and round
+rest.
+
+The shared state has two phases. **Lifting step N**: both lanes may log or
+skip N; the step stays N until both have. **Resting after N**: entered when
+both lanes have N logged or skipped; it keeps N as the current step, runs N's
+rest, and nothing is armed. When the rest ends, or either member taps Skip
+rest, the iPad releases N and moves to lifting the next step. A step is never
+released by one message alone: release needs both acknowledgements and the end
+of rest.
 
 A step is named by the host's slot ID and the set number, never by exercise:
 a workout can hold the same exercise twice (a warm-up squat and a working
@@ -58,9 +66,10 @@ Every arm, log, skip and Undo message carries the host slot ID and set number;
 the partner's phone translates through the map, so one slot's acknowledgement
 can never satisfy another.
 
-Undo therefore rewinds without a special case. When a phone's Undo deletes its
-set, that lane reports the set as no longer logged; the step returns to that
-set, rest stops, and only that phone re-arms it. The other lane's logged set
+Undo rewinds without a special case. When a phone's Undo deletes its set for
+the current step, during lifting or rest, that lane reports the set as no
+longer logged; the state returns to lifting that step, rest is cancelled, and
+only that phone re-arms it. The other lane's logged set
 stays logged and acknowledged, and that lane shows "waiting for Alex" until the
 set is logged again. A correction that edits weight or reps does not move the
 step.
@@ -94,9 +103,12 @@ days ship, the dual workout becomes an additional session instead.
 ### Starting together
 
 The handoff names the host's workout as it was reviewed: plan ID, plan version
-and the workout's slot list. The host's phone checks that version again when
-it assigns the date on Start. If a coach or another device changed the plan
-since the handoff, the host's assignment is refused, the iPad sends the
+and the workout's slot list. The host's date assignment on Start carries
+that plan ID and version, and the Worker checks them in the same write as the
+assignment (P0 adds optional `expected_plan_id` / `expected_version` to the
+date-assignment route, which today checks only `expected_attempt`). If a coach
+or another device changed the plan since the handoff, the assignment is
+refused atomically, the iPad sends the
 partner the current workout, and the partner reviews "Your weights" again
 before Start. Once both have started, the step sequence is fixed from that
 handoff; a later plan edit applies to future workouts, not to this one.
@@ -145,8 +157,11 @@ same challenge-response keyed by the resume key, so only the phone that was
 allowed can take the lane back; a device that copied the QR code has no
 resume key. The host's phone reconnects with the account link key as today.
 The partner's phone stores its resume key in the Keychain, scoped to its
-account and this dual workout, so it survives the app being closed or evicted
-and the phone can reclaim its lane after restoring its runner. The key is
+account and this dual workout. With its runner checkpoint (account-scoped, as
+today) it also stores the dual workout ID, the frozen step sequence and the
+host-slot-to-own-slot map. After the app is closed or evicted, the phone
+restores its runner, reconnects with the resume key and interprets every
+resumed message through the stored map. The key is
 deleted when the lane closes, the dual workout ends, or the member signs out.
 The iPad holds its copy only in memory; if the iPad app is closed, the dual
 workout ends and both phones continue alone.
@@ -255,4 +270,5 @@ prototype (PR #236) handles one person at a time.
   workout handoff message, the shared step, and lane identity on arm and count
   messages.
 - Worker: one idempotent, atomic create of a workout with full slots, which
-  also creates the member's plan when they have none (P0). No new tables.
+  also creates the member's plan when they have none, and an optional plan
+  version check on the date assignment (P0). No new tables.

@@ -22,12 +22,21 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
         if let failure { app.launchEnvironment["TRESFORT_UI_SCHEDULE_FAILURE"] = failure }
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Calendar"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 10))
         return app
     }
 
+    /// The calendar lives behind Today's week strip.
+    private func openCalendar(in app: XCUIApplication) {
+        app.tabBars.buttons["Today"].tap()
+        let calendar = app.buttons["today.calendar"]
+        XCTAssertTrue(calendar.waitForExistence(timeout: 5))
+        for _ in 0..<6 where !calendar.isHittable { app.swipeUp() }
+        calendar.tap()
+    }
+
     private func openSchedule(in app: XCUIApplication) {
-        app.tabBars.buttons["Calendar"].tap()
+        openCalendar(in: app)
         let schedule = app.buttons["calendar.weeklySchedule"]
         XCTAssertTrue(schedule.waitForExistence(timeout: 5))
         schedule.tap()
@@ -130,7 +139,7 @@ final class WeeklyScheduleJourneyTests: XCTestCase {
 
     func testDateAssignmentStaysVisibleWhilePreviewScrolls() {
         let app = launch(fixture: "app-store")
-        app.tabBars.buttons["Calendar"].tap()
+        openCalendar(in: app)
         app.buttons["calendar.date.2026-09-09"].tap()
         let actions = app.buttons["calendar.dateActions"]
         XCTAssertTrue(actions.waitForExistence(timeout: 5))

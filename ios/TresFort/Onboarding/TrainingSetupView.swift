@@ -162,7 +162,7 @@ struct TrainingSetupView: View {
                 Picker("Time for a strength workout", selection: $model.profile.session_minutes) {
                     ForEach([15, 30, 45, 60], id: \.self) { Text("\($0) minutes").tag($0) }
                 }
-                Text("Choose workout dates later in Calendar.")
+                Text("Choose workout dates later from the calendar on Today.")
                     .font(.footnote).foregroundStyle(Theme.muted)
                 Picker("Available equipment", selection: $model.profile.equipment) {
                     Text("Bodyweight & a stable raised surface").tag("bodyweight")

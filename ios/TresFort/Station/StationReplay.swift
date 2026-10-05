@@ -39,6 +39,12 @@ struct StationReplayFrame: Codable, Equatable {
     var appleRightCycles: Int? = nil
     var mediaPipeLeftCycles: Int? = nil
     var mediaPipeRightCycles: Int? = nil
+    // Experimental generic 3D counter over MediaPipe world landmarks. Missing
+    // on comparisons saved before it existed. Curls use the per-arm fields.
+    var genericCycles: Int? = nil
+    var genericLeftCycles: Int? = nil
+    var genericRightCycles: Int? = nil
+    var genericSignal: String? = nil
 }
 
 struct StationReplayReport: Codable {
@@ -56,11 +62,18 @@ struct StationReplayReport: Codable {
     // Missing on older reports means coverage was not recorded, not complete.
     var appleHasIncompleteCoverage: Bool? = nil
     var mediaPipeHasIncompleteCoverage: Bool? = nil
+    var genericCounterVersion: String? = nil
+    var genericHasIncompleteCoverage: Bool? = nil
 }
 
 struct StationReplayCoverage {
     private(set) var appleHasIncompleteCoverage = false
     private(set) var mediaPipeHasIncompleteCoverage = false
+    private(set) var genericHasIncompleteCoverage = false
+
+    mutating func observe(generic: StationGenericMovementCounter) {
+        genericHasIncompleteCoverage = genericHasIncompleteCoverage || generic.hasTrackingLoss
+    }
 
     mutating func observe(apple: StationMovementCounter, mediaPipe: StationMovementCounter) {
         appleHasIncompleteCoverage = appleHasIncompleteCoverage || Self.hasTrackingLoss(apple)
@@ -116,6 +129,7 @@ enum StationReplayWorker {
         var frames: [StationReplayFrame] = []
         var appleCounter = StationMovementCounter(exercise: recording.exercise)
         var mediaPipeCounter = StationMovementCounter(exercise: recording.exercise)
+        var genericCounter = StationGenericMovementCounter(exercise: recording.exercise)
         var coverage = StationReplayCoverage()
         var previousTimestamp = -Double.infinity
         var previousMilliseconds = -1
@@ -146,12 +160,18 @@ enum StationReplayWorker {
                 try validateIdentity(applePersonCount: apple.personCount, mediaPipePersonCount: mp.personCount)
                 appleCounter.process(apple.sample(at: timestamp))
                 mediaPipeCounter.process(mp.sample(at: timestamp))
+                genericCounter.process(StationWorldPoseSample(
+                    timestamp: timestamp, landmarks: result.worldPoses.count == 1 ? result.worldPoses.first : nil,
+                    personCount: result.worldPoses.count))
                 coverage.observe(apple: appleCounter, mediaPipe: mediaPipeCounter)
+                coverage.observe(generic: genericCounter)
                 return StationReplayFrame(timestamp: timestamp, apple: apple, mediaPipe: mp,
                                           mediaPipeLandmarks: result.poses, mediaPipeWorldLandmarks: result.worldPoses,
                                           appleCycles: appleCounter.count, mediaPipeCycles: mediaPipeCounter.count,
                                           appleLeftCycles: appleCounter.leftCount, appleRightCycles: appleCounter.rightCount,
-                                          mediaPipeLeftCycles: mediaPipeCounter.leftCount, mediaPipeRightCycles: mediaPipeCounter.rightCount)
+                                          mediaPipeLeftCycles: mediaPipeCounter.leftCount, mediaPipeRightCycles: mediaPipeCounter.rightCount,
+                                          genericCycles: genericCounter.count, genericLeftCycles: genericCounter.leftCount,
+                                          genericRightCycles: genericCounter.rightCount, genericSignal: genericCounter.signalDescription)
             }
             try session.requireActive()
             frames.append(frame)
@@ -169,7 +189,9 @@ enum StationReplayWorker {
                                    appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
                                    frames: frames, counterVersion: "curl-confidence-grace-v2",
                                    appleHasIncompleteCoverage: coverage.appleHasIncompleteCoverage,
-                                   mediaPipeHasIncompleteCoverage: coverage.mediaPipeHasIncompleteCoverage)
+                                   mediaPipeHasIncompleteCoverage: coverage.mediaPipeHasIncompleteCoverage,
+                                   genericCounterVersion: StationGenericMovementCounter.version,
+                                   genericHasIncompleteCoverage: coverage.genericHasIncompleteCoverage)
     }
 
     static func validateIdentity(applePersonCount: Int, mediaPipePersonCount: Int) throws {

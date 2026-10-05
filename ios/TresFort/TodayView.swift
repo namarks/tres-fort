@@ -339,7 +339,10 @@ struct TodayView: View {
             .fullScreenCover(isPresented: $showStation) {
                 let accountID = auth.userID
                 let epoch = auth.featureSessionEpoch
-                StationEntryView(workoutName: sync.selectedDay?.name, accountID: accountID, epoch: epoch,
+                StationEntryView(workoutName: sync.selectedDay?.name,
+                    workout: sync.exercises.map { StationExerciseOption(prescription: $0) },
+                    catalog: sync.catalog.map { StationExerciseOption(catalog: $0) },
+                    accountID: accountID, epoch: epoch,
                     isCurrentSession: { [weak stationAuth = auth] in
                         stationAuth?.isCurrentFeatureSession(accountID: accountID, epoch: epoch) == true
                     }, observeBoundary: { [weak stationAuth = auth] observer in

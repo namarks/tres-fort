@@ -5,30 +5,41 @@ import Combine
 /// AuthModel is reduced to a validator and boundary registration at the caller.
 struct StationEntryView: View {
     let workoutName: String?
+    let workout: [StationExerciseOption]
+    let catalog: [StationExerciseOption]
     @StateObject private var access: StationAccess
 
-    init(workoutName: String?, accountID: String?, epoch: UInt64,
+    init(workoutName: String?, workout: [StationExerciseOption] = [], catalog: [StationExerciseOption] = [],
+         accountID: String?, epoch: UInt64,
          isCurrentSession: @escaping @MainActor () -> Bool,
          observeBoundary: @escaping (@escaping () -> Bool) -> Void) {
         self.workoutName = workoutName
+        self.workout = workout
+        self.catalog = catalog
         _access = StateObject(wrappedValue: StationAccess(accountID: accountID, epoch: epoch,
                                                        isCurrentSession: isCurrentSession,
                                                        observeBoundary: observeBoundary))
     }
 
-    var body: some View { StationView(workoutName: workoutName, access: access) }
+    var body: some View { StationView(workoutName: workoutName, workout: workout, catalog: catalog, access: access) }
 }
 
-/// An observation-only trial. This view receives a display string, never a
+/// An observation-only trial. This view receives immutable display values, never a
 /// SyncModel, API client, outbox or binding to the workout's mutable state.
 struct StationView: View {
     let workoutName: String?
+    let workout: [StationExerciseOption]
+    let catalog: [StationExerciseOption]
     @ObservedObject var access: StationAccess
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @StateObject private var camera: StationCamera
     @State private var exercise: StationExercise = .squat
+    @State private var trialMode: StationTrialMode? = .squat
+    @State private var selectedOption: StationExerciseOption?
+    @State private var holdTimer = StationHoldTimer(kind: .plank, targetSeconds: 30)
+    @State private var showCatalog = false
     @StateObject private var comparison = StationLiveModel()
 #if DEBUG
     @StateObject private var diagnostics = StationDiagnostics()
@@ -41,8 +52,11 @@ struct StationView: View {
     @State private var countdownTask: Task<Void, Never>?
     @State private var showSavedTests = false
 
-    init(workoutName: String?, access: StationAccess) {
+    init(workoutName: String?, workout: [StationExerciseOption] = [], catalog: [StationExerciseOption] = [],
+         access: StationAccess) {
         self.workoutName = workoutName
+        self.workout = workout
+        self.catalog = catalog
         self.access = access
         _camera = StateObject(wrappedValue: StationCamera(access: access))
     }
@@ -56,19 +70,22 @@ struct StationView: View {
                     VStack(alignment: .leading, spacing: 24) {
                         heading
                         exercisePicker
+                        if let selectedOption { mappingDetails(selectedOption) }
+                        if trialMode != nil {
                         if geometry.size.width >= 850 && !dynamicTypeSize.isAccessibilitySize {
                             HStack(alignment: .top, spacing: 24) {
                                 cameraPanel.frame(maxWidth: .infinity)
-                                counterPanel.frame(width: 400)
+                                trackingPanel.frame(width: 400)
                             }
                         } else {
-                            counterPanel
+                            trackingPanel
                             cameraPanel
                         }
-                        recordingPanel
+                        if trialMode?.repExercise != nil { recordingPanel }
 #if DEBUG
-                        diagnosticPanel
+                        if trialMode?.repExercise != nil { diagnosticPanel }
 #endif
+                        }
                         privacyNote
                     }
                     .padding(24)
@@ -100,6 +117,9 @@ struct StationView: View {
             guard !active else { return }
             cancelCountdown()
             comparison.reset(exercise: exercise)
+            holdTimer = StationHoldTimer(kind: holdTimer.kind, targetSeconds: 30)
+            selectedOption = nil
+            showCatalog = false
             actualReps = ""
             hasRunTrial = false
             showSavedTests = false
@@ -139,8 +159,15 @@ struct StationView: View {
                 if camera.state == .running, let frame { comparison.process(frame) }
                 else { cancelComparison("Camera view changed. Start a new test.") }
             }
+            if holdTimer.isActive {
+                if camera.state == .running, let frame, frame.detector == .mediaPipe {
+                    holdTimer.process(frame.sample)
+                } else { holdTimer.invalidate() }
+            }
 #if DEBUG
-            diagnostics.observeLive(frame: frame, snapshot: comparison.diagnosticSnapshot)
+            if trialMode?.repExercise != nil {
+                diagnostics.observeLive(frame: frame, snapshot: comparison.diagnosticSnapshot)
+            }
 #endif
         }
         .onChange(of: camera.recordingState) { previous, current in
@@ -152,9 +179,15 @@ struct StationView: View {
             }
         }
         .sheet(isPresented: $showSavedTests) { StationRecordingsView(access: access) }
+        .sheet(isPresented: $showCatalog) {
+            StationCatalogView(workout: workout, catalog: catalog) { option in
+                choose(option.trial(), option: option)
+            }
+        }
     }
 
     private func cancelComparison(_ reason: String) {
+        holdTimer.invalidate()
         if comparison.state.isCollecting {
             comparison.invalidate(reason: reason)
         }
@@ -182,30 +215,82 @@ struct StationView: View {
                 HStack(spacing: 12) { exerciseButtons }
                 VStack(alignment: .leading, spacing: 12) { exerciseButtons }
             }
+            HStack {
+                ForEach([StationTrialMode.plank, .wallSit]) { mode in
+                    Button(mode.title) { choose(mode) }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("station.exercise.\(mode.rawValue)")
+                }
+            }
+            .disabled(recordingBusy)
+            Button("Choose from workout or catalog", systemImage: "list.bullet") {
+                cancelComparison("Tracking stopped to choose an exercise.")
+                camera.stop()
+                showCatalog = true
+            }
+            .disabled(recordingBusy)
+            .accessibilityIdentifier("station.catalog")
         }
     }
 
     @ViewBuilder private var exerciseButtons: some View {
         ForEach(StationExercise.allCases) { option in
             Button {
-                hasRunTrial = false
-                actualReps = ""
-                actualRepsFocused = false
-                exercise = option
-                comparison.reset(exercise: option)
+                choose(StationTrialMode(rawValue: option.rawValue))
             } label: {
                 Text(option.title)
                     .font(.headline)
                     .padding(.horizontal, 24).frame(minHeight: 52)
-                    .foregroundStyle(exercise == option ? Theme.bg : Theme.text)
-                    .background(exercise == option ? Theme.accent : Theme.surface2,
+                    .foregroundStyle(trialMode?.repExercise == option ? Theme.bg : Theme.text)
+                    .background(trialMode?.repExercise == option ? Theme.accent : Theme.surface2,
                                 in: RoundedRectangle(cornerRadius: 14))
             }
             .buttonStyle(.plain)
-            .accessibilityAddTraits(exercise == option ? [.isSelected] : [])
+            .accessibilityAddTraits(trialMode?.repExercise == option ? [.isSelected] : [])
             .accessibilityIdentifier("station.exercise.\(option.rawValue)")
             .disabled(recordingBusy)
         }
+    }
+
+    private func choose(_ mode: StationTrialMode?, option: StationExerciseOption? = nil) {
+        cancelComparison("Exercise changed. Start a new test.")
+        trialMode = mode
+        selectedOption = option
+        hasRunTrial = false
+        actualReps = ""
+        actualRepsFocused = false
+        if let rep = mode?.repExercise { exercise = rep }
+        comparison.reset(exercise: exercise)
+        holdTimer = StationHoldTimer(kind: mode?.holdKind ?? .plank, targetSeconds: option?.targetSeconds ?? 30)
+    }
+
+    @ViewBuilder private var trackingPanel: some View {
+        if trialMode?.holdKind != nil {
+            StationHoldPanel(timer: $holdTimer, cameraRunning: camera.state == .running,
+                             title: selectedOption?.name ?? holdTimer.kind.title)
+                .id(selectedOption?.id ?? trialMode?.rawValue)
+        } else { counterPanel }
+    }
+
+    private func mappingDetails(_ option: StationExerciseOption) -> some View {
+        let entry = StationTrackingCatalog.bundled.entry(for: option.exerciseID)
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(option.name).font(.title2.bold())
+            Text(trialMode == nil && entry.trial != nil ? "Use the workout timer for this prescription" : entry.status)
+                .font(.headline).accessibilityIdentifier("station.catalogStatus")
+            if let profile = entry.profile {
+                Text("\(profile.title) · \(profile.measurement == .hold ? "Seconds in position" : "Movement repetitions")")
+                Text(profile.cameraView)
+                Text(profile.definition)
+                Text(profile.limitation).foregroundStyle(Theme.muted)
+            }
+            if let reason = entry.reason { Text(reason).foregroundStyle(Theme.muted) }
+            if trialMode == nil {
+                Text("Continue with manual logging or the workout timer. Camera tracking is not enabled for this selection.")
+            }
+        }
+        .font(.subheadline).padding(16).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 16))
     }
 
     private var cameraPanel: some View {
@@ -243,7 +328,8 @@ struct StationView: View {
                 Text(camera.framingDescription)
                     .font(.subheadline.bold()).foregroundStyle(Theme.text)
                     .accessibilityIdentifier("station.framing")
-                Text(StationPoseFeedback(sample: camera.latestPose, exercise: exercise).message)
+                Text(trialMode?.holdKind != nil ? holdTimer.state.message :
+                     StationPoseFeedback(sample: camera.latestPose, exercise: exercise).message)
                     .font(.headline).foregroundStyle(Theme.text)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("station.poseFeedback")
@@ -251,7 +337,7 @@ struct StationView: View {
                     .font(.caption).foregroundStyle(Theme.muted)
             }
 
-            Text(exercise.guidance)
+            Text(trialMode?.holdKind?.guidance ?? exercise.guidance)
                 .font(.body).foregroundStyle(Theme.text)
                 .fixedSize(horizontal: false, vertical: true)
             Text("Keep the iPad still, use good lighting, and stay alone in view. Camera counts are estimates.")
@@ -291,7 +377,7 @@ struct StationView: View {
 
     private var counterPanel: some View {
         VStack(spacing: 16) {
-            Text(exercise.title.uppercased())
+            Text((selectedOption?.name ?? exercise.title).uppercased())
                 .font(Theme.display(30)).foregroundStyle(Theme.text)
                 .accessibilityIdentifier("station.movement")
             if exercise == .curl {

@@ -25,6 +25,13 @@ may turn detections into durable workout actions.
     and saved replay. Save actual counts per arm; never double bilateral reps
     into one displayed total or assign an old unspecified label to an arm.
   - Keep trials isolated from SyncModel writes, outboxes, rest and progression.
+  - Audit every catalog ID into a reusable rep/hold candidate profile or an
+    explicit manual fallback. Selecting a workout/catalog exercise resolves its
+    profile; only explicitly implemented experiments can start tracking.
+  - Add observation-only forearm-plank and wall-sit countdown experiments:
+    stable pose acquisition, observed-time accumulation, pause/reacquisition,
+    terminal interruption and no automatic set completion. See the
+    [catalog audit and hold contract](catalog-tracking.md).
   - Reset movement history after missing joints or a pose gap;
     reacquire a stable view and keep the whole trial visibly partial. Additional
     people, camera interruption, rotation, backgrounding and view exit require
@@ -51,6 +58,10 @@ may turn detections into durable workout actions.
     the current side-view 2D angle counter cannot establish frontal coverage.
   - Record count errors, corrections and setup/repositioning effort. Select the
     supported movements/angles from observed evidence, not assumed accuracy.
+  - Validate each mapped variant before expanding experiment availability.
+    For holds, measure false starts during setup/lying/rest, target timing,
+    interrupted holds and reacquisition; joint geometry cannot prove contact,
+    load-bearing or form quality.
 - [ ] **P2 — Add assisted set completion and correction**
   - Define one authoritative workout controller, stale-event rejection and a
     stable event identity before observations can enter the existing set path.
@@ -71,15 +82,14 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Finish PR #228's exact-head review and required checks;
-Nick owns merge. The independent-arm curl correction is locally verified.
-After the gates, rebuild the current source to include the saved-replay identity
-fix; install when the owner confirms the camera is off and the iPad is unlocked.
-MediaPipe live source `23ef59f6bade9f464d79c9d59564badd97de5722` is
-signed, verified and installed in place over the paired iPad's active Wi-Fi
-connection. The owner completed and transferred one combined front/side squat
-clip; both real native detectors ran on all 388 frames. The live-default change,
-account-scoped recordings and returning-account follow-up are locally verified.
+**Now (@agent):** Complete exact-head review and repository checks for the
+catalog mapping and observation-only hold timer PR, then hand it to Nick.
+Nick owns merge. PR #228 is now in `origin/main` at
+`e15d53b494a814fca69af37c4db1ba82111273e2`; this catalog slice starts there.
+The audit covers all 280 exercises: 193 rep candidates, 15 hold candidates and
+72 manual fallbacks. Fifteen entries explicitly select a current experimental
+mode; profile membership alone never enables a counter. Real accuracy remains
+unvalidated, and no physical build installation is part of this slice.
 **Next physical trial (@owner):** Use the installed development build to test the live count with separate front-facing and side-view
 clips and save each actual count. No additional repetitions are needed for the
 current diagnosis. Sustained performance, other movements, false positives and
@@ -87,6 +97,10 @@ automatic workout actions remain unvalidated. No unattended recording is request
 
 ## Approved comparison scope
 
+- On 2026-10-04 the owner requested a full catalog tracking audit and reusable
+  mappings, including pose-triggered hold countdowns. This adds an in-app
+  coverage browser and local plank/wall-sit experiments. It does not activate
+  workout writes, progression, background recording or distribution.
 - On 2026-10-03 the owner approved making the first device-test build compare
   the custom counter and Apple counter side by side on the same movements.
 - This authorizes comparison implementation and the internal device-test build.
@@ -111,6 +125,17 @@ automatic workout actions remain unvalidated. No unattended recording is request
 
 ## Implementation evidence
 
+- Catalog mapping and hold countdowns: all 280 migrated IDs are covered exactly
+  once, with 45 reusable profiles and explicit manual reasons. The local D1
+  coverage contract, typecheck, plan graph and all 1,189 backend tests pass.
+  A disposable iPad A16 simulator passed 38 Station unit tests and five UI
+  journeys. After the target-control correction, the final build passed all
+  ten new unit tests and the hold/catalog UI journey, including target editing
+  and reset. Evidence: `.artifacts/catalog-backend-tests.log` and
+  `.artifacts/ios/tres-fort-ios.m6qJsn/Tests.xcresult` (earlier regression suite:
+  `.artifacts/ios/tres-fort-ios.WsMURa/Tests.xcresult`). These prove software
+  behavior and layout, not physical camera accuracy. No iPad installation or
+  workout writes occurred in this slice.
 - Saved replay now rejects the entire comparison if either detector sees more
   than one person, before counting that frame. It cannot resume with another
   person or publish a completed total. A rerun removes its prior derived
@@ -406,8 +431,9 @@ Sources checked 2026-10-03:
 
 - Approved prototype target: 11-inch iPad (A16). Use its built-in front camera
   first; external UVC input is deferred until placement evidence requires it.
-- The counter and view receive no workout mutation capability. A workout title
-  is read-only context, not an armed prescription or automatic exercise match.
+- The counter and view receive no workout mutation capability. Workout/catalog
+  selections carry immutable display values and an optional duration only.
+  Choosing an exercise resolves a profile but does not arm the camera or trial.
 - Current runner ownership protects a process/local persistence namespace.
   Distinct set UUIDs from two devices can represent one physical set twice;
   existing idempotency is not a cross-device controller lock.

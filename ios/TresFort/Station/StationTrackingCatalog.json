@@ -1,0 +1,1032 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "id": "squat",
+      "title": "Squat",
+      "measurement": "reps",
+      "cameraView": "Side view; hip, knee and ankle visible",
+      "definition": "Stand, lower, and return to standing.",
+      "limitation": "Front-facing depth needs a separate calibrated rule."
+    },
+    {
+      "id": "single_leg_squat",
+      "title": "Single-leg squat",
+      "measurement": "reps",
+      "cameraView": "Side or diagonal view of working leg",
+      "definition": "A complete lower-and-rise cycle for each leg.",
+      "limitation": "Identify the working leg; never borrow the resting leg."
+    },
+    {
+      "id": "lunge",
+      "title": "Lunge / split squat",
+      "measurement": "reps",
+      "cameraView": "Diagonal view with both legs visible",
+      "definition": "Lower and rise on the selected working side.",
+      "limitation": "Count sides separately; distinguish steps from repetitions."
+    },
+    {
+      "id": "lateral_lunge",
+      "title": "Lateral lunge",
+      "measurement": "reps",
+      "cameraView": "Front view with both feet in frame",
+      "definition": "Shift, bend the working knee, and return.",
+      "limitation": "Needs a lateral-motion rule and per-side counts."
+    },
+    {
+      "id": "step_up",
+      "title": "Step-up",
+      "measurement": "reps",
+      "cameraView": "Side view including platform and both feet",
+      "definition": "Step up fully, then return to the floor.",
+      "limitation": "Platform occlusion and lead-leg identity need validation."
+    },
+    {
+      "id": "hinge",
+      "title": "Hip hinge / deadlift",
+      "measurement": "reps",
+      "cameraView": "Side view of shoulder, hip, knee and ankle",
+      "definition": "Hinge down and return upright.",
+      "limitation": "Knee angle alone is insufficient; load is entered manually."
+    },
+    {
+      "id": "single_leg_hinge",
+      "title": "Single-leg hinge",
+      "measurement": "reps",
+      "cameraView": "Side view including supporting and free legs",
+      "definition": "Hinge and return on one supporting leg.",
+      "limitation": "Separate sides and balance corrections from complete reps."
+    },
+    {
+      "id": "bridge",
+      "title": "Bridge / hip thrust",
+      "measurement": "reps",
+      "cameraView": "Side view of shoulders, hips and knees",
+      "definition": "Raise the hips and return to the starting position.",
+      "limitation": "Bench, bar and floor occlusion require setup-specific validation."
+    },
+    {
+      "id": "leg_extension",
+      "title": "Leg extension",
+      "measurement": "reps",
+      "cameraView": "Side view with hip, knee and ankle exposed",
+      "definition": "Extend the working knee and return.",
+      "limitation": "Machine pads can hide the knee; count each working side."
+    },
+    {
+      "id": "leg_curl",
+      "title": "Leg curl",
+      "measurement": "reps",
+      "cameraView": "Side view with hip, knee and ankle exposed",
+      "definition": "Bend the knee and return.",
+      "limitation": "Seated, prone and standing positions need separate calibration."
+    },
+    {
+      "id": "nordic",
+      "title": "Nordic / glute-ham raise",
+      "measurement": "reps",
+      "cameraView": "Side view including knees and torso",
+      "definition": "Lower the torso and return to the start.",
+      "limitation": "Assistance and eccentric-only reps need explicit treatment."
+    },
+    {
+      "id": "calf_raise",
+      "title": "Calf raise",
+      "measurement": "reps",
+      "cameraView": "Side view including heels and toes",
+      "definition": "Lift the heels and lower completely.",
+      "limitation": "Requires foot landmarks and small-motion resolution beyond current joint data."
+    },
+    {
+      "id": "curl",
+      "title": "Elbow curl",
+      "measurement": "reps",
+      "cameraView": "Side or diagonal view of shoulders, elbows and wrists",
+      "definition": "Lower, curl, and lower each working arm.",
+      "limitation": "Keep arm counts separate, including alternating curls."
+    },
+    {
+      "id": "horizontal_press",
+      "title": "Bench / horizontal press",
+      "measurement": "reps",
+      "cameraView": "Side view of shoulders, elbows and wrists",
+      "definition": "Extend, lower, and press to extension.",
+      "limitation": "Rack and bench occlusion; independent arms need their own rule."
+    },
+    {
+      "id": "pushup",
+      "title": "Push-up",
+      "measurement": "reps",
+      "cameraView": "Side view including torso and arms",
+      "definition": "Lower and press back up while maintaining the starting body position.",
+      "limitation": "Distinguish setup, knee support and partial reps."
+    },
+    {
+      "id": "overhead_press",
+      "title": "Overhead press",
+      "measurement": "reps",
+      "cameraView": "Front-diagonal view with hands visible overhead",
+      "definition": "Press from shoulders overhead and return.",
+      "limitation": "Requires shoulder and wrist height as well as elbow angle."
+    },
+    {
+      "id": "inclined_press",
+      "title": "Pike / landmine press",
+      "measurement": "reps",
+      "cameraView": "Side view including torso and working arm",
+      "definition": "Press along the intended inclined path and return.",
+      "limitation": "Do not reuse horizontal-press thresholds without calibration."
+    },
+    {
+      "id": "pullup",
+      "title": "Pull-up / pulldown",
+      "measurement": "reps",
+      "cameraView": "Front-diagonal view with full arm path visible",
+      "definition": "Pull through the prescribed range and return.",
+      "limitation": "Hanging body motion and seated machines require different references."
+    },
+    {
+      "id": "row",
+      "title": "Row",
+      "measurement": "reps",
+      "cameraView": "Side-diagonal view of torso and working arms",
+      "definition": "Pull toward the torso and return.",
+      "limitation": "Torso motion and supported or unilateral variants need validation."
+    },
+    {
+      "id": "dip",
+      "title": "Dip",
+      "measurement": "reps",
+      "cameraView": "Side view with shoulders and elbows clear",
+      "definition": "Lower and press back to the starting support.",
+      "limitation": "Bars and rings can hide joints; assistance cannot be inferred."
+    },
+    {
+      "id": "triceps_extension",
+      "title": "Triceps extension",
+      "measurement": "reps",
+      "cameraView": "Side view of the working upper arm",
+      "definition": "Bend and extend the elbow along the selected exercise path.",
+      "limitation": "Overhead, prone and pushdown variants have different start poses."
+    },
+    {
+      "id": "arm_raise",
+      "title": "Arm raise",
+      "measurement": "reps",
+      "cameraView": "Front or side view aligned with the movement plane",
+      "definition": "Raise the arm and lower to the start.",
+      "limitation": "Front and lateral raises need different camera views and rules."
+    },
+    {
+      "id": "fly",
+      "title": "Fly / pull-apart",
+      "measurement": "reps",
+      "cameraView": "Front-diagonal view with both hands visible",
+      "definition": "Open and close the arms through the intended arc.",
+      "limitation": "Pressing and elbow flexion must not become fly reps."
+    },
+    {
+      "id": "straight_arm_pull",
+      "title": "Straight-arm pull / pullover",
+      "measurement": "reps",
+      "cameraView": "Side view of shoulder and wrist path",
+      "definition": "Move the extended arm through its arc and return.",
+      "limitation": "Needs torso-relative wrist motion, not an elbow-cycle counter."
+    },
+    {
+      "id": "trunk_flexion",
+      "title": "Crunch / sit-up",
+      "measurement": "reps",
+      "cameraView": "Side view including shoulders, hips and knees",
+      "definition": "Curl the trunk and return.",
+      "limitation": "Small crunches and full sit-ups need different range calibration."
+    },
+    {
+      "id": "leg_raise",
+      "title": "Leg raise / reverse crunch",
+      "measurement": "reps",
+      "cameraView": "Side view including torso and legs",
+      "definition": "Raise and lower the legs through the prescribed range.",
+      "limitation": "Different floor and hanging starts; distinguish swinging."
+    },
+    {
+      "id": "hip_abduction",
+      "title": "Hip abduction / adduction",
+      "measurement": "reps",
+      "cameraView": "View facing the leg movement plane",
+      "definition": "Move the working leg out or in and return.",
+      "limitation": "Per-side identification and machine-pad visibility are required."
+    },
+    {
+      "id": "quadruped",
+      "title": "Quadruped extension",
+      "measurement": "reps",
+      "cameraView": "Side-diagonal view of all supporting limbs",
+      "definition": "Extend the selected limb or diagonal pair and return.",
+      "limitation": "Count each side without counting weight shifts."
+    },
+    {
+      "id": "dead_bug",
+      "title": "Dead bug",
+      "measurement": "reps",
+      "cameraView": "Side-diagonal view of arms, hips and legs",
+      "definition": "Extend a diagonal arm/leg pair and return.",
+      "limitation": "Requires paired-limb tracking and explicit per-side counting."
+    },
+    {
+      "id": "back_extension",
+      "title": "Back extension",
+      "measurement": "reps",
+      "cameraView": "Side view of shoulder, hip and knee",
+      "definition": "Lower and raise the trunk or legs as prescribed.",
+      "limitation": "Apparatus and floor variants need distinct references."
+    },
+    {
+      "id": "trunk_rotation",
+      "title": "Trunk rotation",
+      "measurement": "reps",
+      "cameraView": "Front-diagonal view of shoulders and hips",
+      "definition": "Rotate and return for each side.",
+      "limitation": "2D overlap can hide rotation; requires 3D validation."
+    },
+    {
+      "id": "rollout",
+      "title": "Rollout / pike",
+      "measurement": "reps",
+      "cameraView": "Side view with hands and feet in frame",
+      "definition": "Extend or fold the body and return to the start.",
+      "limitation": "Needs multiple joint relationships, not a single angle."
+    },
+    {
+      "id": "jumping_jack",
+      "title": "Jumping jack",
+      "measurement": "reps",
+      "cameraView": "Front view with hands and feet fully in frame",
+      "definition": "Open arms and legs, then close.",
+      "limitation": "Fast motion and frame coverage need validation."
+    },
+    {
+      "id": "knee_drive",
+      "title": "Alternating knee drive",
+      "measurement": "reps",
+      "cameraView": "Side-diagonal view including both knees",
+      "definition": "Drive one knee and return, counted per side.",
+      "limitation": "Distinguish running or plank starts and alternating steps."
+    },
+    {
+      "id": "plank",
+      "title": "Forearm plank",
+      "measurement": "hold",
+      "cameraView": "Level side view with shoulder, elbow, wrist, hip, knee and ankle visible",
+      "definition": "Accumulate observed time after a stable forearm-plank position.",
+      "limitation": "Experimental posture recognition; cannot assess form, effort or floor contact."
+    },
+    {
+      "id": "side_plank",
+      "title": "Side plank",
+      "measurement": "hold",
+      "cameraView": "View facing the chest with supporting arm and feet visible",
+      "definition": "Time a stable side-support position for the selected side.",
+      "limitation": "Needs support-side and body-orientation validation."
+    },
+    {
+      "id": "wall_sit",
+      "title": "Wall sit",
+      "measurement": "hold",
+      "cameraView": "Level side view with shoulder, hip, knee and ankle visible",
+      "definition": "Time a stable seated hold with hips and knees bent.",
+      "limitation": "Camera cannot verify wall contact; use an actual wall."
+    },
+    {
+      "id": "hollow_hold",
+      "title": "Hollow hold",
+      "measurement": "hold",
+      "cameraView": "Level side view including shoulders, hips and feet",
+      "definition": "Time the prescribed raised-shoulder and raised-leg position.",
+      "limitation": "Floor contact and lower-back position cannot be verified from joints."
+    },
+    {
+      "id": "hang",
+      "title": "Dead hang",
+      "measurement": "hold",
+      "cameraView": "Full body side-diagonal view including bar and wrists",
+      "definition": "Time a stable overhead hanging position.",
+      "limitation": "Joints alone cannot prove grip, foot clearance or load-bearing."
+    },
+    {
+      "id": "l_sit",
+      "title": "L-sit",
+      "measurement": "hold",
+      "cameraView": "Side view including hands, hips, knees and ankles",
+      "definition": "Time the supported upright torso with legs extended forward.",
+      "limitation": "Requires support contact and foot clearance validation."
+    },
+    {
+      "id": "handstand",
+      "title": "Handstand",
+      "measurement": "hold",
+      "cameraView": "Side view with hands and feet fully in frame",
+      "definition": "Time a stable inverted support position.",
+      "limitation": "Inversion, wall support and safe entry need separate validation."
+    },
+    {
+      "id": "lever",
+      "title": "Lever hold",
+      "measurement": "hold",
+      "cameraView": "Side view including support, torso and legs",
+      "definition": "Time the selected horizontal or tucked lever position.",
+      "limitation": "Front, back and tuck variants need distinct posture definitions."
+    },
+    {
+      "id": "planche",
+      "title": "Planche / crow support",
+      "measurement": "hold",
+      "cameraView": "Side-diagonal view including hands and feet",
+      "definition": "Time the selected supported balance position.",
+      "limitation": "Contact, tuck and lean variants cannot share a generic plank detector."
+    },
+    {
+      "id": "ring_support",
+      "title": "Ring support",
+      "measurement": "hold",
+      "cameraView": "Full body side-diagonal view including both rings",
+      "definition": "Time a stable upright straight-arm support.",
+      "limitation": "Cannot infer load-bearing or foot clearance from arm angles alone."
+    },
+    {
+      "id": "gymnastic_bridge",
+      "title": "Gymnastic bridge hold",
+      "measurement": "hold",
+      "cameraView": "Side view including hands, shoulders, hips and feet",
+      "definition": "Time a stable raised bridge position.",
+      "limitation": "Needs its own geometry and support validation; never infer form quality."
+    }
+  ],
+  "groups": [
+    {
+      "profile": "squat",
+      "trial": "squat",
+      "reason": null,
+      "exercises": [
+        "ex_back_squat",
+        "ex_bw_squat",
+        "ex_front_squat",
+        "ex_goblet_squat"
+      ]
+    },
+    {
+      "profile": "squat",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_belt_squat",
+        "ex_box_squat",
+        "ex_db_squat",
+        "ex_hack_squat",
+        "ex_kb_goblet_squat",
+        "ex_ohs",
+        "ex_paused_squat",
+        "ex_pin_squat",
+        "ex_smith_squat",
+        "ex_zercher_squat",
+        "ex_sissy_squat"
+      ]
+    },
+    {
+      "profile": "single_leg_squat",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_pistol_squat",
+        "ex_skater_squat",
+        "ex_shrimp_squat"
+      ]
+    },
+    {
+      "profile": "lunge",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_bb_lunge",
+        "ex_bw_curtsy_lunge",
+        "ex_bw_reverse_lunge",
+        "ex_db_split_squat",
+        "ex_db_lunge",
+        "ex_db_reverse_lunge"
+      ]
+    },
+    {
+      "profile": "lateral_lunge",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_bw_lateral_lunge",
+        "ex_cossack_squat"
+      ]
+    },
+    {
+      "profile": "step_up",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_bb_step_up",
+        "ex_db_step_up"
+      ]
+    },
+    {
+      "profile": "hinge",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_deadlift",
+        "ex_deficit_dl",
+        "ex_rack_pull",
+        "ex_trap_bar_dl",
+        "ex_db_suitcase_dl",
+        "ex_bw_good_morning",
+        "ex_db_rdl",
+        "ex_good_morning",
+        "ex_kb_deadlift",
+        "ex_landmine_rdl",
+        "ex_rdl",
+        "ex_stiff_leg_dl",
+        "ex_sumo_dl",
+        "ex_pull_through"
+      ]
+    },
+    {
+      "profile": "single_leg_hinge",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_bw_single_leg_rdl",
+        "ex_db_bstance_rdl",
+        "ex_db_single_leg_rdl"
+      ]
+    },
+    {
+      "profile": "bridge",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_banded_glute_bridge",
+        "ex_bw_single_leg_hip_thrust",
+        "ex_glute_bridge",
+        "ex_hip_thrust",
+        "ex_sl_glute_bridge",
+        "ex_glute_bridge_march"
+      ]
+    },
+    {
+      "profile": "leg_extension",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_leg_extension",
+        "ex_single_leg_extension",
+        "ex_leg_press",
+        "ex_single_leg_press"
+      ]
+    },
+    {
+      "profile": "leg_curl",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_lying_leg_curl",
+        "ex_seated_leg_curl",
+        "ex_single_leg_curl",
+        "ex_standing_leg_curl"
+      ]
+    },
+    {
+      "profile": "nordic",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_nordic_curl",
+        "ex_ghr"
+      ]
+    },
+    {
+      "profile": "calf_raise",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_bb_calf_raise",
+        "ex_bw_calf_raise",
+        "ex_calf_press",
+        "ex_db_calf_raise",
+        "ex_seated_calf_raise",
+        "ex_single_leg_calf_raise",
+        "ex_standing_calf_raise"
+      ]
+    },
+    {
+      "profile": "curl",
+      "trial": "curl",
+      "reason": null,
+      "exercises": [
+        "ex_bb_curl",
+        "ex_db_curl",
+        "ex_hammer_curl",
+        "ex_ez_curl",
+        "ex_sa_cable_curl"
+      ]
+    },
+    {
+      "profile": "curl",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_cable_curl",
+        "ex_concentration_curl",
+        "ex_incline_db_curl",
+        "ex_preacher_curl",
+        "ex_reverse_curl",
+        "ex_spider_curl"
+      ]
+    },
+    {
+      "profile": "horizontal_press",
+      "trial": "benchPress",
+      "reason": null,
+      "exercises": [
+        "ex_bench",
+        "ex_db_press",
+        "ex_paused_bench",
+        "ex_cgbp"
+      ]
+    },
+    {
+      "profile": "horizontal_press",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_decline_bench",
+        "ex_decline_db_press",
+        "ex_incline_bench",
+        "ex_incline_db_press",
+        "ex_machine_chest_press",
+        "ex_machine_incline_press",
+        "ex_sa_db_bench",
+        "ex_smith_bench"
+      ]
+    },
+    {
+      "profile": "pushup",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_archer_pushup",
+        "ex_decline_pushup",
+        "ex_feet_elevated_pushup",
+        "ex_incline_pushup",
+        "ex_pushup",
+        "ex_ring_pushup",
+        "ex_single_arm_pushup",
+        "ex_wide_pushup",
+        "ex_diamond_pushup",
+        "ex_pseudo_planche_pushup"
+      ]
+    },
+    {
+      "profile": "overhead_press",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_ohp",
+        "ex_db_ohp",
+        "ex_arnold_press",
+        "ex_machine_shoulder_press",
+        "ex_seated_bb_press",
+        "ex_seated_db_press",
+        "ex_sa_db_ohp"
+      ]
+    },
+    {
+      "profile": "inclined_press",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_pike_pushup",
+        "ex_landmine_press",
+        "ex_hspu"
+      ]
+    },
+    {
+      "profile": "pullup",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_archer_pullup",
+        "ex_assisted_pullup",
+        "ex_chinup",
+        "ex_close_pulldown",
+        "ex_commando_pullup",
+        "ex_lat_pulldown",
+        "ex_mixed_grip_pullup",
+        "ex_neutral_pullup",
+        "ex_pullup",
+        "ex_sa_lat_pulldown",
+        "ex_towel_pullup",
+        "ex_wide_pulldown"
+      ]
+    },
+    {
+      "profile": "row",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_barbell_row",
+        "ex_chest_supported_row",
+        "ex_inverted_row",
+        "ex_one_arm_db_row",
+        "ex_reverse_grip_row",
+        "ex_ring_row",
+        "ex_seated_cable_row",
+        "ex_sa_cable_row",
+        "ex_landmine_row",
+        "ex_smith_row",
+        "ex_tbar_row",
+        "ex_db_row_two",
+        "ex_upright_row",
+        "ex_face_pull"
+      ]
+    },
+    {
+      "profile": "dip",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_bench_dips",
+        "ex_dips",
+        "ex_machine_dip",
+        "ex_ring_dip"
+      ]
+    },
+    {
+      "profile": "triceps_extension",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_overhead_tricep_ext",
+        "ex_db_overhead_ext",
+        "ex_machine_tricep_ext",
+        "ex_rope_pushdown",
+        "ex_sa_cable_pushdown",
+        "ex_skullcrusher",
+        "ex_tricep_kickback",
+        "ex_tricep_pushdown"
+      ]
+    },
+    {
+      "profile": "arm_raise",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_cable_lateral_raise",
+        "ex_front_raise",
+        "ex_lateral_raise",
+        "ex_sa_cable_lateral"
+      ]
+    },
+    {
+      "profile": "fly",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_banded_pull_apart",
+        "ex_cable_crossover",
+        "ex_db_fly",
+        "ex_incline_db_fly",
+        "ex_low_cable_crossover",
+        "ex_pec_deck",
+        "ex_cable_rear_delt_fly",
+        "ex_reverse_fly",
+        "ex_machine_reverse_fly"
+      ]
+    },
+    {
+      "profile": "straight_arm_pull",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_straight_arm_pulldown",
+        "ex_db_pullover"
+      ]
+    },
+    {
+      "profile": "trunk_flexion",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_cable_crunch",
+        "ex_crunch",
+        "ex_situp",
+        "ex_jackknife_situp",
+        "ex_toe_touch_crunch",
+        "ex_v_up"
+      ]
+    },
+    {
+      "profile": "leg_raise",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_hanging_leg_raise",
+        "ex_reverse_crunch"
+      ]
+    },
+    {
+      "profile": "hip_abduction",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_clamshell",
+        "ex_fire_hydrant",
+        "ex_hip_abduction",
+        "ex_hip_adduction",
+        "ex_side_lying_abduction"
+      ]
+    },
+    {
+      "profile": "quadruped",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_bird_dog",
+        "ex_cable_kickback",
+        "ex_glute_kickback"
+      ]
+    },
+    {
+      "profile": "dead_bug",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_dead_bug"
+      ]
+    },
+    {
+      "profile": "back_extension",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_back_extension",
+        "ex_reverse_hyper",
+        "ex_superman"
+      ]
+    },
+    {
+      "profile": "trunk_rotation",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_woodchop",
+        "ex_russian_twist",
+        "ex_thoracic_rotation"
+      ]
+    },
+    {
+      "profile": "rollout",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_ab_wheel",
+        "ex_plank_to_pike"
+      ]
+    },
+    {
+      "profile": "jumping_jack",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_jumping_jack"
+      ]
+    },
+    {
+      "profile": "knee_drive",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_high_knees",
+        "ex_mountain_climber",
+        "ex_wall_sit_marching"
+      ]
+    },
+    {
+      "profile": "plank",
+      "trial": "plank",
+      "reason": null,
+      "exercises": [
+        "ex_plank"
+      ]
+    },
+    {
+      "profile": "side_plank",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_side_plank"
+      ]
+    },
+    {
+      "profile": "wall_sit",
+      "trial": "wallSit",
+      "reason": null,
+      "exercises": [
+        "ex_wall_sit"
+      ]
+    },
+    {
+      "profile": "hollow_hold",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_hollow"
+      ]
+    },
+    {
+      "profile": "hang",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_dead_hang"
+      ]
+    },
+    {
+      "profile": "l_sit",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_l_sit"
+      ]
+    },
+    {
+      "profile": "handstand",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_handstand_hold"
+      ]
+    },
+    {
+      "profile": "lever",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_front_lever",
+        "ex_tuck_front_lever",
+        "ex_back_lever"
+      ]
+    },
+    {
+      "profile": "planche",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_planche_lean",
+        "ex_tuck_planche",
+        "ex_crow_pose"
+      ]
+    },
+    {
+      "profile": "ring_support",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_ring_support_hold"
+      ]
+    },
+    {
+      "profile": "gymnastic_bridge",
+      "trial": null,
+      "reason": null,
+      "exercises": [
+        "ex_gymnastic_bridge"
+      ]
+    },
+    {
+      "profile": null,
+      "trial": null,
+      "reason": "Use manual reps: ballistic or compound phases need equipment tracking and a dedicated sequence model.",
+      "exercises": [
+        "ex_clean_pull",
+        "ex_clean_jerk",
+        "ex_hang_power_clean",
+        "ex_hang_snatch",
+        "ex_high_pull",
+        "ex_kb_clean",
+        "ex_kb_snatch",
+        "ex_muscle_clean",
+        "ex_muscle_snatch",
+        "ex_power_clean",
+        "ex_power_snatch",
+        "ex_full_snatch",
+        "ex_snatch_pull",
+        "ex_push_jerk",
+        "ex_split_jerk",
+        "ex_kb_swing",
+        "ex_sa_kb_swing",
+        "ex_push_press",
+        "ex_db_push_press",
+        "ex_thruster",
+        "ex_db_thruster"
+      ]
+    },
+    {
+      "profile": null,
+      "trial": null,
+      "reason": "Use manual reps: multiple phases, partial or one-way cycles, or changing support make a generic counter ambiguous.",
+      "exercises": [
+        "ex_bar_muscle_up",
+        "ex_ring_muscle_up",
+        "ex_typewriter_pullup",
+        "ex_eccentric_pullup",
+        "ex_skin_the_cat",
+        "ex_wall_walk",
+        "ex_hindu_pushup",
+        "ex_burpee",
+        "ex_inchworm",
+        "ex_renegade_row",
+        "ex_shoulder_tap",
+        "ex_dragon_flag"
+      ]
+    },
+    {
+      "profile": null,
+      "trial": null,
+      "reason": "Use manual reps: flight, landings and fast motion need dedicated validation.",
+      "exercises": [
+        "ex_box_jump",
+        "ex_broad_jump",
+        "ex_jump_squat",
+        "ex_jumping_lunge",
+        "ex_tuck_jump",
+        "ex_plyo_pushup"
+      ]
+    },
+    {
+      "profile": null,
+      "trial": null,
+      "reason": "Use manual reps or a manual timer: travel may leave a stationary camera's view.",
+      "exercises": [
+        "ex_bb_walking_lunge",
+        "ex_bw_lunge",
+        "ex_bear_crawl",
+        "ex_crab_walk",
+        "ex_db_farmers_walk",
+        "ex_db_suitcase_carry",
+        "ex_db_overhead_carry"
+      ]
+    },
+    {
+      "profile": null,
+      "trial": null,
+      "reason": "Use the existing manual timer or equipment metrics; camera cycles do not establish duration, distance or effort.",
+      "exercises": [
+        "ex_bike_erg",
+        "ex_elliptical",
+        "ex_row_erg",
+        "ex_ski_erg",
+        "ex_treadmill",
+        "ex_stairmaster",
+        "ex_stationary_bike",
+        "ex_jump_rope"
+      ]
+    },
+    {
+      "profile": null,
+      "trial": null,
+      "reason": "Use manual reps: subtle or overlapping joint motion is not dependable with the current body landmarks.",
+      "exercises": [
+        "ex_reverse_wrist_curl",
+        "ex_wrist_curl",
+        "ex_bb_shrug",
+        "ex_cable_shrug",
+        "ex_db_shrug",
+        "ex_scapular_pullup",
+        "ex_jefferson_curl",
+        "ex_pallof_press",
+        "ex_flutter_kick",
+        "ex_scissor_kick",
+        "ex_hollow_rocks",
+        "ex_bicycle_crunch"
+      ]
+    },
+    {
+      "profile": null,
+      "trial": null,
+      "reason": "Use manual reps or a manual timer: mobility endpoints and intended hold duration vary.",
+      "exercises": [
+        "ex_childs_pose",
+        "ex_cat_cow",
+        "ex_90_90_hip",
+        "ex_pigeon_pose",
+        "ex_worlds_greatest_stretch",
+        "ex_couch_stretch"
+      ]
+    }
+  ]
+}

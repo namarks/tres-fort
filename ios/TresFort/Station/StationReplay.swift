@@ -146,7 +146,7 @@ enum StationReplayWorker {
                                    mediaPipeModelSHA256: StationMediaPipeDetector.modelSHA256,
                                    osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
                                    appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
-                                   frames: frames, counterVersion: "independent-curl-arms-v1")
+                                   frames: frames, counterVersion: "curl-confidence-grace-v2")
     }
 
     static func validateIdentity(applePersonCount: Int, mediaPipePersonCount: Int) throws {

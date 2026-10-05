@@ -223,7 +223,7 @@ final class StationReplayTests: XCTestCase {
         XCTAssertEqual(report.frames.first?.timestamp, 0)
         XCTAssertEqual(report.frames.last?.timestamp ?? -1, recording.durationSeconds, accuracy: 0.001)
         XCTAssertEqual(report.mediaPipeModelSHA256, StationMediaPipeDetector.modelSHA256)
-        XCTAssertEqual(report.counterVersion, "independent-curl-arms-v1")
+        XCTAssertEqual(report.counterVersion, "curl-confidence-grace-v2")
         XCTAssertTrue(report.frames.allSatisfy { $0.apple.personCount == 0 && $0.mediaPipe.personCount == 0 })
         XCTAssertTrue(report.frames.allSatisfy { $0.appleCycles == 0 && $0.mediaPipeCycles == 0 })
         XCTAssertTrue(report.frames.allSatisfy { $0.apple.milliseconds >= 0 && $0.mediaPipe.milliseconds >= 0 })

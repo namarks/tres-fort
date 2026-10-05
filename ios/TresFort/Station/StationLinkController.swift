@@ -54,6 +54,19 @@ final class StationLinkController: ObservableObject {
         }
     }
 
+    deinit {
+        // A torn-down runner (sign-out, a replaced session) publishes no
+        // disconnect: stop the link and give the phone its sleep policy back.
+        let transport = self.transport
+        let previous = previousIdleTimerDisabled
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated {
+                transport.stop()
+                if let previous { UIApplication.shared.isIdleTimerDisabled = previous }
+            }
+        }
+    }
+
     var isConnected: Bool { connection.isConnected }
 
     /// The arm a reconnected iPad should count, if any. An arm whose count

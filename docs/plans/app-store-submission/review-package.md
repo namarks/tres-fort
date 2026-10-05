@@ -59,7 +59,11 @@ connectors; access to third-party services is governed by their own terms.
 Capture actual candidate screens using synthetic training data. Do not include
 personal accounts, connection codes, fixture banners, fabricated features or
 overlaid claims that hide the UI. Use the required current iPhone dimensions
-from App Store Connect; iPad is not a supported device family in project.yml.
+from App Store Connect. Version 1.0 is iPhone-only (owner decision 2026-10-05):
+`project.yml` targets iPhone + iPad for TestFlight, but the App Store candidate
+is archived with `APP_STORE_IPHONE_ONLY=1`, so no iPad screenshots are needed and
+the iPad Station link is hidden. Do not upload an iPhone + iPad build as the
+review candidate; a released iPad family cannot be removed later.
 
 Suggested sequence: Today with a scheduled workout; workout runner with set
 targets and rest controls; reusable workouts; training history; editable private

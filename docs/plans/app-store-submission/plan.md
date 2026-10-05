@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-10-03 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-10-05 · Theme: release
 
 ## Goal
 
@@ -16,6 +16,8 @@ routes/fields and is incompatible with the serving canonical Worker. Public
 release remains blocked on a compatible candidate; the manual setting prevents
 automatic publication. Preparation
 and TestFlight availability do not mean public release.
+Owner decision, 2026-10-05: version 1.0 ships **iPhone only**. TestFlight builds
+keep iPhone + iPad for Station Mode; iPad can be added in a later version.
 
 ## Phases
 
@@ -86,7 +88,9 @@ and TestFlight availability do not mean public release.
 
 ## Next step
 
-**Now (@agent):** Finish P1/P2 review-package preparation against the reviewed
+**Now (@owner):** Open the App Review page for the rejected submission and share
+Apple's message; the agent cannot read it. Then confirm agreements and App Privacy
+publication. **Agent, in parallel:** finish P1/P2 review-package preparation against the reviewed
 [build-47 source](release-47.md) and retain the owner's device-verification follow-up. The
 owner-approved switch to MANUAL is complete. The selected build 40 is incompatible
 with the current canonical backend: its default `.legacy` client writes to
@@ -95,6 +99,21 @@ with 404 and those fields with 400. Do not publicly release this candidate.
 Replacing or resubmitting the candidate requires separate App Review authority;
 neither the TestFlight release nor the MANUAL change supplies it. Public release
 remains separately gated after a compatible candidate and readiness evidence.
+
+**App Review rejection (2026-10-05 finding):** Apple's 2026-09-22 06:09 UTC email
+("There's an issue with your Très Fort (iOS) submission") rejected submission
+`ea595b5e-86a6-4704-b1ef-ae87b971c728` without naming a guideline; the reason
+exists only on its App Review page, which the API does not expose. The owner must
+read it there. Inferred, not confirmed: review ran 2026-09-15 to 09-22, and the
+canonical Worker began serving at 2026-09-20 02:52 UTC ([release 44](release-44.md)),
+after which build 40's `/api/days` writes fail on the exact path the reviewer
+notes direct (create a workout, add exercises, start it). That would read as a
+Guideline 2.1 completeness defect. A replacement must come from current canonical
+source and be archived with `APP_STORE_IPHONE_ONLY=1 ./scripts/upload-testflight.sh`,
+which sets device family 1 for the app and widget, hides the iPad Station link,
+and verifies the archive's `UIDeviceFamily` before export. Owner-only before
+resubmission: the App Review message, agreements, App Privacy publication, build
+selection, reviewer reply, resubmission and the physical create/log/finish check.
 
 **Internal comparison beta (2026-10-03):** The owner requested upload of the
 iPad camera comparison while Mac CI was queued. [Build 45's receipt](release-45.md)

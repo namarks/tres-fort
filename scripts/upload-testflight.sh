@@ -20,9 +20,16 @@
 # manually in ios/project.yml when you want a new train (e.g. 0.1.0 -> 0.1.1)
 # and create the matching version in App Store Connect first.
 #
+# App Store 1.0 ships iPhone-only (owner decision 2026-10-05) while TestFlight
+# builds keep iPhone + iPad for Station Mode. APP_STORE_IPHONE_ONLY=1 archives
+# that App Store candidate: device family 1 for the app and widget, and the
+# APP_STORE_IPHONE_ONLY Swift condition, which hides the iPad Station link.
+# The archive's UIDeviceFamily is verified before anything is exported.
+#
 # Usage:
 #   Local:  ./scripts/upload-testflight.sh
 #   CI:     BUILD_NUMBER=$GITHUB_RUN_NUMBER ./scripts/upload-testflight.sh
+#   App Store candidate:  APP_STORE_IPHONE_ONLY=1 ./scripts/upload-testflight.sh
 #
 # Requires: xcodegen, an ASC API key at ~/.appstoreconnect/private_keys/AuthKey_<ID>.p8
 set -euo pipefail
@@ -34,6 +41,24 @@ readonly API_ISSUER_ID="b169cd8d-cb73-4efc-8d72-8c92c5ad29ed"
 readonly SCHEME="TresFort"
 
 cd "$(dirname "$0")/../ios"
+
+iphone_only="${APP_STORE_IPHONE_ONLY:-0}"
+case "${iphone_only}" in
+  0) device_settings=() ;;
+  1)
+    # Literal $(inherited) is for xcodebuild, not the shell.
+    # shellcheck disable=SC2016
+    device_settings=(
+      TARGETED_DEVICE_FAMILY=1
+      'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) APP_STORE_IPHONE_ONLY'
+    )
+    echo "Archiving the iPhone-only App Store candidate"
+    ;;
+  *)
+    echo "APP_STORE_IPHONE_ONLY must be 0 or 1, got '${iphone_only}'." >&2
+    exit 2
+    ;;
+esac
 
 marketing_version=$(awk '/MARKETING_VERSION:/ { gsub(/"/, "", $2); print $2; exit }' project.yml)
 
@@ -69,7 +94,19 @@ xcodebuild \
   DEVELOPMENT_TEAM="${TEAM_ID}" \
   CODE_SIGN_STYLE=Automatic \
   CURRENT_PROJECT_VERSION="${next_build}" \
+  ${device_settings[@]+"${device_settings[@]}"} \
   archive
+
+if [ "${iphone_only}" = "1" ]; then
+  readonly ARCHIVED_APP="build/TresFort.xcarchive/Products/Applications/TresFort.app"
+  for bundle in "${ARCHIVED_APP}" "${ARCHIVED_APP}/PlugIns/TresFortWidgets.appex"; do
+    family=$(plutil -extract UIDeviceFamily json -o - "${bundle}/Info.plist" | tr -d '[:space:]')
+    if [ "${family}" != "[1]" ]; then
+      echo "Expected iPhone-only UIDeviceFamily [1] in ${bundle}, got '${family}'; not exporting." >&2
+      exit 1
+    fi
+  done
+fi
 
 xcodebuild \
   -exportArchive \

@@ -59,6 +59,33 @@ may turn detections into durable workout actions.
     stable event identity before observations can enter the existing set path.
   - Add confirmed set completion, rest and progression with easy correction;
     choose a hands-free confirmation mechanism based on the physical trial.
+  - Repository slice (owner-requested 2026-10-04): the iPhone runner is the
+    only controller. An opt-in (per signed-in member), encrypted local MultipeerConnectivity link pairs
+    it with an iPad Station of the same account. Each device fetches a
+    per-account link key once (`GET /api/me/station-link-key`, derived, not
+    stored, and cached in the device Keychain); a mutual challenge-response
+    proves both hold it before any message is trusted, because the discovery
+    tag is public (owner chose this over code matching). Every later message is
+    encrypted and authenticated with a key bound to that connection's nonces,
+    with a direction and counter, so a relay cannot read, forge, replay or
+    reflect one. One-side movements (per-side reps) stay manual, a rep on
+    either curl arm keeps the set open, and arms that counted differently wait
+    for a tap. The iPhone arms
+    the current countable set once rest is over, and only while the workout is
+    open rather than minimized;
+    every distinct slot/set gets a fresh arm ID. The iPad counts that set and
+    reports a finished count once it holds steady for four seconds outside a
+    rep; target reps never end a set. The owner chose instant logging: the
+    iPhone logs that count at once through the ordinary guarded LOG SET path
+    for that exact slot and set, which starts rest and advances the runner.
+    Undo stays available until the next count; it deletes the set through the
+    correction path, ends rest and returns to the slot; the iPad counts that
+    set again once the deletion is saved. Partial counts, other
+    sets, duplicate events and unsupported movements never auto-log; a partial
+    count offers Log, Edit (into the rep control) or Not right (re-count), and
+    so does a count whose set could not be saved.
+  - Remaining: verify the link, instant logging, Undo and fallback on the
+    paired iPhone and iPad, and record miscounts and corrections from real sets.
 - [ ] **P3 — Enable measured automatic progression**
   - Establish explicit acceptance thresholds for premature completion, exact
     counts and required corrections; validate them before enabling auto-log.
@@ -69,22 +96,30 @@ may turn detections into durable workout actions.
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P1 | gated_by | external:owner-ipad-station-device-build | Corrective internal build 46 is verified available to Testers; the owner must evaluate framing and counting on the actual iPad. |
-| P2 | gated_by | external:owner-ipad-station-write-contract | Confirm the supported movements, correction UX and multi-device controller policy before enabling workout writes. |
+| P2 | gated_by | external:owner-ipad-station-linked-device-trial | The owner requested iPhone-controlled assisted logging on 2026-10-04; the paired iPhone/iPad trial must show the link, instant logging with Undo and manual fallback work before P2 is complete. |
 | P3 | gated_by | external:owner-ipad-station-automation-criteria | Automation needs explicit measured quality criteria and activation authority. |
 
 ## Next step
 
-**Now (@agent):** The bounded curl-confidence fix passes local verification;
-complete its exact-head PR gates before Nick merges. Then prepare the next
-owner-controlled device test. Merged source `e15d53b` remains installed; the candidate
-is not installed. The old test-readiness follow-up `472221a` is separate and
-not included here. PR #228 merged before its full iOS gate passed.
-**Next physical trial (@owner):** No additional repetitions are needed to
-reproduce the simultaneous-curl failure. Actual arm totals in the latest clip
-are awaiting owner clarification. After the candidate is reviewed and installed,
-validate live behavior with owner-started tests. Sustained performance, other
-movements, false positives and automatic workout actions remain unvalidated.
-No unattended recording is requested.
+**Now (@agent):** Drive the linked assisted-logging PR (iPhone runner as the
+only controller, iPad counts the armed set) through exact-head review and the
+required checks; Nick owns merge. The bounded curl-confidence fix (PR #234) and
+PR #228's observation-only Station have merged; PR #228 merged before its full
+iOS gate passed. Merged source `e15d53b` remains installed; neither the curl
+fix nor the linked build is installed. The old test-readiness follow-up
+`472221a` is separate and not included here.
+**Next physical trial (@owner):** Deploy the Worker with the link-key route
+(both devices must fetch the key online once), then, with a build containing
+the curl fix and the link on both the iPhone and the iPad, turn on "Count reps
+with iPad Station" in the iPhone runner menu and "Count sets for my iPhone
+workout" on the iPad, then run a few squat sets. Note each counted versus
+actual rep total, any set that logged wrongly, and whether Undo was quick
+enough to fix a miscount mid-workout. No additional repetitions are needed to
+reproduce the simultaneous-curl failure; actual arm totals in the latest clip
+are awaiting owner clarification. Separate front-facing and side-view squat
+clips remain useful for the counter. Sustained performance, other movements,
+false positives and fully automatic logging remain unvalidated. No unattended
+recording is requested.
 
 ## Approved comparison scope
 
@@ -105,6 +140,14 @@ No unattended recording is requested.
   tracker after the first matched native replay. Apple Vision remains a saved
   comparison option. This is a prototype choice, not general accuracy or
   automatic workout-action approval.
+- On 2026-10-04 the owner asked for the iPhone to know when an iPad Station
+  is available and to progress and finish sets from the iPad's count. This
+  authorizes the opt-in local link. Asked how a counted set should log, the
+  owner chose instant logging with Undo over a countdown or a tap. This is an
+  opt-in trial setting; P3's measured acceptance thresholds remain unmet.
+  The owner also chose the server-issued link key, which adds one read-only
+  Worker route; its production deploy and any client distribution still need
+  separate authority.
 - The owner requested direct iPad debugging to shorten iteration and identified
   front-facing squat support as a needed use case. Developer diagnostics stay
   opt-in and Debug-only: bounded numerical summaries on the local console,
@@ -388,7 +431,11 @@ Earlier build evidence (historical, superseded where stated above):
 ## Acceptance and verification
 
 - Entering Station Mode does not start a workout or request camera access.
-- Exercise selection, trial start/stop and all detections cannot write a set.
+- The iPad cannot write a set. Only an armed count sent over the opt-in link
+  can reach the iPhone, which logs it through LOG SET for the exact armed slot
+  and set at once with Undo, or on a tap when tracking was partial.
+- Neither device browses or advertises on the local network until its member
+  turns the link on; the iPhone stays awake only while connected.
 - The live MediaPipe angle counter requires a stable extended position, flexion
   and return. It is an advisory count, not a form, depth or safety assessment.
 - Saved replay feeds identical decoded frames to both pose detectors and uses
@@ -451,7 +498,8 @@ Sources checked 2026-10-03:
 - Current runner ownership protects a process/local persistence namespace.
   Distinct set UUIDs from two devices can represent one physical set twice;
   existing idempotency is not a cross-device controller lock.
-- No backend, database or provider change is part of this work. Bounded local
+- No database or provider change is part of this work; the only backend change
+  is the read-only link-key route. Bounded local
   test retention is owner-approved; client distribution is limited to the internal comparison
   build. Do not store account emails, receipts or purchase identifiers in
   repository evidence.

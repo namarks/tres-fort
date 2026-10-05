@@ -4,6 +4,13 @@
 <dict>
     <key>NSCameraUsageDescription</key>
     <string>Track exercise movements on this device. Record test saves an optional silent clip locally for comparison; share or delete it from Saved tests.</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Connect your iPhone workout to your iPad Station so reps the iPad counts can log your sets. Only your own devices connect.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_tresfort-stn._tcp</string>
+        <string>_tresfort-stn._udp</string>
+    </array>
     <key>NSMicrophoneUsageDescription</key>
     <string>Record optional workout feedback for an editable transcript. Audio is discarded.</string>
     <key>NSSpeechRecognitionUsageDescription</key>

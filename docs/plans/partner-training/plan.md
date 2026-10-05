@@ -60,10 +60,12 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     create that saved their copy. Try again repeats both sides, and dual mode
     begins only when both succeed in that round; a refusal or Cancel discards
     each side's empty session, and after a changed plan the partner reviews the
-    current workout again. Each phone keeps its pending Start in its runner
-    checkpoint and resolves it itself if the iPad never learned the outcome:
-    it discards on a cancelled start, or offers to continue alone or discard if
-    the iPad is gone. The step sequence is fixed once both have started.
+    current workout again. Each phone keeps its pending Start, with a session ID
+    it generates when the date has no session yet, in its runner checkpoint and
+    resolves it itself if the iPad never learned the outcome: it discards on a
+    cancelled start, or offers to continue alone or discard if the iPad is
+    gone. Continuing alone is final for that lane, and a cancel's discard is
+    refused once the session holds a live set. The step sequence is fixed once both have started.
   - The iPad holds the shared step: both phones arm the same exercise and set;
     once both have logged it, the pair rests for that step's handed-off rest
     (or taps Skip rest) before the next step is armed for both.

@@ -65,9 +65,12 @@ struct StationRepCounter {
 
     private var exercise: StationExercise
     private var lastTimestamp: TimeInterval?
+    private var lastReliableTimestamp: TimeInterval?
+    private var confidenceDropoutPending = false
     private var selectedSide: Side?
     private var phase: Phase = .seekingStart
     private var endpointCandidate: EndpointCandidate?
+    private var returnArrival: TimeInterval?
     private var standingSideCandidate: (side: Side, since: TimeInterval)?
 
 #if DEBUG
@@ -97,6 +100,7 @@ struct StationRepCounter {
     private static let endpointDwell: TimeInterval = 0.18
     private static let minimumCycleDuration: TimeInterval = 0.55
     private static let maximumSampleGap: TimeInterval = 0.5
+    private static let maximumCurlConfidenceGap: TimeInterval = 0.15
     private static let maximumStandingSideAngleDifference = 10.0
 
     init(exercise: StationExercise) {
@@ -134,6 +138,13 @@ struct StationRepCounter {
             return
         }
 
+        if confidenceDropoutPending,
+           let lastReliableTimestamp,
+           sample.timestamp - lastReliableTimestamp > Self.maximumCurlConfidenceGap {
+            // The bound spans reliable observations, not just the skipped frame.
+            loseTracking(.trackingLost)
+        }
+
         let measurement: Measurement
         if let selectedSide {
             guard let current = measure(sample, side: selectedSide) else {
@@ -141,9 +152,14 @@ struct StationRepCounter {
                 loseTracking(.trackingLost)
                 return
             }
+            guard current.confidence >= Self.minimumConfidence else {
+                tolerateCurlConfidenceDropout(at: sample.timestamp)
+                return
+            }
             measurement = standingMeasurement(sample, current: current)
         } else {
             let candidates = Side.allCases.compactMap { measure(sample, side: $0) }
+                .filter { $0.confidence >= Self.minimumConfidence }
             guard let best = candidates.max(by: { $0.confidence < $1.confidence }) else {
                 loseTracking(.trackingLost)
                 return
@@ -151,6 +167,8 @@ struct StationRepCounter {
             selectedSide = best.side
             measurement = best
         }
+        lastReliableTimestamp = sample.timestamp
+        confidenceDropoutPending = false
 
         let thresholds = thresholds
 #if DEBUG
@@ -181,13 +199,21 @@ struct StationRepCounter {
             }
         case .returning(let startedAt):
             status = .moving
+            if measurement.angle >= thresholds.extendedEnter, returnArrival == nil {
+                returnArrival = sample.timestamp
+            } else if measurement.angle < thresholds.extendedRetain {
+                returnArrival = nil
+            }
             if let endpoint, endpoint.endpoint == .extended {
                 // Use arrival, not confirmation time: holding still after a
                 // too-fast cycle cannot turn it into a valid repetition.
-                if endpoint.since - startedAt >= Self.minimumCycleDuration {
+                // A confidence dip restarts dwell, but cannot postpone the
+                // observed arrival and make a too-fast cycle count later.
+                if (returnArrival ?? endpoint.since) - startedAt >= Self.minimumCycleDuration {
                     count += 1
                 }
                 phase = .armed(startedAt: nil)
+                returnArrival = nil
                 status = .ready
             }
         }
@@ -198,7 +224,26 @@ struct StationRepCounter {
         selectedSide = nil
         phase = .seekingStart
         endpointCandidate = nil
+        returnArrival = nil
         standingSideCandidate = nil
+        lastReliableTimestamp = nil
+        confidenceDropoutPending = false
+    }
+
+    private mutating func tolerateCurlConfidenceDropout(at timestamp: TimeInterval) {
+        guard exercise == .curl, !confidenceDropoutPending,
+              let lastReliableTimestamp,
+              timestamp - lastReliableTimestamp <= Self.maximumCurlConfidenceGap else {
+            loseTracking(.trackingLost)
+            return
+        }
+        // This observation has complete, finite limb geometry and valid scores,
+        // but its angle cannot advance a phase, dwell or side handoff. Only one
+        // such observation may separate reliable samples, at most 150 ms apart.
+        endpointCandidate = nil
+        standingSideCandidate = nil
+        confidenceDropoutPending = true
+        status = .trackingLost
     }
 
     private mutating func standingMeasurement(_ sample: StationPoseSample,
@@ -209,6 +254,7 @@ struct StationRepCounter {
         guard case .armed(startedAt: nil) = phase,
               current.angle >= thresholds.extendedEnter,
               let alternate = measure(sample, side: current.side == .left ? .right : .left),
+              alternate.confidence >= Self.minimumConfidence,
               alternate.confidence > current.confidence,
               alternate.angle >= thresholds.extendedEnter,
               abs(alternate.angle - current.angle) <= Self.maximumStandingSideAngleDifference else {
@@ -258,7 +304,7 @@ struct StationRepCounter {
         guard points.count == 3,
               points.allSatisfy({
                   $0.x.isFinite && $0.y.isFinite && $0.confidence.isFinite
-                      && $0.confidence >= Self.minimumConfidence && $0.confidence <= 1
+                      && $0.confidence >= 0 && $0.confidence <= 1
               }) else { return nil }
         let a = (x: points[0].x - points[1].x, y: points[0].y - points[1].y)
         let b = (x: points[2].x - points[1].x, y: points[2].y - points[1].y)

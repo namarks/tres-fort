@@ -85,6 +85,18 @@ phone cannot take the lane. The other member can tap
 had stopped. If the iPad itself is lost, both phones carry on alone from their
 own last logged set, as normal workouts.
 
+A phone's own record wins after a reconnect. While a lane is dropped, its phone
+can keep logging, undoing or skipping offline, so the iPad's view of that lane
+may be stale. On every connect and reconnect, before any other message, each
+phone sends a lane snapshot: for every step in the frozen sequence, logged,
+skipped or not yet done, read from its durable runner checkpoint (sets still
+waiting in its outbox count as logged). The iPad replaces that lane's state with
+the snapshot and recomputes the shared phase from both lanes: lifting the
+earliest step either lane has not finished, or resting after the last step both
+have finished. A rest that was running restarts in full rather than resuming,
+and the iPad never treats an acknowledgement it saw before the drop as current
+once a snapshot says otherwise.
+
 Rejected: the iPad logging for both people. It would need a second signed-in
 account on one device and a second offline outbox, and it breaks the rule that
 only the phone writes.
@@ -103,20 +115,25 @@ days ship, the dual workout becomes an additional session instead.
 ### Starting together
 
 The handoff names the host's workout as it was reviewed: plan ID, plan version
-and the workout's slot list. The host's date assignment on Start carries
-that plan ID and version, and the Worker checks them in the same write as the
-assignment (P0 adds optional `expected_plan_id` / `expected_version` to the
-date-assignment route, which today checks only `expected_attempt`). If a coach
-or another device changed the plan since the handoff, the assignment is
-refused atomically, the iPad sends the
-partner the current workout, and the partner reviews "Your weights" again
-before Start. Once both have started, the step sequence is fixed from that
+and the workout's slot list. Each phone's date assignment on Start
+carries the plan ID and version it reviewed, and the Worker checks them in the
+same write as the assignment (P0 adds optional `expected_plan_id` /
+`expected_version` to the date-assignment route, which today checks only
+`expected_attempt`). The host's come from the handoff. The partner's come from
+the result of the create that saved their copy, so a coach or another device
+editing the partner's plan between that save and Start is caught the same way.
+If the host's plan changed since the handoff, the assignment is refused
+atomically, the iPad sends the partner the current workout, and the partner
+reviews "Your weights" again before Start. If the partner's own plan changed,
+their phone reloads its copy, rebuilds the slot map, and the partner reviews
+"Your weights" again; a copy that was removed is saved again. Once both have started, the step sequence is fixed from that
 handoff; a later plan edit applies to future workouts, not to this one.
 
 Each phone writes its own date assignment, so "Start together" cannot be one
 atomic write across two accounts. It is two-phase instead. On Start, each
 phone saves its copy if needed and assigns the workout to that date through the
-existing `set_planned_session` path with its observed `expected_attempt`, then
+existing `set_planned_session` path with its observed `expected_attempt` and
+reviewed plan version, then
 reports success or failure to the iPad. Dual mode, and the first armed set,
 begin only after both phones have acknowledged. An assignment with no logged
 set is not a started session, so a failure on one side leaves nothing that
@@ -267,8 +284,9 @@ prototype (PR #236) handles one person at a time.
 - iPhone: Join a Station, Your weights sheet, partner copy save, a dual mode in
   the runner that follows the shared step and hides structural edits.
 - Link protocol: a join-secret-keyed handshake beside the account-key one, a
-  workout handoff message, the shared step, and lane identity on arm and count
-  messages.
+  workout handoff message, the shared step, a lane snapshot on every connect,
+  and lane identity on arm and count messages.
 - Worker: one idempotent, atomic create of a workout with full slots, which
-  also creates the member's plan when they have none, and an optional plan
+  also creates the member's plan when they have none and returns the committed
+  plan ID and version, and an optional plan
   version check on the date assignment (P0). No new tables.

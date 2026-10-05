@@ -51,9 +51,10 @@ The design and the choices behind each phase are in [spec.md](spec.md).
   - Start in two phases: each phone assigns the workout to the date and
     acknowledges to the iPad, and dual mode begins only after both succeed. A
     failed side can retry; Cancel leaves each member an ordinary planned
-    session. The handoff carries the host's plan ID and version, which the
-    host's date assignment checks in the same write; if the plan changed, the
-    partner reviews the current workout again. The step sequence is fixed once
+    session. Each phone's date assignment checks, in the same write, the plan
+    ID and version it reviewed: the host's from the handoff, the partner's from
+    the create that saved their copy. If either plan changed, the partner
+    reviews the current workout again. The step sequence is fixed once
     both have started.
   - The iPad holds the shared step: both phones arm the same exercise and set;
     once both have logged it, the pair rests for that step's handed-off rest
@@ -70,7 +71,10 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     other continues alone. A dropped phone's lane waits for that same phone,
     proven by a per-lane resume key issued on Allow and kept in the partner's
     Keychain until the lane closes; the slot map and step sequence persist
-    with its runner checkpoint. The other member can choose "Continue alone".
+    with its runner checkpoint. On every connect and reconnect, each phone first sends its lane
+    state for every step from its durable checkpoint, and the iPad adopts it
+    and recomputes the shared step. The other member can choose "Continue
+    alone".
     If the iPad is lost, each phone continues as a normal solo workout.
   - Keep the iPad free of partner data afterwards; disable test recording during
     a dual workout.

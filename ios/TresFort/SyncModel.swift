@@ -6235,6 +6235,11 @@ final class SyncModel: ObservableObject {
         }
     }
 
+    /// Station observes the workout Today is displaying. A mounted runner may
+    /// explicitly override the schedule; otherwise an old selection must not
+    /// replace today's resolved workout or turn a rest day into a workout.
+    var stationWorkout: Workout? { running ? selectedDay : todayResolvedDay }
+
     /// Identity for preview/edit navigation. Display fallbacks used by legacy
     /// runners are not authority to open an unrelated saved workout's editor.
     var todayPreviewWorkout: Workout? {

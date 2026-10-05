@@ -8049,6 +8049,51 @@ final class SetOutboxTests: XCTestCase {
             userID: "user-a", defaults: defaults))
     }
 
+    func testStationUsesTodaysScheduledPrescriptionUnlessRunnerOverridesIt() throws {
+        let defaults = defaults()
+        let staleDay = day(with: [exercise(exerciseID: "ex_plank", timed: true)])
+        let scheduledHold = TemplateExercise(
+            id: "slot-b", exercise_id: "ex_wall_sit", exercise_name: "Wall Sit",
+            exercise_unit: "s", order_index: 0, target_sets: 3, target_reps: 60,
+            target_reps_max: nil, target_rpe: nil, rest_seconds: 90,
+            target_weight: nil, cues: nil, exercise_modality: "timed",
+            exercise_laterality: nil, exercise_load_mode: nil, exercise_demo_slug: nil,
+            target_duration_s: 60, is_warmup: nil)
+        let scheduledDay = Workout(id: "day-b", name: "Scheduled Holds", day_label: "B",
+            order_index: 1, exercises: [scheduledHold])
+        let weekday = try XCTUnwrap(CalendarProjection.weekdayKey(forDateString: fixedCivilDate))
+        let model = SyncModel(auth: retainedAuth(defaults: defaults),
+            defaults: defaults, now: { self.fixedDate })
+        model.plan = PlanTree(id: "plan-a", name: "Plan A", version: 1,
+            workouts: [staleDay, scheduledDay],
+            meta: "{\"schedule\":{\"version\":1,\"week\":{\"\(weekday)\":\"day-b\"}}}")
+        model.selectedDayID = staleDay.id
+
+        // A selection retained from yesterday differs from the workout on Today.
+        XCTAssertEqual(model.selectedDay?.id, staleDay.id)
+        XCTAssertEqual(model.todayResolvedDay?.id, scheduledDay.id)
+        let scheduled = try XCTUnwrap(model.stationWorkout)
+        XCTAssertEqual(scheduled.name, "Scheduled Holds")
+        let scheduledOption = StationExerciseOption(prescription: try XCTUnwrap(scheduled.exercises.first))
+        XCTAssertEqual(scheduledOption.exerciseID, "ex_wall_sit")
+        XCTAssertEqual(scheduledOption.targetSeconds, 60)
+
+        // Once that other workout is explicitly running, Station follows it.
+        model.running = true
+        let active = try XCTUnwrap(model.stationWorkout)
+        XCTAssertEqual(active.id, staleDay.id)
+        let activeOption = StationExerciseOption(prescription: try XCTUnwrap(active.exercises.first))
+        XCTAssertEqual(activeOption.exerciseID, "ex_plank")
+        XCTAssertEqual(activeOption.targetSeconds, 30)
+
+        model.running = false
+        model.plan = PlanTree(id: "plan-a", name: "Plan A", version: 2,
+            workouts: [staleDay, scheduledDay],
+            meta: "{\"schedule\":{\"version\":1,\"week\":{\"\(weekday)\":null}}}")
+        XCTAssertNil(model.stationWorkout, "rest days must not inherit yesterday's selection")
+        XCTAssertTrue(model.setOutbox.isEmpty)
+    }
+
     func testHardBlackoutSessionDoesNotInferNullTemplateFromSchedule() {
         let defaults = defaults()
         let first = exercise(id: "slot-a", exerciseID: "exercise-a")

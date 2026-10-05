@@ -43,6 +43,11 @@ may turn detections into durable workout actions.
   - Verify deterministic counting/loss scenarios, iPad navigation/layout and
     iPhone regressions; complete exact-head review and repository checks.
 - [ ] **P1 — Compare existing counters and validate the mounted iPad**
+  - Compare the native QuickPose SDK and MIT-licensed RepCounterSDK before
+    expanding custom detectors; the [source survey](catalog-tracking.md#existing-implementations-and-datasets)
+    also identifies broader classification and repetition datasets. Keep the
+    catalog mapping independent of the selected engine. No external SDK or
+    dataset has been imported by the catalog slice.
   - Treat the custom angle counter as a baseline, not the selected production
     algorithm. Compare it with Apple HumanBodyActionCounter in the first
     device build. Compare Apple Vision with MediaPipe Full on identical saved
@@ -82,12 +87,12 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Push the verified catalog mapping and hold timer branch and
-open its focused PR; the owner explicitly approved publication to
-`namarks/tres-fort` on 2026-10-04. Complete exact-head review and repository
-checks before handing the PR to Nick. The verified implementation is commit
-`06ff8db3d6e4cc149ed6856044c2b953524ec2cd` on `codex/catalog-camera-profiles`.
-Nick owns merge. PR #228 is now in `origin/main` at
+**Now (@agent):** Complete exact-head review and repository checks for
+[PR #235](https://github.com/namarks/tres-fort/pull/235), including the review
+correction that makes Station use today's resolved workout and hold duration
+unless an active runner overrides it. The owner explicitly approved publication
+to `namarks/tres-fort` on 2026-10-04; Nick owns merge. The implementation is on
+`codex/catalog-camera-profiles`. PR #228 is now in `origin/main` at
 `e15d53b494a814fca69af37c4db1ba82111273e2`; this catalog slice starts there.
 The audit covers all 280 exercises: 193 rep candidates, 15 hold candidates and
 72 manual fallbacks. Fifteen entries explicitly select a current experimental
@@ -139,6 +144,11 @@ automatic workout actions remain unvalidated. No unattended recording is request
   `.artifacts/ios/tres-fort-ios.WsMURa/Tests.xcresult`). These prove software
   behavior and layout, not physical camera accuracy. No iPad installation or
   workout writes occurred in this slice.
+- The PR #235 review correction resolves Station context from today's displayed
+  workout, retaining an active runner override. A disposable iPad simulator
+  passed the schedule/override/rest-day regression, all ten hold/catalog unit
+  tests and all five Station UI journeys. Evidence:
+  `.artifacts/ios/tres-fort-ios.jH64VJ/Tests.xcresult`.
 - Saved replay now rejects the entire comparison if either detector sees more
   than one person, before counting that frame. It cannot resume with another
   person or publish a completed total. A rerun removes its prior derived

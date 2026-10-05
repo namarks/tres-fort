@@ -194,6 +194,7 @@ struct StationLinkUndoRow: View {
            let index = sync.exercises.firstIndex(where: { $0.id == logged.slotID }) {
             sync.jump(to: index)
         }
+        link.recount()
         await sync.drainWorkoutWriteOutboxes()
     }
 }

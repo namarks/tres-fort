@@ -112,6 +112,17 @@ final class StationLinkController: ObservableObject {
         guard let proposal else { return }
         seenEvents.insert(proposal.eventID)
         self.proposal = nil
+        rearm()
+    }
+
+    /// An iPad-logged set was undone: a spent arm for that set is replaced so
+    /// the iPad counts it again (a moved runner re-arms on its own).
+    func recount() {
+        guard proposal == nil, let arm, arm.armID == completedArmID else { return }
+        rearm()
+    }
+
+    private func rearm() {
         guard let old = arm else { return }
         let fresh = StationLinkArm(armID: UUID(), slotID: old.slotID, setNumber: old.setNumber,
                                    exercise: old.exercise, exerciseName: old.exerciseName,

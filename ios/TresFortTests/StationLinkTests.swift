@@ -294,6 +294,22 @@ final class StationLinkTests: XCTestCase {
         XCTAssertNotNil(controller.armToResend, "The next set is armed")
     }
 
+    func testUndoRecountsASpentArmOnTheSameSet() throws {
+        let controller = StationLinkController()
+        controller.request(target())
+        let arm = try XCTUnwrap(controller.arm)
+        let event = completion(arm, reps: 8)
+        controller.receive(.completion(event))
+        controller.finishProposal(event.eventID)
+        controller.recount()
+        let fresh = try XCTUnwrap(controller.arm)
+        XCTAssertNotEqual(fresh.armID, arm.armID, "Undo asks the iPad to count the set again")
+        XCTAssertEqual(fresh.setNumber, arm.setNumber)
+        XCTAssertEqual(controller.armToResend?.armID, fresh.armID)
+        controller.recount()
+        XCTAssertEqual(controller.arm?.armID, fresh.armID, "A live arm is left alone")
+    }
+
     func testUnsavedCountWaitsForATapInsteadOfVanishing() throws {
         let controller = StationLinkController()
         controller.request(target())

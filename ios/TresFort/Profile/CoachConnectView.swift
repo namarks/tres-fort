@@ -20,7 +20,7 @@ enum CoachApp: String, CaseIterable, Identifiable {
 
     var recipient: String {
         switch self {
-        case .codex: return "Codex and its configured model provider"
+        case .codex: return "Codex, operated by OpenAI, and any other model provider you configure in it"
         case .claude: return "Claude, operated by Anthropic"
         case .other: return "Your chosen AI app and its configured model provider"
         }

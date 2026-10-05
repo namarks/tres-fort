@@ -127,6 +127,8 @@ final class StationReplayTests: XCTestCase {
         XCTAssertNil(frame.mediaPipeLeftCycles)
         XCTAssertNil(frame.mediaPipeRightCycles)
         XCTAssertNil(report.counterVersion)
+        XCTAssertNil(report.appleHasIncompleteCoverage)
+        XCTAssertNil(report.mediaPipeHasIncompleteCoverage)
 
         let encoded = try JSONEncoder().encode(report)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
@@ -135,9 +137,13 @@ final class StationReplayTests: XCTestCase {
             XCTAssertNil(encodedFrame[key], "Legacy totals must not invent per-arm evidence")
         }
         XCTAssertNil(object["counterVersion"])
+        XCTAssertNil(object["appleHasIncompleteCoverage"])
+        XCTAssertNil(object["mediaPipeHasIncompleteCoverage"])
         let restored = try JSONDecoder().decode(StationReplayReport.self, from: encoded)
         XCTAssertEqual(restored.frames, report.frames)
         XCTAssertNil(restored.counterVersion)
+        XCTAssertNil(restored.appleHasIncompleteCoverage)
+        XCTAssertNil(restored.mediaPipeHasIncompleteCoverage)
     }
 
     func testCurrentReportRoundTripsIndependentArmCountsIncludingObservedZero() throws {
@@ -151,7 +157,8 @@ final class StationReplayTests: XCTestCase {
             createdAt: legacy.createdAt, appleRevision: legacy.appleRevision, mediaPipeModel: legacy.mediaPipeModel,
             mediaPipeRuntime: legacy.mediaPipeRuntime, mediaPipeModelSHA256: legacy.mediaPipeModelSHA256,
             osVersion: legacy.osVersion, appBuild: legacy.appBuild, frames: [frame],
-            counterVersion: "independent-curl-arms-v1")
+            counterVersion: "independent-curl-arms-v1",
+            appleHasIncompleteCoverage: false, mediaPipeHasIncompleteCoverage: true)
 
         let encoded = try JSONEncoder().encode(report)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
@@ -161,9 +168,73 @@ final class StationReplayTests: XCTestCase {
         XCTAssertEqual(encodedFrame["mediaPipeLeftCycles"] as? Int, 7)
         XCTAssertEqual(encodedFrame["mediaPipeRightCycles"] as? Int, 0)
         XCTAssertEqual(object["counterVersion"] as? String, "independent-curl-arms-v1")
+        XCTAssertEqual(object["appleHasIncompleteCoverage"] as? Bool, false)
+        XCTAssertEqual(object["mediaPipeHasIncompleteCoverage"] as? Bool, true)
         let restored = try JSONDecoder().decode(StationReplayReport.self, from: encoded)
         XCTAssertEqual(restored.frames, [frame])
         XCTAssertEqual(restored.counterVersion, report.counterVersion)
+        XCTAssertEqual(restored.appleHasIncompleteCoverage, false)
+        XCTAssertEqual(restored.mediaPipeHasIncompleteCoverage, true)
+    }
+
+    func testCoverageLatchesOneArmsLossWhileOtherArmKeepsMoving() {
+        var apple = StationMovementCounter(exercise: .curl)
+        var mediaPipe = StationMovementCounter(exercise: .curl)
+        var coverage = StationReplayCoverage()
+        for frame in 0..<4 {
+            let sample = curlPose(angle: 170).sample(at: Double(frame) / 15)
+            apple.process(sample)
+            mediaPipe.process(sample)
+            coverage.observe(apple: apple, mediaPipe: mediaPipe)
+        }
+        XCTAssertEqual(apple.status, .ready)
+        XCTAssertFalse(coverage.appleHasIncompleteCoverage)
+        XCTAssertFalse(coverage.mediaPipeHasIncompleteCoverage)
+
+        apple.process(curlPose(angle: 50, leftConfidence: 0.3).sample(at: 4.0 / 15))
+        mediaPipe.process(curlPose(angle: 50).sample(at: 4.0 / 15))
+        XCTAssertEqual(apple.leftStatus, .trackingLost)
+        XCTAssertEqual(apple.rightStatus, .moving)
+        XCTAssertEqual(apple.status, .moving, "Aggregate status masks one arm's skipped observation")
+        coverage.observe(apple: apple, mediaPipe: mediaPipe)
+        XCTAssertTrue(coverage.appleHasIncompleteCoverage)
+        XCTAssertFalse(coverage.mediaPipeHasIncompleteCoverage)
+
+        apple.process(curlPose(angle: 50).sample(at: 5.0 / 15))
+        mediaPipe.process(curlPose(angle: 50, rightConfidence: 0.3).sample(at: 5.0 / 15))
+        XCTAssertEqual(apple.status, .moving)
+        XCTAssertEqual(mediaPipe.leftStatus, .moving)
+        XCTAssertEqual(mediaPipe.rightStatus, .trackingLost)
+        XCTAssertEqual(mediaPipe.status, .moving)
+        coverage.observe(apple: apple, mediaPipe: mediaPipe)
+        XCTAssertTrue(coverage.appleHasIncompleteCoverage, "Reliable recovery must not erase earlier loss")
+        XCTAssertTrue(coverage.mediaPipeHasIncompleteCoverage)
+
+        let recovered = curlPose(angle: 50).sample(at: 6.0 / 15)
+        apple.process(recovered)
+        mediaPipe.process(recovered)
+        coverage.observe(apple: apple, mediaPipe: mediaPipe)
+        XCTAssertTrue(coverage.appleHasIncompleteCoverage)
+        XCTAssertTrue(coverage.mediaPipeHasIncompleteCoverage)
+    }
+
+    func testCoverageIncludesAggregateLossForExercisesWithoutArmBreakdown() {
+        for exercise in [StationExercise.squat, .benchPress] {
+            var apple = StationMovementCounter(exercise: exercise)
+            var mediaPipe = StationMovementCounter(exercise: exercise)
+            var coverage = StationReplayCoverage()
+            let lost = StationPoseSample(timestamp: 0, joints: [:], personCount: 0)
+            apple.process(lost)
+            XCTAssertEqual(apple.status, .trackingLost)
+            XCTAssertNil(apple.leftStatus)
+            XCTAssertNil(apple.rightStatus)
+            coverage.observe(apple: apple, mediaPipe: mediaPipe)
+            XCTAssertTrue(coverage.appleHasIncompleteCoverage)
+            XCTAssertFalse(coverage.mediaPipeHasIncompleteCoverage)
+            mediaPipe.process(lost)
+            coverage.observe(apple: apple, mediaPipe: mediaPipe)
+            XCTAssertTrue(coverage.mediaPipeHasIncompleteCoverage)
+        }
     }
 
     func testInvalidTimestampsFailBeforeIntegerConversion() throws {
@@ -223,12 +294,41 @@ final class StationReplayTests: XCTestCase {
         XCTAssertEqual(report.frames.first?.timestamp, 0)
         XCTAssertEqual(report.frames.last?.timestamp ?? -1, recording.durationSeconds, accuracy: 0.001)
         XCTAssertEqual(report.mediaPipeModelSHA256, StationMediaPipeDetector.modelSHA256)
-        XCTAssertEqual(report.counterVersion, "independent-curl-arms-v1")
+        XCTAssertEqual(report.counterVersion, "curl-confidence-grace-v2")
+        XCTAssertEqual(report.appleHasIncompleteCoverage, true)
+        XCTAssertEqual(report.mediaPipeHasIncompleteCoverage, true)
         XCTAssertTrue(report.frames.allSatisfy { $0.apple.personCount == 0 && $0.mediaPipe.personCount == 0 })
         XCTAssertTrue(report.frames.allSatisfy { $0.appleCycles == 0 && $0.mediaPipeCycles == 0 })
         XCTAssertTrue(report.frames.allSatisfy { $0.apple.milliseconds >= 0 && $0.mediaPipe.milliseconds >= 0 })
         let decoded = try JSONDecoder().decode(StationReplayReport.self, from: JSONEncoder().encode(report))
         XCTAssertEqual(decoded.frames, report.frames)
+        XCTAssertEqual(decoded.appleHasIncompleteCoverage, true)
+        XCTAssertEqual(decoded.mediaPipeHasIncompleteCoverage, true)
+    }
+
+    func testSavedVideoPersistsExplicitCoverageForReliableAndBrieflyLostAppleArm() async throws {
+        for hasDropout in [false, true] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent("station-coverage-replay-\(UUID())")
+            defer { try? FileManager.default.removeItem(at: root) }
+            let store = try StationRecordingStore(rootURL: root)
+            let recording = try await makeRecording(store: store, exercise: .curl, frameCount: 6, frameInterval: 1.0 / 15)
+            var appleFrames = 0
+            let report = try await StationReplayWorker.run(recording: recording,
+                videoURL: store.videoURL(for: recording.id), session: store.session,
+                appleDetection: { _, _ in
+                    let frame = appleFrames
+                    appleFrames += 1
+                    return self.curlPose(angle: frame < 4 ? 170 : 50,
+                                         leftConfidence: hasDropout && frame == 4 ? 0.3 : 0.9)
+                }) { _ in }
+            XCTAssertEqual(appleFrames, 6)
+            XCTAssertEqual(report.frames.count, 6)
+            XCTAssertEqual(report.appleHasIncompleteCoverage, hasDropout)
+            XCTAssertEqual(report.mediaPipeHasIncompleteCoverage, true, "The real MediaPipe detector sees blank frames")
+            let decoded = try JSONDecoder().decode(StationReplayReport.self, from: JSONEncoder().encode(report))
+            XCTAssertEqual(decoded.appleHasIncompleteCoverage, hasDropout)
+            XCTAssertEqual(decoded.mediaPipeHasIncompleteCoverage, true)
+        }
     }
 
     func testRealAppleAndMediaPipeOnSavedVideoOnDevice() async throws {
@@ -259,12 +359,13 @@ final class StationReplayTests: XCTestCase {
         return recording
     }
 
-    private func makeRecording(store: StationRecordingStore) async throws -> StationRecording {
+    private func makeRecording(store: StationRecordingStore, exercise: StationExercise = .squat,
+                               frameCount: Int = 4, frameInterval: Double = 0.2) async throws -> StationRecording {
         try await withCheckedThrowingContinuation { continuation in
             let queue = DispatchQueue(label: "station.replay.fixture")
             queue.async {
                 do {
-                    let writer = try StationRecordingWriter(exercise: .squat, store: store)
+                    let writer = try StationRecordingWriter(exercise: exercise, store: store)
                     var pixels: CVPixelBuffer?
                     let status = CVPixelBufferCreate(kCFAllocatorDefault, 640, 480, kCVPixelFormatType_32BGRA,
                                                     [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pixels)
@@ -272,8 +373,8 @@ final class StationReplayTests: XCTestCase {
                     CVPixelBufferLockBaseAddress(pixels, [])
                     memset(CVPixelBufferGetBaseAddress(pixels), 0, CVPixelBufferGetDataSize(pixels))
                     CVPixelBufferUnlockBaseAddress(pixels, [])
-                    for index in 0..<4 {
-                        let timestamp = 10 + Double(index) / 5
+                    for index in 0..<frameCount {
+                        let timestamp = 10 + Double(index) * frameInterval
                         let frame = StationComparisonFrame(
                             sample: StationPoseSample(timestamp: timestamp, joints: [:], personCount: 0),
                             applePose: nil, visionMilliseconds: 0, imageAspectRatio: 4.0 / 3.0)
@@ -289,6 +390,19 @@ final class StationReplayTests: XCTestCase {
                 } catch { continuation.resume(throwing: error) }
             }
         }
+    }
+
+    private func curlPose(angle: Double, leftConfidence: Float = 0.9,
+                          rightConfidence: Float = 0.9) -> StationReplayPose {
+        var joints: [String: StationReplayPoint] = [:]
+        let radians = angle * .pi / 180
+        for (prefix, x, confidence) in [("left", 0.4, leftConfidence), ("right", 0.9, rightConfidence)] {
+            joints["\(prefix)Shoulder"] = StationReplayPoint(x: x, y: 0.8, score: 0.9)
+            joints["\(prefix)Elbow"] = StationReplayPoint(x: x, y: 0.5, score: 0.9)
+            joints["\(prefix)Wrist"] = StationReplayPoint(x: x + sin(radians) * 0.25,
+                                                       y: 0.5 + cos(radians) * 0.25, score: confidence)
+        }
+        return StationReplayPose(personCount: 1, joints: joints, milliseconds: 0)
     }
 
     /// Explicit pre-arm-count wire format, with nonzero legacy totals. A

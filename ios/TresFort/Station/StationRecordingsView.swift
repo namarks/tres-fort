@@ -181,7 +181,7 @@ struct StationRecordingDetailView: View {
                             if let apple = curlCycles(left: last.appleLeftCycles, right: last.appleRightCycles),
                                let mediaPipe = curlCycles(left: last.mediaPipeLeftCycles, right: last.mediaPipeRightCycles) {
                                 VStack(alignment: .leading, spacing: 6) {
-                                    Text("Full clip angle cycles").font(.headline)
+                                    Text("Recorded clip counts").font(.headline)
                                     Text("Apple · \(apple)")
                                     Text("MediaPipe · \(mediaPipe)")
                                 }.accessibilityIdentifier("station.curlReplayCounts")
@@ -190,10 +190,12 @@ struct StationRecordingDetailView: View {
                                     .foregroundStyle(.orange)
                             }
                         } else {
-                            Text("Full clip angle cycles: Apple \(last.appleCycles) · MediaPipe \(last.mediaPipeCycles)")
+                            Text("Recorded clip counts: Apple \(last.appleCycles) · MediaPipe \(last.mediaPipeCycles)")
                                 .font(.headline)
                         }
                     }
+                    coverageNotice("Apple", incomplete: report.appleHasIncompleteCoverage)
+                    coverageNotice("MediaPipe", incomplete: report.mediaPipeHasIncompleteCoverage)
                     Text("Frame \(Int(selectedIndex) + 1) / \(report.frames.count) · \(frame.timestamp, specifier: "%.2f") s")
                         .font(.headline).monospacedDigit()
                     if report.frames.count > 1 {
@@ -262,6 +264,19 @@ struct StationRecordingDetailView: View {
         }
         .task(id: frame?.timestamp ?? 0) { await loadStill(at: frame?.timestamp ?? 0) }
         .sheet(item: $shareItems) { items in StationShareSheet(urls: items.urls, access: access) }
+    }
+
+    @ViewBuilder
+    private func coverageNotice(_ detector: String, incomplete: Bool?) -> some View {
+        if incomplete == true {
+            Text("\(detector) · Partial tracking. Some frames could not be used; counts may be incomplete.")
+                .font(.subheadline).foregroundStyle(.orange)
+                .accessibilityIdentifier("station.replayCoverage.\(detector)")
+        } else if incomplete == nil {
+            Text("\(detector) · Tracking coverage is unknown for this saved comparison. Run comparison again to check it.")
+                .font(.subheadline).foregroundStyle(.secondary)
+                .accessibilityIdentifier("station.replayCoverage.\(detector)")
+        }
     }
 
     private func posePanel(_ title: String, pose: StationReplayPose, cycles: Int,

@@ -241,7 +241,7 @@ struct DayAgendaView: View {
 
     /// The day template to DISPLAY for a real (planned) session on this
     /// date — the SAME shared session→schedule resolver Today / the
-    /// calendar / `nextWorkout` use (FIX5's class), not a bare
+    /// calendar / `upcomingDays` use (FIX5's class), not a bare
     /// `workout_id` read. When the session's own `workout_id`
     /// is null (server drops it for an existing same-date row) this still
     /// recovers the template via the weekly schedule unless a hard blackout

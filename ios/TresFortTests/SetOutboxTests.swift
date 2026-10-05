@@ -8174,6 +8174,44 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(model.rideConflict(for: fixedCivilDate), .none)
     }
 
+    func testUpcomingDaysListsScheduledWorkoutsAndPlannedRidesFromTomorrow() throws {
+        let defaults = defaults()
+        let tomorrow = try XCTUnwrap(RideConflict.nextDateString(after: fixedCivilDate))
+        let rideDate = try XCTUnwrap(RideConflict.nextDateString(after: tomorrow))
+        let blackout = try XCTUnwrap(RideConflict.nextDateString(after: rideDate))
+        let weekday = try XCTUnwrap(CalendarProjection.weekdayKey(forDateString: tomorrow))
+        let meta = """
+        {"schedule":{"version":1,"week":{"\(weekday)":"day-a"}},
+         "trips":[{"id":"trip-a","start":"\(blackout)","end":"\(blackout)","type":"travel","can_train_light":false}]}
+        """
+        func ride(_ date: String, _ title: String) -> ExternalEvent {
+            ExternalEvent(
+                id: "intervals:\(title)", source: "intervals", external_id: title,
+                date: date, kind: "ride", title: title, description: nil,
+                planned_duration_sec: 3_600, training_load: 50, intensity: 0.7,
+                synced_at: 2_000_000_000_000, deleted_at: nil)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.plan = PlanTree(
+            id: "plan-a", name: "Plan A", version: 1,
+            workouts: [day(with: [exercise()])], meta: meta)
+        model.rides = [ride(fixedCivilDate, "Today"), ride(rideDate, "Endurance"),
+                       ride(blackout, "Blacked out")]
+
+        let upcoming = model.upcomingDays(within: 7, limit: 3)
+        XCTAssertEqual(upcoming.map(\.dateString), [tomorrow, rideDate],
+                       "today and a hard-blackout date are not upcoming")
+        XCTAssertTrue(upcoming[0].hasWorkout)
+        XCTAssertEqual(upcoming[0].workout?.id, "day-a")
+        XCTAssertTrue(upcoming[0].rides.isEmpty)
+        XCTAssertFalse(upcoming[1].hasWorkout)
+        XCTAssertEqual(upcoming[1].rides.map(\.external_id), ["Endurance"])
+        XCTAssertEqual(model.upcomingDays(within: 7, limit: 1).map(\.dateString), [tomorrow])
+    }
+
     func testConcurrentLoadsCoalesceOntoOneModelOwnedRefresh() async {
         let defaults = defaults()
         let ex = exercise()

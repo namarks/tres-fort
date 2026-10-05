@@ -57,10 +57,11 @@ private func style(for kind: DayProjection.Kind) -> StateStyle? {
     }
 }
 
-// Embedded inside the merged History tab (see HistoryView) — owns no nav
-// chrome (no NavigationStack/title; the parent's stack handles navigation).
-// Self-owned month selection plus an in-header "TODAY" button; the feed's scroll
-// offset drives the condense morph.
+// Embedded inside the Calendar screen (see HistoryView), which Today pushes —
+// owns no nav chrome (no NavigationStack/title; the parent's stack handles
+// navigation). Self-owned month selection plus an in-header "TODAY" button.
+// The month grid and the activity feed share one ordinary scroll: nothing
+// resizes as the member scrolls.
 struct CalendarMonthView: View {
     @ObservedObject var sync: SyncModel
     var onWeeklySchedule: (() -> Void)? = nil
@@ -74,12 +75,8 @@ struct CalendarMonthView: View {
     /// today's cell render even when no other observed state changed.
     @State private var todayTapped: String?
     @State private var selectedDate: String?      // YYYY-MM-DD → agenda sheet
-    /// Drives the morph: false → full month grid header; true → condensed
-    /// contribution-heatmap "hub". Flipped by the feed's scroll offset.
-    @State private var collapsed = false
 
     private var cal: Calendar { CalendarProjection.calendar }
-    private let feedSpace = "history-feed"
 
     /// First day of the displayed month. The current month comes from the
     /// model's clock, the same one that marks today's cell, never a separate
@@ -94,15 +91,11 @@ struct CalendarMonthView: View {
         return cal.date(from: cal.dateComponents([.year, .month], from: day))!
     }
 
-    // ONE calendar surface that condenses, not two stacked views: a fixed
-    // header that morphs month grid ⇄ heatmap as the feed scrolls beneath it.
-    // GeometryReader gives the feed a min-height floor (see feedScroll) so
-    // condensing never makes a short feed fit and snap the scroll back.
     var body: some View {
-        GeometryReader { geo in
+        ScrollView {
             VStack(spacing: 0) {
                 calendarHub
-                feedScroll(availableHeight: geo.size.height)
+                feedContent
             }
         }
         .sheet(item: Binding(
@@ -128,21 +121,15 @@ struct CalendarMonthView: View {
         .task { if sync.plan == nil { await sync.load() } }
     }
 
-    // MARK: morphing calendar header
+    // MARK: calendar header
 
-    /// ONE calendar surface that DENSIFIES on scroll — the SAME full-width month
-    /// grid throughout. As `collapsed` flips, each row's cells shrink and swap
-    /// their date number + glyph for a centered activity chip (see `dayCell`).
-    /// Full-width + column-aligned in both states, so the condensed grid merges
-    /// seamlessly into the full calendar, one row at a time.
+    /// The month grid, at a fixed size. It scrolls away with the feed below it.
     private var calendarHub: some View {
         // ~31 date additions per build: compute the month's cells once and
         // hand them to the grid instead of rebuilding them there.
         let days = gridDays
         return VStack(spacing: 0) {
             header
-            // Full width — aligns with the grid in BOTH states (the condensed
-            // grid is full-width too), so it stays put through the merge.
             if days.compactMap({ $0 }).contains(where: { day in
                 let ymd = CalendarProjection.dateString(day)
                 return !sync.projection(for: ymd).suppressesScheduleAndEndurance
@@ -152,51 +139,14 @@ struct CalendarMonthView: View {
             }
             weekdayHeader
             grid(days)
-                .padding(.bottom, collapsed ? 10 : 12)
+                .padding(.bottom, 12)
         }
         .frame(maxWidth: .infinity)
-        .background(Theme.bg)
-        .overlay(alignment: .bottom) {
-            if collapsed { Rectangle().fill(Theme.surface2).frame(height: 1) }
-        }
-        // Container-level fallback animation for the padding/hairline; each grid
-        // row carries its own delayed animation, which overrides this for the
-        // staggered one-row-at-a-time merge.
-        .animation(.easeInOut(duration: 0.3), value: collapsed)
     }
 
-    // MARK: feed (scrolls beneath the calendar; its offset drives the morph)
+    // MARK: feed (scrolls with the calendar)
 
-    @ViewBuilder
-    private func feedScroll(availableHeight: CGFloat) -> some View {
-        if #available(iOS 18.0, *) {
-            // Reliable path: read the scroll offset directly.
-            ScrollView {
-                feedContent(availableHeight)
-            }
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { _, y in
-                updateCollapsed(scrolled: y)
-            }
-        } else {
-            // iOS 17 fallback: derive offset from a named-space GeometryReader.
-            ScrollView {
-                feedContent(availableHeight)
-                    .background(
-                        GeometryReader { geo in
-                            Color.clear.preference(
-                                key: ScrollOffsetKey.self,
-                                value: geo.frame(in: .named(feedSpace)).minY)
-                        }
-                    )
-            }
-            .coordinateSpace(name: feedSpace)
-            .onPreferenceChange(ScrollOffsetKey.self) { minY in
-                updateCollapsed(scrolled: -minY)
-            }
-        }
-    }
-
-    private func feedContent(_ availableHeight: CGFloat) -> some View {
+    private var feedContent: some View {
         LazyVStack(spacing: 12) {
             if let onWeeklySchedule {
                 Button(action: onWeeklySchedule) {
@@ -210,25 +160,9 @@ struct CalendarMonthView: View {
         }
         .padding(.top, 12)
         .padding(.bottom, 28)
-        // Floor the content above the full available height so condensing
-        // (which frees ~360pt) can never make a short feed suddenly fit the
-        // taller viewport and snap the scroll back to 0 — which would bounce
-        // the calendar open again. The max(…, 600) guards the first layout pass,
-        // where the outer GeometryReader hasn't measured yet (availableHeight 0)
-        // — without it an empty feed visibly jumps height on the second frame.
-        .frame(minHeight: max(availableHeight, 600) + 120, alignment: .top)
     }
 
-    /// Flip the morph from the feed's scroll distance. Hysteresis band (6…28)
-    /// keeps it from fluttering right at the threshold. No `withAnimation` here
-    /// — the per-row `.animation(value: collapsed)` modifiers own the staggered
-    /// transition so the rows merge one at a time.
-    private func updateCollapsed(scrolled: CGFloat) {
-        let next = collapsed ? (scrolled > 6) : (scrolled > 28)
-        if next != collapsed { collapsed = next }
-    }
-
-    // MARK: activity log (condensed heatmap + feed)
+    // MARK: activity log (feed)
 
     /// Distinct civil dates (≤ today) that carry real training — a completed/
     /// in-progress session with logged sets, a completed endurance activity,
@@ -365,17 +299,9 @@ struct CalendarMonthView: View {
         return cells
     }
 
-    /// Condensed day-square side (and its expanded counterpart's height). The
-    /// morph tweens between these. Cells stay FULL WIDTH (flexible columns,
-    /// column-aligned with the expanded grid) in BOTH states — only the height
-    /// and the cell contents change — so the condensed grid merges cell-for-cell
-    /// into the full calendar. Validated in an HTML prototype (28pt rows, 18pt
-    /// chips, 6pt gaps → a clean full-width activity grid).
-    private var cellHeight: CGFloat { collapsed ? 20 : 56 }
-    /// Horizontal gap is CONSTANT so condensed columns stay aligned with the
-    /// expanded grid; the vertical gap tightens when condensed for density.
+    private let cellHeight: CGFloat = 56
     private let colGap: CGFloat = 6
-    private var rowGap: CGFloat { collapsed ? 3 : 6 }
+    private let rowGap: CGFloat = 6
 
     /// gridDays chunked into calendar weeks (rows of 7).
     private func gridRows(_ days: [Date?]) -> [[Date?]] {
@@ -384,13 +310,10 @@ struct CalendarMonthView: View {
         }
     }
 
-    /// The month grid — full width in both states, so the condensed heatmap
-    /// lines up cell-for-cell with the expanded calendar. Each row animates on
-    /// its OWN slightly-delayed beat off `collapsed`, so the calendar merges
-    /// with / peels away from the feed ONE ROW AT A TIME instead of all at once.
+    /// The month grid: full width, one row per calendar week.
     private func grid(_ days: [Date?]) -> some View {
         VStack(spacing: rowGap) {
-            ForEach(Array(gridRows(days).enumerated()), id: \.offset) { rowIndex, row in
+            ForEach(Array(gridRows(days).enumerated()), id: \.offset) { _, row in
                 HStack(spacing: colGap) {
                     ForEach(Array(row.enumerated()), id: \.offset) { _, day in
                         Group {
@@ -406,14 +329,32 @@ struct CalendarMonthView: View {
                         }
                     }
                 }
-                .animation(.easeInOut(duration: 0.3).delay(Double(rowIndex) * 0.06),
-                           value: collapsed)
             }
         }
         .padding(.horizontal, 12)
     }
 
-    @ViewBuilder private func dayCell(_ date: Date) -> some View {
+    private func dayCell(_ date: Date) -> some View {
+        CalendarDayCell(sync: sync, date: date,
+                        identifier: "calendar.date.\(CalendarProjection.dateString(date))") { ymd in
+            selectedDate = ymd
+        }
+    }
+
+}
+
+/// One calendar day: its number, one state glyph, and corner badges for a
+/// ride clash or a secondary endurance activity. Shared by the month grid and
+/// Today's week strip so both read the same. The caller sizes the cell.
+struct CalendarDayCell: View {
+    @ObservedObject var sync: SyncModel
+    let date: Date
+    let identifier: String
+    let onSelect: (String) -> Void
+
+    private var cal: Calendar { CalendarProjection.calendar }
+
+    var body: some View {
         let ymd = CalendarProjection.dateString(date)
         // Single-clock: `sync.todayString` is a computed var (fresh
         // `Date()` each access). The cell's projection ring (past/future
@@ -468,7 +409,7 @@ struct CalendarMonthView: View {
                 : "bicycle")
         // Endurance/manual glyph color — CATEGORY-based so a completed ride
         // reads CYAN (not amber) and a manual logs its own category color,
-        // matching the condensed dots, the feed, and the Group heatmap
+        // matching the feed and the Group heatmap
         // everywhere. A bare planned ride stays muted. (Previously this was a
         // blanket Theme.accent, which made rides look like lifts and clashed
         // with the cyan used in every other view.)
@@ -481,74 +422,24 @@ struct CalendarMonthView: View {
         // already occupies the primary marker; on a no-lift day it becomes
         // the primary glyph below.
         let secondaryEndurance = hasEndurance && (isWorkout || isSkipped)
-        // Condensed dots = the day's activity CATEGORIES, one dot per category,
-        // so a multi-sport day (e.g. lift + ride) shows ALL of them rather than
-        // collapsing to one dominant color. Order: lift (its state color —
-        // green=done / amber=planned/active) or skip (red), then endurance
-        // (cyan), then manual (its OWN category color via forActivityKind — so a
-        // manual run/ride reads cyan, matching the expanded glyph + the Group
-        // heatmap, not a blanket purple). A bare planned ride is muted. Duplicate
-        // categories collapse to one dot (a manual ride alongside an intervals
-        // ride → a single cyan dot). Empty array → rest/empty day (no dot).
-        let dayColors: [Color] = {
-            var out: [Color] = []
-            if isWorkout, let c = st?.color { out.append(c) }
-            else if isSkipped { out.append(Theme.danger) }
-            if hasEndurance {
-                if hasActivity { out.append(WorkoutCategory.endurance.color) }
-                if hasManual {
-                    let c = WorkoutCategory.forActivityKind(
-                        dayManual.first?.type ?? "other").color
-                    if !out.contains(c) { out.append(c) }
-                }
-                if out.isEmpty && hasRide { out.append(Theme.muted) }
-            }
-            return out
-        }()
-
         Button {
-            selectedDate = ymd
+            onSelect(ymd)
         } label: {
-            // Two stacked backings cross-fade so the box recolors cleanly from
-            // the expanded surface to a uniform faint condensed box. Everything
-            // else (ring, chip, number, glyph, badges) is an OVERLAY, so the
+            // Everything (ring, number, glyph, badges) is an OVERLAY, so the
             // grid's .frame is the SOLE size source — the cell can never be
             // stretched taller than its frame by the text's intrinsic height
             // (that was the "tall bars" bug).
-            ZStack {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(isToday ? Theme.surface2
-                          : (isWorkout ? Theme.surface : Theme.surface.opacity(0.35)))
-                    .opacity(collapsed ? 0 : 1)
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(hex: 0x191920))
-                    .opacity(collapsed ? 1 : 0)
-            }
-            // Today keeps its accent ring in both states (the workout tint ring
-            // only shows when expanded).
+            RoundedRectangle(cornerRadius: 10)
+                .fill(isToday ? Theme.surface2
+                      : (isWorkout ? Theme.surface : Theme.surface.opacity(0.35)))
             .overlay {
-                RoundedRectangle(cornerRadius: collapsed ? 8 : 10)
+                RoundedRectangle(cornerRadius: 10)
                     .strokeBorder(isToday ? Theme.accent
-                            : (!collapsed && isWorkout ? (st?.color ?? Theme.accent).opacity(0.35)
+                            : (isWorkout ? (st?.color ?? Theme.accent).opacity(0.35)
                                : Color.clear),
                             lineWidth: isToday ? 1.5 : 1)
             }
-            // Condensed: a centered row of activity dots (fades in) — one dot
-            // per category present, so a multi-sport day shows several dots
-            // side by side. Rest/empty → no dots.
-            .overlay {
-                if !dayColors.isEmpty {
-                    HStack(spacing: 3) {
-                        ForEach(dayColors.indices, id: \.self) { i in
-                            RoundedRectangle(cornerRadius: 2.5)
-                                .fill(dayColors[i])
-                                .frame(width: 10, height: 10)
-                        }
-                    }
-                    .opacity(collapsed ? 1 : 0)
-                }
-            }
-            // Expanded: date number + state glyph (fades out as it condenses).
+            // Date number + state glyph.
             .overlay {
                 VStack(spacing: 4) {
                     Text("\(dayNum)")
@@ -572,18 +463,14 @@ struct CalendarMonthView: View {
                             .font(.system(size: 12)).foregroundStyle(st.color)
                     }
                 }
-                .opacity(collapsed ? 0 : 1)
                 .allowsHitTesting(false)
             }
-            // Corner badges belong to the full cell only — they fade out with
-            // the rest of the expanded chrome.
             .overlay(alignment: .topTrailing) {
                 if conflict == .clash || conflict == .heavyNextDay {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(Theme.accent)
                         .padding(4)
-                        .opacity(collapsed ? 0 : 1)
                 }
             }
             .overlay(alignment: .bottomLeading) {
@@ -592,28 +479,17 @@ struct CalendarMonthView: View {
                         .font(.system(size: 9, weight: .bold))
                         .foregroundStyle(enduranceColor)
                         .padding(4)
-                        .opacity(collapsed ? 0 : 1)
                 }
             }
         }
         .buttonStyle(.plain)
-        .accessibilityIdentifier("calendar.date.\(ymd)")
-    }
-
-}
-
-/// Tracks the History feed's scroll offset (iOS 17-compatible — no
-/// `onScrollGeometryChange`, which is 18+). The feed reports its top edge in a
-/// named coordinate space; `CalendarMonthView` reads it to morph the calendar.
-private struct ScrollOffsetKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+        .accessibilityIdentifier(identifier)
     }
 }
+
 
 /// One day in the History feed: a date block + that day's training (lift,
-/// endurance, manual), color-coded by category (matching the heatmap). Tapping
+/// endurance, manual), color-coded by category (matching the day cells). Tapping
 /// the row opens the full DayAgendaView for the date — where all the detail
 /// already lives, so the feed stays a lightweight index.
 private struct ActivityFeedRow: View {

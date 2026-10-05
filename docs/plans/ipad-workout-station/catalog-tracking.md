@@ -32,14 +32,21 @@ engine; adding a mapped family does not require inventing a new detector.
 |---|---|---|
 | [QuickPose iOS SDK](https://github.com/quickpose/quickpose-ios-sdk) | Its [exercise library](https://docs.quickpose.ai/docs/MobileSDK/ExerciseLibrary) lists 24 entries, including squats, lunges, presses, curls, bridges and planks. | Broad native-iOS comparison candidate. `Package.swift` distributes the core as a binary; an SDK key and [device-based commercial terms](https://quickpose.ai/sdk-pricing/) apply. No account, key or subscription was created. |
 | [RepCounterSDK](https://github.com/NazarKozak/RepCounterSDK) | MIT-licensed Swift source for squat, push-up, lunge, curl, shoulder press and plank, with custom rep/hold specifications. | Small source-based comparison candidate. At `94aaae7`, the plank rule uses hip angle and the timer has no capture-gap bound; preserve Station's position and lost-observation guards when evaluating reuse. |
-| [PoseFit](https://github.com/tefooh/PoseFit) | At `6ca236b`, the classifier catalog has 22 labels and corresponding angle-based handlers. | Broader MediaPipe reference, GPL-3.0. The plank handler exposes hip angle/hold state but no elapsed-time counter. Source inspection does not establish physical accuracy. |
-| [FLAG3D](https://github.com/AndyTang15/FLAG3D) | [Research dataset](https://andytang15.github.io/FLAG3D/) with 60 fitness categories and 180K sequences, combining captured/rendered motion and natural video. | Useful for movement coverage and evaluation; data access requires its agreement. It is not a native counting engine. |
-| [TransRAC / RepCount](https://github.com/SvipRepetitionCounting/TransRAC) and [Google RepNet](https://github.com/google-research/google-research/tree/master/repnet) | Research implementations for counting repetitive actions; RepCount provides action-cycle boundaries. | Useful counting baselines. Assess mobile performance and data rights separately; RepCount-B original videos are not released. |
+| [PoseFit](https://github.com/tefooh/PoseFit) | At `6ca236b`, the classifier catalog has 22 labels and corresponding angle-based handlers. | Broader MediaPipe reference, GPL-3.0. Its `.keras` file is a text pointer marked missing binary; no release supplies the weights. The plank handler exposes hip angle/hold state but no timer. Reported 86.31% accuracy is exercise classification, not rep-count accuracy. |
+| [FLAG3D](https://github.com/AndyTang15/FLAG3D) | [Research dataset](https://andytang15.github.io/FLAG3D/) with 60 fitness categories and 180K sequences, combining captured/rendered motion and natural video. | Training/evaluation data and action-recognition baselines. Its [agreement](https://andytang15.github.io/FLAG3D/License_FLAG3D.pdf) limits use to scientific research and excludes commercial use, including testing commercial systems. |
+| [TransRAC / RepCount](https://github.com/SvipRepetitionCounting/TransRAC) and [Google RepNet](https://github.com/google-research/google-research/tree/master/repnet) | Research implementations for counting repetitive actions; RepCount provides action-cycle boundaries. | Useful counting baselines. TransRAC code is Apache-2.0, while its [paper](https://arxiv.org/html/2204.01018v1#S6) limits RepCount data to academic research; assess pretrained-weight terms separately. RepCount-B original videos are not released. |
 
-Prioritize a matched-clip comparison of QuickPose and RepCounterSDK before
-expanding custom detectors. Retain the current counters as baselines. Inspect
-availability, permissions and terms before importing code, models or datasets;
-this survey adds no dependency and is not an accuracy benchmark.
+Prioritize PoseFit's broader exercise rules and a TransRAC benchmark for the
+catalog coverage question. PoseFit's learned component identifies the exercise;
+its separate hand-authored counters still need count-accuracy evaluation. The
+workout already identifies the selected exercise, so evaluating those counters
+does not depend on recovering the classifier weights. The
+TransRAC release samples 64 frames across a completed video and predicts a total
+from a density map, so live incremental counting and an on-device port require
+additional work. It does not provide hold timing. QuickPose and RepCounterSDK
+remain native comparison candidates, and the current counters remain baselines.
+Inspect availability, permissions and terms before importing code, models or
+datasets; this source survey adds no dependency and is not an accuracy benchmark.
 
 ## Reusable profiles
 

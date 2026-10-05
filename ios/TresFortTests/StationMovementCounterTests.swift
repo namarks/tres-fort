@@ -47,6 +47,53 @@ final class StationMovementCounterTests: XCTestCase {
         XCTAssertEqual(counter.count, 3)
     }
 
+    func testSimultaneousCurlsSurviveIsolatedWristConfidenceDipsAtFifteenFramesPerSecond() {
+        var counter = StationMovementCounter(exercise: .curl)
+        let interval = 1.0 / 15
+        var time = 0.0
+        feed(Array(repeating: (170.0, 170.0), count: 5), to: &counter, time: &time, interval: interval)
+        let videoCycle = [140.0, 125, 100, 60, 60, 60, 60, 60, 100, 125, 145, 170, 170, 170, 170, 170]
+        for rep in 1...3 {
+            for (frame, angle) in videoCycle.enumerated() {
+                let leftDip = frame == (rep == 1 ? 2 : 8)
+                let rightDip = frame == (rep == 3 ? 8 : 2)
+                let reliable = sample(left: angle, right: angle, time: time)
+                var joints = reliable.joints
+                for (joint, dip) in [(StationJoint.leftWrist, leftDip), (.rightWrist, rightDip)] where dip {
+                    let point = joints[joint]!
+                    joints[joint] = StationJointPoint(x: point.x, y: point.y, confidence: 0.3)
+                }
+                counter.process(StationPoseSample(timestamp: time, joints: joints, personCount: 1))
+                time += interval
+            }
+            XCTAssertEqual(counter.leftCount, rep)
+            XCTAssertEqual(counter.rightCount, rep)
+            XCTAssertEqual(counter.count, rep, "Simultaneous curls remain one compatibility cycle")
+        }
+    }
+
+    func testSustainedLossOnOneArmDoesNotExhaustTheOtherArmsConfidenceGrace() {
+        for lostLeft in [true, false] {
+            var counter = StationMovementCounter(exercise: .curl)
+            let interval = 1.0 / 15
+            var time = 0.0
+            feed(Array(repeating: (170.0, 170.0), count: 5), to: &counter, time: &time, interval: interval)
+            let videoCycle = [140.0, 125, 100, 60, 60, 60, 60, 60, 100, 125, 145, 170, 170, 170, 170, 170]
+            for (frame, angle) in videoCycle.enumerated() {
+                counter.process(sample(left: angle, right: angle, time: time,
+                                       leftConfidence: frame == 8 || (lostLeft && frame == 9) ? 0.3 : 0.9,
+                                       rightConfidence: frame == 8 || (!lostLeft && frame == 9) ? 0.3 : 0.9))
+                time += interval
+            }
+            XCTAssertEqual(counter.leftCount, lostLeft ? 0 : 1)
+            XCTAssertEqual(counter.rightCount, lostLeft ? 1 : 0)
+            // Both arms can begin a fresh reliable cycle after sustained loss.
+            feed(videoCycle.map { ($0, $0) }, to: &counter, time: &time, interval: interval)
+            XCTAssertEqual(counter.leftCount, lostLeft ? 1 : 2)
+            XCTAssertEqual(counter.rightCount, lostLeft ? 2 : 1)
+        }
+    }
+
     func testLossOfOneArmDoesNotDiscardTheOtherArmsCycle() {
         for lostLeft in [true, false] {
             var counter = StationMovementCounter(exercise: .curl)
@@ -174,11 +221,12 @@ final class StationMovementCounterTests: XCTestCase {
     }
 
     private func feed(_ angles: [(Double, Double)], to counter: inout StationMovementCounter,
-                      time: inout Double, leftConfidence: Float = 0.8, rightConfidence: Float = 0.95) {
+                      time: inout Double, leftConfidence: Float = 0.8, rightConfidence: Float = 0.95,
+                      interval: TimeInterval = 0.1) {
         for (left, right) in angles {
             counter.process(sample(left: left, right: right, time: time,
                                    leftConfidence: leftConfidence, rightConfidence: rightConfidence))
-            time += 0.1
+            time += interval
         }
     }
 }

@@ -6312,69 +6312,74 @@ final class SyncModel: ObservableObject {
         return scheduledTemplate(forDateString: ymd)
     }
 
-    /// The next upcoming workout, found by forward-scanning the SAME
-    /// projection used by the calendar (no second algorithm). Starts at
-    /// tomorrow, walks up to `maxDays` civil days, and returns the FIRST
-    /// date whose resolved state is a workout (a weekly-schedule projection
-    /// OR a real planned/in_progress session — `.skipped` does not count).
+    /// Upcoming days that carry something to do, found by forward-scanning
+    /// the SAME projection used by the calendar (no second algorithm). Starts
+    /// at tomorrow, walks up to `maxDays` civil days, and returns at most
+    /// `limit` dates whose resolved state is a workout (a weekly-schedule
+    /// projection OR a real planned/in_progress session — `.skipped` does not
+    /// count) or that carry a planned ride/run.
     ///
-    /// `day` is OPTIONAL: when the resolved template isn't in the local
-    /// cache we still return THAT date (with `day == nil`) rather than
-    /// skipping ahead to a wrong, later "next workout". The view renders
-    /// the date/label without exercise detail.
-    struct NextWorkout { let dateString: String; let day: Workout? }
+    /// `workout` is OPTIONAL: when the resolved template isn't in the local
+    /// cache we still return THAT date (with `hasWorkout` and `workout == nil`)
+    /// rather than skipping ahead. The view renders the date without
+    /// exercise detail. Planned endurance is read-only context; a hard
+    /// blackout suppresses it exactly as the calendar does.
+    struct UpcomingDay: Identifiable {
+        let dateString: String
+        let hasWorkout: Bool
+        let workout: Workout?
+        let rides: [ExternalEvent]
+        var id: String { dateString }
+    }
 
-    func nextWorkout(within maxDays: Int = 14) -> NextWorkout? {
+    func upcomingDays(within maxDays: Int = 14, limit: Int = 3) -> [UpcomingDay] {
         // Single-clock: capture `todayString` ONCE (it's a computed var,
         // fresh `Date()` per access) for BOTH the `start` anchor and every
-        // per-offset `projection(for:today:)` in the loop. Without this,
-        // `projection(for: ymd)` re-read the clock each iteration; while
-        // that was correctness-safe here (all `ymd` are strictly future,
-        // so `allowScheduleInference: true` stays valid even post-
-        // rollover), the prior comment overstated it — only the
-        // start/`ymd` GENERATION was TOCTOU-free, not the projection call.
-        // Now the whole scan runs off one clock.
+        // per-offset `projection(for:today:)` in the loop, so the whole scan
+        // runs off one clock.
         let today = todayString
-        guard maxDays > 0,
-              let start = CalendarProjection.date(from: today) else { return nil }
-        for offset in 1...maxDays {
+        guard maxDays > 0, limit > 0,
+              let start = CalendarProjection.date(from: today) else { return [] }
+        var out: [UpcomingDay] = []
+        for offset in 1...maxDays where out.count < limit {
             guard let d = CalendarProjection.calendar
                 .date(byAdding: .day, value: offset, to: start) else { continue }
             let ymd = CalendarProjection.dateString(d)
-            switch projection(for: ymd, today: today) {
+            let proj = projection(for: ymd, today: today)
+            var hasWorkout = false
+            var workout: Workout?
+            switch proj {
             case .projected(let tid):
-                // Real next workout — return THIS date even if the
-                // template isn't cached (day == nil), never skip past it.
-                return NextWorkout(dateString: ymd, day: workout(id: tid))
+                hasWorkout = true
+                workout = self.workout(id: tid)
             case .session(let status, let hardBlackoutTripType):
                 if status == "planned" || status == "in_progress" {
                     // Use the SHARED session→schedule resolver (the same one
-                    // Today/calendar use), not a bare workout_id read:
-                    // a real planned/in_progress session with a null
-                    // workout_id normally resolves via the weekly
-                    // schedule. A hard blackout is the one exception: its
-                    // schedule is suppressed, so only the session's explicit
-                    // template can be returned. Stays nil-graceful for a
-                    // genuinely unresolvable day.
-                    return NextWorkout(
-                        dateString: ymd,
-                        day: sessionDisplayTemplate(
-                            forDateString: ymd,
-                            allowScheduleInference: hardBlackoutTripType == nil))
+                    // Today/calendar use), not a bare workout_id read: a real
+                    // planned/in_progress session with a null workout_id
+                    // normally resolves via the weekly schedule. A hard
+                    // blackout is the one exception: its schedule is
+                    // suppressed, so only the session's explicit template can
+                    // be returned.
+                    hasWorkout = true
+                    workout = sessionDisplayTemplate(
+                        forDateString: ymd,
+                        allowScheduleInference: hardBlackoutTripType == nil)
                 }
                 // A COMPLETED future session (e.g. pre-logged via MCP) is
-                // intentionally NOT surfaced as the "next workout" — it's
-                // already done. The calendar still shows it as completed;
-                // "next workout" means the next thing left to DO. Skipped
-                // is likewise not upcoming.
-                continue
-            // M4 (multisport) — trip days are not the next strength workout
-            // (unavailable = blacked out; light = unstructured travel). Skip.
+                // already done, and skipped is not upcoming.
+            // Trip days are not a strength workout (unavailable = blacked
+            // out; light = unstructured travel).
             case .rest, .none, .unavailable, .light:
-                continue
+                break
+            }
+            let dayRides = proj.suppressesScheduleAndEndurance ? [] : rides(on: ymd)
+            if hasWorkout || !dayRides.isEmpty {
+                out.append(UpcomingDay(dateString: ymd, hasWorkout: hasWorkout,
+                                       workout: workout, rides: dayRides))
             }
         }
-        return nil
+        return out
     }
 
     private static let weekdayLabelFormatter: DateFormatter = {

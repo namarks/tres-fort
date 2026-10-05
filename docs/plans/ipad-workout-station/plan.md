@@ -32,7 +32,10 @@ may turn detections into durable workout actions.
     stable pose acquisition, observed-time accumulation, pause/reacquisition,
     terminal interruption and no automatic set completion. See the
     [catalog audit and hold contract](catalog-tracking.md).
-  - Reset movement history after missing joints or a pose gap;
+  - Reset movement history after missing joints or a pose gap. For curls only,
+    allow one low-confidence observation between reliable measurements no more
+    than 0.15 seconds apart; discard its angle and restart endpoint dwell.
+    Sustained loss still resets the cycle. Always mark coverage incomplete;
     reacquire a stable view and keep the whole trial visibly partial. Additional
     people, camera interruption, rotation, backgrounding and view exit require
     an explicit restart. Never infer completion from target reps or lost tracking.
@@ -43,11 +46,12 @@ may turn detections into durable workout actions.
   - Verify deterministic counting/loss scenarios, iPad navigation/layout and
     iPhone regressions; complete exact-head review and repository checks.
 - [ ] **P1 — Compare existing counters and validate the mounted iPad**
-  - Compare the native QuickPose SDK and MIT-licensed RepCounterSDK before
-    expanding custom detectors; the [source survey](catalog-tracking.md#existing-implementations-and-datasets)
-    also identifies broader classification and repetition datasets. Keep the
-    catalog mapping independent of the selected engine. No external SDK or
-    dataset has been imported by the catalog slice.
+  - Evaluate broader reuse through PoseFit's exercise rules and a TransRAC
+    counting benchmark before expanding custom detectors. The
+    [source survey](catalog-tracking.md#existing-implementations-and-datasets)
+    records model availability, mobile adaptation and FLAG3D's research-only
+    terms, plus native SDK comparators. Keep the mapping independent of the
+    selected engine; no external SDK or dataset is imported by this slice.
   - Treat the custom angle counter as a baseline, not the selected production
     algorithm. Compare it with Apple HumanBodyActionCounter in the first
     device build. Compare Apple Vision with MediaPipe Full on identical saved
@@ -92,16 +96,22 @@ may turn detections into durable workout actions.
 correction that makes Station use today's resolved workout and hold duration
 unless an active runner overrides it. The owner explicitly approved publication
 to `namarks/tres-fort` on 2026-10-04; Nick owns merge. The implementation is on
-`codex/catalog-camera-profiles`. PR #228 is now in `origin/main` at
-`e15d53b494a814fca69af37c4db1ba82111273e2`; this catalog slice starts there.
+`codex/catalog-camera-profiles`. This branch incorporates the merged Today
+calendar work (PR #233) and curl-confidence/replay-coverage fix (PR #234) through
+`77eaa16` on `origin/main`.
 The audit covers all 280 exercises: 193 rep candidates, 15 hold candidates and
 72 manual fallbacks. Fifteen entries explicitly select a current experimental
 mode; profile membership alone never enables a counter. Real accuracy remains
 unvalidated, and no physical build installation is part of this slice.
-**Next physical trial (@owner):** Use the installed development build to test the live count with separate front-facing and side-view
-clips and save each actual count. No additional repetitions are needed for the
-current diagnosis. Sustained performance, other movements, false positives and
-automatic workout actions remain unvalidated. No unattended recording is requested.
+The last recorded device installation is development build 48 from `e15d53b`;
+the catalog slice has not been installed. The old test-readiness follow-up
+`472221a` is separate. PR #228 merged before its full iOS gate passed.
+**Next physical trial (@owner):** No additional repetitions are needed to
+reproduce the simultaneous-curl failure. Actual arm totals in the latest clip
+are awaiting owner clarification. After the candidate is reviewed and installed,
+validate live behavior with owner-started tests. Sustained performance, other
+movements, false positives and automatic workout actions remain unvalidated.
+No unattended recording is requested.
 
 ## Approved comparison scope
 
@@ -149,6 +159,48 @@ automatic workout actions remain unvalidated. No unattended recording is request
   passed the schedule/override/rest-day regression, all ten hold/catalog unit
   tests and all five Station UI journeys. Evidence:
   `.artifacts/ios/tres-fort-ios.jH64VJ/Tests.xcresult`.
+- After incorporating PR #233 and PR #234, the combined branch passed 87
+  affected unit cases (one native-only Apple replay skip) and all five Station
+  iPad UI journeys. Evidence: `.artifacts/ios/tres-fort-ios.JJEKvK/Tests.xcresult`.
+- Exact-head remote review identified that saved comparisons lacked the live
+  partial-coverage warning. Reports now persist optional per-detector coverage
+  flags, latched on aggregate or either arm's tracking loss; newly produced
+  reports always emit explicit booleans. The comparison screen shows partial
+  tracking warnings, and absent legacy fields retain unknown coverage. Exported
+  `comparison.json` preserves these flags. This does not add restoration of old
+  comparisons when reopening a saved test. The coverage fix passed 22 affected
+  unit cases (one native-only Apple replay skip) and all four Station UI journeys,
+  with a fresh clean independent review. Current iOS source matches the tested
+  snapshot in `.artifacts/ios/tres-fort-ios.SayK5A/`. The unchanged counter suites
+  retain the prior verification below; a new exact-head remote review is required.
+- The bounded confidence correction passed 60 unit cases, with one native-only
+  Apple replay case skipped, plus all four Station iPad UI journeys. Plan
+  validation and independent local review pass. Evidence is retained in this
+  worktree's `.artifacts/ios/tres-fort-ios.n2lWUH/`; its temporary build and
+  simulator were removed. Remote exact-head review and CI remain required.
+- The next owner-shared build 48 curl clip contains 448 MediaPipe measurement
+  frames over 29.8 seconds, one person throughout and no capture gaps above
+  0.067 seconds. The exact installed counter replays to left 6 / right 7.
+  During the final three visually observed simultaneous cycles it adds left 0 /
+  right 1. Four isolated wrist-confidence dips below 0.6 reset in-flight cycles;
+  tracking recovers on each following frame. The correction retains phase only
+  across a single short confidence dip, without accepting its angle or bridging
+  endpoint dwell; confidence, angle and minimum-cycle thresholds stay unchanged.
+  Replaying all saved measurements with the candidate counts left 9 / right 9,
+  including left 3 / right 3 in the simultaneous segment. This is a counter
+  replay, not rerun inference or a new live-device result. An earlier left-arm
+  cycle still fails the unchanged 0.55-second minimum-duration guard; neither
+  the duration threshold nor the missing actual-rep labels were adjusted to fit.
+  This transfer has no per-arm actual labels or paired Apple replay. Raw video,
+  landmarks, source hashes and traces remain local and outside Git under the
+  original worktree's `.artifacts/station-trials/0A98CBF8-0DDD-482D-90EC-2744F3BE99E5/`.
+- On 2026-10-04 the owner authorized installing merged source `e15d53b` as local
+  development build 48. Its verified 371-file iOS snapshot passed signed native
+  compilation and app/widget signature/profile checks. The wired in-place
+  installation preserved the owner's account, workouts and saved tests, as
+  confirmed by the owner. Receipts remain in the original worktree's
+  `.artifacts/station-device/merged-*`. No TestFlight upload or workout write
+  occurred. The owner then supplied the curl recording analyzed above.
 - Saved replay now rejects the entire comparison if either detector sees more
   than one person, before counting that frame. It cannot resume with another
   person or publish a completed total. A rerun removes its prior derived
@@ -170,13 +222,13 @@ automatic workout actions remain unvalidated. No unattended recording is request
 
 - Curl correction verification: 121 unit cases passed, one native-only Apple
   replay case skipped, and all four Station UI journeys passed on iPad A16.
-  Every current Swift file matches the tested snapshot at
+  That tested Swift snapshot is retained at
   `.artifacts/ios/tres-fort-ios.GVIxvi/`. Signed native compilation and both
   signature/profile checks pass (`curl-independent-arms-build.log`,
   `curl-signed-verification.json` under `.artifacts/station-device/`). Independent
-  local reviews found no blockers. The curl build has not been installed;
-  physical readiness confirmation is pending. No owner camera was started or
-  stopped, and no test recording was changed. Exact-head PR gates remain required.
+  local reviews found no blockers. This pre-merge build was not installed;
+  the merged-source build 48 installation is recorded above. Broader physical
+  curl accuracy remains unvalidated.
 - First owner clip: 25.8 seconds, 388 paired frames, one person detected in every
   frame by both models. Original shared angle-rule counts were MediaPipe 9 and
   Apple Vision 1. The owner provisionally reported five front-facing plus five

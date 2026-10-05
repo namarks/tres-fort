@@ -50,7 +50,7 @@ final class AppStoreScreenshotTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Strength A"].exists)
         capture("03-workouts")
         tap(app.navigationBars["Workouts"].buttons["Done"], in: app)
-        tap(app.tabBars.buttons["Calendar"], in: app)
+        tap(app.buttons["today.calendar"], in: app)
         XCTAssertTrue(app.buttons["calendar.weeklySchedule"].waitForExistence(timeout: 5))
         capture("04-history")
     }

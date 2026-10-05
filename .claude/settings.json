@@ -9,7 +9,13 @@
       "Bash(git diff *)",
       "Bash(git log *)",
       "Bash(git show *)",
-      "Bash(git branch *)",
+      "Bash(git branch)",
+      "Bash(git branch --list *)",
+      "Bash(git branch --show-current)",
+      "Bash(git branch -a)",
+      "Bash(git branch -r)",
+      "Bash(git branch -vv)",
+      "Bash(git branch --contains *)",
       "Bash(git fetch *)",
       "Bash(git rev-parse *)",
       "Bash(git ls-files *)",
@@ -83,22 +89,25 @@
       "mcp__Tr_s_Fort__get_group_feed"
     ],
     "ask": [
-      "Bash(git push --force *)",
-      "Bash(git push -f *)",
-      "Bash(git push --force-with-lease *)",
-      "Bash(npm run deploy *)",
-      "Bash(npm run deploy:website *)",
-      "Bash(npm run release *)",
+      "Bash(git push *--force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * -f*)",
+      "Bash(git push *+*)",
+      "Bash(npm run deploy*)",
+      "Bash(npm run release*)",
       "Bash(npm run db:*:remote*)",
-      "Bash(npm run ios:testflight *)",
-      "Bash(npm run beta:feedback *)",
-      "Bash(npx wrangler deploy *)",
-      "Bash(wrangler deploy *)",
-      "Bash(npx wrangler secret *)",
-      "Bash(wrangler secret *)",
-      "Bash(npx wrangler d1 * --remote *)",
-      "Bash(wrangler d1 * --remote *)",
-      "mcp__github__merge_pull_request"
+      "Bash(npm run ios:testflight*)",
+      "Bash(npm run beta:feedback*)",
+      "Bash(npx wrangler deploy*)",
+      "Bash(wrangler deploy*)",
+      "Bash(npx wrangler secret*)",
+      "Bash(wrangler secret*)",
+      "Bash(npx wrangler d1 *--remote*)",
+      "Bash(wrangler d1 *--remote*)"
+    ],
+    "deny": [
+      "mcp__github__merge_pull_request",
+      "Bash(gh pr merge*)"
     ]
   }
 }

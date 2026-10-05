@@ -77,10 +77,25 @@ Today a member can hold only one strength session per date
 (`ux_session_user_date`; `workouts-and-multi-session#P1` lifts that). Until
 then, a dual workout uses each member's session for that date. A planned but
 unstarted session is replaced, as the existing "train a different day"
-choice does. If either member has already started or finished a strength
-session that date, the iPad says so before the partner is allowed in, and the
-dual workout cannot start. Once multi-session days ship, the dual workout
-becomes an additional session instead.
+choice does. If either member has already started a strength session that
+date (it has a logged set) or finished one, the iPad says so before the
+partner is allowed in, and the dual workout cannot start. Once multi-session
+days ship, the dual workout becomes an additional session instead.
+
+### Starting together
+
+Each phone writes its own date assignment, so "Start together" cannot be one
+atomic write across two accounts. It is two-phase instead. On Start, each
+phone saves its copy if needed and assigns the workout to that date through the
+existing `set_planned_session` path with its observed `expected_attempt`, then
+reports success or failure to the iPad. Dual mode, and the first armed set,
+begin only after both phones have acknowledged. An assignment with no logged
+set is not a started session, so a failure on one side leaves nothing that
+blocks a retry: the iPad shows which phone failed and offers **Try again** or
+**Cancel**. Trying again repeats only the failed side; an identical assignment
+is already idempotent. Cancel ends the dual workout before any set; each
+member keeps an ordinary planned session for that date that they can run alone
+or change as usual.
 
 ### Same structure, personal loads
 
@@ -150,6 +165,19 @@ plan writer (version, audit, snapshot). Its slot payload is the full writable
 slot above, not the freestyle save shape, which has no groups, warm-ups, rep
 ranges, RPE, cues or progression.
 
+The create is idempotent. As in the freestyle save, the phone generates the
+new `workout_id` (and the fresh slot and group IDs) once, keeps them with the
+pending start, and sends the same request on every retry. If that workout
+already exists with the same content, the Worker returns it and the current
+plan version as a success instead of creating a second copy; a different
+payload under the same ID is rejected. A lost response therefore never
+duplicates the library entry or leaves the phone unable to open its copy.
+
+A partner who has no active plan yet (an account that skipped setup) still
+gets a copy: the same create makes their plan first, in the same batch, and
+returns it. Nothing about the dual workout requires the partner to have set up
+training before.
+
 Alternative: a temporary session that is never saved as a workout. It keeps
 the library clean, but needs a second runner path for a session without a
 workout.
@@ -199,4 +227,5 @@ prototype (PR #236) handles one person at a time.
 - Link protocol: a join-secret-keyed handshake beside the account-key one, a
   workout handoff message, the shared step, and lane identity on arm and count
   messages.
-- Worker: one atomic create of a workout with full slots (P0). No new tables.
+- Worker: one idempotent, atomic create of a workout with full slots, which
+  also creates the member's plan when they have none (P0). No new tables.

@@ -41,10 +41,17 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     the host's target, marked "Check".
   - Save the partner's copy to their library in one atomic create of a workout
     with full slots through the shared plan writer, with fresh slot and group
-    IDs that keep each superset's members, then open their runner.
+    IDs that keep each superset's members, then open their runner. The phone
+    picks the workout ID once and retries the same request, which returns the
+    existing copy instead of duplicating it; a planless partner's plan is
+    created in the same write.
   - Until multi-session days ship, refuse to start when either member already
-    has a started or finished strength session that date, and say so on the
-    iPad; an unstarted planned session is replaced as today.
+    has a started (any logged set) or finished strength session that date, and
+    say so on the iPad; an unstarted planned session is replaced as today.
+  - Start in two phases: each phone assigns the workout to the date and
+    acknowledges to the iPad, and dual mode begins only after both succeed. A
+    failed side can retry; Cancel leaves each member an ordinary planned
+    session.
   - The iPad holds the shared step: both phones arm the same exercise and set,
     rest starts once both have logged it, and the next set starts for both.
     The step is derived from both lanes' acknowledged sets, so an Undo on

@@ -322,20 +322,29 @@ final class StationLinkTests: XCTestCase {
         XCTAssertNotNil(controller.armToResend)
     }
 
-    func testUndoRecountsASpentArmOnTheSameSet() throws {
+    func testUndoWaitsForTheDeletionBeforeArmingTheSetAgain() throws {
         let controller = StationLinkController()
-        controller.request(target())
-        let arm = try XCTUnwrap(controller.arm)
-        let event = completion(arm, reps: 8)
-        controller.receive(.completion(event))
-        controller.finishProposal(event.eventID)
-        controller.recount()
-        let fresh = try XCTUnwrap(controller.arm)
-        XCTAssertNotEqual(fresh.armID, arm.armID, "Undo asks the iPad to count the set again")
-        XCTAssertEqual(fresh.setNumber, arm.setNumber)
-        XCTAssertEqual(controller.armToResend?.armID, fresh.armID)
-        controller.recount()
-        XCTAssertEqual(controller.arm?.armID, fresh.armID, "A live arm is left alone")
+        let logged = StationLinkLoggedSet(setID: "set-1", slotID: "slot-1", setNumber: 1, reps: 8)
+        controller.recordLogged(logged)
+        controller.undoQueued(logged)
+        XCTAssertNil(controller.lastLogged, "Undo is spent once the deletion is queued")
+        XCTAssertEqual(controller.pendingUndo, logged)
+        XCTAssertTrue(StationLinkPolicy.awaitsUndo(controller.pendingUndo, slotID: "slot-1", deletionPending: true),
+                      "Progress still counts the undone set, so its slot waits")
+        XCTAssertFalse(StationLinkPolicy.awaitsUndo(controller.pendingUndo, slotID: "slot-1", deletionPending: false),
+                       "Once the deletion is saved (or rejected) the slot arms again")
+        XCTAssertFalse(StationLinkPolicy.awaitsUndo(controller.pendingUndo, slotID: "slot-2", deletionPending: true),
+                       "Other slots are unaffected")
+        controller.stop()
+        XCTAssertNil(controller.pendingUndo)
+    }
+
+    func testStationOptInBelongsToTheAccountThatTurnedItOn() {
+        XCTAssertTrue(StationLink.isEnabled(storedAccount: "user-a", accountID: "user-a"))
+        XCTAssertFalse(StationLink.isEnabled(storedAccount: "user-a", accountID: "user-b"),
+                       "Another member on the same phone starts with the link off")
+        XCTAssertFalse(StationLink.isEnabled(storedAccount: "user-a", accountID: nil))
+        XCTAssertFalse(StationLink.isEnabled(storedAccount: "", accountID: ""))
     }
 
     func testUnsavedCountWaitsForATapInsteadOfVanishing() throws {

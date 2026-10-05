@@ -11,7 +11,7 @@ struct StationLinkRunnerPanel: View {
     var body: some View {
         // Rest keeps its deadline after it expires, so re-evaluate each second.
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            let target = Self.target(sync: sync, ex: ex, now: context.date)
+            let target = Self.target(sync: sync, ex: ex, undo: link.pendingUndo, now: context.date)
             content(target: target)
                 .task(id: target) { link.request(target) }
         }
@@ -24,9 +24,11 @@ struct StationLinkRunnerPanel: View {
         .accessibilityIdentifier("runner.station")
     }
 
-    static func target(sync: SyncModel, ex: TemplateExercise, now: Date) -> StationLinkTarget? {
+    static func target(sync: SyncModel, ex: TemplateExercise, undo: StationLinkLoggedSet?,
+                       now: Date) -> StationLinkTarget? {
         // A blocked slot disarms; unblocking mints a fresh arm for the set.
-        guard sync.running, !sync.finished, !ex.isTimed, !sync.timedActive, !sync.isSetEntryBlocked(ex),
+        guard !awaitsUndo(sync: sync, ex: ex, undo: undo),
+              sync.running, !sync.finished, !ex.isTimed, !sync.timedActive, !sync.isSetEntryBlocked(ex),
               sync.isFreestyle || sync.runnerSetsDone(ex) < ex.target_sets,
               (sync.restEndDate.map { $0 <= now } ?? true),
               let movement = StationExercise.match(exerciseName: ex.exercise_name,
@@ -35,6 +37,11 @@ struct StationLinkRunnerPanel: View {
         return StationLinkTarget(slotID: ex.id, setNumber: sync.currentPhysicalSetNumber,
                                  exercise: movement, exerciseName: ex.exercise_name,
                                  targetReps: ex.target_reps)
+    }
+
+    static func awaitsUndo(sync: SyncModel, ex: TemplateExercise, undo: StationLinkLoggedSet?) -> Bool {
+        StationLinkPolicy.awaitsUndo(undo, slotID: ex.id, deletionPending: undo.flatMap {
+            sync.correction(for: $0.setID) }.map { $0.deliveryState != .failed } ?? false)
     }
 
     @ViewBuilder
@@ -58,6 +65,9 @@ struct StationLinkRunnerPanel: View {
             return link.connection == .off ? "iPad Station off" : "Looking for your iPad Station"
         }
         guard target != nil else {
+            if Self.awaitsUndo(sync: sync, ex: ex, undo: link.pendingUndo) {
+                return "iPad connected · counts again once Undo is saved"
+            }
             if sync.restEndDate.map({ $0 > Date() }) == true { return "iPad connected · counts after rest" }
             return "iPad connected · log this set yourself"
         }
@@ -157,7 +167,7 @@ struct StationLinkRunnerPanel: View {
 
 /// "iPad logged 8 reps · Undo", in the runner and in final review. Undo
 /// removes the set through the ordinary correction path, ends rest and returns
-/// to that slot so the iPad counts the set again.
+/// to that slot so the iPad counts the set again once the deletion is saved.
 struct StationLinkUndoRow: View {
     @ObservedObject var sync: SyncModel
     @ObservedObject var link: StationLinkController
@@ -189,14 +199,13 @@ struct StationLinkUndoRow: View {
         }
         // Undo stays offered until the deletion is safely queued.
         guard queued else { return }
-        link.clearLogged()
+        link.undoQueued(logged)
         if sync.restEndDate != nil { sync.skipRest() }
         // Jumping also reopens final review when the undone set was the last.
         if sync.finished || sync.currentExercise?.id != logged.slotID,
            let index = sync.exercises.firstIndex(where: { $0.id == logged.slotID }) {
             sync.jump(to: index)
         }
-        link.recount()
         await sync.drainWorkoutWriteOutboxes()
     }
 }

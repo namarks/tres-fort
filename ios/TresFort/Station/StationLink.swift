@@ -14,7 +14,14 @@ enum StationLink {
     /// Seconds the count must hold steady, outside a rep, before the iPad
     /// reports the set finished. Target reps never end a set on their own.
     static let settleSeconds: TimeInterval = 4
-    static let enabledDefaultsKey = "stationLinkEnabled"
+    /// The account that turned the link on. The opt-in belongs to that member
+    /// only, so a shared phone never browses for another member's iPad.
+    static let enabledAccountDefaultsKey = "stationLinkEnabledAccount"
+
+    static func isEnabled(storedAccount: String, accountID: String?) -> Bool {
+        guard let accountID, !accountID.isEmpty else { return false }
+        return storedAccount == accountID
+    }
 
     /// Discovery filters peers by a tag derived from the account's link key.
     /// The tag is public, so it is only a filter: a peer must still prove it
@@ -226,6 +233,14 @@ struct StationLinkLoggedSet: Equatable {
 }
 
 enum StationLinkPolicy {
+    /// While an undone set's deletion is still queued or sending, its slot
+    /// is not armed: progress still counts the set, so the next arm would be
+    /// for the set after it. A rejected deletion leaves the set logged.
+    static func awaitsUndo(_ undo: StationLinkLoggedSet?, slotID: String, deletionPending: Bool) -> Bool {
+        guard let undo, undo.slotID == slotID else { return false }
+        return deletionPending
+    }
+
     /// Accept a completion only for the currently armed set, only once, and
     /// only with a usable rep count.
     static func proposal(for completion: StationLinkCompletion, arm: StationLinkArm?,

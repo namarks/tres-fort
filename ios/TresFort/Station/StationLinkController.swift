@@ -13,6 +13,10 @@ final class StationLinkController: ObservableObject {
     @Published private(set) var stationState: StationLinkStationState?
     @Published private(set) var proposal: StationLinkProposal?
     @Published private(set) var lastLogged: StationLinkLoggedSet?
+    /// An undone iPad set whose deletion is still on its way. Runner progress
+    /// counts the set until then, so the iPad waits instead of counting the
+    /// set after it; the runner arms the undone set afresh once it is gone.
+    @Published private(set) var pendingUndo: StationLinkLoggedSet?
     /// No link key yet: the device must reach the server once to set up.
     @Published private(set) var needsKey = false
 
@@ -76,6 +80,7 @@ final class StationLinkController: ObservableObject {
         needsKey = false
         proposal = nil
         lastLogged = nil
+        pendingUndo = nil
         seenEvents.removeAll()
     }
 
@@ -116,11 +121,10 @@ final class StationLinkController: ObservableObject {
         rearm()
     }
 
-    /// An iPad-logged set was undone: a spent arm for that set is replaced so
-    /// the iPad counts it again (a moved runner re-arms on its own).
-    func recount() {
-        guard proposal == nil, let arm, arm.armID == completedArmID else { return }
-        rearm()
+    /// An iPad-logged set was undone and its deletion is queued.
+    func undoQueued(_ logged: StationLinkLoggedSet) {
+        if lastLogged == logged { lastLogged = nil }
+        pendingUndo = logged
     }
 
     private func rearm() {

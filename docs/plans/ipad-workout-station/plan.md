@@ -60,7 +60,7 @@ may turn detections into durable workout actions.
   - Add confirmed set completion, rest and progression with easy correction;
     choose a hands-free confirmation mechanism based on the physical trial.
   - Repository slice (owner-requested 2026-10-04): the iPhone runner is the
-    only controller. An opt-in, encrypted local MultipeerConnectivity link pairs
+    only controller. An opt-in (per signed-in member), encrypted local MultipeerConnectivity link pairs
     it with an iPad Station of the same account. Each device fetches a
     per-account link key once (`GET /api/me/station-link-key`, derived, not
     stored, and cached in the device Keychain); a mutual challenge-response
@@ -79,7 +79,8 @@ may turn detections into durable workout actions.
     iPhone logs that count at once through the ordinary guarded LOG SET path
     for that exact slot and set, which starts rest and advances the runner.
     Undo stays available until the next count; it deletes the set through the
-    correction path, ends rest and returns to the slot. Partial counts, other
+    correction path, ends rest and returns to the slot; the iPad counts that
+    set again once the deletion is saved. Partial counts, other
     sets, duplicate events and unsupported movements never auto-log; a partial
     count offers Log, Edit (into the rep control) or Not right (re-count), and
     so does a count whose set could not be saved.

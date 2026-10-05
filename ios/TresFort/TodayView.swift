@@ -221,10 +221,11 @@ struct TodayView: View {
     /// iPhone end of the iPad Station link; it browses only while a workout
     /// runs with the setting on, so the local network prompt is opt-in.
     @StateObject private var stationLink = StationLinkController()
-    @AppStorage(StationLink.enabledDefaultsKey) private var stationLinkEnabled = false
+    @AppStorage(StationLink.enabledAccountDefaultsKey) private var stationLinkEnabledAccount = ""
     private var stationLinkAccount: String? {
         // Final review keeps the link so the last iPad-logged set can be undone.
-        guard stationLinkEnabled, sync.running,
+        guard StationLink.isEnabled(storedAccount: stationLinkEnabledAccount, accountID: auth.userID),
+              sync.running,
               UIDevice.current.userInterfaceIdiom == .phone else { return nil }
         return auth.userID
     }
@@ -829,8 +830,12 @@ private struct RunnerView: View {
     @State private var valueDraft: SetValueDraft?
     @State private var weightPrescription: RunnerPrescription?
     @AppStorage(RestCue.defaultsKey) private var timerCuesEnabled = true
-    @AppStorage(StationLink.enabledDefaultsKey) private var stationLinkEnabled = false
+    @AppStorage(StationLink.enabledAccountDefaultsKey) private var stationLinkEnabledAccount = ""
     private var showsStationLink: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+    private var stationLinkEnabled: Binding<Bool> {
+        Binding(get: { StationLink.isEnabled(storedAccount: stationLinkEnabledAccount, accountID: auth.userID) },
+                set: { stationLinkEnabledAccount = $0 ? (auth.userID ?? "") : "" })
+    }
 
     @State private var showingOutline = false
     @State private var loadRevealedFor: Set<String> = []
@@ -967,7 +972,7 @@ private struct RunnerView: View {
                 // a Color-backed container, which SwiftUI exposes to AX audits.
                 Spacer(minLength: 0).frame(height: 44)
             }
-            if showsStationLink && stationLinkEnabled {
+            if showsStationLink && stationLinkEnabled.wrappedValue {
                 StationLinkRunnerPanel(sync: sync, link: stationLink, ex: ex)
             }
             RunnerSetAction(sync: sync, ex: ex)
@@ -1157,7 +1162,7 @@ private struct RunnerView: View {
                 .tint(Theme.accent).frame(minHeight: 44)
                 .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
             if showsStationLink {
-                Toggle("Count reps with iPad Station", isOn: $stationLinkEnabled)
+                Toggle("Count reps with iPad Station", isOn: stationLinkEnabled)
                     .tint(Theme.accent).frame(minHeight: 44)
                     .accessibilityIdentifier("runner.stationLink")
             }

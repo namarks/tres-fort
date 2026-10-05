@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-10-03 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-10-05 · Theme: release
 
 ## Goal
 
@@ -143,9 +143,16 @@ handling. All source migrations were already applied; none was run for this
 release. Public checks pass; authenticated live workout and physical-device
 acceptance remain unperformed.
 
-**Current Apple readback (2026-10-03):** Version 1.0 selects build 40,
-**REJECTED**, with **MANUAL** release. Build 47 is VALID / IN_BETA_TESTING and
-assigned to internal Testers; external Alpha Testers do not have it. The App
+**Build 48 release (2026-10-05):** The owner requested the latest iPhone and
+iPad apps in TestFlight. [The release receipt](release-48.md) records main
+`7d2714c2823fec50314cdb05ed5095c914e260e7`, the signed upload and Apple's
+VALID / IN_BETA_TESTING readback with internal Testers assignment. No Worker
+deployment or migration was made; the iPhone/iPad link needs a separately
+authorized Worker deployment for its link-key route.
+
+**Current Apple readback (2026-10-05):** Version 1.0 selects build 40,
+**REJECTED**, with **MANUAL** release. Build 48 is VALID / IN_BETA_TESTING and
+assigned to internal Testers; external groups were not changed. The App
 Review candidate was not replaced or resubmitted; no public release occurred.
 
 **Agent follow-through:** Finish the runnable P1/P2 audit against canonical source

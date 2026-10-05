@@ -144,7 +144,13 @@ its copy if needed, then makes one write that assigns the workout to that date,
 starts that session (planned to in progress) and records the session's
 starting prescriptions (`runner_targets`) from the workout it reviewed. That
 write is checked against its observed `expected_attempt` and its reviewed plan
-ID and version, and the phone reports success or failure to the iPad. Today the
+ID and version, and it is refused if the session holds any live (not deleted)
+set, checked in the same write, because a set logged from another device after
+the iPad's gate check would otherwise be swept into the dual workout. A Start
+that changes the session advances its `attempt`, as any changed date
+assignment does today, so a late log from that other device is fenced out; an
+identical retry does not advance it again and stays idempotent. The phone
+reports success or failure to the iPad. Today the
 first logged set records `runner_targets` only while the session is still
 planned, so the Start write must record them itself; summaries and recovery
 then read the reviewed prescriptions even if a coach edits the plan before the
@@ -183,7 +189,16 @@ can resume or discard it.
 
 Both people run the same exercises in the same order with the same sets and
 rest. During a dual workout, swap, add, reorder and remove are unavailable;
-skipping a set or exercise skips it for both. Each person keeps their own
+skipping a set or exercise skips it for both. A skip is shared state the iPad
+owns, like the released step: whichever phone skips, the iPad records the
+skipped steps and sends them to both lanes, and each phone records them in its
+runner checkpoint and acknowledges. When the iPad computes the phase, a step it
+has recorded as skipped counts as finished for both lanes whatever their
+snapshots say, and on every reconnect it resends each shared skip that lane's
+snapshot does not yet show, so a phone that missed the message catches up
+instead of rewinding the pair. A skip a dropped phone made offline arrives in
+its snapshot and becomes a shared skip then; a lane that already logged that
+set keeps its set. Each person keeps their own
 weight, unit and reps, and either can correct or undo their own set. Skipping
 an exercise for one person only, or splitting into different exercises, is out
 of scope until real use shows it is needed.

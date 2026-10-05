@@ -51,7 +51,8 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     logged set, is replaced.
   - Start in two phases: each phone makes one write that assigns the workout
     to the date, starts that session and records its reviewed starting
-    prescriptions, then acknowledges to the iPad; dual
+    prescriptions, refusing a session that already holds a live set and
+    advancing its attempt, then acknowledges to the iPad; dual
     mode begins only after both succeed. Starting the session pins the workout,
     since plan writers already refuse to archive, delete or restore a workout
     that is in progress. Each Start write also checks the plan ID and version
@@ -71,7 +72,8 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     acknowledgement. A step is released only after both acknowledgements and
     its rest, so an Undo on either phone rewinds to that set and cancels rest
     while the other lane's set stays logged. Swap, add, reorder and remove are off during
-    a dual workout; a skip applies to both. Each person logs, corrects and
+    a dual workout; a skip applies to both, recorded by the iPad and replayed
+    to any lane that missed it. Each person logs, corrects and
     undoes their own sets by hand.
   - Show two lanes on the iPad (name, weight, reps, logged state). Either person
     can stop; their lane closes for good and leaves the step quorum, so the

@@ -152,6 +152,141 @@ final class StationCounterTests: XCTestCase {
         }
     }
 
+    func testOnlyCurlsRetainACycleAcrossOneConfidenceDipAtFifteenFramesPerSecond() {
+        for exercise in StationExercise.allCases {
+            var counter = StationRepCounter(exercise: exercise)
+            var time = 0.0
+            feed([170, 170, 170, 100, 50, 50, 50], to: &counter, time: &time)
+            let lastReliable = time - 0.1
+            counter.process(sample(angle: 170, time: lastReliable + 1.0 / 15, confidence: 0.3))
+            XCTAssertEqual(counter.status, .trackingLost)
+            time = lastReliable + 2.0 / 15
+            feed([100, 130, 170, 170, 170], to: &counter, time: &time)
+            XCTAssertEqual(counter.count, exercise == .curl ? 1 : 0, exercise.title)
+        }
+    }
+
+    func testConfidenceDipCannotSupplyMissingFlexedEndpointDwell() {
+        var counter = StationRepCounter(exercise: .curl)
+        var time = 0.0
+        let interval = 1.0 / 15
+        feed([170, 170, 170, 170, 100, 50, 50], to: &counter, time: &time, interval: interval)
+        counter.process(sample(angle: 50, time: time, confidence: 0.3))
+        time += interval
+        // Neither reliable flexed segment lasts the required 180 ms. Counting
+        // elapsed time across the skipped observation would falsely confirm it.
+        feed([50, 50, 100, 130, 170, 170, 170, 170], to: &counter, time: &time, interval: interval)
+        XCTAssertEqual(counter.count, 0)
+        feed(cycle, to: &counter, time: &time)
+        XCTAssertEqual(counter.count, 1)
+    }
+
+    func testConfidenceDipRestartsExtendedEndpointDwell() {
+        var counter = StationRepCounter(exercise: .curl)
+        var time = 0.0
+        feed([170, 170, 170, 100, 50, 50, 50, 100, 130], to: &counter, time: &time)
+        let interval = 1.0 / 15
+        feed([170, 170], to: &counter, time: &time, interval: interval)
+        counter.process(sample(angle: 170, time: time, confidence: 0.3))
+        time += interval
+        feed([170, 170, 170], to: &counter, time: &time, interval: interval)
+        XCTAssertEqual(counter.count, 0, "The reliable return dwell is only 133 ms")
+        feed([170], to: &counter, time: &time, interval: interval)
+        XCTAssertEqual(counter.count, 1)
+    }
+
+    func testConfidenceDipCannotMakeATooFastArrivalValidByDelayingConfirmation() {
+        var counter = StationRepCounter(exercise: .curl)
+        var time = 0.0
+        feed([170, 170, 170, 100, 50, 50, 50], to: &counter, time: &time)
+        // The cycle began at 0.3 s and arrived at 0.8 s: below 550 ms.
+        counter.process(sample(angle: 170, time: 0.8))
+        counter.process(sample(angle: 170, time: 0.8 + 1.0 / 15, confidence: 0.3))
+        time = 0.8 + 2.0 / 15
+        feed(Array(repeating: 170, count: 10), to: &counter, time: &time)
+        XCTAssertEqual(counter.count, 0)
+        feed(cycle, to: &counter, time: &time)
+        XCTAssertEqual(counter.count, 1)
+    }
+
+    func testConsecutiveConfidenceDipsInvalidateAndRequireFreshExtension() {
+        for interval in [1.0 / 60, 1.0 / 15] {
+            var counter = StationRepCounter(exercise: .curl)
+            var time = 0.0
+            feed([170, 170, 170, 100, 50, 50, 50], to: &counter, time: &time)
+            time -= 0.1
+            for _ in 0..<2 {
+                time += interval
+                counter.process(sample(angle: 50, time: time, confidence: 0.3))
+            }
+            time += interval
+            feed([50, 100, 130, 170, 170, 170], to: &counter, time: &time)
+            XCTAssertEqual(counter.count, 0)
+            feed(cycle, to: &counter, time: &time)
+            XCTAssertEqual(counter.count, 1)
+        }
+    }
+
+    func testInvalidLimbCannotUseConfidenceGraceEvenAtFifteenFramesPerSecond() {
+        for invalidation in 0..<8 {
+            var counter = StationRepCounter(exercise: .curl)
+            var time = 0.0
+            feed([170, 170, 170, 100, 50, 50, 50], to: &counter, time: &time)
+            let lastReliable = time - 0.1
+            var joints = sample(angle: 50, time: time, confidence: 0.3).joints
+            let wrist = joints[.leftWrist]!
+            switch invalidation {
+            case 0: joints.removeValue(forKey: .leftWrist)
+            case 1: joints[.leftWrist] = StationJointPoint(x: .nan, y: wrist.y, confidence: 0.3)
+            case 2: joints[.leftWrist] = StationJointPoint(x: wrist.x, y: .infinity, confidence: 0.3)
+            case 3: joints[.leftWrist] = joints[.leftElbow]
+            case 4: joints[.leftShoulder] = joints[.leftElbow]
+            case 5: joints[.leftWrist] = StationJointPoint(x: wrist.x, y: wrist.y, confidence: .nan)
+            case 6: joints[.leftWrist] = StationJointPoint(x: wrist.x, y: wrist.y, confidence: -0.1)
+            default: joints[.leftWrist] = StationJointPoint(x: wrist.x, y: wrist.y, confidence: 1.1)
+            }
+            counter.process(StationPoseSample(timestamp: lastReliable + 1.0 / 15,
+                                              joints: joints, personCount: 1))
+            time = lastReliable + 2.0 / 15
+            feed([100, 130, 170, 170, 170], to: &counter, time: &time)
+            XCTAssertEqual(counter.count, 0, "Invalid limb case \(invalidation)")
+            feed(cycle, to: &counter, time: &time)
+            XCTAssertEqual(counter.count, 1)
+        }
+    }
+
+    func testInvalidObservationDuringConfidenceGraceStillInvalidatesTheCycle() {
+        for invalidation in 0..<4 {
+            var counter = StationRepCounter(exercise: .curl)
+            var time = 0.0
+            feed([170, 170, 170, 100, 50, 50, 50], to: &counter, time: &time)
+            let lastReliable = time - 0.1
+            counter.process(sample(angle: 50, time: lastReliable + 1.0 / 15, confidence: 0.3))
+            let invalidTime = invalidation == 2 ? Double.nan
+                : lastReliable + (invalidation == 3 ? 1 : 2.0 / 15)
+            counter.process(sample(angle: 50, time: invalidTime,
+                                   personCount: invalidation < 2 ? invalidation * 2 : 1))
+            time = lastReliable + (invalidation == 3 ? 1.1 : 3.0 / 15)
+            feed([100, 130, 170, 170, 170], to: &counter, time: &time)
+            XCTAssertEqual(counter.count, 0)
+            feed(cycle, to: &counter, time: &time)
+            XCTAssertEqual(counter.count, 1)
+        }
+    }
+
+    func testLowConfidenceCannotAcquireAnArmOrRestartItsGrace() {
+        var counter = StationRepCounter(exercise: .curl)
+        for frame in 0..<30 {
+            counter.process(sample(angle: 170, time: Double(frame) / 15, confidence: 0.3))
+        }
+        XCTAssertEqual(counter.status, .trackingLost)
+        var time = 2.0
+        feed([100, 50, 50, 50, 100, 170, 170, 170], to: &counter, time: &time)
+        XCTAssertEqual(counter.count, 0)
+        feed(cycle, to: &counter, time: &time)
+        XCTAssertEqual(counter.count, 1)
+    }
+
     func testSideCannotChangeDuringARep() {
         var counter = StationRepCounter(exercise: .curl)
         var time = 0.0

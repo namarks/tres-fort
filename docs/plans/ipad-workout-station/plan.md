@@ -65,8 +65,9 @@ may turn detections into durable workout actions.
     tag is public (owner chose this over code matching). Every later message is
     encrypted and authenticated with a key bound to that connection's nonces,
     with a direction and counter, so a relay cannot read, forge, replay or
-    reflect one. One-side movements (per-side reps) stay manual, and a rep on
-    either curl arm keeps the set open. The iPhone arms
+    reflect one. One-side movements (per-side reps) stay manual, a rep on
+    either curl arm keeps the set open, and arms that counted differently wait
+    for a tap. The iPhone arms
     the current countable set once rest is over, and only while the workout is
     open rather than minimized;
     every distinct slot/set gets a fresh arm ID. The iPad counts that set and

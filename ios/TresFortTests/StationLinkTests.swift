@@ -112,6 +112,8 @@ final class StationLinkTests: XCTestCase {
         XCTAssertNil(StationExercise.match(exerciseName: "Skater Squat"))
         XCTAssertNil(StationExercise.match(exerciseName: "Cossack Squat"))
         XCTAssertNil(StationExercise.match(exerciseName: "Jefferson Curl"), "Spinal flexion, not an elbow curl")
+        XCTAssertNil(StationExercise.match(exerciseName: "Concentration Curl"), "One arm, though catalogued bilateral")
+        XCTAssertNil(StationExercise.match(exerciseName: "Shrimp Squat"))
         XCTAssertNil(StationExercise.match(exerciseName: "Dumbbell Curl", unilateral: true),
                      "Per-side reps stay manual whatever the name")
         XCTAssertNil(StationExercise.match(exerciseName: "Squat hold", modality: "timed"))
@@ -176,6 +178,15 @@ final class StationLinkTests: XCTestCase {
         XCTAssertEqual(full?.logsAutomatically, true)
         let partial = StationLinkPolicy.proposal(for: completion(arm, partial: true), arm: arm, seenEvents: [])
         XCTAssertEqual(partial?.logsAutomatically, false, "A partial count waits for a tap")
+        let uneven = StationLinkPolicy.proposal(
+            for: StationLinkCompletion(armID: arm.armID, eventID: UUID(), reps: 8, leftCount: 8, rightCount: 4,
+                                       partial: false), arm: arm, seenEvents: [])
+        XCTAssertEqual(uneven?.logsAutomatically, false, "Arms that counted differently wait for a tap")
+        XCTAssertEqual(uneven?.sidesDiffer, true)
+        let even = StationLinkPolicy.proposal(
+            for: StationLinkCompletion(armID: arm.armID, eventID: UUID(), reps: 8, leftCount: 8, rightCount: 8,
+                                       partial: false), arm: arm, seenEvents: [])
+        XCTAssertEqual(even?.logsAutomatically, true)
     }
 
     func testProposalLogsOnlyIntoTheSlotAndSetItWasCountedFor() throws {

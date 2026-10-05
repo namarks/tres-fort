@@ -80,6 +80,9 @@ struct StationLinkRunnerPanel: View {
             if proposal.partial {
                 Text("Tracking was interrupted, so check the count before logging.")
                     .font(.caption).foregroundStyle(.orange)
+            } else if proposal.sidesDiffer {
+                Text("Your arms counted differently, so check the count before logging.")
+                    .font(.caption).foregroundStyle(.orange)
             } else {
                 Text("The set wasn't saved. Try again or edit it.")
                     .font(.caption).foregroundStyle(.orange)

@@ -115,7 +115,8 @@ extension StationExercise: Codable {
         if unilateral || modality == "timed" || modality == "cardio" { return nil }
         let excluded = ["split", "jump", "pistol", "hack", "leg press", "leg curl", "hamstring",
                         "nordic", "wrist", "single", "one-arm", "one arm", "one-leg", "one leg",
-                        "skater", "cossack", "lateral", "alternating", "jefferson"]
+                        "skater", "cossack", "lateral", "alternating", "jefferson", "concentration",
+                        "shrimp", "sissy"]
         if excluded.contains(where: { name.contains($0) }) { return nil }
         if name.contains("bench press") { return .benchPress }
         if name.contains("squat") { return .squat }
@@ -195,7 +196,8 @@ struct StationLinkTarget: Equatable {
 }
 
 /// A finished count on the iPhone. A complete count logs at once (the owner
-/// chose instant logging with undo); a partial count never auto-logs.
+/// chose instant logging with undo); a partial count, or arms that counted
+/// differently, never auto-logs.
 struct StationLinkProposal: Equatable, Identifiable {
     let eventID: UUID
     let slotID: String
@@ -207,6 +209,11 @@ struct StationLinkProposal: Equatable, Identifiable {
     let partial: Bool
     let logsAutomatically: Bool
     var id: UUID { eventID }
+    /// Both arms were counted and their totals differ.
+    var sidesDiffer: Bool {
+        guard let leftCount, let rightCount else { return false }
+        return leftCount != rightCount
+    }
 }
 
 /// The last set a Station count logged, kept so the member can undo it.
@@ -228,7 +235,8 @@ enum StationLinkPolicy {
             eventID: completion.eventID, slotID: arm.slotID, setNumber: arm.setNumber,
             exerciseName: arm.exerciseName, reps: completion.reps,
             leftCount: completion.leftCount, rightCount: completion.rightCount,
-            partial: completion.partial, logsAutomatically: !completion.partial)
+            partial: completion.partial,
+            logsAutomatically: !completion.partial && completion.leftCount == completion.rightCount)
     }
 
     /// A proposal may log only into the exact slot and set it was counted for.

@@ -228,6 +228,8 @@ struct TodayView: View {
               UIDevice.current.userInterfaceIdiom == .phone else { return nil }
         return auth.userID
     }
+    /// The full calendar, pushed from the week strip.
+    @State private var showCalendar = false
 
     var body: some View {
         let fullRestOverlayVisible = sync.restEndDate != nil && restExpanded && (workoutFocused || sync.finished)
@@ -277,6 +279,15 @@ struct TodayView: View {
             }
             .navigationTitle(sync.running ? "Workout" : "Today")
             .navigationBarTitleDisplayMode(.inline)
+            .navigationDestination(isPresented: $showCalendar) {
+                // Starting or continuing today's workout from a date sheet
+                // returns here, where the runner lives.
+                HistoryView(sync: sync, onStartWorkout: {
+                    showCalendar = false
+                    isLocallyMinimized = false
+                    onResumeWorkout?()
+                })
+            }
             .toolbar {
                 if UIDevice.current.userInterfaceIdiom == .pad {
                     ToolbarItem(placement: .topBarLeading) {
@@ -458,26 +469,31 @@ struct TodayView: View {
         if sync.finished {
             FinishedView(sync: sync, stationLink: stationLink, onExpandRest: scrollableRestExpansion)
         } else if sync.running && !workoutFocused {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Workout in progress").font(.title2.weight(.semibold))
-                if let ex = sync.currentExercise {
-                    Text(ex.exercise_name).font(.headline)
-                    Text("Set \(sync.currentPhysicalSetNumber)").font(.subheadline).foregroundStyle(Theme.muted)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        Text("Workout in progress").font(.title2.weight(.semibold))
+                        if let ex = sync.currentExercise {
+                            Text(ex.exercise_name).font(.headline)
+                            Text("Set \(sync.currentPhysicalSetNumber)").font(.subheadline).foregroundStyle(Theme.muted)
+                        }
+                        Button {
+                            isLocallyMinimized = false
+                            onResumeWorkout?()
+                        } label: {
+                            Label("Resume workout", systemImage: "play.fill")
+                                .frame(maxWidth: .infinity, minHeight: 52)
+                                .background(Theme.accent).foregroundStyle(.black)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                        .accessibilityIdentifier("runner.resume")
+                    }
+                    .padding(20).background(Theme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    weekSection
                 }
-                Button {
-                    isLocallyMinimized = false
-                    onResumeWorkout?()
-                } label: {
-                    Label("Resume workout", systemImage: "play.fill")
-                        .frame(maxWidth: .infinity, minHeight: 52)
-                        .background(Theme.accent).foregroundStyle(.black)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .accessibilityIdentifier("runner.resume")
+                .padding(20)
             }
-            .padding(20).background(Theme.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 16)).padding(20)
-            Spacer()
         } else if sync.running {
             RunnerView(sync: sync, auth: auth, stationLink: stationLink, onExpandRest: { restExpanded = true })
         } else if sync.plan == nil && !sync.canCreateRoutine {
@@ -526,7 +542,7 @@ struct TodayView: View {
             // (user,date)), so we never offer an action the data model
             // can't safely honor.
             VStack(spacing: 0) {
-                WorkoutDoneView(sync: sync)
+                WorkoutDoneView(sync: sync, onOpenCalendar: { showCalendar = true })
                 Button { showOverridePicker = true } label: {
                     todayRoute("Workouts", subtitle: "Your saved workouts")
                 }
@@ -595,6 +611,7 @@ struct TodayView: View {
                         todayRoute("Workouts", subtitle: "Browse, create, and edit")
                     }
                     .accessibilityIdentifier("today.chooseWorkout")
+                    weekSection
                     if let error = sync.loadError {
                         Text(error).font(.footnote).foregroundStyle(Theme.danger)
                     }
@@ -603,6 +620,10 @@ struct TodayView: View {
             }
             .refreshable { await sync.load() }
         }
+    }
+
+    private var weekSection: some View {
+        TodayWeekSection(sync: sync, onOpenCalendar: { showCalendar = true })
     }
 
     private func todayRoute(_ title: String, subtitle: String) -> some View {
@@ -644,78 +665,17 @@ struct TodayView: View {
     }
 }
 
-private struct NextWorkoutCard: View {
-    @ObservedObject var sync: SyncModel
-    let next: SyncModel.NextWorkout
-    @State private var preview: IdentifiedString?
-
-    var body: some View {
-        Button {
-            preview = IdentifiedString(id: next.dateString)
-        } label: {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("NEXT WORKOUT")
-                        .font(Theme.mono(11, .bold)).tracking(2)
-                        .foregroundStyle(Theme.muted)
-                    Spacer()
-                    Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Theme.muted)
-                }
-                // `next.day` is nil when the resolved template isn't cached
-                // — still show the real next date (never skip ahead), just
-                // without detail; the tap still opens the live preview.
-                Text((next.day?.title ?? "Workout scheduled").uppercased())
-                    .font(Theme.display(28))
-                    .foregroundStyle(Theme.text)
-                    .lineLimit(2).minimumScaleFactor(0.6)
-                Text(sync.relativeLabel(for: next.dateString).uppercased())
-                    .font(Theme.mono(13, .bold)).tracking(1)
-                    .foregroundStyle(Theme.accent)
-                if let day = next.day, !day.exercises.isEmpty {
-                    Text(day.exercises
-                            .map(\.exercise_name)
-                            .joined(separator: " · "))
-                        .font(Theme.mono(11))
-                        .foregroundStyle(Theme.muted)
-                        .multilineTextAlignment(.leading)
-                        .padding(.top, 2)
-                }
-            }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-        }
-        .buttonStyle(.plain)
-        .sheet(item: $preview) { d in
-            NavigationStack {
-                DayAgendaView(sync: sync, dateString: d.id)
-                    .navigationTitle("Workout date")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Done") { preview = nil }
-                        }
-                    }
-            }
-            .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
-        }
-    }
-}
-
 // MARK: - Workout complete (today's session is done)
 
 /// Shown when today's resolved session is COMPLETED. A clean recap with
 /// NO primary START WORKOUT CTA and NO "Train a different day" override —
 /// the single session-per-(user,date) invariant means any start would
-/// re-open and double-log the completed row. The next workout is surfaced
-/// so the screen still tells you what's next (same forward-scan the rest
-/// day uses); pull-to-refresh remains so a server change is reflected.
+/// re-open and double-log the completed row. The week strip and upcoming
+/// days still tell you what's next; pull-to-refresh remains so a server
+/// change is reflected.
 private struct WorkoutDoneView: View {
     @ObservedObject var sync: SyncModel
+    let onOpenCalendar: () -> Void
     /// Confirms discarding the just-completed session ("didn't really do
     /// this" — e.g. an accidental/test End workout).
     @State private var recordDate: IdentifiedString?
@@ -769,9 +729,7 @@ private struct WorkoutDoneView: View {
                 .background(Theme.surface)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
 
-                if let next = sync.nextWorkout() {
-                    NextWorkoutCard(sync: sync, next: next)
-                }
+                TodayWeekSection(sync: sync, onOpenCalendar: onOpenCalendar)
 
                 if let err = sync.loadError {
                     Text(err).font(Theme.mono(12)).foregroundStyle(Theme.danger)

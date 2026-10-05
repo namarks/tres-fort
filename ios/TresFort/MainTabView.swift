@@ -66,7 +66,7 @@ struct MainTabView: View {
     private var groupModel: GroupModel { models.group }
     private var health: HealthKitSyncModel { models.health }
 
-    enum Tab { case today, history, progress, group, profile }
+    enum Tab { case today, progress, group, profile }
 
     init(auth: AuthModel, defaults: LocalPersistence = .standard, now: @escaping () -> Date = Date.init,
          weightReader: (any BodyWeightReading)? = nil) {
@@ -86,9 +86,6 @@ struct MainTabView: View {
                     Label("Today", systemImage: "figure.strengthtraining.traditional")
                 }
                 .tag(Tab.today)
-            HistoryView(sync: sync, onStartWorkout: resumeWorkout)
-                .tabItem { Label("Calendar", systemImage: "calendar") }
-                .tag(Tab.history)
             TrainingProgressView(sync: sync, weight: health.weight,
                                  onHealthSettings: { showHealthSettings = true })
                 .tabItem { Label("Progress", systemImage: "chart.xyaxis.line") }

@@ -1,6 +1,6 @@
 # Member Activation and Adherence
 
-Slug: member-activation-and-adherence · Status: paused · Updated: 2026-09-18 · Theme: gym-floor
+Slug: member-activation-and-adherence · Status: paused · Updated: 2026-10-05 · Theme: gym-floor
 
 ## Goal
 
@@ -63,7 +63,7 @@ how to populate an empty progress view without needing another setup flow.
       layouts. Consistency is the guiding message; starters do not prescribe or
       schedule endurance sessions from activity selections alone.
 
-- [ ] **P3 — See the next few sessions in context**
+- [x] **P3 — See the next few sessions in context**
   - Planning approved from the [SensAI inspection](../../reviews/2026-09-sensai/report.md);
     this paused plan is not reactivated. Prototype a compact next-few-sessions
     section in Today with a route to Calendar, preserving Start/Continue as the
@@ -81,6 +81,19 @@ how to populate an empty progress view without needing another setup flow.
     mixed activity, date boundaries and large text; open the intended date and
     session. If multi-session P1 lands first, show all relevant slots using its
     contract rather than silently displaying only the primary session.
+  - Owner direction (2026-10-04): Today hosts this week's Monday–Sunday strip,
+    in the calendar's own day cells, and up to three upcoming days with a
+    workout or planned ride/run. Any day opens the existing date sheet. The
+    separate Calendar tab is removed; the full month grid and past records are
+    pushed from Today's "Calendar" link and no longer condense on scroll.
+    Progress keeps its Strength, Consistency chart and Weight cards unchanged.
+  - Delivered with one forward scan (`upcomingDays`) over the shared
+    projection: hard blackouts suppress planned endurance, skipped/completed
+    dates are not upcoming, and a missing cached template still shows its
+    date. Multi-session P1 has not landed, so one session per date applies.
+    Verification: a model test for the scan, and calendar, weekly-schedule,
+    progress, Intervals and screenshot journeys rerouted through Today;
+    exact-head CI on the delivering PR is the merge gate.
 - [ ] **P4 — Make empty progress views actionable**
   - Keep first-use copy compact: explain what strength/consistency data will
     appear and offer a relevant route to the scheduled workout, existing library
@@ -98,7 +111,6 @@ how to populate an empty progress view without needing another setup flow.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P3 | gated_by | external:owner-sensai-followup-implementation | Planning approval does not reactivate implementation in this paused workstream. |
 | P4 | gated_by | external:owner-sensai-followup-implementation | Planning approval does not reactivate implementation in this paused workstream. |
 | P3 | coordinates_with | plan:workouts-and-multi-session#P1 | Whichever lands second must consume the same date/session projection contract. |
 
@@ -106,10 +118,10 @@ how to populate an empty progress view without needing another setup flow.
 
 **Now (@owner):** P2(a) is implemented and locally verified; its implementation
 PR carries exact-head review and CI evidence for repository delivery. Choose
-whether to activate P1 reminders/widgets or the newly planned P3/P4 usability
-follow-ups. Among the SensAI follow-ups, prioritize library P0.5 guidance and
-filters first, then previews and P3 orientation, then P4 empty states. Migration, production deployment and
-iOS distribution remain separately authorized.
+whether to activate P1 reminders/widgets or the P4 empty-state follow-up. P3
+orientation was activated and delivered at the owner's request on 2026-10-04.
+Migration, production deployment and iOS distribution remain separately
+authorized.
 
 ## Notes / open questions
 

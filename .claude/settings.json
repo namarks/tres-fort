@@ -33,8 +33,6 @@
       "Bash(grep *)",
       "Bash(jq *)",
       "Bash(file *)",
-      "Bash(sort *)",
-      "Bash(uniq *)",
       "Bash(diff *)",
       "Bash(which *)",
 
@@ -98,12 +96,13 @@
       "Bash(npm run db:*:remote*)",
       "Bash(npm run ios:testflight*)",
       "Bash(npm run beta:feedback*)",
-      "Bash(npx wrangler deploy*)",
-      "Bash(wrangler deploy*)",
-      "Bash(npx wrangler secret*)",
-      "Bash(wrangler secret*)",
-      "Bash(npx wrangler d1 *--remote*)",
-      "Bash(wrangler d1 *--remote*)"
+      "Bash(*wrangler deploy*)",
+      "Bash(*wrangler versions deploy*)",
+      "Bash(*wrangler triggers deploy*)",
+      "Bash(*wrangler rollback*)",
+      "Bash(*wrangler delete*)",
+      "Bash(*wrangler secret*)",
+      "Bash(*wrangler d1 *--remote*)"
     ],
     "deny": [
       "mcp__github__merge_pull_request",

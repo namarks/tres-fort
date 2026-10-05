@@ -265,19 +265,21 @@ struct StationSetEndDetector {
     mutating func reset() { self = Self() }
 
     /// Returns true exactly once, when the set is judged finished. A rep on
-    /// either side counts as a change, so a trailing arm keeps the set open.
+    /// either side counts as a change, so a trailing arm keeps the set open,
+    /// and so does any movement or another person in view: the count must
+    /// hold steady while the member is still for the whole window.
     mutating func observe(count: Int, leftCount: Int? = nil, rightCount: Int? = nil,
                           status: StationTrackingStatus, at time: TimeInterval) -> Bool {
         guard !hasFinished, time.isFinite else { return false }
         let sides = [leftCount, rightCount]
-        if lastChange == nil || count != lastCount || sides != lastSides {
+        if lastChange == nil || count != lastCount || sides != lastSides
+            || status == .moving || status == .multiplePeople {
             lastCount = count
             lastSides = sides
             lastChange = time
             return false
         }
-        guard count > 0, status != .moving, status != .multiplePeople,
-              let lastChange, time - lastChange >= StationLink.settleSeconds else { return false }
+        guard count > 0, let lastChange, time - lastChange >= StationLink.settleSeconds else { return false }
         hasFinished = true
         return true
     }

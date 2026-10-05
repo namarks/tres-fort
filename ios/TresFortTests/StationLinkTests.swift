@@ -139,7 +139,19 @@ final class StationLinkTests: XCTestCase {
         _ = detector.observe(count: 3, status: .ready, at: 1)
         XCTAssertFalse(detector.observe(count: 3, status: .moving, at: 6))
         XCTAssertFalse(detector.observe(count: 3, status: .multiplePeople, at: 7))
-        XCTAssertTrue(detector.observe(count: 3, status: .trackingLost, at: 8))
+        XCTAssertFalse(detector.observe(count: 3, status: .trackingLost, at: 10.9),
+                       "Movement or another person restarts the window")
+        XCTAssertTrue(detector.observe(count: 3, status: .trackingLost, at: 11.1))
+    }
+
+    func testAnUncountedRepAttemptRestartsTheSettleWindow() {
+        var detector = StationSetEndDetector()
+        _ = detector.observe(count: 0, status: .ready, at: 0)
+        _ = detector.observe(count: 4, status: .ready, at: 1)
+        XCTAssertFalse(detector.observe(count: 4, status: .moving, at: 5.5), "Another attempt has started")
+        XCTAssertFalse(detector.observe(count: 4, status: .ready, at: 6),
+                       "Returning without a counted rep does not end the set at once")
+        XCTAssertTrue(detector.observe(count: 4, status: .ready, at: 9.6))
     }
 
     func testATrailingArmKeepsTheSetOpen() {

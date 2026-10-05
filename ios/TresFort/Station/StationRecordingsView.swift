@@ -184,6 +184,9 @@ struct StationRecordingDetailView: View {
                                     Text("Recorded clip counts").font(.headline)
                                     Text("Apple · \(apple)")
                                     Text("MediaPipe · \(mediaPipe)")
+                                    if let generic = curlCycles(left: last.genericLeftCycles, right: last.genericRightCycles) {
+                                        Text("Generic 3D · \(generic)")
+                                    }
                                 }.accessibilityIdentifier("station.curlReplayCounts")
                             } else {
                                 Text("This comparison has no per-arm counts. Run comparison again to count the left and right arms separately.")
@@ -192,10 +195,21 @@ struct StationRecordingDetailView: View {
                         } else {
                             Text("Recorded clip counts: Apple \(last.appleCycles) · MediaPipe \(last.mediaPipeCycles)")
                                 .font(.headline)
+                            if let generic = last.genericCycles {
+                                Text("Generic 3D: \(generic)").font(.headline)
+                                    .accessibilityIdentifier("station.genericReplayCount")
+                            }
+                        }
+                        if report.genericCounterVersion != nil {
+                            Text(genericExplanation(signal: last.genericSignal))
+                                .font(.footnote).foregroundStyle(.secondary)
                         }
                     }
                     coverageNotice("Apple", incomplete: report.appleHasIncompleteCoverage)
                     coverageNotice("MediaPipe", incomplete: report.mediaPipeHasIncompleteCoverage)
+                    if report.genericCounterVersion != nil {
+                        coverageNotice("Generic 3D", incomplete: report.genericHasIncompleteCoverage)
+                    }
                     Text("Frame \(Int(selectedIndex) + 1) / \(report.frames.count) · \(frame.timestamp, specifier: "%.2f") s")
                         .font(.headline).monospacedDigit()
                     if report.frames.count > 1 {
@@ -366,6 +380,12 @@ struct StationRecordingDetailView: View {
 
     private func validRepInput(_ value: String) -> Bool {
         value.isEmpty || Int(value).map { (0...1_000).contains($0) } == true
+    }
+
+    private func genericExplanation(signal: String?) -> String {
+        let followed = signal.map { " Followed: \($0)." } ?? " No cycle completed, so no joint angle was chosen."
+        return "Generic 3D counts whichever joint angle repeats most clearly in MediaPipe's 3D pose, with no exercise-specific angle rule or required camera view."
+            + followed + " Experimental; it never logs sets."
     }
 
     private func curlCycles(left: Int?, right: Int?) -> String? {

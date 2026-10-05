@@ -76,14 +76,20 @@ may turn detections into durable workout actions.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
+| P0 | gated_by | external:owner-catalog-pr-publication | Automatic approval review rejected the catalog branch push and requires explicit owner permission to publish it to GitHub. Implementation and local verification are complete. |
 | P1 | gated_by | external:owner-ipad-station-device-build | Corrective internal build 46 is verified available to Testers; the owner must evaluate framing and counting on the actual iPad. |
 | P2 | gated_by | external:owner-ipad-station-write-contract | Confirm the supported movements, correction UX and multi-device controller policy before enabling workout writes. |
 | P3 | gated_by | external:owner-ipad-station-automation-criteria | Automation needs explicit measured quality criteria and activation authority. |
 
 ## Next step
 
-**Now (@agent):** Complete exact-head review and repository checks for the
-catalog mapping and observation-only hold timer PR, then hand it to Nick.
+**Now (@owner):** Authorize pushing the local catalog mapping and hold timer
+branch to `namarks/tres-fort` and opening its focused PR. Automatic approval
+review rejected that publication step; no PR exists yet. The verified
+implementation is commit `06ff8db3d6e4cc149ed6856044c2b953524ec2cd` on
+`codex/catalog-camera-profiles`. Once authorized, the agent should remove this
+publication gate, push the coherent branch and complete exact-head review and
+repository checks before handing the PR to Nick.
 Nick owns merge. PR #228 is now in `origin/main` at
 `e15d53b494a814fca69af37c4db1ba82111273e2`; this catalog slice starts there.
 The audit covers all 280 exercises: 193 rep candidates, 15 hold candidates and

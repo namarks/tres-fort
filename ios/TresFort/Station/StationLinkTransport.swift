@@ -27,6 +27,8 @@ final class StationLinkTransport: NSObject, ObservableObject {
     private var session: MCSession?
     private var advertiser: MCNearbyServiceAdvertiser?
     private var browser: MCNearbyServiceBrowser?
+    /// Peers invited (phone) or accepted (iPad) and not yet gone: one at a
+    /// time, since only one candidate is authenticated.
     private var invited: Set<MCPeerID> = []
     // Authentication of the one connected peer.
     private var candidate: MCPeerID?
@@ -138,6 +140,10 @@ final class StationLinkTransport: NSObject, ObservableObject {
         guard source === session else { return }
         switch state {
         case .connected:
+            if let other = candidate ?? trustedPeer, other != peer {
+                source.cancelConnectPeer(peer) // a second peer is never authenticated
+                return
+            }
             adopt(peer, in: source)
         case .notConnected:
             invited.remove(peer)
@@ -226,21 +232,38 @@ final class StationLinkTransport: NSObject, ObservableObject {
 
     private func handleFound(peer: MCPeerID, info: [String: String]?, from source: MCNearbyServiceBrowser) {
         guard source === browser, let session, let tag, info?["tag"] == tag,
-              !invited.contains(peer), session.connectedPeers.isEmpty else { return }
+              invited.isEmpty, candidate == nil, trustedPeer == nil,
+              session.connectedPeers.isEmpty else { return }
         invited.insert(peer)
         source.invitePeer(peer, to: session, withContext: Data(tag.utf8), timeout: 15)
+        expireInvitation(peer)
+    }
+
+    /// An invitation that never became a connection must not block the next.
+    private func expireInvitation(_ peer: MCPeerID) {
+        let session = self.session
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 20_000_000_000)
+            guard let self, self.session === session, self.invited.contains(peer),
+                  self.candidate != peer, self.trustedPeer != peer else { return }
+            self.invited.remove(peer)
+            self.restartBrowsing()
+        }
     }
 
     private func handleInvitation(from peer: MCPeerID, context: Data?,
                                   from source: MCNearbyServiceAdvertiser,
                                   reply: @escaping (Bool, MCSession?) -> Void) {
         // The tag only filters; the challenge decides trust after connecting.
-        guard source === advertiser, let session, let tag,
-              context == Data(tag.utf8), session.connectedPeers.isEmpty else {
+        guard source === advertiser, let session, let tag, context == Data(tag.utf8),
+              invited.isEmpty, candidate == nil, trustedPeer == nil,
+              session.connectedPeers.isEmpty else {
             reply(false, nil)
             return
         }
+        invited.insert(peer)
         reply(true, session)
+        expireInvitation(peer)
     }
 }
 

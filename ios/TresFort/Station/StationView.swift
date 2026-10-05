@@ -39,6 +39,8 @@ struct StationView: View {
     /// It carries counts out; nothing here can log a set.
     @StateObject private var link = StationLinkStation()
     @State private var linkedArmID: UUID?
+    /// The latest "on" tap; turning the link off or on again supersedes it.
+    @State private var linkRequest: UUID?
 #if DEBUG
     @StateObject private var diagnostics = StationDiagnostics()
 #endif
@@ -224,11 +226,13 @@ struct StationView: View {
             Toggle("Count sets for my iPhone workout", isOn: Binding(
                 get: { link.isEnabled },
                 set: { enabled in
-                    guard enabled else { link.stop(); return }
+                    guard enabled else { linkRequest = nil; link.stop(); return }
                     guard access.validate() else { return }
+                    let request = UUID()
+                    linkRequest = request
                     Task { @MainActor in
                         let key = await loadLinkKey()
-                        guard access.validate() else { return }
+                        guard access.validate(), linkRequest == request else { return }
                         link.enable(key: key)
                     }
                 }))

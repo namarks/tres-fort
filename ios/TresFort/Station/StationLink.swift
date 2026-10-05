@@ -115,7 +115,7 @@ extension StationExercise: Codable {
         if unilateral || modality == "timed" || modality == "cardio" { return nil }
         let excluded = ["split", "jump", "pistol", "hack", "leg press", "leg curl", "hamstring",
                         "nordic", "wrist", "single", "one-arm", "one arm", "one-leg", "one leg",
-                        "skater", "cossack", "lateral", "alternating"]
+                        "skater", "cossack", "lateral", "alternating", "jefferson"]
         if excluded.contains(where: { name.contains($0) }) { return nil }
         if name.contains("bench press") { return .benchPress }
         if name.contains("squat") { return .squat }

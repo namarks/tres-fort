@@ -111,6 +111,7 @@ final class StationLinkTests: XCTestCase {
         XCTAssertNil(StationExercise.match(exerciseName: "Alternating Dumbbell Curl"))
         XCTAssertNil(StationExercise.match(exerciseName: "Skater Squat"))
         XCTAssertNil(StationExercise.match(exerciseName: "Cossack Squat"))
+        XCTAssertNil(StationExercise.match(exerciseName: "Jefferson Curl"), "Spinal flexion, not an elbow curl")
         XCTAssertNil(StationExercise.match(exerciseName: "Dumbbell Curl", unilateral: true),
                      "Per-side reps stay manual whatever the name")
         XCTAssertNil(StationExercise.match(exerciseName: "Squat hold", modality: "timed"))

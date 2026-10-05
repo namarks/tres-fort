@@ -53,6 +53,25 @@ struct StationReplayReport: Codable {
     let appBuild: String
     let frames: [StationReplayFrame]
     var counterVersion: String? = nil
+    // Missing on older reports means coverage was not recorded, not complete.
+    var appleHasIncompleteCoverage: Bool? = nil
+    var mediaPipeHasIncompleteCoverage: Bool? = nil
+}
+
+struct StationReplayCoverage {
+    private(set) var appleHasIncompleteCoverage = false
+    private(set) var mediaPipeHasIncompleteCoverage = false
+
+    mutating func observe(apple: StationMovementCounter, mediaPipe: StationMovementCounter) {
+        appleHasIncompleteCoverage = appleHasIncompleteCoverage || Self.hasTrackingLoss(apple)
+        mediaPipeHasIncompleteCoverage = mediaPipeHasIncompleteCoverage || Self.hasTrackingLoss(mediaPipe)
+    }
+
+    private static func hasTrackingLoss(_ counter: StationMovementCounter) -> Bool {
+        // A moving arm masks the other arm's lost status in the aggregate.
+        counter.status == .trackingLost || counter.leftStatus == .trackingLost
+            || counter.rightStatus == .trackingLost
+    }
 }
 
 enum StationReplayError: LocalizedError {
@@ -97,6 +116,7 @@ enum StationReplayWorker {
         var frames: [StationReplayFrame] = []
         var appleCounter = StationMovementCounter(exercise: recording.exercise)
         var mediaPipeCounter = StationMovementCounter(exercise: recording.exercise)
+        var coverage = StationReplayCoverage()
         var previousTimestamp = -Double.infinity
         var previousMilliseconds = -1
         while let buffer = try session.withAccess({ output.copyNextSampleBuffer() }) {
@@ -126,6 +146,7 @@ enum StationReplayWorker {
                 try validateIdentity(applePersonCount: apple.personCount, mediaPipePersonCount: mp.personCount)
                 appleCounter.process(apple.sample(at: timestamp))
                 mediaPipeCounter.process(mp.sample(at: timestamp))
+                coverage.observe(apple: appleCounter, mediaPipe: mediaPipeCounter)
                 return StationReplayFrame(timestamp: timestamp, apple: apple, mediaPipe: mp,
                                           mediaPipeLandmarks: result.poses, mediaPipeWorldLandmarks: result.worldPoses,
                                           appleCycles: appleCounter.count, mediaPipeCycles: mediaPipeCounter.count,
@@ -146,7 +167,9 @@ enum StationReplayWorker {
                                    mediaPipeModelSHA256: StationMediaPipeDetector.modelSHA256,
                                    osVersion: ProcessInfo.processInfo.operatingSystemVersionString,
                                    appBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
-                                   frames: frames, counterVersion: "curl-confidence-grace-v2")
+                                   frames: frames, counterVersion: "curl-confidence-grace-v2",
+                                   appleHasIncompleteCoverage: coverage.appleHasIncompleteCoverage,
+                                   mediaPipeHasIncompleteCoverage: coverage.mediaPipeHasIncompleteCoverage)
     }
 
     static func validateIdentity(applePersonCount: Int, mediaPipePersonCount: Int) throws {

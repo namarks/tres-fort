@@ -112,6 +112,17 @@ No unattended recording is requested.
 
 ## Implementation evidence
 
+- Exact-head remote review identified that saved comparisons lacked the live
+  partial-coverage warning. Reports now persist optional per-detector coverage
+  flags, latched on aggregate or either arm's tracking loss; newly produced
+  reports always emit explicit booleans. The comparison screen shows partial
+  tracking warnings, and absent legacy fields retain unknown coverage. Exported
+  `comparison.json` preserves these flags. This does not add restoration of old
+  comparisons when reopening a saved test. The coverage fix passed 22 affected
+  unit cases (one native-only Apple replay skip) and all four Station UI journeys,
+  with a fresh clean independent review. Current iOS source matches the tested
+  snapshot in `.artifacts/ios/tres-fort-ios.SayK5A/`. The unchanged counter suites
+  retain the prior verification below; a new exact-head remote review is required.
 - The bounded confidence correction passed 60 unit cases, with one native-only
   Apple replay case skipped, plus all four Station iPad UI journeys. Plan
   validation and independent local review pass. Evidence is retained in this

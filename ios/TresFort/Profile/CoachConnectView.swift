@@ -15,13 +15,30 @@ enum CoachApp: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Used inside sentences and on the consent button.
+    var shortName: String { self == .other ? "your AI app" : name }
+
     var recipient: String {
         switch self {
-        case .codex: return "Codex and its configured model provider"
+        case .codex: return "Codex, operated by OpenAI, and any other model provider you configure in it"
         case .claude: return "Claude, operated by Anthropic"
         case .other: return "Your chosen AI app and its configured model provider"
         }
     }
+}
+
+/// The data categories an authorized AI app can read, shown before any setup
+/// step and on the approval screen. Keep aligned with the MCP read tools and
+/// the privacy policy's AI section.
+enum CoachSharing {
+    static let sharedData = [
+        "Your display name and training profile: goal, activities and weekly activity context, experience, training days and session length, equipment, movements to avoid and lifts you reported",
+        "Training plan, schedule and plan history, plus races, trips, training blocks and other coaching settings",
+        "Workout history: sessions, sets, weights, reps, durations, effort and fatigue ratings",
+        "Saved workout feedback and notes",
+        "Activities imported from Apple Health or Intervals.icu, including heart-rate summaries, and planned Intervals.icu events",
+        "Group activity and member names visible to you",
+    ]
 }
 
 /// Public setup payloads contain only connection details, never account codes.
@@ -49,58 +66,51 @@ struct CoachConnectView: View {
     @ObservedObject var groupModel: GroupModel
     var onHandoff: () -> Void
     @Environment(\.openURL) private var openURL
+    @Environment(\.dismiss) private var dismiss
     @State private var selectedApp: CoachApp = .claude
+    /// App Review 5.1.1(i)/5.1.2(i): setup, connection details and connect codes
+    /// stay hidden until the member allows sharing with the named recipient.
+    /// Choosing a different app asks again.
+    @State private var consentedApp: CoachApp?
     @State private var code: String?
     @State private var generating = false
     @State private var error: String?
 
+    private static let setupTopID = "coach.setup-top"
     private var connectorURL: String { CoachSetup.serverURL(baseURL: Config.apiBaseURL).absoluteString }
 
     var body: some View {
-        Form {
-            if groupModel.me?.coach.connected == true {
+        ScrollViewReader { proxy in
+            Form {
+                if groupModel.me?.coach.connected == true {
+                    Section {
+                        Label("An AI app has access", systemImage: "checkmark.circle.fill")
+                            .accessibilityIdentifier("coach.connected-status")
+                        Text("You can connect Claude and Codex to the same training account.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                }
                 Section {
-                    Label("An AI app has access", systemImage: "checkmark.circle.fill")
-                        .accessibilityIdentifier("coach.connected-status")
-                    Text("You can connect Claude and Codex to the same training account.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
-            }
-            Section {
-                Text("Choose where you want to chat. Your coach can build a plan and adapt it as you train; your workouts stay here.")
-                    .font(.footnote)
-                Picker("AI app", selection: $selectedApp) {
-                    ForEach(CoachApp.allCases) { app in
-                        Text(app.name).tag(app)
-                    }
-                }
-                .accessibilityIdentifier("coach.app-picker")
-            }
-            setupInstructions
-            Section("Start coaching") {
-                Text("Once connected, ask your AI app: “Use Très Fort to load my coaching brief.” After a plan change, return to Today and refresh.")
-                    .font(.footnote)
-                Text("Use your own AI account. Availability and usage limits depend on the provider.")
-                    .font(.footnote).foregroundStyle(.secondary)
-            }
-            Section {
-                DisclosureGroup("Use a connect code") {
-                    Text("Use this if your AI app asks for a code or you cannot return to Très Fort to approve. Paste it only on the Très Fort consent page, never in a chat.")
+                    Text("Choose where you want to chat. Your coach can build a plan and adapt it as you train; your workouts stay here.")
                         .font(.footnote)
-                    if let code {
-                        CopyRow(label: "Connect code", value: code, mono: true)
+                    Picker("AI app", selection: $selectedApp) {
+                        ForEach(CoachApp.allCases) { app in
+                            Text(app.name).tag(app)
+                        }
                     }
-                    Button { Task { await generate() } } label: {
-                        Label(generating ? "Generating…" : code == nil ? "Generate connect code" : "Generate a new code",
-                              systemImage: code == nil ? "key.fill" : "arrow.clockwise")
-                    }
-                    .disabled(generating)
-                    .accessibilityIdentifier("coach.generate-code")
-                    if let error { Text(error).font(.footnote).foregroundStyle(Theme.danger) }
-                    Text("Keep this code private. A new code does not disconnect linked apps. Manage AI access in Profile to disconnect them.")
-                        .font(.caption).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("coach.app-picker")
                 }
-                DisclosureGroup("Data and access") { sharingDetails }
+                if consentedApp == selectedApp {
+                    setupSections
+                } else {
+                    consentSection
+                }
+            }
+            // The consent button sits below the disclosure; bring the member back
+            // to the first setup step once they allow sharing.
+            .onChange(of: consentedApp) { _, app in
+                guard app != nil else { return }
+                DispatchQueue.main.async { proxy.scrollTo(Self.setupTopID, anchor: .top) }
             }
         }
         .navigationTitle("Connect your coach")
@@ -111,11 +121,92 @@ struct CoachConnectView: View {
     }
 
     @ViewBuilder
+    private var consentSection: some View {
+        Section("Before you connect") {
+            Text("Share your training data with \(selectedApp.recipient)?")
+                .font(.headline)
+                .accessibilityIdentifier("coach.data-sharing")
+            Text("To coach you, \(selectedApp.shortName) reads and changes your Très Fort data through a connection you approve. Nothing is sent to a new app until you allow it here and then approve its connection. Apps you already connected keep access until you disconnect them in Profile.")
+                .font(.footnote)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("What is shared").font(.subheadline.weight(.semibold))
+                ForEach(CoachSharing.sharedData, id: \.self) { item in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("•").foregroundStyle(.secondary).accessibilityHidden(true)
+                        Text(item)
+                    }
+                }
+            }
+            .font(.footnote)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("coach.shared-data")
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Who receives it").font(.subheadline.weight(.semibold))
+                Text("\(selectedApp.recipient). They process it under their own terms and privacy policy, using your account with them.")
+            }
+            .font(.footnote)
+            .accessibilityElement(children: .combine)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("What it can do").font(.subheadline.weight(.semibold))
+                Text("Read the information above, change your training plan and record training updates. Changes are saved to your plan history.")
+            }
+            .font(.footnote)
+            .accessibilityElement(children: .combine)
+            Text("You can stop future access anytime in Profile → Disconnect all AI apps. Information already sent stays subject to the recipient’s policies.")
+                .font(.footnote).foregroundStyle(.secondary)
+            providerPolicyLinks
+            PrivacyPolicyLink()
+            Button {
+                consentedApp = selectedApp
+            } label: {
+                Text("Allow sharing with \(selectedApp.shortName)")
+                    .font(.headline).frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .accessibilityIdentifier("coach.consent-allow")
+            Button("Not now", role: .cancel) { dismiss() }
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .accessibilityIdentifier("coach.consent-decline")
+        }
+    }
+
+    @ViewBuilder
+    private var setupSections: some View {
+        setupInstructions
+        Section("Start coaching") {
+            Text("Once connected, ask your AI app: “Use Très Fort to load my coaching brief.” After a plan change, return to Today and refresh.")
+                .font(.footnote)
+            Text("Use your own AI account. Availability and usage limits depend on the provider.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
+        Section {
+            DisclosureGroup("Use a connect code") {
+                Text("Use this if your AI app asks for a code or you cannot return to Très Fort to approve. Paste it only on the Très Fort consent page, never in a chat.")
+                    .font(.footnote)
+                if let code {
+                    CopyRow(label: "Connect code", value: code, mono: true)
+                }
+                Button { Task { await generate() } } label: {
+                    Label(generating ? "Generating…" : code == nil ? "Generate connect code" : "Generate a new code",
+                          systemImage: code == nil ? "key.fill" : "arrow.clockwise")
+                }
+                .disabled(generating)
+                .accessibilityIdentifier("coach.generate-code")
+                if let error { Text(error).font(.footnote).foregroundStyle(Theme.danger) }
+                Text("Keep this code private. A new code does not disconnect linked apps. Manage AI access in Profile to disconnect them.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            DisclosureGroup("Data and access") { sharingDetails }
+        }
+    }
+
+    @ViewBuilder
     private var setupInstructions: some View {
         Section("Connect \(selectedApp.name)") {
-            Text("\(selectedApp.recipient) can read your training and change your plan and logs. Review the requested access before approving.")
+            Label("You allowed sharing with \(selectedApp.recipient). Review the requested access again before approving the connection.",
+                  systemImage: "checkmark.shield")
                 .font(.footnote).foregroundStyle(.secondary)
-                .accessibilityIdentifier("coach.data-sharing")
+                .accessibilityIdentifier("coach.consent-given")
+                .id(Self.setupTopID)
             switch selectedApp {
             case .claude:
                 Button {
@@ -182,6 +273,11 @@ struct CoachConnectView: View {
         Text("Disconnect AI apps in Profile to stop future access. Information already retrieved stays subject to the app and model provider’s policies and account settings. The Apple Health group-sharing switch does not limit your own coach’s access.")
             .font(.footnote).foregroundStyle(.secondary)
         PrivacyPolicyLink()
+        providerPolicyLinks
+    }
+
+    @ViewBuilder
+    private var providerPolicyLinks: some View {
         switch selectedApp {
         case .codex:
             Link("OpenAI privacy policy", destination: AppInformation.openAIPrivacyURL)

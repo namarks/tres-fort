@@ -118,6 +118,17 @@ final class CoachApprovalModel: ObservableObject {
         }
     }
 
+    /// Names who receives the data from the return address, which the client
+    /// registered, rather than from the self-reported client name.
+    static func recipient(for preview: CoachApprovalPreview) -> String {
+        let host = httpsURL(preview.redirect_uri)?.host?.lowercased() ?? ""
+        func within(_ domain: String) -> Bool { host == domain || host.hasSuffix("." + domain) }
+        if within("claude.ai") || within("anthropic.com") { return "Claude, operated by Anthropic" }
+        if within("chatgpt.com") || within("openai.com") { return "ChatGPT, operated by OpenAI" }
+        if within("meta.ai") || within("meta.com") { return "Meta AI, operated by Meta" }
+        return "The app at \(host.isEmpty ? "the return address above" : host) and its configured model provider"
+    }
+
     static func httpsURL(_ value: String) -> URL? {
         guard let url = URL(string: value), url.scheme == "https", url.host != nil,
               url.user == nil, url.password == nil, url.fragment == nil else { return nil }
@@ -150,11 +161,21 @@ struct CoachApprovalView: View {
                         Text("Return address: \(preview.redirect_uri)").font(.footnote)
                         Text("Only allow access if you started this connection in an app you trust.")
                     }
-                    Section("Requested access") {
-                        Text("Read your training profile and plan, workout history, saved feedback and available group information, including imported Apple Health and Intervals.icu workouts.")
+                    Section("Who receives your data") {
+                        Text(CoachApprovalModel.recipient(for: preview))
+                            .accessibilityIdentifier("coach-approval.recipient")
+                        Text("They process it under their own terms and privacy policy. Review their privacy policy before approving.")
+                            .font(.footnote)
+                    }
+                    Section("Data it can read") {
+                        ForEach(CoachSharing.sharedData, id: \.self) { Text($0) }
+                        Text("Apple Health group sharing does not limit your own coach’s access.")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Section("Changes it can make") {
                         Text("Change your plan and record training updates.")
-                        Text("Your AI app and its configured model provider receive the information they request. Review their privacy policies before approving. Apple Health group sharing does not limit your own coach’s access.")
                         Text("Disconnect AI apps in Profile to stop future access. This does not delete data already retrieved into AI conversations.")
+                            .font(.footnote)
                         PrivacyPolicyLink()
                     }
                     Section {

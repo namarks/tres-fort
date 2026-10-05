@@ -835,7 +835,7 @@ private struct RunnerView: View {
     @State private var weightPrescription: RunnerPrescription?
     @AppStorage(RestCue.defaultsKey) private var timerCuesEnabled = true
     @AppStorage(StationLink.enabledAccountDefaultsKey) private var stationLinkEnabledAccount = ""
-    private var showsStationLink: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+    private var showsStationLink: Bool { StationLink.isAvailable && UIDevice.current.userInterfaceIdiom == .phone }
     private var stationLinkEnabled: Binding<Bool> {
         Binding(get: { StationLink.isEnabled(storedAccount: stationLinkEnabledAccount, accountID: auth.userID) },
                 set: { stationLinkEnabledAccount = $0 ? (auth.userID ?? "") : "" })

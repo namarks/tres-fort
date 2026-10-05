@@ -601,6 +601,10 @@ Sources checked 2026-10-03:
 
 ## Notes / open questions
 
+- Owner decision, 2026-10-05: App Store version 1.0 ships iPhone-only, so Station
+  Mode and the iPhone's Station link stay TestFlight-only until a later App Store
+  version adds iPad. The [submission plan](../app-store-submission/plan.md) owns
+  the iPhone-only candidate build.
 - Approved prototype target: 11-inch iPad (A16). Use its built-in front camera
   first; external UVC input is deferred until placement evidence requires it.
 - The counter and view receive no workout mutation capability. Workout/catalog

@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-10-03 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-10-05 · Theme: release
 
 ## Goal
 
@@ -16,6 +16,8 @@ routes/fields and is incompatible with the serving canonical Worker. Public
 release remains blocked on a compatible candidate; the manual setting prevents
 automatic publication. Preparation
 and TestFlight availability do not mean public release.
+Owner decision, 2026-10-05: version 1.0 ships **iPhone only**. TestFlight builds
+keep iPhone + iPad for Station Mode; iPad can be added in a later version.
 
 ## Phases
 
@@ -86,7 +88,10 @@ and TestFlight availability do not mean public release.
 
 ## Next step
 
-**Now (@agent):** Finish P1/P2 review-package preparation against the reviewed
+**Now (@owner):** Approve the AI-sharing consent and privacy policy changes for
+the 5.1.1/5.1.2 rejection recorded below, then publish the policy, confirm
+agreements and App Privacy answers, and upload the iPhone-only candidate.
+**Agent, in parallel:** finish P1/P2 review-package preparation against the reviewed
 [build-47 source](release-47.md) and retain the owner's device-verification follow-up. The
 owner-approved switch to MANUAL is complete. The selected build 40 is incompatible
 with the current canonical backend: its default `.legacy` client writes to
@@ -95,6 +100,39 @@ with 404 and those fields with 400. Do not publicly release this candidate.
 Replacing or resubmitting the candidate requires separate App Review authority;
 neither the TestFlight release nor the MANUAL change supplies it. Public release
 remains separately gated after a compatible candidate and readiness evidence.
+
+**App Review rejection (recorded 2026-10-05):** On 2026-09-22 App Review rejected
+submission `ea595b5e-86a6-4704-b1ef-ae87b971c728` (1.0 (40), reviewed on iPhone
+17 Pro Max and iPad Air 11-inch (M3)) under **Guidelines 5.1.1(i) and 5.1.2(i)**:
+the app appeared to share personal data with a third-party AI service without
+clearly saying what is sent and to whom, and without asking permission first.
+The privacy policy must also say what is collected, how, every use, and that the
+AI service gives equal protection. The owner supplied the App Review page; the
+email and API do not carry the reason. The response, in the same PR as the
+iPhone-only build path:
+
+- Coach Connect now opens on a permission step naming the recipient, the data
+  shared and what the connection can do. Setup actions, connection details and
+  connect codes appear only after **Allow sharing**; choosing another app asks
+  again. The mobile approval screen names the recipient from the registered
+  return address rather than the self-reported client name, and lists the data.
+  Existing grants, already approved on the earlier disclosure screens, keep
+  access until disconnected; the copy says so. Revoking them or enforcing a
+  consent version during bearer validation is a production change for the owner
+  to decide.
+- The privacy policy's AI section now covers recipients, data, collection
+  method, use, equal protection and withdrawal. Its equal-protection statement
+  is an operator commitment that needs owner approval, and the policy must be
+  deployed (website and Worker) before resubmission.
+- Version 1.0 is archived with `APP_STORE_IPHONE_ONLY=1 ./scripts/upload-testflight.sh`,
+  which sets device family 1 for the app and widget, hides the iPad Station link,
+  and verifies the archive's `UIDeviceFamily` before export. Apple still reviews
+  on an iPad in iPhone compatibility mode.
+
+Owner-only before resubmission: approve and publish the policy, review App
+Privacy answers for third-party AI sharing, upload the iPhone-only candidate,
+select it, reply to App Review, resubmit, and run the physical
+consent/create/log/finish check.
 
 **Internal comparison beta (2026-10-03):** The owner requested upload of the
 iPad camera comparison while Mac CI was queued. [Build 45's receipt](release-45.md)

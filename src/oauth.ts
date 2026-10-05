@@ -189,12 +189,13 @@ oauthRoutes.post('/oauth/register', async (c) => {
 
 // `mcp` is the only grant. Some hosts also request `offline_access` (OpenAI's
 // connector guidance asks for it); refresh tokens are always issued, so it is
-// accepted and the stored grant stays exactly `mcp`. Anything else is refused.
+// accepted as a companion to `mcp`, never in place of it, and the stored grant
+// stays exactly `mcp`. Anything else is refused.
 function scopeAccepted(scope: string | undefined): boolean {
   if (!scope) return true;
   if (scope.length > 100) return false;
   const tokens = scope.split(' ').filter(Boolean);
-  return tokens.length > 0 && tokens.every(t => t === 'mcp' || t === 'offline_access');
+  return tokens.includes('mcp') && tokens.every(t => t === 'mcp' || t === 'offline_access');
 }
 
 // Refused OAuth requests are otherwise invisible from the provider side. Log

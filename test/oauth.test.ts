@@ -128,7 +128,7 @@ describe('oauth discovery', () => {
       expect(html).toContain('name="scope" value="mcp"');
       expect(html).toContain('Open Très Fort to review access');
     }
-    for (const scope of ['openid', 'mcp admin', 'mcp,offline_access', 'offline_access '.repeat(20)]) {
+    for (const scope of ['openid', 'offline_access', 'mcp admin', 'mcp,offline_access', 'mcp ' + 'offline_access '.repeat(20)]) {
       const r = await authorize(scope);
       expect(r.status).toBe(400);
       expect(await r.json()).toEqual({ error: 'invalid_scope' });

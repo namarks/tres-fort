@@ -152,6 +152,15 @@ struct StationView: View {
             UIApplication.shared.isIdleTimerDisabled = state == .running
                 ? true : previousIdleTimerDisabled
         }
+        // A rotated key restarts advertising so the iPhone can find it again.
+        .onReceive(NotificationCenter.default.publisher(for: StationLinkKeyStore.refreshed)) { _ in
+            guard link.isEnabled, let request = linkRequest else { return }
+            Task { @MainActor in
+                let key = await loadLinkKey()
+                guard access.validate(), linkRequest == request, link.isEnabled, let key else { return }
+                link.enable(key: key)
+            }
+        }
         .onReceive(camera.$latestFrame) { frame in
             guard access.validate() else { return }
             if comparison.state.isCollecting {

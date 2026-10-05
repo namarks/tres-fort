@@ -18,13 +18,23 @@ extension APIClient {
 /// only a loader closure, never an API client.
 enum StationLinkKeyStore {
     private static let service = "com.nmarkspdx.tresfort.station-link"
+    /// Posted with `userInfo["accountID"]` when a background refresh replaced
+    /// a cached key, so a running link restarts with the new one.
+    static let refreshed = Notification.Name("StationLinkKeyStore.refreshed")
 
     /// A cached key is used at once, so a weak gym connection never delays
-    /// the link; the server copy refreshes it in the background.
+    /// the link; the server copy refreshes it in the background. Without a
+    /// JWT only the cached key is returned.
     static func load(accountID: String, jwt: String?) async -> Data? {
         guard !accountID.isEmpty else { return nil }
         if let key = cached(accountID: accountID) {
-            if let jwt { Task { _ = await fetch(accountID: accountID, jwt: jwt) } }
+            if let jwt {
+                Task { @MainActor in
+                    guard let fresh = await fetch(accountID: accountID, jwt: jwt), fresh != key else { return }
+                    NotificationCenter.default.post(name: refreshed, object: nil,
+                                                    userInfo: ["accountID": accountID])
+                }
+            }
             return key
         }
         guard let jwt else { return nil }

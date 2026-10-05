@@ -404,6 +404,15 @@ struct TodayView: View {
             guard !Task.isCancelled, stationLinkAccount == account else { return }
             if let key { stationLink.start(key: key) } else { stationLink.keyUnavailable() }
         }
+        // A rotated key restarts the running link so both devices meet again.
+        .onReceive(NotificationCenter.default.publisher(for: StationLinkKeyStore.refreshed)) { note in
+            guard let account = stationLinkAccount, note.userInfo?["accountID"] as? String == account else { return }
+            Task { @MainActor in
+                guard let key = await StationLinkKeyStore.load(accountID: account, jwt: nil),
+                      stationLinkAccount == account else { return }
+                stationLink.start(key: key)
+            }
+        }
         .onChange(of: sync.restEndDate) { if sync.restEndDate == nil { restExpanded = false } }
         .onChange(of: sync.running) { if !sync.running { isLocallyMinimized = false } }
         // Only the open runner logs counts, so a minimized workout is not armed;

@@ -33,7 +33,9 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     the iPad shows a one-time QR join code. The partner scans it in their own
     app, and the host confirms on the iPad. A phone signed in as the host's
     own account is refused before confirmation, using an account fingerprint
-    keyed by the join secret. Starting the workout ends joining.
+    keyed by the join secret. Start is offered only after both phones have
+    acknowledged storing their lane resume keys; until then the allowed phone
+    can fetch its key again. Starting the workout ends joining.
   - The partner's phone receives the host's workout over the sealed link with
     every writable slot field and its supersets or circuits, and opens "Your
     weights": each working slot uses the partner's own most recent working
@@ -74,8 +76,10 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     acknowledgement. A step is released only after both acknowledgements and
     its rest, so an Undo on either phone rewinds to that set and cancels rest
     while the other lane's set stays logged. Swap, add, reorder and remove are off during
-    a dual workout; a skip applies to both, recorded by the iPad and replayed
-    to any lane that missed it. Each person logs, corrects and
+    a dual workout, and the Worker refuses slot edits to a workout in an
+    in-progress dual session; a skip applies to both, recorded by the iPad
+    and replayed to any lane that missed it, and an Undo of a set in a skipped
+    step clears that skip. Each person logs, corrects and
     undoes their own sets by hand.
   - Show two lanes on the iPad (name, weight, reps, logged state). Either person
     can stop; their lane closes for good and leaves the step quorum, so the
@@ -130,8 +134,8 @@ for the Station link trial (`ipad-workout-station#P2`).
   confirmation rather than a server-issued key for group members; the partner's
   copy stays in their library (archivable) rather than a temporary session;
   structural edits are off during a dual workout and skips apply to both.
-- No new tables are planned. P0 adds one atomic "create workout with slots"
-  write, because `POST /api/workouts` takes exercise IDs without
+- No new tables are planned; P0 adds a dual-session marker column on
+  `sessions`. P0 adds one atomic "create workout with slots" write, because `POST /api/workouts` takes exercise IDs without
   prescriptions; its slot payload carries every writable slot field, including
   supersets, warm-ups, rep ranges, RPE, cues and progression.
 - Out of scope: more than two people, partners without the app, joining after

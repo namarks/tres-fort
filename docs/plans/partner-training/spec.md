@@ -157,7 +157,15 @@ then read the reviewed prescriptions even if a coach edits the plan before the
 first set. Starting the session in the same write is what pins the workout:
 plan writers already refuse to archive, delete or restore a workout with an
 in-progress session, so a coach or another device cannot pull it away between
-Start and the first set, exactly as for any running solo workout. Dual mode,
+Start and the first set, exactly as for any running solo workout. Slot edits
+are not covered by that guard today: `update_exercise`, `swap_exercise`,
+`delete_exercise`, `add_exercise` and `adjust_today` may change a running solo
+workout's slots. A dual workout cannot allow that, because its steps are named
+by slot IDs on both sides. So the Start write also marks the session as a dual
+session (a nullable column on `sessions`, P0's only schema change), and those
+slot writers refuse, with `active_workout`, any change to the slots of a
+workout an in-progress dual session uses. The coach sees the refusal and can
+make the change after the workout; solo workouts keep today's behavior. Dual mode,
 and the first armed set, begin only after both phones have acknowledged. A
 started session with no logged set does not trip the one-session gate above
 for this same dual workout, so a failure on one side does not block a retry:
@@ -210,7 +218,10 @@ snapshots say, and on every reconnect it resends each shared skip that lane's
 snapshot does not yet show, so a phone that missed the message catches up
 instead of rewinding the pair. A skip a dropped phone made offline arrives in
 its snapshot and becomes a shared skip then; a lane that already logged that
-set keeps its set. Each person keeps their own
+set keeps its set. If that lane then undoes the set, the Undo clears the shared
+skip for that step: the iPad sends the clearing to both lanes, each phone
+records it, and the pair returns to lifting that step, where either can log it
+or skip it again. A deleted set is never turned into a skip. Each person keeps their own
 weight, unit and reps, and either can correct or undo their own set. Skipping
 an exercise for one person only, or splitting into different exercises, is out
 of scope until real use shows it is needed.
@@ -231,8 +242,14 @@ it is signed in as; if they match, it refuses the phone ("This phone is signed
 in as Nick") before offering Allow, because two lanes on one account would
 write both people's sets into one session. The iPad then asks the host to allow
 the partner. On Allow, the iPad sends the partner's phone, over the sealed
-connection, a fresh random 256-bit resume key for this lane. The join secret is
-then dead. If the partner's connection drops, the phone reconnects with the
+connection, a fresh random 256-bit resume key for this lane. The phone stores
+it in its Keychain and acknowledges; until that acknowledgement arrives, the
+join secret still works, but only for the phone with the allowed account
+fingerprint and only to receive the same resume key again, so a drop during
+the handoff never strands the allowed phone. **Start together** is not offered
+until both phones have acknowledged their resume keys. Once the partner's
+acknowledgement arrives the join secret is dead. If the partner's connection
+drops, the phone reconnects with the
 same challenge-response keyed by the resume key, so only the phone that was
 allowed can take the lane back; a device that copied the QR code has no
 resume key. The host's lane is bound the same way: when the host taps "Train
@@ -358,4 +375,6 @@ prototype (PR #236) handles one person at a time.
   date, starts that session (taking a client session ID when it creates the
   row) and records its reviewed starting prescriptions, checked against the
   attempt and the reviewed plan version, plus an attempt-fenced discard that
-  only removes an empty session (P0). No new tables.
+  only removes an empty session, and a dual-session marker that makes slot
+  writers refuse changes to a workout in an in-progress dual session (P0). No
+  new tables.

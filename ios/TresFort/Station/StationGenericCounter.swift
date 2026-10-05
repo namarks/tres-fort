@@ -77,8 +77,13 @@ struct StationGenericCounter {
     /// Includes a first cycle whose signal choice is still pending.
     var count: Int { completedCycles + (pendingLock == nil ? 0 : 1) }
     private(set) var status: StationTrackingStatus = .seekingPosition
-    /// The signal chosen by the first completed cycle, if any.
-    var lockedSignal: String? { locked.map { trackers[$0].signal.name } }
+    /// The signal chosen by the first completed cycle, if any. While that choice
+    /// is pending it is the current best candidate, so a count is never shown
+    /// without its signal, even when a clip ends inside the lock window.
+    var lockedSignal: String? { chosen.map { trackers[$0].signal.name } }
+    /// True when the chosen signal's joints were missing on a frame where the
+    /// person was otherwise tracked, so it may have missed a repetition.
+    var chosenSignalMissedData: Bool { chosen.map { trackers[$0].missedData } ?? false }
 
     private var trackers: [Tracker]
     private var locked: Int?
@@ -126,7 +131,7 @@ struct StationGenericCounter {
         if let locked {
             guard let angle = trackers[locked].signal.angle(in: landmarks, minimumConfidence: Self.minimumConfidence) else {
                 // Keep the chosen signal and its calibration, but restart the cycle.
-                trackers[locked].reset()
+                trackers[locked].markMissing()
                 status = .trackingLost
                 return
             }
@@ -139,7 +144,9 @@ struct StationGenericCounter {
         var completed: [Int] = []
         for index in trackers.indices {
             guard let angle = trackers[index].signal.angle(in: landmarks, minimumConfidence: Self.minimumConfidence) else {
-                trackers[index].reset()
+                // Other candidates may still be visible, so overall status can stay
+                // tracked; remember the gap in case this candidate becomes the signal.
+                trackers[index].markMissing()
                 continue
             }
             visible = true
@@ -171,14 +178,20 @@ struct StationGenericCounter {
         for index in trackers.indices { trackers[index].reset() }
     }
 
-    private mutating func finishLock() {
-        guard let pendingLock else { return }
-        let best = pendingLock.completed.max { left, right in
+    /// The locked signal, or the largest candidate completed in the pending lock window.
+    private var chosen: Int? {
+        if let locked { return locked }
+        return pendingLock?.completed.max { left, right in
             let leftAmplitude = trackers[left].amplitude ?? 0
             let rightAmplitude = trackers[right].amplitude ?? 0
             return leftAmplitude == rightAmplitude ? left > right : leftAmplitude < rightAmplitude
         }
-        self.pendingLock = nil
+    }
+
+    private mutating func finishLock() {
+        guard pendingLock != nil else { return }
+        let best = chosen
+        pendingLock = nil
         guard let best else { return }
         locked = best
         completedCycles += 1
@@ -187,6 +200,7 @@ struct StationGenericCounter {
     private struct Tracker {
         let signal: StationAngleSignal
         private(set) var amplitude: Double?
+        private(set) var missedData = false
         private var direction: Double?
         /// The resting angle of the first completed cycle. Reacquisition returns
         /// to it, so a pause at the far end of a rep can never become the rest.
@@ -211,6 +225,12 @@ struct StationGenericCounter {
             rest = nil
             restCandidate = nil
             excursion = nil
+        }
+
+        /// A reset caused by this signal's own joints going missing.
+        mutating func markMissing() {
+            reset()
+            missedData = true
         }
 
         private var departure: Double { max(12, 0.25 * (amplitude ?? 0)) }
@@ -290,8 +310,12 @@ struct StationGenericMovementCounter {
 
     var hasTrackingLoss: Bool {
         exercise == .curl
-            ? left.status == .trackingLost || right.status == .trackingLost
-            : single.status == .trackingLost
+            ? Self.hasTrackingLoss(left) || Self.hasTrackingLoss(right)
+            : Self.hasTrackingLoss(single)
+    }
+
+    private static func hasTrackingLoss(_ counter: StationGenericCounter) -> Bool {
+        counter.status == .trackingLost || counter.chosenSignalMissedData
     }
 
     var signalDescription: String? {

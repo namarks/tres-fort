@@ -458,6 +458,9 @@ Earlier build evidence (historical, superseded where stated above):
 - Saved replay records generic per-frame counts, the chosen signal, coverage
   and `genericCounterVersion` (`generic-3d-v1`) beside the existing counters.
   Older comparisons decode with the fields absent. The live screen is unchanged.
+  A count is always saved with its signal, even when a clip ends while the
+  signal choice is pending. Coverage is marked incomplete when the chosen
+  signal's joints went missing while other joints stayed tracked.
 - Synthetic 3D unit tests rotate the same squats to front, diagonal, side and
   rear views and count five each, and cover noise, touch-and-go and slow reps,
   small, partial and shrinking movements, too-fast cycles, joint loss

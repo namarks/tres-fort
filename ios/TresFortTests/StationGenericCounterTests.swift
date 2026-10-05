@@ -166,6 +166,40 @@ final class StationGenericCounterTests: XCTestCase {
         XCTAssertEqual(counter.count, 4)
     }
 
+    func testClipEndingInsideTheLockWindowReportsTheCountWithItsSignal() {
+        // The only rep returns to rest on the last frame, so the signal choice is
+        // still pending when the clip ends.
+        let counter = countSquats(repetitionSeries(reps: 1, pause: 0))
+        XCTAssertEqual(counter.count, 1)
+        XCTAssertTrue(["leftKnee", "rightKnee"].contains(counter.lockedSignal ?? ""))
+    }
+
+    func testChosenSignalWithMissingJointsIsReportedAsIncomplete() {
+        // Ankles hidden while the shoulders and hips stay visible: the knees miss
+        // frames but the person is still tracked, and a knee is still chosen.
+        let start = repetitionSeries(reps: 5)
+        let hiddenAnkles = countSquats(start, hide: { $0 < 0.5 ? [27, 28] : [] })
+        XCTAssertEqual(hiddenAnkles.count, 5)
+        XCTAssertTrue(["leftKnee", "rightKnee"].contains(hiddenAnkles.lockedSignal ?? ""))
+        XCTAssertTrue(hiddenAnkles.chosenSignalMissedData)
+        XCTAssertNotEqual(hiddenAnkles.status, .trackingLost)
+
+        // Hiding only the hips' shoulder joints leaves the chosen knee complete.
+        let hiddenShoulders = countSquats(start, hide: { $0 < 0.5 ? [11, 12] : [] })
+        XCTAssertEqual(hiddenShoulders.count, 5)
+        XCTAssertFalse(hiddenShoulders.chosenSignalMissedData)
+
+        var movement = StationGenericMovementCounter(exercise: .squat)
+        var noise = SeededNoise(seed: 8)
+        for (time, depth) in start {
+            let pose = SyntheticPose(depth: depth, hiddenJoints: time < 0.5 ? [27, 28] : [])
+            movement.process(StationWorldPoseSample(timestamp: time, landmarks: pose.landmarks(noise: &noise),
+                                                    personCount: 1))
+        }
+        XCTAssertEqual(movement.count, 5)
+        XCTAssertTrue(movement.hasTrackingLoss)
+    }
+
     func testCyclesFasterThanTheMinimumDurationDoNotCount() {
         XCTAssertEqual(countSquats(repetitionSeries(reps: 3, period: 0.3, pause: 0.5)).count, 0)
     }

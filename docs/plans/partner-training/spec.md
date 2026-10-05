@@ -61,8 +61,9 @@ Stopping removes a lane from the quorum. When a member stops, their lane
 closes for the rest of the workout and the shared step then follows the
 remaining lane alone, which continues as a single-person Station workout from
 its own next unlogged set. A closed lane never reopens. If one phone's link
-drops, its lane holds and the iPad waits for that same phone to reconnect; a
-different person or phone cannot take the lane. The other member can tap
+drops, its lane holds and the iPad waits for that same phone to reconnect,
+proven by the lane's resume key (see pairing below); a different person or
+phone cannot take the lane. The other member can tap
 "Continue alone" at any time, which closes the dropped lane as if that member
 had stopped. If the iPad itself is lost, both phones carry on alone from their
 own last logged set, as normal workouts.
@@ -121,8 +122,13 @@ the partner's ID. The iPad computes the same fingerprint for the host account
 it is signed in as; if they match, it refuses the phone ("This phone is signed
 in as Nick") before offering Allow, because two lanes on one account would
 write both people's sets into one session. The iPad then asks the host to allow
-the partner. The partner's lane key lives only in memory and is forgotten when
-the dual workout ends.
+the partner. On Allow, the iPad sends the partner's phone, over the sealed
+connection, a fresh random 256-bit resume key for this lane. The join secret is
+then dead. If the partner's connection drops, the phone reconnects with the
+same challenge-response keyed by the resume key, so only the phone that was
+allowed can take the lane back; a device that copied the QR code has no
+resume key. The host's phone reconnects with the account link key as today.
+Both keys live only in memory and are forgotten when the dual workout ends.
 
 This needs no server change, no shared group and no deployment. A bystander who
 photographs the code still needs the host to tap Allow, and the code is dead

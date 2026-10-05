@@ -62,8 +62,9 @@ The design and the choices behind each phase are in [spec.md](spec.md).
   - Show two lanes on the iPad (name, weight, reps, logged state). Either person
     can stop; their lane closes for good and leaves the step quorum, so the
     other continues alone. A dropped phone's lane waits for that same phone,
-    and the other member can choose "Continue alone". If the iPad is lost, each
-    phone continues as a normal solo workout.
+    proven by a per-lane resume key issued on Allow, and the other member can
+    choose "Continue alone". If the iPad is lost, each phone continues as a
+    normal solo workout.
   - Keep the iPad free of partner data afterwards; disable test recording during
     a dual workout.
 - [ ] **P1 — Count two people side by side**

@@ -131,6 +131,11 @@ final class StationGenericCounterTests: XCTestCase {
         XCTAssertEqual(countSquats(repetitionSeries(reps: 5, scale: { $0 < 3 ? 1 : 0.4 })).count, 3)
     }
 
+    func testGraduallyShrinkingRepsCannotLowerTheFirstRepReference() {
+        let scales = [1, 0.8, 0.68, 0.58, 0.5, 0.43, 0.37]
+        XCTAssertEqual(countSquats(repetitionSeries(reps: scales.count, scale: { scales[$0] })).count, 2)
+    }
+
     func testCyclesFasterThanTheMinimumDurationDoNotCount() {
         XCTAssertEqual(countSquats(repetitionSeries(reps: 3, period: 0.3, pause: 0.5)).count, 0)
     }

@@ -224,8 +224,12 @@ struct StationGenericCounter {
             guard reached >= requiredAmplitude,
                   direction.map({ $0 == current.sign }) ?? true,
                   timestamp - current.startedAt >= StationGenericCounter.minimumCycleDuration else { return false }
-            direction = current.sign
-            amplitude = amplitude.map { 0.7 * $0 + 0.3 * reached } ?? reached
+            if amplitude == nil {
+                // The first completed cycle is the set's fixed reference. Later
+                // reps never move it, so a drift of short reps cannot lower the bar.
+                direction = current.sign
+                amplitude = reached
+            }
             return true
         }
     }

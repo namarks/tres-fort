@@ -88,9 +88,10 @@ keep iPhone + iPad for Station Mode; iPad can be added in a later version.
 
 ## Next step
 
-**Now (@owner):** Open the App Review page for the rejected submission and share
-Apple's message; the agent cannot read it. Then confirm agreements and App Privacy
-publication. **Agent, in parallel:** finish P1/P2 review-package preparation against the reviewed
+**Now (@owner):** Approve the AI-sharing consent and privacy policy changes for
+the 5.1.1/5.1.2 rejection recorded below, then publish the policy, confirm
+agreements and App Privacy answers, and upload the iPhone-only candidate.
+**Agent, in parallel:** finish P1/P2 review-package preparation against the reviewed
 [build-47 source](release-47.md) and retain the owner's device-verification follow-up. The
 owner-approved switch to MANUAL is complete. The selected build 40 is incompatible
 with the current canonical backend: its default `.legacy` client writes to
@@ -100,20 +101,34 @@ Replacing or resubmitting the candidate requires separate App Review authority;
 neither the TestFlight release nor the MANUAL change supplies it. Public release
 remains separately gated after a compatible candidate and readiness evidence.
 
-**App Review rejection (2026-10-05 finding):** Apple's 2026-09-22 06:09 UTC email
-("There's an issue with your Très Fort (iOS) submission") rejected submission
-`ea595b5e-86a6-4704-b1ef-ae87b971c728` without naming a guideline; the reason
-exists only on its App Review page, which the API does not expose. The owner must
-read it there. Inferred, not confirmed: review ran 2026-09-15 to 09-22, and the
-canonical Worker began serving at 2026-09-20 02:52 UTC ([release 44](release-44.md)),
-after which build 40's `/api/days` writes fail on the exact path the reviewer
-notes direct (create a workout, add exercises, start it). That would read as a
-Guideline 2.1 completeness defect. A replacement must come from current canonical
-source and be archived with `APP_STORE_IPHONE_ONLY=1 ./scripts/upload-testflight.sh`,
-which sets device family 1 for the app and widget, hides the iPad Station link,
-and verifies the archive's `UIDeviceFamily` before export. Owner-only before
-resubmission: the App Review message, agreements, App Privacy publication, build
-selection, reviewer reply, resubmission and the physical create/log/finish check.
+**App Review rejection (recorded 2026-10-05):** On 2026-09-22 App Review rejected
+submission `ea595b5e-86a6-4704-b1ef-ae87b971c728` (1.0 (40), reviewed on iPhone
+17 Pro Max and iPad Air 11-inch (M3)) under **Guidelines 5.1.1(i) and 5.1.2(i)**:
+the app appeared to share personal data with a third-party AI service without
+clearly saying what is sent and to whom, and without asking permission first.
+The privacy policy must also say what is collected, how, every use, and that the
+AI service gives equal protection. The owner supplied the App Review page; the
+email and API do not carry the reason. The response, in the same PR as the
+iPhone-only build path:
+
+- Coach Connect now opens on a permission step naming the recipient, the data
+  shared and what the connection can do. Setup actions, connection details and
+  connect codes appear only after **Allow sharing**; choosing another app asks
+  again. The mobile approval screen names the recipient from the registered
+  return address rather than the self-reported client name, and lists the data.
+- The privacy policy's AI section now covers recipients, data, collection
+  method, use, equal protection and withdrawal. Its equal-protection statement
+  is an operator commitment that needs owner approval, and the policy must be
+  deployed (website and Worker) before resubmission.
+- Version 1.0 is archived with `APP_STORE_IPHONE_ONLY=1 ./scripts/upload-testflight.sh`,
+  which sets device family 1 for the app and widget, hides the iPad Station link,
+  and verifies the archive's `UIDeviceFamily` before export. Apple still reviews
+  on an iPad in iPhone compatibility mode.
+
+Owner-only before resubmission: approve and publish the policy, review App
+Privacy answers for third-party AI sharing, upload the iPhone-only candidate,
+select it, reply to App Review, resubmit, and run the physical
+consent/create/log/finish check.
 
 **Internal comparison beta (2026-10-03):** The owner requested upload of the
 iPad camera comparison while Mac CI was queued. [Build 45's receipt](release-45.md)

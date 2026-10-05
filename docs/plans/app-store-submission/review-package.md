@@ -95,7 +95,11 @@ choose **Save feedback**. Microphone/speech permission denial permits typing or
 skipping. Real transcription depends on supported on-device language/model
 availability; simulator synthetic speech is not a demo of actual recognition.
 
-Claude: Profile → Coach explains access to training/health records through
+Claude: Profile → Coach opens on a permission step that names the recipient
+(for example "Claude, operated by Anthropic"), lists the data shared and what the
+connection can change, and offers **Allow sharing** or **Not now**. No setup link,
+connection detail or connect code is shown before that choice (Guidelines
+5.1.1(i)/5.1.2(i), rejected 2026-09-22). Coach explains access through
 Anthropic. A member uses their own compatible Claude account, generates a connect
 code, adds the Très Fort connector and explicitly authorizes it. Profile can
 revoke the connection. Never place a real connect code in public review notes.

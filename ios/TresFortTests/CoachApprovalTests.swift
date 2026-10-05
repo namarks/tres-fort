@@ -81,6 +81,19 @@ final class CoachApprovalTests: XCTestCase {
         guard case .finished = model.state else { return XCTFail("Expected acknowledgement") }
     }
 
+    func testRecipientComesFromTheRegisteredReturnAddressNotTheClientName() {
+        func recipient(_ name: String, _ uri: String) -> String {
+            CoachApprovalModel.recipient(for: CoachApprovalPreview(client_name: name, redirect_uri: uri, expires_at: 0))
+        }
+        XCTAssertEqual(recipient("Claude", "https://claude.ai/api/mcp/auth_callback"), "Claude, operated by Anthropic")
+        XCTAssertEqual(recipient("ChatGPT", "https://chatgpt.com/connector/oauth/cb"), "ChatGPT, operated by OpenAI")
+        XCTAssertEqual(recipient("Muse", "https://agent.meta.ai/api/hatch/oauth/callback"), "Meta AI, operated by Meta")
+        XCTAssertEqual(recipient("Claude", "https://claude.ai.example/cb"),
+                       "The app at claude.ai.example and its configured model provider")
+        XCTAssertEqual(recipient("Claude", "http://claude.ai/cb"),
+                       "The app at the return address above and its configured model provider")
+    }
+
     func testExpiredRequestCannotBeApproved() async {
         let api = CoachApprovalStub()
         api.preview = CoachApprovalPreview(client_name: "App", redirect_uri: "https://client.example/callback", expires_at: 0)

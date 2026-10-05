@@ -92,8 +92,14 @@ partner's phone proves it holds the secret with the same challenge-response,
 per-connection key and sealed, counted messages as today's link
 (`StationLink.proof` / `sessionKey` / `seal`), keyed by the join secret instead
 of the account link key. After the proof, the phone sends the member's display
-name and the iPad asks the host to allow it. The partner's lane key lives only
-in memory and is forgotten when the dual workout ends.
+name and an account fingerprint: an HMAC of its account ID under the join
+secret, so the iPad learns whether two phones share an account without learning
+the partner's ID. The iPad computes the same fingerprint for the host account
+it is signed in as; if they match, it refuses the phone ("This phone is signed
+in as Nick") before offering Allow, because two lanes on one account would
+write both people's sets into one session. The iPad then asks the host to allow
+the partner. The partner's lane key lives only in memory and is forgotten when
+the dual workout ends.
 
 This needs no server change, no shared group and no deployment. A bystander who
 photographs the code still needs the host to tap Allow, and the code is dead

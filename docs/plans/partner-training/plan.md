@@ -31,7 +31,9 @@ The design and the choices behind each phase are in [spec.md](spec.md).
 - [ ] **P0 — Start a dual workout and move through it together**
   - Before any set is logged, the linked host taps "Train together" on the iPad;
     the iPad shows a one-time QR join code. The partner scans it in their own
-    app, and the host confirms on the iPad. Starting the workout ends joining.
+    app, and the host confirms on the iPad. A phone signed in as the host's
+    own account is refused before confirmation, using an account fingerprint
+    keyed by the join secret. Starting the workout ends joining.
   - The partner's phone receives the host's workout over the sealed link with
     every writable slot field and its supersets or circuits, and opens "Your
     weights": each exercise uses the partner's own most recent working weight

@@ -37,9 +37,16 @@ The design and the choices behind each phase are in [spec.md](spec.md).
     weights": each exercise uses the partner's own most recent working weight
     and unit, else the host's target marked "Check".
   - Save the partner's copy to their library in one atomic create of a workout
-    with full slots through the shared plan writer, then open their runner.
+    with full slots through the shared plan writer, with fresh slot and group
+    IDs that keep each superset's members, then open their runner.
+  - Until multi-session days ship, refuse to start when either member already
+    has a started or finished strength session that date, and say so on the
+    iPad; an unstarted planned session is replaced as today.
   - The iPad holds the shared step: both phones arm the same exercise and set,
     rest starts once both have logged it, and the next set starts for both.
+    The step is derived from both lanes' acknowledged sets, so an Undo on
+    either phone rewinds it to that set and stops rest while the other lane's
+    set stays logged.
     Swap, add, reorder and remove are off during a dual workout; a skip applies
     to both. Each person logs, corrects and undoes their own sets by hand.
   - Show two lanes on the iPad (name, weight, reps, logged state). Either person
@@ -66,6 +73,7 @@ The design and the choices behind each phase are in [spec.md](spec.md).
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P0 | blocked_by | plan:ipad-workout-station#P2 | The partner link reuses the single-member iPhone–iPad link, which still needs its paired-device trial. |
+| P0 | coordinates_with | plan:workouts-and-multi-session#P1 | One strength session per member per date limits a dual workout to members who have not trained yet that day, until ordered sessions per date ship. |
 | P1 | blocked_by | plan:ipad-workout-station#P1 | Counting two people needs the counter chosen and measured on the mounted iPad first. |
 | P2 | blocked_by | plan:ipad-workout-station#P1 | Counting the person whose turn it is needs the same validated counter. |
 

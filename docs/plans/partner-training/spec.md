@@ -44,8 +44,17 @@ account on the partner's behalf.
 
 Moving through the workout together adds one shared piece of state: the current
 step (exercise, set, and whether the pair is resting). The iPad holds it, since
-both phones connect to it. A phone arms only the current step; the step
-advances when both lanes have logged or skipped that set. If the iPad link is
+both phones connect to it. A phone arms only the current step. The step is
+derived from each lane's acknowledged sets, never advanced by a timer or a
+single message: it is the earliest set that is not yet logged or skipped in
+both lanes, and rest runs only while both lanes have that set logged.
+
+Undo therefore rewinds without a special case. When a phone's Undo deletes its
+set, that lane reports the set as no longer logged; the step returns to that
+set, rest stops, and only that phone re-arms it. The other lane's logged set
+stays logged and acknowledged, and that lane shows "waiting for Alex" until the
+set is logged again. A correction that edits weight or reps does not move the
+step. If the iPad link is
 lost, the dual workout ends and each phone carries on alone from its own last
 logged set, as a normal workout. The same phone may reconnect after a brief
 drop; a different person or phone cannot.
@@ -53,6 +62,17 @@ drop; a different person or phone cannot.
 Rejected: the iPad logging for both people. It would need a second signed-in
 account on one device and a second offline outbox, and it breaks the rule that
 only the phone writes.
+
+### One session per date
+
+Today a member can hold only one strength session per date
+(`ux_session_user_date`; `workouts-and-multi-session#P1` lifts that). Until
+then, a dual workout uses each member's session for that date. A planned but
+unstarted session is replaced, as the existing "train a different day"
+choice does. If either member has already started or finished a strength
+session that date, the iPad says so before the partner is allowed in, and the
+dual workout cannot start. Once multi-session days ship, the dual workout
+becomes an additional session instead.
 
 ### Same structure, personal loads
 
@@ -98,6 +118,12 @@ in its own unit. If none exists, it shows the host's target and unit, marked
 "Check". Weights are never converted or scaled from the host's numbers, in line
 with the repository rule against extrapolating loads across people or
 exercises.
+
+The handoff is a template, not identities. The partner's copy gets fresh slot
+IDs and fresh group IDs, one new group ID per host group, so every superset or
+circuit keeps its members and order. Reusing the host's IDs would collide with
+the host's workout and with the partner's earlier copies, because a group ID
+must be unique across a member's whole plan (`validatePlanExerciseGroups`).
 
 **The partner's copy is saved to their library** as an ordinary workout named
 after the host's ("Upper A — with Nick"), so their runner, rest, supersets,

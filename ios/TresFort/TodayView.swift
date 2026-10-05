@@ -218,6 +218,17 @@ struct TodayView: View {
     @State private var isPreparingWorkoutStart = false
     @State private var showFreestyle = false
     @State private var showStation = false
+    /// iPhone end of the iPad Station link; it browses only while a workout
+    /// runs with the setting on, so the local network prompt is opt-in.
+    @StateObject private var stationLink = StationLinkController()
+    @AppStorage(StationLink.enabledAccountDefaultsKey) private var stationLinkEnabledAccount = ""
+    private var stationLinkAccount: String? {
+        // Final review keeps the link so the last iPad-logged set can be undone.
+        guard StationLink.isEnabled(storedAccount: stationLinkEnabledAccount, accountID: auth.userID),
+              sync.running,
+              UIDevice.current.userInterfaceIdiom == .phone else { return nil }
+        return auth.userID
+    }
     /// The full calendar, pushed from the week strip.
     @State private var showCalendar = false
 
@@ -355,6 +366,10 @@ struct TodayView: View {
                         stationAuth?.isCurrentFeatureSession(accountID: accountID, epoch: epoch) == true
                     }, observeBoundary: { [weak stationAuth = auth] observer in
                         _ = stationAuth?.observeFeatureSessionBoundary(observer)
+                    }, loadLinkKey: { [weak stationAuth = auth] in
+                        guard let accountID, let stationAuth,
+                              stationAuth.isCurrentFeatureSession(accountID: accountID, epoch: epoch) else { return nil }
+                        return await StationLinkKeyStore.load(accountID: accountID, jwt: stationAuth.featureJWT)
                     })
                     .environment(\.dynamicTypeSize, dynamicTypeSize)
             }
@@ -395,8 +410,26 @@ struct TodayView: View {
         }
         .preferredColorScheme(.dark)
         .task(id: sync.canChooseStarterWorkout) { await loadStarterAvailability() }
+        .task(id: stationLinkAccount) {
+            guard let account = stationLinkAccount else { stationLink.stop(); return }
+            let key = await StationLinkKeyStore.load(accountID: account, jwt: auth.featureJWT)
+            guard !Task.isCancelled, stationLinkAccount == account else { return }
+            if let key { stationLink.start(key: key) } else { stationLink.keyUnavailable() }
+        }
+        // A rotated key restarts the running link so both devices meet again.
+        .onReceive(NotificationCenter.default.publisher(for: StationLinkKeyStore.refreshed)) { note in
+            guard let account = stationLinkAccount, note.userInfo?["accountID"] as? String == account else { return }
+            Task { @MainActor in
+                guard let key = await StationLinkKeyStore.load(accountID: account, jwt: nil),
+                      stationLinkAccount == account else { return }
+                stationLink.start(key: key)
+            }
+        }
         .onChange(of: sync.restEndDate) { if sync.restEndDate == nil { restExpanded = false } }
         .onChange(of: sync.running) { if !sync.running { isLocallyMinimized = false } }
+        // Only the open runner logs counts, so a minimized workout is not armed;
+        // resuming arms the current set again.
+        .onChange(of: workoutFocused) { _, focused in if !focused { stationLink.pause() } }
     }
 
     /// Queue only after the setup sheet has dismissed. The member-entry route
@@ -435,7 +468,7 @@ struct TodayView: View {
 
     @ViewBuilder private var content: some View {
         if sync.finished {
-            FinishedView(sync: sync, onExpandRest: scrollableRestExpansion)
+            FinishedView(sync: sync, stationLink: stationLink, onExpandRest: scrollableRestExpansion)
         } else if sync.running && !workoutFocused {
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
@@ -463,7 +496,7 @@ struct TodayView: View {
                 .padding(20)
             }
         } else if sync.running {
-            RunnerView(sync: sync, auth: auth, onExpandRest: { restExpanded = true })
+            RunnerView(sync: sync, auth: auth, stationLink: stationLink, onExpandRest: { restExpanded = true })
         } else if sync.plan == nil && !sync.canCreateRoutine {
             PlanLoadRecoveryView(sync: sync)
         } else if sync.canChooseStarterWorkout && !sync.todayIsCompleted {
@@ -775,6 +808,7 @@ private struct RunnerView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
+    @ObservedObject var stationLink: StationLinkController
     var onExpandRest: (() -> Void)? = nil
 
     /// Tap-to-edit on the big weight number → decimal-pad sheet. Persists
@@ -796,6 +830,12 @@ private struct RunnerView: View {
     @State private var valueDraft: SetValueDraft?
     @State private var weightPrescription: RunnerPrescription?
     @AppStorage(RestCue.defaultsKey) private var timerCuesEnabled = true
+    @AppStorage(StationLink.enabledAccountDefaultsKey) private var stationLinkEnabledAccount = ""
+    private var showsStationLink: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+    private var stationLinkEnabled: Binding<Bool> {
+        Binding(get: { StationLink.isEnabled(storedAccount: stationLinkEnabledAccount, accountID: auth.userID) },
+                set: { stationLinkEnabledAccount = $0 ? (auth.userID ?? "") : "" })
+    }
 
     @State private var showingOutline = false
     @State private var loadRevealedFor: Set<String> = []
@@ -931,6 +971,9 @@ private struct RunnerView: View {
                 // Reserve layout without mounting an empty correction view or
                 // a Color-backed container, which SwiftUI exposes to AX audits.
                 Spacer(minLength: 0).frame(height: 44)
+            }
+            if showsStationLink && stationLinkEnabled.wrappedValue {
+                StationLinkRunnerPanel(sync: sync, link: stationLink, ex: ex)
             }
             RunnerSetAction(sync: sync, ex: ex)
         }
@@ -1118,6 +1161,11 @@ private struct RunnerView: View {
             Toggle("Timer sounds", isOn: $timerCuesEnabled)
                 .tint(Theme.accent).frame(minHeight: 44)
                 .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
+            if showsStationLink {
+                Toggle("Count reps with iPad Station", isOn: stationLinkEnabled)
+                    .tint(Theme.accent).frame(minHeight: 44)
+                    .accessibilityIdentifier("runner.stationLink")
+            }
             if ex.exercise_modality == "barbell" {
                 NavigationLink("Plates & warm-up guide") {
                     BarbellLoadingView(target: sync.weight, unit: ex.targetWeightUnit)
@@ -1625,6 +1673,7 @@ private struct RestNextSetValues: View {
 
 private struct FinishedView: View {
     @ObservedObject var sync: SyncModel
+    @ObservedObject var stationLink: StationLinkController
     var onExpandRest: (() -> Void)? = nil
 
     /// All live WORKING sets in today's session (warm-ups excluded), taken
@@ -1645,6 +1694,9 @@ private struct FinishedView: View {
             VStack(spacing: 16) {
                 if let onExpandRest {
                     RestPill(sync: sync, horizontalPadding: 0, onExpand: onExpandRest)
+                }
+                if let logged = stationLink.lastLogged {
+                    StationLinkUndoRow(sync: sync, link: stationLink, logged: logged)
                 }
                 Text(finishPending ? "WAITING" : readyToFinish ? "SETS DONE" : "REVIEW SETS")
                     .font(Theme.display(finishPending ? 64 : 58))

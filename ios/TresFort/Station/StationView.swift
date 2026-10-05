@@ -5,31 +5,42 @@ import Combine
 /// AuthModel is reduced to a validator and boundary registration at the caller.
 struct StationEntryView: View {
     let workoutName: String?
+    let loadLinkKey: @MainActor () async -> Data?
     @StateObject private var access: StationAccess
 
     init(workoutName: String?, accountID: String?, epoch: UInt64,
          isCurrentSession: @escaping @MainActor () -> Bool,
-         observeBoundary: @escaping (@escaping () -> Bool) -> Void) {
+         observeBoundary: @escaping (@escaping () -> Bool) -> Void,
+         loadLinkKey: @escaping @MainActor () async -> Data? = { nil }) {
         self.workoutName = workoutName
+        self.loadLinkKey = loadLinkKey
         _access = StateObject(wrappedValue: StationAccess(accountID: accountID, epoch: epoch,
                                                        isCurrentSession: isCurrentSession,
                                                        observeBoundary: observeBoundary))
     }
 
-    var body: some View { StationView(workoutName: workoutName, access: access) }
+    var body: some View { StationView(workoutName: workoutName, access: access, loadLinkKey: loadLinkKey) }
 }
 
-/// An observation-only trial. This view receives a display string, never a
-/// SyncModel, API client, outbox or binding to the workout's mutable state.
+/// An observation-only trial. This view receives a display string and a link
+/// key loader, never a SyncModel, API client, outbox or binding to the
+/// workout's mutable state.
 struct StationView: View {
     let workoutName: String?
     @ObservedObject var access: StationAccess
+    let loadLinkKey: @MainActor () async -> Data?
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @StateObject private var camera: StationCamera
     @State private var exercise: StationExercise = .squat
     @StateObject private var comparison = StationLiveModel()
+    /// Optional link that counts the set armed by this account's iPhone runner.
+    /// It carries counts out; nothing here can log a set.
+    @StateObject private var link = StationLinkStation()
+    @State private var linkedArmID: UUID?
+    /// The latest "on" tap; turning the link off or on again supersedes it.
+    @State private var linkRequest: UUID?
 #if DEBUG
     @StateObject private var diagnostics = StationDiagnostics()
 #endif
@@ -41,9 +52,11 @@ struct StationView: View {
     @State private var countdownTask: Task<Void, Never>?
     @State private var showSavedTests = false
 
-    init(workoutName: String?, access: StationAccess) {
+    init(workoutName: String?, access: StationAccess,
+         loadLinkKey: @escaping @MainActor () async -> Data? = { nil }) {
         self.workoutName = workoutName
         self.access = access
+        self.loadLinkKey = loadLinkKey
         _camera = StateObject(wrappedValue: StationCamera(access: access))
     }
 
@@ -65,6 +78,7 @@ struct StationView: View {
                             counterPanel
                             cameraPanel
                         }
+                        linkPanel
                         recordingPanel
 #if DEBUG
                         diagnosticPanel
@@ -99,6 +113,9 @@ struct StationView: View {
         .onReceive(access.$isActive) { active in
             guard !active else { return }
             cancelCountdown()
+            linkRequest = nil
+            link.stop()
+            linkedArmID = nil
             comparison.reset(exercise: exercise)
             actualReps = ""
             hasRunTrial = false
@@ -108,6 +125,8 @@ struct StationView: View {
         }
         .onDisappear {
             cancelCountdown()
+            linkRequest = nil
+            link.stop()
 #if DEBUG
             diagnostics.isEnabled = false
 #endif
@@ -129,14 +148,28 @@ struct StationView: View {
             if state != .running {
                 cancelCountdown()
                 cancelComparison("Camera stopped. Results cover only part of this trial.")
+            } else if let arm = link.armToCount, linkedArmID != arm.armID {
+                startLinkedTrial(arm)
             }
             UIApplication.shared.isIdleTimerDisabled = state == .running
                 ? true : previousIdleTimerDisabled
         }
+        // A rotated key restarts advertising so the iPhone can find it again.
+        .onReceive(NotificationCenter.default.publisher(for: StationLinkKeyStore.refreshed)) { _ in
+            guard link.isEnabled, let request = linkRequest else { return }
+            Task { @MainActor in
+                let key = await loadLinkKey()
+                guard access.validate(), linkRequest == request, link.isEnabled, let key else { return }
+                link.enable(key: key)
+            }
+        }
         .onReceive(camera.$latestFrame) { frame in
             guard access.validate() else { return }
             if comparison.state.isCollecting {
-                if camera.state == .running, let frame { comparison.process(frame) }
+                if camera.state == .running, let frame {
+                    comparison.process(frame)
+                    observeLinkedTrial(at: frame.sample.timestamp)
+                }
                 else { cancelComparison("Camera view changed. Start a new test.") }
             }
 #if DEBUG
@@ -152,6 +185,99 @@ struct StationView: View {
             }
         }
         .sheet(isPresented: $showSavedTests) { StationRecordingsView(access: access) }
+        .onChange(of: link.arm) { _, arm in handleArm(arm) }
+        .onChange(of: comparison.state) { _, state in
+            // Stopped by hand or invalidated before the set settled: offer
+            // what was counted as partial, so it never logs without a tap.
+            guard linkedArmID != nil, link.isCounting, state.isTerminal else { return }
+            // Nothing was counted: the same arm may be retried with Start
+            // tracking or by turning the camera back on.
+            if !link.trialEnded(count: comparison.count, leftCount: comparison.leftCount,
+                                rightCount: comparison.rightCount, partial: true) {
+                linkedArmID = nil
+            }
+        }
+    }
+
+    private func handleArm(_ arm: StationLinkArm?) {
+        if let current = linkedArmID, current != arm?.armID {
+            linkedArmID = nil
+            if comparison.state.isCollecting { comparison.reset(exercise: exercise) }
+        }
+        guard let arm else { return }
+        startLinkedTrial(arm)
+    }
+
+    private func startLinkedTrial(_ arm: StationLinkArm) {
+        guard access.validate(), link.armToCount?.armID == arm.armID, linkedArmID != arm.armID else { return }
+        guard camera.state == .running, !recordingBusy, !showSavedTests else {
+            link.report(camera.state == .running ? .stopped : .cameraOff, armID: arm.armID)
+            return
+        }
+        actualRepsFocused = false
+        actualReps = ""
+        exercise = arm.exercise
+        hasRunTrial = true
+        linkedArmID = arm.armID
+        comparison.start(exercise: arm.exercise)
+        link.beginCounting()
+    }
+
+    private func observeLinkedTrial(at timestamp: TimeInterval) {
+        guard linkedArmID != nil, link.isCounting, comparison.state.isCollecting else { return }
+        let finished = link.observe(count: comparison.count, leftCount: comparison.leftCount,
+                                    rightCount: comparison.rightCount, status: comparison.status,
+                                    partial: comparison.hasIncompleteCoverage, at: timestamp)
+        if finished { comparison.stop() }
+    }
+
+    private var linkPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("COUNT FOR MY IPHONE").font(Theme.mono(12, .bold))
+            // On from the tap, while the key loads, so turning it off cancels.
+            Toggle("Count sets for my iPhone workout", isOn: Binding(
+                get: { link.isEnabled || linkRequest != nil },
+                set: { enabled in
+                    guard enabled else { linkRequest = nil; link.stop(); return }
+                    guard access.validate() else { return }
+                    let request = UUID()
+                    linkRequest = request
+                    Task { @MainActor in
+                        let key = await loadLinkKey()
+                        guard access.validate(), linkRequest == request else { return }
+                        link.enable(key: key)
+                        if !link.isEnabled { linkRequest = nil } // no key: show off, with why
+                    }
+                }))
+                .tint(Theme.accent)
+                .accessibilityIdentifier("station.link")
+            Text(linkMessage)
+                .font(.subheadline).foregroundStyle(Theme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("station.linkStatus")
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var linkMessage: String {
+        if link.needsKey {
+            return "Connect this iPad to the internet once to set up counting for your iPhone, then try again."
+        }
+        switch link.connection {
+        case .off:
+            return "Your iPhone runs the workout and logs each set. Turn this on, then turn on iPad Station in your iPhone workout."
+        case .searching:
+            return "Looking for your iPhone. Keep the workout open on your iPhone with iPad Station turned on."
+        case .connected(let name):
+            guard let arm = link.arm else { return "Connected to \(name). Waiting for your next set." }
+            let state = link.isCounting ? "Counting"
+                : link.manualArmID == arm.armID ? "Log this set on your iPhone"
+                : linkedArmID == arm.armID ? "Sent to your iPhone"
+                : camera.state == .running ? "Not counting" : "Turn on the camera to count"
+            return "Connected to \(name) · \(arm.exerciseName), set \(arm.setNumber) · \(state)"
+        }
     }
 
     private func cancelComparison(_ reason: String) {
@@ -188,6 +314,9 @@ struct StationView: View {
     @ViewBuilder private var exerciseButtons: some View {
         ForEach(StationExercise.allCases) { option in
             Button {
+                // Taking over by hand ends the armed set here, counted or not,
+                // so the camera or Start tracking can't silently re-link it.
+                link.abandon()
                 hasRunTrial = false
                 actualReps = ""
                 actualRepsFocused = false
@@ -330,6 +459,8 @@ struct StationView: View {
                 actualRepsFocused = false
                 if comparison.state.isCollecting {
                     comparison.stop()
+                } else if let arm = link.armToCount, linkedArmID == nil {
+                    startLinkedTrial(arm)
                 } else {
                     actualReps = ""
                     hasRunTrial = true
@@ -351,7 +482,7 @@ struct StationView: View {
                 } else { referenceCount }
             }
             if hasRunTrial { timingDetails }
-            Text("Trial only · No sets are saved")
+            Text(link.isEnabled ? "This iPad saves nothing · Your iPhone logs the set" : "Trial only · No sets are saved")
                 .font(.subheadline).foregroundStyle(Theme.muted)
                 .multilineTextAlignment(.center)
                 .accessibilityIdentifier("station.trialNotice")

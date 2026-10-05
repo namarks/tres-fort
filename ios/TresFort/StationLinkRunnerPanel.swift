@@ -135,10 +135,15 @@ struct StationLinkRunnerPanel: View {
             return
         }
         let previous = sync.lastRunnerSetID
+        let previousReps = sync.reps
         sync.setReps(proposal.reps)
         await sync.logCurrentSet(expected: current, expectedSetNumber: proposal.setNumber)
         guard let setID = sync.lastRunnerSetID, setID != previous else {
-            // The set wasn't saved: keep the count on screen to try again.
+            // The set wasn't saved: keep the count on screen to try again, and
+            // give the member's own rep entry back to LOG SET.
+            if sync.currentExercise?.id == current.id, sync.currentPhysicalSetNumber == proposal.setNumber {
+                sync.setReps(previousReps)
+            }
             link.holdProposal(proposal.eventID)
             return
         }

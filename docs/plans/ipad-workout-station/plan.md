@@ -1,6 +1,6 @@
 # iPad Workout Station
 
-Slug: ipad-workout-station · Status: active · Updated: 2026-10-04 · Theme: gym-floor
+Slug: ipad-workout-station · Status: active · Updated: 2026-10-05 · Theme: gym-floor
 
 ## Goal
 
@@ -65,6 +65,11 @@ may turn detections into durable workout actions.
   - Treat front-facing squats as a primary wall-mounted use case. Evaluate
     calibrated hip movement and inferred 3D knee angles using live evidence;
     the current side-view 2D angle counter cannot establish frontal coverage.
+  - Evaluate an exercise-agnostic counter as the path to broad coverage instead
+    of one angle rule per exercise. The planned exercise supplies only a body
+    region and per-side hint; no camera view is required. Saved replay runs it
+    on MediaPipe 3D world landmarks beside the existing counters. See the
+    [generic counter evidence](#generic-3d-counter).
   - Record count errors, corrections and setup/repositioning effort. Select the
     supported movements/angles from observed evidence, not assumed accuracy.
   - Validate each mapped variant before expanding experiment availability.
@@ -125,8 +130,9 @@ unless an active runner overrides it, and restart hold acquisition when the
 person is still moving through accepted geometry. The owner explicitly approved publication
 to `namarks/tres-fort` on 2026-10-04; Nick owns merge. The implementation is on
 `codex/catalog-camera-profiles`. This branch incorporates the merged Today
-calendar work (PR #233), curl-confidence/replay-coverage fix (PR #234) and
-linked assisted logging (PR #232) through `aa02550` on `origin/main`. With the
+calendar work (PR #233), curl-confidence/replay-coverage fix (PR #234),
+linked assisted logging (PR #232) and the replay-only generic 3D counter
+(PR #236) through `fd2dd89` on `origin/main`. With the
 link on, an armed iPhone set switches the iPad from a hold or catalog selection
 to that set's rep counter; choosing any exercise by hand on the iPad abandons
 the armed set, which stays manual on the iPhone.
@@ -149,6 +155,10 @@ are awaiting owner clarification. Separate front-facing and side-view squat
 clips remain useful for the counter. Sustained performance, other movements,
 false positives and fully automatic logging remain unvalidated. No unattended
 recording is requested.
+**Generic counter (@owner):** The replay-only generic 3D counter merged in
+PR #236; see [generic 3D counter](#generic-3d-counter). With a build that
+contains it, rerun saved comparisons (including the mixed front/side squat
+clip) and label actual reps; no new recording format or live change is needed.
 
 ## Approved comparison scope
 
@@ -185,6 +195,11 @@ recording is requested.
   front-facing squat support as a needed use case. Developer diagnostics stay
   opt-in and Debug-only: bounded numerical summaries on the local console,
   with no images, video, account identifiers, network sink or workout writes.
+- On 2026-10-05 the owner chose an exercise-agnostic counter over a
+  per-exercise rule catalog: use the planned exercise as a hint, but never
+  constrain the member to one camera position. The owner approved a
+  replay-only implementation. It adds no live counter, workout write,
+  recording format, dependency or distribution.
 
 ## Implementation evidence
 
@@ -486,6 +501,42 @@ Earlier build evidence (historical, superseded where stated above):
   Evidence: `.artifacts/ios/tres-fort-ios.SWgBMN/Tests.xcresult` and
   `.artifacts/station-device/post-merge-device-build.log`. Work paused before
   pushing these follow-ups or installing that latest device build.
+
+## Generic 3D counter
+
+- `StationGenericCounter` follows every 3D joint angle (knee, hip, elbow,
+  shoulder) in the hinted region from MediaPipe world landmarks. When the first
+  clear out-and-back cycle completes (at least 30 degrees, at least 0.55
+  seconds), the largest cycle finished within 0.3 seconds becomes the set's
+  signal. That first cycle fixes the reference amplitude, direction and resting
+  angle; later cycles must reach 60 percent of it, and the reference never
+  averages in later reps. The resting angle does not drift, so slow reps (up to
+  12 seconds) are not absorbed. It reuses the 0.6 confidence cutoff, 0.5-second
+  gap reset and one-person rule. Lost joints restart the cycle and keep earlier
+  counts; counting resumes only back near the reference resting angle. Curls run one counter per arm and
+  never sum them. Squat uses the lower-body hint; curl and bench use upper body.
+- Saved replay records generic per-frame counts, the chosen signal, coverage
+  and `genericCounterVersion` (`generic-3d-v1`) beside the existing counters.
+  Older comparisons decode with the fields absent. The live screen is unchanged.
+  A count is always saved with its signal, even when a clip ends while the
+  signal choice is pending. Coverage is marked incomplete when the chosen
+  signal's joints went missing while other joints stayed tracked, or, before
+  any signal is chosen, when any candidate's joints did, so an obscured arm or
+  joint is never shown as a reliable zero.
+- Synthetic 3D unit tests rotate the same squats to front, diagonal, side and
+  rear views and count five each, and cover noise, touch-and-go and slow reps,
+  small, partial and shrinking movements, too-fast cycles, joint loss
+  (including loss on the way down with a pause at the bottom), frame gaps,
+  multiple people and independent arms. Rotating a skeleton cannot change 3D angles, so these
+  tests prove the counter uses only view-independent geometry. They do not
+  measure MediaPipe's depth error from a real camera, which remains the main
+  risk for front-facing views. Physical accuracy is unvalidated until saved
+  clips with actual-rep labels are rerun on device. Ankle angles (calf raises)
+  and the additional 21 MediaPipe landmarks are not yet used.
+- Background: the 2026-10-05 survey of datasets, research, open-source and
+  commercial counters found no open per-exercise rule catalog of this size;
+  research instead uses class-agnostic counting. Closest published method:
+  [viewpoint-invariant skeleton repetition counting](https://arxiv.org/abs/2107.13760).
 
 ## Acceptance and verification
 

@@ -116,6 +116,10 @@ iPhone-only build path:
   connect codes appear only after **Allow sharing**; choosing another app asks
   again. The mobile approval screen names the recipient from the registered
   return address rather than the self-reported client name, and lists the data.
+  Existing grants, already approved on the earlier disclosure screens, keep
+  access until disconnected; the copy says so. Revoking them or enforcing a
+  consent version during bearer validation is a production change for the owner
+  to decide.
 - The privacy policy's AI section now covers recipients, data, collection
   method, use, equal protection and withdrawal. Its equal-protection statement
   is an operator commitment that needs owner approval, and the policy must be

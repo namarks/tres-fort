@@ -126,7 +126,7 @@ struct CoachConnectView: View {
             Text("Share your training data with \(selectedApp.recipient)?")
                 .font(.headline)
                 .accessibilityIdentifier("coach.data-sharing")
-            Text("To coach you, \(selectedApp.shortName) reads and changes your Très Fort data through a connection you approve. Nothing is sent until you allow it here and then approve the connection.")
+            Text("To coach you, \(selectedApp.shortName) reads and changes your Très Fort data through a connection you approve. Nothing is sent to a new app until you allow it here and then approve its connection. Apps you already connected keep access until you disconnect them in Profile.")
                 .font(.footnote)
             VStack(alignment: .leading, spacing: 6) {
                 Text("What is shared").font(.subheadline.weight(.semibold))

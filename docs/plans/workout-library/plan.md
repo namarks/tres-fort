@@ -565,7 +565,7 @@ records production and internal-client delivery evidence, with the approved
 live-verification deferral stated above. A pre-metadata Worker is unsafe to restore after
 metadata writes because its rebuild/snapshots omit the fields.
 
-**Latest retained client distribution:** [TestFlight 1.0 (47)](../app-store-submission/release-47.md)
+**Earlier Focus client distribution:** [TestFlight 1.0 (47)](../app-store-submission/release-47.md)
 includes the Focus workflow and the earlier library/canonical-workout changes.
 Apple confirmed VALID / IN_BETA_TESTING and internal Testers assignment on
 October 3. The receipt records App Review build 40 as REJECTED, with MANUAL

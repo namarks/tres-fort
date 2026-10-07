@@ -88,8 +88,10 @@ No provider API credentials are stored or forwarded by Très Fort.
 
 ### Meta AI (Muse), connected by the member
 
-Verified on the owner's account on 2026-10-06: Muse in Meta AI read the
-coaching brief and made a plan change that appeared in the iOS plan history.
+Verified on the owner's account on 2026-10-06, against the production Worker
+before [PR #239](https://github.com/namarks/tres-fort/pull/239) was released:
+Muse in Meta AI read the coaching brief and made a plan change that appeared in
+the iOS plan history. The route therefore does not depend on that release.
 It is not an in-app setup choice. The privacy policy limits in-app setup to
 services whose policies protect personal information at least as well as
 Très Fort's, including no advertising use, and
@@ -105,8 +107,9 @@ ask it to load the coaching brief to prove the connection. It signs in from
 Meta's hosted browser, so the iPhone approval link cannot open there: expand
 **Use a connect code** on the Très Fort consent page instead. Its callback is
 `https://agent.meta.ai/api/hatch/oauth/callback`, which dynamic registration
-accepts without configuration, and the consent page names the recipient as
-Meta AI, operated by Meta.
+accepts without configuration. Once PR #239 is released, the consent page also
+names the recipient as Meta AI, operated by Meta, and refused OAuth requests
+log an `oauth_refused` reason for `wrangler tail`.
 
 ### ChatGPT developer mode and Dots
 

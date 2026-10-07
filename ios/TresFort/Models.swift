@@ -32,6 +32,7 @@ struct UserDTO: Decodable {
 }
 
 struct TemplateExercise: Codable, Identifiable, Equatable {
+    var progression: String? = nil
     let id: String
     let exercise_id: String
     let exercise_name: String
@@ -354,6 +355,7 @@ struct PlanComparisonResponse: Codable, Equatable {
 }
 
 struct SessionRow: Codable, Identifiable {
+    var partner_workout_id: String? = nil
     var kind: String? = nil
     var isFreestyle: Bool { kind == "freestyle" }
     var exercise_swaps: String? = nil

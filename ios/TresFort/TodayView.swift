@@ -221,6 +221,8 @@ struct TodayView: View {
     /// iPhone end of the iPad Station link; it browses only while a workout
     /// runs with the setting on, so the local network prompt is opt-in.
     @StateObject private var stationLink = StationLinkController()
+    @StateObject private var partner = PartnerPhoneModel()
+    @State private var showPartner = false
     @AppStorage(StationLink.enabledAccountDefaultsKey) private var stationLinkEnabledAccount = ""
     private var stationLinkAccount: String? {
         // Final review keeps the link so the last iPad-logged set can be undone.
@@ -233,7 +235,7 @@ struct TodayView: View {
     @State private var showCalendar = false
 
     var body: some View {
-        let fullRestOverlayVisible = sync.restEndDate != nil && restExpanded && (workoutFocused || sync.finished)
+        let fullRestOverlayVisible = !sync.isPartnerWorkout && sync.restEndDate != nil && restExpanded && (workoutFocused || sync.finished)
         NavigationStack {
             ZStack(alignment: .top) {
                 Theme.background
@@ -253,14 +255,19 @@ struct TodayView: View {
                             .frame(minHeight: 44)
                             .accessibilityIdentifier("today.openSavedStarter")
                     }
-                    content
-                    if sync.canStartFreestyle {
+                    if UIDevice.current.userInterfaceIdiom == .phone {
+                        Button(partner.isOpen ? "Partner workout setup" : "Train together") { showPartner = true }
+                            .frame(minHeight: 44).accessibilityIdentifier("today.partner")
+                    }
+                    if partner.isActive { PartnerPhoneRunner(model: partner, sync: sync) }
+                    else { content.disabled(sync.partnerReserved) }
+                    if !sync.partnerReserved && sync.canStartFreestyle {
                         Button { showFreestyle = true } label: {
                             Label(sync.isFreestyle ? "Continue freestyle" : "Start freestyle", systemImage: "figure.strengthtraining.traditional")
                                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                         }.padding(.horizontal, 20).accessibilityIdentifier("today.startFreestyle")
                     }
-                    if let onLogActivity, !sync.running, !sync.finished {
+                    if let onLogActivity, !sync.partnerReserved, !sync.running, !sync.finished {
                         Button(action: onLogActivity) {
                             Label("Log an activity", systemImage: "figure.walk")
                                 .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
@@ -298,7 +305,7 @@ struct TodayView: View {
                         .accessibilityIdentifier("today.station")
                     }
                 }
-                if sync.running {
+                if sync.running && !sync.isPartnerWorkout {
                     if workoutFocused {
                         ToolbarItem(placement: .topBarLeading) {
                             Button("Minimize", systemImage: "chevron.down") {
@@ -397,6 +404,7 @@ struct TodayView: View {
             .sheet(item: $showTodayPicker) { target in
                 WorkoutDatePickerView(sync: sync, date: target.id)
             }
+            .sheet(isPresented: $showPartner) { PartnerPhoneSetup(model: partner, sync: sync) }
             .sheet(isPresented: $showFreestyle) { FreestyleExercisePicker(sync: sync, starting: true) }
             .sheet(isPresented: $showRoutine) {
                 CreateWorkoutView(sync: sync, onStart: sync.todayIsCompleted ? nil : startChosenWorkout)
@@ -414,6 +422,11 @@ struct TodayView: View {
         }
         .preferredColorScheme(.dark)
         .task(id: sync.canChooseStarterWorkout) { await loadStarterAvailability() }
+        .task(id: auth.featureSessionEpoch) {
+            guard UIDevice.current.userInterfaceIdiom == .phone else { return }
+            partner.bind(auth: auth, sync: sync, link: stationLink)
+        }
+        .onChange(of: partner.needsReview) { _, needed in if needed { showPartner = true } }
         .task(id: stationLinkAccount) {
             guard let account = stationLinkAccount else { stationLink.stop(); return }
             let key = await StationLinkKeyStore.load(accountID: account, jwt: auth.featureJWT)

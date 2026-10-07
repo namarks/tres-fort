@@ -573,6 +573,7 @@ final class AuthModel: ObservableObject {
                 return
             }
             pendingEntryIntents = []
+            PartnerLaneKeyStore.clear(accountID: previousAccount)
         }
         if featureJWT != nil {
             notifyFeatureSessionBoundary()
@@ -719,6 +720,7 @@ final class AuthModel: ObservableObject {
             return
         }
         guard persistEntryIntents([]) else { return }
+        if let userID { PartnerLaneKeyStore.clear(accountID: userID) }
         notifyFeatureSessionBoundary()
         featureSessionEpoch &+= 1
         resetOnboardingResolution()

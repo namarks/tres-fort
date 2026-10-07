@@ -52,6 +52,7 @@ struct StationView: View {
     /// Optional link that counts the set armed by this account's iPhone runner.
     /// It carries counts out; nothing here can log a set.
     @StateObject private var link = StationLinkStation()
+    @StateObject private var partner: PartnerStationModel
     @State private var linkedArmID: UUID?
     /// The latest "on" tap; turning the link off or on again supersedes it.
     @State private var linkRequest: UUID?
@@ -73,6 +74,7 @@ struct StationView: View {
         self.catalog = catalog
         self.access = access
         self.loadLinkKey = loadLinkKey
+        _partner = StateObject(wrappedValue: PartnerStationModel(accountID: access.session.accountID))
         _camera = StateObject(wrappedValue: StationCamera(access: access))
     }
 
@@ -83,6 +85,9 @@ struct StationView: View {
             GeometryReader { geometry in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
+                        if partner.isOpen {
+                            PartnerStationPanel(model: partner)
+                        } else {
                         heading
                         exercisePicker
                         if let selectedOption { mappingDetails(selectedOption) }
@@ -106,7 +111,16 @@ struct StationView: View {
                             // armed iPhone set switches to its rep counter.
                             linkPanel
                         }
+                        Button("Train together") {
+                            guard !recordingBusy, access.validate() else { return }
+                            cancelCountdown(); cancelComparison("Starting partner workout.")
+                            camera.stop(); holdTimer.invalidate(); linkedArmID = nil
+                            partner.begin(link: link)
+                        }.buttonStyle(.borderedProminent)
+                            .disabled(!link.connection.isConnected || recordingBusy)
+                            .accessibilityIdentifier("station.trainTogether")
                         privacyNote
+                        }
                     }
                     .padding(24)
                     .frame(maxWidth: 1240)
@@ -135,6 +149,7 @@ struct StationView: View {
         }
         .onReceive(access.$isActive) { active in
             guard !active else { return }
+            partner.end()
             cancelCountdown()
             linkRequest = nil
             link.stop()
@@ -150,6 +165,7 @@ struct StationView: View {
             dismiss()
         }
         .onDisappear {
+            partner.end()
             cancelCountdown()
             linkRequest = nil
             link.stop()
@@ -238,6 +254,7 @@ struct StationView: View {
     }
 
     private func handleArm(_ arm: StationLinkArm?) {
+        guard !partner.isOpen else { return }
         if let current = linkedArmID, current != arm?.armID {
             linkedArmID = nil
             if comparison.state.isCollecting { comparison.reset(exercise: exercise) }
@@ -261,7 +278,7 @@ struct StationView: View {
     }
 
     private func startLinkedTrial(_ arm: StationLinkArm) {
-        guard access.validate(), link.armToCount?.armID == arm.armID, linkedArmID != arm.armID else { return }
+        guard !partner.isOpen, access.validate(), link.armToCount?.armID == arm.armID, linkedArmID != arm.armID else { return }
         guard camera.state == .running, !recordingBusy, !showSavedTests else {
             link.report(camera.state == .running ? .stopped : .cameraOff, armID: arm.armID)
             return

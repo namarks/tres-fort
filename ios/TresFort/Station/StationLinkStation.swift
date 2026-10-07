@@ -16,6 +16,9 @@ final class StationLinkStation: ObservableObject {
     /// No link key yet: the iPad must reach the server once to set up.
     @Published private(set) var needsKey = false
 
+    var onPartnerMessage: ((PartnerPacket) -> Void)?
+    func sendPartner(_ packet: PartnerPacket) { transport.send(.partner(packet)) }
+
     private let transport: StationLinkTransport
     private var detector = StationSetEndDetector()
     private var lastProgress: StationLinkProgress?
@@ -54,6 +57,7 @@ final class StationLinkStation: ObservableObject {
 
     func receive(_ message: StationLinkMessage) {
         switch message {
+        case .partner(let packet): onPartnerMessage?(packet)
         case .arm(let next):
             if arm?.armID == next.armID { return }
             withdraw()

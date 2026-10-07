@@ -119,7 +119,9 @@ enum AccountLocalState {
     @MainActor
     @discardableResult
     static func clear(userID: String, defaults: LocalPersistence = .standard) -> Bool {
+        PartnerLaneKeyStore.clear(accountID: userID)
         let protectedKeys = [
+            PartnerCheckpointStore.key(userID),
             trainingProfileDraftKey(userID: userID),
             PlanChangeDismissalStore.key(userID: userID),
             ActivityOutboxStore.scopedKey(userID: userID),

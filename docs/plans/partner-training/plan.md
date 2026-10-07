@@ -1,6 +1,6 @@
 # Partner Training on One iPad
 
-Slug: partner-training · Status: planned · Updated: 2026-10-05 · Theme: gym-floor
+Slug: partner-training · Status: active · Updated: 2026-10-06 · Theme: gym-floor
 
 ## Goal
 
@@ -117,18 +117,39 @@ The design and the choices behind each phase are in [spec.md](spec.md).
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | blocked_by | plan:ipad-workout-station#P2 | The partner link reuses the single-member iPhone–iPad link, which still needs its paired-device trial. |
+| P0 | coordinates_with | plan:ipad-workout-station#P2 | The owner activated partner setup on 2026-10-06. Repository implementation can proceed; distribution still requires the single-member link trial and the partner trial. |
 | P0 | coordinates_with | plan:workouts-and-multi-session#P1 | One strength session per member per date limits a dual workout to members who have not trained yet that day, until ordered sessions per date ship. |
 | P1 | blocked_by | plan:ipad-workout-station#P1 | Counting two people needs the counter chosen and measured on the mounted iPad first. |
 | P2 | blocked_by | plan:ipad-workout-station#P1 | Counting the person whose turn it is needs the same validated counter. |
 
 ## Next step
 
-**Now (@owner):** Activate this plan when it should start. The owner chose
-side by side first and dual-start-only on 2026-10-05. P0 implementation waits
-for the Station link trial (`ipad-workout-station#P2`).
+**Now (@owner):** Merge the `codex/partner-training-setup` pull request once its
+exact-head Codex review and required CI checks pass. P0 repository work implements the
+manual two-lane setup and runner; it does not implement camera counting. Keep P0
+open until the [paired-device acceptance checks](validation.md) pass. Migration
+0056, Worker deployment and client distribution need separate release authority.
+
+Implementation evidence: `test/partner_training.test.ts`,
+`ios/TresFortTests/PartnerTrainingTests.swift`, and the partner runner cases in
+`SetOutboxTests.swift`. These check atomic copy/start/cancel, structural write
+locks, lane identity, shared-step/rest/Undo rules, persistence and the normal
+account-owned set outbox. Simulator checks do not prove three-device discovery,
+QR handoff or reconnect timing.
 
 ## Notes / open questions
+
+- Owner activation (2026-10-06): "Work on the partner training setup" authorizes
+  P0 implementation now. The existing device trial remains an acceptance and
+  distribution gate, rather than blocking repository development.
+- Cancellation has an append-only audit receipt indexed by member and Start
+  request ID. It fences a Start that committed without an acknowledgement or
+  has not committed yet; it cannot discard live sets. The session marker is
+  also pinned against full-plan session remaps and session-only swaps.
+- A failed start ends that setup; cancel it and review a fresh invitation. Each
+  individual Start and copy retries the same immutable request. Continue alone
+  closes the lane locally and retains its backend cleanup until connectivity
+  returns, while ordinary queued sets remain account-owned.
 
 - Owner decisions (2026-10-05): side by side before turn-taking, with both
   modes supported eventually; a dual workout must be started as one, so nobody

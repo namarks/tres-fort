@@ -20,6 +20,9 @@ final class StationLinkController: ObservableObject {
     /// No link key yet: the device must reach the server once to set up.
     @Published private(set) var needsKey = false
 
+    var onPartnerMessage: ((PartnerPacket) -> Void)?
+    func sendPartner(_ packet: PartnerPacket) { transport.send(.partner(packet)) }
+
     private let transport: StationLinkTransport
     private var seenEvents: Set<UUID> = []
     private var completedArmID: UUID?
@@ -174,6 +177,7 @@ final class StationLinkController: ObservableObject {
 
     func receive(_ message: StationLinkMessage) {
         switch message {
+        case .partner(let packet): onPartnerMessage?(packet)
         case .progress(let value):
             guard value.armID == arm?.armID else { return }
             progress = value

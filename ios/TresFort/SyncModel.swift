@@ -104,6 +104,11 @@ final class SyncModel: ObservableObject {
     @Published var restTotal: Int = 0
 
     // Guided workout runner.
+    @Published var partnerReserved = false
+    @Published private(set) var partnerContinuingAlone = false
+    @Published private(set) var partnerControl: PartnerRunnerControl?
+    var onPartnerSkip: (() -> Void)?
+    var isPartnerWorkout: Bool { !partnerContinuingAlone && (partnerReserved || partnerControl != nil || todaySession?.partner_workout_id != nil) }
     @Published var running = false
     @Published var finished = false
     @Published private(set) var workoutFeedback: WorkoutFeedback?
@@ -297,6 +302,9 @@ final class SyncModel: ObservableObject {
         self.timedCueFinisher = timedCueFinisher
         self.timedNotificationCanceller = timedNotificationCanceller
         self.accountID = auth.userID
+        self.partnerContinuingAlone = auth.userID.flatMap { PartnerCheckpointStore.load($0, defaults: defaults) }?.phase == .leaving
+        self.partnerReserved = auth.userID.flatMap { PartnerCheckpointStore.load($0, defaults: defaults) }
+            .map { $0.phase != .leaving } ?? false
         self.featureSessionEpoch = auth.featureSessionEpoch
         self.freestyleAPI = freestyleAPI
         self.setWriteAPI = setWriteAPI
@@ -1081,7 +1089,7 @@ final class SyncModel: ObservableObject {
             return submittedSession
         }
         return SessionRow(
-            kind: submittedSession.kind, exercise_swaps: submittedSession.exercise_swaps,
+            partner_workout_id: submittedSession.partner_workout_id, kind: submittedSession.kind, exercise_swaps: submittedSession.exercise_swaps,
             notes: submittedSession.notes, perceived_fatigue: submittedSession.perceived_fatigue,
             started_at: submittedSession.started_at, completed_at: submittedSession.completed_at,
             id: result.set.session_id,
@@ -1127,7 +1135,7 @@ final class SyncModel: ObservableObject {
         aliasIDs.insert(acknowledgedSession.id)
         aliasIDs.insert(acceptedSet.session_id)
         let canonical = SessionRow(
-            kind: source.kind, exercise_swaps: source.exercise_swaps,
+            partner_workout_id: source.partner_workout_id, kind: source.kind, exercise_swaps: source.exercise_swaps,
             notes: source.notes, perceived_fatigue: source.perceived_fatigue,
             started_at: source.started_at, completed_at: source.completed_at,
             id: acceptedSet.session_id,
@@ -1330,7 +1338,7 @@ final class SyncModel: ObservableObject {
                 current!, with: response, kind: .resolution)
         let source = advancesAttempt || responseWins ? response : current!
         let canonical = SessionRow(
-            kind: source.kind, exercise_swaps: source.exercise_swaps,
+            partner_workout_id: source.partner_workout_id, kind: source.kind, exercise_swaps: source.exercise_swaps,
             notes: source.notes, perceived_fatigue: source.perceived_fatigue,
             started_at: source.started_at, completed_at: source.completed_at,
             id: response.id,
@@ -2032,7 +2040,7 @@ final class SyncModel: ObservableObject {
             sessions.filter { $0.date == staleSession.date }.map(\.id))
         aliasedSessionIDs.insert(staleSession.id)
         let canonicalSession = SessionRow(
-            kind: staleSession.kind, exercise_swaps: staleSession.exercise_swaps,
+            partner_workout_id: staleSession.partner_workout_id, kind: staleSession.kind, exercise_swaps: staleSession.exercise_swaps,
             notes: staleSession.notes, perceived_fatigue: staleSession.perceived_fatigue,
             started_at: staleSession.started_at, completed_at: staleSession.completed_at,
             id: committedSet.session_id,
@@ -2393,6 +2401,10 @@ final class SyncModel: ObservableObject {
     }
 
     func isSetEntryBlocked(_ ex: TemplateExercise) -> Bool {
+        if isPartnerWorkout {
+            guard let control = partnerControl, control.slotID == ex.id, control.canLog,
+                  !partnerLoggedIndices(ex).contains(control.set) else { return true }
+        }
         if hasPendingTerminalIntentForCurrentWorkout || isTerminalMutationInFlight || isSwappingExercise {
             return true
         }
@@ -2543,6 +2555,7 @@ final class SyncModel: ObservableObject {
         guard canInitiateBoundFeatureAction,
               currentJWT != nil, canMutateBoundSetAccount,
               !isTerminalMutationInFlight,
+              (!isPartnerWorkout || !isSetEntryBlocked(ex)),
               terminalOutbox.intent(for: workoutDate) == nil,
               !setSlotsInFlight.contains(ex.id)
         else { return nil }
@@ -3819,7 +3832,7 @@ final class SyncModel: ObservableObject {
             preflightMountedRunnerOwnership(
                 checkpointBeforeState: persistedRunnerCheckpoint)
         }
-        guard running, date == todayString, !exercises.isEmpty else { return }
+        guard !isPartnerWorkout, running, date == todayString, !exercises.isEmpty else { return }
         defer { rememberGroupProgress() }
         // An ACK may remove a previous set while another physical hold is in
         // progress. Its selection repair waits for that hold's local commit.
@@ -4019,6 +4032,7 @@ final class SyncModel: ObservableObject {
 
     @discardableResult
     func swapWorkoutExercise(_ target: WorkoutSwapTarget, with exerciseID: String) async -> Bool {
+        guard !isPartnerWorkout else { return false }
         guard let jwt = currentJWT, canInitiateBoundFeatureAction,
               matchesTerminalActionTarget(target.session), running, !finished, !timedActive,
               !isSwappingExercise, !isTerminalMutationInFlight, !hasPendingTerminalIntentForCurrentWorkout,
@@ -4075,6 +4089,7 @@ final class SyncModel: ObservableObject {
     }
     /// 1-based number of the set about to be performed for the current exercise.
     var currentSetNumber: Int {
+        if let control = partnerControl { return control.set }
         guard let ex = currentExercise else { return 1 }
         return groupProgress(for: ex)?.round ?? (runnerSetsDone(ex) + 1)
     }
@@ -4089,7 +4104,8 @@ final class SyncModel: ObservableObject {
     /// the outbox and keep reserving their original index even though the
     /// presentation count reopens them for retry.
     private func nextReservedSetIndex(for ex: TemplateExercise) -> Int {
-        reservedSetIDs(for: ex).count + 1
+        if let control = partnerControl, control.slotID == ex.id { return control.set }
+        return reservedSetIDs(for: ex).count + 1
     }
 
     /// Runner progress counts every locally durable set exactly once. Pending
@@ -4154,6 +4170,7 @@ final class SyncModel: ObservableObject {
     }
 
     private func normalizeMountedRunnerAfterLocalCommit(for date: String) {
+        guard !isPartnerWorkout else { return }
         guard running, date == todayString, let current = currentExercise else {
             return
         }
@@ -4257,6 +4274,7 @@ final class SyncModel: ObservableObject {
 
     @discardableResult
     private func repairGroupAfterDeletedSet(_ intent: PendingSetCorrection, observedGroupID: String? = nil) -> Bool {
+        if isPartnerWorkout { return !running || persistRunnerCheckpoint() }
         if intent.runnerGroupRepair != nil {
             // A missing local plan/checkpoint is not evidence that a prepared
             // repair became obsolete. An invalidated cache or retired model
@@ -4338,6 +4356,7 @@ final class SyncModel: ObservableObject {
     }
 
     private func reopenMountedRunner(for failedIntent: PendingSetIntent) {
+        guard !isPartnerWorkout else { return }
         guard running, failedIntent.date == todayString,
               let index = exercises.firstIndex(where: {
                   setIntent(failedIntent, matches: $0, on: todayString)
@@ -4385,6 +4404,7 @@ final class SyncModel: ObservableObject {
     }
 
     private func allowNewWorkoutStart() -> Bool {
+        guard !isPartnerWorkout else { return false }
         guard !isRoutineMutationInFlight else {
             loadError = "Wait for the routine change to finish before starting your workout."
             return false
@@ -4409,6 +4429,7 @@ final class SyncModel: ObservableObject {
     }
 
     func startWorkout() {
+        guard !isPartnerWorkout else { return }
         guard canInitiateBoundFeatureAction, currentJWT != nil else { return }
         guard allowNewWorkoutStart() else { return }
         let date = todaySession?.date ?? todayString
@@ -4451,6 +4472,86 @@ final class SyncModel: ObservableObject {
         if currentExercise?.group_id != nil {
             normalizeMountedRunnerProgress(for: todayString, forceGroupSelection: true)
         } else { rememberGroupProgress() }
+    }
+
+    /// Start ACKs bind the ordinary runner to the exact reviewed attempt. Never
+    /// replace its durable queue: it remains the sole authority for set writes.
+    @discardableResult
+    func mountPartnerWorkout(_ session: SessionRow) -> Bool {
+        guard canInitiateBoundFeatureAction,
+              (hasVerifiedPlanState && !isUsingCachedState || canUseOfflineWorkoutState),
+              session.date == todayString,
+              session.status == "in_progress", let workoutID = session.workout_id,
+              plan?.workouts.contains(where: { $0.id == workoutID }) == true else { return false }
+        guard let accepted = acceptSessionResolution(session), accepted.status == "in_progress",
+              accepted.partner_workout_id == session.partner_workout_id else { return false }
+        if running, selectedDayID == workoutID, todaySession?.id == accepted.id, todaySession?.attempt == accepted.attempt,
+           persistedRunnerCheckpoint?.sessionAttempt == accepted.attempt { return true }
+        guard clearRunnerCheckpointAndSharedRest() else { return false }
+        todaySession = accepted; selectedDayID = workoutID
+        runnerRestartDiscardedAttempt = nil; workoutFeedback = nil
+        runnerFocus = RunnerFocusState(); deferredGroupRepair = nil
+        running = true; finished = false; exerciseIndex = 0; skipped = []
+        workoutStart = session.started_at.map { Date(timeIntervalSince1970: Double($0) / 1000) } ?? now()
+        seedInputs()
+        return persistRunnerCheckpoint()
+    }
+
+    func partnerLoggedIndices(_ ex: TemplateExercise) -> Set<Int> {
+        let deleted = Set(setCorrections.filter { $0.isDelete && $0.deliveryState == .queued }.map(\.setID))
+        return Set(todaySlotSets(ex).filter { !deleted.contains($0.id) }.map(\.set_index))
+            .union(pendingSetIntents(for: ex).filter { $0.deliveryState == .queued && !deleted.contains($0.id) }
+                .map { $0.body.set_index })
+    }
+
+    func applyPartnerControl(_ value: PartnerRunnerControl) {
+        guard canInitiateBoundFeatureAction, running else { return }
+        let previous = partnerControl
+        partnerControl = value
+        finished = value.complete
+        if let index = exercises.firstIndex(where: { $0.id == value.slotID }),
+           previous?.slotID != value.slotID || exerciseIndex != index {
+            clearTimedSet(); exerciseIndex = index; seedInputs()
+        } else if previous?.set != value.set { clearTimedSet() }
+        if restEndDate != value.restUntil {
+            relinquishLocalRest(); restActivityEnder(); restNotificationCanceller()
+            if let end = value.restUntil, end > now() {
+                restEndDate = end; restExercise = currentExercise?.exercise_name ?? "Together"
+                restTotal = max(0, Int(ceil(end.timeIntervalSince(now()))))
+                scheduleRestCue(for: end); RestCue.scheduleNotification(at: end)
+            }
+        }
+        if previous != value { persistRunnerCheckpoint() }
+    }
+
+    @discardableResult
+    func releasePartnerWorkout(_ session: SessionRow?) -> Bool {
+        if let session {
+            guard let accepted = acceptSessionResolution(session), accepted.partner_workout_id == nil else { return false }
+            if accepted.status == "discarded" { stopRunnerForStateChange() }
+        }
+        partnerReserved = false; partnerControl = nil; partnerContinuingAlone = false
+        onPartnerSkip = nil
+        // The lane has closed irreversibly. Existing sets and the outbox carry
+        // on through the ordinary solo runner, with no partner credentials.
+        if running { normalizeMountedRunnerProgress(for: todayString) }
+        return true
+    }
+
+    /// Continuing alone is a durable local choice. The server marker is
+    /// cleared when connectivity returns; ordinary queued sets keep their IDs.
+    @discardableResult
+    func continuePartnerAlone() -> Bool {
+        guard canInitiateBoundFeatureAction, let accountID,
+              let saved = PartnerCheckpointStore.load(accountID, defaults: defaults), saved.phase == .leaving,
+              let attempt = saved.attempt, let sessionID = saved.sessionID,
+              let session = sessions.first(where: { $0.id == sessionID && $0.attempt == attempt }),
+              session.status == "in_progress", session.date == todayString else { return false }
+        if !running, !mountPartnerWorkout(session) { return false }
+        partnerReserved = false; partnerControl = nil; partnerContinuingAlone = true
+        onPartnerSkip = nil
+        normalizeMountedRunnerProgress(for: todayString)
+        return true
     }
 
     var hasResumableWorkout: Bool { resumableCheckpoint != nil }
@@ -4517,6 +4618,7 @@ final class SyncModel: ObservableObject {
     /// work. Pending writes remain pending and keep their exact attempt tokens.
     /// Timed holds restart from a stable boundary rather than elapsed wall time.
     func resumeWorkout() {
+        guard !isPartnerWorkout else { return }
         guard canInitiateBoundFeatureAction, currentJWT != nil,
               !isUsingCachedState || canUseOfflineWorkoutState else { return }
         let candidate = resumableCheckpoint.flatMap { checkpoint in
@@ -4632,7 +4734,7 @@ final class SyncModel: ObservableObject {
               currentPhysicalSetNumber == expectedSetNumber,
               ex.isTimed,
               !timedActive,
-              !isRunnerComplete(ex),
+              (partnerControl != nil || !isRunnerComplete(ex)),
               !isTerminalMutationInFlight,
               !hasPendingTerminalIntentForCurrentWorkout,
               !isSetEntryBlocked(ex)
@@ -4784,7 +4886,7 @@ final class SyncModel: ObservableObject {
                 : reservedSetIDs(for: ex).isSubset(of: attempt.reservedSetIDs)),
               groupContext(for: ex) == attempt.groupContext,
               ex.isTimed,
-              !isRunnerComplete(ex),
+              (partnerControl != nil || !isRunnerComplete(ex)),
               ex.holdSeconds == attempt.prescribedHoldSeconds,
               ex.isWarmup == attempt.isWarmup,
               timedStartDate == attempt.startedAt,
@@ -4954,6 +5056,7 @@ final class SyncModel: ObservableObject {
     }
 
     func jump(to index: Int) {
+        guard !isPartnerWorkout else { return }
         guard exercises.indices.contains(index) else { return }
         // Returning from final review is an explicit runner selection too.
         // Persist the reopened state with the selected exercise below.
@@ -4989,7 +5092,7 @@ final class SyncModel: ObservableObject {
               let ex = currentExercise,
               currentExerciseMatchesRenderedAction(renderedExercise, current: ex),
               currentPhysicalSetNumber == expectedSetNumber,
-              !isRunnerComplete(ex),
+              (partnerControl != nil || !isRunnerComplete(ex)),
               !isSetEntryBlocked(ex)
         else { return }
         skipped.remove(ex.id)   // logging work un-skips this slot
@@ -5006,6 +5109,7 @@ final class SyncModel: ObservableObject {
     /// session (so it is NOT requeued, #3) and advances to the next
     /// unresolved exercise; ends the workout if none remain.
     func skip() {
+        if isPartnerWorkout { onPartnerSkip?(); return }
         guard !isSwappingExercise else { return }
         // Skip is a terminal decision for the rendered hold even when there is
         // no next slot and `jump` therefore never calls `seedInputs`.
@@ -5084,6 +5188,7 @@ final class SyncModel: ObservableObject {
     }
 
     func finishWorkout() async {
+        guard !isPartnerWorkout else { return }
         guard !isSwappingExercise else { return }
         guard canInitiateBoundFeatureAction, currentJWT != nil else { return }
         let date = todaySession?.date ?? todayString
@@ -5151,6 +5256,7 @@ final class SyncModel: ObservableObject {
     /// the runner/Live Activity don't linger; `load()` then pulls the
     /// vanished state. Restarting the day creates a fresh session.
     func discardWorkout() async {
+        guard !isPartnerWorkout else { return }
         guard !isSwappingExercise else { return }
         guard canInitiateBoundFeatureAction, currentJWT != nil else { return }
         let date = todaySession?.date ?? todayString
@@ -5872,6 +5978,7 @@ final class SyncModel: ObservableObject {
     private var restCueTask: Task<Void, Never>?
 
     private func startWorkoutRest(seconds: Int, name: String) {
+        guard !isPartnerWorkout else { return }
         guard seconds > 0, !exercises.isEmpty,
               !exercises.allSatisfy({ isRunnerResolved($0) }) else {
             if restEndDate != nil { skipRest() }
@@ -5896,6 +6003,7 @@ final class SyncModel: ObservableObject {
         RestCue.scheduleNotification(at: end)
     }
     func addRest(_ seconds: Int) {
+        guard !isPartnerWorkout else { return }
         guard canControlSharedRestArtifacts, let end = restEndDate else {
             if restEndDate != nil { relinquishStaleRunnerCheckpoint() }
             return
@@ -5907,6 +6015,11 @@ final class SyncModel: ObservableObject {
         RestCue.scheduleNotification(at: newEnd)
     }
     func skipRest() {
+        if isPartnerWorkout {
+            // Internal runner teardown also calls this method. Only the
+            // explicit partner control may ask the iPad to skip shared rest.
+            relinquishLocalRest(); restActivityEnder(); restNotificationCanceller(); return
+        }
         guard canControlSharedRestArtifacts else {
             relinquishStaleRunnerCheckpoint()
             return

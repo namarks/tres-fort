@@ -113,6 +113,11 @@ may turn detections into durable workout actions.
     counts and required corrections; validate them before enabling auto-log.
   - Preserve manual recovery, device takeover and offline/reconnect integrity.
 
+## Execution frontier
+
+- P1
+- P2
+
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
@@ -124,7 +129,9 @@ may turn detections into durable workout actions.
 ## Next step
 
 **Now (@owner):** Install the matching build-49 client, available in internal
-TestFlight, on the iPhone and iPad, then run P2's linked-device trial. The
+TestFlight, on the iPhone and iPad, then evaluate P1's mounted-iPad counting and
+P2's linked-device logging, Undo and fallback. These owner-participated trials
+are the current execution frontier; their existing acceptance gates remain open. The
 October 7 owner-authorized [release](../app-store-submission/release-49.md)
 deploys source `cd3cf40`, including the Station link-key route, and uploads the
 matching iPhone/iPad client. The catalog camera profiles, curl fix and linked

@@ -1,6 +1,6 @@
 # Partner Training on One iPad
 
-Slug: partner-training · Status: active · Updated: 2026-10-06 · Theme: gym-floor
+Slug: partner-training · Status: active · Updated: 2026-10-07 · Theme: gym-floor
 
 ## Goal
 
@@ -117,18 +117,21 @@ The design and the choices behind each phase are in [spec.md](spec.md).
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | coordinates_with | plan:ipad-workout-station#P2 | The owner activated partner setup on 2026-10-06. Repository implementation can proceed; distribution still requires the single-member link trial and the partner trial. |
+| P0 | coordinates_with | plan:ipad-workout-station#P2 | The owner authorized the internal backend/client release on 2026-10-07. The single-member link trial and partner trial remain acceptance requirements. |
 | P0 | coordinates_with | plan:workouts-and-multi-session#P1 | One strength session per member per date limits a dual workout to members who have not trained yet that day, until ordered sessions per date ship. |
 | P1 | blocked_by | plan:ipad-workout-station#P1 | Counting two people needs the counter chosen and measured on the mounted iPad first. |
 | P2 | blocked_by | plan:ipad-workout-station#P1 | Counting the person whose turn it is needs the same validated counter. |
 
 ## Next step
 
-**Now (@owner):** Merge [PR #243](https://github.com/namarks/tres-fort/pull/243) once its
-exact-head Codex review and required CI checks pass. P0 repository work implements the
-manual two-lane setup and runner; it does not implement camera counting. Keep P0
-open until the [paired-device acceptance checks](validation.md) pass. Migration
-0056, Worker deployment and client distribution need separate release authority.
+**Now (@owner):** Run the [paired-device acceptance checks](validation.md) with
+build 49 from internal TestFlight against the matching deployed Worker.
+[PR #243](https://github.com/namarks/tres-fort/pull/243) merged after exact-head
+Codex review and required CI. The October 7 owner-authorized
+[release](../app-store-submission/release-49.md) applied migration 0056, deployed
+source `cd3cf40` and uploaded the iPhone/iPad client. Keep P0 open until the
+physical trial passes. The release implements manual two-person workouts;
+it does not implement partner camera counting.
 
 Implementation evidence: `test/partner_training.test.ts`,
 `ios/TresFortTests/PartnerTrainingTests.swift`, and the partner runner cases in
@@ -140,8 +143,9 @@ QR handoff or reconnect timing.
 ## Notes / open questions
 
 - Owner activation (2026-10-06): "Work on the partner training setup" authorizes
-  P0 implementation now. The existing device trial remains an acceptance and
-  distribution gate, rather than blocking repository development.
+  P0 implementation. The October 7 backend/TestFlight authorization enables
+  the internal trial; it does not claim physical acceptance or authorize
+  public release.
 - Cancellation has an append-only audit receipt indexed by member and Start
   request ID. It fences a Start that committed without an acknowledgement or
   has not committed yet; it cannot discard live sets. The session marker is

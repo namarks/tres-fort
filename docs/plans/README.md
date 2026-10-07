@@ -134,8 +134,9 @@ AI coaching.
   internal TestFlight 1.0 (43). P1 tags/archive and P2 freestyle/Save as workout
   shipped under the build-44 live-verification deferral; build 47 delivered the
   Focus runner. P0.5(c) adds static preview thumbnails with compact-phone and
-  accessibility verification; its PR carries review/CI evidence and distribution
-  remains separate. The visual-source comparison recommends future replacements.
+  accessibility verification; PR #244 is merged and the owner-authorized
+  [build-49 release](app-store-submission/release-49.md) records its matching
+  Worker and internal beta. The visual-source comparison recommends future replacements.
   Authenticated live workout verification remains
   separately gated; repository completion cannot establish that acceptance.
 - [Workouts and multi-session days](workouts-and-multi-session/plan.md) —

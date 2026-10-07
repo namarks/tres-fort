@@ -141,9 +141,10 @@ AI coaching.
   separately gated; repository completion cannot establish that acceptance.
 - [Workouts and multi-session days](workouts-and-multi-session/plan.md) —
   **active**; the owner retired legacy-client support. P0(c) removed old wire
-  contracts and physical-schema adaptation, preserving historical data. Canonical
-  Worker/client release remains separately gated; ordered sessions per date
-  follow as the next repository feature slice.
+  contracts and physical-schema adaptation, preserving historical data. The
+  canonical Worker and internal client are released through
+  [build 49](app-store-submission/release-49.md); authenticated workout checks
+  remain gated. Ordered sessions per date are the next repository feature slice.
 [Supersets and circuits](completed/supersets-and-circuits/plan.md) are retained
 as completed repository history: shared coach/member authoring, alternating
 round execution and recovery, separate transition/round rests, and compatible

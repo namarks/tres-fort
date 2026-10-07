@@ -171,6 +171,10 @@ struct PartnerCoordinator {
     private(set) var revision: UInt64 = 0
     private var restingStep: Int?
 
+    init(steps: [PartnerStep]) {
+        self.steps = steps
+    }
+
     var state: PartnerSharedState {
         .init(revision: revision, stepIndex: min(released + 1, steps.count), restUntil: restUntil,
               skipped: skipped, host: lanes[.host]!, partner: lanes[.partner]!,

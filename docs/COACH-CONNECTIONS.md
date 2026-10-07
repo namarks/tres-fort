@@ -103,8 +103,11 @@ compatible app**, which tells them to review that app's policy before approving.
 
 Muse has no connector settings screen. In a Muse chat, ask it to create a
 custom connector for a remote MCP server with Streamable HTTP and OAuth (no API
-key), give it the MCP URL and the protected-resource discovery URL, and tell it
-not to invent endpoints. Muse may report "connected" before sign-in finishes;
+key), give it the MCP URL shown on the **Other compatible app** screen and the
+protected-resource discovery URL, and tell it not to invent endpoints. The
+discovery URL is the same host with `/.well-known/oauth-protected-resource` in
+place of `/mcp`, for example
+`https://<your-worker>.workers.dev/.well-known/oauth-protected-resource`. Muse may report "connected" before sign-in finishes;
 ask it to load the coaching brief to prove the connection. It signs in from
 Meta's hosted browser, so the iPhone approval link cannot open there: expand
 **Use a connect code** on the Très Fort consent page instead. Its callback is

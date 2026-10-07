@@ -56,6 +56,27 @@ it('concurrent copy retries share one acknowledgement and invalid copies leave n
   expect(await createPartnerWorkout(env.DB,empty,{...copy(),slots:[{...copy().slots[0],target_reps:0}]})).toMatchObject({error:'invalid_fields'});
   expect(await getPlanTree(env.DB,empty)).toBeNull();
 });
+it('accepts the iPhone wire shape with omitted nullable slot fields and retries as the same copy',async()=>{
+  const userId = await member(), jwt = await issueAppJwt(userId,env.APP_JWT_SECRET);
+  // Swift's synthesized encoder omits nil slot fields. partnerPost explicitly
+  // restores expected_plan_id and progression, which the wire validator requires.
+  const input = {workout_id:crypto.randomUUID(),name:'Together',expected_plan_id:null,expected_version:0,
+    slots:[{id:crypto.randomUUID(),exercise_id:'ex_back_squat',order_index:0,target_sets:3,
+      target_reps:8,rest_seconds:90,target_weight_unit:'lb',is_warmup:0,progression:null}]};
+  const post = (body: unknown) => SELF.fetch('https://test/api/partner/workouts',{
+    method:'POST',headers:{Authorization:`Bearer ${jwt}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const response = await post(input);
+  expect(response.status).toBe(201);
+  const receipt = await response.json();
+  expect(receipt).toMatchObject({workout_id:input.workout_id,version:1});
+  const nulls = {target_reps_max:null,target_rpe:null,target_weight:null,target_duration_s:null,cues:null,
+    group_id:null,group_rest_seconds:null,group_transition_seconds:null};
+  expect((await getPlanTree(env.DB,userId))!.workouts[0]!.exercises[0]).toMatchObject({...input.slots[0],...nulls});
+  const retry = await post({...input,slots:[{...input.slots[0],...nulls}]});
+  expect(retry.status).toBe(201);
+  expect(await retry.json()).toEqual(receipt);
+  expect((await getPlanTree(env.DB,userId))!.workouts).toHaveLength(1);
+});
 it('rolls back copy, plan, audit and snapshots together',async()=>{
   const user = await member(), input = copy();
   await env.DB.exec("CREATE TRIGGER fail_partner_audit BEFORE INSERT ON audit_log WHEN NEW.tool='create_partner_workout' BEGIN SELECT RAISE(ABORT,'partner test failure'); END");

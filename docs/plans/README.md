@@ -131,10 +131,13 @@ AI coaching.
   saved as a workout. The weekly routine becomes one optional use of the
   library. P0.5(a)/(b) implement unified exercise guidance/history and shared
   search/filter behavior; both shipped with the recent usability fixes in
-  internal TestFlight 1.0 (43). P1 tags/archive is implemented; migration, Worker
-  deployment and client distribution await separate release authority. P2
-  freestyle and Save as workout are implemented in PR #217, with release
-  awaiting separate authority; preview thumbnails remain planned pending activation.
+  internal TestFlight 1.0 (43). P1 tags/archive and P2 freestyle/Save as workout
+  shipped under the build-44 live-verification deferral; build 47 delivered the
+  Focus runner. P0.5(c) adds static preview thumbnails with compact-phone and
+  accessibility verification; its PR carries review/CI evidence and distribution
+  remains separate. The visual-source comparison recommends future replacements.
+  Authenticated live workout verification remains
+  separately gated; repository completion cannot establish that acceptance.
 - [Workouts and multi-session days](workouts-and-multi-session/plan.md) —
   **active**; the owner retired legacy-client support. P0(c) removed old wire
   contracts and physical-schema adaptation, preserving historical data. Canonical

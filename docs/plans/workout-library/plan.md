@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: active · Updated: 2026-10-03 · Theme: gym-floor
+Slug: workout-library · Status: gated · Updated: 2026-10-06 · Theme: gym-floor
 
 ## Goal
 
@@ -231,14 +231,15 @@ No second editor, no per-session template copies, no weeks table.
       September 18 Pacific. No backend deployment was needed; App Review still
       selects build 40. Physical-device and VoiceOver acceptance remain open.
 
-- [ ] **P0.5 — Connect exercise guidance and discovery**
+- [x] **P0.5 — Connect exercise guidance and discovery**
   - Planning approved after the [September 18 SensAI inspection](../../reviews/2026-09-sensai/report.md).
     The owner activated (a) on 2026-09-18, ahead of P1 tags/archive.
     P0.5(a) merged in [PR #213](https://github.com/namarks/tres-fort/pull/213).
     The owner activated (b) on 2026-09-18, then authorized a combined internal
     TestFlight build with (a) and the recent UI fixes after review and merge.
-    Slice (c) remains planned and requires activation; App Review and public
-    release remain outside this approval.
+    The October 6 request to finish this plan activates slice (c), with a
+    comparison of replacement visual libraries. App Review and public release
+    remain outside this approval.
   - [x] **(a) One exercise sheet for technique and history**
     - Reuse the existing demo and exercise-history data in a shared Technique /
       History sheet opened from workout preview, runner and catalog pickers.
@@ -297,14 +298,34 @@ No second editor, no per-session template copies, no weeks table.
       current-head review and all eight CI checks passed, including 625 iOS unit
       tests (one existing skip) and all 12 smoke journeys. P0.4(b) records its
       completed internal TestFlight distribution.
-  - [ ] **(c) Small exercise visuals in workout previews**
-    - Reuse Très Fort's own demonstration assets as lightweight thumbnails in
+  - [x] **(c) Small exercise visuals in workout previews**
+    - Reuse the app's existing demonstration assets as lightweight thumbnails in
       the shared workout preview. Keep exercise names, targets and circuit or
       superset membership readable; missing art gets a stable fallback.
     - Verify recognition and equipment discovery with unfamiliar movements,
       long names, large text, Reduce Motion and a long grouped workout. Keep
       scrolling responsive and preserve text accessibility; visuals must not
       push the prescription or primary workout action out of reach.
+    - The [visual comparison](visuals.md) finds existing assets are free-exercise-db
+      photographs, with uneven framing and incomplete catalog coverage.
+      Workout Guide is the preferred no-fee illustration trial; WorkoutLabs
+      is the commercial alternative. No replacement assets or paid provider
+      are adopted by this preview slice.
+    - Implemented static, uncropped thumbnails with a fixed fallback and a
+      full-width prescription layout at accessibility text sizes. The shared
+      loader prefers either bundled frame, fetches only the first available
+      remote still, downsamples thumbnails and rejects superseded responses.
+      Its bounded cache is shared with the full technique sheet.
+    - Five loader unit tests and three native UI journeys passed on iPhone 16e /
+      iOS 26.2. They cover missing/malformed art, stale responses, offline
+      loading, a twelve-exercise grouped preview, Reduce Motion, and return
+      from technique/history. The grouped journey also passed at the largest
+      system text size. Native screenshots were inspected; the pinned primary
+      action and information buttons remain reachable. These are simulator
+      results, not physical-device or manual VoiceOver acceptance.
+    - The `codex/workout-preview-visuals` pull request carries exact-head review
+      and CI evidence. These thumbnails are not part of the retained build-47
+      distribution receipt; client distribution remains separate.
 
 - [x] **P0.6 — Focus the gym workflow**
   - The October 3 design audit and owner approval activate this implementation.
@@ -477,7 +498,6 @@ No second editor, no per-session template copies, no weeks table.
 ## Execution frontier
 
 - P0.2(b)
-- P0.5(c)
 
 ## Dependencies
 
@@ -492,7 +512,6 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 | P0 | blocked_by | plan:workouts-and-multi-session#P0(a) | The selected goal establishes canonical workout terminology and compatible clients before the library UI. Production rollout and compatibility cleanup do not block this repository slice. |
 | P0 | coordinates_with | plan:member-activation-and-adherence#P0 | Both edit the no-plan and Today entry surfaces; do not run concurrently on the same iOS files. |
 | P0.3(a) | coordinates_with | plan:member-activation-and-adherence#P0 | Both use first-workout entry and the shared exercise catalog. |
-| P0.5(c) | gated_by | external:owner-sensai-followup-implementation | Preview thumbnails remain planned pending activation. |
 | P0.5 | coordinates_with | plan:member-activation-and-adherence#P3 | Preview and upcoming-session entry share Today and workout detail routes. |
 | P0.2(b) | gated_by | external:owner-live-workout-verification | Authenticated session-swap and workout behavior still need a connected client/device; the build-44 internal-release exception does not claim these checks passed. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
@@ -503,9 +522,18 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@agent):** P0.6 is delivered in [TestFlight 1.0 (47)](../app-store-submission/release-47.md)
-from reviewed merged source `e3251de`; Apple confirms internal Testers availability.
-The separately approved compatible Worker is serving that source at 100% traffic.
+**Now (@owner):** All planned repository slices are implemented. Merge the
+preview-thumbnails pull request after its exact-head review and required CI
+pass. P0.2(b)'s authenticated live-verification gate remains open and prevents
+closing this plan. A client distribution containing the new thumbnails needs
+separate release authorization; the retained build-47 receipt predates them.
+The [visual comparison](visuals.md) records replacement recommendations only,
+following the owner's choice to finish previews with the existing images.
+
+**Retained release evidence:** P0.6's [TestFlight 1.0 (47) receipt](../app-store-submission/release-47.md)
+records reviewed source `e3251de`, internal Testers availability and the
+separately approved matching Worker deployment. This October 6 repository slice
+does not claim a fresh production or App Store readback.
 
 **Deferred owner verification:** Use build 47 to test authenticated workout paths
 on a device, including slot edits/reordering, metadata, freestyle recovery/save
@@ -513,7 +541,7 @@ and session swaps, plus the focused runner at ordinary and accessibility sizes.
 P1/P2 backend and internal client delivery were completed under the explicit
 build-44 verification exception; those live checks remain unperformed, not passed.
 P0.2(b) live verification and physical/VoiceOver acceptance remain open. Preview
-thumbnails P0.5(c) still require activation. Ordered multi-session work proceeds
+thumbnails P0.5(c) have simulator verification but are not yet distributed. Ordered multi-session work proceeds
 in the workouts-and-multi-session plan; wider onboarding and RPE semantics remain separate.
 
 **P1 repository evidence (September 19):** Migration 0053, atomic REST/MCP
@@ -534,11 +562,11 @@ records production and internal-client delivery evidence, with the approved
 live-verification deferral stated above. A pre-metadata Worker is unsafe to restore after
 metadata writes because its rebuild/snapshots omit the fields.
 
-**Current client distribution:** [TestFlight 1.0 (47)](../app-store-submission/release-47.md)
+**Latest retained client distribution:** [TestFlight 1.0 (47)](../app-store-submission/release-47.md)
 includes the Focus workflow and the earlier library/canonical-workout changes.
 Apple confirmed VALID / IN_BETA_TESTING and internal Testers assignment on
-October 3. The selected App Review build remains 40, now REJECTED, with MANUAL
-release; replacing it is a separate App Review action. No public release occurred.
+October 3. The receipt records App Review build 40 as REJECTED, with MANUAL
+release; replacing it is a separate App Review action. It does not establish a public release.
 
 **Previous client distribution:** [TestFlight 1.0 (43)](../app-store-submission/release-43.md)
 contains the usability and accessibility fixes in PRs #209/#210 plus the shared
@@ -595,13 +623,14 @@ as a pending upload gate. Library P0 is merged and verified in
 [PR #161](https://github.com/namarks/tres-fort/pull/161). The Workouts surface
 includes schedule badges, separate Unschedule and Delete workout actions,
 and a today-or-future date picker using the shared
-assignment guard and attempt-CAS writer. The first build keeps released outgoing
-request shapes and has shipped during the rename's compatibility window.
+assignment guard and attempt-CAS writer. The first build kept released outgoing
+request shapes and shipped during the rename's compatibility window.
 The compatibility Worker and migration 0045 are now released. The
 [canonical rollout status](../workouts-and-multi-session/plan.md#next-step) records
 the production evidence and the owner-approved deferral of live REST authoring,
-date-assignment and session-write checks to the client rollout. Canonical-route
-checks must pass before the later canonical-writing build is distributed.
+date-assignment and session-write checks to the client rollout. The later build-44
+internal distribution used the explicit live-verification deferral documented
+above; it did not establish passing canonical-route checks.
 Follow the [staged rollout](../workouts-and-multi-session/rollout.md).
 
 Local/CI validation: [PR #161 CI](https://github.com/namarks/tres-fort/actions/runs/34371920505)
@@ -610,16 +639,19 @@ suite passed 897 tests, including both physical schemas and old/new wire
 contracts.
 Those tests verified that Unschedule retains the workout and dated session while clearing its recurring
 entries. The library-date assignment appears in Today and the coach's current
-workout response without changing the recurring plan. P1 now supplies tags/archive. Freestyle (P2) and multiple sessions per date
-remain unimplemented and outside the completed goal's scope.
+workout response without changing the recurring plan. P1 now supplies tags/archive,
+and P2 supplies freestyle and Save as workout. Multiple sessions per date remain
+in the separate workouts-and-multi-session workstream.
 
 ## Notes / open questions
 
 - The September 18 follow-up selects P0.5(a)/(b) as the first SensAI-inspired
   implementation candidates, followed by P0.5(c). The owner subsequently
   activated P0.5(a), then P0.5(b), ahead of P1, and authorized their combined
-  internal TestFlight distribution with the recent UI fixes. P0.5(c), production
-  deployment and App Review/public-release authority remain separate decisions. The evidence
+  internal TestFlight distribution with the recent UI fixes. The October 6 request
+  activated P0.5(c); the owner chose to retain existing images and receive separate
+  replacement recommendations. Client distribution, production deployment and
+  App Review/public-release authority remain separate decisions. The evidence
   note distinguishes observed competitor behavior from untested coaching quality.
 
 - Source: owner observation (2026-09-05) that everything in the app is framed

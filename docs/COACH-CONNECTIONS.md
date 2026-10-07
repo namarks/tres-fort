@@ -78,13 +78,42 @@ exact authorized callback, including its chosen port.
 The host app must support remote MCP over Streamable HTTP, OAuth discovery,
 Dynamic Client Registration, authorization code with PKCE S256, and refresh.
 Apps requiring only a provider API key or static token are not covered by this
-member setup. GLM and Muse are model families, not proof of host compatibility.
+member setup. A model family alone is not proof of host compatibility.
 Choose a host that supports the connection and configure the model there.
 
 Z.AI documents [GLM in OpenCode](https://docs.z.ai/devpack/tool/opencode), and Meta
 has documented [Muse tool/MCP use and OpenCode examples](https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/).
 These are candidate host/model routes, not end-to-end Très Fort certifications.
 No provider API credentials are stored or forwarded by Très Fort.
+
+### Meta AI (Muse), connected by the member
+
+Verified on the owner's account on 2026-10-06: Muse in Meta AI read the
+coaching brief and made a plan change that appeared in the iOS plan history.
+It is not an in-app setup choice. The privacy policy limits in-app setup to
+services whose policies protect personal information at least as well as
+Très Fort's, including no advertising use, and
+[Meta uses Meta AI conversations to personalize ads](https://fortune.com/2025/10/02/meta-to-use-users-ai-chatbot-conversations-to-personalize-ads).
+A member can still connect it themselves through **Other compatible app**,
+which tells them to review that app's policy before approving.
+
+Muse has no connector settings screen. In a Muse chat, ask it to create a
+custom connector for a remote MCP server with Streamable HTTP and OAuth (no API
+key), give it the MCP URL and the protected-resource discovery URL, and tell it
+not to invent endpoints. Muse may report "connected" before sign-in finishes;
+ask it to load the coaching brief to prove the connection. It signs in from
+Meta's hosted browser, so the iPhone approval link cannot open there: expand
+**Use a connect code** on the Très Fort consent page instead. Its callback is
+`https://agent.meta.ai/api/hatch/oauth/callback`, which dynamic registration
+accepts without configuration, and the consent page names the recipient as
+Meta AI, operated by Meta.
+
+### ChatGPT developer mode and Dots
+
+Not yet verified. ChatGPT's developer mode can add a custom app with OAuth, but
+OpenAI documents read/fetch-only custom apps on Pro, and it does not say whether
+a dot can use a developer-mode app or only a published plugin. The published
+plugin (see below) is the documented route to a one-tap ChatGPT install.
 
 ## Shared behavior and compatibility
 

@@ -73,9 +73,13 @@ enum CoachSetup {
     /// Muse has no connector settings screen; a chat request creates the
     /// connector. Naming the discovery URL keeps it from guessing endpoints,
     /// and the brief read proves the sign-in finished.
+    static func discoveryURL(baseURL: URL) -> URL {
+        baseURL.appendingPathComponent(".well-known/oauth-protected-resource")
+    }
+
     static func museSetupPrompt(baseURL: URL) -> String {
         let server = serverURL(baseURL: baseURL).absoluteString
-        let discovery = baseURL.appendingPathComponent(".well-known/oauth-protected-resource").absoluteString
+        let discovery = discoveryURL(baseURL: baseURL).absoluteString
         return """
         Create a Custom Connector for a remote MCP server named Très Fort at \(server). Use Streamable HTTP with OAuth sign-in and dynamic client registration, no API key. Discover OAuth from \(discovery) and do not invent endpoints. I will enter any Très Fort connect code directly on its sign-in page, never in this chat. When it is connected, prove it by loading my Très Fort coaching brief and summarizing it. Do not change my training plan or log anything during setup.
         """
@@ -287,9 +291,12 @@ struct CoachConnectView: View {
                     .font(.footnote).foregroundStyle(.secondary)
                     .accessibilityIdentifier("coach.muse-sign-in")
                 DisclosureGroup("Manual setup") {
-                    Text("Ask Muse to create a custom connector for a remote MCP server with OAuth, using these details.")
+                    Text("Ask Muse to create a custom connector for a remote MCP server using Streamable HTTP with OAuth sign-in and dynamic client registration, no API key. Give it these details and tell it to discover OAuth from the discovery URL, not invent endpoints.")
                         .font(.footnote)
                     connectionDetails
+                    CopyRow(label: "OAuth discovery URL",
+                            value: CoachSetup.discoveryURL(baseURL: Config.apiBaseURL).absoluteString,
+                            mono: true)
                 }
             case .other:
                 Text("In your AI app, add a remote MCP server with OAuth sign-in using these details. Models need a compatible host app to connect.")

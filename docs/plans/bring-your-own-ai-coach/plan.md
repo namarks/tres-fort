@@ -191,11 +191,12 @@ P3.1 landed in [PR #207](https://github.com/namarks/tres-fort/pull/207).
   developer-mode apps qualify, and its developer-mode page limits Pro to
   read/fetch. If Dots need a published plugin, P4 is the route.
 - 2026-10-06: Muse verified on the owner's account. It read the coaching brief
-  and made a plan change that synced to iOS plan history. It stays out of the
-  in-app setup choices: the privacy policy limits in-app setup to services with
-  equal protection and no advertising use, and Meta uses Meta AI chats for ads.
-  The [connection guide](../../COACH-CONNECTIONS.md) documents the
-  member-connected route. ChatGPT developer mode and Dots remain unverified.
+  and made a plan change that synced to iOS plan history. Meta uses Meta AI
+  chats for ads, which conflicts with the policy's equal-protection standard
+  for in-app setup. On 2026-10-07 the owner chose to add Muse to the in-app
+  setup choices anyway, so the policy keeps that standard with a disclosed Meta
+  exception and the consent step says the same. ChatGPT developer mode and Dots
+  remain unverified.
 
 - P5 is a planned follow-up, separate from P2 device verification and P4 plugin
   publication. The highest-priority non-AI work is library P0.5(a)/(b); evaluate

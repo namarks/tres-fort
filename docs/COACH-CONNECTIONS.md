@@ -8,9 +8,9 @@ API usage, API-key entry, embedded chat, or automatic model selection.
 ## Setup
 
 In Très Fort, open **Profile → Coach → Set up your AI coach** (or **Connect
-another AI app**). Choose Claude, Codex, or another compatible app. Setup is
+another AI app**). Choose Claude, Codex, Muse (Meta AI), or another compatible app. Setup is
 available immediately; generating a connect code is not a prerequisite.
-Both providers can have separate connections to the same training account.
+Each app can have its own connection to the same training account.
 The status at the top means an AI app has access, not that the selected
 provider completed setup.
 
@@ -86,24 +86,25 @@ has documented [Muse tool/MCP use and OpenCode examples](https://ai.meta.com/blo
 These are candidate host/model routes, not end-to-end Très Fort certifications.
 No provider API credentials are stored or forwarded by Très Fort.
 
-### Meta AI (Muse), connected by the member
+### Muse (Meta AI)
 
 Verified on the owner's account on 2026-10-06, against the production Worker
 before [PR #239](https://github.com/namarks/tres-fort/pull/239) was released:
 Muse in Meta AI read the coaching brief and made a plan change that appeared in
 the iOS plan history. The route therefore does not depend on that release.
-It is not an in-app setup choice. The privacy policy limits in-app setup to
-services whose policies protect personal information at least as well as
-Très Fort's, including no advertising use, and
-[Meta uses Meta AI conversations to personalize ads](https://fortune.com/2025/10/02/meta-to-use-users-ai-chatbot-conversations-to-personalize-ads).
-A member can still connect it themselves through **Other compatible app**,
-which tells them to review that app's policy before approving.
 
-Muse has no connector settings screen. In a Muse chat, ask it to create a
-custom connector for a remote MCP server with Streamable HTTP and OAuth (no API
-key), give it the MCP URL and the protected-resource discovery URL, and tell it
-not to invent endpoints. Muse may report "connected" before sign-in finishes;
-ask it to load the coaching brief to prove the connection. It signs in from
+Choose **Muse (Meta AI)** and tap **Copy setup for Muse**. Muse has no
+connector settings screen, so the copied request asks it in chat to create a
+custom connector for the remote MCP server with Streamable HTTP and OAuth (no
+API key), names the MCP URL and the protected-resource discovery URL, tells it
+not to invent endpoints, and asks it to prove the connection by loading the
+coaching brief. Muse may report "connected" before sign-in finishes; a failed
+brief read means the sign-in did not finish. **Manual setup** shows the same
+details.
+
+Meta [uses Meta AI conversations to personalize ads](https://fortune.com/2025/10/02/meta-to-use-users-ai-chatbot-conversations-to-personalize-ads).
+The consent step and the privacy policy say so, alongside the link to Meta's
+privacy policy. It signs in from
 Meta's hosted browser, so the iPhone approval link cannot open there: expand
 **Use a connect code** on the Très Fort consent page instead. Its callback is
 `https://agent.meta.ai/api/hatch/oauth/callback`, which dynamic registration

@@ -4,24 +4,33 @@ import UIKit
 /// Setup choices describe AI apps, not models. A model needs a host that can
 /// connect to our remote MCP server and complete the per-account OAuth flow.
 enum CoachApp: String, CaseIterable, Identifiable {
-    case codex, claude, other
+    case codex, claude, muse, other
     var id: String { rawValue }
 
     var name: String {
         switch self {
         case .codex: return "Codex"
         case .claude: return "Claude"
+        case .muse: return "Muse (Meta AI)"
         case .other: return "Other compatible app"
         }
     }
 
     /// Used inside sentences and on the consent button.
-    var shortName: String { self == .other ? "your AI app" : name }
+    var shortName: String {
+        switch self {
+        case .muse: return "Muse"
+        case .other: return "your AI app"
+        default: return name
+        }
+    }
 
     var recipient: String {
         switch self {
         case .codex: return "Codex, operated by OpenAI, and any other model provider you configure in it"
         case .claude: return "Claude, operated by Anthropic"
+        // Matches CoachApprovalModel.recipient(for:) for Muse's agent.meta.ai callback.
+        case .muse: return "Meta AI, operated by Meta"
         case .other: return "Your chosen AI app and its configured model provider"
         }
     }
@@ -60,6 +69,17 @@ enum CoachSetup {
         Help me connect Très Fort as my AI coach in Codex. Add a remote MCP server named tres-fort at \(serverURL(baseURL: baseURL).absoluteString), using OAuth. Preserve my other connections; if that name already exists, check it before changing anything. Start the OAuth sign-in and guide me through approving access in my browser. I will enter any Très Fort connect code directly on its consent page, never in this chat. After connecting, load my Très Fort coaching brief to verify access. Do not change my training plan or log anything during setup.
         """
     }
+
+    /// Muse has no connector settings screen; a chat request creates the
+    /// connector. Naming the discovery URL keeps it from guessing endpoints,
+    /// and the brief read proves the sign-in finished.
+    static func museSetupPrompt(baseURL: URL) -> String {
+        let server = serverURL(baseURL: baseURL).absoluteString
+        let discovery = baseURL.appendingPathComponent(".well-known/oauth-protected-resource").absoluteString
+        return """
+        Create a Custom Connector for a remote MCP server named Très Fort at \(server). Use Streamable HTTP with OAuth sign-in and dynamic client registration, no API key. Discover OAuth from \(discovery) and do not invent endpoints. I will enter any Très Fort connect code directly on its sign-in page, never in this chat. When it is connected, prove it by loading my Très Fort coaching brief and summarizing it. Do not change my training plan or log anything during setup.
+        """
+    }
 }
 
 struct CoachConnectView: View {
@@ -86,7 +106,7 @@ struct CoachConnectView: View {
                     Section {
                         Label("An AI app has access", systemImage: "checkmark.circle.fill")
                             .accessibilityIdentifier("coach.connected-status")
-                        Text("You can connect Claude and Codex to the same training account.")
+                        Text("You can connect more than one AI app to the same training account.")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                 }
@@ -238,7 +258,7 @@ struct CoachConnectView: View {
             case .codex:
                 CopyRow(label: "Copy setup for Codex",
                         value: CoachSetup.codexSetupPrompt(baseURL: Config.apiBaseURL),
-                        mono: false, hideValue: true)
+                        mono: false, hideValue: true, copiedLabel: "Copied setup for Codex")
                     .accessibilityIdentifier("coach.codex-setup")
                 Text("Paste this into Codex and let it set up the connection. Complete the browser sign-in on the computer running Codex; use a connect code below when asked.")
                     .font(.footnote)
@@ -255,6 +275,21 @@ struct CoachConnectView: View {
                         CopyRow(label: "Add server", value: "codex mcp add tres-fort --url \(connectorURL)", mono: true)
                         CopyRow(label: "Sign in", value: "codex mcp login tres-fort", mono: true)
                     }
+                }
+            case .muse:
+                CopyRow(label: "Copy setup for Muse",
+                        value: CoachSetup.museSetupPrompt(baseURL: Config.apiBaseURL),
+                        mono: false, hideValue: true, copiedLabel: "Copied setup for Muse")
+                    .accessibilityIdentifier("coach.muse-setup")
+                Text("Paste this into a Muse chat. When Muse opens the Très Fort sign-in page, expand Use a connect code, paste a code from below and allow access.")
+                    .font(.footnote)
+                Text("Muse signs in from Meta’s own browser, so approving in this app isn’t offered there. If Muse says it’s connected but can’t load your coaching brief, the sign-in didn’t finish.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .accessibilityIdentifier("coach.muse-sign-in")
+                DisclosureGroup("Manual setup") {
+                    Text("Ask Muse to create a custom connector for a remote MCP server with OAuth, using these details.")
+                        .font(.footnote)
+                    connectionDetails
                 }
             case .other:
                 Text("In your AI app, add a remote MCP server with OAuth sign-in using these details. Models need a compatible host app to connect.")
@@ -285,6 +320,11 @@ struct CoachConnectView: View {
                 .font(.footnote).foregroundStyle(.secondary)
         case .claude:
             Link("Anthropic privacy policy", destination: AppInformation.anthropicPrivacyURL)
+        case .muse:
+            Link("Meta privacy policy", destination: AppInformation.metaPrivacyURL)
+            Text("Meta says it may use your Meta AI conversations, which can include training information Muse retrieves, to personalize the content and ads you see.")
+                .font(.footnote).foregroundStyle(.secondary)
+                .accessibilityIdentifier("coach.muse-ads")
         case .other:
             Text("Review your chosen app and model provider’s privacy policies before connecting.")
                 .font(.footnote).foregroundStyle(.secondary)
@@ -319,6 +359,7 @@ private struct CopyRow: View {
     let value: String
     let mono: Bool
     var hideValue = false
+    var copiedLabel = "Copied"
     @State private var copied = false
 
     var body: some View {
@@ -329,7 +370,7 @@ private struct CopyRow: View {
         } label: {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(copied && hideValue ? "Copied setup for Codex" : label)
+                    Text(copied && hideValue ? copiedLabel : label)
                         .font(hideValue ? .headline : .caption)
                         .foregroundStyle(hideValue ? .primary : .secondary)
                     if !hideValue { Text(value)

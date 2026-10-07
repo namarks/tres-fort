@@ -94,6 +94,16 @@ final class CoachApprovalTests: XCTestCase {
                        "The app at the return address above and its configured model provider")
     }
 
+    func testMuseSetupNamesTheSameRecipientAndGivesExactDiscovery() {
+        let callback = CoachApprovalPreview(client_name: "Muse", redirect_uri: "https://agent.meta.ai/api/hatch/oauth/callback", expires_at: 0)
+        XCTAssertEqual(CoachApp.muse.recipient, CoachApprovalModel.recipient(for: callback))
+        let prompt = CoachSetup.museSetupPrompt(baseURL: URL(string: "https://worker.example")!)
+        XCTAssertTrue(prompt.contains("https://worker.example/mcp"))
+        XCTAssertTrue(prompt.contains("https://worker.example/.well-known/oauth-protected-resource"))
+        XCTAssertTrue(prompt.contains("never in this chat"))
+        XCTAssertFalse(prompt.contains("passphrase"))
+    }
+
     func testExpiredRequestCannotBeApproved() async {
         let api = CoachApprovalStub()
         api.preview = CoachApprovalPreview(client_name: "App", redirect_uri: "https://client.example/callback", expires_at: 0)

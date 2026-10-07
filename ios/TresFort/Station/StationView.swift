@@ -62,7 +62,7 @@ struct StationView: View {
     @State private var actualReps = ""
     @FocusState private var actualRepsFocused: Bool
     @State private var hasRunTrial = false
-    @State private var previousIdleTimerDisabled = false
+    @StateObject private var idleTimer = StationIdleTimerOverride()
     @State private var countdown: Int?
     @State private var countdownTask: Task<Void, Never>?
     @State private var showSavedTests = false
@@ -144,11 +144,13 @@ struct StationView: View {
         }
         .preferredColorScheme(.dark)
         .onAppear {
-            previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
+            idleTimer.begin()
+            refreshIdleTimer()
             if !access.validate() { dismiss() }
         }
         .onReceive(access.$isActive) { active in
             guard !active else { return }
+            idleTimer.end()
             partner.end()
             cancelCountdown()
             linkRequest = nil
@@ -165,6 +167,7 @@ struct StationView: View {
             dismiss()
         }
         .onDisappear {
+            idleTimer.end()
             partner.end()
             cancelCountdown()
             linkRequest = nil
@@ -174,17 +177,16 @@ struct StationView: View {
 #endif
             cancelComparison("Camera closed. Results cover only part of this trial.")
             camera.stop()
-            UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase != .active else { return }
+            guard phase != .active else { refreshIdleTimer(); return }
             cancelCountdown()
             cancelComparison("Tracking stopped when the app became inactive.")
             // The system permission alert temporarily makes this scene inactive.
             // Keep that request alive; actual backgrounding always cancels it.
             if phase == .inactive && camera.state == .requestingPermission { return }
             camera.stop()
-            UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
+            refreshIdleTimer()
         }
         .onChange(of: camera.state) { _, state in
             if state != .running {
@@ -193,9 +195,9 @@ struct StationView: View {
             } else if let arm = link.armToCount, linkedArmID != arm.armID {
                 startLinkedTrial(arm)
             }
-            UIApplication.shared.isIdleTimerDisabled = state == .running
-                ? true : previousIdleTimerDisabled
+            refreshIdleTimer()
         }
+        .onChange(of: partner.isOpen) { _, _ in refreshIdleTimer() }
         // A rotated key restarts advertising so the iPhone can find it again.
         .onReceive(NotificationCenter.default.publisher(for: StationLinkKeyStore.refreshed)) { _ in
             guard link.isEnabled, let request = linkRequest else { return }
@@ -251,6 +253,11 @@ struct StationView: View {
                 linkedArmID = nil
             }
         }
+    }
+
+    private func refreshIdleTimer() {
+        idleTimer.update(cameraRunning: camera.state == .running, partnerOpen: partner.isOpen,
+                         foreground: scenePhase == .active && access.isActive)
     }
 
     private func handleArm(_ arm: StationLinkArm?) {
@@ -800,4 +807,31 @@ struct StationView: View {
         .accessibilityIdentifier("station.diagnostics")
     }
 #endif
+}
+
+/// Camera and manual partner mode share one override, so stopping the camera
+/// cannot release the screen while Station still coordinates both phones.
+@MainActor
+final class StationIdleTimerOverride: ObservableObject {
+    private let read: () -> Bool
+    private let write: (Bool) -> Void
+    private var previous: Bool?
+
+    init(read: @escaping () -> Bool = { UIApplication.shared.isIdleTimerDisabled },
+         write: @escaping (Bool) -> Void = { UIApplication.shared.isIdleTimerDisabled = $0 }) {
+        self.read = read
+        self.write = write
+    }
+    func begin() {
+        if previous == nil { previous = read() }
+    }
+    func update(cameraRunning: Bool, partnerOpen: Bool, foreground: Bool) {
+        guard let previous else { return }
+        write(foreground && (cameraRunning || partnerOpen) ? true : previous)
+    }
+    func end() {
+        guard let previous else { return }
+        self.previous = nil
+        write(previous)
+    }
 }

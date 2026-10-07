@@ -19,6 +19,8 @@ implied by repository review or merge.
   account changes cannot authorize writes.
 - `StationLinkTests` and `RunnerRecoveryTests`: existing encrypted transport and
   live/certified-cache recovery behavior.
+- `StationPrivacyTests`: partner setup/training keeps Station awake after the
+  camera stops, and closing Station restores the previous idle-timer setting.
 
 ## Required physical trial
 
@@ -35,6 +37,7 @@ performed by this implementation session.
 | Copy and units | Include duplicate movements, warm-ups, a circuit, reps/RPE/cues/progression, timed work and kg loads. Partner gets fresh IDs and their own working weights/units; fallback targets say Check. Retrying creates one copy. |
 | Start failure | Change either reviewed plan or log a set before Start. The pair does not begin. Cancel or leaving during Start ends setup; late ACKs cannot release the pair. Cancel settles each empty start, including a Start whose response was lost, without removing logged work. |
 | Shared progress | One phone logs: the pair waits. The second logs: one shared rest begins. Skip rest advances both. Skip set applies to both and preserves physical set numbers. |
+| Auto-Lock | With a short iPad Auto-Lock interval, leave the iPad untouched during setup and several sets/rests. Station stays awake. Closing partner mode restores normal Auto-Lock; returning from background keeps an open Station awake again. |
 | Undo and rejected upload | Undo during rest and after advancing, then reconnect. The pair rewinds, the other log stays, and already elapsed rests are not replayed. A rejected queued set reopens its step. |
 | Drop and relaunch | Disable one phone's local connection; the iPad waits. Relaunch that phone before and after storing its lane key, and immediately after its Start ACK but before shared state arrives. Its checkpoint and complete lane snapshot recover the same lane; a committed Start can recover without internet. |
 | Continue alone | Lose the iPad or leave a lane, including without internet after a successful start. Each phone keeps its own logs/outbox and can proceed solo. Reconnect must not reopen the closed lane. |

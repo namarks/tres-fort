@@ -2,7 +2,12 @@ import Foundation
 import Security
 
 struct PartnerCheckpoint: Codable, Equatable {
-    enum Phase: String, Codable { case reviewing, saving, ready, starting, active, cancelling, leaving }
+    enum Phase: String, Codable {
+        case reviewing, saving, ready, starting, active, cancelling, leaving
+        var acceptsSetupCancellation: Bool {
+            [.reviewing, .saving, .ready, .starting].contains(self)
+        }
+    }
     let id: UUID
     let lane: PartnerLane
     let offer: PartnerOffer

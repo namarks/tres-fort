@@ -14321,6 +14321,50 @@ extension SetOutboxTests {
 
 @MainActor
 extension SetOutboxTests {
+    func testPartnerStartACKRecoversOfflineBeforeFirstSharedState() async throws {
+        let suite = "PartnerStartACK.\(UUID().uuidString)"
+        let defaults = LocalPersistence(suiteName: suite)!, api = SetWriteAPIStub(), ex = exercise()
+        addTeardownBlock { [preferences = defaults.preferences, directory = defaults.trainingStore.directory] in
+            preferences.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let old = session(status: "planned", updatedAt: 2_000_000_000_001, attempt: 0)
+        api.stateHandler = { _ in self.state(session: old, sets: [], exercise: ex) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { self.fixedDate })
+        await model.load()
+        var started = session(updatedAt: 2_000_000_000_002, attempt: 1)
+        let offer = PartnerOffer(id: UUID(), hostName: "Host", planID: "plan-a", planVersion: 1,
+            workout: day(with: [ex]))
+        started.partner_workout_id = offer.id.uuidString
+        // This is the commit boundary used before sending .started to Station.
+        XCTAssertTrue(model.mountPartnerWorkout(started))
+        XCTAssertTrue(model.isSetEntryBlocked(ex))
+        let checkpoint = PartnerCheckpoint(id: offer.id, lane: .host, offer: offer,
+            name: "Host", phase: .starting, slotMap: [ex.id: ex.id],
+            sessionID: started.id, attempt: started.attempt)
+        XCTAssertTrue(PartnerCheckpointStore.replace(checkpoint, expected: nil,
+            accountID: "user-a", defaults: defaults))
+
+        // Relaunch before shared state arrives, with every network path offline.
+        api.stateHandler = { _ in throw URLError(.notConnectedToInternet) }
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let readsBeforeRelaunch = api.stateCalls
+        let coldDefaults = LocalPersistence(suiteName: suite)!
+        let cold = SyncModel(auth: retainedAuth(defaults: coldDefaults), setWriteAPI: api,
+            defaults: coldDefaults, now: { self.fixedDate })
+        XCTAssertTrue(cold.canUseOfflineWorkoutState)
+        let saved = try XCTUnwrap(cold.sessions.first { $0.id == started.id && $0.attempt == 1 })
+        XCTAssertEqual(saved.partner_workout_id, offer.id.uuidString)
+        XCTAssertTrue(cold.mountPartnerWorkout(saved))
+        XCTAssertTrue(cold.isSetEntryBlocked(ex), "Relaunch cannot bypass the two-phone Start barrier")
+        cold.applyPartnerControl(.init(slotID: ex.id, set: 1, canLog: true, restUntil: nil, complete: false))
+        await cold.logCurrentSet(expected: ex, expectedSetNumber: 1)
+        XCTAssertEqual(cold.setOutbox.pending.first?.expectedAttempt, 1)
+        XCTAssertEqual(cold.setOutbox.pending.first?.resolvedSessionID, started.id)
+        XCTAssertEqual(api.stateCalls, readsBeforeRelaunch, "Recovery does not depend on a fresh state pull")
+    }
+
     func testPartnerControlKeepsOwnOutboxAndSharedSetIndexWithoutSoloAdvancement() async throws {
         let defaults = defaults(), api = SetWriteAPIStub()
         let auth = retainedAuth(defaults: defaults), ex = exercise(targetSets: 3)

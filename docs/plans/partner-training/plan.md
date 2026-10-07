@@ -124,7 +124,7 @@ The design and the choices behind each phase are in [spec.md](spec.md).
 
 ## Next step
 
-**Now (@owner):** Merge the `codex/partner-training-setup` pull request once its
+**Now (@owner):** Merge [PR #243](https://github.com/namarks/tres-fort/pull/243) once its
 exact-head Codex review and required CI checks pass. P0 repository work implements the
 manual two-lane setup and runner; it does not implement camera counting. Keep P0
 open until the [paired-device acceptance checks](validation.md) pass. Migration
@@ -146,6 +146,10 @@ QR handoff or reconnect timing.
   request ID. It fences a Start that committed without an acknowledgement or
   has not committed yet; it cannot discard live sets. The session marker is
   also pinned against full-plan session remaps and session-only swaps.
+- A phone persists the successful Start session and runner checkpoint before
+  acknowledging Station. The first shared state still gates logging; a cold
+  relaunch can recover that attempt from its certified account snapshot offline.
+  Cancelling or leaving during Start fences late acknowledgements on Station.
 - A failed start ends that setup; cancel it and review a fresh invitation. Each
   individual Start and copy retries the same immutable request. Continue alone
   closes the lane locally and retains its backend cleanup until connectivity

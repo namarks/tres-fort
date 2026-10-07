@@ -22,7 +22,6 @@ final class PartnerPhoneModel: ObservableObject {
     private var subscriptions: Set<AnyCancellable> = []
     private var timer: Task<Void, Never>?
     private var lastSnapshot: PartnerLaneSnapshot?
-    private var startACK: SessionRow?
     private var laneKeyAvailable = false
     private var invalidated = false
     private var retryAfter = Date.distantPast
@@ -59,7 +58,7 @@ final class PartnerPhoneModel: ObservableObject {
             self.send(.leave)
             if let accountID = self.accountID { PartnerLaneKeyStore.clear(accountID: accountID) }
             self.invalidated = true; self.stopLinks(); self.checkpoint = nil
-            self.startACK = nil; self.name = "Member"; self.error = nil
+            self.name = "Member"; self.error = nil
             return false
         }
         if let checkpoint, let key = PartnerLaneKeyStore.load(checkpoint.id, accountID: accountID) {
@@ -203,9 +202,11 @@ final class PartnerPhoneModel: ObservableObject {
             guard save(next) else { return }
             applyState(); publishSnapshot(force: true)
         case .cancel:
-            guard value.phase != .active else { return }
+            guard value.phase.acceptsSetupCancellation else { return }
             Task { await leave(cancel: true) }
-        case .leave: Task { await leave(cancel: false) }
+        case .leave:
+            guard value.phase != .leaving && value.phase != .cancelling else { return }
+            Task { await leave(cancel: false) }
         case .failed(let message): error = message
         default: break
         }
@@ -229,7 +230,14 @@ final class PartnerPhoneModel: ObservableObject {
         do {
             let response: PartnerSessionResponse = try await api.partnerPost("/api/partner/start", body: value.start!, jwt: jwt)
             guard current, var latest = checkpoint, latest.id == value.id else { return }
-            startACK = response.session; latest.sessionID = response.session.id; latest.attempt = response.session.attempt
+            // Persist both the session ACK and its runner checkpoint before
+            // Station can release the pair. Mounting alone never enables a log;
+            // only the first shared state does that. A cold phone can now use
+            // its certified snapshot without another successful server read.
+            guard sync.mountPartnerWorkout(response.session) else {
+                error = "Couldn't save the started workout. Retry before continuing."; return
+            }
+            latest.sessionID = response.session.id; latest.attempt = response.session.attempt
             guard save(latest) else { return }
             if latest.phase == .starting { send(.started(round: round)) }
         } catch {
@@ -274,7 +282,7 @@ final class PartnerPhoneModel: ObservableObject {
         guard laneKeyAvailable, let value = checkpoint, value.phase == .active, let state = value.shared, let sync else { return }
         if !sync.running || sync.todaySession?.id != value.sessionID || sync.todaySession?.attempt != value.attempt
             || sync.selectedDayID != value.receipt?.workout_id {
-            guard let session = startACK ?? sync.sessions.first(where: { $0.id == value.sessionID && $0.attempt == value.attempt }),
+            guard let session = sync.sessions.first(where: { $0.id == value.sessionID && $0.attempt == value.attempt }),
                   sync.mountPartnerWorkout(session) else { error = "Refresh Today to recover this workout, or continue alone."; return }
         }
         sync.onPartnerSkip = { [weak self] in self?.skip() }
@@ -354,8 +362,11 @@ final class PartnerPhoneModel: ObservableObject {
                 if value.attempt == nil {
                     let response: PartnerSessionResponse = try await api.partnerPost("/api/partner/start", body: request, jwt: jwt)
                     guard current, var latest = checkpoint, latest.id == value.id else { return }
+                    guard sync?.mountPartnerWorkout(response.session) == true else {
+                        error = "Couldn't save the started workout. Retry before continuing."; return
+                    }
                     latest.sessionID = response.session.id; latest.attempt = response.session.attempt
-                    guard save(latest) else { return }; value = latest; startACK = response.session
+                    guard save(latest) else { return }; value = latest
                 }
                 guard let sessionID = value.sessionID, let attempt = value.attempt else { return }
                 let body = PartnerLeaveRequest(partner_workout_id: value.id.uuidString, expected_attempt: attempt,
@@ -367,7 +378,7 @@ final class PartnerPhoneModel: ObservableObject {
             } else { guard sync?.releasePartnerWorkout(nil) == true else { return } }
             guard save(nil) else { return }
             if let accountID { PartnerLaneKeyStore.clear(accountID: accountID) }
-            laneLink.stop(); stopJoin(); lastSnapshot = nil; startACK = nil; laneKeyAvailable = false; error = nil
+            laneLink.stop(); stopJoin(); lastSnapshot = nil; laneKeyAvailable = false; error = nil
         } catch {
             retryAfter = Date().addingTimeInterval(10)
             if current { self.error = "Couldn't close the lane. Retry with a connection. Logged sets are kept." }

@@ -272,3 +272,17 @@ struct PartnerRunnerControl: Equatable {
     let restUntil: Date?
     let complete: Bool
 }
+
+/// A terminal setup decision also fences acknowledgements already in flight.
+struct PartnerStartBarrier {
+    let round: UUID
+    private(set) var acknowledged: Set<PartnerLane> = []
+    private(set) var cancelled = false
+    var active: Bool { !cancelled && acknowledged.count == 2 }
+    mutating func acknowledge(_ lane: PartnerLane, round: UUID) -> Bool {
+        guard !cancelled, round == self.round else { return false }
+        acknowledged.insert(lane)
+        return active
+    }
+    mutating func cancelSetup() { cancelled = true }
+}

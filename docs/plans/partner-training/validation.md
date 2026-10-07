@@ -12,9 +12,11 @@ implied by repository review or merge.
 - `PartnerTrainingTests`: invitation expiry/fingerprints, fresh slot/group IDs,
   full prescription copying and own-history load/unit selection; shared-step
   quorum, rest, Undo, reconnect, closed lanes and checkpoint compare-and-swap.
-- Partner cases in `SetOutboxTests`: the ordinary durable outbox keeps each set's
-  account/session/attempt and shared set number; only shared state enables a
-  log, and cold unverified state and account changes cannot authorize writes.
+- Partner cases in `SetOutboxTests`: a successful Start is durable before Station
+  is notified, so relaunch before the first shared state recovers offline. The
+  ordinary durable outbox keeps each set's account/session/attempt and shared
+  set number; only shared state enables a log, and cold unverified state and
+  account changes cannot authorize writes.
 - `StationLinkTests` and `RunnerRecoveryTests`: existing encrypted transport and
   live/certified-cache recovery behavior.
 
@@ -31,10 +33,10 @@ performed by this implementation session.
 | Pair and start | Host opens an empty workout on iPhone, links Station, then chooses Train together on iPad. Partner scans, host allows, partner reviews weights. Both Start ACKs precede logging. |
 | Same account and spent QR | Another host-account phone is refused. Expired QR cannot invite a new member; a spent QR cannot take either lane. No member joins mid-workout. |
 | Copy and units | Include duplicate movements, warm-ups, a circuit, reps/RPE/cues/progression, timed work and kg loads. Partner gets fresh IDs and their own working weights/units; fallback targets say Check. Retrying creates one copy. |
-| Start failure | Change either reviewed plan or log a set before Start. The pair does not begin. Cancel settles each empty start, including a Start whose response was lost, without removing logged work. |
+| Start failure | Change either reviewed plan or log a set before Start. The pair does not begin. Cancel or leaving during Start ends setup; late ACKs cannot release the pair. Cancel settles each empty start, including a Start whose response was lost, without removing logged work. |
 | Shared progress | One phone logs: the pair waits. The second logs: one shared rest begins. Skip rest advances both. Skip set applies to both and preserves physical set numbers. |
 | Undo and rejected upload | Undo during rest and after advancing, then reconnect. The pair rewinds, the other log stays, and already elapsed rests are not replayed. A rejected queued set reopens its step. |
-| Drop and relaunch | Disable one phone's local connection; the iPad waits. Relaunch that phone before and after storing its lane key. Its checkpoint and complete lane snapshot recover the same lane. |
+| Drop and relaunch | Disable one phone's local connection; the iPad waits. Relaunch that phone before and after storing its lane key, and immediately after its Start ACK but before shared state arrives. Its checkpoint and complete lane snapshot recover the same lane; a committed Start can recover without internet. |
 | Continue alone | Lose the iPad or leave a lane, including without internet after a successful start. Each phone keeps its own logs/outbox and can proceed solo. Reconnect must not reopen the closed lane. |
 | Account and privacy boundary | Sign out, switch accounts, delete the account, and close Station. Old views cannot log; lane keys are removed; iPad clears all partner names, targets and invitations. |
 

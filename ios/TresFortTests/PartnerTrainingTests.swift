@@ -78,6 +78,24 @@ final class PartnerTrainingTests: XCTestCase {
         XCTAssertTrue(value.state.skipped.isEmpty)
         XCTAssertNil(value.state.restUntil)
     }
+    func testLeavingDuringStartFencesBothAcknowledgementsAndCancelEchoes() {
+        let round = UUID()
+        var start = PartnerStartBarrier(round: round)
+        XCTAssertFalse(start.acknowledge(.host, round: round))
+        start.cancelSetup()
+        XCTAssertFalse(start.acknowledge(.partner, round: round))
+        XCTAssertFalse(start.acknowledge(.host, round: round))
+        XCTAssertFalse(start.active)
+        XCTAssertFalse(PartnerCheckpoint.Phase.cancelling.acceptsSetupCancellation,
+                       "A station Cancel must not echo another Cancel back indefinitely")
+        XCTAssertFalse(PartnerCheckpoint.Phase.leaving.acceptsSetupCancellation,
+                       "Continue alone is final even while its cleanup is offline")
+        var retry = PartnerStartBarrier(round: UUID())
+        XCTAssertFalse(retry.acknowledge(.host, round: round))
+        XCTAssertFalse(retry.acknowledge(.host, round: retry.round))
+        XCTAssertTrue(retry.acknowledge(.partner, round: retry.round))
+    }
+
     private func offer() throws -> PartnerOffer {
         let group = UUID().uuidString
         let slots: [[String: Any]] = (0..<2).map { index in

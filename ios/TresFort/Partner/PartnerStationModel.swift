@@ -24,8 +24,9 @@ final class PartnerStationModel: ObservableObject {
     private var allowedFingerprint: Data?
     private var partnerKey: Data?
     private var nextSetupRetry = Date.distantPast
-    private var startRound: UUID?
-    private var started: Set<PartnerLane> = []
+    private var startBarrier: PartnerStartBarrier?
+    private var startRound: UUID? { startBarrier?.round }
+    private var setupEnded = false
     private var subscriptions: Set<AnyCancellable> = []
     private var timer: Task<Void,Never>?
     var isOpen: Bool {id != nil}
@@ -70,7 +71,7 @@ final class PartnerStationModel: ObservableObject {
         }
     }
     private func receiveHostSetup(_ packet: PartnerPacket) {
-        guard packet.id==id,offer==nil else {return}
+        guard packet.id==id,!setupEnded,offer==nil else {return}
         switch packet.message {
         case .hostSetup(let offer,let key):
             guard offer.id==id,offer.isValid,key.count==32 else {error="The workout could not be shared.";return}
@@ -83,7 +84,7 @@ final class PartnerStationModel: ObservableObject {
         }
     }
     private func receiveInvitation(_ packet: PartnerPacket) {
-        guard packet.id==id,state==nil,!starting,let invitation else {return}
+        guard packet.id==id,!setupEnded,state==nil,!starting,let invitation else {return}
         switch packet.message {
         case .join(let name,let fingerprint):
             guard fingerprint.count==32,!name.isEmpty,name.count<=80 else {return}
@@ -120,12 +121,12 @@ final class PartnerStationModel: ObservableObject {
     }
     func start() {
         guard canStart,let offer else {return}
-        starting=true;started=[];startRound=UUID()
+        starting=true;startBarrier=PartnerStartBarrier(round:UUID())
         coordinator=PartnerCoordinator(steps:offer.steps)
         sendBoth(.start(round:startRound!))
     }
     private func receive(_ packet: PartnerPacket,from lane: PartnerLane) {
-        guard packet.id==id else {return}
+        guard packet.id==id,!setupEnded else {return}
         switch packet.message {
         case .resumeStored:
             guard lane == .partner, allowedFingerprint != nil else { return }
@@ -137,9 +138,9 @@ final class PartnerStationModel: ObservableObject {
             if starting,let startRound {send(.start(round:startRound),over:link(lane))}
         case .started(let round):
             guard starting,round==startRound else {return}
-            started.insert(lane)
+            let active = startBarrier?.acknowledge(lane,round:round) == true
             coordinator?.receive(.init(),from:lane,now:Date())
-            if started.count==2 {starting=false;broadcast()}
+            if active {starting=false;broadcast()}
         case .snapshot(let snapshot):
             guard !starting,coordinator != nil else {return}
             coordinator?.receive(snapshot,from:lane,now:Date());broadcast()
@@ -153,15 +154,20 @@ final class PartnerStationModel: ObservableObject {
                   offer.steps[state.stepIndex].id == stepID else {return}
             skipRest()
         case .leave:
-            if coordinator == nil { sendBoth(.cancel); error="A member left setup. Cancel and start again."; ready=[] }
+            if state == nil { cancelSetup("A member left setup. Cancel and start again.") }
             else { coordinator?.close(lane,now:Date());broadcast() }
         case .cancel:
-            if state == nil { sendBoth(.cancel); starting=false; coordinator=nil; ready=[]; error="Setup cancelled on an iPhone." }
+            if state == nil { cancelSetup("Setup cancelled on an iPhone.") }
         case .failed(let message):
-            error=message
-            if starting {sendBoth(.cancel);starting=false;coordinator=nil;ready=[]}
+            if state == nil { cancelSetup(message) } else { error=message }
         default:break
         }
+    }
+    private func cancelSetup(_ message: String) {
+        guard !setupEnded else { return }
+        setupEnded=true;startBarrier?.cancelSetup()
+        starting=false;coordinator=nil;ready=[];error=message
+        sendBoth(.cancel)
     }
     func skipRest() {coordinator?.skipRest(now:Date());broadcast()}
     private func tick() {
@@ -192,7 +198,7 @@ final class PartnerStationModel: ObservableObject {
         timer?.cancel();timer=nil
         invitationLink.stop();hostLink.stop();partnerLink.stop();originalLink?.onPartnerMessage=nil;originalLink=nil
         id=nil;offer=nil;invitation=nil;candidateName=nil;candidateFingerprint=nil;allowedFingerprint=nil
-        partnerKey=nil;hostSlots=[];partnerSlots=[];ready=[];started=[];state=nil;coordinator=nil
-        partnerName="Partner";starting=false;startRound=nil;error=nil
+        partnerKey=nil;hostSlots=[];partnerSlots=[];ready=[];state=nil;coordinator=nil
+        partnerName="Partner";starting=false;startBarrier=nil;setupEnded=false;error=nil
     }
 }

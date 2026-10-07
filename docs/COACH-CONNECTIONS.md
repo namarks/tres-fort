@@ -10,7 +10,7 @@ API usage, API-key entry, embedded chat, or automatic model selection.
 In Très Fort, open **Profile → Coach → Set up your AI coach** (or **Connect
 another AI app**). Choose Claude, Codex, or another compatible app. Setup is
 available immediately; generating a connect code is not a prerequisite.
-Both providers can have separate connections to the same training account.
+Each app can have its own connection to the same training account.
 The status at the top means an AI app has access, not that the selected
 provider completed setup.
 
@@ -78,13 +78,50 @@ exact authorized callback, including its chosen port.
 The host app must support remote MCP over Streamable HTTP, OAuth discovery,
 Dynamic Client Registration, authorization code with PKCE S256, and refresh.
 Apps requiring only a provider API key or static token are not covered by this
-member setup. GLM and Muse are model families, not proof of host compatibility.
+member setup. A model family alone is not proof of host compatibility.
 Choose a host that supports the connection and configure the model there.
 
 Z.AI documents [GLM in OpenCode](https://docs.z.ai/devpack/tool/opencode), and Meta
 has documented [Muse tool/MCP use and OpenCode examples](https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/).
 These are candidate host/model routes, not end-to-end Très Fort certifications.
 No provider API credentials are stored or forwarded by Très Fort.
+
+### Meta AI (Muse), connected by the member
+
+Verified on the owner's account on 2026-10-06, against the production Worker
+before [PR #239](https://github.com/namarks/tres-fort/pull/239) was released:
+Muse in Meta AI read the coaching brief and made a plan change that appeared in
+the iOS plan history. The route therefore does not depend on that release.
+
+It is not an in-app setup choice. Meta
+[uses Meta AI conversations to personalize ads](https://fortune.com/2025/10/02/meta-to-use-users-ai-chatbot-conversations-to-personalize-ads),
+which conflicts with the privacy policy's equal-protection promise for in-app
+setup and with App Store Review Guidelines 5.1.2(vi) and 5.1.3(i) on health and
+fitness data. The owner decided on 2026-10-07 to keep it member-connected at
+least until version 1.0 is approved. A member can connect it through **Other
+compatible app**, which tells them to review that app's policy before approving.
+
+Muse has no connector settings screen. In a Muse chat, ask it to create a
+custom connector for a remote MCP server with Streamable HTTP and OAuth (no API
+key), give it the MCP URL shown on the **Other compatible app** screen and the
+protected-resource discovery URL, and tell it not to invent endpoints. The
+discovery URL is the same host with `/.well-known/oauth-protected-resource` in
+place of `/mcp`, for example
+`https://<your-worker>.workers.dev/.well-known/oauth-protected-resource`. Muse may report "connected" before sign-in finishes;
+ask it to load the coaching brief to prove the connection. It signs in from
+Meta's hosted browser, so the iPhone approval link cannot open there: expand
+**Use a connect code** on the Très Fort consent page instead. Its callback is
+`https://agent.meta.ai/api/hatch/oauth/callback`, which dynamic registration
+accepts without configuration. Once PR #239 is released, the consent page also
+names the recipient as Meta AI, operated by Meta, and refused OAuth requests
+log an `oauth_refused` reason for `wrangler tail`.
+
+### ChatGPT developer mode and Dots
+
+Not yet verified. ChatGPT's developer mode can add a custom app with OAuth, but
+OpenAI documents read/fetch-only custom apps on Pro, and it does not say whether
+a dot can use a developer-mode app or only a published plugin. The published
+plugin (see below) is the documented route to a one-tap ChatGPT install.
 
 ## Shared behavior and compatibility
 

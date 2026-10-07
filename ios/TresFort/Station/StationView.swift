@@ -52,6 +52,7 @@ struct StationView: View {
     /// Optional link that counts the set armed by this account's iPhone runner.
     /// It carries counts out; nothing here can log a set.
     @StateObject private var link = StationLinkStation()
+    @StateObject private var partner: PartnerStationModel
     @State private var linkedArmID: UUID?
     /// The latest "on" tap; turning the link off or on again supersedes it.
     @State private var linkRequest: UUID?
@@ -61,7 +62,7 @@ struct StationView: View {
     @State private var actualReps = ""
     @FocusState private var actualRepsFocused: Bool
     @State private var hasRunTrial = false
-    @State private var previousIdleTimerDisabled = false
+    @StateObject private var idleTimer = StationIdleTimerOverride()
     @State private var countdown: Int?
     @State private var countdownTask: Task<Void, Never>?
     @State private var showSavedTests = false
@@ -73,6 +74,7 @@ struct StationView: View {
         self.catalog = catalog
         self.access = access
         self.loadLinkKey = loadLinkKey
+        _partner = StateObject(wrappedValue: PartnerStationModel(accountID: access.session.accountID))
         _camera = StateObject(wrappedValue: StationCamera(access: access))
     }
 
@@ -83,6 +85,9 @@ struct StationView: View {
             GeometryReader { geometry in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
+                        if partner.isOpen {
+                            PartnerStationPanel(model: partner)
+                        } else {
                         heading
                         exercisePicker
                         if let selectedOption { mappingDetails(selectedOption) }
@@ -106,7 +111,16 @@ struct StationView: View {
                             // armed iPhone set switches to its rep counter.
                             linkPanel
                         }
+                        Button("Train together") {
+                            guard !recordingBusy, access.validate() else { return }
+                            cancelCountdown(); cancelComparison("Starting partner workout.")
+                            camera.stop(); holdTimer.invalidate(); linkedArmID = nil
+                            partner.begin(link: link)
+                        }.buttonStyle(.borderedProminent)
+                            .disabled(!link.connection.isConnected || recordingBusy)
+                            .accessibilityIdentifier("station.trainTogether")
                         privacyNote
+                        }
                     }
                     .padding(24)
                     .frame(maxWidth: 1240)
@@ -130,11 +144,14 @@ struct StationView: View {
         }
         .preferredColorScheme(.dark)
         .onAppear {
-            previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
+            idleTimer.begin()
+            refreshIdleTimer()
             if !access.validate() { dismiss() }
         }
         .onReceive(access.$isActive) { active in
             guard !active else { return }
+            idleTimer.end()
+            partner.end()
             cancelCountdown()
             linkRequest = nil
             link.stop()
@@ -150,6 +167,8 @@ struct StationView: View {
             dismiss()
         }
         .onDisappear {
+            idleTimer.end()
+            partner.end()
             cancelCountdown()
             linkRequest = nil
             link.stop()
@@ -158,17 +177,16 @@ struct StationView: View {
 #endif
             cancelComparison("Camera closed. Results cover only part of this trial.")
             camera.stop()
-            UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase != .active else { return }
+            guard phase != .active else { refreshIdleTimer(); return }
             cancelCountdown()
             cancelComparison("Tracking stopped when the app became inactive.")
             // The system permission alert temporarily makes this scene inactive.
             // Keep that request alive; actual backgrounding always cancels it.
             if phase == .inactive && camera.state == .requestingPermission { return }
             camera.stop()
-            UIApplication.shared.isIdleTimerDisabled = previousIdleTimerDisabled
+            refreshIdleTimer()
         }
         .onChange(of: camera.state) { _, state in
             if state != .running {
@@ -177,9 +195,9 @@ struct StationView: View {
             } else if let arm = link.armToCount, linkedArmID != arm.armID {
                 startLinkedTrial(arm)
             }
-            UIApplication.shared.isIdleTimerDisabled = state == .running
-                ? true : previousIdleTimerDisabled
+            refreshIdleTimer()
         }
+        .onChange(of: partner.isOpen) { _, _ in refreshIdleTimer() }
         // A rotated key restarts advertising so the iPhone can find it again.
         .onReceive(NotificationCenter.default.publisher(for: StationLinkKeyStore.refreshed)) { _ in
             guard link.isEnabled, let request = linkRequest else { return }
@@ -237,7 +255,13 @@ struct StationView: View {
         }
     }
 
+    private func refreshIdleTimer() {
+        idleTimer.update(cameraRunning: camera.state == .running, partnerOpen: partner.isOpen,
+                         foreground: scenePhase == .active && access.isActive)
+    }
+
     private func handleArm(_ arm: StationLinkArm?) {
+        guard !partner.isOpen else { return }
         if let current = linkedArmID, current != arm?.armID {
             linkedArmID = nil
             if comparison.state.isCollecting { comparison.reset(exercise: exercise) }
@@ -261,7 +285,7 @@ struct StationView: View {
     }
 
     private func startLinkedTrial(_ arm: StationLinkArm) {
-        guard access.validate(), link.armToCount?.armID == arm.armID, linkedArmID != arm.armID else { return }
+        guard !partner.isOpen, access.validate(), link.armToCount?.armID == arm.armID, linkedArmID != arm.armID else { return }
         guard camera.state == .running, !recordingBusy, !showSavedTests else {
             link.report(camera.state == .running ? .stopped : .cameraOff, armID: arm.armID)
             return
@@ -783,4 +807,31 @@ struct StationView: View {
         .accessibilityIdentifier("station.diagnostics")
     }
 #endif
+}
+
+/// Camera and manual partner mode share one override, so stopping the camera
+/// cannot release the screen while Station still coordinates both phones.
+@MainActor
+final class StationIdleTimerOverride: ObservableObject {
+    private let read: () -> Bool
+    private let write: (Bool) -> Void
+    private var previous: Bool?
+
+    init(read: @escaping () -> Bool = { UIApplication.shared.isIdleTimerDisabled },
+         write: @escaping (Bool) -> Void = { UIApplication.shared.isIdleTimerDisabled = $0 }) {
+        self.read = read
+        self.write = write
+    }
+    func begin() {
+        if previous == nil { previous = read() }
+    }
+    func update(cameraRunning: Bool, partnerOpen: Bool, foreground: Bool) {
+        guard let previous else { return }
+        write(foreground && (cameraRunning || partnerOpen) ? true : previous)
+    }
+    func end() {
+        guard let previous else { return }
+        self.previous = nil
+        write(previous)
+    }
 }

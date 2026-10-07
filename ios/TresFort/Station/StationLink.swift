@@ -179,6 +179,7 @@ enum StationLinkStationState: String, Codable, Equatable {
 }
 
 enum StationLinkMessage: Codable, Equatable {
+    case partner(PartnerPacket)
     case arm(StationLinkArm)
     case disarm(armID: UUID)
     case progress(StationLinkProgress)
@@ -193,7 +194,7 @@ enum StationLinkMessage: Codable, Equatable {
     }
 
     static func decode(_ data: Data) -> StationLinkMessage? {
-        guard let envelope = try? JSONDecoder().decode(StationLinkEnvelope.self, from: data),
+        guard data.count <= 1_048_576, let envelope = try? JSONDecoder().decode(StationLinkEnvelope.self, from: data),
               envelope.version == StationLink.protocolVersion else { return nil }
         return envelope.message
     }

@@ -1,4 +1,5 @@
 import { isArchivedWorkoutAssignment } from './workoutMetadata';
+import { isActivePartnerWorkout } from './partnerTraining';
 /** Diagnostic categories are fixed values, never an Error's mutable name. */
 export function diagnosticErrorType(error: unknown): string {
   if (error instanceof TypeError) return 'TypeError';
@@ -21,6 +22,7 @@ const PUBLIC_TOOL_ERRORS = new Set([
 ]);
 
 export function publicToolErrorCode(error: unknown): string | null {
+  if (isActivePartnerWorkout(error)) return 'active_workout';
   if (isArchivedWorkoutAssignment(error)) return 'day_not_found';
   if (!(error instanceof Error)) return null;
   if (PUBLIC_TOOL_ERRORS.has(error.message)) return error.message;

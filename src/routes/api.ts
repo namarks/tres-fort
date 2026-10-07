@@ -9,9 +9,13 @@ import type { HonoEnv } from '../types';
 import { requireAppJwt } from '../auth';
 import { planForCapabilities, readCapabilities } from '../exerciseGroupViews';
 import { isGroupId } from '../exerciseGroups';
+import { isPartnerStartInput } from '../partnerTraining';
 import { appleProviderConfig } from '../apple';
 import { validActivitySourceTime } from '../activityTime';
 import {
+  cancelPartnerStart, createPartnerWorkout,
+  startPartnerSession,
+  leavePartnerSession,
   getOwnedSession,
   startFreestyleSession,
   getFreestyleWorkoutDraft,
@@ -1981,4 +1985,41 @@ apiRoutes.get('/groups/:id/activity', async (c) => {
   }
   const members = await getGroupActivitySeries(c.env.DB, groupId, days, userId);
   return c.json({ group_id: groupId, days, server_time: Date.now(), members });
+});
+
+// Partner setup is local pairing; these writes always use the signed-in
+// phone's own account, never an account ID or credential from the other lane.
+apiRoutes.post('/partner/workouts', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({error:parsed.error},400);
+  const result = await createPartnerWorkout(c.env.DB,c.get('userId'),parsed.body);
+  return c.json(result, 'conflict' in result ? 409 : 'error' in result ?
+    result.error === 'invalid_fields' || result.error === 'invalid_exercises' || result.error === 'group_conflict' ? 400 : 409 : 201);
+});
+
+apiRoutes.post('/partner/start', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({error:parsed.error},400);
+  if (!isPartnerStartInput(parsed.body)) return c.json({error:'invalid_fields',fields:['start']},400);
+  const result = await startPartnerSession(c.env.DB,c.get('userId'),parsed.body);
+  return c.json(result,'session' in result ? 200 : 409);
+});
+
+apiRoutes.post('/partner/sessions/:id/leave', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({error:parsed.error},400);
+  const b = parsed.body;
+  if (invalidMutationFields(b,{partner_workout_id:isGroupId,expected_attempt:isNonNegativeInteger,
+      cancel:(value)=>typeof value==='boolean'}).length || Object.keys(b).some(key=>!['partner_workout_id','expected_attempt','cancel'].includes(key))) return c.json({error:'invalid_fields'},400);
+  const result = await leavePartnerSession(c.env.DB,c.get('userId'),c.req.param('id'),
+    b.partner_workout_id as string,b.expected_attempt as number,b.cancel as boolean);
+  return c.json(result,'session' in result ? 200 : 409);
+});
+
+apiRoutes.post('/partner/cancel-start', async (c) => {
+  const parsed=await readMutationBody(c);
+  if (!parsed.ok) return c.json({error:parsed.error},400);
+  if (!isPartnerStartInput(parsed.body)) return c.json({error:'invalid_fields'},400);
+  const result=await cancelPartnerStart(c.env.DB,c.get('userId'),parsed.body);
+  return c.json(result,'cancelled' in result ? 200 : 409);
 });

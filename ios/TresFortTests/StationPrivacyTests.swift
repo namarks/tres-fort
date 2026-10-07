@@ -18,6 +18,30 @@ private actor StationDeferred<Value> {
 
 @MainActor
 final class StationPrivacyTests: XCTestCase {
+    func testPartnerStationKeepsScreenAwakeAcrossCameraStopAndRestoresOnExit() {
+        for originallyDisabled in [false, true] {
+            var disabled = originallyDisabled
+            let idleTimer = StationIdleTimerOverride(read: { disabled }, write: { disabled = $0 })
+            idleTimer.begin()
+            idleTimer.update(cameraRunning: true, partnerOpen: false, foreground: true)
+            XCTAssertTrue(disabled)
+            idleTimer.begin() // A repeated appearance cannot capture our own override.
+            idleTimer.update(cameraRunning: false, partnerOpen: true, foreground: true)
+            XCTAssertTrue(disabled, "Manual partner mode must outlive the camera's awake requirement")
+            idleTimer.update(cameraRunning: false, partnerOpen: true, foreground: false)
+            XCTAssertEqual(disabled, originallyDisabled)
+            idleTimer.update(cameraRunning: false, partnerOpen: true, foreground: true)
+            XCTAssertTrue(disabled, "Returning to Station must keep the shared coordinator awake")
+            idleTimer.update(cameraRunning: false, partnerOpen: false, foreground: true)
+            XCTAssertEqual(disabled, originallyDisabled, "Closing partner mode restores the prior setting")
+            idleTimer.update(cameraRunning: false, partnerOpen: true, foreground: true)
+            idleTimer.end()
+            XCTAssertEqual(disabled, originallyDisabled, "Dismissal or an account boundary ends the override")
+            idleTimer.update(cameraRunning: true, partnerOpen: true, foreground: true)
+            XCTAssertEqual(disabled, originallyDisabled, "Late camera callbacks cannot reopen a closed override")
+        }
+    }
+
     private func temporaryRoot() -> URL {
         FileManager.default.temporaryDirectory.appendingPathComponent("station-privacy-\(UUID())")
     }

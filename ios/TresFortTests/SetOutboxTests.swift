@@ -14318,3 +14318,123 @@ extension SetOutboxTests {
         XCTAssertTrue(WorkoutTerminalOutboxStore.load(userID: "user-a", defaults: defaults).isEmpty)
     }
 }
+
+@MainActor
+extension SetOutboxTests {
+    func testPartnerStartACKRecoversOfflineBeforeFirstSharedState() async throws {
+        let suite = "PartnerStartACK.\(UUID().uuidString)"
+        let defaults = LocalPersistence(suiteName: suite)!, api = SetWriteAPIStub(), ex = exercise()
+        addTeardownBlock { [preferences = defaults.preferences, directory = defaults.trainingStore.directory] in
+            preferences.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: directory)
+        }
+        let old = session(status: "planned", updatedAt: 2_000_000_000_001, attempt: 0)
+        api.stateHandler = { _ in self.state(session: old, sets: [], exercise: ex) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { self.fixedDate })
+        await model.load()
+        var started = session(updatedAt: 2_000_000_000_002, attempt: 1)
+        let offer = PartnerOffer(id: UUID(), hostName: "Host", planID: "plan-a", planVersion: 1,
+            workout: day(with: [ex]))
+        started.partner_workout_id = offer.id.uuidString
+        // This is the commit boundary used before sending .started to Station.
+        XCTAssertTrue(model.mountPartnerWorkout(started))
+        XCTAssertTrue(model.isSetEntryBlocked(ex))
+        let checkpoint = PartnerCheckpoint(id: offer.id, lane: .host, offer: offer,
+            name: "Host", phase: .starting, slotMap: [ex.id: ex.id],
+            sessionID: started.id, attempt: started.attempt)
+        XCTAssertTrue(PartnerCheckpointStore.replace(checkpoint, expected: nil,
+            accountID: "user-a", defaults: defaults))
+
+        // Relaunch before shared state arrives, with every network path offline.
+        api.stateHandler = { _ in throw URLError(.notConnectedToInternet) }
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let readsBeforeRelaunch = api.stateCalls
+        let coldDefaults = LocalPersistence(suiteName: suite)!
+        let cold = SyncModel(auth: retainedAuth(defaults: coldDefaults), setWriteAPI: api,
+            defaults: coldDefaults, now: { self.fixedDate })
+        XCTAssertTrue(cold.canUseOfflineWorkoutState)
+        let saved = try XCTUnwrap(cold.sessions.first { $0.id == started.id && $0.attempt == 1 })
+        XCTAssertEqual(saved.partner_workout_id, offer.id.uuidString)
+        XCTAssertTrue(cold.mountPartnerWorkout(saved))
+        XCTAssertTrue(cold.isSetEntryBlocked(ex), "Relaunch cannot bypass the two-phone Start barrier")
+        cold.applyPartnerControl(.init(slotID: ex.id, set: 1, canLog: true, restUntil: nil, complete: false))
+        await cold.logCurrentSet(expected: ex, expectedSetNumber: 1)
+        XCTAssertEqual(cold.setOutbox.pending.first?.expectedAttempt, 1)
+        XCTAssertEqual(cold.setOutbox.pending.first?.resolvedSessionID, started.id)
+        XCTAssertEqual(api.stateCalls, readsBeforeRelaunch, "Recovery does not depend on a fresh state pull")
+    }
+
+    func testPartnerControlKeepsOwnOutboxAndSharedSetIndexWithoutSoloAdvancement() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let auth = retainedAuth(defaults: defaults), ex = exercise(targetSets: 3)
+        let old = session(status: "planned", updatedAt: 2_000_000_000_001, attempt: 0)
+        api.stateHandler = { _ in self.state(session: old, sets: [], exercise: ex) }
+        let model = SyncModel(auth: auth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        await model.load()
+        model.partnerReserved = true
+        var started = session(updatedAt: 2_000_000_000_002, attempt: 1)
+        started.partner_workout_id = "pair"
+        XCTAssertTrue(model.mountPartnerWorkout(started))
+        XCTAssertTrue(model.isSetEntryBlocked(ex), "A Start ACK alone cannot enable logging")
+        model.applyPartnerControl(.init(slotID: ex.id, set: 2, canLog: true, restUntil: nil, complete: false))
+        XCTAssertEqual(model.currentPhysicalSetNumber, 2, "A shared skip must not renumber the next physical set")
+        await model.logCurrentSet(expected: ex, expectedSetNumber: 2)
+        XCTAssertEqual(model.setOutbox.pending.count, 1)
+        XCTAssertEqual(model.setOutbox.pending.first?.body.set_index, 2)
+        XCTAssertEqual(model.setOutbox.pending.first?.expectedAttempt, 1)
+        XCTAssertEqual(model.setOutbox.pending.first?.resolvedSessionID, started.id)
+        XCTAssertNil(model.restEndDate, "Only the iPad can start partner rest")
+        XCTAssertFalse(model.finished)
+        XCTAssertTrue(model.isSetEntryBlocked(ex))
+        await model.logCurrentSet(expected: ex, expectedSetNumber: 2)
+        XCTAssertEqual(model.setOutbox.pending.count, 1, "Repeated taps cannot log the same shared step twice")
+        await model.finishWorkout()
+        XCTAssertTrue(model.terminalOutbox.isEmpty, "Close the partner lane before an ordinary finish")
+        let saved = StateSnapshotStore.load(userID: "user-a", defaults: defaults)
+        XCTAssertEqual(saved?.state.sessions.first?.attempt, 1, "Start ACK is durable before set delivery")
+        let pending = try XCTUnwrap(model.setOutbox.pending.first)
+        XCTAssertTrue(model.enqueueCorrection(pending: pending, values: nil))
+        XCTAssertTrue(model.partnerLoggedIndices(ex).isEmpty, "A durable offline Undo rewinds immediately")
+    }
+
+    func testPartnerRunnerRejectsUnverifiedColdStateAndOtherAccountActions() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let auth = retainedAuth(defaults: defaults), ex = exercise()
+        let model = SyncModel(auth: auth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        prepare(model, exercise: ex)
+        var started = session(attempt: 1); started.partner_workout_id = "pair"
+        XCTAssertFalse(model.mountPartnerWorkout(started))
+        api.stateHandler = { _ in self.state(session: started, sets: [], exercise: ex) }
+        await model.load()
+        XCTAssertTrue(model.mountPartnerWorkout(started))
+        model.applyPartnerControl(.init(slotID: ex.id, set: 1, canLog: true, restUntil: nil, complete: false))
+        auth.signOut()
+        await model.logCurrentSet(expected: ex, expectedSetNumber: 1)
+        XCTAssertTrue(model.setOutbox.pending.isEmpty)
+    }
+}
+
+
+@MainActor
+extension SetOutboxTests {
+    func testPartnerContinueAloneIsDurableBeforeOfflineLogging() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub(), auth = retainedAuth(defaults: defaults), ex = exercise()
+        var started = session(updatedAt: 2_000_000_000_001, attempt: 1); started.partner_workout_id = "pair"
+        api.stateHandler = { _ in self.state(session: started, sets: [], exercise: ex) }
+        let model = SyncModel(auth: auth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        await model.load()
+        XCTAssertTrue(model.mountPartnerWorkout(started))
+        XCTAssertFalse(model.continuePartnerAlone(), "The choice must be saved before it can unlock solo logging")
+        let offer = PartnerOffer(id: UUID(), hostName: "Host", planID: "plan-a", planVersion: 1, workout: day(with: [ex]))
+        let checkpoint = PartnerCheckpoint(id: offer.id, lane: .host, offer: offer, name: "Host", phase: .leaving,
+            slotMap: [ex.id: ex.id], sessionID: started.id, attempt: 1)
+        XCTAssertTrue(PartnerCheckpointStore.replace(checkpoint, expected: nil, accountID: "user-a", defaults: defaults))
+        XCTAssertTrue(model.continuePartnerAlone())
+        XCTAssertFalse(model.isPartnerWorkout)
+        await model.logCurrentSet(expected: ex, expectedSetNumber: 1)
+        XCTAssertEqual(model.setOutbox.pending.first?.expectedAttempt, 1)
+        XCTAssertEqual(model.setOutbox.pending.first?.resolvedSessionID, started.id)
+        XCTAssertEqual(PartnerCheckpointStore.load("user-a", defaults: defaults)?.phase, .leaving)
+    }
+}

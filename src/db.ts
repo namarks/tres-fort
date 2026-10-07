@@ -3,6 +3,8 @@ import {
   type IntervalsConnectionStatus, type IntervalsUserCreds, type ActivityDedupeWindow,
 } from './services/intervalsSync';
 import { createOAuthGrantService } from './services/oauthGrants';
+import { isPartnerWorkoutInput, isPartnerStartInput, partnerRequestJSON, partnerSlotKeys,
+  type PartnerWorkoutInput, type PartnerStartInput, type PartnerSlot } from './partnerTraining';
 import { validWorkoutTags, normalizeWorkoutTags, validArchivedAt } from './workoutMetadata';
 import { deriveFreestylePrescriptions, type FreestylePrescription } from './freestyle';
 import { addDays, weekdayOf, projectCalendar, projectCalendarWindow, projectRideConflicts } from './calendarProjection';
@@ -69,7 +71,7 @@ const uuid = () => crypto.randomUUID();
 
 /** Snapshot the selected slot's day at the same write boundary as its first
  * accepted set. In-session overrides can differ from the session's day pin. */
-function runnerTargetSnapshotSQL(dayExpression: string, timestamp: string): string {
+function runnerTargetSnapshotSQL(dayExpression: string, timestamp: string, ownerExpression = 'sessions.user_id'): string {
   return `(SELECT json_object('version', 1, 'captured_at', ${timestamp}, 'plan_version', p.version,
     'slots', json((SELECT json_group_array(json_object(
       'slot_id', te.id, 'exercise_id', te.exercise_id, 'name', e.name,
@@ -81,7 +83,7 @@ function runnerTargetSnapshotSQL(dayExpression: string, timestamp: string): stri
       FROM template_exercises te JOIN exercises e ON e.id=te.exercise_id
       WHERE te.workout_id=d.id)))
     FROM workouts d JOIN plans p ON p.id=d.plan_id
-    WHERE d.id=${dayExpression} AND p.user_id=sessions.user_id)`;
+    WHERE d.id=${dayExpression} AND p.user_id=${ownerExpression})`;
 }
 
 interface SetPrescriptionContext { plan_id: string; version: number; day_id: string }
@@ -3077,6 +3079,7 @@ export interface PlanSnapshotRow {
 }
 
 export interface PlanWriteAttribution {
+  receiptID?: string;
   actor: 'mcp' | 'ios' | 'system';
   operation: string;
   args?: unknown;
@@ -3246,7 +3249,7 @@ export function preparePlanWriteFinish(
       `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
        SELECT ?5,p.user_id,?6,?7,?8,?9,?10 FROM plans p
         WHERE p.id=?1 AND p.user_id=?2 AND p.version=?3 AND p.plan_write_nonce=?4`,
-    ).bind(plan.id, plan.user_id, nextVersion, nonce, uuid(), attribution.actor,
+    ).bind(plan.id, plan.user_id, nextVersion, nonce, attribution.receiptID ?? uuid(), attribution.actor,
       attribution.operation, JSON.stringify(attribution.args ?? {}),
       typeof attribution.result === 'string'
         ? attribution.result
@@ -10586,4 +10589,218 @@ export async function saveFreestyleWorkout(db: D1Database,userId: string,session
     return await readReceipt() ?? {error:'session_state_conflict' as const};
   }
   return response;
+}
+
+// ---- Partner training: each phone writes only its own member's records. ----
+
+function normalizedPartnerSlot(slot: PartnerSlot): PartnerSlot {
+  return { id: slot.id, exercise_id: slot.exercise_id, order_index: slot.order_index,
+    target_sets: slot.target_sets, target_reps: slot.target_reps,
+    target_reps_max: slot.target_reps_max ?? null, target_rpe: slot.target_rpe ?? null,
+    rest_seconds: slot.rest_seconds, target_weight: slot.target_weight ?? null,
+    target_weight_unit: slot.target_weight_unit ?? 'lb', target_duration_s: slot.target_duration_s ?? null,
+    progression: slot.progression ?? null, cues: slot.cues ?? null, is_warmup: slot.is_warmup,
+    group_id: slot.group_id ?? null, group_rest_seconds: slot.group_rest_seconds ?? null,
+    group_transition_seconds: slot.group_transition_seconds ?? null };
+}
+
+/** Save a reviewed full prescription once. A planless member gets their plan
+ * in the same transaction. The audit UUID doubles as the durable retry receipt. */
+export async function createPartnerWorkout(db: D1Database, userId: string, raw: unknown) {
+  if (!isPartnerWorkoutInput(raw)) return { error: 'invalid_fields' as const, fields: ['workout'] };
+  const input: PartnerWorkoutInput = { ...raw, name: raw.name.trim(), slots: raw.slots.map(normalizedPartnerSlot) };
+  const request = partnerRequestJSON(input);
+  const readReceipt = async () => {
+    const receipt = await db.prepare('SELECT user_id,tool,args,result FROM audit_log WHERE id=?1')
+      .bind(input.workout_id).first<{user_id:string;tool:string;args:string;result:string}>();
+    if (!receipt) return null;
+    if (receipt.user_id !== userId || receipt.tool !== 'create_partner_workout' || receipt.args !== request) {
+      return { error: 'idempotency_conflict' as const };
+    }
+    const tree = await getPlanTree(db, userId);
+    const workout = tree?.workouts.find(row => row.id === input.workout_id && row.archived_at == null);
+    if (!tree || !workout || workout.name !== input.name
+        || partnerRequestJSON(workout.exercises.map(normalizedPartnerSlot)) !== partnerRequestJSON(input.slots)) {
+      return { error: 'partner_copy_changed' as const };
+    }
+    return { workout_id: workout.id, plan_id: tree.id, version: tree.version };
+  };
+  const previous = await readReceipt();
+  if (previous) return previous;
+  const tree = await getPlanTree(db, userId);
+  if ((tree?.id ?? null) !== input.expected_plan_id || (tree?.version ?? 0) !== input.expected_version) {
+    return await readReceipt() ?? { conflict: true as const, current_version: tree?.version ?? 0 };
+  }
+  if (new Set(input.slots.map(slot => slot.id)).size !== input.slots.length) {
+    return { error: 'invalid_fields' as const, fields: ['id'] };
+  }
+  const catalog = await getExercises(db);
+  for (const slot of input.slots) {
+    const exercise = catalog.find(row => row.id === slot.exercise_id);
+    if (!exercise) return { error: 'invalid_exercises' as const };
+    let progression: unknown = null;
+    try { progression = slot.progression == null ? null : JSON.parse(slot.progression); }
+    catch { return { error: 'invalid_fields' as const, fields: ['progression'] }; }
+    const invalid = validateExercisePrescription({ ...slot, progression }, { modality: exercise.modality });
+    if (invalid) return invalid;
+  }
+  const groups = validatePlanExerciseGroups([...(tree?.workouts ?? []), { exercises: input.slots }]);
+  if (groups) return groups;
+  const ts = now(), nonce = uuid();
+  const plan: PlanRow = tree ?? { id: uuid(), user_id: userId, name: 'My workouts', status: 'active',
+    version: 0, meta: null, created_at: ts, updated_at: ts };
+  const response = { workout_id: input.workout_id, plan_id: plan.id, version: plan.version + 1 };
+  // Object insertion order here matches the canonical request in the receipt.
+  const attribution: PlanWriteAttribution = { actor: 'ios', operation: 'create_partner_workout',
+    receiptID: input.workout_id, args: JSON.parse(request), result: response };
+  const claim = 'EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND version=-?3 AND plan_write_nonce=?4)';
+  const bindings = [plan.id, userId, plan.version, nonce] as const;
+  const statements: D1PreparedStatement[] = tree
+    ? preparePlanWriteStart(db, plan, attribution, ts, nonce)
+    : [db.prepare(`INSERT INTO plans (id,user_id,name,status,version,meta,created_at,updated_at,plan_write_nonce)
+        SELECT ?1,?2,'My workouts','active',0,NULL,?3,?3,?4
+        WHERE EXISTS (SELECT 1 FROM users WHERE id=?2)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id=?2)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id=?2)
+        ON CONFLICT DO NOTHING`).bind(plan.id,userId,ts,nonce)];
+  statements.push(db.prepare(`INSERT INTO workouts (id,plan_id,name,order_index,created_at,updated_at)
+    SELECT ?5,?1,?6,(SELECT COALESCE(MAX(order_index)+1,0) FROM workouts WHERE plan_id=?1),?7,?7 WHERE ${claim}`)
+    .bind(...bindings,input.workout_id,input.name,ts));
+  for (const slot of input.slots) {
+    const fields = [...partnerSlotKeys];
+    const values = fields.map(key => slot[key] ?? null);
+    statements.push(db.prepare(`INSERT INTO template_exercises (${fields.join(',')},workout_id,created_at,updated_at)
+      SELECT ${values.map((_,index)=>`?${index+5}`).join(',')},?${values.length+5},?${values.length+6},?${values.length+6}
+      WHERE ${claim}`).bind(...bindings,...values,input.workout_id,ts));
+  }
+  statements.push(...preparePlanWriteFinish(db,plan,attribution,ts,nonce));
+  try {
+    const results = await runWorkoutWriteBatch(db,statements);
+    if (results[0]?.meta.changes === 1) return response;
+  } catch (error) {
+    const retry = await readReceipt();
+    if (retry) return retry;
+    throw error;
+  }
+  return await readReceipt() ?? { conflict:true as const, current_version:(await getActivePlan(db,userId))?.version ?? 0 };
+}
+
+/** Assign, start and snapshot one member's lane under one write-time claim.
+ * The other member has a separate transaction and can never write this lane. */
+export async function startPartnerSession(db: D1Database, userId: string, input: PartnerStartInput) {
+  if (!isPartnerStartInput(input)) return { error:'invalid_fields' as const, fields:['start'] };
+  const request = partnerRequestJSON(input);
+  const readReceipt = async () => {
+    const receipt = await db.prepare('SELECT user_id,tool,args,result FROM audit_log WHERE id=?1').bind(input.id)
+      .first<{user_id:string;tool:string;args:string;result:string}>();
+    if (!receipt) return null;
+    if (receipt.user_id !== userId || receipt.tool !== 'start_partner_session' || receipt.args !== request) {
+      return { error:'idempotency_conflict' as const };
+    }
+    const session = await getOwnedSessionByDate(db,userId,input.date);
+    const ack = JSON.parse(receipt.result) as {session:SessionRow};
+    return session?.id === ack.session.id && session.attempt === ack.session.attempt
+      && session.partner_workout_id === input.partner_workout_id && session.status === 'in_progress'
+      ? { session } : { error:'session_state_conflict' as const };
+  };
+  const cancelled = await db.prepare(`SELECT 1 FROM audit_log
+    WHERE user_id=?1 AND tool='cancel_partner_start' AND json_extract(args,'$.id')=?2`)
+    .bind(userId,input.id).first();
+  if (cancelled) return {error:'session_state_conflict' as const};
+  const previous = await readReceipt();
+  if (previous) return previous;
+  const tree = await getPlanTree(db,userId);
+  const workout = tree?.workouts.find(row => row.id === input.workout_id && row.archived_at == null);
+  if (!tree || !workout || tree.id !== input.expected_plan_id || tree.version !== input.expected_version) {
+    return await readReceipt() ?? { conflict:true as const, current_version:tree?.version ?? 0 };
+  }
+  const existing = await getOwnedSessionByDate(db,userId,input.date);
+  if ((existing?.attempt ?? 0) !== input.expected_attempt || (existing && existing.id !== input.session_id)
+      || existing?.status === 'completed' || existing?.partner_workout_id != null) {
+    return await readReceipt() ?? { error:'session_state_conflict' as const };
+  }
+  const ts = Math.max(now(), (existing?.updated_at ?? 0)+1), nonce = uuid();
+  const targets = await db.prepare(`SELECT ${runnerTargetSnapshotSQL('?1','?2','?3')} AS value`)
+    .bind(workout.id,ts,userId).first<{value:string}>();
+  const session: SessionRow = { id:input.session_id,user_id:userId,plan_id:tree.id,workout_id:workout.id,
+    date:input.date,status:'in_progress',kind:'planned',started_at:ts,completed_at:null,
+    perceived_fatigue:null,notes:null,exercise_swaps:null,runner_targets:targets?.value ?? null,
+    created_at:existing?.created_at ?? ts,updated_at:ts,attempt:input.expected_attempt+1,
+    write_protocol:'attempt-v1',partner_workout_id:input.partner_workout_id };
+  const observed = existing ? JSON.stringify([existing.id,existing.attempt,existing.status,existing.updated_at]) : 'null';
+  const claim = `EXISTS (SELECT 1 FROM audit_log WHERE id=?1 AND user_id=?2 AND json_extract(result,'$.nonce')=?3)`;
+  const statements = [db.prepare(`INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+    SELECT ?1,?2,'ios','start_partner_session',?3,?4,?5
+    WHERE EXISTS (SELECT 1 FROM plans WHERE id=?6 AND user_id=?2 AND status='active' AND version=?7)
+      AND NOT EXISTS (SELECT 1 FROM audit_log WHERE user_id=?2 AND tool='cancel_partner_start'
+        AND json_extract(args,'$.id')=?1)
+      AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id=?2)
+      AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id=?2)
+      AND COALESCE((SELECT json_array(id,attempt,status,updated_at) FROM sessions WHERE user_id=?2 AND date=?8),'null')=?9
+      AND NOT EXISTS (SELECT 1 FROM set_logs l JOIN sessions s ON s.id=l.session_id
+        WHERE s.user_id=?2 AND s.date=?8 AND l.deleted_at IS NULL)
+    ON CONFLICT(id) DO NOTHING`)
+    .bind(input.id,userId,request,JSON.stringify({nonce,session}),ts,tree.id,tree.version,input.date,observed),
+    db.prepare(`INSERT INTO sessions (id,user_id,plan_id,workout_id,date,status,kind,started_at,completed_at,
+      perceived_fatigue,notes,exercise_swaps,runner_targets,created_at,updated_at,attempt,write_protocol,partner_workout_id)
+      SELECT ?4,?2,?5,?6,?7,'in_progress','planned',?8,NULL,NULL,NULL,NULL,?9,?10,?8,?11,'attempt-v1',?12
+      WHERE ${claim}
+      ON CONFLICT(user_id,date) DO UPDATE SET plan_id=excluded.plan_id,workout_id=excluded.workout_id,
+        status=excluded.status,kind=excluded.kind,started_at=excluded.started_at,completed_at=NULL,
+        perceived_fatigue=NULL,notes=NULL,exercise_swaps=NULL,runner_targets=excluded.runner_targets,
+        updated_at=excluded.updated_at,attempt=excluded.attempt,write_protocol=excluded.write_protocol,
+        partner_workout_id=excluded.partner_workout_id`)
+      .bind(input.id,userId,nonce,session.id,tree.id,workout.id,input.date,ts,session.runner_targets,
+        session.created_at,session.attempt,input.partner_workout_id)];
+  const results = await runWorkoutWriteBatch(db,statements);
+  if (results[0]?.meta.changes === 1) return {session};
+  return await readReceipt() ?? {error:'session_state_conflict' as const};
+}
+
+/** A delayed cancellation cannot erase a member's logged work, and a member
+ * who continues alone clears the marker so that cancellation can never win later. */
+export async function leavePartnerSession(db: D1Database,userId:string,sessionId:string,
+  partnerWorkoutId:string,expectedAttempt:number,cancel:boolean) {
+  const result = await runWorkoutWriteStatement<SessionRow>(db,db.prepare(`UPDATE sessions
+    SET partner_workout_id=NULL,status=CASE WHEN ?5=1 THEN 'discarded' ELSE status END,
+      updated_at=MAX(updated_at+1,?6)
+    WHERE id=?1 AND user_id=?2 AND partner_workout_id=?3 AND attempt=?4 AND status='in_progress'
+      AND (?5=0 OR NOT EXISTS (SELECT 1 FROM set_logs WHERE session_id=?1 AND deleted_at IS NULL))
+    RETURNING *`).bind(sessionId,userId,partnerWorkoutId,expectedAttempt,cancel?1:0,now()));
+  const session = result.results[0];
+  if (session) return {session};
+  const existing = await getOwnedSession(db,userId,sessionId);
+  if (existing?.attempt === expectedAttempt && existing.partner_workout_id == null
+      && (cancel ? existing.status === 'discarded' : ['in_progress','completed','discarded'].includes(existing.status))) return {session:existing};
+  return {error:'session_state_conflict' as const};
+}
+
+/** Cancel before or after an ambiguous Start acknowledgement. Both the receipt
+ * fence and empty-session discard commit together; a later Start cannot win. */
+export async function cancelPartnerStart(db:D1Database,userId:string,input:PartnerStartInput) {
+  if (!isPartnerStartInput(input)) return {error:'invalid_fields' as const};
+  const ts=now(), receiptId=uuid(), args=partnerRequestJSON(input);
+  const results=await runWorkoutWriteBatch<SessionRow>(db,[
+    db.prepare(`INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+      SELECT ?1,?2,'ios','cancel_partner_start',?3,'{"cancelled":true}',?4
+      WHERE EXISTS (SELECT 1 FROM users WHERE id=?2)
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id=?2)
+        AND NOT EXISTS (SELECT 1 FROM audit_log WHERE id=?5 AND (user_id!=?2 OR args!=?3 OR tool!='start_partner_session'))
+        AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.user_id=?2 AND s.id=?6 AND s.attempt=?7
+          AND (s.status='in_progress' AND s.partner_workout_id IS NULL
+            OR s.partner_workout_id=?8 AND EXISTS (SELECT 1 FROM set_logs WHERE session_id=s.id AND deleted_at IS NULL)))
+      ON CONFLICT DO NOTHING`).bind(receiptId,userId,args,ts,input.id,input.session_id,input.expected_attempt+1,input.partner_workout_id),
+    db.prepare(`UPDATE sessions SET partner_workout_id=NULL,status='discarded',updated_at=MAX(updated_at+1,?1)
+      WHERE user_id=?2 AND id=?3 AND attempt=?4 AND partner_workout_id=?5 AND status='in_progress'
+        AND EXISTS (SELECT 1 FROM audit_log WHERE user_id=?2 AND tool='cancel_partner_start' AND args=?6)
+        AND NOT EXISTS (SELECT 1 FROM set_logs WHERE session_id=?3 AND deleted_at IS NULL)
+      RETURNING *`).bind(ts,userId,input.session_id,input.expected_attempt+1,input.partner_workout_id,args)
+  ]);
+  const receipt=await db.prepare(`SELECT args FROM audit_log WHERE user_id=?1 AND tool='cancel_partner_start'
+    AND json_extract(args,'$.id')=?2`).bind(userId,input.id).first<{args:string}>();
+  if (!receipt || receipt.args!==args) return {error:'session_state_conflict' as const};
+  const row=results[1]?.results?.[0];
+  const existing=row ?? await getOwnedSession(db,userId,input.session_id);
+  return {cancelled:true as const,session:existing?.attempt===input.expected_attempt+1
+    && existing.status==='discarded' ? existing : null};
 }

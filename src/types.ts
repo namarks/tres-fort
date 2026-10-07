@@ -193,6 +193,7 @@ export interface TemplateExerciseRow {
 }
 
 export interface SessionRow {
+  partner_workout_id?: string | null;
   kind?: 'planned' | 'freestyle';
   exercise_swaps?: string | null;
   runner_targets?: string | null;

@@ -160,8 +160,9 @@ checks. Claude's install link and native approval are released, but their full
 physical-iPhone round trip has not been verified. Codex's direct connection still
 uses the desktop setup; a phone-only hosted install requires P4 publication.
 
-**Also now (@owner):** Try ChatGPT developer mode, then check whether a dot can
-use that connection. Muse is verified (see notes). The sign-in hardening from
+**Also now (@owner):** Muse is verified (see notes). Trying ChatGPT developer
+mode and whether a dot can use that connection is deferred by the owner
+(2026-10-07). The sign-in hardening from
 [PR #239](https://github.com/namarks/tres-fort/pull/239) (accepting
 `offline_access`, path-inserted discovery, recipient naming, logging refused
 OAuth requests for `wrangler tail`) is merged and must be released under owner
@@ -197,7 +198,8 @@ P3.1 landed in [PR #207](https://github.com/namarks/tres-fort/pull/207).
   5.1.2(vi)/5.1.3(i). On 2026-10-07 the owner kept it member-connected through
   Other compatible app until 1.0 is approved; the
   [connection guide](../../COACH-CONNECTIONS.md) documents that route.
-  ChatGPT developer mode and Dots remain unverified.
+  ChatGPT developer mode and Dots remain unverified; the owner deferred trying
+  them on 2026-10-07.
 
 - P5 is a planned follow-up, separate from P2 device verification and P4 plugin
   publication. The highest-priority non-AI work is library P0.5(a)/(b); evaluate

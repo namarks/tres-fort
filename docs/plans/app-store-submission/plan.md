@@ -98,7 +98,7 @@ keep iPhone + iPad for Station Mode; iPad can be added in a later version.
 
 **Now (@agent):** Complete exact-head review and required CI for the October 7
 readiness slice: exclude the iPad camera SDK from the public iPhone project,
-declare app elapsed-time API use, correct body-weight/provider-data disclosures,
+declare collected data and elapsed-time API use, correct body-weight/provider-data disclosures,
 and prepare matching screenshots and the review package. Keep the P1/P2 phases
 open for the remaining operator/provider and candidate evidence below.
 

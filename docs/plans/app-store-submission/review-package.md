@@ -144,9 +144,11 @@ and diagnostic practices before finalizing the declaration.
 | Exercises, sets, durations, training load | Shared training service and history | Fitness; linked to user; app functionality |
 | Imported heart-rate/health workout summaries and provider health metrics | Optional HealthKit workout uploads and full Intervals activity/event responses | Health and Fitness; linked to user; app functionality |
 | Intervals device/gear metadata | Full provider responses may contain power-meter serial/device identifiers, names, gear and route references; no personal payload inspected | Device ID and Other User Content as applicable; linked to user; app functionality; verify the provider data inventory before attestation |
+| Other retained Intervals metadata | Full responses also retain source/model identifiers, route references, weather summaries and processing timestamps | Other Data Types; linked to user; app functionality; no inferred location coordinates or downloaded attachment content |
 | Apple Health body-weight view | Separate Read weight control; samples stay in process memory and are not backend/coach/group/export data | Not collected by this local-only path; Health is still declared for uploaded workout/provider data |
 | Saved notes, fatigue, plan details, group names | Member/coach authoring, history and group feed | Other user content and relevant health/fitness data; linked to user |
-| Group safety | Member block IDs, sharing restrictions, category-only operator audit; optional support email | Linked identifiers and support/user content; app functionality |
+| Group relationships and safety | Persisted private-group memberships, member block IDs, sharing restrictions, category-only operator audit; optional support email | Contacts for the group social graph (no phone address-book access), linked identifiers and support/user content; app functionality |
+| Account action history | D1 audit records retain account-linked actor, tool/action, result and timestamps, including coach-disconnection actions | Product Interaction; linked to user; app functionality for security and reversible history, not analytics |
 | Performance diagnostics | Current Worker settings return logpush false, tail consumers null and observability null; account logging inventory reads returned 403 | Independent provider analytics and historical exports remain unverified; do not attest no diagnostics collection from source config alone |
 | Microphone recording | On-device transcription; discarded | Audio is not uploaded; saved transcript is user content |
 
@@ -161,9 +163,16 @@ Intervals raw metadata is retained even though coach projections exclude it.
 
 The required-reason manifest declares app-private UserDefaults (`CA92.1`) and
 elapsed-event/timer SystemBootTime (`35F9.1`).
-It does not substitute for App Privacy answers or assert that the backend
-collects no data. Audit the final archive for every required-reason API and any
-third-party SDK manifest before upload.
+Following [Apple TN3184](https://developer.apple.com/documentation/technotes/tn3184-adding-data-collection-details-to-your-privacy-manifest),
+it also declares the audited first-party name, email, user ID, Health, Fitness,
+Device ID, Other User Content, Customer Support, Contacts (group relationships),
+Other Data Types (remaining provider metadata), and Product Interaction
+(persisted account-action history) categories as linked and
+not used for tracking. All use App Functionality; Health, Fitness and Other User
+Content also use Product Personalization. These source-backed declarations do
+not substitute for the separately entered App Privacy answers or settle the
+unverified provider-logging inventory. Audit the final archive for every
+required-reason API and any third-party SDK manifest before upload.
 
 Age questionnaire: the October 7 readback already marks health/wellness,
 user-generated content and social features present; chat, ads, unrestricted web

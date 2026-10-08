@@ -58,6 +58,17 @@ The app manifest also declares SystemBootTime reason `35F9.1` for elapsed-event
 timing alongside UserDefaults `CA92.1`. Release app code uses `systemUptime` even
 without MediaPipe. See Apple's [required-reason guidance](https://developer.apple.com/documentation/bundleresources/describing-use-of-required-reason-api)
 and [reason categories](https://developer.apple.com/documentation/bundleresources/app-privacy-configuration/nsprivacyaccessedapitypes/nsprivacyaccessedapitype).
+The manifest now includes the audited first-party collection categories, linking
+and purpose declarations required by [TN3184](https://developer.apple.com/documentation/technotes/tn3184-adding-data-collection-details-to-your-privacy-manifest):
+name, email, user ID, Health, Fitness, Device ID, Other User Content, Customer
+Support, Contacts for the private-group social graph, and Other Data Types for
+remaining retained provider metadata, plus Product Interaction for persisted
+account-action audit records. Contacts does not indicate phone address-book
+access; Product Interaction covers security/reversible history rather than
+analytics. All are linked to the account and not used for tracking, with App
+Functionality throughout and Product Personalization for Health, Fitness and
+Other User Content. This does not attest unknown provider logging or replace
+App Store Connect labels.
 
 ### Privacy and access
 
@@ -107,18 +118,19 @@ CI shard also compiles this variant and checks that its camera adapter is unavai
 
 The unsigned Release iPhoneOS archive built successfully with Xcode 27.0.
 Both app and widget report `UIDeviceFamily=[1]`; the app embeds UserDefaults
-`CA92.1` and SystemBootTime `35F9.1`. Inspection found no MediaPipe/model/notices
+`CA92.1`, SystemBootTime `35F9.1`, and all 11 collected-data declarations.
+The embedded manifest matches source byte-for-byte. Inspection found no MediaPipe/model/notices
 assets, SDK linker inputs, or linked MediaPipe/Abseil/Protobuf/MPP symbols.
 The app binary SHA-256 is
-`218a2f87cfd44d155ed5e890a652cd1c2621f3d152e025d051305413cace61e0`.
+`93bd6a5ab5503d1ac71deab8371fbb24a2ce6dd7b3326cb8e28be97695d4d3b0`.
 Local unsigned build number 29 is packaging evidence, not a reserved upload
 number. Its complete iOS source manifest matches the final tested source,
 including the beta-checkpoint recovery fix. Detailed inspection, source manifest, linker
 commands and binary reports are retained under
-`.artifacts/app-store-readiness/final-unsigned-device/`. The final screenshot
+`.artifacts/app-store-readiness/collection-manifest-unsigned-device/`. The final screenshot
 and recovery run passed all three UI tests with no failures. All five exported
 images were visually checked; their hashes, source manifest and test log are
-retained in `.artifacts/app-store-readiness-2026-10-07/final-screenshots/`.
+retained in `.artifacts/app-store-readiness-2026-10-07/complete-manifest-screenshots/`.
 
 Upload-script tests (12), offline project-generation tests (3), dependency tests
 (7), verifier tests (14), screenshot-asset tests (7), website tests (3) and

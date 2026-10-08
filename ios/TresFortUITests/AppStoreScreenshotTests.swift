@@ -84,7 +84,6 @@ final class AppStoreScreenshotTests: XCTestCase {
         try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .pad, "Native iPad screenshot")
         #if APP_STORE_BUILD
         let app = launch()
-        XCUIDevice.shared.orientation = .landscapeLeft
         tap(app.buttons["today.station"], in: app)
         XCTAssertTrue(app.staticTexts["station.manualSetup"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["station.done"].isHittable)

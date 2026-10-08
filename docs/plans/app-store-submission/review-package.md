@@ -74,7 +74,7 @@ Station/partner training, and excludes the experimental movement camera, SDK
 and model. The default `project.yml` remains the camera-enabled beta.
 
 Capture both required display classes: iPhone 17 Pro at 1206 × 2622, and 13-inch
-iPad Pro (M4) at 2064 × 2752 portrait or 2752 × 2064 landscape. These match
+iPad Pro (M4) at 2064 × 2752 portrait. These match
 [Apple's screenshot specifications](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications/),
 checked October 8. Do not use beta camera screens in the public listing.
 

@@ -33,8 +33,8 @@ Public CI has separate native iPhone and iPad shards, including camera-unavailab
 checks and manual Station/partner journeys. The ordinary beta Station shard and
 full-suite schedule remain intact. Capture draft assets with
 `scripts/capture-app-store-screenshots.sh NEW_OUTPUT iphone` or `... NEW_OUTPUT ipad`.
-iPhone captures contain five portrait 1206×2622 PNGs; iPad captures contain five
-portrait 2064×2752 PNGs and one landscape 2752×2064 manual Station image. The
+iPhone captures contain five portrait 1206×2622 PNGs; iPad captures contain six
+portrait 2064×2752 PNGs, including manual Station. The
 manifest records each image's dimensions, hash, and the exact source snapshot.
 
 ## Beta setup

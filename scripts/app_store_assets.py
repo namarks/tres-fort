@@ -15,7 +15,7 @@ def screenshot_dimensions(device_family):
     images = {name + '.png': portrait for name in
               ('01-today', '02-runner', '03-workouts', '04-history', '05-feedback')}
     if device_family == 'ipad':
-        images['06-station.png'] = (2752, 2064)
+        images['06-station.png'] = portrait
     return images
 
 
@@ -41,8 +41,12 @@ def validate_png(data, expected_dimensions=(1206, 2622)):
         require(kind != b'tRNS', 'Transparency is not allowed')
         if not types:
             require(kind == b'IHDR' and length == 13, 'Missing PNG header')
-            require(struct.unpack('>IIBBBBB', payload) == (width, height, 8, 2, 0, 0, 0),
-                    f'Expected opaque {width} x {height} RGB screenshot')
+            header = struct.unpack('>IIBBBBB', payload)
+            require(header == (width, height, 8, 2, 0, 0, 0),
+                    f'Expected opaque {width} x {height} RGB screenshot; '
+                    f'actual IHDR width={header[0]}, height={header[1]}, '
+                    f'bit_depth={header[2]}, color_type={header[3]}, '
+                    f'compression={header[4]}, filter={header[5]}, interlace={header[6]}')
         else:
             require(kind != b'IHDR', 'Duplicate PNG header')
         if kind == b'IDAT':

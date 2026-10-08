@@ -22,7 +22,27 @@ case "$family" in
   ipad) device=com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4-8GB ;;
 esac
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/tres-fort-app-store-capture.XXXXXX")"
-trap 'rm -rf "$scratch"' EXIT
+phase='source identity'
+cleanup_capture() {
+  result=$?
+  trap - EXIT
+  if [[ "$result" -ne 0 ]]; then
+    printf 'Capture failed during %s (exit %s).\n' "$phase" "$result" >"$scratch/failure.txt"
+    # Tests may pass while export, image validation, or source parity fails.
+    # Preserve the whole diagnostic tree before reclaiming owned staging.
+    if mkdir -p "$output" && mv "$scratch" "$output/failed-capture"; then
+      echo "Capture failure evidence: $output/failed-capture" >&2
+    else
+      echo "Could not retain capture evidence at $output; staging remains at $scratch" >&2
+    fi
+  else
+    rm -rf "$scratch"
+  fi
+  exit "$result"
+}
+trap cleanup_capture EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 python3 - "$repo_root" "$scratch/source-identity.json" <<'PY'
 import json, pathlib, subprocess, sys
 def git(*args):
@@ -32,26 +52,26 @@ pathlib.Path(sys.argv[2]).write_text(json.dumps({
     'source_tree': git('rev-parse', 'HEAD^{tree}'),
     'working_tree_changes': git('status', '--porcelain')}))
 PY
+phase='build and tests'
 if ! APP_STORE_BUILD=1 IOS_KEEP_RESULTS=1 IOS_EVIDENCE_DIR="$scratch/results" \
   bash "$repo_root/scripts/verify-ios.sh" \
     --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 \
     --device "$device" \
     --only-testing TresFortUITests/AppStoreScreenshotTests >"$scratch/verify.log" 2>&1; then
   cat "$scratch/verify.log" >&2
-  # Retain failure evidence at the requested new location before cleaning the
-  # owned staging directory. The simulator/build cleanup belongs to verify-ios.
-  mkdir -p "$(dirname "$output")"
-  mkdir "$output"
-  if [[ -d "$scratch/results" ]]; then cp -R "$scratch/results" "$output/failed-results"; fi
-  cp "$scratch/verify.log" "$output/verify.log"
   exit 1
 fi
+phase='attachment export'
 bundles=("$scratch"/results/*/Tests.xcresult)
 [[ ${#bundles[@]} -eq 1 && -d "${bundles[0]}" ]] || { echo 'Missing unique test result' >&2; exit 1; }
 evidence="$(dirname "${bundles[0]}")"
-xcrun xcresulttool export attachments --path "${bundles[0]}" \
-  --output-path "$scratch/attachments" --test-id AppStoreScreenshotTests
-python3 -B - "$repo_root" "$evidence" "$scratch/attachments" "$output" "$scratch/source-identity.json" "$family" <<'PY'
+if ! xcrun xcresulttool export attachments --path "${bundles[0]}" \
+  --output-path "$scratch/attachments" --test-id AppStoreScreenshotTests >"$scratch/export.log" 2>&1; then
+  cat "$scratch/export.log" >&2
+  exit 1
+fi
+phase='asset validation and source parity'
+if ! python3 -B - "$repo_root" "$evidence" "$scratch/attachments" "$output" "$scratch/source-identity.json" "$family" >"$scratch/validation.log" 2>&1 <<'PY'
 import datetime, hashlib, json, pathlib, re, shutil, subprocess, sys
 repo, evidence, attachments, output, identity_path = map(pathlib.Path, sys.argv[1:6])
 family = sys.argv[6]
@@ -105,3 +125,8 @@ manifest = {
 (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
 print(f'Captured {len(images)} draft {family} screenshots in {output}')
 PY
+then
+  cat "$scratch/validation.log" >&2
+  exit 1
+fi
+cat "$scratch/validation.log"

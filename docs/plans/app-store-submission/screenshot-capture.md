@@ -16,14 +16,15 @@ Choose new output directories; the command refuses to overwrite an existing
 set. It selects `project-app-store.yml` (`APP_STORE_BUILD=1`), creates its own
 iPhone 17 Pro or 13-inch iPad Pro (M4) simulator and unsigned build, and runs the
 real-screen asset journeys plus saved-partner-setup recovery. The iPad run also
-opens manual Station in landscape. The workflow exports the named screenshots
-and removes its temporary build and simulator. It retains failed-test evidence
-if verification fails.
+opens manual Station in portrait. The workflow exports the named screenshots
+and removes its temporary build and simulator. If any stage fails, it retains
+the build/test results, available attachments and export/validation logs in
+`failed-capture` under the requested output directory.
 
 Both sets contain Today, the workout runner, reusable workouts, History and
 editable feedback. The iPad set adds manual Station setup. All images must be
 opaque RGB PNGs: iPhone portraits are 1206 × 2622; iPad portraits are
-2064 × 2752 and the Station landscape is 2752 × 2064. These are native accepted
+2064 × 2752, including Station. These are native accepted
 resolutions, not resized screenshots. The default device selector is `iphone`.
 
 The manifest records public project selection, device family, per-image

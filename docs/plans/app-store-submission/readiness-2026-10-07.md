@@ -124,8 +124,11 @@ assets, SDK linker inputs, or linked MediaPipe/Abseil/Protobuf/MPP symbols.
 The app binary SHA-256 is
 `93bd6a5ab5503d1ac71deab8371fbb24a2ce6dd7b3326cb8e28be97695d4d3b0`.
 Local unsigned build number 29 is packaging evidence, not a reserved upload
-number. Its complete iOS source manifest matches the final tested source,
-including the beta-checkpoint recovery fix. Detailed inspection, source manifest, linker
+number. Its application, resource and project inputs match this branch,
+including the beta-checkpoint recovery fix. A later test-only correction makes
+the runner journey scroll helper move toward offscreen controls without
+overshooting them; it does not change the archived application or screenshots.
+Detailed inspection, source manifest, linker
 commands and binary reports are retained under
 `.artifacts/app-store-readiness/collection-manifest-unsigned-device/`. The final screenshot
 and recovery run passed all three UI tests with no failures. All five exported
@@ -139,6 +142,12 @@ tests across 88 files. Final iOS and independent review results are recorded in
 this change's pull request. An unsigned archive or simulator run proves only its stated
 build/package properties; it is not a signed/uploaded candidate, real Apple
 sign-in, authenticated production workout or physical-device acceptance.
+
+The full runner streamline class passed all 12 UI tests after correcting its
+scroll helper. Two largest-text failures were reproduced locally: full upward
+swipes moved Start workout above the viewport, and further upward swipes could
+not recover it. The helper now uses bounded drags toward the control on its
+containing scroll surface; the original hittability assertions remain intact.
 
 ## Remaining release decisions and evidence
 

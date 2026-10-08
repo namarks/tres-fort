@@ -255,8 +255,7 @@ struct TodayView: View {
                             .frame(minHeight: 44)
                             .accessibilityIdentifier("today.openSavedStarter")
                     }
-                    // A public build cannot start partner training, but an
-                    // upgraded beta must retain access to close its saved lane.
+                    // An unfinished partner lane remains reachable after relaunch.
                     if (StationLink.isAvailable || partner.isOpen) && UIDevice.current.userInterfaceIdiom == .phone {
                         Button(partner.isOpen ? "Partner workout setup" : "Train together") { showPartner = true }
                             .frame(minHeight: 44).accessibilityIdentifier("today.partner")
@@ -1030,7 +1029,15 @@ private struct RunnerView: View {
                 Spacer(minLength: 0).frame(height: 44)
             }
             if showsStationLink && stationLinkEnabled.wrappedValue {
+                #if APP_STORE_BUILD
+                Label(stationLink.needsKey ? "Go online once to set up partner training" :
+                      stationLink.isConnected ? "iPad connected · start Train together on the iPad" :
+                      "Looking for your iPad for partner training", systemImage: "ipad.landscape")
+                    .font(.footnote).foregroundStyle(Theme.muted)
+                    .accessibilityIdentifier("runner.station.status")
+                #else
                 StationLinkRunnerPanel(sync: sync, link: stationLink, ex: ex)
+                #endif
             }
             RunnerSetAction(sync: sync, ex: ex)
         }
@@ -1219,7 +1226,8 @@ private struct RunnerView: View {
                 .tint(Theme.accent).frame(minHeight: 44)
                 .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
             if showsStationLink {
-                Toggle("Count reps with iPad Station", isOn: stationLinkEnabled)
+                Toggle(StationLink.cameraCountingAvailable ? "Count reps with iPad Station" :
+                       "Use iPad for partner workout", isOn: stationLinkEnabled)
                     .tint(Theme.accent).frame(minHeight: 44)
                     .accessibilityIdentifier("runner.stationLink")
             }

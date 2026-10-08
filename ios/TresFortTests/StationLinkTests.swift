@@ -3,6 +3,12 @@ import XCTest
 
 @MainActor
 final class StationLinkTests: XCTestCase {
+    private func requireCameraCounting() throws {
+        #if APP_STORE_BUILD
+        throw XCTSkip("Camera counting is exercised in the beta variant; PublicStationTests verifies its exclusion.")
+        #endif
+    }
+
     private func target(slot: String = "slot-1", set: Int = 1, reps: Int = 8) -> StationLinkTarget {
         StationLinkTarget(slotID: slot, setNumber: set, exercise: .squat, exerciseName: "Back Squat", targetReps: reps)
     }
@@ -215,6 +221,7 @@ final class StationLinkTests: XCTestCase {
     }
 
     func testSwappingTheExerciseInASlotReArmsAndDropsItsCount() throws {
+        try requireCameraCounting()
         let controller = StationLinkController()
         controller.request(target())
         let arm = try XCTUnwrap(controller.arm)
@@ -228,6 +235,7 @@ final class StationLinkTests: XCTestCase {
     }
 
     func testControllerArmsEachSetFreshlyAndDropsCountsWhenTheRunnerMovesOn() throws {
+        try requireCameraCounting()
         let controller = StationLinkController()
         controller.request(target(set: 1))
         let first = try XCTUnwrap(controller.arm)
@@ -251,6 +259,7 @@ final class StationLinkTests: XCTestCase {
     }
 
     func testDismissedCountIsNeverReplayedAndTheSetIsCountedAgain() throws {
+        try requireCameraCounting()
         let controller = StationLinkController()
         controller.request(target())
         let arm = try XCTUnwrap(controller.arm)
@@ -268,6 +277,7 @@ final class StationLinkTests: XCTestCase {
     }
 
     func testFinishedProposalIsNotReofferedAndKeepsTheArm() throws {
+        try requireCameraCounting()
         let controller = StationLinkController()
         controller.request(target())
         let arm = try XCTUnwrap(controller.arm)
@@ -282,6 +292,7 @@ final class StationLinkTests: XCTestCase {
     }
 
     func testMinimizingDisarmsButKeepsACountWaitingForATap() throws {
+        try requireCameraCounting()
         let controller = StationLinkController()
         controller.request(target())
         controller.pause()
@@ -297,6 +308,7 @@ final class StationLinkTests: XCTestCase {
     }
 
     func testAReconnectedIPadIsNotReArmedForASpentSet() throws {
+        try requireCameraCounting()
         let controller = StationLinkController()
         controller.request(target())
         let arm = try XCTUnwrap(controller.arm)
@@ -311,6 +323,7 @@ final class StationLinkTests: XCTestCase {
     }
 
     func testASetTakenOverOnTheIPadIsNotReArmedOnReconnect() throws {
+        try requireCameraCounting()
         let controller = StationLinkController()
         controller.request(target())
         let arm = try XCTUnwrap(controller.arm)
@@ -348,6 +361,7 @@ final class StationLinkTests: XCTestCase {
     }
 
     func testUnsavedCountWaitsForATapInsteadOfVanishing() throws {
+        try requireCameraCounting()
         let controller = StationLinkController()
         controller.request(target())
         let arm = try XCTUnwrap(controller.arm)
@@ -363,6 +377,7 @@ final class StationLinkTests: XCTestCase {
     }
 
     func testLoggedSetStaysUndoableUntilTheNextCount() throws {
+        try requireCameraCounting()
         let controller = StationLinkController()
         controller.request(target())
         let logged = StationLinkLoggedSet(setID: "set-1", slotID: "slot-1", setNumber: 1, reps: 8)
@@ -381,6 +396,7 @@ final class StationLinkTests: XCTestCase {
     }
 
     func testProgressFromAnotherArmIsIgnored() throws {
+        try requireCameraCounting()
         let controller = StationLinkController()
         controller.request(target())
         let arm = try XCTUnwrap(controller.arm)
@@ -392,7 +408,8 @@ final class StationLinkTests: XCTestCase {
 
     // MARK: iPad station
 
-    func testStationCountsOnlyTheArmedSetAndReportsOnce() {
+    func testStationCountsOnlyTheArmedSetAndReportsOnce() throws {
+        try requireCameraCounting()
         let station = StationLinkStation()
         let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 1, exercise: .squat,
                                  exerciseName: "Back Squat", targetReps: 3)
@@ -424,7 +441,8 @@ final class StationLinkTests: XCTestCase {
         XCTAssertFalse(station.isCounting)
     }
 
-    func testAbandonedOrEmptyTrialStopsWithoutACount() {
+    func testAbandonedOrEmptyTrialStopsWithoutACount() throws {
+        try requireCameraCounting()
         let station = StationLinkStation()
         let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 1, exercise: .squat,
                                  exerciseName: "Back Squat", targetReps: 3)
@@ -443,7 +461,8 @@ final class StationLinkTests: XCTestCase {
         XCTAssertEqual(station.manualArmID, arm.armID)
     }
 
-    func testChoosingAMovementAfterAnEmptyTrialKeepsTheSetManual() {
+    func testChoosingAMovementAfterAnEmptyTrialKeepsTheSetManual() throws {
+        try requireCameraCounting()
         let station = StationLinkStation()
         let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 1, exercise: .squat,
                                  exerciseName: "Back Squat", targetReps: 3)

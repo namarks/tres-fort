@@ -1,6 +1,6 @@
 # iPad Workout Station
 
-Slug: ipad-workout-station · Status: active · Updated: 2026-10-07 · Theme: gym-floor
+Slug: ipad-workout-station · Status: active · Updated: 2026-10-08 · Theme: gym-floor
 
 ## Goal
 
@@ -602,10 +602,13 @@ Sources checked 2026-10-03:
 
 ## Notes / open questions
 
-- Owner decision, 2026-10-05: App Store version 1.0 ships iPhone-only, so Station
-  Mode and the iPhone's Station link stay TestFlight-only until a later App Store
-  version adds iPad. The [submission plan](../app-store-submission/plan.md) owns
-  the iPhone-only candidate build.
+- Owner decision, 2026-10-08 supersedes October 5: App Store version 1.0
+  includes native iPad and manual partner Station. The
+  [submission plan](../app-store-submission/plan.md) owns the SDK-free public
+  build; movement-camera counting, recordings and assisted automatic logging
+  remain beta-only. The physical camera/link trials above remain open for the
+  beta; the public manual candidate requires its own native iPad and
+  [three-device partner acceptance](../partner-training/validation.md).
 - Approved prototype target: 11-inch iPad (A16). Use its built-in front camera
   first; external UVC input is deferred until placement evidence requires it.
 - The counter and view receive no workout mutation capability. Workout/catalog

@@ -20,17 +20,17 @@
 # manually in ios/project.yml when you want a new train (e.g. 0.1.0 -> 0.1.1)
 # and create the matching version in App Store Connect first.
 #
-# App Store 1.0 ships iPhone-only (owner decision 2026-10-05) while TestFlight
-# builds keep iPhone + iPad for Station Mode. APP_STORE_IPHONE_ONLY=1 archives
-# that App Store candidate using project-app-store.yml: device family 1 for
-# the app and widget, no Station SDK/model, and APP_STORE_IPHONE_ONLY, which
-# hides iPad Station and partner training entry points.
+# APP_STORE_BUILD=1 archives the public iPhone + iPad candidate using
+# project-app-store.yml: device families 1,2 for app and widget, manual Station
+# and partner training, and no experimental camera SDK/model. Default beta
+# builds retain experimental Station inference. The obsolete iPhone-only flag
+# is rejected even when set to 0; remove it from old release commands.
 # The archive's UIDeviceFamily is verified before anything is exported.
 #
 # Usage:
 #   Local:  ./scripts/upload-testflight.sh
 #   CI:     BUILD_NUMBER=$GITHUB_RUN_NUMBER ./scripts/upload-testflight.sh
-#   App Store candidate:  APP_STORE_IPHONE_ONLY=1 ./scripts/upload-testflight.sh
+#   App Store candidate:  APP_STORE_BUILD=1 ./scripts/upload-testflight.sh
 #
 # Requires: xcodegen, an ASC API key at ~/.appstoreconnect/private_keys/AuthKey_<ID>.p8
 set -euo pipefail
@@ -43,15 +43,19 @@ readonly SCHEME="TresFort"
 
 cd "$(dirname "$0")/../ios"
 
-iphone_only="${APP_STORE_IPHONE_ONLY:-0}"
-case "${iphone_only}" in
+if [[ ${APP_STORE_IPHONE_ONLY+x} ]]; then
+  echo 'APP_STORE_IPHONE_ONLY is obsolete; remove it and use APP_STORE_BUILD=1 for the public iPhone + iPad build.' >&2
+  exit 2
+fi
+app_store_build="${APP_STORE_BUILD-0}"
+case "${app_store_build}" in
   0) project_spec=project.yml ;;
   1)
     project_spec=project-app-store.yml
-    echo "Archiving the iPhone-only App Store candidate"
+    echo "Archiving the iPhone + iPad App Store candidate"
     ;;
   *)
-    echo "APP_STORE_IPHONE_ONLY must be 0 or 1, got '${iphone_only}'." >&2
+    echo "APP_STORE_BUILD must be 0 or 1, got '${app_store_build}'." >&2
     exit 2
     ;;
 esac
@@ -69,7 +73,7 @@ else
 fi
 
 xcodegen generate --spec "${project_spec}"
-if [ "${iphone_only}" = "1" ]; then
+if [ "${app_store_build}" = "1" ]; then
   python3 Dependencies/verify_app_store_project.py TresFort.xcodeproj/project.pbxproj
 fi
 
@@ -95,12 +99,12 @@ xcodebuild \
   CURRENT_PROJECT_VERSION="${next_build}" \
   archive
 
-if [ "${iphone_only}" = "1" ]; then
+if [ "${app_store_build}" = "1" ]; then
   readonly ARCHIVED_APP="build/TresFort.xcarchive/Products/Applications/TresFort.app"
   for bundle in "${ARCHIVED_APP}" "${ARCHIVED_APP}/PlugIns/TresFortWidgets.appex"; do
     family=$(plutil -extract UIDeviceFamily json -o - "${bundle}/Info.plist" | tr -d '[:space:]')
-    if [ "${family}" != "[1]" ]; then
-      echo "Expected iPhone-only UIDeviceFamily [1] in ${bundle}, got '${family}'; not exporting." >&2
+    if [ "${family}" != "[1,2]" ]; then
+      echo "Expected iPhone + iPad UIDeviceFamily [1,2] in ${bundle}, got '${family}'; not exporting." >&2
       exit 1
     fi
   done

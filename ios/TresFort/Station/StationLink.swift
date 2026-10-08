@@ -18,11 +18,11 @@ enum StationLink {
     /// only, so a shared phone never browses for another member's iPad.
     static let enabledAccountDefaultsKey = "stationLinkEnabledAccount"
 
-    /// App Store 1.0 ships iPhone-only (owner decision 2026-10-05), so its
-    /// build hides the link: there is no public iPad Station to pair with.
-    /// `scripts/upload-testflight.sh` sets the flag for that candidate only.
-    static var isAvailable: Bool {
-        #if APP_STORE_IPHONE_ONLY
+    /// Manual partner coordination is available in both distributions. The
+    /// experimental movement counter stays in the TestFlight build only.
+    static let isAvailable = true
+    static var cameraCountingAvailable: Bool {
+        #if APP_STORE_BUILD
         return false
         #else
         return true

@@ -25,8 +25,11 @@ implied by repository review or merge.
 ## Required physical trial
 
 Use disposable test accounts and confirm each account's history independently.
-The single-member Station link trial (`ipad-workout-station#P2`) and all rows below
-must pass before treating P0 as accepted. Record actual device models, OS versions,
+All rows below must pass before treating P0 as accepted. For the public
+manual candidate, the pair/start and recovery rows establish the required
+host-phone link behavior. The single-member camera logging trial
+(`ipad-workout-station#P2`) remains a separate beta acceptance gate; the public
+candidate disables camera messages and makes no counting claim. Record actual device models, OS versions,
 client build, Worker release SHA, and observed results; no physical trial has been
 performed by this implementation session.
 
@@ -47,9 +50,10 @@ performed by this implementation session.
 
 1. Nick merges only after the configured exact-head Codex review and all required
    checks pass. P0 remains open pending physical acceptance.
-2. With separate production authority, apply migration 0056 before deploying the
-   matching Worker. Confirm the deployed release identity. It adds the session
-   marker and SQL guards; it does not rewrite workout history.
+2. Confirm the deployed Worker supports the candidate. Migration 0056 and the
+   matching Worker were delivered with [build 49](../app-store-submission/release-49.md);
+   do not reapply that migration. Any further production change requires
+   separate authority.
 3. With separate distribution authority, build and distribute the matching iOS
    client. Run the physical trial with that exact backend/client pair.
 4. Camera side-by-side and turn-taking work remain P1 and P2.

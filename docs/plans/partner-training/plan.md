@@ -1,6 +1,6 @@
 # Partner Training on One iPad
 
-Slug: partner-training · Status: active · Updated: 2026-10-07 · Theme: gym-floor
+Slug: partner-training · Status: active · Updated: 2026-10-08 · Theme: gym-floor
 
 ## Goal
 
@@ -132,6 +132,13 @@ Codex review and required CI. The October 7 owner-authorized
 source `cd3cf40` and uploaded the iPhone/iPad client. Keep P0 open until the
 physical trial passes. The release implements manual two-person workouts;
 it does not implement partner camera counting.
+
+**Public scope (owner-approved 2026-10-08):** The
+[App Store candidate](../app-store-submission/plan.md) now includes native iPad
+and P0 manual partner training. Its separate Station entry loads no movement
+camera and keeps camera counting unavailable. Complete the physical matrix on
+that public candidate before submission. P1/P2 camera validation stays in the
+beta workstream; camera accuracy is not a claim of this manual release.
 
 Implementation evidence: `test/partner_training.test.ts`,
 `ios/TresFortTests/PartnerTrainingTests.swift`, and the partner runner cases in

@@ -25,11 +25,16 @@ struct StationEntryView: View {
     }
 
     var body: some View {
+        #if APP_STORE_BUILD
+        ManualStationView(access: access, loadLinkKey: loadLinkKey)
+        #else
         StationView(workoutName: workoutName, workout: workout, catalog: catalog, access: access,
                     loadLinkKey: loadLinkKey)
+        #endif
     }
 }
 
+#if !APP_STORE_BUILD
 /// An observation-only trial. This view receives immutable display values and a
 /// link key loader, never a SyncModel, API client, outbox or binding to the
 /// workout's mutable state.
@@ -808,6 +813,8 @@ struct StationView: View {
     }
 #endif
 }
+
+#endif
 
 /// Camera and manual partner mode share one override, so stopping the camera
 /// cannot release the screen while Station still coordinates both phones.

@@ -1,6 +1,7 @@
 """The fast CI policy must not skip iOS changes or hide missing Git evidence."""
 import importlib.util
 from pathlib import Path
+import re
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -37,6 +38,30 @@ class IOSScopeTests(unittest.TestCase):
                          'scripts/ci-ios-scope.py', 'test/verify-ios.test.py',
                          'test/ci-ios-scope.test.py']:
                 self.assertEqual(policy.select_suite(event, ['docs/note.md', path]), 'full')
+
+    def test_public_device_shards_require_camera_gate_and_native_ui_coverage(self):
+        workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/ci.yml').read_text()
+        steps = dict(re.findall(r'      - name: ([^\n]+)\n(.*?)(?=\n      - |\n  [a-z]|\Z)',
+                                workflow, re.S))
+        job_name = re.search(r'  ios-tests:\n    name: ([^\n]+)', workflow).group(1)
+        for family, device in [('iPhone', 'iPhone-17-Pro'), ('iPad', 'iPad-Pro-13-inch-M4-8GB')]:
+            step = steps[f'{family} App Store build and tests']
+            self.assertIn(f'- shard: app-store-{family.lower()}', workflow)
+            self.assertIn(f"matrix.shard == 'app-store-{family.lower()}' && '{family} App Store'", job_name)
+            self.assertIn("APP_STORE_BUILD: '1'", step)
+            self.assertIn(f'--device com.apple.CoreSimulator.SimDeviceType.{device}', step)
+            self.assertIn('--only-testing TresFortUITests/AppStoreScreenshotTests', step)
+        for suite in ['TresFortTests/StationMediaPipeDetectorTests', 'TresFortTests/PublicStationTests']:
+            self.assertIn('--only-testing ' + suite, steps['iPhone App Store build and tests'])
+        for suite in ['TresFortTests', 'TresFortUITests/PublicStationJourneyTests',
+                      'TresFortUITests/MemberActivationJourneyTests/testFreshDeviceSignInRestoresExistingTrainingAndStation']:
+            self.assertIn('--only-testing ' + suite, steps['iPad App Store build and tests'])
+        # Require the entire public unit target, not a similarly prefixed class.
+        self.assertRegex(steps['iPad App Store build and tests'], r'--only-testing TresFortTests(?:\s|$)')
+        self.assertNotIn('--skip-testing', steps['iPad App Store build and tests'])
+        self.assertNotIn('APP_STORE_BUILD', steps['iPad Station build and tests'])
+        self.assertIn('--only-testing TresFortUITests/StationJourneyTests',
+                      steps['iPad Station build and tests'])
 
     def test_pull_request_compares_tested_merge_with_base_and_preserves_paths(self):
         with patch.object(policy.subprocess, 'check_output', return_value=

@@ -20,7 +20,7 @@ private actor ReplayReportGate {
 
 final class StationReplayTests: XCTestCase {
     private func requireStationRuntime() throws {
-        #if APP_STORE_IPHONE_ONLY
+        #if APP_STORE_BUILD
         throw XCTSkip("Real Station inference is tested in the iPhone + iPad beta variant.")
         #endif
     }

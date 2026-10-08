@@ -103,6 +103,7 @@ final class StationLinkController: ObservableObject {
     /// Arms the iPad for the runner's current set, or disarms it with nil.
     /// While a proposal waits, the arm is kept so the iPad doesn't count rest.
     func request(_ target: StationLinkTarget?) {
+        guard StationLink.cameraCountingAvailable else { return }
         if StationLinkPolicy.arm(arm, matches: target) { return }
         if let proposal, target?.slotID != proposal.slotID || target?.setNumber != proposal.setNumber
             || target?.exerciseName != proposal.exerciseName {
@@ -179,10 +180,10 @@ final class StationLinkController: ObservableObject {
         switch message {
         case .partner(let packet): onPartnerMessage?(packet)
         case .progress(let value):
-            guard value.armID == arm?.armID else { return }
+            guard StationLink.cameraCountingAvailable, value.armID == arm?.armID else { return }
             progress = value
         case .completion(let completion):
-            guard proposal == nil,
+            guard StationLink.cameraCountingAvailable, proposal == nil,
                   let next = StationLinkPolicy.proposal(for: completion, arm: arm,
                                                         seenEvents: seenEvents) else { return }
             seenEvents.insert(completion.eventID)
@@ -190,6 +191,7 @@ final class StationLinkController: ObservableObject {
             lastLogged = nil
             proposal = next
         case .station(let state, let armID):
+            guard StationLink.cameraCountingAvailable else { return }
             guard armID == nil || armID == arm?.armID else { return }
             stationState = state
             // A set taken over by hand stays manual, even across a reconnect.

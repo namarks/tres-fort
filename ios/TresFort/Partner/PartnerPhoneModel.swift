@@ -26,6 +26,8 @@ final class PartnerPhoneModel: ObservableObject {
     private var invalidated = false
     private var retryAfter = Date.distantPast
     private let api = APIClient()
+    // Use the account's persistence namespace, including isolated UI fixtures.
+    private var defaults: LocalPersistence { auth?.trainingSetupPersistence ?? .standard }
     var isOpen: Bool { checkpoint != nil || joining }
     var isActive: Bool { checkpoint?.phase == .active }
     var needsReview: Bool { checkpoint?.phase == .reviewing || checkpoint?.phase == .saving }
@@ -39,7 +41,7 @@ final class PartnerPhoneModel: ObservableObject {
         self.auth = auth; self.sync = sync; originalLink = link
         accountID = auth.userID; epoch = auth.featureSessionEpoch; invalidated = false
         guard let accountID, current else { return }
-        checkpoint = PartnerCheckpointStore.load(accountID)
+        checkpoint = PartnerCheckpointStore.load(accountID, defaults: defaults)
         sync.partnerReserved = checkpoint != nil && checkpoint?.phase != .leaving
         sync.onPartnerSkip = { [weak self] in self?.skip() }
         link.onPartnerMessage = { [weak self] packet in self?.hostRequested(packet) }
@@ -126,7 +128,7 @@ final class PartnerPhoneModel: ObservableObject {
         let value = PartnerCheckpoint(id: offer.id, lane: .host, offer: offer, name: name, phase: .ready,
             slotMap: Dictionary(uniqueKeysWithValues: workout.exercises.map { ($0.id, $0.id) }),
             receipt: .init(workout_id: workout.id, plan_id: plan.id, version: plan.version))
-        guard PartnerCheckpointStore.load(accountID) == checkpoint,
+        guard PartnerCheckpointStore.load(accountID, defaults: defaults) == checkpoint,
               PartnerLaneKeyStore.save(key, id: offer.id, accountID: accountID), save(value) else {
             originalLink?.sendPartner(.init(id: packet.id, message: .failed("Couldn't save the host lane. Retry on the iPhone."))); return
         }
@@ -144,7 +146,7 @@ final class PartnerPhoneModel: ObservableObject {
                 let draft = PartnerDraft.make(offer: offer, plan: sync.plan, history: sync.sets)
                 let value = PartnerCheckpoint(id: offer.id, lane: .partner, offer: offer, name: name, phase: .reviewing,
                     slotMap: draft.map, copy: draft.request)
-                guard PartnerCheckpointStore.load(accountID) == checkpoint,
+                guard PartnerCheckpointStore.load(accountID, defaults: defaults) == checkpoint,
               PartnerLaneKeyStore.save(key, id: offer.id, accountID: accountID), save(value) else { return }
             }
             guard checkpoint?.id == offer.id, PartnerLaneKeyStore.load(offer.id, accountID: accountID) == key else { return }
@@ -392,7 +394,7 @@ final class PartnerPhoneModel: ObservableObject {
     @discardableResult
     private func save(_ value: PartnerCheckpoint?) -> Bool {
         guard current, let accountID,
-              PartnerCheckpointStore.replace(value, expected: checkpoint, accountID: accountID) else {
+              PartnerCheckpointStore.replace(value, expected: checkpoint, accountID: accountID, defaults: defaults) else {
             error = "Couldn't save this lane on your iPhone. Reopen Today before continuing."; return false
         }
         checkpoint = value; return true

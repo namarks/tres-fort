@@ -19,10 +19,10 @@ pathlib.Path(sys.argv[2]).write_text(json.dumps({
     'source_tree': git('rev-parse', 'HEAD^{tree}'),
     'working_tree_changes': git('status', '--porcelain')}))
 PY
-if ! IOS_KEEP_RESULTS=1 IOS_EVIDENCE_DIR="$scratch/results" \
+if ! APP_STORE_IPHONE_ONLY=1 IOS_KEEP_RESULTS=1 IOS_EVIDENCE_DIR="$scratch/results" \
   bash "$repo_root/scripts/verify-ios.sh" \
     --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 \
-    --device com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro-Max \
+    --device com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro \
     --only-testing TresFortUITests/AppStoreScreenshotTests >"$scratch/verify.log" 2>&1; then
   cat "$scratch/verify.log" >&2
   # Retain failure evidence at the requested new location before cleaning the
@@ -77,9 +77,11 @@ manifest = {
     **identity,
     'ios_source_manifest': 'sources.json',
     'test_evidence': 'capture-tests.log',
-    'device': 'iPhone 17 Pro Max', 'runtime': 'iOS 26.2', 'locale': 'en_US',
+    'device': 'iPhone 17 Pro', 'runtime': 'iOS 26.2', 'locale': 'en_US',
     'configuration': 'Debug simulator; production views with fictional, network-isolated data',
-    'image_size': [1320, 2868], 'images': {name: digest for name, (_, digest) in sorted(images.items())},
+    'project_spec': 'project-app-store.yml',
+    'app_store_iphone_only': True,
+    'image_size': [1206, 2622], 'images': {name: digest for name, (_, digest) in sorted(images.items())},
     'status': 'Draft assets. Visually review and match to the final selected release candidate before publication.',
     'specification': 'https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications/'
 }

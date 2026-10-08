@@ -15,6 +15,10 @@ final class AppStoreScreenshotTests: XCTestCase {
         XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["fixture.scenario"].exists)
+        #if APP_STORE_IPHONE_ONLY
+        XCTAssertFalse(app.buttons["today.partner"].exists,
+                       "The public iPhone candidate must not offer iPad partner setup")
+        #endif
         return app
     }
 
@@ -40,6 +44,32 @@ final class AppStoreScreenshotTests: XCTestCase {
         for _ in 0..<5 where !element.isHittable { app.swipeUp() }
         XCTAssertTrue(element.isHittable)
         element.tap()
+    }
+
+    func testSavedBetaPartnerSetupCanBeCancelledInIPhoneOnlyBuild() {
+        let app = XCUIApplication()
+        app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "app-store"
+        app.launchEnvironment["TRESFORT_UI_PARTNER_READY"] = "1"
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+        let recovery = app.buttons["today.partner"]
+        XCTAssertTrue(recovery.waitForExistence(timeout: 10))
+        XCTAssertEqual(recovery.label, "Partner workout setup")
+        let start = app.buttons["today.startWorkout"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        XCTAssertFalse(start.isEnabled, "A saved ready lane reserves ordinary Today until closed")
+        recovery.tap()
+        let cancel = app.buttons["Cancel empty start"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        cancel.tap()
+        let released = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND enabled == true"), object: start)
+        XCTAssertEqual(XCTWaiter.wait(for: [released], timeout: 5), .completed)
+        #if APP_STORE_IPHONE_ONLY
+        XCTAssertFalse(recovery.exists, "Closing the saved beta lane must not expose new partner setup")
+        #else
+        XCTAssertEqual(recovery.label, "Train together")
+        #endif
     }
 
     func testCaptureTodayWorkoutsAndHistory() {
@@ -77,6 +107,31 @@ final class AppStoreScreenshotTests: XCTestCase {
         if app.buttons["Done"].isHittable { app.buttons["Done"].tap() }
         XCTAssertEqual(app.textViews["feedback.note"].value as? String,
                        "Steady reps today. Keep this weight next time.")
+        // The keyboard can leave the Form scrolled beneath its toolbar. Restore
+        // the disclosure before capturing this collection surface, without
+        // scrolling the runner underneath the sheet or the note's TextEditor.
+        let privacy = app.staticTexts["Optional. Saved feedback is shared with your coach and kept out of group feeds."]
+        let toolbar = app.navigationBars["Finish workout"]
+        let form = app.collectionViews.containing(.textView, identifier: "feedback.note").firstMatch
+        let save = app.buttons["feedback.saveAndFinish"]
+        XCTAssertTrue(privacy.waitForExistence(timeout: 5))
+        XCTAssertTrue(form.exists)
+        for _ in 0..<4 {
+            let top = max(form.frame.minY, toolbar.frame.maxY) + 12
+            if privacy.isHittable && privacy.frame.minY >= top { break }
+            let bottom = min(form.frame.maxY, save.frame.minY) - 12
+            let height = bottom - top
+            guard height > 80 else { break }
+            let distance = min(height * 0.3, max(32, top - privacy.frame.minY))
+            let origin = app.coordinate(withNormalizedOffset: .zero)
+            let start = origin.withOffset(CGVector(dx: form.frame.minX + 12, dy: top + 24))
+            let end = origin.withOffset(CGVector(dx: form.frame.minX + 12, dy: top + 24 + distance))
+            start.press(forDuration: 0.1, thenDragTo: end,
+                        withVelocity: .slow, thenHoldForDuration: 0.5)
+        }
+        XCTAssertTrue(privacy.isHittable)
+        XCTAssertGreaterThanOrEqual(privacy.frame.minY, toolbar.frame.maxY + 8)
+        XCTAssertLessThanOrEqual(privacy.frame.maxY, save.frame.minY)
         capture("05-feedback")
     }
 }

@@ -10,7 +10,7 @@ candidate, compatible production backend, documented verification and owner
 exceptions, accurate privacy disclosures, listing and reviewer access. The owner
 requested expedited shipment on 2026-09-10. Complete the prepared App Store
 package and submission requirements while retaining the existing submission.
-The October 3 Apple readback retains MANUAL release and selects build 40,
+The October 7 live Apple readback retains MANUAL release and selects build 40,
 now REJECTED. Build 40 is known to use retired workout
 routes/fields and is incompatible with the serving canonical Worker. Public
 release remains blocked on a compatible candidate; the manual setting prevents
@@ -31,6 +31,9 @@ keep iPhone + iPad for Station Mode; iPad can be added in a later version.
   - Align marketing version with the App Store 1.0 record; choose the build
     number only after a fresh App Store Connect read.
 - [ ] **P1 — Privacy and public-user review readiness**
+  - [x] Refresh the source/provider audit and prepare the privacy/rating worksheet;
+    [October 7 evidence](readiness-2026-10-07.md) records implemented controls,
+    policy-host drift, retained Intervals metadata and unresolved attestations.
   - Trace deletion/export, HealthKit cache/backup behavior, coach access and
     withdrawal, and private-group content through the actual paths.
   - Resolve essential reporting/blocking/filtering requirements for group
@@ -38,6 +41,8 @@ keep iPhone + iPad for Station Mode; iPad can be added in a later version.
   - Prepare accurate App Privacy and age-rating answers against final source
     and provider behavior. Confirm public policy/support URLs work.
 - [ ] **P2 — Review package**
+  - [x] Refresh listing/reviewer text and prepare a conditional rejection reply
+    in [review-package.md](review-package.md); verify free US configuration.
   - Prepare copy, category, synthetic-data screenshots from the actual candidate
     UI, and reviewer instructions for manual onboarding, logging, optional
     integrations, export and deletion.
@@ -62,11 +67,14 @@ keep iPhone + iPad for Station Mode; iPad can be added in a later version.
       The separate September 19 build-44 exception defers authenticated live
       workout checks to device testing for internal TestFlight only; it does
       not establish App Review or public-readiness acceptance.
-  - [x] **(b) Signed candidate and Apple processing**
-    - The owner separately approved Xcode signing and then explicitly approved
-      validation and upload of 1.0 (40). Xcode validation/upload succeeded;
-      Apple reports VALID and IN_BETA_TESTING in internal Testers. Exact source
-      and the signed archive are retained. P3(a) live checks remain unperformed.
+  - [ ] **(b) Compatible signed iPhone-only candidate and Apple processing**
+    - Historical build 40 processing is complete, but that rejected candidate
+      is incompatible with the canonical backend. Build 49 is an internal
+      iPhone/iPad beta, not the selected public candidate.
+    - After exact-head review/CI, separately authorize signing/upload of the
+      iPhone-only project, check app/widget family and embedded privacy metadata,
+      match final screenshots, and verify Apple processing. P3(a) physical and
+      authenticated checks remain unperformed.
 - [ ] **P4 — Submission and public-release handoff**
   - [x] Select build 40 and retain Apple's review-submission receipt. The owner
     submitted 1.0 (40) on 2026-09-14 at 01:23:28 UTC (2026-09-13 Pacific);
@@ -88,18 +96,39 @@ keep iPhone + iPad for Station Mode; iPad can be added in a later version.
 
 ## Next step
 
-**Now (@owner):** Approve the AI-sharing consent and privacy policy changes for
-the 5.1.1/5.1.2 rejection recorded below, then publish the policy, confirm
-agreements and App Privacy answers, and upload the iPhone-only candidate.
-**Agent, in parallel:** finish P1/P2 review-package preparation against the reviewed
-[build-49 source](release-49.md) and retain the owner's device-verification follow-up. The
-owner-approved switch to MANUAL is complete. The selected build 40 is incompatible
-with the current canonical backend: its default `.legacy` client writes to
-`/api/days` and sends `day_template_id`; the serving Worker rejects that route
-with 404 and those fields with 400. Do not publicly release this candidate.
-Replacing or resubmitting the candidate requires separate App Review authority;
-neither the TestFlight release nor the MANUAL change supplies it. Public release
-remains separately gated after a compatible candidate and readiness evidence.
+**Now (@agent):** Complete exact-head review and required CI for the October 7
+readiness slice: exclude the iPad camera SDK from the public iPhone project,
+declare collected data and elapsed-time API use, correct body-weight/provider-data disclosures,
+and prepare matching screenshots and the review package. Keep the P1/P2 phases
+open for the remaining operator/provider and candidate evidence below.
+One CI outline journey on `a94f7ae` remained on Today after Start despite correct
+touch delivery; it has not reproduced locally. The readiness evidence records
+that unresolved cause and the opt-in synthetic stage trace added for a recurrence.
+Require current-head CI; local passes do not clear the earlier red run.
+
+**Then (@owner):** Review the prepared [policy, privacy worksheet and rejection
+reply](review-package.md), confirm provider protections, App Privacy, agreements
+and support/moderation operation, and authorize publication of the identical
+policy on both hosts plus a fresh iPhone-only candidate. The current public
+website still serves the older AI disclosure. Perform the designated-account
+physical consent/workout/export/deletion checks. Candidate selection, replying
+to Apple, resubmission and eventual MANUAL public release remain separately
+authorized actions. No provider write or account/training mutation was performed
+by this readiness audit.
+
+The [readiness evidence](readiness-2026-10-07.md) records fresh Apple, public-site,
+Worker-source, logging and migration readbacks. Core consent, group safety,
+account export/deletion and protected storage already exist. Do not reapply
+migration 0048, recreate the retired reviewer login, or treat the old build-40
+upload as a compatible candidate. The remaining logging-inventory reads returned
+403; they are unknown, not proof of no collection. The current source does not
+enforce new consent versions for existing coach grants; changing that behavior
+remains an explicit owner decision.
+
+## Retained rejection and release evidence
+
+The following dated entries preserve prior delivery/authority evidence. They do
+not override the current next step or establish unperformed device checks.
 
 **App Review rejection (recorded 2026-10-05):** On 2026-09-22 App Review rejected
 submission `ea595b5e-86a6-4704-b1ef-ae87b971c728` (1.0 (40), reviewed on iPhone

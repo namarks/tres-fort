@@ -19,8 +19,8 @@ class AssetValidationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.signature = b'\x89PNG\r\n\x1a\n'
-        cls.header = chunk(b'IHDR', struct.pack('>IIBBBBB', 1320, 2868, 8, 2, 0, 0, 0))
-        cls.pixels = bytes((1 + 1320 * 3) * 2868)
+        cls.header = chunk(b'IHDR', struct.pack('>IIBBBBB', 1206, 2622, 8, 2, 0, 0, 0))
+        cls.pixels = bytes((1 + 1206 * 3) * 2622)
         cls.image = chunk(b'IDAT', zlib.compress(cls.pixels))
         cls.end = chunk(b'IEND')
         cls.valid = cls.signature + cls.header + cls.image + cls.end

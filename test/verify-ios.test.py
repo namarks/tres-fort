@@ -23,6 +23,7 @@ class VerifyIOSTests(unittest.TestCase):
         (self.root / 'bin').mkdir()
         (self.root / 'bin' / 'python3').symlink_to(Path(sys.executable).resolve())
         (self.root / 'ios' / 'project.yml').write_text('name: Test\n')
+        (self.root / 'ios' / 'project-app-store.yml').write_text('name: TestAppStore\n')
         shutil.copy(SCRIPT, self.root / 'scripts' / SCRIPT.name)
         shutil.copy(SCRIPT.parent / 'ios_sources.py', self.root / 'scripts' / 'ios_sources.py')
         mock = '''#!/usr/bin/env python3
@@ -67,6 +68,7 @@ else: print('synthetic-tool-version')
                         TMPDIR=str(self.root/'scratch'), MOCK_CALLS=str(self.root/'calls.jsonl'))
         self.env.pop('IOS_KEEP_RESULTS', None)
         self.env.pop('IOS_EVIDENCE_DIR', None)
+        self.env.pop('APP_STORE_IPHONE_ONLY', None)
 
     def run_script(self, args=None):
         args = args if args is not None else ['--runtime','runtime','--device','device']
@@ -81,6 +83,19 @@ else: print('synthetic-tool-version')
 
     def test_requires_explicit_selection_before_creating_device(self):
         self.assertEqual(self.run_script([]).returncode, 2)
+        self.assertEqual(self.calls(), [])
+
+    def test_selects_app_store_project_only_when_requested(self):
+        self.env['APP_STORE_IPHONE_ONLY'] = '1'
+        self.assertEqual(self.run_script().returncode, 0)
+        generation = next(args for name, args in self.calls()
+                          if name == 'xcodegen' and args[0] == 'generate')
+        self.assertEqual(Path(generation[generation.index('--spec') + 1]).name,
+                         'project-app-store.yml')
+
+    def test_invalid_app_store_mode_stops_before_creating_device(self):
+        self.env['APP_STORE_IPHONE_ONLY'] = 'yes'
+        self.assertEqual(self.run_script().returncode, 2)
         self.assertEqual(self.calls(), [])
 
     def test_invalid_runtime_cleans_scratch_and_never_creates_simulator(self):

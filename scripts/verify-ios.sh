@@ -29,6 +29,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$runtime" && -n "$device" ]] || { usage >&2; exit 2; }
+case "${APP_STORE_IPHONE_ONLY:-0}" in
+  0) project_spec=project.yml ;;
+  1) project_spec=project-app-store.yml ;;
+  *) echo 'APP_STORE_IPHONE_ONLY must be 0 or 1.' >&2; exit 2 ;;
+esac
 [[ "$ui_suite" == full || "$ui_suite" == smoke ]] || { usage >&2; exit 2; }
 if [[ -n "$ci_shard" ]]; then
   [[ "$ci_shard" =~ ^[1-6]$ ]] || { usage >&2; exit 2; }
@@ -162,12 +167,13 @@ PY
   echo "Device type: $device"
   echo "CI shard: ${ci_shard:-full or focused}"
   echo "UI suite: $ui_suite"
+  echo "Project spec: $project_spec"
   printf 'Test selection: %s\n' ${test_args[@]+"${test_args[@]}"}
   git -C "$repo_root" rev-parse HEAD
   git -C "$repo_root" status --short
 } >"$recording_root/environment.log"
 TRESFORT_MEDIAPIPE_CACHE="${TRESFORT_MEDIAPIPE_CACHE:-$repo_root/.artifacts/mediapipe-downloads}" \
-  xcodegen generate --spec "$scratch/ios/project.yml" >"$recording_root/xcodegen.log" 2>&1
+  xcodegen generate --spec "$scratch/ios/$project_spec" >"$recording_root/xcodegen.log" 2>&1
 simulator="$(xcrun simctl create "TresFort verification $(basename "$scratch")" "$device" "$runtime")"
 echo "Verifying TresFort on $runtime / $device ($simulator)"
 xcrun simctl boot "$simulator" >"$recording_root/boot.log" 2>&1

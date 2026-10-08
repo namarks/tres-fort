@@ -19,6 +19,12 @@ private actor ReplayReportGate {
 }
 
 final class StationReplayTests: XCTestCase {
+    private func requireStationRuntime() throws {
+        #if APP_STORE_IPHONE_ONLY
+        throw XCTSkip("Real Station inference is tested in the iPhone + iPad beta variant.")
+        #endif
+    }
+
     func testIdentityGateRejectsAmbiguityDetectedOnlyByApple() {
         XCTAssertThrowsError(try StationReplayWorker.validateIdentity(applePersonCount: 2, mediaPipePersonCount: 1)) {
             guard case StationReplayError.multiplePeople = $0 else { return XCTFail("Expected identity rejection, got \($0)") }
@@ -40,6 +46,7 @@ final class StationReplayTests: XCTestCase {
     }
 
     func testSavedVideoAbortsAtAmbiguousFrameBeforeLaterFramesOrCompletedReport() async throws {
+        try requireStationRuntime()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("station-ambiguous-replay-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try StationRecordingStore(rootURL: root)
@@ -272,6 +279,7 @@ final class StationReplayTests: XCTestCase {
     }
 
     func testSavedVideoFeedsAlignedFramesAndRealMediaPipeAndExportsVersionedEvidence() async throws {
+        try requireStationRuntime()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("station-replay-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         let store = try StationRecordingStore(rootURL: root)
@@ -307,6 +315,7 @@ final class StationReplayTests: XCTestCase {
     }
 
     func testSavedVideoPersistsExplicitCoverageForReliableAndBrieflyLostAppleArm() async throws {
+        try requireStationRuntime()
         for hasDropout in [false, true] {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("station-coverage-replay-\(UUID())")
             defer { try? FileManager.default.removeItem(at: root) }
@@ -332,6 +341,7 @@ final class StationReplayTests: XCTestCase {
     }
 
     func testRealAppleAndMediaPipeOnSavedVideoOnDevice() async throws {
+        try requireStationRuntime()
 #if targetEnvironment(simulator)
         throw XCTSkip("The simulator runtime omits Apple's human pose model weights; this check requires a physical device.")
 #else

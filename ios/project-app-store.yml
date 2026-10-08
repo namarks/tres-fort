@@ -1,0 +1,30 @@
+# Public 1.0 is iPhone-only. Generate this variant explicitly; a build-setting
+# override alone would leave the Station SDK, graph and model in the app.
+# XcodeGen's documented :REPLACE merge keeps inherited application settings
+# while replacing these arrays instead of appending to their beta contents.
+include: project.yml
+options:
+  preGenCommand: ""
+settings:
+  base:
+    SWIFT_ACTIVE_COMPILATION_CONDITIONS: '$(inherited) APP_STORE_IPHONE_ONLY'
+  configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: '$(inherited) DEBUG APP_STORE_IPHONE_ONLY'
+targets:
+  TresFort:
+    sources:REPLACE:
+      - TresFort
+      - Shared
+    dependencies:REPLACE:
+      - target: TresFortWidgets
+        embed: true
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "1"
+        OTHER_LDFLAGS[sdk=iphonesimulator*]: '$(inherited)'
+        OTHER_LDFLAGS[sdk=iphoneos*]: '$(inherited)'
+  TresFortWidgets:
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "1"

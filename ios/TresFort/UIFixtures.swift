@@ -1,5 +1,6 @@
 #if DEBUG && targetEnvironment(simulator)
 import Foundation
+import OSLog
 import SwiftUI
 
 /// Explicit, simulator-only launch fixtures. Release/device builds contain none
@@ -42,6 +43,51 @@ enum UIFixtureScenario: String, CaseIterable {
     }()
 }
 
+/// Fixed, value-free stages for diagnosing a synthetic UI test's Start path.
+/// Opt-in separately from fixtures; never compiled into device/release builds.
+enum UIFixtureStartTrace {
+    enum Stage: String {
+        case fixtureInitialized = "fixture_initialized"
+        case todayStartAction = "today_start_action"
+        case todayResumeSelected = "today_resume_selected"
+        case todayStartSelected = "today_start_selected"
+        case prepareEntered = "prepare_entered"
+        case prepareAlreadyActive = "prepare_already_active"
+        case prepareTaskEntered = "prepare_task_entered"
+        case permissionReturned = "permission_returned"
+        case prepareTaskCancelled = "prepare_task_cancelled"
+        case prepareInvokingStart = "prepare_invoking_start"
+        case prepareReturned = "prepare_returned"
+        case startTodayEntered = "start_today_entered"
+        case startTodayRejected = "start_today_rejected"
+        case startWorkoutEntered = "start_workout_entered"
+        case startPartnerRejected = "start_partner_rejected"
+        case startAuthorityRejected = "start_authority_rejected"
+        case startEligibilityRejected = "start_eligibility_rejected"
+        case eligibilityPartnerRejected = "eligibility_partner_rejected"
+        case eligibilityMutationRejected = "eligibility_mutation_rejected"
+        case eligibilityCompletedRejected = "eligibility_completed_rejected"
+        case eligibilityExistingWorkoutRejected = "eligibility_existing_workout_rejected"
+        case eligibilityAccepted = "eligibility_accepted"
+        case startTerminalRejected = "start_terminal_rejected"
+        case startCheckpointClearRejected = "start_checkpoint_clear_rejected"
+        case startRunningSet = "start_running_set"
+        case startCheckpointSaved = "start_checkpoint_saved"
+        case startCheckpointRejected = "start_checkpoint_rejected"
+        case startWorkoutReturned = "start_workout_returned"
+        case runnerAppeared = "runner_appeared"
+    }
+
+    private static let enabled = ProcessInfo.processInfo.environment["TRESFORT_UI_TRACE_START"] == "1"
+        && UIFixtureScenario.selected != nil
+    private static let logger = Logger(subsystem: "com.nmarkspdx.tresfort", category: "UIFixtureStart")
+
+    static func record(_ stage: Stage) {
+        guard enabled else { return }
+        logger.notice("\(stage.rawValue, privacy: .public)")
+    }
+}
+
 private final class FixtureTokenStore: AppTokenStore {
     func load() -> String? { nil }
     func save(_ token: String) {}
@@ -63,6 +109,7 @@ enum UIFixtureModel {
         return value
     }()
     static func makeAuth() -> AuthModel {
+        UIFixtureStartTrace.record(.fixtureInitialized)
         let auth = AuthModel(tokenStore: FixtureTokenStore(), defaults: defaults)
         if UIFixtureScenario.selected != .signIn && UIFixtureScenario.selected?.isActivation != true {
             auth.userID = "synthetic-ui-user"
@@ -76,6 +123,25 @@ enum UIFixtureModel {
                 auth.requestEntry(.coach)
             }
             auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
+        }
+        if UIFixtureScenario.selected == .appStore,
+           ProcessInfo.processInfo.environment["TRESFORT_UI_PARTNER_READY"] == "1" {
+            // Simulate an App Store upgrade with a beta's unfinished setup.
+            // No start request or lane key exists: cancellation stays local.
+            var workout = (AppStoreScreenshotData.plan["days"] as! [[String: Any]])[0]
+            workout["id"] = UUID().uuidString
+            workout["exercises"] = (workout["exercises"] as! [[String: Any]]).map { original in
+                var slot = original; slot["id"] = UUID().uuidString; return slot
+            }
+            let decoded = try! JSONDecoder().decode(Workout.self, from: JSONSerialization.data(withJSONObject: workout))
+            let offer = PartnerOffer(id: UUID(), hostName: "Synthetic host", planID: UUID().uuidString,
+                                     planVersion: 1, workout: decoded)
+            precondition(offer.isValid)
+            let checkpoint = PartnerCheckpoint(id: offer.id, lane: .host, offer: offer, name: "Synthetic host",
+                phase: .ready, slotMap: Dictionary(uniqueKeysWithValues: decoded.exercises.map { ($0.id, $0.id) }),
+                receipt: .init(workout_id: decoded.id, plan_id: offer.planID, version: 1))
+            precondition(PartnerCheckpointStore.replace(checkpoint, expected: nil,
+                accountID: auth.userID!, defaults: defaults))
         }
         if UIFixtureScenario.selected == .activationInvite
             || ProcessInfo.processInfo.environment["TRESFORT_UI_PENDING_INVITE"] == "1" {

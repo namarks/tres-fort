@@ -4404,16 +4404,30 @@ final class SyncModel: ObservableObject {
     }
 
     private func allowNewWorkoutStart() -> Bool {
-        guard !isPartnerWorkout else { return false }
+        guard !isPartnerWorkout else {
+            #if DEBUG && targetEnvironment(simulator)
+            UIFixtureStartTrace.record(.eligibilityPartnerRejected)
+            #endif
+            return false
+        }
         guard !isRoutineMutationInFlight else {
+            #if DEBUG && targetEnvironment(simulator)
+            UIFixtureStartTrace.record(.eligibilityMutationRejected)
+            #endif
             loadError = "Wait for the routine change to finish before starting your workout."
             return false
         }
         guard !todayIsCompleted else {
+            #if DEBUG && targetEnvironment(simulator)
+            UIFixtureStartTrace.record(.eligibilityCompletedRejected)
+            #endif
             loadError = "Today's workout is already completed."
             return false
         }
         guard !blocksNewWorkoutStart else {
+            #if DEBUG && targetEnvironment(simulator)
+            UIFixtureStartTrace.record(.eligibilityExistingWorkoutRejected)
+            #endif
             if needsLiveWorkoutValidation {
                 loadError = hasSavedRunnerAwaitingValidation
                     ? "Connect to validate and resume your saved workout before starting another."
@@ -4425,13 +4439,34 @@ final class SyncModel: ObservableObject {
             }
             return false
         }
+        #if DEBUG && targetEnvironment(simulator)
+        UIFixtureStartTrace.record(.eligibilityAccepted)
+        #endif
         return true
     }
 
     func startWorkout() {
-        guard !isPartnerWorkout else { return }
-        guard canInitiateBoundFeatureAction, currentJWT != nil else { return }
-        guard allowNewWorkoutStart() else { return }
+        #if DEBUG && targetEnvironment(simulator)
+        UIFixtureStartTrace.record(.startWorkoutEntered)
+        #endif
+        guard !isPartnerWorkout else {
+            #if DEBUG && targetEnvironment(simulator)
+            UIFixtureStartTrace.record(.startPartnerRejected)
+            #endif
+            return
+        }
+        guard canInitiateBoundFeatureAction, currentJWT != nil else {
+            #if DEBUG && targetEnvironment(simulator)
+            UIFixtureStartTrace.record(.startAuthorityRejected)
+            #endif
+            return
+        }
+        guard allowNewWorkoutStart() else {
+            #if DEBUG && targetEnvironment(simulator)
+            UIFixtureStartTrace.record(.startEligibilityRejected)
+            #endif
+            return
+        }
         let date = todaySession?.date ?? todayString
         var restartDiscardedAttempt = sessions.first(where: {
             $0.date == date && $0.status == "discarded"
@@ -4440,6 +4475,9 @@ final class SyncModel: ObservableObject {
             guard terminal.action == .discard,
                   terminal.deliveryState == .acknowledged
             else {
+                #if DEBUG && targetEnvironment(simulator)
+                UIFixtureStartTrace.record(.startTerminalRejected)
+                #endif
                 loadError = "This workout still has a finish or discard waiting to sync."
                 return
             }
@@ -4455,6 +4493,9 @@ final class SyncModel: ObservableObject {
             ownedTerminalIntentIDs.remove(terminal.id)
         }
         guard clearRunnerCheckpointAndSharedRest() else {
+            #if DEBUG && targetEnvironment(simulator)
+            UIFixtureStartTrace.record(.startCheckpointClearRejected)
+            #endif
             loadError = "This workout is already active in another app view. Refresh to continue."
             return
         }
@@ -4463,15 +4504,25 @@ final class SyncModel: ObservableObject {
         runnerFocus = RunnerFocusState()
         deferredGroupRepair = nil
         running = true
+        #if DEBUG && targetEnvironment(simulator)
+        UIFixtureStartTrace.record(.startRunningSet)
+        #endif
         finished = false
         exerciseIndex = 0
         skipped = []
         workoutStart = now()
         seedInputs()
+        #if DEBUG && targetEnvironment(simulator)
+        UIFixtureStartTrace.record(persistRunnerCheckpoint() ? .startCheckpointSaved : .startCheckpointRejected)
+        #else
         persistRunnerCheckpoint()
+        #endif
         if currentExercise?.group_id != nil {
             normalizeMountedRunnerProgress(for: todayString, forceGroupSelection: true)
         } else { rememberGroupProgress() }
+        #if DEBUG && targetEnvironment(simulator)
+        UIFixtureStartTrace.record(.startWorkoutReturned)
+        #endif
     }
 
     /// Start ACKs bind the ordinary runner to the exact reviewed attempt. Never
@@ -6529,7 +6580,15 @@ final class SyncModel: ObservableObject {
     /// `todayResolvedDay`, i.e. the SAME CalendarProjection the calendar
     /// uses). Reuses the EXISTING session-start path verbatim.
     func startToday() {
-        guard allowNewWorkoutStart() else { return }
+        #if DEBUG && targetEnvironment(simulator)
+        UIFixtureStartTrace.record(.startTodayEntered)
+        #endif
+        guard allowNewWorkoutStart() else {
+            #if DEBUG && targetEnvironment(simulator)
+            UIFixtureStartTrace.record(.startTodayRejected)
+            #endif
+            return
+        }
         if let id = todayResolvedDay?.id { selectedDayID = id }
         startWorkout()
     }

@@ -22,8 +22,9 @@
 #
 # App Store 1.0 ships iPhone-only (owner decision 2026-10-05) while TestFlight
 # builds keep iPhone + iPad for Station Mode. APP_STORE_IPHONE_ONLY=1 archives
-# that App Store candidate: device family 1 for the app and widget, and the
-# APP_STORE_IPHONE_ONLY Swift condition, which hides the iPad Station link.
+# that App Store candidate using project-app-store.yml: device family 1 for
+# the app and widget, no Station SDK/model, and APP_STORE_IPHONE_ONLY, which
+# hides iPad Station and partner training entry points.
 # The archive's UIDeviceFamily is verified before anything is exported.
 #
 # Usage:
@@ -44,14 +45,9 @@ cd "$(dirname "$0")/../ios"
 
 iphone_only="${APP_STORE_IPHONE_ONLY:-0}"
 case "${iphone_only}" in
-  0) device_settings=() ;;
+  0) project_spec=project.yml ;;
   1)
-    # Literal $(inherited) is for xcodebuild, not the shell.
-    # shellcheck disable=SC2016
-    device_settings=(
-      TARGETED_DEVICE_FAMILY=1
-      'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) APP_STORE_IPHONE_ONLY'
-    )
+    project_spec=project-app-store.yml
     echo "Archiving the iPhone-only App Store candidate"
     ;;
   *)
@@ -72,7 +68,10 @@ else
   sed -i '' "s/CURRENT_PROJECT_VERSION: \"${current_build}\"/CURRENT_PROJECT_VERSION: \"${next_build}\"/" project.yml
 fi
 
-xcodegen generate
+xcodegen generate --spec "${project_spec}"
+if [ "${iphone_only}" = "1" ]; then
+  python3 Dependencies/verify_app_store_project.py TresFort.xcodeproj/project.pbxproj
+fi
 
 rm -rf build/TresFort.xcarchive build/export
 
@@ -94,7 +93,6 @@ xcodebuild \
   DEVELOPMENT_TEAM="${TEAM_ID}" \
   CODE_SIGN_STYLE=Automatic \
   CURRENT_PROJECT_VERSION="${next_build}" \
-  ${device_settings[@]+"${device_settings[@]}"} \
   archive
 
 if [ "${iphone_only}" = "1" ]; then
@@ -103,6 +101,16 @@ if [ "${iphone_only}" = "1" ]; then
     family=$(plutil -extract UIDeviceFamily json -o - "${bundle}/Info.plist" | tr -d '[:space:]')
     if [ "${family}" != "[1]" ]; then
       echo "Expected iPhone-only UIDeviceFamily [1] in ${bundle}, got '${family}'; not exporting." >&2
+      exit 1
+    fi
+  done
+  # Also reject stale copied resources left by a previous beta build.
+  for asset in "${ARCHIVED_APP}/pose_landmarker_full.task" \
+    "${ARCHIVED_APP}/Notices/MediaPipe-LICENSE.txt" \
+    "${ARCHIVED_APP}/Frameworks/MediaPipeTasksVision.framework" \
+    "${ARCHIVED_APP}/Frameworks/MediaPipeTasksCommon.framework"; do
+    if [ -e "${asset}" ]; then
+      echo "App Store archive retains Station SDK asset ${asset}; not exporting." >&2
       exit 1
     fi
   done

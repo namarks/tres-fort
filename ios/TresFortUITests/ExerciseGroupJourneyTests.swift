@@ -13,8 +13,10 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["today.chooseWorkout"].waitForExistence(timeout: 10))
         app.buttons["today.chooseWorkout"].tap()
-        let workout = app.buttons.containing(.staticText, identifier: "Warm-up and strength").firstMatch
+        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 10))
+        let workout = app.buttons["library.workout.synthetic-day"]
         XCTAssertTrue(workout.waitForExistence(timeout: 10))
+        XCTAssertTrue(workout.isHittable)
         workout.tap()
         XCTAssertTrue(app.buttons["workoutDetails.edit"].waitForExistence(timeout: 5))
         app.buttons["workoutDetails.edit"].tap()

@@ -12,6 +12,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
                         tickingClock: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = fixture
+        app.launchEnvironment["TRESFORT_UI_TRACE_START"] = "1"
         app.launchEnvironment["TRESFORT_UI_ACCEPT_CORRECTIONS"] = "1"
         app.launchEnvironment["TRESFORT_UI_GROUP_CONTRACT"] = groupContract
         if tickingClock { app.launchEnvironment["TRESFORT_UI_TICKING_CLOCK"] = "1" }
@@ -24,20 +25,17 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
             let start = app.buttons["today.startWorkout"]
             XCTAssertTrue(start.waitForExistence(timeout: 10))
             guard startWorkout else { return app }
-            reveal(start, in: app); start.tap()
+            reveal(start, in: app)
+            XCTAssertTrue(start.isEnabled)
+            start.tap()
         }
         XCTAssertTrue(app.staticTexts["runner.exerciseTitle"].waitForExistence(timeout: 10))
         return app
     }
 
-    private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
-        XCTAssertTrue(element.waitForExistence(timeout: 5))
-        for _ in 0..<10 {
-            if element.isHittable && element.frame.maxY <= app.frame.maxY - 34 { break }
-            app.scrollViews.firstMatch.swipeUp()
-        }
-        XCTAssertTrue(element.isHittable)
-        XCTAssertLessThanOrEqual(element.frame.maxY, app.frame.maxY - 34)
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication,
+                        file: StaticString = #filePath, line: UInt = #line) {
+        UITestScrolling.reveal(element, in: app, maxAttempts: 10, file: file, line: line)
     }
 
     private func capture(_ name: String) {
@@ -53,7 +51,9 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(change.frame.minY, view.frame.maxY)
         capture("today-accessibility-actions-stacked")
         let start = app.buttons["today.startWorkout"]
-        reveal(start, in: app); start.tap()
+        reveal(start, in: app)
+        XCTAssertTrue(start.isEnabled)
+        start.tap()
         let title = app.staticTexts["runner.exerciseTitle"]
         XCTAssertTrue(title.waitForExistence(timeout: 5))
         let demo = app.buttons["Exercise information for Barbell Squat"]

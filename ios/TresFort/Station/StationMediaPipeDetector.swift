@@ -3,7 +3,13 @@ import CoreVideo
 import CryptoKit
 import Foundation
 import ImageIO
+#if APP_STORE_IPHONE_ONLY
+#if canImport(MediaPipeTasksVision)
+#error("Generate project-app-store.yml; a flag-only build still includes the Station SDK.")
+#endif
+#else
 import MediaPipeTasksVision
+#endif
 
 /// Coordinates use the upright image, top-left origin. Depth uses the model's
 /// approximate image-width scale; it is not a measured distance in metres.
@@ -40,10 +46,11 @@ final class StationMediaPipeDetector {
     static let modelSHA256 = "5134a3aad27a58b93da0088d431f366da362b44e3ccfbe3462b3827a839011b1"
 
     enum DetectionError: LocalizedError {
-        case missingModel, incorrectModel, unsupportedPixelFormat, invalidTimestamp, bufferAllocation
+        case unavailableInThisBuild, missingModel, incorrectModel, unsupportedPixelFormat, invalidTimestamp, bufferAllocation
 
         var errorDescription: String? {
             switch self {
+            case .unavailableInThisBuild: return "iPad Station is not available in this iPhone-only build."
             case .missingModel: return "The MediaPipe Full model is missing from this build."
             case .incorrectModel: return "The MediaPipe Full model does not match the pinned version."
             case .unsupportedPixelFormat: return "MediaPipe requires BGRA video frames."
@@ -53,7 +60,9 @@ final class StationMediaPipeDetector {
         }
     }
 
+    #if !APP_STORE_IPHONE_ONLY
     private let landmarker: PoseLandmarker
+    #endif
     private let lock = NSLock()
     private let imageContext = CIContext(options: [.cacheIntermediates: false,
                                                   .workingColorSpace: NSNull(),
@@ -61,6 +70,9 @@ final class StationMediaPipeDetector {
     private var previousTimestamp: Int?
 
     init(modelURL: URL? = Bundle.main.url(forResource: "pose_landmarker_full", withExtension: "task")) throws {
+        #if APP_STORE_IPHONE_ONLY
+        throw DetectionError.unavailableInThisBuild
+        #else
         guard let modelURL else { throw DetectionError.missingModel }
         let bytes = try Data(contentsOf: modelURL, options: .mappedIfSafe)
         let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
@@ -76,10 +88,14 @@ final class StationMediaPipeDetector {
         options.minTrackingConfidence = 0.5
         options.shouldOutputSegmentationMasks = false
         landmarker = try PoseLandmarker(options: options)
+        #endif
     }
 
     func detect(pixelBuffer: CVPixelBuffer, timestampMilliseconds: Int,
                 orientation: CGImagePropertyOrientation) throws -> StationMediaPipeDetection {
+        #if APP_STORE_IPHONE_ONLY
+        throw DetectionError.unavailableInThisBuild
+        #else
         lock.lock()
         defer { lock.unlock() }
         guard timestampMilliseconds >= 0,
@@ -112,6 +128,7 @@ final class StationMediaPipeDetector {
                 inferenceMilliseconds: (ProcessInfo.processInfo.systemUptime - started) * 1_000
             )
         }
+        #endif
     }
 
     /// Physically apply EXIF orientation before calling MediaPipe with `.up`.

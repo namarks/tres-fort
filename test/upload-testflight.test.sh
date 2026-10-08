@@ -42,10 +42,12 @@ run_case() {
 
   mkdir -p \
     "${case_root}/repo/scripts" \
-    "${case_root}/repo/ios" \
+    "${case_root}/repo/ios/Dependencies" \
     "${case_root}/bin" \
     "${case_root}/home/.appstoreconnect/private_keys"
   cp "${SUBJECT_SCRIPT}" "${case_root}/repo/scripts/upload-testflight.sh"
+  cp "$(dirname "${SUBJECT_SCRIPT}")/../ios/Dependencies/verify_app_store_project.py" \
+    "${case_root}/repo/ios/Dependencies/verify_app_store_project.py"
   printf '%s\n' \
     'settings:' \
     '  MARKETING_VERSION: "0.1.0"' \
@@ -53,11 +55,18 @@ run_case() {
     > "${case_root}/repo/ios/project.yml"
   : > "${case_root}/home/.appstoreconnect/private_keys/AuthKey_VP9G3R7Q85.p8"
 
-  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "${case_root}/bin/xcodegen"
+  # shellcheck disable=SC2016
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf "%s\n" "$*" >> "${STUB_XCODEGEN_LOG}"' \
+    'mkdir -p TresFort.xcodeproj' \
+    'printf "%s\n" "${STUB_PROJECT_CONTENTS}" > TresFort.xcodeproj/project.pbxproj' \
+    > "${case_root}/bin/xcodegen"
   # shellcheck disable=SC2016
   printf '%s\n' \
     '#!/usr/bin/env bash' \
     'printf "%s\n" "$@" >> "${STUB_XCODEBUILD_LOG}"' \
+    'if [ "${STUB_ARCHIVE_SDK}" = 1 ]; then mkdir -p build/TresFort.xcarchive/Products/Applications/TresFort.app; touch build/TresFort.xcarchive/Products/Applications/TresFort.app/pose_landmarker_full.task; fi' \
     > "${case_root}/bin/xcodebuild"
   # shellcheck disable=SC2016
   printf '%s\n' \
@@ -74,8 +83,10 @@ run_case() {
     > "${case_root}/bin/xcrun"
   chmod +x "${case_root}/bin/xcodegen" "${case_root}/bin/xcodebuild" "${case_root}/bin/xcrun" "${case_root}/bin/plutil"
   xcodebuild_log="${case_root}/xcodebuild.log"
+  xcodegen_log="${case_root}/xcodegen.log"
   plutil_log="${case_root}/plutil.log"
   : > "${xcodebuild_log}"
+  : > "${xcodegen_log}"
   : > "${plutil_log}"
 
   if last_output=$(cd "${case_root}/repo" && \
@@ -85,6 +96,9 @@ run_case() {
     APP_STORE_IPHONE_ONLY="${CASE_IPHONE_ONLY:-0}" \
     STUB_DEVICE_FAMILY="${CASE_DEVICE_FAMILY:-[1]}" \
     STUB_XCODEBUILD_LOG="${xcodebuild_log}" \
+    STUB_XCODEGEN_LOG="${xcodegen_log}" \
+    STUB_PROJECT_CONTENTS="${CASE_PROJECT_CONTENTS:-APP_STORE_IPHONE_ONLY}" \
+    STUB_ARCHIVE_SDK="${CASE_ARCHIVE_SDK:-0}" \
     STUB_PLUTIL_LOG="${plutil_log}" \
     STUB_XCRUN_STATUS="${xcrun_status}" \
     STUB_XCRUN_OUTPUT="${xcrun_output}" \
@@ -151,6 +165,7 @@ run_case \
   "UPLOAD SUCCEEDED with no errors"
 assert_status 0
 grep -q 'TARGETED_DEVICE_FAMILY' "${xcodebuild_log}" && fail "default archive overrode the device family"
+grep -qx 'generate --spec project.yml' "${xcodegen_log}" || fail "default archive selected the wrong spec"
 [ -s "${plutil_log}" ] && fail "default archive ran the iPhone-only check"
 
 case_number=$((case_number + 1))
@@ -161,10 +176,7 @@ CASE_IPHONE_ONLY=1 run_case \
 assert_status 0
 assert_contains "Archiving the iPhone-only App Store candidate"
 assert_contains "Uploaded 0.1.0 (30)."
-grep -qx 'TARGETED_DEVICE_FAMILY=1' "${xcodebuild_log}" || fail "missing device family override"
-# shellcheck disable=SC2016
-grep -qxF 'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) APP_STORE_IPHONE_ONLY' "${xcodebuild_log}" \
-  || fail "missing Swift condition override"
+grep -qx 'generate --spec project-app-store.yml' "${xcodegen_log}" || fail "missing App Store spec selection"
 grep -q 'TresFort.app/Info.plist' "${plutil_log}" || fail "app bundle not verified"
 grep -q 'TresFortWidgets.appex/Info.plist' "${plutil_log}" || fail "widget bundle not verified"
 
@@ -186,5 +198,32 @@ CASE_IPHONE_ONLY=yes run_case \
 assert_status 2
 assert_contains "APP_STORE_IPHONE_ONLY must be 0 or 1"
 [ -s "${xcodebuild_log}" ] && fail "built despite an invalid flag"
+
+case_number=$((case_number + 1))
+CASE_IPHONE_ONLY=1 CASE_PROJECT_CONTENTS='APP_STORE_IPHONE_ONLY .dependencies/mediapipe' run_case \
+  "App Store project with Station SDK inputs fails before archiving" \
+  0 \
+  "UPLOAD SUCCEEDED with no errors"
+assert_status 1
+assert_contains "App Store project retains Station SDK input"
+[ -s "${xcodebuild_log}" ] && fail "built despite retaining Station SDK inputs"
+
+case_number=$((case_number + 1))
+CASE_IPHONE_ONLY=1 CASE_PROJECT_CONTENTS='wrong project' run_case \
+  "App Store project missing its Swift condition fails before archiving" \
+  0 \
+  "UPLOAD SUCCEEDED with no errors"
+assert_status 1
+assert_contains "App Store project is missing APP_STORE_IPHONE_ONLY"
+[ -s "${xcodebuild_log}" ] && fail "built despite using the wrong project"
+
+case_number=$((case_number + 1))
+CASE_IPHONE_ONLY=1 CASE_ARCHIVE_SDK=1 run_case \
+  "App Store archive with a stale Station model fails before exporting" \
+  0 \
+  "UPLOAD SUCCEEDED with no errors"
+assert_status 1
+assert_contains "App Store archive retains Station SDK asset"
+grep -q -- '-exportArchive' "${xcodebuild_log}" && fail "exported despite a stale model"
 
 echo "1..${case_number}"

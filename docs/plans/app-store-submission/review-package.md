@@ -1,6 +1,8 @@
 # App Store review package
 
-Prepared for owner review; not published. Live completion and gates belong to
+Refreshed October 7, 2026 for owner review; not published. The current
+[readiness audit](readiness-2026-10-07.md) records source/provider evidence and
+remaining limitations. Live completion and gates belong to
 [plan.md](plan.md). Reconcile claims/screenshots with the final candidate before
 upload. No credentials or personal training records belong in this file.
 
@@ -23,8 +25,8 @@ upload. No credentials or personal training records belong in this file.
 Description:
 
 Très Fort helps you plan your strength training and follow it set by set on
-iPhone. Build your own workouts, or connect your own Claude account to review
-and adapt your plan.
+iPhone. Build your own workouts, or optionally connect Claude, Codex or another
+compatible AI app to review and adapt your plan after you approve access.
 
 TRAIN WITH A PLAN
 Create reusable workouts, choose exercises and targets, and organize your
@@ -41,18 +43,20 @@ recognition where available, then review and edit the text before saving.
 
 CONNECT YOUR TRAINING
 Optionally import workouts from Apple Health or connect Intervals.icu to keep
-your other activities in view. An authorized Claude connection can use your
-training history to help adapt your plan.
+your other activities in view. An authorized AI coaching connection can use your training history to help
+adapt your plan. Separately, view your latest Apple Health weight and trends
+privately on your iPhone.
 
 TRAIN WITH YOUR CREW
 Join a private group to share training progress with people you know. Apple
 Health group sharing has a separate setting that is off by default.
 
 YOUR ACCOUNT, YOUR CHOICE
-Apple Health, Intervals.icu, Claude and groups are optional. Sign in with Apple
+Apple Health, Intervals.icu, AI coaching and groups are optional. Sign in with Apple
 to sync training, export your account data, or delete your account in Profile.
-Claude coaching requires a separate Claude account that supports custom
-connectors; access to third-party services is governed by their own terms.
+AI coaching requires a separate account with a compatible service. Claude
+uses custom connectors; Codex linking requires a connected desktop/host.
+Access to third-party services is governed by their own terms.
 
 ## Screenshots
 
@@ -60,9 +64,10 @@ Capture actual candidate screens using synthetic training data. Do not include
 personal accounts, connection codes, fixture banners, fabricated features or
 overlaid claims that hide the UI. Use the required current iPhone dimensions
 from App Store Connect. Version 1.0 is iPhone-only (owner decision 2026-10-05):
-`project.yml` targets iPhone + iPad for TestFlight, but the App Store candidate
-is archived with `APP_STORE_IPHONE_ONLY=1`, so no iPad screenshots are needed and
-the iPad Station link is hidden. Do not upload an iPhone + iPad build as the
+`project.yml` targets iPhone + iPad for TestFlight. The App Store candidate
+uses `project-app-store.yml` through `APP_STORE_IPHONE_ONLY=1`: it excludes the
+iPad camera SDK/model, targets family 1 for app and widget, and hides Station
+and partner linking. No iPad screenshots are needed. Do not upload an iPhone + iPad build as the
 review candidate; a released iPad family cannot be removed later.
 
 Suggested sequence: Today with a scheduled workout; workout runner with set
@@ -85,9 +90,10 @@ that Apple's account-access requirement is satisfied.
 
 Manual path: sign in; continue setup while skipping optional groups and
 Intervals.icu; choose **Build my first workout**; create a workout and add an
-exercise; open Today and start that workout; log a set; finish; inspect History.
-Exercise targets can be edited from Workouts. Profile contains account export,
-account deletion, Group safety and privacy/support links.
+exercise; open Today and start that workout; log a set; finish; open Today → Calendar
+to inspect history.
+Exercise targets can be edited from Workouts. Profile → Account contains **Download account data** and **Delete account**.
+Profile also contains Group safety and privacy/support links.
 
 Feedback: near workout completion, choose **Talk about your workout**. Type a
 note or choose the microphone option, stop recording, edit the transcript and
@@ -95,7 +101,7 @@ choose **Save feedback**. Microphone/speech permission denial permits typing or
 skipping. Real transcription depends on supported on-device language/model
 availability; simulator synthetic speech is not a demo of actual recognition.
 
-Claude: Profile → Coach opens on a permission step that names the recipient
+AI coaching: Profile → Coach opens on a permission step that names the recipient
 (for example "Claude, operated by Anthropic"), lists the data shared and what the
 connection can change, and offers **Allow sharing** or **Not now**. No setup link,
 connection detail or connect code is shown before that choice (Guidelines
@@ -110,7 +116,7 @@ available summaries; it does not write to Health. Optional group sharing is
 off by default. Intervals.icu requires the reviewer's own authorized account or
 an explicitly approved nonpersonal review arrangement.
 
-Account deletion: Profile → Delete Account, confirm, and complete fresh Apple
+Account deletion: Profile → Account → Delete account, confirm, and complete fresh Apple
 authentication if requested. Verify with a designated review/test account;
 never delete the operator's account to demonstrate this path.
 
@@ -124,7 +130,10 @@ Reports are checked daily and actionable abuse addressed within 24 hours.
 
 ## Privacy and rating preparation
 
-The following is an evidence worksheet, not completed App Store answers.
+The following is a proposed answer worksheet, not an attestation or a claim
+that the App Store privacy label is current. Apple’s [App Privacy guidance](https://developer.apple.com/app-store/app-privacy-details/)
+distinguishes off-device collection from purely local processing; optional
+integrations still need disclosure unless all optional-disclosure criteria apply.
 No advertising/tracking SDK is present in the examined source. App functionality
 is the proposed purpose for account and training data; verify all provider log
 and diagnostic practices before finalizing the declaration.
@@ -133,27 +142,52 @@ and diagnostic practices before finalizing the declaration.
 |---|---|---|
 | Apple identity, optional name, relay/ordinary email | Sign in with Apple; account profile | User ID, name, email; linked to user; app functionality |
 | Exercises, sets, durations, training load | Shared training service and history | Fitness; linked to user; app functionality |
-| Imported heart-rate/health workout summaries | Optional HealthKit and Intervals imports | Health and fitness; linked to user; app functionality |
+| Imported heart-rate/health workout summaries and provider health metrics | Optional HealthKit workout uploads and full Intervals activity/event responses | Health and Fitness; linked to user; app functionality |
+| Intervals device/gear metadata | Full provider responses may contain power-meter serial/device identifiers, names, gear and route references; no personal payload inspected | Device ID and Other User Content as applicable; linked to user; app functionality; verify the provider data inventory before attestation |
+| Other retained Intervals metadata | Full responses also retain source/model identifiers, route references, weather summaries and processing timestamps | Other Data Types; linked to user; app functionality; no inferred location coordinates or downloaded attachment content |
+| Apple Health body-weight view | Separate Read weight control; samples stay in process memory and are not backend/coach/group/export data | Not collected by this local-only path; Health is still declared for uploaded workout/provider data |
 | Saved notes, fatigue, plan details, group names | Member/coach authoring, history and group feed | Other user content and relevant health/fitness data; linked to user |
-| Group safety | Member block IDs, sharing restrictions, category-only operator audit; optional support email | Linked identifiers and support/user content; app functionality |
-| Performance diagnostics | Candidate disables Worker log persistence and exports, preserving aggregate metrics | Verify deployed settings, independent provider analytics and historical exports before final classification |
+| Group relationships and safety | Persisted private-group memberships, member block IDs, sharing restrictions, category-only operator audit; optional support email | Contacts for the group social graph (no phone address-book access), linked identifiers and support/user content; app functionality |
+| Account action history | D1 audit records retain account-linked actor, tool/action, result and timestamps, including coach-disconnection actions | Product Interaction; linked to user; app functionality for security and reversible history, not analytics |
+| Performance diagnostics | Current Worker settings return logpush false, tail consumers null and observability null; account logging inventory reads returned 403 | Independent provider analytics and historical exports remain unverified; do not attest no diagnostics collection from source config alone |
 | Microphone recording | On-device transcription; discarded | Audio is not uploaded; saved transcript is user content |
 
-The required-reason manifest declares app-private UserDefaults use (`CA92.1`).
-It does not substitute for App Privacy answers or assert that the backend
-collects no data. Audit the final archive for every required-reason API and any
-third-party SDK manifest before upload.
+Proposed purposes are **App Functionality** for the collected account/training
+records, and **Product Personalization** for profile/training inputs used to
+tailor starter workouts and authorized coaching. Proposed tracking answer: **No**
+for the examined app. No advertising SDK or behavioral analytics was found;
+confirm independent provider behavior before attesting the complete label.
+Support correspondence belongs under Customer Support when collected. No raw
+audio, camera video or local Health weight is uploaded by the iPhone candidate.
+Intervals raw metadata is retained even though coach projections exclude it.
 
-Age questionnaire: health/wellness topics and user-generated group names/notes
-must be evaluated truthfully. There is no general chat, gambling, purchase,
-advertising or open-web browsing feature in the examined source. Do not select
-a final age rating or attest answers until the final candidate and its group controls are verified.
+The required-reason manifest declares app-private UserDefaults (`CA92.1`) and
+elapsed-event/timer SystemBootTime (`35F9.1`).
+Following [Apple TN3184](https://developer.apple.com/documentation/technotes/tn3184-adding-data-collection-details-to-your-privacy-manifest),
+it also declares the audited first-party name, email, user ID, Health, Fitness,
+Device ID, Other User Content, Customer Support, Contacts (group relationships),
+Other Data Types (remaining provider metadata), and Product Interaction
+(persisted account-action history) categories as linked and
+not used for tracking. All use App Functionality; Health, Fitness and Other User
+Content also use Product Personalization. These source-backed declarations do
+not substitute for the separately entered App Privacy answers or settle the
+unverified provider-logging inventory. Audit the final archive for every
+required-reason API and any third-party SDK manifest before upload.
+
+Age questionnaire: the October 7 readback already marks health/wellness,
+user-generated content and social features present; chat, ads, unrestricted web
+access and medical/treatment information are absent. It returns FOUR_PLUS.
+These match the inspected feature categories, but do not establish all content
+frequency answers or an operator attestation. There is no gambling or purchase
+feature in the examined source. Reconfirm the final questionnaire; do not infer
+a required rating override merely from the policy saying the app is not
+directed at children under 13.
 
 ## Group safety and protected storage
 
 The owner approved the [private-group safety policy](group-safety-proposal.md)
 and [aggregate-only diagnostics policy](diagnostics-policy-proposal.md) on
-2026-09-10. The candidate adds mutual blocking, email reports, conservative
+2026-09-10. The current implementation includes mutual blocking, email reports, conservative
 shared-text filtering and reversible operator sharing restrictions. Enforcement
 uses the same membership rule for rosters, REST/MCP feeds and statistics, before
 pagination. It preserves private originals. Filtering is limited; human reports
@@ -164,11 +198,12 @@ The operator uses Profile → Group safety with the member ID from an email and 
 bounded reason. Only the configured owner Apple identity has this control;
 ordinary group creators do not. Restriction and audit commit together. No new
 moderation service, admin website or report-content database is introduced.
-Verify support-mail delivery and operator access before release. Apply migration
-`0048` before the compatible Worker, and verify its settings before distributing
-the app. Rolling back to a Worker without enforcement would undo the controls.
+Verify support-mail delivery and operator access before release. The October 7 SELECT-only ledger read confirms migrations through 0056,
+including 0048; do not reapply that migration. The deployed Worker matches
+build-49 source. Support-mail delivery and physical moderator access remain
+unverified. Rolling back to a Worker without enforcement would undo the controls.
 
-The candidate migrates training snapshots, queued writes, runner recovery,
+The implemented storage path migrates training snapshots, queued writes, runner recovery,
 HealthKit anchors and Intervals metadata into app-owned files with complete
 file protection and backup exclusion. Ordinary settings and account identifiers
 remain in UserDefaults. Protected copies and deletion markers take precedence
@@ -191,6 +226,57 @@ all pending work. Backup exclusion also means unsynced device-only work is not
 recoverable from an iCloud device backup; server-acknowledged history can sync
 again after sign-in.
 
-Sources checked 2026-09-10: [Apple review guidelines](https://developer.apple.com/app-store/review/guidelines/),
+Sources refreshed 2026-10-07: [Apple review guidelines](https://developer.apple.com/app-store/review/guidelines/),
 [UserDefaults](https://developer.apple.com/documentation/Foundation/UserDefaults),
 [backup exclusions](https://developer.apple.com/documentation/foundation/optimizing-your-app-s-data-for-icloud-backup).
+
+
+## Prepared response to the privacy rejection
+
+Use only after the compatible iPhone-only build and both policy URLs are live.
+Replace `[BUILD]` with the verified selected candidate. This is a draft, not a
+message sent to App Review or a statement that publication has occurred.
+
+> Version 1.0 ([BUILD]) adds an explicit permission step before AI connection
+> setup. Profile → Coach names the selected app and provider, explains which
+> training and health information is shared and what the connection can change,
+> and offers Allow sharing or Not now. The subsequent authorization also
+> requires Allow or Deny. Manual workouts remain available without a coach.
+>
+> The updated privacy policy describes collection, uses, recipients, provider
+> protections, retention and withdrawal. Profile → Disconnect all AI apps stops
+> future access; the policy explains that already retrieved conversations are
+> managed with the external AI service. The App Store privacy-policy URL is
+> https://tresfort.app/privacy.
+>
+> Sign in with Apple creates a normal account without an invitation or payment.
+> Reviewers can skip optional connections, create a workout, log and finish a
+> session, and use Profile → Account to export or delete the account. Version
+> 1.0 supports iPhone; iPad Station and partner-device linking are not offered
+> in this candidate.
+
+The operator must approve the existing equal-protection commitment against the
+chosen providers before using this response. No consent-version enforcement or
+revocation of existing grants is introduced by this preparation. The existing
+policy explicitly says established connections retain access until disconnected.
+
+## Metadata update packet
+
+During the separately authorized App Store update:
+
+- Replace the Claude-only description with the text above. Suggested
+  promotional text: “Build workouts, track every set, and review your progress.
+  Optional Apple Health, Intervals.icu and AI coach connections bring your
+  training together.”
+- Use the five final iPhone-only captures; confirm their display class and
+  dimensions in App Store Connect. Never upload the initial beta-mode capture
+  showing Train together.
+- Replace the obsolete short reviewer notes with the tested manual/consent
+  instructions above; clear the leftover retired demo username and password
+  while keeping Sign in with Apple instructions. Contact fields were present
+  on October 7; verify them without copying private values into this repository.
+- Retain free US availability and MANUAL release after verifying live state.
+  Confirm applicable agreements and the complete App Privacy questionnaire.
+- Select the new compatible candidate, then send the approved rejection reply
+  and resubmit only with App Review authority. Internal beta approval does not
+  supply that authority.

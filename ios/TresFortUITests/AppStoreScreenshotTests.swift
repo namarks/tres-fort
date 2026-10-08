@@ -125,6 +125,12 @@ final class AppStoreScreenshotTests: XCTestCase {
         XCTAssertFalse(app.textViews["feedback.note"].exists)
         capture("05-finish-summary")
         tap(app.buttons["feedback.expand"], in: app)
+        // iPad presents a shorter form sheet. Its note editor is lazy and
+        // appears only after scrolling the foreground Form, not the runner.
+        XCTAssertEqual(app.collectionViews.count, 1)
+        let form = app.collectionViews.firstMatch
+        UITestScrolling.reveal(app.textViews["feedback.note"], in: app,
+                               maxAttempts: 6, surface: form)
         XCTAssertTrue(app.textViews["feedback.note"].waitForExistence(timeout: 5))
         tap(app.textViews["feedback.note"], in: app)
         app.textViews["feedback.note"].typeText("Steady reps today. Keep this weight next time.")
@@ -136,7 +142,6 @@ final class AppStoreScreenshotTests: XCTestCase {
         // scrolling the runner underneath the sheet or the note's TextEditor.
         let privacy = app.staticTexts["Optional. Saved feedback is shared with your coach and kept out of group feeds."]
         let toolbar = app.navigationBars["Finish workout"]
-        let form = app.collectionViews.containing(.textView, identifier: "feedback.note").firstMatch
         let save = app.buttons["feedback.saveAndFinish"]
         XCTAssertTrue(privacy.waitForExistence(timeout: 5))
         XCTAssertTrue(form.exists)

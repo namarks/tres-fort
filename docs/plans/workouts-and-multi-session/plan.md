@@ -1,6 +1,6 @@
 # Workouts and Multi-Session Days
 
-Slug: workouts-and-multi-session · Status: active · Updated: 2026-10-03 · Theme: gym-floor
+Slug: workouts-and-multi-session · Status: active · Updated: 2026-10-07 · Theme: gym-floor
 
 ## Goal
 
@@ -181,8 +181,8 @@ merge, recovery and outbox isolation, under the canonical client contract. P0(c)
 is implemented with 1,161 backend tests passing and 636 iOS unit tests passing
 (one existing skip). The authorized production migrations and canonical Worker
 release and P0(b) internal TestFlight distribution are complete. The current
-[build 47 receipt](../app-store-submission/release-47.md) records internal Testers
-availability and compatible production source `e3251de`. Authenticated workout
+[build 49 receipt](../app-store-submission/release-49.md) records internal Testers
+availability and compatible production source `cd3cf40`. Authenticated workout
 checks deferred with build 44 remain unperformed; App Review/public-release
 gates remain separate.
 

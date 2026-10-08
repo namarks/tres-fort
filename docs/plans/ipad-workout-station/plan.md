@@ -1,6 +1,6 @@
 # iPad Workout Station
 
-Slug: ipad-workout-station · Status: active · Updated: 2026-10-05 · Theme: gym-floor
+Slug: ipad-workout-station · Status: active · Updated: 2026-10-07 · Theme: gym-floor
 
 ## Goal
 
@@ -113,39 +113,40 @@ may turn detections into durable workout actions.
     counts and required corrections; validate them before enabling auto-log.
   - Preserve manual recovery, device takeover and offline/reconnect integrity.
 
+## Execution frontier
+
+- P1
+- P2
+
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P1 | gated_by | external:owner-ipad-station-device-build | Corrective internal build 46 is verified available to Testers; the owner must evaluate framing and counting on the actual iPad. |
+| P1 | gated_by | external:owner-ipad-station-device-build | Internal build 49 is verified available to Testers; the owner must evaluate framing and counting on the actual iPad. |
 | P2 | gated_by | external:owner-ipad-station-linked-device-trial | The owner requested iPhone-controlled assisted logging on 2026-10-04; the paired iPhone/iPad trial must show the link, instant logging with Undo and manual fallback work before P2 is complete. |
 | P3 | gated_by | external:owner-ipad-station-automation-criteria | Automation needs explicit measured quality criteria and activation authority. |
 
 ## Next step
 
-**Now (@agent):** Complete exact-head review and repository checks for
-[PR #235](https://github.com/namarks/tres-fort/pull/235), including the review
-corrections that make Station use today's resolved workout and hold duration
-unless an active runner overrides it, and restart hold acquisition when the
-person is still moving through accepted geometry. The owner explicitly approved publication
-to `namarks/tres-fort` on 2026-10-04; Nick owns merge. The implementation is on
-`codex/catalog-camera-profiles`. This branch incorporates the merged Today
-calendar work (PR #233), curl-confidence/replay-coverage fix (PR #234),
-linked assisted logging (PR #232) and the replay-only generic 3D counter
-(PR #236) through `fd2dd89` on `origin/main`. With the
-link on, an armed iPhone set switches the iPad from a hold or catalog selection
+**Now (@owner):** Install the matching build-49 client, available in internal
+TestFlight, on the iPhone and iPad, then evaluate P1's mounted-iPad counting and
+P2's linked-device logging, Undo and fallback. These owner-participated trials
+are the current execution frontier; their existing acceptance gates remain open. The
+October 7 owner-authorized [release](../app-store-submission/release-49.md)
+deploys source `cd3cf40`, including the Station link-key route, and uploads the
+matching iPhone/iPad client. The catalog camera profiles, curl fix and linked
+assisted logging are merged; physical installation and trial results are not
+established by their TestFlight upload. With the link on, an armed iPhone set
+switches the iPad from a hold or catalog selection
 to that set's rep counter; choosing any exercise by hand on the iPad abandons
 the armed set, which stays manual on the iPhone.
 The audit covers all 280 exercises: 193 rep candidates, 15 hold candidates and
 72 manual fallbacks. Fifteen entries explicitly select a current experimental
 mode; profile membership alone never enables a counter. Real accuracy remains
-unvalidated, and no physical build installation is part of this slice.
-Merged source `e15d53b` remains installed; neither the curl fix, the linked
-build nor the catalog slice is installed. The old test-readiness follow-up
-`472221a` is separate. PR #228 merged before its full iOS gate passed.
-**Next physical trial (@owner):** Deploy the Worker with the link-key route
-(both devices must fetch the key online once), then, with a build containing
-the curl fix and the link on both the iPhone and the iPad, turn on "Count reps
+unvalidated. The retained device receipts below describe earlier installations;
+this release does not claim the owner has installed build 49.
+**Next physical trial (@owner):** With build 49 installed on both devices,
+fetch the link key online once from the deployed Worker. Turn on "Count reps
 with iPad Station" in the iPhone runner menu and "Count sets for my iPhone
 workout" on the iPad, then run a few squat sets. Note each counted versus
 actual rep total, any set that logged wrongly, and whether Undo was quick

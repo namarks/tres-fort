@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: gated · Updated: 2026-10-06 · Theme: gym-floor
+Slug: workout-library · Status: gated · Updated: 2026-10-07 · Theme: gym-floor
 
 ## Goal
 
@@ -323,9 +323,10 @@ No second editor, no per-session template copies, no weeks table.
       system text size. Native screenshots were inspected; the pinned primary
       action and information buttons remain reachable. These are simulator
       results, not physical-device or manual VoiceOver acceptance.
-    - The `codex/workout-preview-visuals` pull request carries exact-head review
-      and CI evidence. These thumbnails are not part of the retained build-47
-      distribution receipt; client distribution remains separate.
+    - The [preview PR #244](https://github.com/namarks/tres-fort/pull/244) merged after
+      exact-head review and CI. The owner authorized the matching backend and
+      internal TestFlight release on October 7; [build 49's receipt](../app-store-submission/release-49.md)
+      records its upload and Apple availability separately.
 
 - [x] **P0.6 — Focus the gym workflow**
   - The October 3 design audit and owner approval activate this implementation.
@@ -522,26 +523,28 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 
 ## Next step
 
-**Now (@owner):** All planned repository slices are implemented. Merge the
-preview-thumbnails pull request after its exact-head review and required CI
-pass. P0.2(b)'s authenticated live-verification gate remains open and prevents
-closing this plan. A client distribution containing the new thumbnails needs
-separate release authorization; the retained build-47 receipt predates them.
+**Now (@owner):** Complete P0.2(b)'s authenticated live verification on the
+matching build-49 client and Worker. All planned repository slices are
+implemented and the preview-thumbnails PR is merged. The live-verification
+gate remains open and prevents closing this plan.
 The [visual comparison](visuals.md) records replacement recommendations only,
 following the owner's choice to finish previews with the existing images.
 
-**Retained release evidence:** P0.6's [TestFlight 1.0 (47) receipt](../app-store-submission/release-47.md)
-records reviewed source `e3251de`, internal Testers availability and the
-separately approved matching Worker deployment. This October 6 repository slice
-does not claim a fresh production or App Store readback.
+**Release evidence:** The owner authorized the latest backend and internal
+TestFlight on October 7. [Build 49's receipt](../app-store-submission/release-49.md)
+records source `cd3cf40`, production deployment at 100% traffic, and TestFlight
+1.0 (49) VALID / IN_BETA_TESTING in internal Testers for iPhone and iPad.
+[Build 47](../app-store-submission/release-47.md) retains the
+earlier Focus runner release evidence.
 
-**Deferred owner verification:** Use build 47 to test authenticated workout paths
+**Deferred owner verification:** Use TestFlight build 49 to test authenticated workout paths
 on a device, including slot edits/reordering, metadata, freestyle recovery/save
 and session swaps, plus the focused runner at ordinary and accessibility sizes.
 P1/P2 backend and internal client delivery were completed under the explicit
 build-44 verification exception; those live checks remain unperformed, not passed.
 P0.2(b) live verification and physical/VoiceOver acceptance remain open. Preview
-thumbnails P0.5(c) have simulator verification but are not yet distributed. Ordered multi-session work proceeds
+thumbnails P0.5(c) have simulator verification; the new internal beta does not
+establish those physical-device checks. Ordered multi-session work proceeds
 in the workouts-and-multi-session plan; wider onboarding and RPE semantics remain separate.
 
 **P1 repository evidence (September 19):** Migration 0053, atomic REST/MCP
@@ -562,7 +565,7 @@ records production and internal-client delivery evidence, with the approved
 live-verification deferral stated above. A pre-metadata Worker is unsafe to restore after
 metadata writes because its rebuild/snapshots omit the fields.
 
-**Latest retained client distribution:** [TestFlight 1.0 (47)](../app-store-submission/release-47.md)
+**Earlier Focus client distribution:** [TestFlight 1.0 (47)](../app-store-submission/release-47.md)
 includes the Focus workflow and the earlier library/canonical-workout changes.
 Apple confirmed VALID / IN_BETA_TESTING and internal Testers assignment on
 October 3. The receipt records App Review build 40 as REJECTED, with MANUAL

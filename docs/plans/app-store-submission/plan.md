@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-10-05 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-10-07 · Theme: release
 
 ## Goal
 
@@ -92,7 +92,7 @@ keep iPhone + iPad for Station Mode; iPad can be added in a later version.
 the 5.1.1/5.1.2 rejection recorded below, then publish the policy, confirm
 agreements and App Privacy answers, and upload the iPhone-only candidate.
 **Agent, in parallel:** finish P1/P2 review-package preparation against the reviewed
-[build-47 source](release-47.md) and retain the owner's device-verification follow-up. The
+[build-49 source](release-49.md) and retain the owner's device-verification follow-up. The
 owner-approved switch to MANUAL is complete. The selected build 40 is incompatible
 with the current canonical backend: its default `.legacy` client writes to
 `/api/days` and sends `day_template_id`; the serving Worker rejects that route
@@ -188,18 +188,26 @@ VALID / IN_BETA_TESTING readback with internal Testers assignment. No Worker
 deployment or migration was made; the iPhone/iPad link needs a separately
 authorized Worker deployment for its link-key route.
 
-**Current Apple readback (2026-10-05):** Version 1.0 selects build 40,
-**REJECTED**, with **MANUAL** release. Build 48 is VALID / IN_BETA_TESTING and
-assigned to internal Testers; external groups were not changed. The App
-Review candidate was not replaced or resubmitted; no public release occurred.
+**Build 49 release (2026-10-07):** The owner requested the latest deployment and
+confirmed backend plus TestFlight. [The release receipt](release-49.md) records
+source `cd3cf4057320daa474292b86f3ddbbca401d5099`, additive migration 0056, the
+matching Worker at 100% traffic, and TestFlight 1.0 (49) VALID / IN_BETA_TESTING
+for internal Testers on iPhone and iPad. It adds
+manual partner training and workout-preview thumbnails. Physical acceptance
+and authenticated workout checks remain open.
+
+**Current Apple readback (2026-10-07):** Version 1.0 still selects build 40,
+**REJECTED**, with **MANUAL** release. Build 49 is VALID / IN_BETA_TESTING in
+internal Testers, with no external group assignment. The App Review
+candidate was not replaced or resubmitted; no public release occurred.
 
 **Agent follow-through:** Finish the runnable P1/P2 audit against canonical source
-`e3251de9bf8ff6f2e447068b69fe4154c0b468a8`: reconcile privacy/account and group
+`cd3cf4057320daa474292b86f3ddbbca401d5099`: reconcile privacy/account and group
 controls, public policy/support availability, listing and reviewer instructions,
 and the documented verification exceptions. Record evidence and identify any
 owner-only App Store fields before completing those phases. The App Review
 candidate remains pinned, but the serving backend is now canonical source
-`e3251de9bf8ff6f2e447068b69fe4154c0b468a8`, recorded in [release 47](release-47.md).
+`cd3cf4057320daa474292b86f3ddbbca401d5099`, recorded in [release 49](release-49.md).
 The reviewed build-40 source defaults to the retired REST contract, so its
 workout mutations are known to be incompatible, not merely unverified. Keep
 public release blocked until a compatible candidate replaces it and required

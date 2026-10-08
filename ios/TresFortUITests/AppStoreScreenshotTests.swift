@@ -20,10 +20,11 @@ final class AppStoreScreenshotTests: XCTestCase {
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
                                "-restAudioCuesEnabled", "NO"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["Today"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["fixture.scenario"].exists)
         if UIDevice.current.userInterfaceIdiom == .phone {
+            XCTAssertTrue(app.tabBars.buttons["Today"].exists)
             XCTAssertTrue(app.buttons["today.partner"].exists,
                           "The public candidate includes manual partner training")
         } else {

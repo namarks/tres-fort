@@ -45,7 +45,7 @@ CONNECT YOUR TRAINING
 Optionally import workouts from Apple Health or connect Intervals.icu to keep
 your other activities in view. An authorized AI coaching connection can use your training history to help
 adapt your plan. Separately, view your latest Apple Health weight and trends
-privately on your iPhone.
+privately on your device.
 
 TRAIN TOGETHER
 Use an iPad as a shared workout display while two members log sets on their own

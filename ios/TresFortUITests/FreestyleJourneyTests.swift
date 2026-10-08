@@ -5,9 +5,9 @@ final class FreestyleJourneyTests: XCTestCase {
     override func tearDownWithError() throws {
         if (testRun?.failureCount ?? 0) > 0 { print(XCUIApplication().debugDescription) }
     }
-    private func reveal(_ element: XCUIElement, app: XCUIApplication) {
-        for _ in 0..<8 { if element.isHittable { return }; app.swipeUp() }
-        XCTAssertTrue(element.isHittable)
+    private func reveal(_ element: XCUIElement, app: XCUIApplication,
+                        file: StaticString = #filePath, line: UInt = #line) {
+        UITestScrolling.reveal(element, in: app, maxAttempts: 8, file: file, line: line)
     }
     private func journey(large: Bool, timed: Bool = false) {
         let app = XCUIApplication()
@@ -62,8 +62,13 @@ final class FreestyleJourneyTests: XCTestCase {
         XCTAssertTrue(history.waitForExistence(timeout: 10)); reveal(history, app: app); history.tap()
         let saveAs = app.buttons["freestyle.saveAsWorkout"]
         XCTAssertTrue(saveAs.waitForExistence(timeout: 5)); reveal(saveAs, app: app); saveAs.tap()
+        XCTAssertTrue(app.navigationBars["Save as workout"].waitForExistence(timeout: 5))
+        // The front Form is a CollectionView whose Save row is lazy. Bind its
+        // unique surface before scrolling; the underlying summary stays mounted.
+        let saveForm = app.collectionViews.element
+        XCTAssertTrue(saveForm.waitForExistence(timeout: 5))
         let save = app.buttons["freestyle.save"]
-        reveal(save, app: app)
+        UITestScrolling.reveal(save, in: app, maxAttempts: 8, surface: saveForm)
         let shot = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         shot.name = large ? "freestyle-review-large" : "freestyle-review"; shot.lifetime = .keepAlways; add(shot)
         save.tap()

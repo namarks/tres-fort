@@ -122,18 +122,19 @@ Both app and widget report `UIDeviceFamily=[1]`; the app embeds UserDefaults
 The embedded manifest matches source byte-for-byte. Inspection found no MediaPipe/model/notices
 assets, SDK linker inputs, or linked MediaPipe/Abseil/Protobuf/MPP symbols.
 The app binary SHA-256 is
-`93bd6a5ab5503d1ac71deab8371fbb24a2ce6dd7b3326cb8e28be97695d4d3b0`.
+`6ae93937639f9d060ab3fa53ec5d740b4f8fabd5fd0be4e0b0c5ad52f5a7af4e`.
 Local unsigned build number 29 is packaging evidence, not a reserved upload
 number. Its application, resource and project inputs match this branch,
-including the beta-checkpoint recovery fix. A later test-only correction makes
-the runner journey scroll helper move toward offscreen controls without
-overshooting them; it does not change the archived application or screenshots.
+including the beta-checkpoint recovery fix and source containing simulator-only
+diagnostics. The Release binary contains no diagnostic marker strings. Later
+test-only corrections share bounded scrolling, select the correct library
+row and scope outline navigation to its sheet; they do not change the archived application.
 Detailed inspection, source manifest, linker
 commands and binary reports are retained under
-`.artifacts/app-store-readiness/collection-manifest-unsigned-device/`. The final screenshot
+`.artifacts/app-store-readiness/diagnostic-source-unsigned-device/`. The final screenshot
 and recovery run passed all three UI tests with no failures. All five exported
 images were visually checked; their hashes, source manifest and test log are
-retained in `.artifacts/app-store-readiness-2026-10-07/complete-manifest-screenshots/`.
+retained in `.artifacts/app-store-readiness-2026-10-07/final-screenshots/`.
 
 Upload-script tests (12), offline project-generation tests (3), dependency tests
 (7), verifier tests (14), screenshot-asset tests (7), website tests (3) and
@@ -148,6 +149,31 @@ scroll helper. Two largest-text failures were reproduced locally: full upward
 swipes moved Start workout above the viewport, and further upward swipes could
 not recover it. The helper now uses bounded drags toward the control on its
 containing scroll surface; the original hittability assertions remain intact.
+The same confirmed overscroll in the freestyle largest-text journey now uses
+that shared helper with its existing attempt limit. The lazy Save row is revealed
+on the front form’s explicitly selected collection view. Two group-authoring failures
+selected a matching Today card behind the Workouts sheet; selecting the existing
+library-row identifier removes that ambiguity without changing product behavior.
+Both group-authoring journeys and all 12 runner journeys passed together; all
+three freestyle variants passed after the lazy-form correction. The two failing
+exercise-discovery journeys likewise measured a visible outline-sheet control
+against the covered runner’s scroll view. That helper now selects the target’s
+containing surface and the foreground toolbar while preserving picker-specific
+pinned-action bounds. All four exercise-discovery journeys then passed on the
+final helper revision.
+
+A later CI run on `a94f7ae` reported a different failure: the outline journey
+remained on Today after its single Start tap. The button was visible and enabled,
+and simulator logs confirmed UIKit received the correctly placed touch events.
+The same journey passed locally in both class and full-shard contexts. Source
+and event-log review did not establish the cause, so no retry, timeout extension
+or speculative production fix was added. Opt-in DEBUG-simulator diagnostics now
+record fixed stage names from fixture initialization through the button action,
+Start guards, checkpoint result and runner appearance. They contain no training
+or account values and are excluded from device/Release builds. Their purpose is
+to identify the missing boundary if this failure recurs; adding them does not
+establish that the earlier failure is fixed. Final exact-head results remain in
+the pull request.
 
 ## Remaining release decisions and evidence
 

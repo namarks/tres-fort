@@ -101,6 +101,10 @@ readiness slice: exclude the iPad camera SDK from the public iPhone project,
 declare collected data and elapsed-time API use, correct body-weight/provider-data disclosures,
 and prepare matching screenshots and the review package. Keep the P1/P2 phases
 open for the remaining operator/provider and candidate evidence below.
+One CI outline journey on `a94f7ae` remained on Today after Start despite correct
+touch delivery; it has not reproduced locally. The readiness evidence records
+that unresolved cause and the opt-in synthetic stage trace added for a recurrence.
+Require current-head CI; local passes do not clear the earlier red run.
 
 **Then (@owner):** Review the prepared [policy, privacy worksheet and rejection
 reply](review-package.md), confirm provider protections, App Privacy, agreements

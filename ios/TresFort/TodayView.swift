@@ -602,9 +602,21 @@ struct TodayView: View {
                                 }
                             }
                             Button(isPreparingWorkoutStart ? "Preparing…" : sync.hasResumableWorkout ? "Continue workout" : "Start workout") {
+                                #if DEBUG && targetEnvironment(simulator)
+                                UIFixtureStartTrace.record(.todayStartAction)
+                                #endif
                                 prepareNewWorkout {
-                                    if sync.hasResumableWorkout { sync.resumeWorkout() }
-                                    else { sync.startToday() }
+                                    if sync.hasResumableWorkout {
+                                        #if DEBUG && targetEnvironment(simulator)
+                                        UIFixtureStartTrace.record(.todayResumeSelected)
+                                        #endif
+                                        sync.resumeWorkout()
+                                    } else {
+                                        #if DEBUG && targetEnvironment(simulator)
+                                        UIFixtureStartTrace.record(.todayStartSelected)
+                                        #endif
+                                        sync.startToday()
+                                    }
                                 }
                             }
                             .buttonStyle(WorkoutPrimaryButtonStyle())
@@ -671,16 +683,39 @@ struct TodayView: View {
     /// Ask at the user's explicit start action, before the runner begins. Rest
     /// scheduling itself must never surprise-interrupt the first logged set.
     private func prepareNewWorkout(_ start: @escaping @MainActor () -> Void) {
-        guard !isPreparingWorkoutStart else { return }
+        #if DEBUG && targetEnvironment(simulator)
+        UIFixtureStartTrace.record(.prepareEntered)
+        #endif
+        guard !isPreparingWorkoutStart else {
+            #if DEBUG && targetEnvironment(simulator)
+            UIFixtureStartTrace.record(.prepareAlreadyActive)
+            #endif
+            return
+        }
         isPreparingWorkoutStart = true
         Task { @MainActor in
+            #if DEBUG && targetEnvironment(simulator)
+            UIFixtureStartTrace.record(.prepareTaskEntered)
+            #endif
             await RestCue.requestNotificationPermissionIfNeeded()
+            #if DEBUG && targetEnvironment(simulator)
+            UIFixtureStartTrace.record(.permissionReturned)
+            #endif
             guard !Task.isCancelled else {
+                #if DEBUG && targetEnvironment(simulator)
+                UIFixtureStartTrace.record(.prepareTaskCancelled)
+                #endif
                 isPreparingWorkoutStart = false
                 return
             }
+            #if DEBUG && targetEnvironment(simulator)
+            UIFixtureStartTrace.record(.prepareInvokingStart)
+            #endif
             start()
             isPreparingWorkoutStart = false
+            #if DEBUG && targetEnvironment(simulator)
+            UIFixtureStartTrace.record(.prepareReturned)
+            #endif
         }
     }
 }
@@ -927,6 +962,9 @@ private struct RunnerView: View {
                 if !dynamicTypeSize.isAccessibilitySize { runnerActions(ex) }
             }
             .sheet(isPresented: $showingOutline) { workoutOutline(blocks: blocks) }
+            #if DEBUG && targetEnvironment(simulator)
+            .onAppear { UIFixtureStartTrace.record(.runnerAppeared) }
+            #endif
             .onChange(of: sync.timedActive) { wasActive, isActive in
                 if wasActive && !isActive { showingOutline = false }
             }

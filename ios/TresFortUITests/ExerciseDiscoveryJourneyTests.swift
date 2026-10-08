@@ -18,13 +18,26 @@ final class ExerciseDiscoveryJourneyTests: XCTestCase {
         _ = element.waitForExistence(timeout: 2)
         for _ in 0..<20 {
             let results = app.collectionViews["exercisePicker.results"]
-            let surface = results.exists ? results : (app.scrollViews.firstMatch.exists ? app.scrollViews.firstMatch : app)
+            let surface: XCUIElement
+            if results.exists {
+                surface = results
+            } else if element.exists {
+                let identifier = element.identifier.isEmpty ? element.label : element.identifier
+                let containingScroll = app.scrollViews.containing(element.elementType, identifier: identifier).firstMatch
+                surface = containingScroll.exists ? containingScroll : app
+            } else {
+                surface = app
+            }
             // A List's accessibility frame includes its bottom safe-area inset.
             // Keep drag gestures above the pinned confirmation/selection.
             let selection = app.staticTexts["runner.swap-selection"]
             let confirm = app.buttons["runner.confirm-swap"]
             let bottom = selection.exists ? selection.frame.minY : (confirm.exists ? confirm.frame.minY : surface.frame.maxY)
-            let top = max(surface.frame.minY, app.navigationBars.firstMatch.frame.maxY) + 8
+            // A presented outline keeps the runner in the accessibility tree.
+            // Use the target's surface and foreground bar, not that covered UI.
+            let navigationBottom = app.navigationBars.allElementsBoundByIndex
+                .filter { $0.isHittable }.map { $0.frame.maxY }.max() ?? surface.frame.minY
+            let top = max(surface.frame.minY, navigationBottom) + 8
             let visibleBottom = min(surface.frame.maxY, bottom) - 12
             let height = visibleBottom - top
             if element.exists && element.isHittable,

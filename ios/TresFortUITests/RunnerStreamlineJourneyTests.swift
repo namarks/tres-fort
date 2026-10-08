@@ -12,6 +12,7 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
                         tickingClock: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = fixture
+        app.launchEnvironment["TRESFORT_UI_TRACE_START"] = "1"
         app.launchEnvironment["TRESFORT_UI_ACCEPT_CORRECTIONS"] = "1"
         app.launchEnvironment["TRESFORT_UI_GROUP_CONTRACT"] = groupContract
         if tickingClock { app.launchEnvironment["TRESFORT_UI_TICKING_CLOCK"] = "1" }
@@ -24,41 +25,17 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
             let start = app.buttons["today.startWorkout"]
             XCTAssertTrue(start.waitForExistence(timeout: 10))
             guard startWorkout else { return app }
-            reveal(start, in: app); start.tap()
+            reveal(start, in: app)
+            XCTAssertTrue(start.isEnabled)
+            start.tap()
         }
         XCTAssertTrue(app.staticTexts["runner.exerciseTitle"].waitForExistence(timeout: 10))
         return app
     }
 
-    private func reveal(_ element: XCUIElement, in app: XCUIApplication) {
-        XCTAssertTrue(element.waitForExistence(timeout: 5))
-        for _ in 0..<10 {
-            if element.isHittable && element.frame.maxY <= app.frame.maxY - 34 { break }
-            // The target can be above the viewport after a previous gesture.
-            // Select its own surface so a sheet never scrolls underlying Today;
-            // fixed controls already reachable above return without a gesture.
-            let identifier = element.identifier.isEmpty ? element.label : element.identifier
-            let scroll = app.scrollViews.containing(element.elementType, identifier: identifier).firstMatch
-            guard scroll.exists else { break }
-            let viewport = scroll.frame.intersection(app.frame)
-            let top = viewport.minY + 8
-            let bottom = min(viewport.maxY, app.frame.maxY - 34) - 8
-            let height = bottom - top
-            guard !viewport.isNull, height > 48 else { break }
-            let offset = element.frame.midY - (top + bottom) / 2
-            let down = offset < 0
-            // Partial, slow drags avoid the momentum of swipeUp overshooting a
-            // short control in the smaller accessibility-size viewport.
-            let distance = min(height * 0.45, max(24, abs(offset)))
-            let startY = top + height * (down ? 0.25 : 0.75)
-            let origin = app.coordinate(withNormalizedOffset: .zero)
-            let start = origin.withOffset(CGVector(dx: viewport.midX, dy: startY))
-            let end = origin.withOffset(CGVector(dx: viewport.midX, dy: startY + (down ? distance : -distance)))
-            start.press(forDuration: 0.1, thenDragTo: end,
-                        withVelocity: .slow, thenHoldForDuration: 0.5)
-        }
-        XCTAssertTrue(element.isHittable)
-        XCTAssertLessThanOrEqual(element.frame.maxY, app.frame.maxY - 34)
+    private func reveal(_ element: XCUIElement, in app: XCUIApplication,
+                        file: StaticString = #filePath, line: UInt = #line) {
+        UITestScrolling.reveal(element, in: app, maxAttempts: 10, file: file, line: line)
     }
 
     private func capture(_ name: String) {
@@ -74,7 +51,9 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(change.frame.minY, view.frame.maxY)
         capture("today-accessibility-actions-stacked")
         let start = app.buttons["today.startWorkout"]
-        reveal(start, in: app); start.tap()
+        reveal(start, in: app)
+        XCTAssertTrue(start.isEnabled)
+        start.tap()
         let title = app.staticTexts["runner.exerciseTitle"]
         XCTAssertTrue(title.waitForExistence(timeout: 5))
         let demo = app.buttons["Exercise information for Barbell Squat"]

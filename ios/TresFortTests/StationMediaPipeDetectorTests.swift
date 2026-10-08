@@ -4,6 +4,17 @@ import XCTest
 @testable import TresFort
 
 final class StationMediaPipeDetectorTests: XCTestCase {
+    #if APP_STORE_IPHONE_ONLY
+    func testAppStoreBuildHasNoModelAndExplicitlyRejectsStationInference() {
+        XCTAssertNil(Bundle.main.url(forResource: "pose_landmarker_full", withExtension: "task"))
+        XCTAssertFalse(StationLink.isAvailable)
+        XCTAssertThrowsError(try StationMediaPipeDetector()) { error in
+            guard case StationMediaPipeDetector.DetectionError.unavailableInThisBuild = error else {
+                return XCTFail("Expected the explicit unavailable-build error, got \(error)")
+            }
+        }
+    }
+    #else
     func testBundledFullModelExecutesAndRejectsTimestampReuse() throws {
         let detector = try StationMediaPipeDetector()
         let frame = try buffer(width: 192, height: 256, blue: Array(repeating: 0, count: 192 * 256))
@@ -76,4 +87,5 @@ final class StationMediaPipeDetectorTests: XCTestCase {
             (0..<CVPixelBufferGetWidth(buffer)).map { x in address[y * stride + x * 4] }
         }
     }
+    #endif
 }

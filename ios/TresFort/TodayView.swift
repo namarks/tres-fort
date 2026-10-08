@@ -255,7 +255,9 @@ struct TodayView: View {
                             .frame(minHeight: 44)
                             .accessibilityIdentifier("today.openSavedStarter")
                     }
-                    if UIDevice.current.userInterfaceIdiom == .phone {
+                    // A public build cannot start partner training, but an
+                    // upgraded beta must retain access to close its saved lane.
+                    if (StationLink.isAvailable || partner.isOpen) && UIDevice.current.userInterfaceIdiom == .phone {
                         Button(partner.isOpen ? "Partner workout setup" : "Train together") { showPartner = true }
                             .frame(minHeight: 44).accessibilityIdentifier("today.partner")
                     }

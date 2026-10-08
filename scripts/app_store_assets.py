@@ -28,8 +28,8 @@ def validate_png(data):
         require(kind != b'tRNS', 'Transparency is not allowed')
         if not types:
             require(kind == b'IHDR' and length == 13, 'Missing PNG header')
-            require(struct.unpack('>IIBBBBB', payload) == (1320, 2868, 8, 2, 0, 0, 0),
-                    'Expected opaque 1320 x 2868 RGB screenshot')
+            require(struct.unpack('>IIBBBBB', payload) == (1206, 2622, 8, 2, 0, 0, 0),
+                    'Expected opaque 1206 x 2622 RGB screenshot')
         else:
             require(kind != b'IHDR', 'Duplicate PNG header')
         if kind == b'IDAT':
@@ -51,8 +51,8 @@ def validate_png(data):
     require(ended and offset == len(data) and image_data, 'Incomplete PNG structure')
     # Decode the bounded scanline stream too: a recomputed CRC cannot make
     # broken compression or an invalid row filter into a valid screenshot.
-    row_size = 1 + 1320 * 3
-    expected_size = row_size * 2868
+    row_size = 1 + 1206 * 3
+    expected_size = row_size * 2622
     decoder = zlib.decompressobj()
     pixels = decoder.decompress(b''.join(image_data), expected_size + 1)
     require(decoder.eof and not decoder.unused_data and not decoder.unconsumed_tail,

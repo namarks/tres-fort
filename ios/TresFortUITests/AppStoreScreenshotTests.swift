@@ -15,6 +15,10 @@ final class AppStoreScreenshotTests: XCTestCase {
         XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["fixture.scenario"].exists)
+        #if APP_STORE_IPHONE_ONLY
+        XCTAssertFalse(app.buttons["today.partner"].exists,
+                       "The public iPhone candidate must not offer iPad partner setup")
+        #endif
         return app
     }
 
@@ -40,6 +44,32 @@ final class AppStoreScreenshotTests: XCTestCase {
         for _ in 0..<5 where !element.isHittable { app.swipeUp() }
         XCTAssertTrue(element.isHittable)
         element.tap()
+    }
+
+    func testSavedBetaPartnerSetupCanBeCancelledInIPhoneOnlyBuild() {
+        let app = XCUIApplication()
+        app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "app-store"
+        app.launchEnvironment["TRESFORT_UI_PARTNER_READY"] = "1"
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+        let recovery = app.buttons["today.partner"]
+        XCTAssertTrue(recovery.waitForExistence(timeout: 10))
+        XCTAssertEqual(recovery.label, "Partner workout setup")
+        let start = app.buttons["today.startWorkout"]
+        XCTAssertTrue(start.waitForExistence(timeout: 10))
+        XCTAssertFalse(start.isEnabled, "A saved ready lane reserves ordinary Today until closed")
+        recovery.tap()
+        let cancel = app.buttons["Cancel empty start"]
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5))
+        cancel.tap()
+        let released = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == true AND enabled == true"), object: start)
+        XCTAssertEqual(XCTWaiter.wait(for: [released], timeout: 5), .completed)
+        #if APP_STORE_IPHONE_ONLY
+        XCTAssertFalse(recovery.exists, "Closing the saved beta lane must not expose new partner setup")
+        #else
+        XCTAssertEqual(recovery.label, "Train together")
+        #endif
     }
 
     func testCaptureTodayWorkoutsAndHistory() {

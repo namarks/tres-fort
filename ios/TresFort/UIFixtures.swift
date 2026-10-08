@@ -77,6 +77,25 @@ enum UIFixtureModel {
             }
             auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
         }
+        if UIFixtureScenario.selected == .appStore,
+           ProcessInfo.processInfo.environment["TRESFORT_UI_PARTNER_READY"] == "1" {
+            // Simulate an App Store upgrade with a beta's unfinished setup.
+            // No start request or lane key exists: cancellation stays local.
+            var workout = (AppStoreScreenshotData.plan["days"] as! [[String: Any]])[0]
+            workout["id"] = UUID().uuidString
+            workout["exercises"] = (workout["exercises"] as! [[String: Any]]).map { original in
+                var slot = original; slot["id"] = UUID().uuidString; return slot
+            }
+            let decoded = try! JSONDecoder().decode(Workout.self, from: JSONSerialization.data(withJSONObject: workout))
+            let offer = PartnerOffer(id: UUID(), hostName: "Synthetic host", planID: UUID().uuidString,
+                                     planVersion: 1, workout: decoded)
+            precondition(offer.isValid)
+            let checkpoint = PartnerCheckpoint(id: offer.id, lane: .host, offer: offer, name: "Synthetic host",
+                phase: .ready, slotMap: Dictionary(uniqueKeysWithValues: decoded.exercises.map { ($0.id, $0.id) }),
+                receipt: .init(workout_id: decoded.id, plan_id: offer.planID, version: 1))
+            precondition(PartnerCheckpointStore.replace(checkpoint, expected: nil,
+                accountID: auth.userID!, defaults: defaults))
+        }
         if UIFixtureScenario.selected == .activationInvite
             || ProcessInfo.processInfo.environment["TRESFORT_UI_PENDING_INVITE"] == "1" {
             auth.handleDeepLink(Config.apiBaseURL.appendingPathComponent("join/ABC234"))

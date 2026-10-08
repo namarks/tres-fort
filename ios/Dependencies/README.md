@@ -1,5 +1,32 @@
 # MediaPipe pose replay dependency
 
+## Shipping variants
+
+The default `project.yml` is the iPhone + iPad TestFlight variant, including
+Station inference. The public iPhone-only 1.0 candidate instead uses
+`xcodegen generate --spec project-app-store.yml`. That spec replaces the app's
+dependency/resource arrays, disables the MediaPipe setup step, removes the
+forced graph linker flags, and sets device family 1 for the app and widget.
+It includes no MediaPipe frameworks, graph archives, model or bundled notices.
+The adapter fails explicitly if called, and Station/partner entry points are hidden.
+
+`APP_STORE_IPHONE_ONLY=1 scripts/upload-testflight.sh` selects that spec and
+checks the generated project before archiving; it also checks the archive's
+app and widget device families and rejects leftover SDK assets before exporting.
+A Swift compile guard rejects
+setting only the condition while retaining an importable MediaPipe SDK.
+Ordinary TestFlight generation remains unchanged. The variant and guard live
+under `ios/`, so disposable verification and screenshot source manifests include
+their exact bytes. Run `python3 test/app-store-packaging.test.py` to generate
+and inspect both projects using offline test placeholders (XcodeGen required).
+
+The pinned 0.10.21 archives do not supply a privacy manifest or SDK signature,
+and include Abseil/Protobuf components. Their existing network audit does not
+establish App Store SDK-manifest compliance. The SDK is excluded from the public
+candidate; an eventual public iPad release needs its own SDK compliance review.
+
+## Beta setup
+
 `xcodegen generate` runs `setup_mediapipe.py` before generating the project.
 The script downloads the official **MediaPipeTasksVision/Common 0.10.21** archives
 and **Pose Landmarker Full float16 revision 1** into ignored `.dependencies/`.

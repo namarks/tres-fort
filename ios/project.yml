@@ -1,4 +1,5 @@
-# XcodeGen spec. Regenerate the .xcodeproj with: cd ios && xcodegen generate
+# iPhone + iPad TestFlight spec. Regenerate: cd ios && xcodegen generate
+# Public iPhone-only candidate: xcodegen generate --spec project-app-store.yml
 name: TresFort
 options:
   preGenCommand: python3 Dependencies/setup_mediapipe.py

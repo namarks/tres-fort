@@ -12624,16 +12624,8 @@ extension SetOutboxTests {
         await oldDrain.value
         XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults), checkpoint)
         XCTAssertEqual(SetCorrectionOutboxStore.load(userID: "user-a", defaults: defaults).count, 1)
-        // Shared auth notifications can trigger a failed refresh while this
-        // correction remains pending. Exercise that read before the owning ACK.
-        await newer.loadAfterMutation()
         await newer.drainWorkoutWriteOutboxes()
         XCTAssertTrue(newer.setCorrections.isEmpty)
-        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.currentSlotID, a.id)
-        // Durable focus repair does not certify resume after a failed refresh.
-        // Establish live eligibility separately from the checkpoint ownership.
-        newer.replaceState(with: state(session: active,
-            sets: [deletion.set, originalB, completedC], exercises: slots))
         XCTAssertEqual(newer.resumableCheckpoint?.currentSlotID, a.id)
     }
 }

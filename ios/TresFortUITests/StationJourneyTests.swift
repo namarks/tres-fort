@@ -3,9 +3,6 @@ import XCTest
 final class StationJourneyTests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
-        #if APP_STORE_BUILD
-        throw XCTSkip("Movement tracking is exercised in the beta variant; PublicStationJourneyTests covers manual Station.")
-        #endif
         try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .pad, "Station Mode is an iPad surface")
     }
 

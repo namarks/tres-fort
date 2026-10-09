@@ -4,7 +4,6 @@ import VisionKit
 
 struct PartnerStationPanel: View {
     @ObservedObject var model: PartnerStationModel
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             Text("Train together").font(.largeTitle.bold())
@@ -15,17 +14,15 @@ struct PartnerStationPanel: View {
                     if offer.steps.indices.contains(state.stepIndex) {
                         let step = offer.steps[state.stepIndex]
                         Text("\(step.name) · Set \(step.set)").font(.title.bold())
-                            .accessibilityIdentifier("partner.stationStep")
-                        rowLayout(spacing: 20).callAsFunction {
+                        HStack(alignment: .top, spacing: 20) {
                             lane(name: offer.hostName, slot: model.hostSlots.first { $0.hostSlotID == step.slotID },
                                  snapshot: state.host, connected: state.hostConnected, step: step)
                             lane(name: model.partnerName, slot: model.partnerSlots.first { $0.hostSlotID == step.slotID },
                                  snapshot: state.partner, connected: state.partnerConnected, step: step)
                         }
                         if let end = state.restUntil {
-                            rowLayout(spacing: 8, alignment: .center).callAsFunction {
+                            HStack {
                                 Text("Rest together").font(.title2)
-                                    .accessibilityIdentifier("partner.stationRest")
                                 Text(end, style: .timer).monospacedDigit().font(.largeTitle)
                                 Button("Skip rest") { model.skipRest() }.buttonStyle(.bordered)
                             }
@@ -36,7 +33,7 @@ struct PartnerStationPanel: View {
                     }
                 } else {
                     if let invitation = model.invitation {
-                        rowLayout(spacing: 24).callAsFunction {
+                        HStack(alignment: .top, spacing: 24) {
                             if let image = qr(invitation.code) {
                                 Image(uiImage: image).interpolation(.none).resizable().scaledToFit()
                                     .frame(width: 240, height: 240).padding(12).background(.white)
@@ -49,7 +46,7 @@ struct PartnerStationPanel: View {
                         }
                     }
                     if let candidate = model.candidateName {
-                        rowLayout(spacing: 8, alignment: .center).callAsFunction {
+                        HStack {
                             Text("Allow \(candidate) to join?").font(.title2)
                             Button("Allow") { model.allow() }.buttonStyle(.borderedProminent)
                             Button("Decline") { model.decline() }.buttonStyle(.bordered)
@@ -62,23 +59,12 @@ struct PartnerStationPanel: View {
                         .accessibilityIdentifier("partner.startTogether")
                 }
             } else { ProgressView("Requesting the workout from your iPhone…") }
-            Text(StationLink.cameraCountingAvailable
-                 ? "Log each set on your own iPhone. Camera counting is off during partner workouts."
-                 : "Log each set on your own iPhone. Your workouts and weights stay separate.")
+            Text("Log each set on your own iPhone. Camera counting is off during partner workouts.")
                 .foregroundStyle(.secondary)
             Button(model.state == nil ? "Cancel setup" : "Close Station") { model.end() }
                 .buttonStyle(.bordered)
-                .accessibilityIdentifier("partner.stationClose")
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    private func rowLayout(spacing: CGFloat, alignment: VerticalAlignment = .top) -> AnyLayout {
-        #if APP_STORE_BUILD
-        if dynamicTypeSize.isAccessibilitySize {
-            return AnyLayout(VStackLayout(alignment: .leading, spacing: spacing))
-        }
-        #endif
-        return AnyLayout(HStackLayout(alignment: alignment, spacing: spacing))
     }
     private func lane(name: String, slot: PartnerDisplaySlot?, snapshot: PartnerLaneSnapshot,
                       connected: Bool, step: PartnerStep) -> some View {

@@ -202,38 +202,3 @@ final class PartnerStationModel: ObservableObject {
         partnerName="Partner";starting=false;startBarrier=nil;setupEnded=false;error=nil
     }
 }
-
-#if DEBUG && targetEnvironment(simulator)
-extension PartnerStationModel {
-    /// Render the real shared-step panel with synthetic lane snapshots. No
-    /// transport starts, lane keys persist, or phone/server writes occur.
-    func installPublicStationUIFixtureIfRequested() {
-        guard !StationLink.cameraCountingAvailable, UIFixtureScenario.selected == .appStore,
-              accountID == "synthetic-ui-user", id == nil,
-              let mode = ProcessInfo.processInfo.environment["TRESFORT_UI_STATION_PARTNER"],
-              ["active", "rest"].contains(mode) else { return }
-        var workout = (AppStoreScreenshotData.plan["days"] as! [[String: Any]])[0]
-        workout["id"] = UUID().uuidString
-        workout["exercises"] = (workout["exercises"] as! [[String: Any]]).map { original in
-            var slot = original; slot["id"] = UUID().uuidString; slot["rest_seconds"] = 300; return slot
-        }
-        let decoded = try! JSONDecoder().decode(Workout.self, from: JSONSerialization.data(withJSONObject: workout))
-        let offer = PartnerOffer(id: UUID(), hostName: "Jordan", planID: UUID().uuidString,
-                                 planVersion: 1, workout: decoded)
-        precondition(offer.isValid)
-        id = offer.id
-        self.offer = offer
-        partnerName = "Casey"
-        hostSlots = decoded.exercises.map {
-            .init(hostSlotID: $0.id, weight: $0.target_weight, unit: $0.targetWeightUnit.rawValue, reps: $0.target_reps)
-        }
-        partnerSlots = decoded.exercises.map {
-            .init(hostSlotID: $0.id, weight: 20, unit: "kg", reps: $0.target_reps)
-        }
-        coordinator = PartnerCoordinator(steps: offer.steps)
-        let logged: Set<String> = mode == "rest" ? [offer.steps[0].id] : []
-        receive(.init(id: offer.id, message: .snapshot(.init(logged: logged))), from: .host)
-        receive(.init(id: offer.id, message: .snapshot(.init(logged: logged))), from: .partner)
-    }
-}
-#endif

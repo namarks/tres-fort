@@ -1,5 +1,5 @@
 # iPhone + iPad TestFlight spec. Regenerate: cd ios && xcodegen generate
-# Public SDK-free iPhone + iPad candidate: xcodegen generate --spec project-app-store.yml
+# Public iPhone-only candidate: xcodegen generate --spec project-app-store.yml
 name: TresFort
 options:
   preGenCommand: python3 Dependencies/setup_mediapipe.py
@@ -48,7 +48,6 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nmarkspdx.tresfort
         INFOPLIST_FILE: TresFort/Info.plist
-        CAMERA_USAGE_DESCRIPTION: "Scan an iPad invitation code to join a workout. Track exercise movements on this device. Record test saves an optional silent clip locally for comparison; share or delete it from Saved tests."
         CODE_SIGN_ENTITLEMENTS: TresFort/TresFort.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_PREVIEWS: YES

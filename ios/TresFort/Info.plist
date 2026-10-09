@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>NSCameraUsageDescription</key>
-    <string>$(CAMERA_USAGE_DESCRIPTION)</string>
+    <string>Track exercise movements on this device. Record test saves an optional silent clip locally for comparison; share or delete it from Saved tests.</string>
     <key>NSLocalNetworkUsageDescription</key>
-    <string>Connect your iPhone and iPad Station, and an invited partner's iPhone, to share workout targets, weights, and progress.</string>
+    <string>Connect your iPhone workout to your iPad Station so reps the iPad counts can log your sets. Only your own devices connect.</string>
     <key>NSBonjourServices</key>
     <array>
         <string>_tresfort-stn._tcp</string>

@@ -27,7 +27,7 @@ struct BodyWeightAccessSection: View {
         } header: {
             Text("Weight")
         } footer: {
-            Text("Optional. Read measurements shared with Apple Health by your scale or entered in Health. Weight stays on this device and is visible only to you in Très Fort. Turning this off clears the view; your Health measurements remain. You can change read permissions in the Health app.")
+            Text("Optional. Read measurements shared with Apple Health by your scale or entered in Health. Weight stays on this iPhone and is visible only to you in Très Fort. Turning this off clears the view; your Health measurements remain. You can change read permissions in the Health app.")
         }
     }
 }

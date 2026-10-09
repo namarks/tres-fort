@@ -3,7 +3,7 @@ import CoreVideo
 import CryptoKit
 import Foundation
 import ImageIO
-#if APP_STORE_BUILD
+#if APP_STORE_IPHONE_ONLY
 #if canImport(MediaPipeTasksVision)
 #error("Generate project-app-store.yml; a flag-only build still includes the Station SDK.")
 #endif
@@ -50,7 +50,7 @@ final class StationMediaPipeDetector {
 
         var errorDescription: String? {
             switch self {
-            case .unavailableInThisBuild: return "Movement tracking is not available in this build."
+            case .unavailableInThisBuild: return "iPad Station is not available in this iPhone-only build."
             case .missingModel: return "The MediaPipe Full model is missing from this build."
             case .incorrectModel: return "The MediaPipe Full model does not match the pinned version."
             case .unsupportedPixelFormat: return "MediaPipe requires BGRA video frames."
@@ -60,7 +60,7 @@ final class StationMediaPipeDetector {
         }
     }
 
-    #if !APP_STORE_BUILD
+    #if !APP_STORE_IPHONE_ONLY
     private let landmarker: PoseLandmarker
     #endif
     private let lock = NSLock()
@@ -70,7 +70,7 @@ final class StationMediaPipeDetector {
     private var previousTimestamp: Int?
 
     init(modelURL: URL? = Bundle.main.url(forResource: "pose_landmarker_full", withExtension: "task")) throws {
-        #if APP_STORE_BUILD
+        #if APP_STORE_IPHONE_ONLY
         throw DetectionError.unavailableInThisBuild
         #else
         guard let modelURL else { throw DetectionError.missingModel }
@@ -93,7 +93,7 @@ final class StationMediaPipeDetector {
 
     func detect(pixelBuffer: CVPixelBuffer, timestampMilliseconds: Int,
                 orientation: CGImagePropertyOrientation) throws -> StationMediaPipeDetection {
-        #if APP_STORE_BUILD
+        #if APP_STORE_IPHONE_ONLY
         throw DetectionError.unavailableInThisBuild
         #else
         lock.lock()

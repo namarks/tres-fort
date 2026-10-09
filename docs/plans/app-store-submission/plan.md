@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-10-08 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-10-07 · Theme: release
 
 ## Goal
 
@@ -16,13 +16,8 @@ routes/fields and is incompatible with the serving canonical Worker. Public
 release remains blocked on a compatible candidate; the manual setting prevents
 automatic publication. Preparation
 and TestFlight availability do not mean public release.
-Owner decision, 2026-10-08: version 1.0 includes **iPhone and native iPad**,
-including manual partner training through iPad Station. This supersedes the
-October 5 iPhone-only decision. The public candidate excludes experimental
-movement-camera counting, recordings, MediaPipe and its model. The separate beta
-project retains those experiments. Native iPad and three-device acceptance must
-be demonstrated on the public candidate before submission; existing beta
-distribution is not that evidence.
+Owner decision, 2026-10-05: version 1.0 ships **iPhone only**. TestFlight builds
+keep iPhone + iPad for Station Mode; iPad can be added in a later version.
 
 ## Phases
 
@@ -72,13 +67,12 @@ distribution is not that evidence.
       The separate September 19 build-44 exception defers authenticated live
       workout checks to device testing for internal TestFlight only; it does
       not establish App Review or public-readiness acceptance.
-  - [ ] **(b) Compatible signed iPhone/iPad candidate and Apple processing**
+  - [ ] **(b) Compatible signed iPhone-only candidate and Apple processing**
     - Historical build 40 processing is complete, but that rejected candidate
       is incompatible with the canonical backend. Build 49 is an internal
       iPhone/iPad beta, not the selected public candidate.
     - After exact-head review/CI, separately authorize signing/upload of the
-      public project (`APP_STORE_BUILD=1`), check app/widget families 1 and 2,
-      SDK exclusion and embedded privacy metadata,
+      iPhone-only project, check app/widget family and embedded privacy metadata,
       match final screenshots, and verify Apple processing. P3(a) physical and
       authenticated checks remain unperformed.
 - [ ] **P4 — Submission and public-release handoff**
@@ -102,24 +96,25 @@ distribution is not that evidence.
 
 ## Next step
 
-**Now (@agent):** Prepare the public iPhone/iPad candidate from the merged
-October 7 readiness slice (PR #247): expose manual Station/partner training,
-keep movement-camera counting unavailable, update both device screenshot sets
-and reviewer instructions, then obtain exact-head Codex review and all required
-CI. Preserve the full beta camera build and tests. P1/P2 remain open for the
-operator/provider and physical candidate evidence below.
+**Now (@agent):** Complete exact-head review and required CI for the October 7
+readiness slice: exclude the iPad camera SDK from the public iPhone project,
+declare collected data and elapsed-time API use, correct body-weight/provider-data disclosures,
+and prepare matching screenshots and the review package. Keep the P1/P2 phases
+open for the remaining operator/provider and candidate evidence below.
+One CI outline journey on `a94f7ae` remained on Today after Start despite correct
+touch delivery; it has not reproduced locally. The readiness evidence records
+that unresolved cause and the opt-in synthetic stage trace added for a recurrence.
+Require current-head CI; local passes do not clear the earlier red run.
 
 **Then (@owner):** Review the prepared [policy, privacy worksheet and rejection
 reply](review-package.md), confirm provider protections, App Privacy, agreements
 and support/moderation operation, and authorize publication of the identical
-policy on both hosts plus a fresh public iPhone/iPad candidate. The current
-public website still serves the older AI disclosure. Perform the
-designated-account consent/workout/export/deletion checks, native iPad layout
-checks and [manual partner trial](../partner-training/validation.md) with two
-phones/accounts and one iPad. Candidate selection, replying to Apple,
-resubmission and eventual MANUAL public release remain separately authorized
-actions. No provider write or account/training mutation is part of this
-preparation.
+policy on both hosts plus a fresh iPhone-only candidate. The current public
+website still serves the older AI disclosure. Perform the designated-account
+physical consent/workout/export/deletion checks. Candidate selection, replying
+to Apple, resubmission and eventual MANUAL public release remain separately
+authorized actions. No provider write or account/training mutation was performed
+by this readiness audit.
 
 The [readiness evidence](readiness-2026-10-07.md) records fresh Apple, public-site,
 Worker-source, logging and migration readbacks. Core consent, group safety,
@@ -133,10 +128,7 @@ remains an explicit owner decision.
 ## Retained rejection and release evidence
 
 The following dated entries preserve prior delivery/authority evidence. They do
-not override the current next step or establish unperformed device checks. The
-iPhone-only commands below are historical: current public builds use
-`APP_STORE_BUILD=1`; the retired flag is rejected to prevent an accidental beta
-upload.
+not override the current next step or establish unperformed device checks.
 
 **App Review rejection (recorded 2026-10-05):** On 2026-09-22 App Review rejected
 submission `ea595b5e-86a6-4704-b1ef-ae87b971c728` (1.0 (40), reviewed on iPhone

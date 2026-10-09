@@ -3,22 +3,18 @@
 ## Shipping variants
 
 The default `project.yml` is the iPhone + iPad TestFlight variant, including
-experimental Station inference. The public iPhone + iPad 1.0 candidate uses
+Station inference. The public iPhone-only 1.0 candidate instead uses
 `xcodegen generate --spec project-app-store.yml`. That spec replaces the app's
 dependency/resource arrays, disables the MediaPipe setup step, removes the
-forced graph linker flags, and sets device families 1,2 for the app and widget.
+forced graph linker flags, and sets device family 1 for the app and widget.
 It includes no MediaPipe frameworks, graph archives, model or bundled notices.
-The inference adapter fails explicitly if called. Manual Station and partner
-training remain available; experimental camera controls and counting do not.
+The adapter fails explicitly if called, and Station/partner entry points are hidden.
 
-`APP_STORE_BUILD=1 scripts/upload-testflight.sh` selects that spec and
+`APP_STORE_IPHONE_ONLY=1 scripts/upload-testflight.sh` selects that spec and
 checks the generated project before archiving; it also checks the archive's
 app and widget device families and rejects leftover SDK assets before exporting.
-The verifier selects it with the same flag and checks the generated project
-before building. Any presence of the obsolete `APP_STORE_IPHONE_ONLY`
-environment variable is rejected, including `0` or an empty value. Remove it
-from old commands. A Swift compile guard rejects setting only the public
-condition while retaining an importable MediaPipe SDK.
+A Swift compile guard rejects
+setting only the condition while retaining an importable MediaPipe SDK.
 Ordinary TestFlight generation remains unchanged. The variant and guard live
 under `ios/`, so disposable verification and screenshot source manifests include
 their exact bytes. Run `python3 test/app-store-packaging.test.py` to generate
@@ -27,15 +23,7 @@ and inspect both projects using offline test placeholders (XcodeGen required).
 The pinned 0.10.21 archives do not supply a privacy manifest or SDK signature,
 and include Abseil/Protobuf components. Their existing network audit does not
 establish App Store SDK-manifest compliance. The SDK is excluded from the public
-candidate; an eventual public camera release needs its own SDK compliance review.
-
-Public CI has separate native iPhone and iPad shards, including camera-unavailable
-checks and manual Station/partner journeys. The ordinary beta Station shard and
-full-suite schedule remain intact. Capture draft assets with
-`scripts/capture-app-store-screenshots.sh NEW_OUTPUT iphone` or `... NEW_OUTPUT ipad`.
-iPhone captures contain five portrait 1206×2622 PNGs; iPad captures contain six
-portrait 2064×2752 PNGs, including manual Station. The
-manifest records each image's dimensions, hash, and the exact source snapshot.
+candidate; an eventual public iPad release needs its own SDK compliance review.
 
 ## Beta setup
 

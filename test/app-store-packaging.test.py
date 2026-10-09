@@ -1,7 +1,6 @@
 """Generate both shipping variants using offline dependency placeholders."""
 from pathlib import Path
 import json
-import plistlib
 import shutil
 import subprocess
 import sys
@@ -49,15 +48,8 @@ class AppStorePackagingTests(unittest.TestCase):
         verify_project(project)
         text = project.read_text()
         self.assertNotIn('Notices', text)
-        self.assertEqual([item['TARGETED_DEVICE_FAMILY'] for item in self.shipping_settings(project)], ['1,2'] * 4)
-        descriptions = [item['CAMERA_USAGE_DESCRIPTION'] for item in self.shipping_settings(project)
-                        if item['PRODUCT_BUNDLE_IDENTIFIER'] == 'com.nmarkspdx.tresfort']
-        self.assertEqual(descriptions, ["Scan your partner's iPad invitation code to join a workout."] * 2)
-        info = plistlib.loads((self.ios / 'TresFort/Info.plist').read_bytes())
-        self.assertEqual(info['NSCameraUsageDescription'], '$(CAMERA_USAGE_DESCRIPTION)')
-        self.assertIn("invited partner's iPhone", info['NSLocalNetworkUsageDescription'])
-        self.assertIn('DEBUG APP_STORE_BUILD', text)
-        self.assertNotIn('APP_STORE_IPHONE_ONLY', text)
+        self.assertEqual([item['TARGETED_DEVICE_FAMILY'] for item in self.shipping_settings(project)], ['1'] * 4)
+        self.assertIn('DEBUG APP_STORE_IPHONE_ONLY', text)
         self.assertIn('TresFortWidgets.appex in Embed Foundation Extensions', text)
         self.assertFalse((self.ios / '.dependencies').exists())
 
@@ -78,12 +70,6 @@ class AppStorePackagingTests(unittest.TestCase):
         self.assertIn('libMediaPipeTasksCommon_device_graph.a', text)
         self.assertIn('libMediaPipeTasksCommon_simulator_graph.a', text)
         self.assertEqual([item['TARGETED_DEVICE_FAMILY'] for item in self.shipping_settings(project)], ['1,2'] * 4)
-        descriptions = [item['CAMERA_USAGE_DESCRIPTION'] for item in self.shipping_settings(project)
-                        if item['PRODUCT_BUNDLE_IDENTIFIER'] == 'com.nmarkspdx.tresfort']
-        self.assertEqual(len(descriptions), 2)
-        self.assertTrue(all('Track exercise movements' in value and 'invitation code' in value
-                            for value in descriptions))
-        self.assertNotIn('APP_STORE_BUILD', text)
         self.assertNotIn('APP_STORE_IPHONE_ONLY', text)
         with self.assertRaisesRegex(ValueError, 'retains Station SDK input'):
             verify_project(project)
@@ -91,19 +77,6 @@ class AppStorePackagingTests(unittest.TestCase):
     def test_source_snapshot_carries_the_variant_and_its_upload_guard(self):
         self.assertIn('project-app-store.yml', self.manifest)
         self.assertIn('Dependencies/verify_app_store_project.py', self.manifest)
-
-    def test_public_guard_rejects_legacy_condition_and_single_device_family(self):
-        project = self.generate('project-app-store.yml')
-        original = project.read_text()
-        invalid = [original.replace('APP_STORE_BUILD', 'APP_STORE_IPHONE_ONLY'),
-                   original.replace('APP_STORE_BUILD', ''),
-                   original.replace('TARGETED_DEVICE_FAMILY = "1,2";', 'TARGETED_DEVICE_FAMILY = 1;', 1)]
-        for contents in invalid:
-            with self.subTest(project=contents[:40]):
-                self.assertNotEqual(contents, original)
-                project.write_text(contents)
-                with self.assertRaises(ValueError):
-                    verify_project(project)
 
 
 if __name__ == '__main__':

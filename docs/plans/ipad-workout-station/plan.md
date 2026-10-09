@@ -1,6 +1,6 @@
 # iPad Workout Station
 
-Slug: ipad-workout-station · Status: active · Updated: 2026-10-08 · Theme: gym-floor
+Slug: ipad-workout-station · Status: active · Updated: 2026-10-09 · Theme: gym-floor
 
 ## Goal
 
@@ -134,6 +134,13 @@ detections into durable workout actions.
     now retain prescribed and edited effort. The focused projection/link run
     passes 45 tests, and native RPE edit/log, linked display and rest-tap
     journeys pass with screenshot verification.
+    CI regression coverage now selects the complete display journey class
+    in both iPad build variants. The Station camera journey respects the
+    local-workout controller exclusion; first-workout creation observes
+    exercise selection and enabled Review before navigation.
+    Both repaired journeys and all display journeys pass on CI's iOS 26.2
+    runtime: 20 focused native checks across iPhone, standard iPad and public
+    iPad builds. CI selection/verification checks and plan compilation pass.
     Exact-head cloud review and required CI remain delivery gates.
 - [ ] **P3 — Enable measured automatic progression**
   - Establish explicit acceptance thresholds for premature completion, exact

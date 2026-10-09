@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-10-08 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-10-09 · Theme: release
 
 ## Goal
 
@@ -81,6 +81,10 @@ distribution is not that evidence.
       SDK exclusion and embedded privacy metadata,
       match final screenshots, and verify Apple processing. P3(a) physical and
       authenticated checks remain unperformed.
+    - Uploaded public candidate: [build 50](release-50.md), with families
+      [1,2], no Station SDK/model, privacy manifest embedded, Apple VALID /
+      APP_STORE_ELIGIBLE, and screenshots captured from the same source. It is
+      not yet selected for 1.0, and the owner's screenshot comparison remains open.
 - [ ] **P4 — Submission and public-release handoff**
   - [x] Select build 40 and retain Apple's review-submission receipt. The owner
     submitted 1.0 (40) on 2026-09-14 at 01:23:28 UTC (2026-09-13 Pacific);
@@ -102,21 +106,20 @@ distribution is not that evidence.
 
 ## Next step
 
-**Now (@agent):** Prepare the public iPhone/iPad candidate from the merged
-October 7 readiness slice (PR #247): expose manual Station/partner training,
-keep movement-camera counting unavailable, update both device screenshot sets
-and reviewer instructions, then obtain exact-head Codex review and all required
-CI. Preserve the full beta camera build and tests. P1/P2 remain open for the
-operator/provider and physical candidate evidence below.
-
-**Then (@owner):** Review the prepared [policy, privacy worksheet and rejection
-reply](review-package.md), confirm provider protections, App Privacy, agreements
+**Now (@owner):** The public iPhone/iPad candidate is uploaded:
+[1.0 (50)](release-50.md) from main `b3f10cc` (PR #248) is VALID and
+App Store eligible, with draft iPhone and iPad screenshot sets captured from
+that source. Review those screenshots (the receipt lists three cosmetic points)
+and the prepared [policy, privacy worksheet and rejection
+reply](review-package.md). Confirm provider protections, App Privacy, agreements
 and support/moderation operation, and authorize publication of the identical
-policy on both hosts plus a fresh public iPhone/iPad candidate. The current
+policy on both hosts. The PR #248 final head passed all CI but has no completed
+exact-head Codex review (usage limits); the receipt records the gap. The current
 public website still serves the older AI disclosure. Perform the
 designated-account consent/workout/export/deletion checks, native iPad layout
 checks and [manual partner trial](../partner-training/validation.md) with two
-phones/accounts and one iPad. Candidate selection, replying to Apple,
+phones/accounts and one iPad on build 50. Candidate selection, screenshot and
+metadata upload, replying to Apple,
 resubmission and eventual MANUAL public release remain separately authorized
 actions. No provider write or account/training mutation is part of this
 preparation.
@@ -233,10 +236,18 @@ for internal Testers on iPhone and iPad. It adds
 manual partner training and workout-preview thumbnails. Physical acceptance
 and authenticated workout checks remain open.
 
-**Current Apple readback (2026-10-07):** Version 1.0 still selects build 40,
-**REJECTED**, with **MANUAL** release. Build 49 is VALID / IN_BETA_TESTING in
-internal Testers, with no external group assignment. The App Review
-candidate was not replaced or resubmitted; no public release occurred.
+**Build 50 public candidate (2026-10-09):** The owner asked for the App Store
+screenshots and the iPhone + native iPad 1.0 candidate. [The release
+receipt](release-50.md) records main `b3f10ccfe483c2e4eafe4098d8259d359d6c83f3`,
+both draft screenshot sets, and the `APP_STORE_BUILD=1` archive with families
+[1,2] and no Station SDK/model. Apple reports VALID / APP_STORE_ELIGIBLE. No
+Worker deployment or migration was needed; the serving release-49 backend
+source is identical.
+
+**Current Apple readback (2026-10-09):** Version 1.0 still selects build 40,
+**REJECTED**, with **MANUAL** release. Build 50 is VALID / IN_BETA_TESTING in
+internal Testers, not submitted for external beta. The App Review candidate
+was not replaced or resubmitted; no public release occurred.
 
 **Agent follow-through:** Finish the runnable P1/P2 audit against canonical source
 `cd3cf4057320daa474292b86f3ddbbca401d5099`: reconcile privacy/account and group

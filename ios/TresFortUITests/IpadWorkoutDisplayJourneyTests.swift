@@ -7,12 +7,14 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
-        if (testRun?.failureCount ?? 0) > 0 { print(XCUIApplication().debugDescription) }
-        XCUIDevice.shared.orientation = .portrait
+        let app = XCUIApplication()
+        if (testRun?.failureCount ?? 0) > 0 { print(app.debugDescription) }
+        // Do not rotate a remaining modal or SpringBoard just to clean up.
+        // Each launch establishes its orientation after the app is foreground.
+        if app.state != .notRunning { app.terminate() }
     }
 
     private func launch(largeText: Bool = false, linked: String? = nil) -> XCUIApplication {
-        XCUIDevice.shared.orientation = .landscapeLeft
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "app-store"
         app.launchEnvironment["TRESFORT_UI_ACCEPT_CORRECTIONS"] = "1"
@@ -22,6 +24,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
                                "-restAudioCuesEnabled", "NO",
                                "-com.nmarkspdx.tresfort.weight-entry-unit", "lb"]
         app.launch()
+        orient(.landscapeLeft, in: app)
         let entry = app.buttons[linked == nil ? "today.startWorkout" : "today.station"]
         XCTAssertTrue(entry.waitForExistence(timeout: 10))
         reveal(entry, in: app)
@@ -30,6 +33,20 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
             XCTAssertTrue(element("ipadWorkout.display", in: app).waitForExistence(timeout: 10))
         }
         return app
+    }
+
+    private func orient(_ orientation: UIDeviceOrientation, in app: XCUIApplication,
+                        file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(app.state, .runningForeground, file: file, line: line)
+        if XCUIDevice.shared.orientation != orientation {
+            XCUIDevice.shared.orientation = orientation
+        }
+        let expected = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            let frame = app.frame
+            return orientation.isLandscape ? frame.width > frame.height : frame.height > frame.width
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [expected], timeout: 5), .completed,
+                       "The foreground app must finish the requested rotation", file: file, line: line)
     }
 
     private func element(_ id: String, in app: XCUIApplication) -> XCUIElement {
@@ -108,7 +125,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
     func testRepeatingTheEndRestTapNeverLogsTheNextSet() {
         for orientation in [UIDeviceOrientation.landscapeLeft, .portrait] {
             let app = launch()
-            XCUIDevice.shared.orientation = orientation
+            orient(orientation, in: app)
             app.buttons["runner.logSet"].tap()
             let endRest = app.buttons["rest.done"]
             XCTAssertTrue(endRest.waitForExistence(timeout: 5))
@@ -175,7 +192,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
     func testPortraitAndLandscapeKeepInstructionsAndPrimaryControlsVisible() {
         let app = launch()
         for orientation in [UIDeviceOrientation.portrait, .landscapeLeft] {
-            XCUIDevice.shared.orientation = orientation
+            orient(orientation, in: app)
             for id in ["runner.exerciseTitle", "ipadWorkout.phase", "ipadWorkout.position", "ipadWorkout.target", "ipadWorkout.next"] {
                 assertVisible(element(id, in: app), in: app)
             }
@@ -189,7 +206,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
 
     func testAccessibilityLayoutKeepsEditingLoggingAndRestReachableAfterRotation() {
         let app = launch(largeText: true)
-        XCUIDevice.shared.orientation = .portrait
+        orient(.portrait, in: app)
         let edit = app.buttons["runner.editValues"]
         reveal(edit, in: app); edit.tap()
         XCTAssertTrue(app.navigationBars["Next set"].waitForExistence(timeout: 5))
@@ -200,7 +217,7 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         XCTAssertTrue(endRest.waitForExistence(timeout: 5))
         reveal(endRest, in: app)
         capture("ipad-display-accessibility-portrait-rest")
-        XCUIDevice.shared.orientation = .landscapeLeft
+        orient(.landscapeLeft, in: app)
         reveal(endRest, in: app); endRest.tap()
         reveal(log, in: app)
         XCTAssertEqual(log.label, "LOG SET 2")
@@ -242,6 +259,8 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         XCTAssertFalse(app.buttons["runner.logSet"].exists)
         XCTAssertTrue(app.buttons["station.done"].isHittable)
         capture("ipad-display-linked-disconnected")
+        app.buttons["station.done"].tap()
+        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))
     }
 
     private func replace(_ field: XCUIElement, with text: String) {

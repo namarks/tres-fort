@@ -18,6 +18,24 @@ private actor StationDeferred<Value> {
 
 @MainActor
 final class StationPrivacyTests: XCTestCase {
+    func testWorkoutDisplayKeepsScreenAwakeWithoutCameraAndRestoresPriorSetting() {
+        for originallyDisabled in [false, true] {
+            var disabled = originallyDisabled
+            let idleTimer = StationIdleTimerOverride(read: { disabled }, write: { disabled = $0 })
+            idleTimer.begin()
+            idleTimer.update(cameraRunning: false, partnerOpen: false, foreground: true, workoutDisplay: true)
+            XCTAssertTrue(disabled)
+            idleTimer.update(cameraRunning: false, partnerOpen: false, foreground: false, workoutDisplay: true)
+            XCTAssertEqual(disabled, originallyDisabled)
+            idleTimer.update(cameraRunning: false, partnerOpen: false, foreground: true, workoutDisplay: true)
+            XCTAssertTrue(disabled)
+            idleTimer.update(cameraRunning: false, partnerOpen: false, foreground: true, workoutDisplay: false)
+            XCTAssertEqual(disabled, originallyDisabled)
+            idleTimer.end()
+            XCTAssertEqual(disabled, originallyDisabled)
+        }
+    }
+
     func testPartnerStationKeepsScreenAwakeAcrossCameraStopAndRestoresOnExit() {
         for originallyDisabled in [false, true] {
             var disabled = originallyDisabled

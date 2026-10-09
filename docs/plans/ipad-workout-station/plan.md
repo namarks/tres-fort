@@ -4,10 +4,11 @@ Slug: ipad-workout-station · Status: active · Updated: 2026-10-08 · Theme: gy
 
 ## Goal
 
-Let a member use a stationary iPad as a readable workout display and movement
-tracker while their main phone remains free. First establish camera placement
-and counting quality in an observation-only trial; only validated later slices
-may turn detections into durable workout actions.
+Let a member read their workout from across the room on a stationary iPad,
+either running the workout on the iPad or following their iPhone. Movement
+tracking builds on that display: establish camera placement and counting
+quality in observation-only trials before validated later slices turn
+detections into durable workout actions.
 
 ## Phases
 
@@ -108,6 +109,27 @@ may turn detections into durable workout actions.
     so does a count whose set could not be saved.
   - Remaining: verify the link, instant logging, Undo and fallback on the
     paired iPhone and iPad, and record miscounts and corrections from real sets.
+- [ ] **P2.1 — Deliver the iPad workout display in both modes**
+  - Use the existing dark Theme, amber actions, completion colors, Bebas Neue
+    headings and JetBrains Mono values in one distance-readable presentation.
+  - Support standalone iPad workouts through the existing SyncModel writer and
+    guarded set, timer, edit, correction and outline actions.
+  - Carry a camera-independent workout projection over the authenticated solo
+    link: current prescription, set/round, next step, rest/timed deadline,
+    paused state and final review. The iPhone remains the linked writer.
+  - Clear stale guidance on link withdrawal/disconnection and keep an active
+    foreground display awake without requiring camera access.
+  - Verify iPad portrait/landscape and accessibility layouts, local
+    logging/edit/rest progression, linked unsupported movements and connection
+    loss, plus unchanged iPhone behavior and public-build camera exclusion.
+  - Keep standalone camera logging, device takeover and broader automatic
+    progression outside this display slice; P1/P2/P3 physical gates remain.
+  - Implemented on `codex/ipad-workout-display`: shared native Theme-backed
+    presentation, draft-aware projection, compatible authenticated link updates,
+    foreground screen-awake lifetime and separate fixed rest/log controls.
+    Local state/link/lifetime checks pass (56 tests); public iPad Station and
+    linked-display checks pass (6 journeys). Final layout, iPhone regression,
+    exact-head cloud review and required CI remain delivery gates.
 - [ ] **P3 — Enable measured automatic progression**
   - Establish explicit acceptance thresholds for premature completion, exact
     counts and required corrections; validate them before enabling auto-log.
@@ -117,6 +139,7 @@ may turn detections into durable workout actions.
 
 - P1
 - P2
+- P2.1
 
 ## Dependencies
 
@@ -128,23 +151,26 @@ may turn detections into durable workout actions.
 
 ## Next step
 
-**Now (@owner):** Install the matching build-49 client, available in internal
-TestFlight, on the iPhone and iPad, then evaluate P1's mounted-iPad counting and
-P2's linked-device logging, Undo and fallback. These owner-participated trials
-are the current execution frontier; their existing acceptance gates remain open. The
+**Now (@agent):** Finish P2.1's final native layout and iPhone regression checks,
+then satisfy the exact-head PR review and CI gates for
+`codex/ipad-workout-display`. This source change does not distribute a new client.
+
+The iPad's installed version was read directly as 1.0 (49) after the owner's
+October 8 TestFlight update. The iPhone's installed version is unverified.
+P1/P2 physical-trial acceptance gates remain open. P2.1 requires a later
+authorized client distribution before its display can be tested across the room. The
 October 7 owner-authorized [release](../app-store-submission/release-49.md)
 deploys source `cd3cf40`, including the Station link-key route, and uploads the
 matching iPhone/iPad client. The catalog camera profiles, curl fix and linked
-assisted logging are merged; physical installation and trial results are not
-established by their TestFlight upload. With the link on, an armed iPhone set
+assisted logging are merged; physical trial results are not established by
+their TestFlight upload. With the link on, an armed iPhone set
 switches the iPad from a hold or catalog selection
 to that set's rep counter; choosing any exercise by hand on the iPad abandons
 the armed set, which stays manual on the iPhone.
 The audit covers all 280 exercises: 193 rep candidates, 15 hold candidates and
 72 manual fallbacks. Fifteen entries explicitly select a current experimental
 mode; profile membership alone never enables a counter. Real accuracy remains
-unvalidated. The retained device receipts below describe earlier installations;
-this release does not claim the owner has installed build 49.
+unvalidated. The retained device receipts below describe earlier installations.
 **Next physical trial (@owner):** With build 49 installed on both devices,
 fetch the link key online once from the deployed Worker. Turn on "Count reps
 with iPad Station" in the iPhone runner menu and "Count sets for my iPhone
@@ -163,6 +189,12 @@ clip) and label actual reps; no new recording format or live change is needed.
 
 ## Approved comparison scope
 
+- On 2026-10-08 the owner requested a workout display readable from across the
+  room, chose equal support for standalone iPad and iPhone-controlled sessions,
+  and approved the proposed display with the requirement to match the app's
+  existing styling. P2.1 is a shared presentation and read-only link projection;
+  the existing controllers retain workout write authority. Standalone camera
+  logging and new automatic-progression policy require later work and trials.
 - On 2026-10-04 the owner requested a full catalog tracking audit and reusable
   mappings, including pose-triggered hold countdowns. This adds an in-app
   coverage browser and local plank/wall-sit experiments. It does not activate

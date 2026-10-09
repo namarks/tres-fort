@@ -21,6 +21,76 @@ final class StationLinkTests: XCTestCase {
 
     // MARK: pairing and protocol
 
+    private func display(_ phase: WorkoutDisplayState.Phase = .ready) -> WorkoutDisplayState {
+        WorkoutDisplayState(phase: phase, workoutName: "Strength", current: nil, next: nil,
+            restEndDate: phase == .rest ? Date(timeIntervalSince1970: 2_000_000_060) : nil,
+            timedEndDate: nil, timedStartDate: nil, workoutStartDate: nil, message: nil, isFreestyle: false)
+    }
+
+    func testDisplayRoundTripsEncryptedAndLegacyPeersDecodeItWithoutLosingTheirLink() throws {
+        // This models exactly the envelope fields and station message known by
+        // older peers, rather than testing the new decoder against itself.
+        struct LegacyEnvelope: Decodable {
+            enum Message: Decodable { case station(StationLinkStationState, armID: UUID?) }
+            let version: Int
+            let message: Message
+        }
+        let key = Data(repeating: 9, count: 32)
+        for state in [display(), display(.rest), nil] {
+            let message = StationLinkMessage.display(state)
+            let encoded = try message.encoded()
+            XCTAssertEqual(StationLinkMessage.decode(encoded), message)
+            let legacy = try JSONDecoder().decode(LegacyEnvelope.self, from: encoded)
+            XCTAssertEqual(legacy.version, 1)
+            guard case .station(.ready, armID: nil) = legacy.message else {
+                return XCTFail("An old Station must receive only a harmless known message")
+            }
+            let sealed = try XCTUnwrap(StationLink.seal(message, sessionKey: key, senderRole: "controller", counter: 1))
+            XCTAssertEqual(StationLink.open(sealed, sessionKey: key, senderRole: "controller", after: 0)?.message, message)
+            XCTAssertNil(StationLink.open(sealed, sessionKey: key, senderRole: "station", after: 0))
+        }
+    }
+
+    func testDisplayPublishesWithoutAnArmAndReconnectKeepsOnlyTheLatestSnapshot() {
+        let controller = StationLinkController()
+        controller.publishDisplay(display())
+        XCTAssertNil(controller.arm)
+        XCTAssertEqual(controller.displayToResend, display())
+        controller.publishDisplay(display(.rest))
+        controller.resendCurrentState()
+        XCTAssertEqual(controller.displayToResend, display(.rest))
+        controller.pause()
+        XCTAssertEqual(controller.displayToResend, display(.rest), "Runner explicitly publishes its paused projection")
+        controller.keyUnavailable()
+        XCTAssertNil(controller.displayToResend)
+        controller.publishDisplay(display(.review))
+        controller.stop()
+        XCTAssertNil(controller.displayToResend)
+    }
+
+    func testDisplaySurvivesCameraDisarmButClearsOnWithdrawalAndLostConnection() {
+        let transport = StationLinkTransport(role: .station)
+        let station = StationLinkStation(transport: transport)
+        station.receive(.display(display(.rest)))
+        XCTAssertEqual(station.display, display(.rest))
+        let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 1, exercise: .squat,
+                                 exerciseName: "Back Squat", targetReps: 5)
+        station.receive(.arm(arm))
+        station.receive(.disarm(armID: arm.armID))
+        XCTAssertEqual(station.display, display(.rest), "Rest guidance is independent of the camera")
+        station.receive(.display(nil))
+        XCTAssertNil(station.display)
+        station.receive(.display(display()))
+        transport.stop() // publishes the same unavailable-connection path used by a peer disconnect
+        XCTAssertNil(station.display)
+        station.receive(.display(display()))
+        station.enable(key: nil)
+        XCTAssertNil(station.display, "An invalidated account key cannot retain active instructions")
+        station.receive(.display(display()))
+        station.stop()
+        XCTAssertNil(station.display)
+    }
+
     func testDiscoveryTagIsAFilterDerivedFromTheKey() {
         let key = Data(repeating: 7, count: 32)
         let tag = StationLink.discoveryTag(key: key)

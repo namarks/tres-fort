@@ -19,6 +19,7 @@ final class StationLinkController: ObservableObject {
     @Published private(set) var pendingUndo: StationLinkLoggedSet?
     /// No link key yet: the device must reach the server once to set up.
     @Published private(set) var needsKey = false
+    @Published private(set) var display: WorkoutDisplayState?
 
     var onPartnerMessage: ((PartnerPacket) -> Void)?
     func sendPartner(_ packet: PartnerPacket) { transport.send(.partner(packet)) }
@@ -52,8 +53,8 @@ final class StationLinkController: ObservableObject {
         self.transport.onMessage = { [weak self] in self?.receive($0) }
         // A fresh connection learns the current arm, if any.
         self.transport.onConnect = { [weak self] in
-            guard let self, let arm = self.armToResend else { return }
-            self.transport.send(.arm(arm))
+            guard let self else { return }
+            self.resendCurrentState()
         }
     }
 
@@ -72,6 +73,21 @@ final class StationLinkController: ObservableObject {
 
     var isConnected: Bool { connection.isConnected }
 
+    var displayToResend: WorkoutDisplayState? { display }
+
+    /// The existing authenticated transport owns reconnect delivery. Publishing
+    /// can happen before pairing, so a fresh peer receives the latest state.
+    func publishDisplay(_ state: WorkoutDisplayState?) {
+        guard display != state else { return }
+        display = state
+        transport.send(.display(state))
+    }
+
+    func resendCurrentState() {
+        transport.send(.display(displayToResend))
+        if let arm = armToResend { transport.send(.arm(arm)) }
+    }
+
     /// The arm a reconnected iPad should count, if any. An arm whose count
     /// already arrived (waiting for a tap, handed to Edit, or logged) is spent:
     /// only a new set or "Not right" asks the iPad to count again.
@@ -86,11 +102,13 @@ final class StationLinkController: ObservableObject {
     }
 
     func keyUnavailable() {
+        publishDisplay(nil)
         transport.stop()
         needsKey = true
     }
 
     func stop() {
+        publishDisplay(nil)
         request(nil)
         transport.stop()
         needsKey = false
@@ -196,7 +214,7 @@ final class StationLinkController: ObservableObject {
             stationState = state
             // A set taken over by hand stays manual, even across a reconnect.
             if state == .manual, let armID { completedArmID = armID }
-        case .arm, .disarm, .challenge, .proof:
+        case .display, .arm, .disarm, .challenge, .proof:
             break // only the iPhone arms sets; the transport authenticates
         }
     }

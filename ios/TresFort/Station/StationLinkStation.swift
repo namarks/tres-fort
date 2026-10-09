@@ -15,6 +15,7 @@ final class StationLinkStation: ObservableObject {
     @Published private(set) var isEnabled = false
     /// No link key yet: the iPad must reach the server once to set up.
     @Published private(set) var needsKey = false
+    @Published private(set) var display: WorkoutDisplayState?
 
     var onPartnerMessage: ((PartnerPacket) -> Void)?
     func sendPartner(_ packet: PartnerPacket) { transport.send(.partner(packet)) }
@@ -29,7 +30,7 @@ final class StationLinkStation: ObservableObject {
         cancellable = self.transport.$connection.sink { [weak self] value in
             guard let self else { return }
             self.connection = value
-            if !value.isConnected { self.withdraw() }
+            if !value.isConnected { self.withdraw(); self.display = nil }
         }
         self.transport.onMessage = { [weak self] in self?.receive($0) }
         self.transport.onConnect = { [weak self] in self?.report(.ready) }
@@ -49,6 +50,7 @@ final class StationLinkStation: ObservableObject {
     }
 
     func stop() {
+        display = nil
         withdraw()
         isEnabled = false
         needsKey = false
@@ -58,6 +60,7 @@ final class StationLinkStation: ObservableObject {
     func receive(_ message: StationLinkMessage) {
         switch message {
         case .partner(let packet): onPartnerMessage?(packet)
+        case .display(let state): display = state
         case .arm(let next):
             guard StationLink.cameraCountingAvailable else {
                 report(.manual, armID: next.armID)

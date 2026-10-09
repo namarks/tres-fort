@@ -154,12 +154,24 @@ final class RunnerStreamlineJourneyTests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Workout outline"].waitForExistence(timeout: 5))
         let row = app.buttons["Dumbbell Row"]
         reveal(row, in: app); row.tap()
+        expectation(for: NSPredicate(format: "exists == false"),
+                    evaluatedWith: app.navigationBars["Workout outline"])
+        waitForExpectations(timeout: 5)
+        expectation(for: NSPredicate(format: "label == %@", "DUMBBELL ROW"),
+                    evaluatedWith: app.staticTexts["runner.exerciseTitle"])
+        waitForExpectations(timeout: 5)
         XCTAssertEqual(app.staticTexts["runner.exerciseTitle"].label, "DUMBBELL ROW")
         app.buttons["runner.outline"].tap()
         let squat = app.buttons["Barbell Squat"]
         XCTAssertTrue(squat.waitForExistence(timeout: 5))
         XCTAssertFalse(squat.staticTexts["Skipped"].exists)
         squat.tap()
+        expectation(for: NSPredicate(format: "exists == false"),
+                    evaluatedWith: app.navigationBars["Workout outline"])
+        waitForExpectations(timeout: 5)
+        expectation(for: NSPredicate(format: "label == %@", "BARBELL SQUAT"),
+                    evaluatedWith: app.staticTexts["runner.exerciseTitle"])
+        waitForExpectations(timeout: 5)
         XCTAssertEqual(app.buttons["runner.weight"].value as? String, "140")
         XCTAssertEqual(app.buttons["runner.reps"].value as? String, "6")
         XCTAssertTrue(app.buttons["LOG SET 1"].exists)

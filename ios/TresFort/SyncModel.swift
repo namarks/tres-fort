@@ -4756,13 +4756,19 @@ final class SyncModel: ObservableObject {
         return history.filter { $0.session_id == lastSessionID }
     }
 
-    private func seedInputs() {
-        clearTimedSet()
-        guard let ex = currentExercise else { return }
-        let input = RunnerInputPolicy.seed(ex,
+    /// Read-only preview of the same prescription/history/draft precedence
+    /// used when the runner actually moves to this slot.
+    func runnerPreviewInput(for ex: TemplateExercise) -> RunnerInputState {
+        RunnerInputPolicy.seed(ex,
             previous: comparablePreviousSets(for: ex).last,
             draft: persistedRunnerCheckpoint?.inputsBySlot?[ex.id] ?? persistedRunnerCheckpoint?.input,
             defaultWeight: todaySession?.exerciseSwaps.entries.contains { $0.replacement == ex } == true ? 0 : 45)
+    }
+
+    private func seedInputs() {
+        clearTimedSet()
+        guard let ex = currentExercise else { return }
+        let input = runnerPreviewInput(for: ex)
         weight = input.weight
         reps = input.reps
         rpe = input.rpe

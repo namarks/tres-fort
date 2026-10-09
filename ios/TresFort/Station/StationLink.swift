@@ -2,7 +2,8 @@ import CryptoKit
 import Foundation
 
 /// The iPhone runner is the only workout controller. A linked iPad Station is a
-/// sensor: it counts the set the iPhone arms and reports a finished count. The
+/// display and sensor: it shows the runner independently of camera eligibility,
+/// counts the set the iPhone arms and reports a finished count. The
 /// iPad never receives a SyncModel, outbox or API client; only the iPhone logs.
 enum StationLink {
     /// Bonjour service type (at most 15 characters). Info.plist lists the
@@ -180,6 +181,9 @@ enum StationLinkStationState: String, Codable, Equatable {
 
 enum StationLinkMessage: Codable, Equatable {
     case partner(PartnerPacket)
+    /// Read-only runner guidance, independent of camera arming. Nil withdraws
+    /// the display when the controller closes or changes workouts/accounts.
+    case display(WorkoutDisplayState?)
     case arm(StationLinkArm)
     case disarm(armID: UUID)
     case progress(StationLinkProgress)
@@ -190,19 +194,29 @@ enum StationLinkMessage: Codable, Equatable {
     case proof(Data)
 
     func encoded() throws -> Data {
-        try JSONEncoder().encode(StationLinkEnvelope(version: StationLink.protocolVersion, message: self))
+        if case .display(let state) = self {
+            // Older v1 peers can still count: they ignore these optional
+            // envelope fields and the existing station-status message. Sending
+            // an unknown enum case would make their authenticated decoder
+            // reject the entire connection, including subsequent counts.
+            return try JSONEncoder().encode(StationLinkEnvelope(version: StationLink.protocolVersion,
+                message: .station(.ready, armID: nil), displayUpdate: true, display: state))
+        }
+        return try JSONEncoder().encode(StationLinkEnvelope(version: StationLink.protocolVersion, message: self))
     }
 
     static func decode(_ data: Data) -> StationLinkMessage? {
         guard data.count <= 1_048_576, let envelope = try? JSONDecoder().decode(StationLinkEnvelope.self, from: data),
               envelope.version == StationLink.protocolVersion else { return nil }
-        return envelope.message
+        return envelope.displayUpdate == true ? .display(envelope.display) : envelope.message
     }
 }
 
 private struct StationLinkEnvelope: Codable {
     let version: Int
     let message: StationLinkMessage
+    var displayUpdate: Bool? = nil
+    var display: WorkoutDisplayState? = nil
 }
 
 /// The set the iPhone runner would like counted right now, or nil when the

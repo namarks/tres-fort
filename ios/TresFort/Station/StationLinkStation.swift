@@ -59,6 +59,10 @@ final class StationLinkStation: ObservableObject {
         switch message {
         case .partner(let packet): onPartnerMessage?(packet)
         case .arm(let next):
+            guard StationLink.cameraCountingAvailable else {
+                report(.manual, armID: next.armID)
+                return
+            }
             if arm?.armID == next.armID { return }
             withdraw()
             arm = next

@@ -180,7 +180,7 @@ struct WorkoutFeedbackSheet: View {
             }
             Button("Type instead") { editor.stop(); typing = true }
             if let message = editor.message { Text(message).foregroundStyle(.secondary) }
-            Text("Recording stays on this iPhone and is discarded. Review the text before saving.")
+            Text("Recording stays on this device and is discarded. Review the text before saving.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         Section("Your words") {

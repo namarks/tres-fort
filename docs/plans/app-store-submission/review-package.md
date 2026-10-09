@@ -1,6 +1,6 @@
 # App Store review package
 
-Refreshed October 7, 2026 for owner review; not published. The current
+Refreshed October 8, 2026 for owner review; not published. The current
 [readiness audit](readiness-2026-10-07.md) records source/provider evidence and
 remaining limitations. Live completion and gates belong to
 [plan.md](plan.md). Reconcile claims/screenshots with the final candidate before
@@ -25,7 +25,7 @@ upload. No credentials or personal training records belong in this file.
 Description:
 
 Très Fort helps you plan your strength training and follow it set by set on
-iPhone. Build your own workouts, or optionally connect Claude, Codex or another
+iPhone and iPad. Build your own workouts, or optionally connect Claude, Codex or another
 compatible AI app to review and adapt your plan after you approve access.
 
 TRAIN WITH A PLAN
@@ -45,7 +45,12 @@ CONNECT YOUR TRAINING
 Optionally import workouts from Apple Health or connect Intervals.icu to keep
 your other activities in view. An authorized AI coaching connection can use your training history to help
 adapt your plan. Separately, view your latest Apple Health weight and trends
-privately on your iPhone.
+privately on your device.
+
+TRAIN TOGETHER
+Use an iPad as a shared workout display while two members log sets on their own
+iPhones. Each person keeps their own account, weights and training history,
+with shared exercise and rest progress.
 
 TRAIN WITH YOUR CREW
 Join a private group to share training progress with people you know. Apple
@@ -62,13 +67,16 @@ Access to third-party services is governed by their own terms.
 
 Capture actual candidate screens using synthetic training data. Do not include
 personal accounts, connection codes, fixture banners, fabricated features or
-overlaid claims that hide the UI. Use the required current iPhone dimensions
-from App Store Connect. Version 1.0 is iPhone-only (owner decision 2026-10-05):
-`project.yml` targets iPhone + iPad for TestFlight. The App Store candidate
-uses `project-app-store.yml` through `APP_STORE_IPHONE_ONLY=1`: it excludes the
-iPad camera SDK/model, targets family 1 for app and widget, and hides Station
-and partner linking. No iPad screenshots are needed. Do not upload an iPhone + iPad build as the
-review candidate; a released iPad family cannot be removed later.
+overlaid claims that hide the UI. Version 1.0 includes native iPhone and iPad
+(owner decision 2026-10-08). Use `project-app-store.yml` through
+`APP_STORE_BUILD=1`: it targets families 1 and 2 for app/widget, includes manual
+Station/partner training, and excludes the experimental movement camera, SDK
+and model. The default `project.yml` remains the camera-enabled beta.
+
+Capture both required display classes: iPhone 17 Pro at 1206 × 2622, and 13-inch
+iPad Pro (M4) at 2064 × 2752 portrait. These match
+[Apple's screenshot specifications](https://developer.apple.com/help/app-store-connect/reference/app-information/screenshot-specifications/),
+checked October 8. Do not use beta camera screens in the public listing.
 
 Suggested sequence: Today with a scheduled workout; workout runner with set
 targets and rest controls; reusable workouts; training history; editable private
@@ -77,7 +85,7 @@ requirements are resolved. Preserve source SHA, build, simulator/device, locale
 and dimensions with the resulting image set.
 
 Use the [screenshot capture workflow](screenshot-capture.md) to produce and
-validate the five-image draft set from the selected source. Its fictional-data
+validate the five-image iPhone and six-image iPad draft sets from the selected source. The iPad set adds manual Station setup. Its fictional-data
 fixture uses actual screens and preserves source and successful-test evidence.
 
 ## Reviewer instructions
@@ -94,6 +102,37 @@ exercise; open Today and start that workout; log a set; finish; open Today → C
 to inspect history.
 Exercise targets can be edited from Workouts. Profile → Account contains **Download account data** and **Delete account**.
 Profile also contains Group safety and privacy/support links.
+
+Native iPad: the same manual workout, history and account paths are available
+in portrait and landscape. Today → iPad Station opens the shared partner
+display. Movement-camera counting and test recording are absent in this public
+build; ordinary workout logging does not require camera permission.
+
+Partner training needs two iPhones with **different** member accounts and an
+iPad signed in to the host's account. Use designated nonpersonal reviewer/test
+accounts with no completed workout or logged sets that day, and no pending
+training writes. Refresh Today on both phones while online. Initial link-key
+loading, saving the partner’s workout and starting both sessions require
+internet; device discovery and shared progress also require local-network access:
+
+1. On the host iPhone, start a workout without logging a set. In the runner menu,
+   enable **Use iPad for partner workout**.
+2. On the iPad, open Today → iPad Station and enable its host-phone connection.
+   Once connected, choose **Train together**.
+3. On the second iPhone, open Today → Train together → **Scan iPad code**. This
+   uses the camera only to read the pairing QR; it does not count movements.
+   Confirm the joining member on the iPad, review personal weights on the
+   partner's phone, and choose **Save workout and get ready**. Choose **Start together** on the iPad.
+4. Log a set on each person's own iPhone. The shared display advances after
+   both log, and shows shared rest. Each member’s workout history records
+   their own sets; phones also retain shared progress for recovery.
+   Use Undo to correct a set or **Continue alone** to leave the shared workout.
+
+No new member can join after the paired workout starts. Ordinary manual
+training needs neither another device nor a partner. These instructions are a
+draft until the [physical acceptance matrix](../partner-training/validation.md)
+is completed on the selected public build; simulator UI checks do not establish
+QR discovery, network recovery or account separation on actual devices.
 
 Feedback: near workout completion, choose **Talk about your workout**. Type a
 note or choose the microphone option, stop recording, edit the transcript and
@@ -158,7 +197,12 @@ tailor starter workouts and authorized coaching. Proposed tracking answer: **No*
 for the examined app. No advertising SDK or behavioral analytics was found;
 confirm independent provider behavior before attesting the complete label.
 Support correspondence belongs under Customer Support when collected. No raw
-audio, camera video or local Health weight is uploaded by the iPhone candidate.
+audio, camera video or local Health weight is uploaded by the public candidate. Pairing QR images are processed locally; the Station
+link carries the explicitly shared workout, member display names and progress
+between participating devices, including exercise cues, targets, weights and
+reps. The partner saves a separate workout copy to their account. Closing
+Station clears its display, but does not delete that saved copy or each
+member’s own training history.
 Intervals raw metadata is retained even though coach projections exclude it.
 
 The required-reason manifest declares app-private UserDefaults (`CA92.1`) and
@@ -233,7 +277,7 @@ Sources refreshed 2026-10-07: [Apple review guidelines](https://developer.apple.
 
 ## Prepared response to the privacy rejection
 
-Use only after the compatible iPhone-only build and both policy URLs are live.
+Use only after the compatible iPhone/iPad build and both policy URLs are live.
 Replace `[BUILD]` with the verified selected candidate. This is a draft, not a
 message sent to App Review or a statement that publication has occurred.
 
@@ -252,8 +296,10 @@ message sent to App Review or a statement that publication has occurred.
 > Sign in with Apple creates a normal account without an invitation or payment.
 > Reviewers can skip optional connections, create a workout, log and finish a
 > session, and use Profile → Account to export or delete the account. Version
-> 1.0 supports iPhone; iPad Station and partner-device linking are not offered
-> in this candidate.
+> 1.0 supports iPhone and native iPad. Manual partner training uses an iPad
+> shared display and two separate iPhone accounts; each phone logs its own
+> member’s sets. Movement-camera counting and experimental recordings are not
+> included.
 
 The operator must approve the existing equal-protection commitment against the
 chosen providers before using this response. No consent-version enforcement or
@@ -268,9 +314,9 @@ During the separately authorized App Store update:
   promotional text: “Build workouts, track every set, and review your progress.
   Optional Apple Health, Intervals.icu and AI coach connections bring your
   training together.”
-- Use the five final iPhone-only captures; confirm their display class and
-  dimensions in App Store Connect. Never upload the initial beta-mode capture
-  showing Train together.
+- Use the final public iPhone and native iPad captures; confirm both required
+  display classes and dimensions in App Store Connect. Match the source to the
+  selected candidate and exclude beta movement-camera screens.
 - Replace the obsolete short reviewer notes with the tested manual/consent
   instructions above; clear the leftover retired demo username and password
   while keeping Sign in with Apple instructions. Contact fields were present

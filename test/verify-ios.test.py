@@ -19,6 +19,7 @@ class VerifyIOSTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         (self.root / 'scripts').mkdir()
         (self.root / 'ios').mkdir()
+        (self.root / 'ios' / 'Dependencies').mkdir()
         (self.root / 'scratch').mkdir()
         (self.root / 'bin').mkdir()
         (self.root / 'bin' / 'python3').symlink_to(Path(sys.executable).resolve())
@@ -26,6 +27,8 @@ class VerifyIOSTests(unittest.TestCase):
         (self.root / 'ios' / 'project-app-store.yml').write_text('name: TestAppStore\n')
         shutil.copy(SCRIPT, self.root / 'scripts' / SCRIPT.name)
         shutil.copy(SCRIPT.parent / 'ios_sources.py', self.root / 'scripts' / 'ios_sources.py')
+        shutil.copy(SCRIPT.parent.parent / 'ios/Dependencies/verify_app_store_project.py',
+                    self.root / 'ios/Dependencies/verify_app_store_project.py')
         mock = '''#!/usr/bin/env python3
 import json, os, pathlib, signal, sys
 name = pathlib.Path(sys.argv[0]).name
@@ -41,6 +44,11 @@ if name == 'xcrun':
     elif args[:2] == ['simctl', 'bootstatus']: sys.exit(int(os.environ.get('MOCK_BOOTSTATUS_EXIT', '0')))
     elif args[:2] == ['simctl', 'ui']: sys.exit(int(os.environ.get('MOCK_UI_EXIT', '0')))
     elif args[:2] == ['simctl', 'delete']: sys.exit(int(os.environ.get('MOCK_DELETE_EXIT', '0')))
+elif name == 'xcodegen' and args[0] == 'generate':
+    project = pathlib.Path(args[args.index('--spec') + 1]).parent / 'TresFort.xcodeproj'
+    project.mkdir()
+    contents = 'APP_STORE_BUILD\\n' + 'TARGETED_DEVICE_FAMILY = "1,2";\\n' * 4
+    (project / 'project.pbxproj').write_text(os.environ.get('MOCK_PROJECT_CONTENTS', contents))
 elif name == 'xcodebuild' and args[0] in ['build-for-testing', 'test-without-building']:
     result = pathlib.Path(args[args.index('-resultBundlePath') + 1])
     result.mkdir()
@@ -69,6 +77,7 @@ else: print('synthetic-tool-version')
         self.env.pop('IOS_KEEP_RESULTS', None)
         self.env.pop('IOS_EVIDENCE_DIR', None)
         self.env.pop('APP_STORE_IPHONE_ONLY', None)
+        self.env.pop('APP_STORE_BUILD', None)
 
     def run_script(self, args=None):
         args = args if args is not None else ['--runtime','runtime','--device','device']
@@ -86,7 +95,7 @@ else: print('synthetic-tool-version')
         self.assertEqual(self.calls(), [])
 
     def test_selects_app_store_project_only_when_requested(self):
-        self.env['APP_STORE_IPHONE_ONLY'] = '1'
+        self.env['APP_STORE_BUILD'] = '1'
         self.assertEqual(self.run_script().returncode, 0)
         generation = next(args for name, args in self.calls()
                           if name == 'xcodegen' and args[0] == 'generate')
@@ -94,9 +103,32 @@ else: print('synthetic-tool-version')
                          'project-app-store.yml')
 
     def test_invalid_app_store_mode_stops_before_creating_device(self):
-        self.env['APP_STORE_IPHONE_ONLY'] = 'yes'
-        self.assertEqual(self.run_script().returncode, 2)
-        self.assertEqual(self.calls(), [])
+        for mode in ('yes', ''):
+            with self.subTest(mode=mode):
+                self.env['APP_STORE_BUILD'] = mode
+                self.assertEqual(self.run_script().returncode, 2)
+                self.assertEqual(self.calls(), [])
+
+    def test_deprecated_flag_is_rejected_even_when_empty_zero_or_new_mode_is_set(self):
+        for legacy in ('', '0', '1'):
+            for mode in ('0', '1'):
+                with self.subTest(legacy=legacy, mode=mode):
+                    self.env['APP_STORE_IPHONE_ONLY'] = legacy
+                    self.env['APP_STORE_BUILD'] = mode
+                    result = self.run_script()
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn('APP_STORE_IPHONE_ONLY is obsolete', result.stderr)
+                    self.assertEqual(self.calls(), [])
+
+    def test_public_project_guard_rejects_wrong_generation_before_creating_device(self):
+        self.env['APP_STORE_BUILD'] = '1'
+        self.env['MOCK_PROJECT_CONTENTS'] = 'APP_STORE_IPHONE_ONLY'
+        result = self.run_script()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('deprecated APP_STORE_IPHONE_ONLY', result.stderr)
+        self.assertFalse(any(args[:2] == ['simctl', 'create'] for _, args in self.calls()))
+        self.assertFalse(any(name == 'xcodebuild' and args[0] == 'build-for-testing'
+                             for name, args in self.calls()))
 
     def test_invalid_runtime_cleans_scratch_and_never_creates_simulator(self):
         result=self.run_script(['--runtime','missing','--device','device'])

@@ -4,7 +4,15 @@ import XCTest
 /// simulator transport. Images remain drafts until checked against the final
 /// selected candidate. This test does not upload anything to App Store Connect.
 final class AppStoreScreenshotTests: XCTestCase {
-    override func setUpWithError() throws { continueAfterFailure = false }
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
+    }
+
+    override func tearDownWithError() throws {
+        XCUIDevice.shared.orientation = .portrait
+        if (testRun?.failureCount ?? 0) > 0 { print(XCUIApplication().debugDescription) }
+    }
 
     private func launch() -> XCUIApplication {
         let app = XCUIApplication()
@@ -12,13 +20,16 @@ final class AppStoreScreenshotTests: XCTestCase {
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
                                "-restAudioCuesEnabled", "NO"]
         app.launch()
-        XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.navigationBars["Today"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 10))
         XCTAssertFalse(app.staticTexts["fixture.scenario"].exists)
-        #if APP_STORE_IPHONE_ONLY
-        XCTAssertFalse(app.buttons["today.partner"].exists,
-                       "The public iPhone candidate must not offer iPad partner setup")
-        #endif
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            XCTAssertTrue(app.tabBars.buttons["Today"].exists)
+            XCTAssertTrue(app.buttons["today.partner"].exists,
+                          "The public candidate includes manual partner training")
+        } else {
+            XCTAssertTrue(app.buttons["today.station"].exists)
+        }
         return app
     }
 
@@ -46,7 +57,8 @@ final class AppStoreScreenshotTests: XCTestCase {
         element.tap()
     }
 
-    func testSavedBetaPartnerSetupCanBeCancelledInIPhoneOnlyBuild() {
+    func testSavedPartnerSetupCanBeCancelled() throws {
+        try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .phone, "Partner lane recovery belongs to its iPhone")
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "app-store"
         app.launchEnvironment["TRESFORT_UI_PARTNER_READY"] = "1"
@@ -65,10 +77,21 @@ final class AppStoreScreenshotTests: XCTestCase {
         let released = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == true AND enabled == true"), object: start)
         XCTAssertEqual(XCTWaiter.wait(for: [released], timeout: 5), .completed)
-        #if APP_STORE_IPHONE_ONLY
-        XCTAssertFalse(recovery.exists, "Closing the saved beta lane must not expose new partner setup")
-        #else
         XCTAssertEqual(recovery.label, "Train together")
+    }
+
+    func testCaptureManualStationOnIPad() throws {
+        try XCTSkipIf(UIDevice.current.userInterfaceIdiom != .pad, "Native iPad screenshot")
+        #if APP_STORE_BUILD
+        let app = launch()
+        tap(app.buttons["today.station"], in: app)
+        XCTAssertTrue(app.staticTexts["station.manualSetup"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["station.done"].isHittable)
+        XCTAssertFalse(app.buttons["station.enableCamera"].exists)
+        XCTAssertFalse(app.buttons["station.recordTest"].exists)
+        capture("06-station")
+        #else
+        throw XCTSkip("Public manual Station is captured with APP_STORE_BUILD=1")
         #endif
     }
 
@@ -101,6 +124,12 @@ final class AppStoreScreenshotTests: XCTestCase {
         XCTAssertFalse(app.textViews["feedback.note"].exists)
         capture("05-finish-summary")
         tap(app.buttons["feedback.expand"], in: app)
+        // iPad presents a shorter form sheet. Its note editor is lazy and
+        // appears only after scrolling the foreground Form, not the runner.
+        XCTAssertEqual(app.collectionViews.count, 1)
+        let form = app.collectionViews.firstMatch
+        UITestScrolling.reveal(app.textViews["feedback.note"], in: app,
+                               maxAttempts: 6, surface: form)
         XCTAssertTrue(app.textViews["feedback.note"].waitForExistence(timeout: 5))
         tap(app.textViews["feedback.note"], in: app)
         app.textViews["feedback.note"].typeText("Steady reps today. Keep this weight next time.")
@@ -112,7 +141,6 @@ final class AppStoreScreenshotTests: XCTestCase {
         // scrolling the runner underneath the sheet or the note's TextEditor.
         let privacy = app.staticTexts["Optional. Saved feedback is shared with your coach and kept out of group feeds."]
         let toolbar = app.navigationBars["Finish workout"]
-        let form = app.collectionViews.containing(.textView, identifier: "feedback.note").firstMatch
         let save = app.buttons["feedback.saveAndFinish"]
         XCTAssertTrue(privacy.waitForExistence(timeout: 5))
         XCTAssertTrue(form.exists)

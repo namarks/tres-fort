@@ -4,10 +4,11 @@ import XCTest
 @testable import TresFort
 
 final class StationMediaPipeDetectorTests: XCTestCase {
-    #if APP_STORE_IPHONE_ONLY
+    #if APP_STORE_BUILD
     func testAppStoreBuildHasNoModelAndExplicitlyRejectsStationInference() {
         XCTAssertNil(Bundle.main.url(forResource: "pose_landmarker_full", withExtension: "task"))
-        XCTAssertFalse(StationLink.isAvailable)
+        XCTAssertTrue(StationLink.isAvailable)
+        XCTAssertFalse(StationLink.cameraCountingAvailable)
         XCTAssertThrowsError(try StationMediaPipeDetector()) { error in
             guard case StationMediaPipeDetector.DetectionError.unavailableInThisBuild = error else {
                 return XCTFail("Expected the explicit unavailable-build error, got \(error)")

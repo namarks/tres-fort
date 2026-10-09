@@ -29,10 +29,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$runtime" && -n "$device" ]] || { usage >&2; exit 2; }
-case "${APP_STORE_IPHONE_ONLY:-0}" in
+if [[ ${APP_STORE_IPHONE_ONLY+x} ]]; then
+  echo 'APP_STORE_IPHONE_ONLY is obsolete; remove it and use APP_STORE_BUILD=1 for the public iPhone + iPad build.' >&2
+  exit 2
+fi
+case "${APP_STORE_BUILD-0}" in
   0) project_spec=project.yml ;;
   1) project_spec=project-app-store.yml ;;
-  *) echo 'APP_STORE_IPHONE_ONLY must be 0 or 1.' >&2; exit 2 ;;
+  *) echo 'APP_STORE_BUILD must be 0 or 1.' >&2; exit 2 ;;
 esac
 [[ "$ui_suite" == full || "$ui_suite" == smoke ]] || { usage >&2; exit 2; }
 if [[ -n "$ci_shard" ]]; then
@@ -174,6 +178,10 @@ PY
 } >"$recording_root/environment.log"
 TRESFORT_MEDIAPIPE_CACHE="${TRESFORT_MEDIAPIPE_CACHE:-$repo_root/.artifacts/mediapipe-downloads}" \
   xcodegen generate --spec "$scratch/ios/$project_spec" >"$recording_root/xcodegen.log" 2>&1
+if [[ "$project_spec" == project-app-store.yml ]]; then
+  python3 -B "$scratch/ios/Dependencies/verify_app_store_project.py" \
+    "$scratch/ios/TresFort.xcodeproj/project.pbxproj"
+fi
 simulator="$(xcrun simctl create "TresFort verification $(basename "$scratch")" "$device" "$runtime")"
 echo "Verifying TresFort on $runtime / $device ($simulator)"
 xcrun simctl boot "$simulator" >"$recording_root/boot.log" 2>&1

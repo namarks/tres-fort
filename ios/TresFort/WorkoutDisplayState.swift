@@ -27,6 +27,9 @@ struct WorkoutDisplayState: Codable, Equatable {
         let groupTitle: String?
         let roundNumber: Int?
         let totalRounds: Int?
+        /// The effort that accompanies these exact runner inputs. Optional
+        /// so display packets from before effort guidance still decode.
+        var rpe: Double? = nil
     }
 
     let phase: Phase
@@ -116,7 +119,8 @@ struct WorkoutDisplayState: Codable, Equatable {
             totalExercises: sync.exercises.count, isWarmup: exercise.isWarmup,
             isBodyweight: exercise.allowsAssistance,
             isUnilateral: exercise.isUnilateral, isPerHand: exercise.isPerHand,
-            groupTitle: group?.title, roundNumber: round, totalRounds: group?.rounds)
+            groupTitle: group?.title, roundNumber: round, totalRounds: group?.rounds,
+            rpe: input?.rpe)
     }
 
     @MainActor

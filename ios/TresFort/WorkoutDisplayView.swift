@@ -205,10 +205,12 @@ struct WorkoutDisplayView<Controls: View>: View {
                     metric(value: "\(reps)", label: step.isUnilateral ? "REPS / SIDE" : "REPS", size: layout.numberSize)
                 }
             }
-            if step.isBodyweight && (step.weight ?? 0) == 0 {
-                Text("BODYWEIGHT")
-                    .font(Theme.mono(18, .bold))
+            let context = targetContext(step)
+            if !context.isEmpty {
+                Text(context)
+                    .font(Theme.mono(layout.compact || layout.tight ? 18 : 22, .bold))
                     .foregroundStyle(Theme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -382,7 +384,17 @@ struct WorkoutDisplayView<Controls: View>: View {
         }
         if let seconds = step.durationSeconds { parts.append("\(seconds) seconds") }
         else if let reps = step.reps { parts.append("\(reps) reps" + (step.isUnilateral ? " per side" : "")) }
-        return parts.joined(separator: " × ")
+        let prescription = parts.joined(separator: " × ")
+        return [prescription, rpeLabel(step)].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    private func targetContext(_ step: WorkoutDisplayState.Step) -> String {
+        let bodyweight = step.isBodyweight && (step.weight ?? 0) == 0 ? "BODYWEIGHT" : nil
+        return [bodyweight, rpeLabel(step)].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    private func rpeLabel(_ step: WorkoutDisplayState.Step) -> String? {
+        step.rpe.map { "RPE " + SetValueFormatter.number($0) }
     }
 
     private struct DisplayLayout {

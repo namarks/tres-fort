@@ -18,13 +18,13 @@ enum IpadWorkoutDisplayUIFixture {
             reps: 12, durationSeconds: nil, setNumber: 2, totalSets: 3,
             exerciseNumber: 2, totalExercises: 4, isWarmup: false, isBodyweight: false,
             isUnilateral: false, isPerHand: false, groupTitle: nil,
-            roundNumber: nil, totalRounds: nil)
+            roundNumber: nil, totalRounds: nil, rpe: 8)
         let next = WorkoutDisplayState.Step(slotID: "synthetic-display-plank",
             exerciseName: "Plank", weight: nil, weightUnit: .kg,
             reps: nil, durationSeconds: 45, setNumber: 1, totalSets: 2,
             exerciseNumber: 3, totalExercises: 4, isWarmup: false, isBodyweight: true,
             isUnilateral: false, isPerHand: false, groupTitle: nil,
-            roundNumber: nil, totalRounds: nil)
+            roundNumber: nil, totalRounds: nil, rpe: 7)
         let resting = mode == "rest"
         station.receive(.display(WorkoutDisplayState(phase: resting ? .rest : .ready,
             workoutName: "Synthetic phone workout", current: current,

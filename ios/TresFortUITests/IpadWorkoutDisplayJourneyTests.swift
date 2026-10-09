@@ -145,8 +145,11 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         XCTAssertTrue(editor.waitForExistence(timeout: 5))
         replace(app.textFields["Weight"], with: "140")
         replace(app.textFields["Reps"], with: "6")
+        replace(app.textFields["—"], with: "8.5")
         editor.buttons["Save"].tap()
-        expectLabel("140 lb × 6 reps", on: element("ipadWorkout.target", in: app))
+        expectLabel("140 lb × 6 reps · RPE 8.5", on: element("ipadWorkout.target", in: app))
+        XCTAssertTrue(element("ipadWorkout.next", in: app).label.contains("RPE 8.5"))
+        capture("ipad-display-edited-rpe")
 
         app.buttons["runner.outline"].tap()
         let row = app.buttons["Dumbbell Row"]
@@ -157,14 +160,15 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         XCTAssertTrue(squat.waitForExistence(timeout: 5))
         XCTAssertFalse(squat.staticTexts["Skipped"].exists)
         squat.tap()
-        expectLabel("140 lb × 6 reps", on: element("ipadWorkout.target", in: app))
+        expectLabel("140 lb × 6 reps · RPE 8.5", on: element("ipadWorkout.target", in: app))
         XCTAssertEqual(app.buttons["runner.logSet"].label, "LOG SET 1")
 
         app.buttons["runner.logSet"].tap()
         XCTAssertTrue(app.buttons["rest.done"].waitForExistence(timeout: 5))
-        expectLabel("Last set · 140 × 6 · lb", on: app.staticTexts["rest.lastValues"])
+        expectLabel("Last set · 140 × 6 · lb · RPE 8.5", on: app.staticTexts["rest.lastValues"])
+        capture("ipad-display-rest-rpe")
         app.buttons["rest.done"].tap()
-        expectLabel("140 lb × 6 reps", on: element("ipadWorkout.target", in: app))
+        expectLabel("140 lb × 6 reps · RPE 8.5", on: element("ipadWorkout.target", in: app))
         XCTAssertEqual(app.buttons["runner.logSet"].label, "LOG SET 2")
     }
 
@@ -211,12 +215,13 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
             let app = launch(linked: mode)
             expectLabel(mode == "rest" ? "REST" : "READY FOR YOUR SET", on: app.staticTexts["ipadWorkout.phase"])
             XCTAssertEqual(app.staticTexts["runner.exerciseTitle"].label, "CABLE FACE PULL")
-            XCTAssertEqual(element("ipadWorkout.target", in: app).label, "22.5 kg × 12 reps")
+            XCTAssertEqual(element("ipadWorkout.target", in: app).label, "22.5 kg × 12 reps · RPE 8")
             XCTAssertEqual(app.staticTexts["ipadWorkout.position"].label, "SET 2 OF 3")
             XCTAssertTrue(element("ipadWorkout.source", in: app).label.contains("iPhone"))
             XCTAssertEqual(element("ipadWorkout.countdown", in: app).exists, mode == "rest")
             let next = element("ipadWorkout.next", in: app)
             XCTAssertTrue(next.label.contains(mode == "rest" ? "CABLE FACE PULL" : "PLANK"))
+            XCTAssertTrue(next.label.contains(mode == "rest" ? "RPE 8" : "RPE 7"))
             if mode == "ready" { XCTAssertTrue(next.label.contains("45 seconds")) }
             XCTAssertFalse(app.buttons["runner.logSet"].exists)
             XCTAssertFalse(app.buttons["runner.editValues"].exists)

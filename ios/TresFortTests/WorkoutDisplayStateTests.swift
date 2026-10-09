@@ -38,10 +38,10 @@ final class WorkoutDisplayStateTests: XCTestCase {
     }
 
     private func exercise(_ id: String, sets: Int = 3, modality: String = "reps",
-                          group: String? = nil, perHand: Bool = false) -> TemplateExercise {
+                          group: String? = nil, perHand: Bool = false, rpe: Double? = nil) -> TemplateExercise {
         TemplateExercise(id: id, exercise_id: "exercise-\(id)", exercise_name: "Exercise \(id)",
             exercise_unit: "lb", order_index: 0, target_sets: sets, target_reps: 6,
-            target_reps_max: nil, target_rpe: nil, rest_seconds: 90, target_weight: 20,
+            target_reps_max: nil, target_rpe: rpe, rest_seconds: 90, target_weight: 20,
             cues: nil, exercise_modality: modality, exercise_laterality: "bilateral",
             exercise_load_mode: perHand ? "per_hand" : "total", exercise_demo_slug: nil,
             target_duration_s: modality == "cardio" ? 300 : nil, is_warmup: 0,
@@ -105,19 +105,70 @@ final class WorkoutDisplayStateTests: XCTestCase {
     }
 
     func testNextPreviewPreservesEditedSlotDraftAndMatchesNavigatingThere() {
-        let a = exercise("a", sets: 1), b = exercise("b")
+        let a = exercise("a", sets: 1), b = exercise("b", rpe: 7)
         let sync = model([a, b])
         sync.jump(to: 1)
-        XCTAssertTrue(sync.setRunnerValues(SetCorrectionValues(weight: 32, reps: 11, rpe: nil,
+        XCTAssertTrue(sync.setRunnerValues(SetCorrectionValues(weight: 32, reps: 11, rpe: 8.5,
                                                                durationSeconds: nil), expected: RunnerPrescription(b)))
         sync.jump(to: 0)
         let preview = WorkoutDisplayState.project(sync: sync).next
         XCTAssertEqual(preview?.slotID, b.id)
         XCTAssertEqual(preview?.weight, 32)
         XCTAssertEqual(preview?.reps, 11)
+        XCTAssertEqual(preview?.rpe, 8.5, "The saved slot draft takes precedence over its prescribed RPE")
         sync.jump(to: 1)
         let actual = WorkoutDisplayState.project(sync: sync).current
         XCTAssertEqual(preview, actual)
+    }
+
+    func testEffortUsesEditedCurrentInputsForThisAndTheFollowingSet() {
+        let ex = exercise("a", rpe: 7)
+        let sync = model([ex])
+        sync.jump(to: 0)
+        XCTAssertEqual(WorkoutDisplayState.project(sync: sync).current?.rpe, 7)
+        XCTAssertTrue(sync.setRunnerValues(SetCorrectionValues(weight: 24, reps: 8, rpe: 8.5,
+                                                               durationSeconds: nil), expected: RunnerPrescription(ex)))
+        let edited = WorkoutDisplayState.project(sync: sync)
+        XCTAssertEqual(edited.current?.rpe, 8.5)
+        XCTAssertEqual(edited.next?.rpe, 8.5)
+        sync.restEndDate = Date().addingTimeInterval(60)
+        XCTAssertEqual(WorkoutDisplayState.project(sync: sync).next?.rpe, 8.5)
+        XCTAssertTrue(sync.setRunnerValues(SetCorrectionValues(weight: 24, reps: 8, rpe: nil,
+                                                               durationSeconds: nil), expected: RunnerPrescription(ex)))
+        XCTAssertNil(WorkoutDisplayState.project(sync: sync).current?.rpe,
+                     "Clearing effort must not reintroduce the old prescription")
+        XCTAssertNil(WorkoutDisplayState.project(sync: sync).next?.rpe)
+    }
+
+    func testUpcomingSlotEffortUsesItsPrescriptionUntilEdited() {
+        let a = exercise("a", sets: 1, rpe: 6), b = exercise("b", rpe: 8)
+        let sync = model([a, b])
+        sync.jump(to: 0)
+        let state = WorkoutDisplayState.project(sync: sync)
+        XCTAssertEqual(state.current?.rpe, 6)
+        XCTAssertEqual(state.next?.rpe, 8, "Do not copy the current exercise's effort into a different slot")
+    }
+
+    func testDisplayEffortRoundTripsAndOlderPacketsWithoutItRemainReadable() throws {
+        let sync = model([exercise("a")])
+        sync.rpe = 7.5
+        let state = WorkoutDisplayState.project(sync: sync)
+        let packet = StationLinkMessage.display(state)
+        XCTAssertEqual(StationLinkMessage.decode(try packet.encoded()), packet)
+
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any])
+        for key in ["current", "next"] {
+            var step = try XCTUnwrap(legacy[key] as? [String: Any])
+            step.removeValue(forKey: "rpe")
+            legacy[key] = step
+        }
+        let restored = try JSONDecoder().decode(WorkoutDisplayState.self,
+            from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertNil(restored.current?.rpe)
+        XCTAssertNil(restored.next?.rpe)
+        XCTAssertEqual(restored.current?.slotID, state.current?.slotID)
+        XCTAssertEqual(restored.current?.weight, state.current?.weight)
+        XCTAssertEqual(restored.next?.setNumber, state.next?.setNumber)
     }
 
     func testRestUsesAbsoluteDeadlineAndPreparesTheAlreadyAdvancedSet() throws {

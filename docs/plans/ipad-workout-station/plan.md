@@ -124,12 +124,17 @@ detections into durable workout actions.
     loss, plus unchanged iPhone behavior and public-build camera exclusion.
   - Keep standalone camera logging, device takeover and broader automatic
     progression outside this display slice; P1/P2/P3 physical gates remain.
-  - Implemented on `codex/ipad-workout-display`: shared native Theme-backed
+  - Implemented in [PR #251](https://github.com/namarks/tres-fort/pull/251): shared native Theme-backed
     presentation, draft-aware projection, compatible authenticated link updates,
     foreground screen-awake lifetime and separate fixed rest/log controls.
-    Local state/link/lifetime checks pass (56 tests); public iPad Station and
-    linked-display checks pass (6 journeys). Final layout, iPhone regression,
-    exact-head cloud review and required CI remain delivery gates.
+    Local state/link/lifetime checks and public iPad Station/linked-display
+    journeys pass. Native portrait/landscape, accessibility, edited values,
+    progression, repeated rest taps and iPhone regressions are verified.
+    Review identified missing RPE; the projection and both target summaries
+    now retain prescribed and edited effort. The focused projection/link run
+    passes 45 tests, and native RPE edit/log, linked display and rest-tap
+    journeys pass with screenshot verification.
+    Exact-head cloud review and required CI remain delivery gates.
 - [ ] **P3 — Enable measured automatic progression**
   - Establish explicit acceptance thresholds for premature completion, exact
     counts and required corrections; validate them before enabling auto-log.
@@ -151,9 +156,9 @@ detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Finish P2.1's final native layout and iPhone regression checks,
-then satisfy the exact-head PR review and CI gates for
-`codex/ipad-workout-display`. This source change does not distribute a new client.
+**Now (@agent):** Satisfy the exact-head PR review and CI gates for
+[PR #251](https://github.com/namarks/tres-fort/pull/251).
+Nick merges after the gates pass. This source change does not distribute a new client.
 
 The iPad's installed version was read directly as 1.0 (49) after the owner's
 October 8 TestFlight update. The iPhone's installed version is unverified.

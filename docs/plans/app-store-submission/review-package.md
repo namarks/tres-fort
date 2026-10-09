@@ -63,7 +63,7 @@ Access to third-party services is governed by their own terms.
 Capture actual candidate screens using synthetic training data. Do not include
 personal accounts, connection codes, fixture banners, fabricated features or
 overlaid claims that hide the UI. Use the required current iPhone dimensions
-from App Store Connect. Version 1.0 is iPhone-only (owner decision 2026-10-05):
+from App Store Connect. Version 1.0 is iPhone-only (owner decision 2026-10-05, reaffirmed 2026-10-09):
 `project.yml` targets iPhone + iPad for TestFlight. The App Store candidate
 uses `project-app-store.yml` through `APP_STORE_IPHONE_ONLY=1`: it excludes the
 iPad camera SDK/model, targets family 1 for app and widget, and hides Station

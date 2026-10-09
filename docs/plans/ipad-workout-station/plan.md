@@ -1,6 +1,6 @@
 # iPad Workout Station
 
-Slug: ipad-workout-station · Status: active · Updated: 2026-10-07 · Theme: gym-floor
+Slug: ipad-workout-station · Status: active · Updated: 2026-10-09 · Theme: gym-floor
 
 ## Goal
 
@@ -602,7 +602,8 @@ Sources checked 2026-10-03:
 
 ## Notes / open questions
 
-- Owner decision, 2026-10-05: App Store version 1.0 ships iPhone-only, so Station
+- Owner decision, 2026-10-05, reaffirmed 2026-10-09 (superseding an October 8
+  decision to include native iPad): App Store version 1.0 ships iPhone-only, so Station
   Mode and the iPhone's Station link stay TestFlight-only until a later App Store
   version adds iPad. The [submission plan](../app-store-submission/plan.md) owns
   the iPhone-only candidate build.

@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-10-07 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-10-09 · Theme: release
 
 ## Goal
 
@@ -16,8 +16,11 @@ routes/fields and is incompatible with the serving canonical Worker. Public
 release remains blocked on a compatible candidate; the manual setting prevents
 automatic publication. Preparation
 and TestFlight availability do not mean public release.
-Owner decision, 2026-10-05: version 1.0 ships **iPhone only**. TestFlight builds
-keep iPhone + iPad for Station Mode; iPad can be added in a later version.
+Owner decision, 2026-10-09: version 1.0 ships **iPhone only**, reaffirming the
+October 5 decision and superseding the October 8 iPhone + native iPad decision
+([PR #248](https://github.com/namarks/tres-fort/pull/248), reverted here).
+TestFlight builds keep iPhone + iPad for Station Mode; iPad can be added in a
+later version.
 
 ## Phases
 
@@ -96,25 +99,20 @@ keep iPhone + iPad for Station Mode; iPad can be added in a later version.
 
 ## Next step
 
-**Now (@agent):** Complete exact-head review and required CI for the October 7
-readiness slice: exclude the iPad camera SDK from the public iPhone project,
-declare collected data and elapsed-time API use, correct body-weight/provider-data disclosures,
-and prepare matching screenshots and the review package. Keep the P1/P2 phases
-open for the remaining operator/provider and candidate evidence below.
-One CI outline journey on `a94f7ae` remained on Today after Start despite correct
-touch delivery; it has not reproduced locally. The readiness evidence records
-that unresolved cause and the opt-in synthetic stage trace added for a recurrence.
-Require current-head CI; local passes do not clear the earlier red run.
+**Now (@owner):** Review the prepared [policy, privacy worksheet and rejection
+reply](review-package.md); confirm provider protections, App Privacy answers for
+third-party AI sharing, agreements and support/moderation operation; and confirm
+both policy hosts serve the current policy before resubmission. Perform the
+designated-account physical consent/workout/export/deletion checks, then
+authorize signing/upload of a fresh iPhone-only candidate from merged main
+(`APP_STORE_IPHONE_ONLY=1 ./scripts/upload-testflight.sh`). Candidate
+selection, replying to Apple, resubmission and eventual MANUAL public release
+remain separately authorized actions.
 
-**Then (@owner):** Review the prepared [policy, privacy worksheet and rejection
-reply](review-package.md), confirm provider protections, App Privacy, agreements
-and support/moderation operation, and authorize publication of the identical
-policy on both hosts plus a fresh iPhone-only candidate. The current public
-website still serves the older AI disclosure. Perform the designated-account
-physical consent/workout/export/deletion checks. Candidate selection, replying
-to Apple, resubmission and eventual MANUAL public release remain separately
-authorized actions. No provider write or account/training mutation was performed
-by this readiness audit.
+**Then (@agent):** After an owner-authorized upload, record the archive's device
+family 1 check, Apple processing and the build number, and refresh the review
+package for that build. No provider write or account/training mutation is part
+of this preparation.
 
 The [readiness evidence](readiness-2026-10-07.md) records fresh Apple, public-site,
 Worker-source, logging and migration readbacks. Core consent, group safety,

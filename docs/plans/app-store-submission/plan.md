@@ -114,7 +114,15 @@ and the prepared [policy, privacy worksheet and rejection
 reply](review-package.md). Confirm provider protections, App Privacy, agreements
 and support/moderation operation, and authorize publication of the identical
 policy on both hosts. The PR #248 final head passed all CI but has no completed
-exact-head Codex review (usage limits); the receipt records the gap. The current
+exact-head Codex review (usage limits); the receipt records the gap.
+
+**In parallel (@agent):** Finish the runnable P1/P2 audit against the build-50
+source `b3f10cc`. Reconcile the listing copy and reviewer instructions with the
+captured screens, account export/deletion and group controls, and public
+policy/support availability. Record evidence and list any owner-only App Store
+fields. Make no App Store Connect, provider or production writes.
+
+**Owner checks:** The current
 public website still serves the older AI disclosure. Perform the
 designated-account consent/workout/export/deletion checks, native iPad layout
 checks and [manual partner trial](../partner-training/validation.md) with two

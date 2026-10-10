@@ -168,11 +168,19 @@ detections into durable workout actions.
 
 ## Next step
 
-**Now (@owner):** Install [1.0 (51)](../app-store-submission/release-51.md)
-on both devices. First try the distance-readable display in standalone iPad
-and iPhone-controlled modes, then evaluate the existing linked camera counting,
-logging, Undo and manual fallback with supported movements. P1/P2/P2.1 physical
-acceptance remains open.
+**Now (@agent):** Verify and review the connection-flow correction requested
+on 2026-10-10. The first build-51 connection attempt stalled because the owner
+had enabled the iPad side without finding the iPhone's exercise-options toggle;
+successful physical pairing has not been observed. The current branch adds a
+visible **iPad display** action on Today and the active iPhone workout, a
+navigation-only setup QR on iPad, explicit phone confirmation, and a remembered
+account-scoped iPad preference. Pairing can happen before starting a workout.
+Opening the code never grants access or starts/logs a workout. Reopening Station
+reuses only the same account's opt-in, and setup failures offer Retry and local
+network guidance. Preserve pending counts, spent-event identity and Undo during
+connection retries. Ship this correction only through the normal exact-head
+review, CI and separately authorized distribution gates; build 51 still has the
+previous setup flow. P1/P2/P2.1 physical acceptance remains open.
 
 Build 51 uses merged source `8cf8235` and includes the experimental camera SDK
 omitted from the public build 50. Before publication, the connected iPad was
@@ -600,7 +608,9 @@ Earlier build evidence (historical, superseded where stated above):
   can reach the iPhone, which logs it through LOG SET for the exact armed slot
   and set at once with Undo, or on a tap when tracking was partial.
 - Neither device browses or advertises on the local network until its member
-  turns the link on; the iPhone stays awake only while connected.
+  turns the link on. Remember that choice for the same account and reconnect
+  on foreground app/Station entry; a setup QR only opens confirmation. The
+  iPhone stays awake only while connected. Pairing never starts a workout.
 - The live MediaPipe angle counter requires a stable extended position, flexion
   and return. It is an advisory count, not a form, depth or safety assessment.
 - Saved replay feeds identical decoded frames to both pose detectors and uses

@@ -9,13 +9,14 @@ struct MemberEntryIntent: Codable, Equatable, Identifiable {
         case invite(String)
         case coach
         case coachApproval(String)
+        case ipadDisplay
         case workouts
         case workout(String)
 
         var requiresPersonalAccount: Bool {
             switch self {
             case .workouts, .workout: return false
-            case .invite, .coach, .coachApproval: return true
+            case .invite, .coach, .coachApproval, .ipadDisplay: return true
             }
         }
     }

@@ -877,6 +877,10 @@ final class AuthModel: ObservableObject {
     /// Preserve validated invite navigation across interrupted sign-in and
     /// onboarding. Signed-in intents remain bound to that account.
     func handleDeepLink(_ url: URL) {
+        if StationLink.isSetupURL(url) {
+            requestEntry(.ipadDisplay)
+            return
+        }
         if let request = Self.coachApprovalID(from: url) {
             requestEntry(.coachApproval(request))
             return

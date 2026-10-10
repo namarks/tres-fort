@@ -20,6 +20,13 @@ final class StationLinkController: ObservableObject {
     /// No link key yet: the device must reach the server once to set up.
     @Published private(set) var needsKey = false
     @Published private(set) var display: WorkoutDisplayState?
+    @Published private(set) var connectionAttempt = 0
+
+    /// Retry discovery without discarding an acknowledged set or its Undo.
+    func retryConnection() {
+        transport.stop()
+        connectionAttempt += 1
+    }
 
     var onPartnerMessage: ((PartnerPacket) -> Void)?
     func sendPartner(_ packet: PartnerPacket) { transport.send(.partner(packet)) }

@@ -6,6 +6,7 @@ struct MemberEntryPresentation: ViewModifier {
     @ObservedObject var auth: AuthModel
     @ObservedObject var sync: SyncModel
     @ObservedObject var groupModel: GroupModel
+    @ObservedObject var stationLink: StationLinkController
     var onJoined: () -> Void
     var onCoach: () -> Void
     var onWorkout: () -> Void
@@ -47,6 +48,11 @@ struct MemberEntryPresentation: ViewModifier {
                     case let .coachApproval(request):
                         CoachApprovalView(auth: auth, requestID: request,
                             accountName: groupModel.me?.display_name ?? "Your signed-in Très Fort account") { sheet = nil }
+                    case .ipadDisplay:
+                        StationPhoneSetupView(auth: auth, link: stationLink) {
+                            onWorkout()
+                            sheet = nil
+                        }
                     case .workouts:
                         CreateWorkoutView(sync: sync)
                     case let .workout(id):
@@ -104,6 +110,7 @@ struct MemberEntryPresentation: ViewModifier {
         }
         presented = Presentation(intent: intent, epoch: auth.featureSessionEpoch)
         if intent.destination == .coach { onCoach() }
+        if intent.destination == .ipadDisplay { onWorkout() }
         sheet = presented
     }
 

@@ -15,6 +15,11 @@ struct StationWorkoutDisplayPublisher: View {
                 displayUnit: WeightUnit(rawValue: weightUnitRaw) ?? .lb) : nil
             Color.clear.frame(width: 0, height: 0)
                 .task(id: state) { link.publishDisplay(state) }
+                .onChange(of: link.isConnected) { _, connected in
+                    // A failed key load withdrew the old projection. Publish
+                    // the live runner again after Retry, even if it is idle.
+                    if connected { link.publishDisplay(state) }
+                }
         }
         .onDisappear { link.publishDisplay(nil) }
         .accessibilityHidden(true)
@@ -28,6 +33,7 @@ struct LinkedWorkoutDisplayView<Controls: View>: View {
     @ObservedObject var link: StationLinkStation
     var trackingCount: String? = nil
     var trackingStatus: String? = nil
+    var retryConnection: () -> Void = {}
     @ViewBuilder let controls: () -> Controls
 
     var body: some View {
@@ -40,15 +46,30 @@ struct LinkedWorkoutDisplayView<Controls: View>: View {
                 VStack(alignment: .leading, spacing: 24) {
                     Image(systemName: "iphone.and.arrow.forward")
                         .font(.system(size: 42)).foregroundStyle(Theme.accent)
-                    Text(link.connection.isConnected ? "WAITING FOR YOUR WORKOUT" : "CONNECT YOUR IPHONE")
+                    Text(link.connection.isConnected ? "IPHONE CONNECTED" : "CONNECT YOUR IPHONE")
                         .font(Theme.display(56)).foregroundStyle(Theme.text)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier("ipadWorkout.connection")
                     Text(link.connection.isConnected
-                         ? "Open the workout on your iPhone. Both devices need a version with iPad workout display support."
-                         : "On your iPhone, start a workout and turn on Use iPad workout display in Workout outline → Current exercise options. Keep the workout open on your iPhone.")
+                         ? "Start or resume a workout on your iPhone. It will appear here automatically."
+                         : "Keep Très Fort open on your iPhone. If you’ve connected before, your workout will appear automatically.")
                         .font(Theme.mono(18)).foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
+                    if !link.connection.isConnected {
+                        if link.needsKey {
+                            Text("Connect this iPad to the internet to finish setup, then try again.")
+                                .accessibilityIdentifier("station.connectionProblem")
+                        } else if link.connection == .unavailable {
+                            Text("Couldn’t start the local connection. Check Local Network access in Settings, then try again.")
+                                .accessibilityIdentifier("station.connectionProblem")
+                        }
+                        StationSetupCode()
+                        Button("Try again", action: retryConnection)
+                            .font(Theme.mono(16, .bold)).foregroundStyle(Theme.accent)
+                            .frame(minHeight: 48)
+                            .accessibilityIdentifier("station.retryConnection")
+                        StationConnectionHelp()
+                    }
                     controls()
                 }
                 .padding(32).frame(maxWidth: 1000, alignment: .leading)

@@ -183,6 +183,7 @@ struct TodayView: View {
     @State private var feedbackPresentation: WorkoutFeedbackPresentation?
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
+    @ObservedObject var stationLink: StationLinkController
     /// Opens the shared ManualActivitySheet hosted by MainTabView so a user
     /// can log "I just did Pilates" without tab-switching. Optional so
     /// existing tests / previews can construct the view without the new
@@ -219,18 +220,20 @@ struct TodayView: View {
     @State private var isPreparingWorkoutStart = false
     @State private var showFreestyle = false
     @State private var showStation = false
-    /// iPhone end of the iPad Station link; it browses only while a workout
-    /// runs with the setting on, so the local network prompt is opt-in.
-    @StateObject private var stationLink = StationLinkController()
+    @State private var showStationConnection = false
     @StateObject private var partner = PartnerPhoneModel()
     @State private var showPartner = false
     @AppStorage(StationLink.enabledAccountDefaultsKey) private var stationLinkEnabledAccount = ""
     private var stationLinkAccount: String? {
-        // Final review keeps the link so the last iPad-logged set can be undone.
+        // Pair before starting a workout. Discovery remains an account-scoped
+        // opt-in, and pairing never starts or resumes a workout by itself.
         guard StationLink.isEnabled(storedAccount: stationLinkEnabledAccount, accountID: auth.userID),
-              sync.running,
+              !auth.isReviewAccount,
               UIDevice.current.userInterfaceIdiom == .phone else { return nil }
         return auth.userID
+    }
+    private var stationLinkRequestID: String {
+        "\(stationLinkAccount ?? ""):\(stationLink.connectionAttempt)"
     }
     /// The full calendar, pushed from the week strip.
     @State private var showCalendar = false
@@ -299,6 +302,17 @@ struct TodayView: View {
                 })
             }
             .toolbar {
+                if UIDevice.current.userInterfaceIdiom == .phone && !auth.isReviewAccount {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button { showStationConnection = true } label: {
+                            Label("iPad display", systemImage: stationLink.isConnected ? "checkmark.circle.fill" : "ipad.landscape")
+                                .labelStyle(.titleAndIcon)
+                                .font(.subheadline.weight(.semibold))
+                        }
+                        .accessibilityIdentifier("today.ipadDisplay")
+                        .accessibilityValue(stationLink.isConnected ? "Connected" : "")
+                    }
+                }
                 if UIDevice.current.userInterfaceIdiom == .pad {
                     ToolbarItem(placement: .topBarLeading) {
                         Button { showStation = true } label: {
@@ -368,6 +382,11 @@ struct TodayView: View {
             .sheet(item: $feedbackPresentation) { item in
                 WorkoutFeedbackSheet(sync: sync, target: item.target, finishAfterSave: true)
             }
+            .sheet(isPresented: $showStationConnection) {
+                StationPhoneSetupView(auth: auth, link: stationLink) {
+                    showStationConnection = false
+                }
+            }
             .fullScreenCover(isPresented: $showStation) {
                 let accountID = auth.userID
                 let epoch = auth.featureSessionEpoch
@@ -430,11 +449,16 @@ struct TodayView: View {
             partner.bind(auth: auth, sync: sync, link: stationLink)
         }
         .onChange(of: partner.needsReview) { _, needed in if needed { showPartner = true } }
-        .task(id: stationLinkAccount) {
+        .task(id: stationLinkRequestID) {
             guard let account = stationLinkAccount else { stationLink.stop(); return }
             let key = await StationLinkKeyStore.load(accountID: account, jwt: auth.featureJWT)
             guard !Task.isCancelled, stationLinkAccount == account else { return }
             if let key { stationLink.start(key: key) } else { stationLink.keyUnavailable() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active, stationLinkAccount != nil, !stationLink.isConnected {
+                stationLink.retryConnection()
+            }
         }
         // A rotated key restarts the running link so both devices meet again.
         .onReceive(NotificationCenter.default.publisher(for: StationLinkKeyStore.refreshed)) { note in
@@ -452,7 +476,7 @@ struct TodayView: View {
         .onChange(of: workoutFocused) { _, focused in if !focused { stationLink.pause() } }
         .background {
             StationWorkoutDisplayPublisher(sync: sync, link: stationLink,
-                enabled: stationLinkAccount != nil && !partner.isOpen,
+                enabled: stationLinkAccount != nil && sync.running && !partner.isOpen,
                 paused: (!workoutFocused && !sync.finished) || scenePhase != .active)
         }
     }
@@ -1098,6 +1122,7 @@ private struct RunnerView: View {
                 #if APP_STORE_BUILD
                 Label(stationLink.needsKey ? "Go online once to set up iPad Station" :
                       stationLink.isConnected ? "Workout shown on your iPad" :
+                      stationLink.connection == .unavailable ? "Open iPad display to retry the connection" :
                       "Looking for your iPad Station", systemImage: "ipad.landscape")
                     .font(.footnote).foregroundStyle(Theme.muted)
                     .accessibilityIdentifier("runner.station.status")
@@ -1291,15 +1316,6 @@ private struct RunnerView: View {
             Toggle("Timer sounds", isOn: $timerCuesEnabled)
                 .tint(Theme.accent).frame(minHeight: 44)
                 .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
-            if showsStationLink {
-                Toggle("Use iPad workout display", isOn: stationLinkEnabled)
-                    .tint(Theme.accent).frame(minHeight: 44)
-                    .accessibilityIdentifier("runner.stationLink")
-                if StationLink.cameraCountingAvailable {
-                    Text("With tracking enabled on the iPad, supported counted sets log here automatically with Undo. Keep this workout open.")
-                        .font(.caption).foregroundStyle(Theme.muted)
-                }
-            }
             if ex.exercise_modality == "barbell" {
                 NavigationLink("Plates & warm-up guide") {
                     BarbellLoadingView(target: sync.weight, unit: ex.targetWeightUnit)

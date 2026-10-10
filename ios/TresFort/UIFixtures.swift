@@ -124,6 +124,14 @@ enum UIFixtureModel {
             }
             auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
         }
+        if UIFixtureScenario.selected == .appStore {
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_STATION_SETUP"] == "1" {
+                auth.handleDeepLink(StationLink.setupURL)
+            }
+            if let remembered = ProcessInfo.processInfo.environment["TRESFORT_UI_STATION_REMEMBERED_ACCOUNT"] {
+                defaults.preferences.set(remembered, forKey: StationLink.stationEnabledAccountDefaultsKey)
+            }
+        }
         if UIFixtureScenario.selected == .appStore,
            ProcessInfo.processInfo.environment["TRESFORT_UI_PARTNER_READY"] == "1" {
             // Simulate an App Store upgrade with a beta's unfinished setup.
@@ -273,6 +281,7 @@ private struct UIFixtureTrainingView: View {
     @ObservedObject var auth: AuthModel
     let scenario: UIFixtureScenario
     @StateObject private var sync: SyncModel
+    @StateObject private var stationLink = StationLinkController()
 
     init(auth: AuthModel, scenario: UIFixtureScenario) {
         self.auth = auth
@@ -306,7 +315,7 @@ private struct UIFixtureTrainingView: View {
                     TrainingProgressView(sync: sync).tabItem { Label("Progress", systemImage: "chart.xyaxis.line") }
                 }
             } else {
-                TodayView(sync: sync, auth: auth)
+                TodayView(sync: sync, auth: auth, stationLink: stationLink)
             }
         }
         .task {

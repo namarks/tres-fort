@@ -18,6 +18,18 @@ enum StationLink {
     /// The account that turned the link on. The opt-in belongs to that member
     /// only, so a shared phone never browses for another member's iPad.
     static let enabledAccountDefaultsKey = "stationLinkEnabledAccount"
+    static let stationEnabledAccountDefaultsKey = "stationDisplayEnabledAccount"
+
+    /// A navigation shortcut only. It carries no account, pairing secret or
+    /// permission; the phone still asks its signed-in member to connect.
+    static let setupURL = URL(string: "tresfort://ipad-display")!
+
+    static func isSetupURL(_ url: URL) -> Bool {
+        guard let parts = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return false }
+        return parts.scheme == "tresfort" && parts.host == "ipad-display"
+            && parts.path.isEmpty && parts.user == nil && parts.password == nil
+            && parts.port == nil && parts.query == nil && parts.fragment == nil
+    }
 
     /// Manual partner coordination is available in both distributions. The
     /// experimental movement counter stays in the TestFlight build only.

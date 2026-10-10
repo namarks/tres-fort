@@ -62,6 +62,7 @@ struct StationLinkRunnerPanel: View {
     private func statusText(target: StationLinkTarget?) -> String {
         guard link.isConnected else {
             if link.needsKey { return "Go online once to set up iPad Station" }
+            if link.connection == .unavailable { return "Open iPad display to retry the connection" }
             return link.connection == .off ? "iPad Station off" : "Looking for your iPad Station"
         }
         guard target != nil else {

@@ -10,6 +10,16 @@ spec = importlib.util.spec_from_file_location(
     'ci_ios_scope', Path(__file__).resolve().parents[1] / 'scripts/ci-ios-scope.py')
 policy = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(policy)
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def device_lists():
+    """Selectors per device job, parsed as scripts/verify-ios.sh reads them."""
+    lists = {}
+    for path in sorted((ROOT / '.github/ios-tests').glob('*.txt')):
+        lines = (line.split('#', 1)[0].strip() for line in path.read_text().splitlines())
+        lists[path.stem] = [line for line in lines if line]
+    return lists
 
 
 class IOSScopeTests(unittest.TestCase):
@@ -39,31 +49,54 @@ class IOSScopeTests(unittest.TestCase):
                          'test/ci-ios-scope.test.py']:
                 self.assertEqual(policy.select_suite(event, ['docs/note.md', path]), 'full')
 
+    def test_device_test_lists_run_smoke_not_full(self):
+        # Adding a class to a device job must not escalate to all six shards.
+        for name in ['station', 'app-store-iphone', 'app-store-ipad']:
+            self.assertEqual(policy.select_suite(
+                'pull_request', [f'.github/ios-tests/{name}.txt']), 'smoke')
+
+    def test_device_test_lists_name_real_suites(self):
+        ios = ROOT / 'ios'
+        for name, selectors in device_lists().items():
+            self.assertTrue(selectors, name)
+            self.assertEqual(len(selectors), len(set(selectors)), name)
+            for selector in selectors:
+                with self.subTest(list=name, selector=selector):
+                    target, *rest = selector.split('/')
+                    self.assertIn(target, ['TresFortTests', 'TresFortUITests'])
+                    if rest:
+                        source = (ios / target / (rest[0] + '.swift')).read_text()
+                        self.assertRegex(source, rf'class\s+{re.escape(rest[0])}\b')
+                    if len(rest) == 2:
+                        self.assertRegex(source, rf'func\s+{re.escape(rest[1])}\s*\(')
+
     def test_public_device_shards_require_camera_gate_and_native_ui_coverage(self):
-        workflow = (Path(__file__).resolve().parents[1] / '.github/workflows/ci.yml').read_text()
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
         steps = dict(re.findall(r'      - name: ([^\n]+)\n(.*?)(?=\n      - |\n  [a-z]|\Z)',
                                 workflow, re.S))
         job_name = re.search(r'  ios-tests:\n    name: ([^\n]+)', workflow).group(1)
+        lists = device_lists()
         for family, device in [('iPhone', 'iPhone-17-Pro'), ('iPad', 'iPad-Pro-13-inch-M4-8GB')]:
             step = steps[f'{family} App Store build and tests']
             self.assertIn(f'- shard: app-store-{family.lower()}', workflow)
             self.assertIn(f"matrix.shard == 'app-store-{family.lower()}' && '{family} App Store'", job_name)
             self.assertIn("APP_STORE_BUILD: '1'", step)
             self.assertIn(f'--device com.apple.CoreSimulator.SimDeviceType.{device}', step)
-            self.assertIn('--only-testing TresFortUITests/AppStoreScreenshotTests', step)
+            self.assertIn(f'--only-testing-file .github/ios-tests/app-store-{family.lower()}.txt', step)
+            self.assertIn('TresFortUITests/AppStoreScreenshotTests', lists[f'app-store-{family.lower()}'])
         for suite in ['TresFortTests/StationMediaPipeDetectorTests', 'TresFortTests/PublicStationTests']:
-            self.assertIn('--only-testing ' + suite, steps['iPhone App Store build and tests'])
+            self.assertIn(suite, lists['app-store-iphone'])
+        # Require the entire public unit target, not a similarly prefixed class.
         for suite in ['TresFortTests', 'TresFortUITests/PublicStationJourneyTests',
                       'TresFortUITests/IpadWorkoutDisplayJourneyTests',
                       'TresFortUITests/MemberActivationJourneyTests/testFreshDeviceSignInRestoresExistingTrainingAndStation']:
-            self.assertIn('--only-testing ' + suite, steps['iPad App Store build and tests'])
-        # Require the entire public unit target, not a similarly prefixed class.
-        self.assertRegex(steps['iPad App Store build and tests'], r'--only-testing TresFortTests(?:\s|$)')
+            self.assertIn(suite, lists['app-store-ipad'])
         self.assertNotIn('--skip-testing', steps['iPad App Store build and tests'])
         self.assertNotIn('APP_STORE_BUILD', steps['iPad Station build and tests'])
+        self.assertIn('--only-testing-file .github/ios-tests/station.txt',
+                      steps['iPad Station build and tests'])
         for suite in ['StationJourneyTests', 'IpadWorkoutDisplayJourneyTests']:
-            self.assertIn('--only-testing TresFortUITests/' + suite,
-                          steps['iPad Station build and tests'])
+            self.assertIn('TresFortUITests/' + suite, lists['station'])
 
     def test_pull_request_compares_tested_merge_with_base_and_preserves_paths(self):
         with patch.object(policy.subprocess, 'check_output', return_value=

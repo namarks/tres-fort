@@ -152,6 +152,29 @@ else: print('synthetic-tool-version')
         self.assertEqual(len(list((self.root/'.artifacts').rglob('result.txt'))),2)
         self.assertIn('-only-testing:TresFortTests',next(args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building'))
 
+    def test_selection_file_adds_each_selector_and_rejects_bad_files(self):
+        selection=self.root/'selection.txt'
+        selection.write_text('# comment\nTresFortTests/StationLiveTests\n\n  TresFortUITests/A/testB  # why\nTresFortTests')
+        result=self.run_script(['--runtime','runtime','--device','device','--only-testing-file',str(selection)])
+        self.assertEqual(result.returncode,0,result.stderr)
+        args=next(args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building')
+        self.assertEqual([arg for arg in args if arg.startswith('-only-testing:')],
+                         ['-only-testing:TresFortTests/StationLiveTests','-only-testing:TresFortUITests/A/testB',
+                          '-only-testing:TresFortTests'])
+        for contents in ['# nothing selected\n\n','TresFortTests/-flag\n','A/B/C/D\n']:
+            with self.subTest(contents=contents):
+                selection.write_text(contents)
+                calls_before=self.calls()
+                self.assertEqual(self.run_script(['--runtime','runtime','--device','device',
+                                                  '--only-testing-file',str(selection)]).returncode,2)
+                self.assertEqual(self.calls(),calls_before)
+        for extra in [['--only-testing-file',str(self.root/'missing.txt')],
+                      ['--only-testing-file',str(selection),'--ci-shard','1']]:
+            selection.write_text('TresFortTests\n')
+            calls_before=self.calls()
+            self.assertEqual(self.run_script(['--runtime','runtime','--device','device',*extra]).returncode,2)
+            self.assertEqual(self.calls(),calls_before)
+
     def test_build_failure_retains_diagnostics_and_never_runs_tests(self):
         self.env['MOCK_BUILD_EXIT']='65'
         self.assertNotEqual(self.run_script().returncode,0)

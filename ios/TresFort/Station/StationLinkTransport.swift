@@ -13,7 +13,7 @@ import UIKit
 final class StationLinkTransport: NSObject, ObservableObject {
     enum Role: String { case station, controller }
     enum Connection: Equatable {
-        case off, searching, connected(String)
+        case off, searching, unavailable, connected(String)
         var isConnected: Bool { if case .connected = self { return true }; return false }
     }
 
@@ -309,7 +309,7 @@ extension StationLinkTransport: MCNearbyServiceBrowserDelegate {
     }
 
     nonisolated func browser(_ browser: MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: Error) {
-        onMain { if browser === $0.browser { $0.connection = .off } }
+        onMain { if browser === $0.browser { $0.connection = .unavailable } }
     }
 }
 
@@ -321,6 +321,6 @@ extension StationLinkTransport: MCNearbyServiceAdvertiserDelegate {
     }
 
     nonisolated func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
-        onMain { if advertiser === $0.advertiser { $0.connection = .off } }
+        onMain { if advertiser === $0.advertiser { $0.connection = .unavailable } }
     }
 }

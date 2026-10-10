@@ -95,7 +95,8 @@ struct RootView: View {
             RestCue.cancelNotification()
             await RestLiveActivity.endStaleActivities()
         }
-        // Universal Link entry: a tapped https://…/join/<code> routes here
+        // External entry: group/coach Universal Links and the navigation-only
+        // iPad setup shortcut route here
         // (onOpenURL on iOS 14+, plus the canonical web-browsing activity
         // hook for belt-and-suspenders). Both funnel into AuthModel, which
         // validates + stashes the code for MainTabView to present — so it

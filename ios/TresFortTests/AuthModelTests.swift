@@ -2321,6 +2321,22 @@ extension AuthModelTests {
         XCTAssertEqual(auth.nextEntryIntent?.destination, .workouts)
     }
 
+    func testStationSetupLinkOnlyQueuesAccountBoundNavigationAndNeverEnablesDiscovery() {
+        let local = defaults()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: local)
+        auth.onboardingComplete = true
+        auth.handleDeepLink(StationLink.setupURL)
+        auth.handleDeepLink(StationLink.setupURL)
+        XCTAssertEqual(auth.pendingEntryIntents.count, 1)
+        XCTAssertEqual(auth.nextEntryIntent?.destination, .ipadDisplay)
+        XCTAssertEqual(auth.nextEntryIntent?.accountID, "user-a")
+        XCTAssertNil(local.preferences.string(forKey: StationLink.enabledAccountDefaultsKey))
+        let restored = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: local)
+        XCTAssertEqual(restored.nextEntryIntent?.destination, .ipadDisplay)
+        auth.signOut()
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+    }
+
     func testMemberEntrySurvivesFailedSignInRelaunchAndOnboarding() async {
         let defaults = defaults()
         let api = AuthAPIStub()

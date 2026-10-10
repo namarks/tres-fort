@@ -20,6 +20,13 @@ final class StationLinkController: ObservableObject {
     /// No link key yet: the device must reach the server once to set up.
     @Published private(set) var needsKey = false
     @Published private(set) var display: WorkoutDisplayState?
+    @Published private(set) var connectionAttempt = 0
+
+    /// Retry discovery without discarding an acknowledged set or its Undo.
+    func retryConnection() {
+        transport.stop()
+        connectionAttempt += 1
+    }
 
     var onPartnerMessage: ((PartnerPacket) -> Void)?
     func sendPartner(_ packet: PartnerPacket) { transport.send(.partner(packet)) }
@@ -28,27 +35,14 @@ final class StationLinkController: ObservableObject {
     private var seenEvents: Set<UUID> = []
     private var completedArmID: UUID?
     private var cancellable: AnyCancellable?
-    /// The phone must stay awake to receive counts; restore the prior policy.
-    private var previousIdleTimerDisabled: Bool?
+    private let idleTimer: StationIdleTimerOverride
+    private var workoutActive = false
 
-    init(transport: StationLinkTransport? = nil) {
+    init(transport: StationLinkTransport? = nil, idleTimer: StationIdleTimerOverride? = nil) {
         self.transport = transport ?? StationLinkTransport(role: .controller)
+        self.idleTimer = idleTimer ?? StationIdleTimerOverride()
         cancellable = self.transport.$connection.sink { [weak self] value in
-            guard let self else { return }
-            self.connection = value
-            if value.isConnected {
-                if self.previousIdleTimerDisabled == nil {
-                    self.previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
-                    UIApplication.shared.isIdleTimerDisabled = true
-                }
-            } else {
-                self.progress = nil
-                self.stationState = nil
-                if let previous = self.previousIdleTimerDisabled {
-                    UIApplication.shared.isIdleTimerDisabled = previous
-                    self.previousIdleTimerDisabled = nil
-                }
-            }
+            self?.connectionChanged(value)
         }
         self.transport.onMessage = { [weak self] in self?.receive($0) }
         // A fresh connection learns the current arm, if any.
@@ -62,16 +56,41 @@ final class StationLinkController: ObservableObject {
         // A torn-down runner (sign-out, a replaced session) publishes no
         // disconnect: stop the link and give the phone its sleep policy back.
         let transport = self.transport
-        let previous = previousIdleTimerDisabled
+        let idleTimer = self.idleTimer
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 transport.stop()
-                if let previous { UIApplication.shared.isIdleTimerDisabled = previous }
+                idleTimer.end()
             }
         }
     }
 
     var isConnected: Bool { connection.isConnected }
+
+    /// Discovery can outlive a workout. Only an open foreground workout
+    /// needs to keep the phone awake to receive counts and publish guidance.
+    func setWorkoutActive(_ active: Bool) {
+        workoutActive = active
+        updateIdleTimer()
+    }
+
+    func connectionChanged(_ value: StationLinkTransport.Connection) {
+        connection = value
+        if !value.isConnected {
+            progress = nil
+            stationState = nil
+        }
+        updateIdleTimer()
+    }
+
+    private func updateIdleTimer() {
+        if workoutActive && isConnected {
+            idleTimer.begin()
+            idleTimer.update(cameraRunning: false, partnerOpen: false, foreground: true, workoutDisplay: true)
+        } else {
+            idleTimer.end()
+        }
+    }
 
     var displayToResend: WorkoutDisplayState? { display }
 
@@ -108,14 +127,28 @@ final class StationLinkController: ObservableObject {
     }
 
     func stop() {
-        publishDisplay(nil)
-        request(nil)
+        clearWorkoutState()
         transport.stop()
         needsKey = false
+    }
+
+    /// Keep remembered pairing available between workouts without carrying a
+    /// count, Undo or armed set into a later workout with the same template.
+    func resetWorkout() {
+        setWorkoutActive(false)
+        clearWorkoutState()
+    }
+
+    private func clearWorkoutState() {
+        publishDisplay(nil)
+        request(nil)
+        progress = nil
+        stationState = nil
         proposal = nil
         lastLogged = nil
         pendingUndo = nil
         seenEvents.removeAll()
+        completedArmID = nil
     }
 
     /// Arms the iPad for the runner's current set, or disarms it with nil.

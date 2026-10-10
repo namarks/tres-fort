@@ -61,6 +61,7 @@ struct StationView: View {
     @State private var linkedArmID: UUID?
     /// The latest "on" tap; turning the link off or on again supersedes it.
     @State private var linkRequest: UUID?
+    @AppStorage(StationLink.stationEnabledAccountDefaultsKey) private var enabledAccount = ""
 #if DEBUG
     @StateObject private var diagnostics = StationDiagnostics()
 #endif
@@ -94,7 +95,7 @@ struct StationView: View {
             Group {
             if showingWorkoutDisplay {
                 LinkedWorkoutDisplayView(link: link, trackingCount: linkedCount,
-                    trackingStatus: linkedTrackingStatus) {
+                    trackingStatus: linkedTrackingStatus, retryConnection: { setConnection(true) }) {
                     Button("Camera & options", systemImage: "slider.horizontal.3") {
                         showStationSetup = true
                     }
@@ -181,6 +182,9 @@ struct StationView: View {
             showLinkedDisplayFixture = IpadWorkoutDisplayUIFixture.installIfRequested(
                 on: link, accountID: access.session.accountID)
             #endif
+            if StationLink.isEnabled(storedAccount: enabledAccount, accountID: access.session.accountID) {
+                setConnection(true)
+            }
         }
         .onReceive(access.$isActive) { active in
             guard !active else { return }
@@ -301,7 +305,7 @@ struct StationView: View {
         #if DEBUG && targetEnvironment(simulator)
         if showLinkedDisplayFixture { return true }
         #endif
-        return link.isEnabled
+        return link.isEnabled || linkRequest != nil || link.needsKey
     }
 
     private var linkedCount: String? {
@@ -371,23 +375,16 @@ struct StationView: View {
     private var linkPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("IPHONE WORKOUT DISPLAY").font(Theme.mono(12, .bold))
-            // On from the tap, while the key loads, so turning it off cancels.
-            Toggle("Follow my iPhone workout", isOn: Binding(
-                get: { link.isEnabled || linkRequest != nil },
-                set: { enabled in
-                    guard enabled else { linkRequest = nil; link.stop(); return }
-                    guard access.validate() else { return }
-                    let request = UUID()
-                    linkRequest = request
-                    Task { @MainActor in
-                        let key = await loadLinkKey()
-                        guard access.validate(), linkRequest == request else { return }
-                        link.enable(key: key)
-                        if !link.isEnabled { linkRequest = nil } // no key: show off, with why
-                    }
-                }))
-                .tint(Theme.accent)
-                .accessibilityIdentifier("station.link")
+            Button("Connect iPhone") {
+                showStationSetup = false
+                setConnection(true)
+            }
+            .buttonStyle(WorkoutPrimaryButtonStyle())
+            .accessibilityIdentifier("station.connectPhone")
+            Toggle("Reconnect automatically", isOn: Binding(
+                get: { StationLink.isEnabled(storedAccount: enabledAccount, accountID: access.session.accountID) },
+                set: setConnection))
+                .tint(Theme.accent).accessibilityIdentifier("station.link")
             Text(linkMessage)
                 .font(.subheadline).foregroundStyle(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -400,13 +397,15 @@ struct StationView: View {
 
     private var linkMessage: String {
         if link.needsKey {
-            return "Connect this iPad to the internet once to set up counting for your iPhone, then try again."
+            return "Connect this iPad to the internet once to finish setup, then try again."
         }
         switch link.connection {
         case .off:
-            return "Your iPhone runs the workout and logs each set. Turn this on, then turn on iPad Station in your iPhone workout."
+            return "Connect once, then open Station whenever you want to use your iPad display."
         case .searching:
-            return "Looking for your iPhone. Keep the workout open on your iPhone with iPad Station turned on."
+            return "Looking for your iPhone. Open Très Fort on it, or scan the setup code."
+        case .unavailable:
+            return "Couldn’t start the local connection. Check Local Network access in Settings."
         case .connected(let name):
             guard let arm = link.arm else { return "Connected to \(name). Waiting for your next set." }
             let state = link.isCounting ? "Counting"
@@ -414,6 +413,22 @@ struct StationView: View {
                 : linkedArmID == arm.armID ? "Sent to your iPhone"
                 : camera.state == .running ? "Not counting" : "Turn on the camera to count"
             return "Connected to \(name) · \(arm.exerciseName), set \(arm.setNumber) · \(state)"
+        }
+    }
+
+    private func setConnection(_ enabled: Bool) {
+        guard access.validate() else { return }
+        enabledAccount = enabled ? access.session.accountID : ""
+        linkRequest = nil
+        link.stop()
+        guard enabled else { return }
+        let request = UUID()
+        linkRequest = request
+        Task { @MainActor in
+            let key = await loadLinkKey()
+            guard access.validate(), linkRequest == request else { return }
+            link.enable(key: key)
+            if !link.isEnabled { linkRequest = nil }
         }
     }
 

@@ -125,9 +125,6 @@ enum UIFixtureModel {
             auth.handleDeepLink(URL(string: "https://tresfort.app/coach/authorize?request=" + String(repeating: "a", count: 64))!)
         }
         if UIFixtureScenario.selected == .appStore {
-            if ProcessInfo.processInfo.environment["TRESFORT_UI_STATION_SETUP"] == "1" {
-                auth.handleDeepLink(StationLink.setupURL)
-            }
             if let remembered = ProcessInfo.processInfo.environment["TRESFORT_UI_STATION_REMEMBERED_ACCOUNT"] {
                 defaults.preferences.set(remembered, forKey: StationLink.stationEnabledAccountDefaultsKey)
             }

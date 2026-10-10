@@ -1,6 +1,6 @@
 # iPad Workout Station
 
-Slug: ipad-workout-station · Status: active · Updated: 2026-10-09 · Theme: gym-floor
+Slug: ipad-workout-station · Status: active · Updated: 2026-10-10 · Theme: gym-floor
 
 ## Goal
 
@@ -168,7 +168,8 @@ detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Verify and review the connection-flow correction requested
+**Now (@agent):** Complete exact-head review and CI for the connection-flow
+correction in [PR #253](https://github.com/namarks/tres-fort/pull/253), requested
 on 2026-10-10. The first build-51 connection attempt stalled because the owner
 had enabled the iPad side without finding the iPhone's exercise-options toggle;
 successful physical pairing has not been observed. The current branch adds a
@@ -181,6 +182,13 @@ network guidance. Preserve pending counts, spent-event identity and Undo during
 connection retries. Ship this correction only through the normal exact-head
 review, CI and separately authorized distribution gates; build 51 still has the
 previous setup flow. P1/P2/P2.1 physical acceptance remains open.
+
+Focused local verification passes on iPhone and both public and camera-enabled
+iPad builds, including real iOS URL handoff, explicit opt-in and cancellation,
+account isolation, remembered choices, QR decoding, reconnect/Undo integrity,
+largest text and existing public Station journeys. Synthetic screenshots were
+checked against the shared Theme. These simulator results do not establish
+physical pairing or camera accuracy.
 
 Build 51 uses merged source `8cf8235` and includes the experimental camera SDK
 omitted from the public build 50. Before publication, the connected iPad was

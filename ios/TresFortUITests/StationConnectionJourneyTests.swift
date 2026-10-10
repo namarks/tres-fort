@@ -13,11 +13,14 @@ final class StationConnectionJourneyTests: XCTestCase {
                         largeText: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "app-store"
-        if shortcut { app.launchEnvironment["TRESFORT_UI_STATION_SETUP"] = "1" }
         if let rememberedAccount { app.launchEnvironment["TRESFORT_UI_STATION_REMEMBERED_ACCOUNT"] = rememberedAccount }
         if largeText { app.launchEnvironment["TRESFORT_UI_LARGE_TEXT"] = "1" }
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-restAudioCuesEnabled", "NO"]
-        app.launch()
+        if shortcut {
+            app.open(URL(string: "tresfort://ipad-display")!)
+        } else {
+            app.launch()
+        }
         return app
     }
 

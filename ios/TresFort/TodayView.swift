@@ -460,6 +460,10 @@ struct TodayView: View {
                 stationLink.retryConnection()
             }
         }
+        .onChange(of: sync.running && workoutFocused && scenePhase == .active, initial: true) { _, active in
+            stationLink.setWorkoutActive(active)
+        }
+        .onDisappear { stationLink.setWorkoutActive(false) }
         // A rotated key restarts the running link so both devices meet again.
         .onReceive(NotificationCenter.default.publisher(for: StationLinkKeyStore.refreshed)) { note in
             guard let account = stationLinkAccount, note.userInfo?["accountID"] as? String == account else { return }

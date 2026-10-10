@@ -21,6 +21,28 @@ final class StationLinkTests: XCTestCase {
 
     // MARK: pairing and protocol
 
+    func testPhoneOnlyStaysAwakeForAConnectedActiveWorkout() {
+        for originallyDisabled in [false, true] {
+            var disabled = originallyDisabled
+            let timer = StationIdleTimerOverride(read: { disabled }, write: { disabled = $0 })
+            let controller = StationLinkController(idleTimer: timer)
+            controller.connectionChanged(.connected("iPad"))
+            XCTAssertEqual(disabled, originallyDisabled, "Pairing before a workout preserves auto-lock")
+            controller.setWorkoutActive(true)
+            XCTAssertTrue(disabled)
+            controller.setWorkoutActive(false)
+            XCTAssertEqual(disabled, originallyDisabled, "Finishing, minimizing or backgrounding releases the override")
+            controller.setWorkoutActive(true)
+            XCTAssertTrue(disabled)
+            controller.connectionChanged(.searching)
+            XCTAssertEqual(disabled, originallyDisabled)
+            controller.connectionChanged(.connected("iPad"))
+            XCTAssertTrue(disabled, "Reconnection keeps an active workout awake")
+            controller.stop()
+            XCTAssertEqual(disabled, originallyDisabled)
+        }
+    }
+
     func testRetryKeepsLoggedSetUndoAndPendingDeletion() {
         let controller = StationLinkController()
         let logged = StationLinkLoggedSet(setID: "set-1", slotID: "slot-1", setNumber: 1, reps: 8)

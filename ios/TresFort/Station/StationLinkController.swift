@@ -35,27 +35,14 @@ final class StationLinkController: ObservableObject {
     private var seenEvents: Set<UUID> = []
     private var completedArmID: UUID?
     private var cancellable: AnyCancellable?
-    /// The phone must stay awake to receive counts; restore the prior policy.
-    private var previousIdleTimerDisabled: Bool?
+    private let idleTimer: StationIdleTimerOverride
+    private var workoutActive = false
 
-    init(transport: StationLinkTransport? = nil) {
+    init(transport: StationLinkTransport? = nil, idleTimer: StationIdleTimerOverride? = nil) {
         self.transport = transport ?? StationLinkTransport(role: .controller)
+        self.idleTimer = idleTimer ?? StationIdleTimerOverride()
         cancellable = self.transport.$connection.sink { [weak self] value in
-            guard let self else { return }
-            self.connection = value
-            if value.isConnected {
-                if self.previousIdleTimerDisabled == nil {
-                    self.previousIdleTimerDisabled = UIApplication.shared.isIdleTimerDisabled
-                    UIApplication.shared.isIdleTimerDisabled = true
-                }
-            } else {
-                self.progress = nil
-                self.stationState = nil
-                if let previous = self.previousIdleTimerDisabled {
-                    UIApplication.shared.isIdleTimerDisabled = previous
-                    self.previousIdleTimerDisabled = nil
-                }
-            }
+            self?.connectionChanged(value)
         }
         self.transport.onMessage = { [weak self] in self?.receive($0) }
         // A fresh connection learns the current arm, if any.
@@ -69,16 +56,41 @@ final class StationLinkController: ObservableObject {
         // A torn-down runner (sign-out, a replaced session) publishes no
         // disconnect: stop the link and give the phone its sleep policy back.
         let transport = self.transport
-        let previous = previousIdleTimerDisabled
+        let idleTimer = self.idleTimer
         DispatchQueue.main.async {
             MainActor.assumeIsolated {
                 transport.stop()
-                if let previous { UIApplication.shared.isIdleTimerDisabled = previous }
+                idleTimer.end()
             }
         }
     }
 
     var isConnected: Bool { connection.isConnected }
+
+    /// Discovery can outlive a workout. Only an open foreground workout
+    /// needs to keep the phone awake to receive counts and publish guidance.
+    func setWorkoutActive(_ active: Bool) {
+        workoutActive = active
+        updateIdleTimer()
+    }
+
+    func connectionChanged(_ value: StationLinkTransport.Connection) {
+        connection = value
+        if !value.isConnected {
+            progress = nil
+            stationState = nil
+        }
+        updateIdleTimer()
+    }
+
+    private func updateIdleTimer() {
+        if workoutActive && isConnected {
+            idleTimer.begin()
+            idleTimer.update(cameraRunning: false, partnerOpen: false, foreground: true, workoutDisplay: true)
+        } else {
+            idleTimer.end()
+        }
+    }
 
     var displayToResend: WorkoutDisplayState? { display }
 

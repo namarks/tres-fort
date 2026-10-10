@@ -173,14 +173,28 @@ detections into durable workout actions.
 
 ## Next step
 
-**Now (@owner):** Update both devices to internal TestFlight **1.0 (52)** and
-try the easier connection flow. [PR #253](https://github.com/namarks/tres-fort/pull/253)
-is merged as `d5958f1`; the [release receipt](../app-store-submission/release-52.md)
-records the identical reviewed tree, all 15 passing CI jobs, a successful signed
-upload, Apple VALID / IN_BETA_TESTING and internal Testers assignment. Fresh
-screenshot/crash-feedback queries returned no submissions. Availability does
-not establish installation, successful physical pairing or camera accuracy;
-P1/P2/P2.1 physical acceptance remains open.
+**Now (@agent):** Verify and review the QR readability correction in
+[PR #255](https://github.com/namarks/tres-fort/pull/255). The owner reports that
+the regular iPhone Camera shows no link for the iPad code, with iPhone build
+**1.0 (52)** confirmed by the owner. Apple's CoreImage and Vision readers both
+decode the saved synthetic iPad screenshot, so this does not yet isolate the
+physical failure. The shipped rendering has only 3.45 white modules around the
+symbol; the [QR standard requires at least four](https://www.qrcode.com/en/howto/code.html).
+The correction embeds a white margin in the bitmap, enlarges the code at whole
+module sizes, exposes a prominent manual setup route, and adds bitmap-margin
+and actual-screen decoding checks. Focused camera-enabled iPad verification
+passes four unit checks and two native journeys, including decoding the actual
+displayed code at normal and largest text sizes. Physical Camera acceptance
+still needs a repeat trial; the larger diagnostic code's owner result is pending. This
+correction is not in build 52 and needs the normal review, CI and release gates.
+
+**Available build:** [PR #253](https://github.com/namarks/tres-fort/pull/253)
+is merged as `d5958f1`; [TestFlight 1.0 (52)](../app-store-submission/release-52.md)
+uses the identical reviewed tree with all 15 source CI jobs passing. Apple
+confirms VALID / IN_BETA_TESTING and internal Testers assignment. The direct
+screenshot/crash-feedback queries at release returned no submissions; the
+later owner QR report above is separate evidence. P1/P2/P2.1 physical
+acceptance remains open.
 
 The build adds a visible **iPad display** action on Today and the active iPhone
 workout, a navigation-only setup QR on iPad, explicit phone confirmation and
@@ -212,10 +226,11 @@ mode; profile membership alone never enables a counter. Real accuracy remains
 unvalidated. The retained device receipts below describe earlier installations.
 **Next physical trial (@owner):** With build 52 installed on both devices,
 use the same account and allow Local Network access. In iPad Station, tap
-"Connect iPhone", scan the setup QR with iPhone and confirm "Connect iPad";
-the phone's visible "iPad display" action is another setup entry point. Fetch
-the link key online once. Check that opening the phone app and iPad Station
+"Connect iPhone". Until the QR failure is resolved, open Très Fort on iPhone,
+tap "iPad display" at the top of Today and confirm "Connect iPad". Fetch the
+link key online once. Check that opening the phone app and iPad Station
 reconnects after this first opt-in, including before and after a workout.
+Repeat the QR route when a build containing its correction is available.
 In "Camera & options", choose "Enable camera" to try supported counted sets
 while keeping the iPhone workout open. Also check
 standalone iPad manual logging/timers, across-room readability and linked

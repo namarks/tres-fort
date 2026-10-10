@@ -78,9 +78,17 @@ public release. The SDK-free public candidate remains a separate track.
 
 ## Device-testing handoff
 
+After release, the owner confirmed iPhone build 52 and reported that its regular
+Camera app shows no link for the iPad setup QR. This is an unresolved physical
+acceptance failure. Use the visible phone setup action below while the QR
+correction in PR #255 is verified; that correction is not part of this binary.
+The image decodes in synthetic CoreImage/Vision checks, but its displayed white
+margin is narrower than the QR standard requires. That defect is confirmed;
+its role in this particular physical failure is not yet established.
+
 Update both devices to **1.0 (52)** in TestFlight. On iPad, open Station and tap
-**Connect iPhone**, then scan its QR using the iPhone and confirm **Connect iPad**.
-The visible **iPad display** action on iPhone is another setup entry point.
+**Connect iPhone**. On iPhone, open Très Fort, tap **iPad display** at the top of
+Today and confirm **Connect iPad**. This route does not depend on scanning.
 Use the same signed-in account on both devices, allow Local Network access,
 and fetch the link key online once. After opting in, opening the phone app
 and iPad Station reconnects without repeating setup.
@@ -92,8 +100,9 @@ stay manual. Standalone iPad workouts retain manual logging and timers.
 
 Verify first pairing, relaunch/reconnect, before/after-workout transitions,
 across-room readability, count accuracy, premature completion, Undo and manual
-correction on the actual devices. No successful physical pairing, installation,
-recording or workout was observed or initiated by this release workflow.
+correction on the actual devices. The iPhone installation is owner-reported;
+successful physical pairing, recording and workout results remain unobserved.
+The release workflow did not initiate any recording or workout.
 
 Sanitized source, package, upload and Apple receipts, plus the IPA and dSYMs,
 are retained in `.artifacts/release-52` in the originating task workspace.

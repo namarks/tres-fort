@@ -114,16 +114,18 @@ struct StationSetupCode: View {
                 : AnyLayout(VStackLayout(alignment: .leading, spacing: 16))
             layout {
                 if let image = Self.image() {
-                    Image(uiImage: image).interpolation(.none).resizable()
-                        .scaledToFit().frame(width: 176, height: 176)
+                    // Keep modules on whole points at both iPad size classes.
+                    let side = image.size.width * (sizeClass == .regular ? 1 : 0.75)
+                    Image(uiImage: image).renderingMode(.original).interpolation(.none).resizable()
+                        .scaledToFit().frame(width: side, height: side)
                         .padding(16).background(.white, in: RoundedRectangle(cornerRadius: 12))
                         .accessibilityLabel("iPhone setup QR code")
                         .accessibilityIdentifier("station.setupCode")
                 }
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Open the Très Fort link, then tap Connect iPad. You only need to set this up once.")
-                    Text("You can also open Très Fort on your iPhone and tap iPad display at the top of Today or your workout.")
-                        .foregroundStyle(Theme.muted)
+                    Text("Can’t scan? On your iPhone, open Très Fort → iPad display → Connect iPad.")
+                        .foregroundStyle(Theme.text)
                 }
             }
         }
@@ -135,8 +137,14 @@ struct StationSetupCode: View {
         let filter = CIFilter.qrCodeGenerator()
         filter.message = Data(StationLink.setupURL.absoluteString.utf8)
         filter.correctionLevel = "M"
-        guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)),
-              let image = CIContext().createCGImage(output, from: output.extent) else { return nil }
+        guard let code = filter.outputImage else { return nil }
+        // QR readers need at least four white modules around the symbol.
+        // Include them in the bitmap instead of relying on fixed-size card padding.
+        let extent = code.extent.insetBy(dx: -4, dy: -4)
+        let white = CIImage(color: CIColor(red: 1, green: 1, blue: 1)).cropped(to: extent)
+        let output = code.composited(over: white).cropped(to: extent)
+            .transformed(by: CGAffineTransform(scaleX: 8, y: 8))
+        guard let image = CIContext().createCGImage(output, from: output.extent) else { return nil }
         return UIImage(cgImage: image)
     }
 }

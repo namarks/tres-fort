@@ -13,6 +13,8 @@ def select_suite(event, paths=()):
 
     # Changes to the selection/partition machinery must prove full coverage on
     # the PR itself; a passing smoke run cannot validate the weekly job budget.
+    # Device-job test lists (.github/ios-tests/) are deliberately absent: the
+    # smoke tier already runs every device job, so it exercises a list edit.
     verification_paths = {
         '.github/workflows/ci.yml', 'scripts/verify-ios.sh',
         'scripts/ci-ios-scope.py', 'test/verify-ios.test.py',

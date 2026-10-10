@@ -3,7 +3,7 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() {
-  echo 'Usage: npm run ios:verify -- --runtime RUNTIME --device DEVICE [--ui-suite full|smoke] [--ci-shard 1|2|3|4|5|6] [--only-testing Target[/Class[/method]]] [--content-size SIZE]'
+  echo 'Usage: npm run ios:verify -- --runtime RUNTIME --device DEVICE [--ui-suite full|smoke] [--ci-shard 1|2|3|4|5|6] [--only-testing Target[/Class[/method]]] [--only-testing-file PATH] [--content-size SIZE]'
 }
 runtime=''
 device=''
@@ -13,7 +13,7 @@ ui_suite='full'
 test_args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --runtime|--device|--only-testing|--content-size|--ci-shard|--ui-suite)
+    --runtime|--device|--only-testing|--only-testing-file|--content-size|--ci-shard|--ui-suite)
       [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { usage >&2; exit 2; }
       case "$1" in
         --runtime) runtime="$2" ;;
@@ -22,6 +22,20 @@ while [[ $# -gt 0 ]]; do
         --ci-shard) ci_shard="$2" ;;
         --ui-suite) ui_suite="$2" ;;
         --only-testing) test_args+=("-only-testing:$2") ;;
+        --only-testing-file)
+          # One selector per line; blank lines and # comments are ignored.
+          [[ -f "$2" ]] || { echo "Test selection file not found: $2" >&2; exit 2; }
+          selected=0
+          while IFS= read -r selector || [[ -n "$selector" ]]; do
+            selector="${selector%%#*}"
+            selector="${selector//[[:space:]]/}"
+            [[ -n "$selector" ]] || continue
+            [[ "$selector" =~ ^[A-Za-z_][A-Za-z0-9_]*(/[A-Za-z_][A-Za-z0-9_]*){0,2}$ ]] || {
+              echo "Invalid test selector in $2: $selector" >&2; exit 2; }
+            test_args+=("-only-testing:$selector")
+            selected=$((selected + 1))
+          done <"$2"
+          [[ "$selected" -gt 0 ]] || { echo "Test selection file is empty: $2" >&2; exit 2; } ;;
       esac
       shift 2 ;;
     --help|-h) usage; exit 0 ;;

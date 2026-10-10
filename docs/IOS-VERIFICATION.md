@@ -79,6 +79,10 @@ time is headroom for slow runners, not room for more tests. Existing
 assertions and element waits are unchanged.
 Sharding or smoke mode cannot be combined with `--only-testing`. Without these
 arguments the command still runs the full suite locally.
+The iPad Station and App Store device jobs read their selectors from
+`.github/ios-tests/*.txt` through `--only-testing-file` (one selector per line,
+`#` comments allowed). Editing those lists selects smoke, which runs every
+device job; `test/ci-ios-scope.test.py` checks each selector names a real test.
 
 CI prioritizes the current iPhone 17 layout and normal text sizes. The optional
 `--content-size` argument can set a simulator system preference for a focused

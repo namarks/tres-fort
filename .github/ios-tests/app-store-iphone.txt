@@ -1,0 +1,7 @@
+# iPhone App Store CI job (iPhone 17 Pro, APP_STORE_BUILD=1). One test
+# selector per line: Target, Target/Class or Target/Class/method. Editing this
+# list runs the normal smoke tier, not the full UI suite.
+TresFortUITests/AppStoreScreenshotTests
+TresFortTests/StationMediaPipeDetectorTests
+TresFortTests/PublicStationTests
+TresFortUITests/StationConnectionJourneyTests

@@ -1,0 +1,23 @@
+# iPad Station CI job (iPad A16, development build). One test selector per
+# line: Target, Target/Class or Target/Class/method. Editing this list runs
+# the normal smoke tier, not the full UI suite that a ci.yml change forces.
+TresFortTests/AuthOnboardingAccountTests
+TresFortTests/StationLiveTests
+TresFortTests/StationPrivacyTests
+TresFortTests/StationCounterTests
+TresFortTests/StationMovementCounterTests
+TresFortTests/StationCurlRecordingTests
+TresFortTests/StationRecordingTests
+TresFortTests/StationReplayTests
+TresFortTests/StationMediaPipeDetectorTests
+TresFortTests/StationDiagnosticsTests
+TresFortTests/StationComparisonTests
+TresFortTests/StationCameraConfigurationTests
+TresFortTests/StationPoseFeedbackTests
+TresFortUITests/StationJourneyTests
+TresFortUITests/IpadWorkoutDisplayJourneyTests
+TresFortUITests/PlanlessAccountJourneyTests
+TresFortUITests/MemberActivationJourneyTests/testFreshDeviceSignInRestoresExistingTrainingAndStation
+TresFortUITests/MemberActivationJourneyTests/testFreshDeviceStateFailureRetriesWithoutOfferingNewAccountSetup
+TresFortUITests/MemberActivationJourneyTests/testFreshDeviceConfirmedEmptyAccountStillOffersSetup
+TresFortUITests/StationConnectionJourneyTests

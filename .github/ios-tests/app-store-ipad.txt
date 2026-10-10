@@ -1,0 +1,9 @@
+# iPad App Store CI job (iPad Pro 13-inch, APP_STORE_BUILD=1). One test
+# selector per line: Target, Target/Class or Target/Class/method. Editing this
+# list runs the normal smoke tier, not the full UI suite.
+TresFortTests
+TresFortUITests/AppStoreScreenshotTests
+TresFortUITests/PublicStationJourneyTests
+TresFortUITests/IpadWorkoutDisplayJourneyTests
+TresFortUITests/MemberActivationJourneyTests/testFreshDeviceSignInRestoresExistingTrainingAndStation
+TresFortUITests/StationConnectionJourneyTests

@@ -141,7 +141,12 @@ detections into durable workout actions.
     Both repaired journeys and all display journeys pass on CI's iOS 26.2
     runtime: 20 focused native checks across iPhone, standard iPad and public
     iPad builds. CI selection/verification checks and plan compilation pass.
-    Exact-head cloud review and required CI remain delivery gates.
+    PR #251 is merged; all 15 required CI jobs passed on its final head.
+    Exact-head cloud review remained unavailable due usage limits; independent
+    local review was advisory. The owner subsequently authorized internal
+    [build 51](../app-store-submission/release-51.md), now VALID and available
+    to Testers with the new display and camera tracking. Physical acceptance
+    remains open; TestFlight availability is not a device-trial result.
 - [ ] **P3 — Enable measured automatic progression**
   - Establish explicit acceptance thresholds for premature completion, exact
     counts and required corrections; validate them before enabling auto-log.
@@ -157,23 +162,25 @@ detections into durable workout actions.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P1 | gated_by | external:owner-ipad-station-device-build | Internal build 49 is verified available to Testers; the owner must evaluate framing and counting on the actual iPad. |
+| P1 | gated_by | external:owner-ipad-station-device-build | Internal build 51 is verified available to Testers with the new display and camera tracking; the owner must evaluate framing and counting on the actual iPad. |
 | P2 | gated_by | external:owner-ipad-station-linked-device-trial | The owner requested iPhone-controlled assisted logging on 2026-10-04; the paired iPhone/iPad trial must show the link, instant logging with Undo and manual fallback work before P2 is complete. |
 | P3 | gated_by | external:owner-ipad-station-automation-criteria | Automation needs explicit measured quality criteria and activation authority. |
 
 ## Next step
 
-**Now (@agent):** Satisfy the exact-head PR review and CI gates for
-[PR #251](https://github.com/namarks/tres-fort/pull/251).
-Nick merges after the gates pass. This source change does not distribute a new client.
+**Now (@owner):** Install [1.0 (51)](../app-store-submission/release-51.md)
+on both devices. First try the distance-readable display in standalone iPad
+and iPhone-controlled modes, then evaluate the existing linked camera counting,
+logging, Undo and manual fallback with supported movements. P1/P2/P2.1 physical
+acceptance remains open.
 
-The iPad's installed version was read directly as 1.0 (49) after the owner's
-October 8 TestFlight update. The iPhone's installed version is unverified.
-P1/P2 physical-trial acceptance gates remain open. P2.1 requires a later
-authorized client distribution before its display can be tested across the room. The
-October 7 owner-authorized [release](../app-store-submission/release-49.md)
-deploys source `cd3cf40`, including the Station link-key route, and uploads the
-matching iPhone/iPad client. The catalog camera profiles, curl fix and linked
+Build 51 uses merged source `8cf8235` and includes the experimental camera SDK
+omitted from the public build 50. Before publication, the connected iPad was
+verified on 1.0 (50), and the owner confirmed the same build on iPhone. Build 51
+availability does not establish installation. No new backend deployment or
+migration was needed or performed; backend source remains identical to the
+[release-49 source](../app-store-submission/release-49.md).
+The catalog camera profiles, curl fix and linked
 assisted logging are merged; physical trial results are not established by
 their TestFlight upload. With the link on, an armed iPhone set
 switches the iPad from a hold or catalog selection
@@ -183,10 +190,13 @@ The audit covers all 280 exercises: 193 rep candidates, 15 hold candidates and
 72 manual fallbacks. Fifteen entries explicitly select a current experimental
 mode; profile membership alone never enables a counter. Real accuracy remains
 unvalidated. The retained device receipts below describe earlier installations.
-**Next physical trial (@owner):** With build 49 installed on both devices,
-fetch the link key online once from the deployed Worker. Turn on "Count reps
-with iPad Station" in the iPhone runner menu and "Count sets for my iPhone
-workout" on the iPad, then run a few squat sets. Note each counted versus
+**Next physical trial (@owner):** With build 51 installed on both devices,
+fetch the link key online once from the deployed Worker using the same account.
+Turn on "Use iPad workout display" in the iPhone runner menu and "Follow my
+iPhone workout" in iPad Station. In "Camera & options", choose "Enable camera"
+to try supported counted sets while keeping the iPhone workout open. Also check
+standalone iPad manual logging/timers, across-room readability and linked
+connection loss/recovery; standalone camera logging is not implemented. Note each counted versus
 actual rep total, any set that logged wrongly, and whether Undo was quick
 enough to fix a miscount mid-workout. No additional repetitions are needed to
 reproduce the simultaneous-curl failure; actual arm totals in the latest clip

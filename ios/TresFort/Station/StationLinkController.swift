@@ -127,14 +127,28 @@ final class StationLinkController: ObservableObject {
     }
 
     func stop() {
-        publishDisplay(nil)
-        request(nil)
+        clearWorkoutState()
         transport.stop()
         needsKey = false
+    }
+
+    /// Keep remembered pairing available between workouts without carrying a
+    /// count, Undo or armed set into a later workout with the same template.
+    func resetWorkout() {
+        setWorkoutActive(false)
+        clearWorkoutState()
+    }
+
+    private func clearWorkoutState() {
+        publishDisplay(nil)
+        request(nil)
+        progress = nil
+        stationState = nil
         proposal = nil
         lastLogged = nil
         pendingUndo = nil
         seenEvents.removeAll()
+        completedArmID = nil
     }
 
     /// Arms the iPad for the runner's current set, or disarms it with nil.

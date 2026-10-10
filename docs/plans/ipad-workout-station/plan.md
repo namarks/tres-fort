@@ -180,10 +180,12 @@ Opening the code never grants access or starts/logs a workout. Reopening Station
 reuses only the same account's opt-in, and setup failures offer Retry and local
 network guidance. Preserve pending counts, spent-event identity and Undo during
 connection retries. Remembered discovery does not prevent phone auto-lock;
-only a connected, open foreground workout holds the phone awake. Ship this
-correction only through the normal exact-head
-review, CI and separately authorized distribution gates; build 51 still has the
-previous setup flow. P1/P2/P2.1 physical acceptance remains open.
+only a connected, open foreground workout holds the phone awake. Keeping the
+connection between workouts clears the previous workout's armed set, count and
+Undo before another workout starts. Ship this correction only through the
+normal exact-head review, CI and separately authorized distribution gates;
+build 51 still has the previous setup flow. P1/P2/P2.1 physical acceptance
+remains open.
 
 Focused local verification passes on iPhone and both public and camera-enabled
 iPad builds, including real iOS URL handoff, explicit opt-in and cancellation,

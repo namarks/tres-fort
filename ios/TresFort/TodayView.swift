@@ -474,7 +474,12 @@ struct TodayView: View {
             }
         }
         .onChange(of: sync.restEndDate) { if sync.restEndDate == nil { restExpanded = false } }
-        .onChange(of: sync.running) { if !sync.running { isLocallyMinimized = false } }
+        .onChange(of: sync.running) { _, running in
+            if !running {
+                isLocallyMinimized = false
+                stationLink.resetWorkout()
+            }
+        }
         // Only the open runner logs counts, so a minimized workout is not armed;
         // resuming arms the current set again.
         .onChange(of: workoutFocused) { _, focused in if !focused { stationLink.pause() } }

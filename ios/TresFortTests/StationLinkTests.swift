@@ -40,6 +40,10 @@ final class StationLinkTests: XCTestCase {
             XCTAssertTrue(disabled, "Reconnection keeps an active workout awake")
             controller.stop()
             XCTAssertEqual(disabled, originallyDisabled)
+            controller.connectionChanged(.connected("iPad"))
+            XCTAssertTrue(disabled, "Re-enabling the display during the same workout restores its wake lock")
+            controller.resetWorkout()
+            XCTAssertEqual(disabled, originallyDisabled)
         }
     }
 
@@ -53,6 +57,38 @@ final class StationLinkTests: XCTestCase {
         controller.retryConnection()
         XCTAssertEqual(controller.pendingUndo, logged)
         XCTAssertNil(controller.lastLogged)
+    }
+
+    func testEndingWorkoutKeepsPairingButClearsDisplayAndUndo() {
+        let controller = StationLinkController()
+        controller.connectionChanged(.connected("iPad"))
+        controller.publishDisplay(display(.review))
+        let logged = StationLinkLoggedSet(setID: "old-set", slotID: "slot-1", setNumber: 1, reps: 8)
+        controller.recordLogged(logged)
+        controller.resetWorkout()
+        XCTAssertTrue(controller.isConnected, "Finishing does not force another pairing")
+        XCTAssertNil(controller.display)
+        XCTAssertNil(controller.lastLogged, "A new workout must not offer Undo for the previous workout")
+        controller.undoQueued(logged)
+        controller.resetWorkout()
+        XCTAssertNil(controller.pendingUndo)
+    }
+
+    func testNextWorkoutCannotReuseAnOldCountForTheSameTemplateAndSet() throws {
+        try requireCameraCounting()
+        let controller = StationLinkController()
+        controller.request(target())
+        let oldArm = try XCTUnwrap(controller.arm)
+        let oldCount = completion(oldArm, reps: 5, partial: true)
+        controller.receive(.completion(oldCount))
+        XCTAssertNotNil(controller.proposal)
+        controller.resetWorkout()
+        XCTAssertNil(controller.arm)
+        XCTAssertNil(controller.proposal)
+        controller.request(target())
+        XCTAssertNotEqual(controller.arm?.armID, oldArm.armID)
+        controller.receive(.completion(oldCount))
+        XCTAssertNil(controller.proposal, "A late count from the old workout cannot log in the new one")
     }
 
     func testRetryPreservesPendingCountAndDoesNotRearmIt() throws {

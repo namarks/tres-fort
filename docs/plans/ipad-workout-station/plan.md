@@ -147,6 +147,11 @@ detections into durable workout actions.
     [build 51](../app-store-submission/release-51.md), now VALID and available
     to Testers with the new display and camera tracking. Physical acceptance
     remains open; TestFlight availability is not a device-trial result.
+    The setup follow-up [PR #253](https://github.com/namarks/tres-fort/pull/253)
+    is merged and shipped in [build 52](../app-store-submission/release-52.md):
+    visible phone setup, iPad QR, remembered same-account connection and
+    reconnect/workout-boundary protection. Exact-head cloud review is clean,
+    all 15 CI jobs passed, and Apple confirms internal Testers availability.
 - [ ] **P3 — Enable measured automatic progression**
   - Establish explicit acceptance thresholds for premature completion, exact
     counts and required corrections; validate them before enabling auto-log.
@@ -162,44 +167,39 @@ detections into durable workout actions.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P1 | gated_by | external:owner-ipad-station-device-build | Internal build 51 is verified available to Testers with the new display and camera tracking; the owner must evaluate framing and counting on the actual iPad. |
+| P1 | gated_by | external:owner-ipad-station-device-build | Internal build 52 is verified available to Testers with the display, easier pairing and camera tracking; the owner must evaluate framing and counting on the actual iPad. |
 | P2 | gated_by | external:owner-ipad-station-linked-device-trial | The owner requested iPhone-controlled assisted logging on 2026-10-04; the paired iPhone/iPad trial must show the link, instant logging with Undo and manual fallback work before P2 is complete. |
 | P3 | gated_by | external:owner-ipad-station-automation-criteria | Automation needs explicit measured quality criteria and activation authority. |
 
 ## Next step
 
-**Now (@agent):** Complete exact-head review and CI for the connection-flow
-correction in [PR #253](https://github.com/namarks/tres-fort/pull/253), requested
-on 2026-10-10. The first build-51 connection attempt stalled because the owner
-had enabled the iPad side without finding the iPhone's exercise-options toggle;
-successful physical pairing has not been observed. The current branch adds a
-visible **iPad display** action on Today and the active iPhone workout, a
-navigation-only setup QR on iPad, explicit phone confirmation, and a remembered
-account-scoped iPad preference. Pairing can happen before starting a workout.
-Opening the code never grants access or starts/logs a workout. Reopening Station
-reuses only the same account's opt-in, and setup failures offer Retry and local
-network guidance. Preserve pending counts, spent-event identity and Undo during
-connection retries. Remembered discovery does not prevent phone auto-lock;
-only a connected, open foreground workout holds the phone awake. Keeping the
-connection between workouts clears the previous workout's armed set, count and
-Undo before another workout starts. Ship this correction only through the
-normal exact-head review, CI and separately authorized distribution gates;
-build 51 still has the previous setup flow. P1/P2/P2.1 physical acceptance
-remains open.
+**Now (@owner):** Update both devices to internal TestFlight **1.0 (52)** and
+try the easier connection flow. [PR #253](https://github.com/namarks/tres-fort/pull/253)
+is merged as `d5958f1`; the [release receipt](../app-store-submission/release-52.md)
+records the identical reviewed tree, all 15 passing CI jobs, a successful signed
+upload, Apple VALID / IN_BETA_TESTING and internal Testers assignment. Fresh
+screenshot/crash-feedback queries returned no submissions. Availability does
+not establish installation, successful physical pairing or camera accuracy;
+P1/P2/P2.1 physical acceptance remains open.
 
-Focused local verification passes on iPhone and both public and camera-enabled
-iPad builds, including real iOS URL handoff, explicit opt-in and cancellation,
-account isolation, remembered choices, QR decoding, reconnect/Undo integrity,
-largest text and existing public Station journeys. Synthetic screenshots were
-checked against the shared Theme. These simulator results do not establish
-physical pairing or camera accuracy.
+The build adds a visible **iPad display** action on Today and the active iPhone
+workout, a navigation-only setup QR on iPad, explicit phone confirmation and
+remembered account-scoped choices. Pairing can happen before a workout. Opening
+the code never grants access or starts/logs one. Reopening Station reuses only
+the same account's opt-in; setup failures offer Retry and Local Network guidance.
+Retries preserve pending counts, spent-event identity and Undo. Idle discovery
+allows phone auto-lock; only a connected, open foreground workout holds it awake.
+Ending a workout clears its armed set, count and Undo without dropping pairing.
 
-Build 51 uses merged source `8cf8235` and includes the experimental camera SDK
-omitted from the public build 50. Before publication, the connected iPad was
-verified on 1.0 (50), and the owner confirmed the same build on iPhone. Build 51
-availability does not establish installation. No new backend deployment or
-migration was needed or performed; backend source remains identical to the
-[release-49 source](../app-store-submission/release-49.md).
+Focused local verification covers real iOS URL handoff, explicit opt-in and
+cancellation, account isolation, remembered choices, QR decoding, reconnect/Undo
+integrity, workout-boundary reset, largest text and existing public Station
+journeys. Synthetic screenshots match the shared Theme. These simulator results
+do not establish physical pairing or camera accuracy.
+
+Build 52 retains the experimental camera SDK omitted from public build 50.
+No backend deployment or migration was needed or performed; backend source
+remains identical to the [release-49 source](../app-store-submission/release-49.md).
 The catalog camera profiles, curl fix and linked
 assisted logging are merged; physical trial results are not established by
 their TestFlight upload. With the link on, an armed iPhone set
@@ -210,11 +210,14 @@ The audit covers all 280 exercises: 193 rep candidates, 15 hold candidates and
 72 manual fallbacks. Fifteen entries explicitly select a current experimental
 mode; profile membership alone never enables a counter. Real accuracy remains
 unvalidated. The retained device receipts below describe earlier installations.
-**Next physical trial (@owner):** With build 51 installed on both devices,
-fetch the link key online once from the deployed Worker using the same account.
-Turn on "Use iPad workout display" in the iPhone runner menu and "Follow my
-iPhone workout" in iPad Station. In "Camera & options", choose "Enable camera"
-to try supported counted sets while keeping the iPhone workout open. Also check
+**Next physical trial (@owner):** With build 52 installed on both devices,
+use the same account and allow Local Network access. In iPad Station, tap
+"Connect iPhone", scan the setup QR with iPhone and confirm "Connect iPad";
+the phone's visible "iPad display" action is another setup entry point. Fetch
+the link key online once. Check that opening the phone app and iPad Station
+reconnects after this first opt-in, including before and after a workout.
+In "Camera & options", choose "Enable camera" to try supported counted sets
+while keeping the iPhone workout open. Also check
 standalone iPad manual logging/timers, across-room readability and linked
 connection loss/recovery; standalone camera logging is not implemented. Note each counted versus
 actual rep total, any set that logged wrongly, and whether Undo was quick

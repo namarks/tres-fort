@@ -179,6 +179,7 @@ private struct PendingTerminalBanner: View {
 
 struct TodayView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.scenePhase) private var scenePhase
     @State private var feedbackPresentation: WorkoutFeedbackPresentation?
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
@@ -304,6 +305,7 @@ struct TodayView: View {
                             Label("Station Mode", systemImage: "figure.strengthtraining.traditional")
                         }
                         .accessibilityIdentifier("today.station")
+                        .disabled(sync.running || sync.partnerReserved)
                     }
                 }
                 if sync.running && !sync.isPartnerWorkout {
@@ -448,6 +450,11 @@ struct TodayView: View {
         // Only the open runner logs counts, so a minimized workout is not armed;
         // resuming arms the current set again.
         .onChange(of: workoutFocused) { _, focused in if !focused { stationLink.pause() } }
+        .background {
+            StationWorkoutDisplayPublisher(sync: sync, link: stationLink,
+                enabled: stationLinkAccount != nil && !partner.isOpen,
+                paused: (!workoutFocused && !sync.finished) || scenePhase != .active)
+        }
     }
 
     /// Queue only after the setup sheet has dismissed. The member-entry route
@@ -859,6 +866,7 @@ private struct ProgressBar: View {
 
 private struct RunnerView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.scenePhase) private var scenePhase
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
     @ObservedObject var stationLink: StationLinkController
@@ -892,11 +900,16 @@ private struct RunnerView: View {
 
     @State private var showingOutline = false
     @State private var loadRevealedFor: Set<String> = []
+    @StateObject private var displayIdleTimer = StationIdleTimerOverride()
 
     var body: some View {
         if let ex = sync.currentExercise {
             let blocks = ExerciseGroupBlock.blocks(sync.exercises)
             let group = blocks.first { $0.isGroup && $0.members.contains { $0.id == ex.id } }
+            Group {
+            if UIDevice.current.userInterfaceIdiom == .pad {
+                ipadRunner(ex)
+            } else {
             VStack(spacing: 0) {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
@@ -960,6 +973,8 @@ private struct RunnerView: View {
                 .contentShape(Rectangle())
                 if !dynamicTypeSize.isAccessibilitySize { runnerActions(ex) }
             }
+            }
+            }
             .sheet(isPresented: $showingOutline) { workoutOutline(blocks: blocks) }
             #if DEBUG && targetEnvironment(simulator)
             .onAppear { UIFixtureStartTrace.record(.runnerAppeared) }
@@ -997,6 +1012,57 @@ private struct RunnerView: View {
                 ExerciseInformationSheet(sync: sync, information: ExerciseInformation(
                     prescription: ex, catalog: sync.catalogRow(ex.exercise_id)))
             }
+            .onAppear {
+                guard UIDevice.current.userInterfaceIdiom == .pad else { return }
+                displayIdleTimer.begin()
+                refreshDisplayIdleTimer()
+            }
+            .onChange(of: scenePhase) { _, _ in refreshDisplayIdleTimer() }
+            .onDisappear { displayIdleTimer.end() }
+        }
+    }
+
+    private func refreshDisplayIdleTimer() {
+        displayIdleTimer.update(cameraRunning: false, partnerOpen: false,
+            foreground: scenePhase == .active, workoutDisplay: true)
+    }
+
+    private func ipadRunner(_ ex: TemplateExercise) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { _ in
+            WorkoutDisplayView(state: WorkoutDisplayState.project(sync: sync, displayUnit: weightUnit)) {
+                VStack(spacing: 12) {
+                    HStack(spacing: 16) {
+                        Button { openValues(ex) } label: {
+                            Label("Edit set", systemImage: "slider.horizontal.3")
+                                .frame(minHeight: 44)
+                        }
+                        .accessibilityIdentifier("runner.editValues")
+                        .disabled(sync.timedActive || sync.isSetEntryBlocked(ex))
+                        Button { showingOutline = true } label: {
+                            Label("Workout outline", systemImage: "list.bullet")
+                                .frame(minHeight: 44)
+                        }
+                        .accessibilityIdentifier("runner.outline")
+                    }
+                    .font(Theme.mono(14, .bold)).foregroundStyle(Theme.accent)
+                    if hasLastSetReview { LastRunnerSetReview(sync: sync, compact: true) }
+                    // Reserve a separate target for ending rest so a second tap
+                    // at this position can never become a set submission.
+                    if sync.restEndDate != nil {
+                        Button { sync.skipRest() } label: {
+                            Text("END REST").font(Theme.mono(16, .bold))
+                                .frame(maxWidth: .infinity, minHeight: 44)
+                                .background(Theme.accent).foregroundStyle(Theme.bg)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                        }
+                        .buttonStyle(.plain).accessibilityIdentifier("rest.done")
+                    } else {
+                        Spacer(minLength: 0).frame(height: 44)
+                    }
+                    RunnerSetAction(sync: sync, ex: ex)
+                        .disabled(sync.restEndDate != nil)
+                }
+            }
         }
     }
 
@@ -1030,9 +1096,9 @@ private struct RunnerView: View {
             }
             if showsStationLink && stationLinkEnabled.wrappedValue {
                 #if APP_STORE_BUILD
-                Label(stationLink.needsKey ? "Go online once to set up partner training" :
-                      stationLink.isConnected ? "iPad connected · start Train together on the iPad" :
-                      "Looking for your iPad for partner training", systemImage: "ipad.landscape")
+                Label(stationLink.needsKey ? "Go online once to set up iPad Station" :
+                      stationLink.isConnected ? "Workout shown on your iPad" :
+                      "Looking for your iPad Station", systemImage: "ipad.landscape")
                     .font(.footnote).foregroundStyle(Theme.muted)
                     .accessibilityIdentifier("runner.station.status")
                 #else
@@ -1226,10 +1292,13 @@ private struct RunnerView: View {
                 .tint(Theme.accent).frame(minHeight: 44)
                 .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
             if showsStationLink {
-                Toggle(StationLink.cameraCountingAvailable ? "Count reps with iPad Station" :
-                       "Use iPad for partner workout", isOn: stationLinkEnabled)
+                Toggle("Use iPad workout display", isOn: stationLinkEnabled)
                     .tint(Theme.accent).frame(minHeight: 44)
                     .accessibilityIdentifier("runner.stationLink")
+                if StationLink.cameraCountingAvailable {
+                    Text("With tracking enabled on the iPad, supported counted sets log here automatically with Undo. Keep this workout open.")
+                        .font(.caption).foregroundStyle(Theme.muted)
+                }
             }
             if ex.exercise_modality == "barbell" {
                 NavigationLink("Plates & warm-up guide") {

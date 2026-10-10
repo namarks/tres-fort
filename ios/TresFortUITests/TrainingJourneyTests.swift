@@ -3,6 +3,10 @@ import XCTest
 final class TrainingJourneyTests: XCTestCase {
     override func setUpWithError() throws { continueAfterFailure = false }
 
+    override func tearDownWithError() throws {
+        if (testRun?.failureCount ?? 0) > 0 { print(XCUIApplication().debugDescription) }
+    }
+
     @discardableResult
     private func launch(_ fixture: String, largeText: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
@@ -41,10 +45,22 @@ final class TrainingJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["Create a workout"].waitForExistence(timeout: 10))
         screenshot("verified-empty-plan")
         app.buttons["Create a workout"].tap()
+        XCTAssertTrue(app.navigationBars["Add exercises"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.textFields["createWorkout.name"].exists)
-        let selection = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "exercisePicker.exercise.")).firstMatch
-        XCTAssertTrue(selection.waitForExistence(timeout: 5)); selection.tap()
-        app.buttons["createWorkout.review"].tap()
+        let selection = app.buttons["exercisePicker.exercise.synthetic-exercise"]
+        reveal(selection, in: app)
+        selection.tap()
+        // Review starts disabled. Observe the selection taking effect before
+        // sending a tap to that control, and fail at this boundary if the
+        // single exercise tap was not accepted.
+        expectation(for: NSPredicate(format: "selected == true"), evaluatedWith: selection)
+        waitForExpectations(timeout: 5)
+        let review = app.buttons["createWorkout.review"]
+        expectation(for: NSPredicate(format: "enabled == true AND label == %@", "Review workout (1)"),
+                    evaluatedWith: review)
+        waitForExpectations(timeout: 5)
+        review.tap()
+        XCTAssertTrue(app.navigationBars["Review workout"].waitForExistence(timeout: 5))
         let name = app.textFields["createWorkout.name"]
         XCTAssertTrue(name.waitForExistence(timeout: 5)); name.tap(); name.typeText("Workout A")
         reveal(app.buttons["createWorkout.create"], in: app)

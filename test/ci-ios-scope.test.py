@@ -54,14 +54,16 @@ class IOSScopeTests(unittest.TestCase):
         for suite in ['TresFortTests/StationMediaPipeDetectorTests', 'TresFortTests/PublicStationTests']:
             self.assertIn('--only-testing ' + suite, steps['iPhone App Store build and tests'])
         for suite in ['TresFortTests', 'TresFortUITests/PublicStationJourneyTests',
+                      'TresFortUITests/IpadWorkoutDisplayJourneyTests',
                       'TresFortUITests/MemberActivationJourneyTests/testFreshDeviceSignInRestoresExistingTrainingAndStation']:
             self.assertIn('--only-testing ' + suite, steps['iPad App Store build and tests'])
         # Require the entire public unit target, not a similarly prefixed class.
         self.assertRegex(steps['iPad App Store build and tests'], r'--only-testing TresFortTests(?:\s|$)')
         self.assertNotIn('--skip-testing', steps['iPad App Store build and tests'])
         self.assertNotIn('APP_STORE_BUILD', steps['iPad Station build and tests'])
-        self.assertIn('--only-testing TresFortUITests/StationJourneyTests',
-                      steps['iPad Station build and tests'])
+        for suite in ['StationJourneyTests', 'IpadWorkoutDisplayJourneyTests']:
+            self.assertIn('--only-testing TresFortUITests/' + suite,
+                          steps['iPad Station build and tests'])
 
     def test_pull_request_compares_tested_merge_with_base_and_preserves_paths(self):
         with patch.object(policy.subprocess, 'check_output', return_value=

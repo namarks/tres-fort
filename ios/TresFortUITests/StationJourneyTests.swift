@@ -53,12 +53,12 @@ final class StationJourneyTests: XCTestCase {
 
     func testCameraUnavailableCanExitWithoutLoggingASet() {
         let app = launch()
-        let start = app.buttons["today.startWorkout"]
-        for _ in 0..<6 where !start.isHittable { app.scrollViews.firstMatch.swipeUp() }
-        start.tap()
-        XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
+        // Station has its own observation/link lifetime and must be entered
+        // before this iPad acquires a local workout writer.
         app.buttons["today.station"].tap()
-        app.buttons["station.enableCamera"].tap()
+        let enable = app.buttons["station.enableCamera"]
+        XCTAssertTrue(enable.waitForExistence(timeout: 5))
+        enable.tap()
         let status = app.staticTexts["station.cameraStatus"]
         let unavailable = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "label == %@", "A front camera is not available on this device."), object: status)
@@ -67,8 +67,15 @@ final class StationJourneyTests: XCTestCase {
         XCTAssertFalse(app.buttons["station.trial"].isEnabled)
         XCTAssertEqual(app.staticTexts["station.repCount"].label, "MediaPipe: 0 reps")
         app.buttons["station.done"].tap()
+        let start = app.buttons["today.startWorkout"]
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["LOG SET 1"].exists, "Camera setup must not start a workout")
+        for _ in 0..<6 where !start.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        start.tap()
         XCTAssertTrue(app.buttons["LOG SET 1"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["LOG SET 2"].exists)
+        XCTAssertFalse(app.buttons["today.station"].isEnabled,
+                       "A local iPad workout cannot also enter the linked Station")
     }
 
     func testRotationAndLargeTextKeepSetupAndExitReachable() {

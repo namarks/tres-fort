@@ -71,6 +71,10 @@ struct StationView: View {
     @State private var countdown: Int?
     @State private var countdownTask: Task<Void, Never>?
     @State private var showSavedTests = false
+    @State private var showStationSetup = false
+#if DEBUG && targetEnvironment(simulator)
+    @State private var showLinkedDisplayFixture = false
+#endif
 
     init(workoutName: String?, workout: [StationExerciseOption] = [], catalog: [StationExerciseOption] = [],
          access: StationAccess, loadLinkKey: @escaping @MainActor () async -> Data? = { nil }) {
@@ -87,6 +91,18 @@ struct StationView: View {
         Group {
         if access.isActive {
         NavigationStack {
+            Group {
+            if showingWorkoutDisplay {
+                LinkedWorkoutDisplayView(link: link, trackingCount: linkedCount,
+                    trackingStatus: linkedTrackingStatus) {
+                    Button("Camera & options", systemImage: "slider.horizontal.3") {
+                        showStationSetup = true
+                    }
+                    .font(Theme.mono(16, .bold)).foregroundStyle(Theme.accent)
+                    .frame(minHeight: 48)
+                    .accessibilityIdentifier("ipadWorkout.options")
+                }
+            } else {
             GeometryReader { geometry in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 24) {
@@ -94,6 +110,7 @@ struct StationView: View {
                             PartnerStationPanel(model: partner)
                         } else {
                         heading
+                        linkPanel
                         exercisePicker
                         if let selectedOption { mappingDetails(selectedOption) }
                         if trialMode != nil {
@@ -106,7 +123,6 @@ struct StationView: View {
                             trackingPanel
                             cameraPanel
                         }
-                        linkPanel
                         if trialMode?.repExercise != nil { recordingPanel }
 #if DEBUG
                         if trialMode?.repExercise != nil { diagnosticPanel }
@@ -114,7 +130,8 @@ struct StationView: View {
                         } else {
                             // Manual-only selection: the link stays reachable, and an
                             // armed iPhone set switches to its rep counter.
-                            linkPanel
+                            Text("This movement uses manual logging on your iPhone.")
+                                .foregroundStyle(Theme.muted)
                         }
                         Button("Train together") {
                             guard !recordingBusy, access.validate() else { return }
@@ -133,9 +150,17 @@ struct StationView: View {
                 }
                 .background(Theme.background)
             }
+            }
+            }
             .navigationTitle("Station Mode")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if showStationSetup && link.isEnabled {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Workout display") { showStationSetup = false }
+                            .accessibilityIdentifier("ipadWorkout.returnToDisplay")
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss() }
                         .accessibilityIdentifier("station.done")
@@ -152,6 +177,10 @@ struct StationView: View {
             idleTimer.begin()
             refreshIdleTimer()
             if !access.validate() { dismiss() }
+            #if DEBUG && targetEnvironment(simulator)
+            showLinkedDisplayFixture = IpadWorkoutDisplayUIFixture.installIfRequested(
+                on: link, accountID: access.session.accountID)
+            #endif
         }
         .onReceive(access.$isActive) { active in
             guard !active else { return }
@@ -203,6 +232,7 @@ struct StationView: View {
             refreshIdleTimer()
         }
         .onChange(of: partner.isOpen) { _, _ in refreshIdleTimer() }
+        .onChange(of: link.isEnabled) { _, _ in refreshIdleTimer() }
         // A rotated key restarts advertising so the iPhone can find it again.
         .onReceive(NotificationCenter.default.publisher(for: StationLinkKeyStore.refreshed)) { _ in
             guard link.isEnabled, let request = linkRequest else { return }
@@ -262,7 +292,33 @@ struct StationView: View {
 
     private func refreshIdleTimer() {
         idleTimer.update(cameraRunning: camera.state == .running, partnerOpen: partner.isOpen,
-                         foreground: scenePhase == .active && access.isActive)
+                         foreground: scenePhase == .active && access.isActive,
+                         workoutDisplay: link.isEnabled)
+    }
+
+    private var showingWorkoutDisplay: Bool {
+        guard !partner.isOpen, !showStationSetup else { return false }
+        #if DEBUG && targetEnvironment(simulator)
+        if showLinkedDisplayFixture { return true }
+        #endif
+        return link.isEnabled
+    }
+
+    private var linkedCount: String? {
+        guard link.isCounting else { return nil }
+        if exercise == .curl {
+            let left = comparison.leftCount.map { String($0) } ?? "—"
+            let right = comparison.rightCount.map { String($0) } ?? "—"
+            return "L \(left) · R \(right)"
+        }
+        return "\(comparison.count)"
+    }
+
+    private var linkedTrackingStatus: String? {
+        guard camera.state == .running else { return "Camera off · Log sets on your iPhone" }
+        guard link.isCounting else { return "Your iPhone controls logging and progression" }
+        return comparison.hasIncompleteCoverage ? "Tracking interrupted · Review the count on your iPhone"
+            : comparison.status.message
     }
 
     private func handleArm(_ arm: StationLinkArm?) {
@@ -314,9 +370,9 @@ struct StationView: View {
 
     private var linkPanel: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("COUNT FOR MY IPHONE").font(Theme.mono(12, .bold))
+            Text("IPHONE WORKOUT DISPLAY").font(Theme.mono(12, .bold))
             // On from the tap, while the key loads, so turning it off cancels.
-            Toggle("Count sets for my iPhone workout", isOn: Binding(
+            Toggle("Follow my iPhone workout", isOn: Binding(
                 get: { link.isEnabled || linkRequest != nil },
                 set: { enabled in
                     guard enabled else { linkRequest = nil; link.stop(); return }
@@ -832,9 +888,9 @@ final class StationIdleTimerOverride: ObservableObject {
     func begin() {
         if previous == nil { previous = read() }
     }
-    func update(cameraRunning: Bool, partnerOpen: Bool, foreground: Bool) {
+    func update(cameraRunning: Bool, partnerOpen: Bool, foreground: Bool, workoutDisplay: Bool = false) {
         guard let previous else { return }
-        write(foreground && (cameraRunning || partnerOpen) ? true : previous)
+        write(foreground && (cameraRunning || partnerOpen || workoutDisplay) ? true : previous)
     }
     func end() {
         guard let previous else { return }

@@ -42,7 +42,7 @@ final class PublicStationJourneyTests: XCTestCase {
         let connect = app.switches["station.link"]
         XCTAssertTrue(connect.exists)
         XCTAssertEqual(connect.value as? String, "0")
-        XCTAssertEqual(app.staticTexts["station.linkStatus"].label, "Connect when your host’s iPhone is ready.")
+        XCTAssertEqual(app.staticTexts["station.linkStatus"].label, "Connect when your iPhone is ready.")
         XCTAssertFalse(app.buttons["station.trainTogether"].isEnabled)
         app.buttons["station.done"].tap()
         XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))

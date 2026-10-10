@@ -11,6 +11,10 @@ struct ManualStationView: View {
     @StateObject private var partner: PartnerStationModel
     @StateObject private var idleTimer = StationIdleTimerOverride()
     @State private var linkRequest: UUID?
+    @State private var showOptions = false
+#if DEBUG && targetEnvironment(simulator)
+    @State private var showLinkedDisplayFixture = false
+#endif
 
     init(access: StationAccess, loadLinkKey: @escaping @MainActor () async -> Data?) {
         self.access = access
@@ -22,6 +26,17 @@ struct ManualStationView: View {
         Group {
             if access.isActive {
                 NavigationStack {
+                    Group {
+                    if showingWorkoutDisplay {
+                        LinkedWorkoutDisplayView(link: link) {
+                            Button("Connection & partner options", systemImage: "slider.horizontal.3") {
+                                showOptions = true
+                            }
+                            .font(Theme.mono(16, .bold)).foregroundStyle(Theme.accent)
+                            .frame(minHeight: 48)
+                            .accessibilityIdentifier("ipadWorkout.options")
+                        }
+                    } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 28) {
                             if partner.isOpen {
@@ -34,9 +49,17 @@ struct ManualStationView: View {
                         .frame(maxWidth: 1040)
                         .frame(maxWidth: .infinity)
                     }
+                    }
+                    }
                     .background(Theme.background)
                     .navigationTitle("iPad Station")
                     .toolbar {
+                        if showOptions && link.isEnabled {
+                            ToolbarItem(placement: .topBarLeading) {
+                                Button("Workout display") { showOptions = false }
+                                    .accessibilityIdentifier("ipadWorkout.returnToDisplay")
+                            }
+                        }
                         ToolbarItem(placement: .confirmationAction) {
                             Button("Done") { dismiss() }.accessibilityIdentifier("station.done")
                         }
@@ -49,6 +72,8 @@ struct ManualStationView: View {
             idleTimer.begin()
             #if DEBUG && targetEnvironment(simulator)
             partner.installPublicStationUIFixtureIfRequested()
+            showLinkedDisplayFixture = IpadWorkoutDisplayUIFixture.installIfRequested(
+                on: link, accountID: access.session.accountID)
             #endif
             refreshIdleTimer()
         }
@@ -60,6 +85,7 @@ struct ManualStationView: View {
         }
         .onChange(of: scenePhase) { _, _ in refreshIdleTimer() }
         .onChange(of: partner.isOpen) { _, _ in refreshIdleTimer() }
+        .onChange(of: link.isEnabled) { _, _ in refreshIdleTimer() }
         .onReceive(NotificationCenter.default.publisher(for: StationLinkKeyStore.refreshed)) { note in
             guard note.userInfo?["accountID"] as? String == access.session.accountID,
                   link.isEnabled, let request = linkRequest else { return }
@@ -74,29 +100,30 @@ struct ManualStationView: View {
     private var setup: some View {
         VStack(alignment: .leading, spacing: 24) {
             VStack(alignment: .leading, spacing: 12) {
-                Text("Train together").font(.largeTitle.bold())
+                Text("IPAD STATION").font(Theme.display(44))
                     .accessibilityIdentifier("station.manualSetup")
-                Text("Use this iPad as your shared workout display. Each person logs sets on their own iPhone.")
+                Text("Follow your iPhone workout from across the room, or train together with a partner. Your iPhone logs each set.")
                     .font(.title2)
             }
             VStack(alignment: .leading, spacing: 20) {
-                step("1", title: "Connect the host’s iPhone",
-                     detail: "Sign in to the same account on this iPad and the host’s iPhone. On the iPhone, start a workout, open Workout outline → Current exercise options, and turn on Use iPad for partner workout.")
-                step("2", title: "Invite your partner",
-                     detail: "Connect below, then tap Train together. Your partner uses their own account and scans the iPad code from Today → Train together on their iPhone.")
-                step("3", title: "Lift together, log separately",
-                     detail: "Review each person’s weights on their iPhone. Start together on the iPad before either person logs a set or completes a workout today. The shared rest starts when both people finish their set.")
+                step("1", title: "Prepare your iPhone",
+                     detail: "Sign in to the same account on this iPad and your iPhone. On the iPhone, start a workout, open Workout outline → Current exercise options, and turn on Use iPad workout display.")
+                step("2", title: "Follow your workout",
+                     detail: "Connect below to show your current exercise, targets and rest timer on this iPad. Keep the workout open on your iPhone and log each set there.")
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 20))
             VStack(alignment: .leading, spacing: 12) {
-                Toggle("Connect host’s iPhone", isOn: Binding(
+                Toggle("Follow my iPhone workout", isOn: Binding(
                     get: { link.isEnabled || linkRequest != nil }, set: setConnection))
                     .tint(Theme.accent)
                     .accessibilityIdentifier("station.link")
                 Text(linkMessage).foregroundStyle(Theme.muted)
                     .accessibilityIdentifier("station.linkStatus")
+                Text("Training with a partner?").font(.headline)
+                Text("Tap Train together, then have your partner scan the iPad code from Today → Train together on their iPhone. Start together before either person logs a set today; shared rest starts when both people finish their set.")
+                    .foregroundStyle(Theme.muted)
                 Button("Train together") {
                     guard access.validate() else { return }
                     partner.begin(link: link)
@@ -107,7 +134,7 @@ struct ManualStationView: View {
                 Text("Your partner saves a copy of the shared workout, including targets and notes, to their account. Both people’s weights and progress appear on this iPad.")
                     .font(.footnote).foregroundStyle(Theme.muted)
             }
-            Text("Keep both iPhones and this iPad nearby. Go online to set up and start the workout, and allow local network access when you connect. Each person can continue alone on their iPhone.")
+            Text("Keep your iPhone and this iPad nearby. Go online to set up and start the workout, and allow local network access when you connect.")
                 .font(.footnote).foregroundStyle(Theme.muted)
         }
     }
@@ -124,11 +151,11 @@ struct ManualStationView: View {
     }
 
     private var linkMessage: String {
-        if link.needsKey { return "Go online once to set up partner training on this iPad." }
+        if link.needsKey { return "Go online once to set up your iPad workout display." }
         switch link.connection {
-        case .off: return "Connect when your host’s iPhone is ready."
-        case .searching: return "Looking for your host’s iPhone…"
-        case .connected(let name): return "Connected to \(name). Ready to invite your partner."
+        case .off: return "Connect when your iPhone is ready."
+        case .searching: return "Looking for your iPhone…"
+        case .connected(let name): return "Connected to \(name). Your workout appears on this iPad."
         }
     }
 
@@ -147,7 +174,16 @@ struct ManualStationView: View {
 
     private func refreshIdleTimer() {
         idleTimer.update(cameraRunning: false, partnerOpen: partner.isOpen,
-                         foreground: scenePhase == .active && access.isActive)
+                         foreground: scenePhase == .active && access.isActive,
+                         workoutDisplay: link.isEnabled)
+    }
+
+    private var showingWorkoutDisplay: Bool {
+        guard !partner.isOpen, !showOptions else { return false }
+        #if DEBUG && targetEnvironment(simulator)
+        if showLinkedDisplayFixture { return true }
+        #endif
+        return link.isEnabled
     }
 
     private func close() {

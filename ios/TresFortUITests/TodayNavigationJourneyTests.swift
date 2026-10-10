@@ -51,7 +51,9 @@ final class TodayNavigationJourneyTests: XCTestCase {
         let app = launch()
         XCTAssertFalse(app.buttons["Workout options"].exists)
         XCTAssertFalse(app.buttons["today.createWorkout"].exists)
-        XCTAssertEqual(app.navigationBars["Today"].buttons.count, 0)
+        let displayConnection = app.navigationBars["Today"].buttons["today.ipadDisplay"]
+        XCTAssertTrue(displayConnection.waitForExistence(timeout: 5))
+        XCTAssertEqual(displayConnection.label, "iPad display")
         capture("today-navigation")
         tap(app.buttons["today.viewWorkout"], in: app)
         XCTAssertTrue(app.navigationBars["Strength A"].waitForExistence(timeout: 5))

@@ -85,6 +85,10 @@ distribution is not that evidence.
       [1,2], no Station SDK/model, privacy manifest embedded, Apple VALID /
       APP_STORE_ELIGIBLE, and screenshots captured from the same source. It is
       not yet selected for 1.0, and the owner's screenshot comparison remains open.
+    - Separate internal trial: [build 51](release-51.md) adds the merged iPad
+      workout display and retains the experimental camera SDK. It is VALID and
+      available to internal Testers; it does not replace the SDK-free public
+      candidate or establish public/physical acceptance.
 - [ ] **P4 — Submission and public-release handoff**
   - [x] Select build 40 and retain Apple's review-submission receipt. The owner
     submitted 1.0 (40) on 2026-09-14 at 01:23:28 UTC (2026-09-13 Pacific);

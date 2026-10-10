@@ -11,6 +11,7 @@ struct ManualStationView: View {
     @StateObject private var partner: PartnerStationModel
     @StateObject private var idleTimer = StationIdleTimerOverride()
     @State private var linkRequest: UUID?
+    @AppStorage(StationLink.stationEnabledAccountDefaultsKey) private var enabledAccount = ""
     @State private var showOptions = false
 #if DEBUG && targetEnvironment(simulator)
     @State private var showLinkedDisplayFixture = false
@@ -28,7 +29,7 @@ struct ManualStationView: View {
                 NavigationStack {
                     Group {
                     if showingWorkoutDisplay {
-                        LinkedWorkoutDisplayView(link: link) {
+                        LinkedWorkoutDisplayView(link: link, retryConnection: { setConnection(true) }) {
                             Button("Connection & partner options", systemImage: "slider.horizontal.3") {
                                 showOptions = true
                             }
@@ -75,6 +76,9 @@ struct ManualStationView: View {
             showLinkedDisplayFixture = IpadWorkoutDisplayUIFixture.installIfRequested(
                 on: link, accountID: access.session.accountID)
             #endif
+            if StationLink.isEnabled(storedAccount: enabledAccount, accountID: access.session.accountID) {
+                setConnection(true)
+            }
             refreshIdleTimer()
         }
         .onDisappear { close() }
@@ -106,17 +110,20 @@ struct ManualStationView: View {
                     .font(.title2)
             }
             VStack(alignment: .leading, spacing: 20) {
-                step("1", title: "Prepare your iPhone",
-                     detail: "Sign in to the same account on this iPad and your iPhone. On the iPhone, start a workout, open Workout outline → Current exercise options, and turn on Use iPad workout display.")
-                step("2", title: "Follow your workout",
-                     detail: "Connect below to show your current exercise, targets and rest timer on this iPad. Keep the workout open on your iPhone and log each set there.")
+                step("1", title: "Connect once",
+                     detail: "Tap Connect iPhone below, then scan the setup code with your iPhone camera. Both devices must use the same Très Fort account.")
+                step("2", title: "Train with your iPad display",
+                     detail: "Start or resume a workout on your iPhone. Next time, just open Très Fort on your iPhone and Station on your iPad to reconnect.")
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 20))
             VStack(alignment: .leading, spacing: 12) {
-                Toggle("Follow my iPhone workout", isOn: Binding(
-                    get: { link.isEnabled || linkRequest != nil }, set: setConnection))
+                Button("Connect iPhone") { showOptions = false; setConnection(true) }
+                    .buttonStyle(WorkoutPrimaryButtonStyle())
+                    .accessibilityIdentifier("station.connectPhone")
+                Toggle("Reconnect automatically", isOn: Binding(
+                    get: { StationLink.isEnabled(storedAccount: enabledAccount, accountID: access.session.accountID) }, set: setConnection))
                     .tint(Theme.accent)
                     .accessibilityIdentifier("station.link")
                 Text(linkMessage).foregroundStyle(Theme.muted)
@@ -155,13 +162,17 @@ struct ManualStationView: View {
         switch link.connection {
         case .off: return "Connect when your iPhone is ready."
         case .searching: return "Looking for your iPhone…"
+        case .unavailable: return "Couldn’t start the local connection. Check Local Network access in Settings."
         case .connected(let name): return "Connected to \(name). Your workout appears on this iPad."
         }
     }
 
     private func setConnection(_ enabled: Bool) {
-        guard enabled else { linkRequest = nil; link.stop(); return }
         guard access.validate() else { return }
+        enabledAccount = enabled ? access.session.accountID : ""
+        linkRequest = nil
+        link.stop()
+        guard enabled else { return }
         let request = UUID()
         linkRequest = request
         Task { @MainActor in
@@ -183,7 +194,7 @@ struct ManualStationView: View {
         #if DEBUG && targetEnvironment(simulator)
         if showLinkedDisplayFixture { return true }
         #endif
-        return link.isEnabled
+        return link.isEnabled || linkRequest != nil || link.needsKey
     }
 
     private func close() {

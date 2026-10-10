@@ -11,6 +11,7 @@ private final class MainTabModels: ObservableObject {
     let group: GroupModel
     let health: HealthKitSyncModel
     let connectivity: SetConnectivityMonitor
+    let stationLink = StationLinkController()
     private var syncObservation: AnyCancellable?
 
     init(auth: AuthModel, defaults: LocalPersistence, now: @escaping () -> Date,
@@ -78,6 +79,7 @@ struct MainTabView: View {
         TabView(selection: $selectedTab) {
             TodayView(sync: sync,
                       auth: auth,
+                      stationLink: models.stationLink,
                       onLogActivity: { showActivitySheet = true },
                       isWorkoutFocused: isWorkoutFocused,
                       onMinimizeWorkout: { isWorkoutFocused = false },
@@ -189,6 +191,7 @@ struct MainTabView: View {
             }
         }
         .modifier(MemberEntryPresentation(auth: auth, sync: sync, groupModel: groupModel,
+                                          stationLink: models.stationLink,
                                           onJoined: { selectedTab = .group },
                                           onCoach: { selectedTab = .profile },
                                           onWorkout: resumeWorkout))

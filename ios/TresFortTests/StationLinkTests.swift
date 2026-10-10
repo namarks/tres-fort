@@ -21,6 +21,96 @@ final class StationLinkTests: XCTestCase {
 
     // MARK: pairing and protocol
 
+    func testPhoneOnlyStaysAwakeForAConnectedActiveWorkout() {
+        for originallyDisabled in [false, true] {
+            var disabled = originallyDisabled
+            let timer = StationIdleTimerOverride(read: { disabled }, write: { disabled = $0 })
+            let controller = StationLinkController(idleTimer: timer)
+            controller.connectionChanged(.connected("iPad"))
+            XCTAssertEqual(disabled, originallyDisabled, "Pairing before a workout preserves auto-lock")
+            controller.setWorkoutActive(true)
+            XCTAssertTrue(disabled)
+            controller.setWorkoutActive(false)
+            XCTAssertEqual(disabled, originallyDisabled, "Finishing, minimizing or backgrounding releases the override")
+            controller.setWorkoutActive(true)
+            XCTAssertTrue(disabled)
+            controller.connectionChanged(.searching)
+            XCTAssertEqual(disabled, originallyDisabled)
+            controller.connectionChanged(.connected("iPad"))
+            XCTAssertTrue(disabled, "Reconnection keeps an active workout awake")
+            controller.stop()
+            XCTAssertEqual(disabled, originallyDisabled)
+            controller.connectionChanged(.connected("iPad"))
+            XCTAssertTrue(disabled, "Re-enabling the display during the same workout restores its wake lock")
+            controller.resetWorkout()
+            XCTAssertEqual(disabled, originallyDisabled)
+        }
+    }
+
+    func testRetryKeepsLoggedSetUndoAndPendingDeletion() {
+        let controller = StationLinkController()
+        let logged = StationLinkLoggedSet(setID: "set-1", slotID: "slot-1", setNumber: 1, reps: 8)
+        controller.recordLogged(logged)
+        controller.retryConnection()
+        XCTAssertEqual(controller.lastLogged, logged)
+        controller.undoQueued(logged)
+        controller.retryConnection()
+        XCTAssertEqual(controller.pendingUndo, logged)
+        XCTAssertNil(controller.lastLogged)
+    }
+
+    func testEndingWorkoutKeepsPairingButClearsDisplayAndUndo() {
+        let controller = StationLinkController()
+        controller.connectionChanged(.connected("iPad"))
+        controller.publishDisplay(display(.review))
+        let logged = StationLinkLoggedSet(setID: "old-set", slotID: "slot-1", setNumber: 1, reps: 8)
+        controller.recordLogged(logged)
+        controller.resetWorkout()
+        XCTAssertTrue(controller.isConnected, "Finishing does not force another pairing")
+        XCTAssertNil(controller.display)
+        XCTAssertNil(controller.lastLogged, "A new workout must not offer Undo for the previous workout")
+        controller.undoQueued(logged)
+        controller.resetWorkout()
+        XCTAssertNil(controller.pendingUndo)
+    }
+
+    func testNextWorkoutCannotReuseAnOldCountForTheSameTemplateAndSet() throws {
+        try requireCameraCounting()
+        let controller = StationLinkController()
+        controller.request(target())
+        let oldArm = try XCTUnwrap(controller.arm)
+        let oldCount = completion(oldArm, reps: 5, partial: true)
+        controller.receive(.completion(oldCount))
+        XCTAssertNotNil(controller.proposal)
+        controller.resetWorkout()
+        XCTAssertNil(controller.arm)
+        XCTAssertNil(controller.proposal)
+        controller.request(target())
+        XCTAssertNotEqual(controller.arm?.armID, oldArm.armID)
+        controller.receive(.completion(oldCount))
+        XCTAssertNil(controller.proposal, "A late count from the old workout cannot log in the new one")
+    }
+
+    func testRetryPreservesPendingCountAndDoesNotRearmIt() throws {
+        try requireCameraCounting()
+        let controller = StationLinkController()
+        controller.request(target())
+        let arm = try XCTUnwrap(controller.arm)
+        let event = completion(arm, reps: 5, partial: true)
+        controller.receive(.completion(event))
+        controller.publishDisplay(display())
+        let proposal = controller.proposal
+        controller.retryConnection()
+        XCTAssertEqual(controller.connectionAttempt, 1)
+        XCTAssertEqual(controller.proposal, proposal)
+        XCTAssertEqual(controller.display, display())
+        XCTAssertNil(controller.armToResend)
+        controller.finishProposal(event.eventID)
+        controller.retryConnection()
+        controller.receive(.completion(event))
+        XCTAssertNil(controller.proposal, "Retry cannot make a spent count log twice")
+    }
+
     private func display(_ phase: WorkoutDisplayState.Phase = .ready) -> WorkoutDisplayState {
         WorkoutDisplayState(phase: phase, workoutName: "Strength", current: nil, next: nil,
             restEndDate: phase == .rest ? Date(timeIntervalSince1970: 2_000_000_060) : nil,

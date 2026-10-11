@@ -67,6 +67,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nmarkspdx.tresfort.widgets
         INFOPLIST_FILE: TresFortWidgets/Info.plist
+        # App Group shared with the app for the Today widget snapshot.
+        CODE_SIGN_ENTITLEMENTS: TresFortWidgets/TresFortWidgets.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
 
   TresFortTests:

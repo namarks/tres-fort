@@ -76,5 +76,8 @@ struct RestActivityWidget: Widget {
 
 @main
 struct TresFortWidgetsBundle: WidgetBundle {
-    var body: some Widget { RestActivityWidget() }
+    var body: some Widget {
+        RestActivityWidget()
+        TodayWorkoutWidget()
+    }
 }

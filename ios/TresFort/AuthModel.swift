@@ -877,6 +877,12 @@ final class AuthModel: ObservableObject {
     /// Preserve validated invite navigation across interrupted sign-in and
     /// onboarding. Signed-in intents remain bound to that account.
     func handleDeepLink(_ url: URL) {
+        // Widget taps only bring Today forward; a signed-out launch already
+        // lands on sign-in, so nothing is stored for later.
+        if TrainingAgendaLink.isTodayURL(url) {
+            NotificationCenter.default.post(name: TrainingAgendaLink.openToday, object: nil)
+            return
+        }
         if StationLink.isSetupURL(url) {
             requestEntry(.ipadDisplay)
             return

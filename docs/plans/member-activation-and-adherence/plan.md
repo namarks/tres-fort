@@ -1,6 +1,6 @@
 # Member Activation and Adherence
 
-Slug: member-activation-and-adherence · Status: paused · Updated: 2026-10-05 · Theme: gym-floor
+Slug: member-activation-and-adherence · Status: paused · Updated: 2026-10-11 · Theme: gym-floor
 
 ## Goal
 
@@ -32,13 +32,38 @@ how to populate an empty progress view without needing another setup flow.
   - Verify the invite, manual, and coach-connected paths through focused
     end-to-end walkthroughs from entry to first completed workout; fix concrete
     breaks without adding an activation analytics system.
-- [ ] **P1 — Return for the next workout**
+- [x] **P1 — Return for the next workout**
   - Offer opt-in local reminders derived from the existing recurring schedule
     and deep-link each reminder to the correct Today workout.
   - Add a compact Today widget using the same projection and refresh it after
     schedule, skip, completion, or sign-out changes.
   - Keep notification timing and copy editable in app settings; do not require
     a new server notification system for the initial adherence loop.
+  - Owner activation (2026-10-11): Nick chose this slice first from the
+    smoothness recommendation thread.
+  - Delivered on iPhone and iPad with no backend change. The app builds a
+    14-day display snapshot from the shared projection (`SyncModel`
+    `trainingAgendaSnapshot`), so scheduled, dated, skipped, trip, started and
+    completed days match Today and the calendar. It is written to the
+    `group.com.nmarkspdx.tresfort` App Group for the widget and drives local
+    reminders; both refresh after each published plan/session change, a new
+    civil day, a time-zone change and a settings change, and are cleared at
+    every account boundary (sign-out, expiry, deletion).
+  - The widget (small, medium, Lock Screen rectangular and inline) shows
+    today's workout, or for a rest/skip/trip day the next workout, with one
+    timeline entry per civil day; a tap opens Today through the navigation-only
+    `tresfort://today` link. Profile > Reminders turns reminders on (asking for
+    notification permission once) and sets one local time. A reminder fires
+    only on a day whose workout has not started; rest, skipped, trip, started
+    and finished days stay quiet, and tapping it opens Today. Copy is fixed
+    rather than member-editable; the editable setting is the time.
+  - Verification: unit tests for the snapshot, reminder plan (including
+    daylight saving), notification replacement and sign-out ordering, widget
+    timeline, storage and link parsing; the packaging test requires the App
+    Group on both shipping variants. Exact-head CI on the delivering PR is the
+    merge gate. Seeing the widget and a delivered reminder on a physical
+    device is part of the next owner TestFlight check; the first signed
+    archive registers the new App Group through automatic signing.
 - [x] **P2 — Deliver a useful starting point**
   - [x] **(a) Training profile and starter workout**
     - Brief, optional setup captures overall goals; all intended activities
@@ -116,12 +141,12 @@ how to populate an empty progress view without needing another setup flow.
 
 ## Next step
 
-**Now (@owner):** P2(a) is implemented and locally verified; its implementation
-PR carries exact-head review and CI evidence for repository delivery. Choose
-whether to activate P1 reminders/widgets or the P4 empty-state follow-up. P3
-orientation was activated and delivered at the owner's request on 2026-10-04.
-Migration, production deployment and iOS distribution remain separately
-authorized.
+**Now (@owner):** P1 reminders and the Today widget are implemented; their
+implementation PR carries exact-head review and CI evidence for repository
+delivery. On the next authorized TestFlight build, add the widget and turn on a
+reminder to confirm both on a real device, then choose whether to activate the
+P4 empty-state follow-up. P2(a) and P3 are delivered. Migration, production
+deployment and iOS distribution remain separately authorized.
 
 ## Notes / open questions
 

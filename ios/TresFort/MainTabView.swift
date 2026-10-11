@@ -12,6 +12,7 @@ private final class MainTabModels: ObservableObject {
     let health: HealthKitSyncModel
     let connectivity: SetConnectivityMonitor
     let stationLink = StationLinkController()
+    let agenda: TrainingAgendaPublisher
     private var syncObservation: AnyCancellable?
 
     init(auth: AuthModel, defaults: LocalPersistence, now: @escaping () -> Date,
@@ -44,6 +45,9 @@ private final class MainTabModels: ObservableObject {
         self.group = groupModel
         self.health = health
         self.connectivity = setConnectivity
+        // Today widget and opt-in workout reminders follow this account's
+        // published projection and are cleared at its feature boundary.
+        self.agenda = TrainingAgendaPublisher(sync: sync, auth: auth, now: now)
         // The tab shell reads runner lifecycle state as well as owning its
         // models. Forward changes so first-start, minimize and completion
         // update its chrome immediately, without an unrelated tab interaction.
@@ -189,6 +193,10 @@ struct MainTabView: View {
             ManualActivitySheet { pending in
                 await groupModel.logActivity(pending)
             }
+        }
+        // The Today widget and workout reminders open Today; navigation only.
+        .onReceive(NotificationCenter.default.publisher(for: TrainingAgendaLink.openToday)) { _ in
+            resumeWorkout()
         }
         .modifier(MemberEntryPresentation(auth: auth, sync: sync, groupModel: groupModel,
                                           stationLink: models.stationLink,

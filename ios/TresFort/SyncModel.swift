@@ -6307,6 +6307,10 @@ final class SyncModel: ObservableObject {
         return projection(for: t, today: t)
     }
 
+    /// The widget snapshot and reminders belong to the feature session that
+    /// rendered them, like any other new user-visible action.
+    var canPublishTrainingAgenda: Bool { canInitiateBoundFeatureAction }
+
     /// SINGLE definition of "is this raw session status a workout?" (i.e.
     /// not skipped / not a non-training terminal state). The ONLY place this
     /// rule is written on the iOS side.

@@ -83,7 +83,11 @@ enum TrainingAgendaStore {
             defaults.removeObject(forKey: snapshotKey)
             return true
         }
-        guard let data = try? JSONEncoder().encode(snapshot) else { return false }
+        // Sorted keys make equal snapshots encode to equal bytes; keyed
+        // containers otherwise have no stable order across encodes.
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
+        guard let data = try? encoder.encode(snapshot) else { return false }
         guard defaults.data(forKey: snapshotKey) != data else { return false }
         defaults.set(data, forKey: snapshotKey)
         return true

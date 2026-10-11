@@ -83,20 +83,29 @@ extension SyncModel {
 
 // MARK: - Reminder settings and plan
 
+/// Reminder preferences belong to one account: several people can share an
+/// install, and one person's opt-in never schedules another's workouts.
 enum WorkoutReminderSettings {
-    static let enabledKey = "workoutRemindersEnabled"
-    static let minutesKey = "workoutReminderMinutes"
     /// 7:00 in the morning, local time.
     static let defaultMinutes = 7 * 60
     static let changed = Notification.Name("com.nmarkspdx.tresfort.workout-reminder-settings")
 
-    static func isEnabled(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: enabledKey)
+    static func enabledKey(userID: String) -> String {
+        "com.nmarkspdx.tresfort.workout-reminders-enabled.v1.\(userID)"
     }
 
-    static func minutesAfterMidnight(_ defaults: UserDefaults = .standard) -> Int {
-        guard defaults.object(forKey: minutesKey) != nil else { return defaultMinutes }
-        return min(max(defaults.integer(forKey: minutesKey), 0), 24 * 60 - 1)
+    static func minutesKey(userID: String) -> String {
+        "com.nmarkspdx.tresfort.workout-reminder-minutes.v1.\(userID)"
+    }
+
+    static func isEnabled(_ defaults: UserDefaults = .standard, userID: String?) -> Bool {
+        guard let userID else { return false }
+        return defaults.bool(forKey: enabledKey(userID: userID))
+    }
+
+    static func minutesAfterMidnight(_ defaults: UserDefaults = .standard, userID: String?) -> Int {
+        guard let userID, defaults.object(forKey: minutesKey(userID: userID)) != nil else { return defaultMinutes }
+        return min(max(defaults.integer(forKey: minutesKey(userID: userID)), 0), 24 * 60 - 1)
     }
 }
 
@@ -268,6 +277,8 @@ final class TrainingAgendaPublisher {
     private weak var sync: SyncModel?
     private let sharedDefaults: UserDefaults?
     private let settings: UserDefaults
+    /// The account this publisher serves; a new account gets a new publisher.
+    private let userID: String?
     private let reminders: WorkoutReminderCoordinator
     private let reloadWidgets: () -> Void
     private let now: () -> Date
@@ -287,6 +298,7 @@ final class TrainingAgendaPublisher {
         self.sync = sync
         self.sharedDefaults = sharedDefaults
         self.settings = settings
+        self.userID = auth.userID
         self.reminders = reminders
         self.reloadWidgets = reloadWidgets
         self.now = now
@@ -331,8 +343,8 @@ final class TrainingAgendaPublisher {
         if changed || forceWidgetReload { reloadWidgets() }
         let input = ReminderInput(
             snapshot: snapshot,
-            enabled: WorkoutReminderSettings.isEnabled(settings),
-            minutes: WorkoutReminderSettings.minutesAfterMidnight(settings))
+            enabled: WorkoutReminderSettings.isEnabled(settings, userID: userID),
+            minutes: WorkoutReminderSettings.minutesAfterMidnight(settings, userID: userID))
         guard reapplyReminders || input != lastReminderInput else { return }
         lastReminderInput = input
         guard input.enabled else {

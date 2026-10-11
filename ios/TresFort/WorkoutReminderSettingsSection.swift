@@ -4,12 +4,18 @@ import UserNotifications
 /// Opt-in workout reminders. Turning them on asks for notification permission
 /// once; the time is local and applies to every workout day.
 struct WorkoutReminderSettingsSection: View {
-    @AppStorage(WorkoutReminderSettings.enabledKey) private var enabled = false
-    @AppStorage(WorkoutReminderSettings.minutesKey) private var minutes = WorkoutReminderSettings.defaultMinutes
+    @AppStorage private var enabled: Bool
+    @AppStorage private var minutes: Int
     @State private var permissionDenied = false
     @State private var requesting = false
     @Environment(\.scenePhase) private var scenePhase
     private var reminders: WorkoutReminderCoordinator { .shared }
+
+    init(userID: String) {
+        _enabled = AppStorage(wrappedValue: false, WorkoutReminderSettings.enabledKey(userID: userID))
+        _minutes = AppStorage(wrappedValue: WorkoutReminderSettings.defaultMinutes,
+                              WorkoutReminderSettings.minutesKey(userID: userID))
+    }
 
     var body: some View {
         Section {

@@ -381,7 +381,7 @@ final class TrainingAgendaTests: XCTestCase {
     func testReturningToTheAppReappliesRemindersAfterPermissionIsGranted() async {
         let model = model()
         let settings = userDefaults()
-        settings.set(true, forKey: WorkoutReminderSettings.enabledKey)
+        settings.set(true, forKey: WorkoutReminderSettings.enabledKey(userID: "user-a"))
         let center = ReminderCenterStub()
         center.status = .denied
         let coordinator = WorkoutReminderCoordinator(center: center)
@@ -447,13 +447,30 @@ final class TrainingAgendaTests: XCTestCase {
         XCTAssertEqual(reloads, 1)
     }
 
+    func testAnotherAccountsOptInSchedulesNothing() async {
+        let model = model()
+        let settings = userDefaults()
+        settings.set(true, forKey: WorkoutReminderSettings.enabledKey(userID: "user-b"))
+        let center = ReminderCenterStub()
+        let coordinator = WorkoutReminderCoordinator(center: center)
+        let publisher = TrainingAgendaPublisher(
+            sync: model, auth: retained.compactMap { $0 as? AuthModel }.last!,
+            sharedDefaults: userDefaults(), settings: settings, reminders: coordinator,
+            reloadWidgets: {}, now: { .distantPast }, notificationCenter: NotificationCenter())
+
+        publisher.refresh(reapplyReminders: true)
+        await coordinator.waitForTests()
+        XCTAssertTrue(center.pending.isEmpty, "user-a never opted in")
+        XCTAssertFalse(WorkoutReminderSettings.isEnabled(settings, userID: nil))
+    }
+
     func testPublisherWritesSnapshotSchedulesRemindersAndClearsAtSignOut() async throws {
         let defaults = persistence()
         let model = model(defaults: defaults)
         let shared = userDefaults()
         let settings = userDefaults()
-        settings.set(true, forKey: WorkoutReminderSettings.enabledKey)
-        settings.set(23 * 60 + 59, forKey: WorkoutReminderSettings.minutesKey)
+        settings.set(true, forKey: WorkoutReminderSettings.enabledKey(userID: "user-a"))
+        settings.set(23 * 60 + 59, forKey: WorkoutReminderSettings.minutesKey(userID: "user-a"))
         let center = ReminderCenterStub()
         let coordinator = WorkoutReminderCoordinator(center: center)
         var reloads = 0
@@ -476,12 +493,12 @@ final class TrainingAgendaTests: XCTestCase {
         await coordinator.waitForTests()
         XCTAssertEqual(reloads, 1, "an unchanged agenda neither reloads the widget nor reschedules")
 
-        settings.set(false, forKey: WorkoutReminderSettings.enabledKey)
+        settings.set(false, forKey: WorkoutReminderSettings.enabledKey(userID: "user-a"))
         publisher.refresh()
         await coordinator.waitForTests()
         XCTAssertTrue(center.pending.isEmpty, "turning reminders off removes them")
 
-        settings.set(true, forKey: WorkoutReminderSettings.enabledKey)
+        settings.set(true, forKey: WorkoutReminderSettings.enabledKey(userID: "user-a"))
         publisher.refresh()
         await coordinator.waitForTests()
         XCTAssertFalse(center.pending.isEmpty)

@@ -9,9 +9,15 @@ def require(condition, message):
         raise ValueError(message)
 
 
+# Native portrait size per capture family: iPhone 17 Pro (Dynamic Island,
+# medium display), iPhone 17 Pro Max (Dynamic Island, large display) and
+# 13-inch iPad Pro.
+PORTRAIT_SIZES = {'iphone': (1206, 2622), 'iphone-large': (1320, 2868), 'ipad': (2064, 2752)}
+
+
 def screenshot_dimensions(device_family):
-    require(device_family in ('iphone', 'ipad'), 'Expected iphone or ipad screenshot family')
-    portrait = (1206, 2622) if device_family == 'iphone' else (2064, 2752)
+    require(device_family in PORTRAIT_SIZES, 'Expected iphone, iphone-large or ipad screenshot family')
+    portrait = PORTRAIT_SIZES[device_family]
     images = {name + '.png': portrait for name in
               ('01-today', '02-runner', '03-workouts', '04-history', '05-feedback')}
     if device_family == 'ipad':
@@ -20,7 +26,7 @@ def screenshot_dimensions(device_family):
 
 
 def validate_png(data, expected_dimensions=(1206, 2622)):
-    require(expected_dimensions in ((1206, 2622), (2064, 2752), (2752, 2064)),
+    require(expected_dimensions in ((1206, 2622), (1320, 2868), (2064, 2752), (2752, 2064)),
             'Unsupported screenshot dimensions')
     width, height = expected_dimensions
     require(data[:8] == b'\x89PNG\r\n\x1a\n', 'Not PNG')

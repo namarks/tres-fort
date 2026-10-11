@@ -12,13 +12,14 @@ case "${APP_STORE_BUILD-0}" in
   0|1) ;; # This capture command always selects the public build below.
   *) echo 'APP_STORE_BUILD must be 0 or 1.' >&2; exit 2 ;;
 esac
-if [[ $# -gt 2 || -e "$output" || ( "$family" != iphone && "$family" != ipad ) ]]; then
-  echo 'Usage: capture-app-store-screenshots.sh [new-output-directory] [iphone|ipad]' >&2
+if [[ $# -gt 2 || -e "$output" || ( "$family" != iphone && "$family" != iphone-large && "$family" != ipad ) ]]; then
+  echo 'Usage: capture-app-store-screenshots.sh [new-output-directory] [iphone|iphone-large|ipad]' >&2
   echo 'Choose a new directory; existing screenshots are never overwritten.' >&2
   exit 2
 fi
 case "$family" in
   iphone) device=com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro ;;
+  iphone-large) device=com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro-Max ;;
   ipad) device=com.apple.CoreSimulator.SimDeviceType.iPad-Pro-13-inch-M4-8GB ;;
 esac
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/tres-fort-app-store-capture.XXXXXX")"
@@ -112,7 +113,8 @@ manifest = {
     **identity,
     'ios_source_manifest': 'sources.json',
     'test_evidence': 'capture-tests.log',
-    'device': 'iPhone 17 Pro' if family == 'iphone' else 'iPad Pro 13-inch (M4)',
+    'device': {'iphone': 'iPhone 17 Pro', 'iphone-large': 'iPhone 17 Pro Max',
+               'ipad': 'iPad Pro 13-inch (M4)'}[family],
     'device_family': family, 'runtime': 'iOS 26.2', 'locale': 'en_US',
     'configuration': 'Debug simulator; production views with fictional, network-isolated data',
     'project_spec': 'project-app-store.yml',

@@ -49,6 +49,18 @@ class AssetValidationTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_png(self.signature + header + self.image + self.end, dimensions)
 
+    def test_large_iphone_capture_uses_the_same_screens_at_its_native_size(self):
+        iphone = screenshot_dimensions('iphone')
+        large = screenshot_dimensions('iphone-large')
+        self.assertEqual(set(large), set(iphone))
+        self.assertEqual(set(large.values()), {(1320, 2868)})
+        header = chunk(b'IHDR', struct.pack('>IIBBBBB', 1320, 2868, 8, 2, 0, 0, 0))
+        image = self.signature + header + chunk(b'IDAT', zlib.compress(bytes((1 + 1320 * 3) * 2868))) + self.end
+        validate_png(image, (1320, 2868))
+        with self.assertRaises(ValueError): validate_png(image)
+        with self.assertRaises(ValueError): validate_png(self.valid, (1320, 2868))
+        with self.assertRaises(ValueError): validate_png(image, (2868, 1320))
+
     def test_capture_rejects_deprecated_flag_and_invalid_device_before_tools_run(self):
         script = Path(__file__).resolve().parents[1] / 'scripts/capture-app-store-screenshots.sh'
         with tempfile.TemporaryDirectory(prefix='tres-fort-capture-contract-') as temporary:

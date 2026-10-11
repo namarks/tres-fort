@@ -1,3 +1,4 @@
+import CoreImage
 import XCTest
 
 final class StationConnectionJourneyTests: XCTestCase {
@@ -35,6 +36,20 @@ final class StationConnectionJourneyTests: XCTestCase {
         attachment.name = name
         attachment.lifetime = .keepAlways
         add(attachment)
+    }
+
+    private func assertDisplayedCodeDecodes(in app: XCUIApplication) throws {
+        let code = app.images["station.setupCode"]
+        XCTAssertTrue(code.waitForExistence(timeout: 5))
+        UITestScrolling.reveal(code, in: app, maxAttempts: 12)
+        XCTAssertTrue(app.windows.firstMatch.frame.contains(code.frame), "Keep the full code and white border on screen")
+        let image = try XCTUnwrap(code.screenshot().image.cgImage)
+        let detector = try XCTUnwrap(CIDetector(ofType: CIDetectorTypeQRCode,
+            context: CIContext(options: [.useSoftwareRenderer: true]),
+            options: [CIDetectorAccuracy: CIDetectorAccuracyHigh]))
+        let payloads = detector.features(in: CIImage(cgImage: image))
+            .compactMap { ($0 as? CIQRCodeFeature)?.messageString }
+        XCTAssertEqual(payloads, ["tresfort://ipad-display"])
     }
 
     func testPhoneConnectionIsVisibleBeforeAndDuringWorkoutAndRemembersExplicitChoice() throws {
@@ -89,6 +104,7 @@ final class StationConnectionJourneyTests: XCTestCase {
         XCTAssertTrue(app.images["station.setupCode"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["station.connectionProblem"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["station.connectionProblem"].label.contains("internet"))
+        try assertDisplayedCodeDecodes(in: app)
         capture("ipad-scan-to-connect")
         tap(app.buttons["station.retryConnection"], in: app)
         XCTAssertTrue(app.images["station.setupCode"].waitForExistence(timeout: 5))
@@ -115,7 +131,7 @@ final class StationConnectionJourneyTests: XCTestCase {
         XCTAssertFalse(app.images["station.setupCode"].exists)
     }
 
-    func testLargestTextKeepsSetupAndDismissalReachable() {
+    func testLargestTextKeepsSetupAndDismissalReachable() throws {
         let app = launch(largeText: true)
         if UIDevice.current.userInterfaceIdiom == .phone {
             tap(app.buttons["today.ipadDisplay"], in: app)
@@ -125,6 +141,8 @@ final class StationConnectionJourneyTests: XCTestCase {
         } else {
             tap(app.buttons["today.station"], in: app)
             tap(app.buttons["station.connectPhone"], in: app)
+            try assertDisplayedCodeDecodes(in: app)
+            capture("ipad-setup-code-largest-text")
             tap(app.buttons["ipadWorkout.options"], in: app)
             tap(app.switches["station.link"], in: app)
             XCTAssertTrue(app.buttons["station.done"].isHittable)

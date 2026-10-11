@@ -83,6 +83,7 @@ final class TodayNavigationJourneyTests: XCTestCase {
         XCTAssertEqual(app.buttons.matching(identifier: "library.workout.created-workout").count, 1)
         tap(app.navigationBars["Workouts"].buttons["Done"], in: app)
         XCTAssertTrue(app.staticTexts["Strength A"].exists, "Creation must not replace today's scheduled workout")
+        tap(app.buttons["today.moreWaysToTrain"], in: app)
         tap(app.buttons["today.logActivity"], in: app)
         XCTAssertTrue(app.navigationBars["Log activity"].waitForExistence(timeout: 5))
         capture("activity-destination")

@@ -15,8 +15,12 @@ final class FreestyleJourneyTests: XCTestCase {
         if large { app.launchEnvironment["TRESFORT_UI_LARGE_TEXT"] = "1" }
         app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US", "-restAudioCuesEnabled", timed ? "NO" : "YES"]
         app.launch()
-        let start = app.buttons["Start freestyle"]
-        XCTAssertTrue(start.waitForExistence(timeout: 10)); reveal(start, app: app); start.tap()
+        // Freestyle is an occasional start, so it lives in Today's "+" menu.
+        let more = app.buttons["today.moreWaysToTrain"]
+        XCTAssertTrue(more.waitForExistence(timeout: 10)); more.tap()
+        let start = app.buttons["today.startFreestyle"]
+        XCTAssertTrue(start.waitForExistence(timeout: 5))
+        XCTAssertEqual(start.label, "Start freestyle"); start.tap()
         let search = app.textFields["exercisePicker.search"]
         XCTAssertTrue(search.waitForExistence(timeout: 5))
         search.tap(); search.typeText((timed ? "Goblet Hold" : "Barbell Squat") + "\n")

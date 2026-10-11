@@ -119,6 +119,14 @@ how to populate an empty progress view without needing another setup flow.
     Verification: a model test for the scan, and calendar, weekly-schedule,
     progress, Intervals and screenshot journeys rerouted through Today;
     exact-head CI on the delivering PR is the merge gate.
+  - Owner direction (2026-10-11): Today keeps today's workout, Workouts and
+    the week in front. Start freestyle, Log an activity and Train together
+    are rarely used, so they move into a "+" menu in Today's navigation bar;
+    an unfinished partner lane keeps its visible "Partner workout setup" row.
+    The week strip pages sideways through this week and the next seven,
+    opening on this week; its header names the week shown and offers a way
+    back. Verification: unit tests for the week pages and titles, and the
+    freestyle, activity and partner journeys opened through the menu.
 - [ ] **P4 — Make empty progress views actionable**
   - Keep first-use copy compact: explain what strength/consistency data will
     appear and offer a relevant route to the scheduled workout, existing library

@@ -1,6 +1,8 @@
 # App Store review package
 
-Refreshed October 8, 2026 for owner review; not published. The current
+Refreshed October 8, 2026 for owner review. The October 8 policy was
+[published on both hosts](policy-publication-2026-10-11.md) on October 11; the
+listing text and rejection reply here are not yet submitted. The current
 [readiness audit](readiness-2026-10-07.md) records source/provider evidence and
 remaining limitations. Live completion and gates belong to
 [plan.md](plan.md). Reconcile claims/screenshots with the final candidate before

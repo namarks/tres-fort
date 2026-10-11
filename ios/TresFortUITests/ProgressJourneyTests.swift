@@ -33,23 +33,29 @@ final class ProgressJourneyTests: XCTestCase {
         add(attachment)
     }
 
-    func testProgressTabOpensStrengthConsistencyAndOptionalHealthWeight() {
+    func testProgressTabLeadsWithConsistencyThenStrengthAndOptionalHealthWeight() {
         let app = launch()
-        XCTAssertTrue(app.buttons["progress.strength"].waitForExistence(timeout: 10))
+        let consistency = app.buttons["progress.consistency"]
+        XCTAssertTrue(consistency.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["progress.strength"].exists)
+        XCTAssertLessThan(consistency.frame.minY, app.buttons["progress.strength"].frame.minY,
+                          "Consistency is the first thing Progress shows")
+        XCTAssertTrue(consistency.label.contains("week streak"))
         capture("Progress overview — synthetic training", app: app)
-        app.buttons["progress.strength"].tap()
+        consistency.tap()
+        XCTAssertTrue(app.staticTexts["consistency.total"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.descendants(matching: .any)["consistency.heatmap"].firstMatch.exists)
+        XCTAssertTrue(app.staticTexts["This week so far"].exists)
+        app.buttons["26 weeks"].tap()
+        capture("Consistency — synthetic completed workouts", app: app)
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+        tap(app.buttons["progress.strength"], in: app)
         XCTAssertTrue(app.navigationBars["Strength"].waitForExistence(timeout: 5))
         let exercise = app.buttons.matching(NSPredicate(format: "identifier BEGINSWITH 'history.exercise.'")).firstMatch
         XCTAssertTrue(exercise.waitForExistence(timeout: 5))
         exercise.tap()
         XCTAssertTrue(app.otherElements["history.progress.chart"].waitForExistence(timeout: 5))
         app.navigationBars.buttons.element(boundBy: 0).tap()
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        tap(app.buttons["progress.consistency"], in: app)
-        XCTAssertTrue(app.staticTexts["consistency.total"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.staticTexts["This week so far"].exists)
-        app.buttons["12 weeks"].tap()
-        capture("Consistency — synthetic completed workouts", app: app)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         tap(app.buttons["progress.weightSettings"], in: app)
         XCTAssertTrue(app.navigationBars["Apple Health"].waitForExistence(timeout: 5))

@@ -17,6 +17,64 @@ final class DemoImageLoaderTests: XCTestCase {
         }
     }
 
+    func testBundledDrawingWinsOverPhotosWithoutSlugOrNetwork() async {
+        let drawing0 = UIImage(systemName: "figure.walk")!
+        let drawing1 = UIImage(systemName: "figure.run")!
+        let photo = UIImage(systemName: "dumbbell")!
+        var lookups: [String] = []
+        DemoRequestProtocol.configure { _ in XCTFail("Drawings must stay offline"); return (500, Data()) }
+        let subject = loader { name in
+            lookups.append(name)
+            switch name {
+            case "drawing_ex_drawn__0": return drawing0
+            case "drawing_ex_drawn__1": return drawing1
+            case "photo__0", "photo__1": return photo
+            default: return nil
+            }
+        }
+        await subject.load(exerciseID: "ex_drawn", demoSlug: "photo", jwt: "test")
+        XCTAssertTrue(subject.frames[0] === drawing0)
+        XCTAssertTrue(subject.frames[1] === drawing1)
+        XCTAssertTrue(subject.showsDrawing)
+
+        lookups = []
+        await subject.load(exerciseID: "ex_drawn", demoSlug: nil, jwt: nil,
+                           presentation: .thumbnail)
+        XCTAssertTrue(subject.frames[0] === drawing0)
+        XCTAssertNil(subject.frames[1])
+        XCTAssertEqual(lookups, ["drawing_ex_drawn__0"])
+        XCTAssertTrue(subject.showsDrawing)
+        XCTAssertFalse(subject.isLoading)
+    }
+
+    func testSingleDrawingStaysStaticAndPhotoClearsDrawingCredit() async {
+        let hold = UIImage(systemName: "figure.core.training")!
+        let photo = UIImage(systemName: "dumbbell")!
+        DemoRequestProtocol.configure { _ in XCTFail("Bundled art must stay offline"); return (500, Data()) }
+        let subject = loader { name in
+            name == "drawing_ex_hold__0" ? hold : name.hasPrefix("photo__") ? photo : nil
+        }
+        await subject.load(exerciseID: "ex_hold", demoSlug: nil, jwt: "test")
+        XCTAssertTrue(subject.frames[0] === hold)
+        XCTAssertNil(subject.frames[1])
+        XCTAssertTrue(subject.showsDrawing)
+        await subject.load(exerciseID: "ex_photo", demoSlug: "photo", jwt: "test")
+        XCTAssertTrue(subject.frames.allSatisfy { $0 === photo })
+        XCTAssertFalse(subject.showsDrawing)
+    }
+
+    func testAppBundlesReviewedDrawingsAndKeepsPhotosOnlyWhereNoneFits() {
+        let bundle = Bundle(for: DemoImageLoader.self)
+        let image = { (name: String) in UIImage(named: name, in: bundle, with: nil) }
+        XCTAssertNotNil(image("drawing_ex_back_squat__0"))
+        XCTAssertNotNil(image("drawing_ex_back_squat__1"))
+        XCTAssertNotNil(image("drawing_ex_plank__0"))
+        XCTAssertNil(image("drawing_ex_plank__1"), "Holds ship one still frame")
+        XCTAssertNil(image("drawing_ex_rdl__0"), "No reviewed drawing shows an RDL hinge")
+        XCTAssertNotNil(image("Romanian_Deadlift__0"))
+        XCTAssertNil(image("Barbell_Squat__0"), "Drawn exercises do not also bundle photos")
+    }
+
     func testThumbnailUsesEitherBundledFrameWithoutNetwork() async {
         let image = UIImage(systemName: "dumbbell")!
         DemoRequestProtocol.configure { _ in XCTFail("Bundled thumbnail must stay offline"); return (500, Data()) }

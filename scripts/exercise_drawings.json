@@ -1,0 +1,1194 @@
+{
+  "source": {
+    "name": "Workout Guide",
+    "repository": "https://github.com/bryllim/workout-guide",
+    "commit": "aac599224bb9780305239607ef98540b7e0ce389",
+    "assets": "packages/workout-guide/assets",
+    "creator": "Bryl Lim",
+    "upstream": "Everkinetic (https://github.com/everkinetic/data)",
+    "license": "CC BY-SA 4.0",
+    "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "changes": "Selected frames, cropped to the figure and re-encoded as grayscale PNG."
+  },
+  "exercises": {
+    "ex_ab_wheel": {
+      "drawing": "ab-wheel",
+      "frames": [
+        2
+      ]
+    },
+    "ex_archer_pushup": {
+      "drawing": "archer-push-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_arnold_press": {
+      "drawing": "arnold-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_assisted_pullup": {
+      "drawing": "assisted-pull-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_back_extension": {
+      "drawing": "back-extension",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_back_squat": {
+      "drawing": "squat",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_banded_glute_bridge": {
+      "drawing": "banded-glute-bridge",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_banded_pull_apart": {
+      "drawing": "band-pull-apart",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_barbell_row": {
+      "drawing": "barbell-row",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_bb_shrug": {
+      "drawing": "shrug",
+      "frames": [
+        1,
+        2
+      ]
+    },
+    "ex_bear_crawl": {
+      "drawing": "bear-crawl",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_belt_squat": {
+      "drawing": "belt-squat",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_bench": {
+      "drawing": "bench-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_bench_dips": {
+      "drawing": "bench-dip",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_bicycle_crunch": {
+      "drawing": "bicycle-crunch",
+      "frames": [
+        2,
+        3
+      ]
+    },
+    "ex_bird_dog": {
+      "drawing": "bird-dog",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_burpee": {
+      "drawing": "burpee",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_bw_calf_raise": {
+      "drawing": "calf-raise",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_bw_curtsy_lunge": {
+      "drawing": "curtsy-lunge",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_bw_lateral_lunge": {
+      "drawing": "lateral-lunge",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_bw_squat": {
+      "drawing": "bodyweight-squat",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_cable_crossover": {
+      "drawing": "cable-fly",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_cable_crunch": {
+      "drawing": "cable-crunch",
+      "frames": [
+        2
+      ]
+    },
+    "ex_cable_curl": {
+      "drawing": "cable-curl",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_cable_kickback": {
+      "drawing": "cable-kickback",
+      "frames": [
+        1,
+        2
+      ]
+    },
+    "ex_cable_lateral_raise": {
+      "drawing": "cable-lateral-raise",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_cable_rear_delt_fly": {
+      "drawing": "cable-rear-delt-fly",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_cat_cow": {
+      "drawing": "cat-cow-stretch",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_cgbp": {
+      "drawing": "close-grip-bench-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_chest_supported_row": {
+      "drawing": "chest-supported-row",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_childs_pose": {
+      "drawing": "childs-pose",
+      "frames": [
+        1
+      ]
+    },
+    "ex_chinup": {
+      "drawing": "chin-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_clamshell": {
+      "drawing": "clamshell",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_close_pulldown": {
+      "drawing": "close-grip-lat-pulldown",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_commando_pullup": {
+      "drawing": "commando-pull-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_concentration_curl": {
+      "drawing": "concentration-curl",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_cossack_squat": {
+      "drawing": "cossack-squat",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_crab_walk": {
+      "drawing": "crab-walk",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_crunch": {
+      "drawing": "crunch",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_db_curl": {
+      "drawing": "bicep-curl",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_db_farmers_walk": {
+      "drawing": "farmer-carry",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_db_fly": {
+      "drawing": "dumbbell-fly",
+      "frames": [
+        2,
+        3
+      ]
+    },
+    "ex_db_ohp": {
+      "drawing": "standing-dumbbell-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_db_overhead_ext": {
+      "drawing": "dumbbell-overhead-tricep-extension",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_db_press": {
+      "drawing": "dumbbell-bench-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_db_rdl": {
+      "drawing": "dumbbell-romanian-deadlift",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_db_reverse_lunge": {
+      "drawing": "reverse-lunge",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_db_row_two": {
+      "drawing": "dumbbell-bent-over-row",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_db_shrug": {
+      "drawing": "dumbbell-shrug",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_db_single_leg_rdl": {
+      "drawing": "single-leg-romanian-deadlift",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_db_split_squat": {
+      "drawing": "bulgarian-split-squat",
+      "frames": [
+        1,
+        2
+      ]
+    },
+    "ex_db_step_up": {
+      "drawing": "step-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_dead_bug": {
+      "drawing": "dead-bug",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_dead_hang": {
+      "drawing": "dead-hang",
+      "frames": [
+        1
+      ]
+    },
+    "ex_deadlift": {
+      "drawing": "deadlift",
+      "frames": [
+        3,
+        1
+      ]
+    },
+    "ex_decline_bench": {
+      "drawing": "decline-bench-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_decline_db_press": {
+      "drawing": "decline-dumbbell-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_decline_pushup": {
+      "drawing": "decline-push-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_diamond_pushup": {
+      "drawing": "diamond-push-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_dips": {
+      "drawing": "dip",
+      "frames": [
+        1,
+        2
+      ]
+    },
+    "ex_dragon_flag": {
+      "drawing": "dragon-flag",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_eccentric_pullup": {
+      "drawing": "negative-pull-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_elliptical": {
+      "drawing": "elliptical",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_ez_curl": {
+      "drawing": "ez-bar-curl",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_face_pull": {
+      "drawing": "face-pull",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_fire_hydrant": {
+      "drawing": "fire-hydrant",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_flutter_kick": {
+      "drawing": "flutter-kick",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_front_raise": {
+      "drawing": "front-raise",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_front_squat": {
+      "drawing": "front-squat",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_glute_bridge": {
+      "drawing": "barbell-glute-bridge",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_glute_bridge_march": {
+      "drawing": "glute-bridge-march",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_glute_kickback": {
+      "drawing": "donkey-kick",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_goblet_squat": {
+      "drawing": "goblet-squat",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_good_morning": {
+      "drawing": "good-morning",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_hack_squat": {
+      "drawing": "hack-squat",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_hammer_curl": {
+      "drawing": "hammer-curl",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_hanging_leg_raise": {
+      "drawing": "hanging-leg-raise",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_high_knees": {
+      "drawing": "high-knees",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_hindu_pushup": {
+      "drawing": "hindu-push-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_hip_abduction": {
+      "drawing": "hip-abduction-machine",
+      "frames": [
+        1,
+        2
+      ]
+    },
+    "ex_hip_adduction": {
+      "drawing": "hip-adduction-machine",
+      "frames": [
+        1,
+        2
+      ]
+    },
+    "ex_hip_thrust": {
+      "drawing": "hip-thrust",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_hollow": {
+      "drawing": "hollow-body-hold",
+      "frames": [
+        1
+      ]
+    },
+    "ex_hollow_rocks": {
+      "drawing": "hollow-rock",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_hspu": {
+      "drawing": "handstand-push-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_inchworm": {
+      "drawing": "inchworm",
+      "frames": [
+        2,
+        3
+      ]
+    },
+    "ex_incline_bench": {
+      "drawing": "incline-bench-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_incline_db_curl": {
+      "drawing": "incline-dumbbell-curl",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_incline_db_press": {
+      "drawing": "incline-dumbbell-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_incline_pushup": {
+      "drawing": "incline-push-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_inverted_row": {
+      "drawing": "inverted-row",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_jump_rope": {
+      "drawing": "jump-rope",
+      "frames": [
+        1,
+        2
+      ]
+    },
+    "ex_jump_squat": {
+      "drawing": "jump-squat",
+      "frames": [
+        3,
+        1
+      ]
+    },
+    "ex_jumping_jack": {
+      "drawing": "jumping-jack",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_kb_swing": {
+      "drawing": "kettlebell-swing",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_l_sit": {
+      "drawing": "l-sit-hold",
+      "frames": [
+        1
+      ]
+    },
+    "ex_landmine_press": {
+      "drawing": "landmine-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_landmine_rdl": {
+      "drawing": "landmine-romanian-deadlift",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_landmine_row": {
+      "drawing": "meadows-row",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_lat_pulldown": {
+      "drawing": "lat-pulldown",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_lateral_raise": {
+      "drawing": "lateral-raise",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_leg_extension": {
+      "drawing": "leg-extension",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_leg_press": {
+      "drawing": "leg-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_lying_leg_curl": {
+      "drawing": "lying-leg-curl",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_machine_chest_press": {
+      "drawing": "machine-chest-press",
+      "frames": [
+        1,
+        2
+      ]
+    },
+    "ex_machine_dip": {
+      "drawing": "assisted-dip",
+      "frames": [
+        1,
+        2
+      ]
+    },
+    "ex_machine_reverse_fly": {
+      "drawing": "reverse-pec-deck",
+      "frames": [
+        1,
+        2
+      ]
+    },
+    "ex_machine_shoulder_press": {
+      "drawing": "machine-shoulder-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_mountain_climber": {
+      "drawing": "mountain-climber",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_neutral_pullup": {
+      "drawing": "neutral-grip-pull-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_nordic_curl": {
+      "drawing": "nordic-hamstring-curl",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_ohp": {
+      "drawing": "overhead-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_one_arm_db_row": {
+      "drawing": "one-arm-dumbbell-row",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_overhead_tricep_ext": {
+      "drawing": "overhead-tricep-extension",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_pallof_press": {
+      "drawing": "pallof-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_pec_deck": {
+      "drawing": "pec-deck",
+      "frames": [
+        1,
+        2
+      ]
+    },
+    "ex_pike_pushup": {
+      "drawing": "pike-push-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_pistol_squat": {
+      "drawing": "pistol-squat",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_plank": {
+      "drawing": "plank",
+      "frames": [
+        1
+      ]
+    },
+    "ex_plyo_pushup": {
+      "drawing": "explosive-push-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_pull_through": {
+      "drawing": "cable-pull-through",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_pullup": {
+      "drawing": "pull-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_push_press": {
+      "drawing": "push-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_pushup": {
+      "drawing": "push-up",
+      "frames": [
+        3,
+        1
+      ]
+    },
+    "ex_rack_pull": {
+      "drawing": "rack-pull",
+      "frames": [
+        1,
+        2
+      ]
+    },
+    "ex_reverse_crunch": {
+      "drawing": "reverse-crunch",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_reverse_curl": {
+      "drawing": "reverse-curl",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_reverse_fly": {
+      "drawing": "rear-delt-fly",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_reverse_hyper": {
+      "drawing": "reverse-hyperextension",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_rope_pushdown": {
+      "drawing": "rope-tricep-pushdown",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_row_erg": {
+      "drawing": "rowing",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_russian_twist": {
+      "drawing": "russian-twist",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_sa_cable_row": {
+      "drawing": "single-arm-cable-row",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_scapular_pullup": {
+      "drawing": "scapular-pull-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_seated_cable_row": {
+      "drawing": "seated-row",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_seated_calf_raise": {
+      "drawing": "seated-calf-raise",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_seated_db_press": {
+      "drawing": "seated-dumbbell-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_seated_leg_curl": {
+      "drawing": "seated-leg-curl",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_shoulder_tap": {
+      "drawing": "plank-shoulder-tap",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_shrimp_squat": {
+      "drawing": "shrimp-squat",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_side_lying_abduction": {
+      "drawing": "side-lying-hip-abduction",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_side_plank": {
+      "drawing": "side-plank",
+      "frames": [
+        1
+      ]
+    },
+    "ex_single_leg_calf_raise": {
+      "drawing": "single-leg-calf-raise",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_sissy_squat": {
+      "drawing": "sissy-squat",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_ski_erg": {
+      "drawing": "skierg",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_skullcrusher": {
+      "drawing": "skull-crusher",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_sl_glute_bridge": {
+      "drawing": "single-leg-glute-bridge",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_smith_bench": {
+      "drawing": "smith-machine-bench-press",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_smith_squat": {
+      "drawing": "smith-machine-squat",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_stairmaster": {
+      "drawing": "stair-climber",
+      "frames": [
+        1,
+        2
+      ]
+    },
+    "ex_standing_calf_raise": {
+      "drawing": "standing-calf-raise",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_stationary_bike": {
+      "drawing": "cycling",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_straight_arm_pulldown": {
+      "drawing": "straight-arm-pulldown",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_sumo_dl": {
+      "drawing": "sumo-deadlift",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_superman": {
+      "drawing": "superman",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_tbar_row": {
+      "drawing": "t-bar-row",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_towel_pullup": {
+      "drawing": "towel-pull-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_trap_bar_dl": {
+      "drawing": "trap-bar-deadlift",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_tricep_kickback": {
+      "drawing": "tricep-kickback",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_tricep_pushdown": {
+      "drawing": "tricep-pushdown",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_upright_row": {
+      "drawing": "upright-row",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_v_up": {
+      "drawing": "v-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_wall_sit": {
+      "drawing": "wall-sit",
+      "frames": [
+        1
+      ]
+    },
+    "ex_wall_walk": {
+      "drawing": "wall-walk",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_wide_pulldown": {
+      "drawing": "wide-grip-lat-pulldown",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_wide_pushup": {
+      "drawing": "wide-push-up",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_woodchop": {
+      "drawing": "cable-woodchop",
+      "frames": [
+        1,
+        2
+      ]
+    },
+    "ex_worlds_greatest_stretch": {
+      "drawing": "worlds-greatest-stretch",
+      "frames": [
+        1,
+        3
+      ]
+    },
+    "ex_wrist_curl": {
+      "drawing": "wrist-curl",
+      "frames": [
+        1,
+        3
+      ]
+    }
+  },
+  "excluded": {
+    "ex_rdl": "Every frame either stands upright or lowers the bar to the floor, so none shows a Romanian deadlift hinge.",
+    "ex_skater_squat": "The frames show lateral lunges, not a single-leg skater squat.",
+    "ex_toe_touch_crunch": "The drawing is a standing toe touch, not a lying crunch."
+  }
+}

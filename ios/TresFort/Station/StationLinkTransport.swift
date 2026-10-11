@@ -36,9 +36,9 @@ protocol StationLinkRadio: AnyObject {
 /// Neither side waits for a dead connection to time out. A quiet connection
 /// carries a heartbeat, so a peer that has gone silent is dropped within
 /// `silenceLimit`; a failed send drops it at once. The iPad keeps a connection
-/// in use against any newcomer. One may take over a connection that the same
-/// iPhone abandoned, or one that has gone quiet and stays quiet until the
-/// newcomer proves the key.
+/// in use against any newcomer. Once a newcomer proves the key, it replaces a
+/// connection the same iPhone abandoned, or one that stayed quiet throughout,
+/// so the old connection serves until then.
 @MainActor
 final class StationLinkTransport: ObservableObject {
     enum Role: String { case station, controller }
@@ -192,17 +192,12 @@ final class StationLinkTransport: ObservableObject {
             return
         }
         discoveryWorks()
-        if let active {
-            if active.peer == peer {
-                // A phone invites again only once it has given up on its
-                // connection, so this side lets that session go first.
-                drop(active)
-            } else if inUse(active) {
-                // Another device, or a takeover too soon to tell: the
-                // connection in use keeps the link.
-                _ = accept(false)
-                return
-            }
+        // Another device, or a takeover too soon to tell, is turned away
+        // while the connection in use keeps the link. The same phone invites
+        // again only once it has given up on its connection.
+        if let active, active.peer != peer, inUse(active) {
+            _ = accept(false)
+            return
         }
         // A newer invitation replaces an attempt that hasn't proved the key.
         if let pending { drop(pending) }
@@ -404,7 +399,7 @@ final class StationLinkTransport: ObservableObject {
 
     private func authenticate(_ link: PeerLink) {
         guard let key, let ownNonce = link.ownNonce, let peerNonce = link.peerNonce else { return }
-        if let previous = active, inUse(previous) {
+        if let previous = active, previous.peer != link.peer, inUse(previous) {
             // The connection it was to replace was heard from again meanwhile.
             drop(link)
             return
@@ -415,7 +410,7 @@ final class StationLinkTransport: ObservableObject {
                                                  stationNonce: stationNonce)
         link.lastReceived = now()
         pending = nil
-        // A connection this replaces has stayed quiet.
+        // Its phone abandoned the connection this replaces, or it stayed quiet.
         if let previous = active { previous.channel.close() }
         active = link
         connection = .connected(link.channel.peerName)

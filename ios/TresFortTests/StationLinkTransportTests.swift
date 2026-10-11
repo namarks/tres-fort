@@ -221,16 +221,28 @@ final class StationLinkTransportTests: XCTestCase {
         XCTAssertEqual(ipad.transport.connection, .connected("iPhone"))
     }
 
-    func testAnOlderPhoneThatInvitesAgainReplacesTheSessionItAbandoned() throws {
+    func testAnOlderPhoneThatInvitesAgainReplacesTheSessionItAbandonedOnlyByProvingTheKey() throws {
         let ipad = Device(.station, clock: clock)
         ipad.transport.start(key: key)
         let (first, _) = try connectOlderPhone(to: ipad)
+
+        // A newcomer under the same identity that can't prove the key changes nothing.
+        let impostor = FakeChannel(phonePeer.displayName)
+        ipad.transport.handleInvitation(from: phonePeer, context: Data(tag.utf8)) { $0 ? impostor : nil }
+        ipad.transport.handle(impostor, connected: true)
+        ipad.transport.handle(impostor, received: try StationLinkMessage.challenge(StationLink.newNonce()).encoded())
+        ipad.transport.handle(impostor, received: try StationLinkMessage.proof(Data(repeating: 1, count: 32)).encoded())
+        XCTAssertTrue(impostor.closed)
+        XCTAssertFalse(first.closed)
+
         // Its session ended on the phone; the iPad still lists it. An older
         // phone invites again under the same identity.
         let (second, _) = try connectOlderPhone(to: ipad)
         XCTAssertTrue(first.closed)
         XCTAssertFalse(second.closed)
         XCTAssertEqual(ipad.connects, 2)
+        XCTAssertFalse(ipad.states.drop(while: { !$0.isConnected }).contains(where: { !$0.isConnected }),
+                       "The old session served until the new one proved the key, so the display didn't blank")
     }
 
     func testANewerInvitationReplacesAnAttemptThatNeverConnected() {

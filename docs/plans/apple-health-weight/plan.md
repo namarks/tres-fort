@@ -41,7 +41,7 @@ upload permission.
   - Open Progress on a consistency card instead of the recent-lift list: the
     current weekly streak, this week's completed workouts against the recurring
     schedule when one is set, and a Monday–Sunday day grid of completed
-    workouts (16 weeks on iPhone, 26 on iPad). Strength and Weight follow.
+    workouts (16 weeks on iPhone, 52 on iPad). Strength and Weight follow.
   - A streak counts consecutive weeks with at least one completed native
     workout; an empty current week keeps it until Sunday ends. The detail view
     adds the best streak, days trained and the same grid for 8, 16 or 26 weeks.

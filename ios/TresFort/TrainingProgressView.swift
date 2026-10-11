@@ -139,7 +139,7 @@ private struct ConsistencyCard: View {
     @Environment(\.horizontalSizeClass) private var sizeClass
 
     var body: some View {
-        let weekCount = sizeClass == .regular ? 26 : 16
+        let weekCount = sizeClass == .regular ? 52 : 16
         let summary = WorkoutConsistency(sessions: sync.sessions, today: sync.todayString, weekCount: weekCount)
         let thisWeek = summary.weeks.last?.completed ?? 0
         let scheduled = WorkoutConsistency.scheduledPerWeek(sync.plan?.schedule)
@@ -192,7 +192,7 @@ struct WorkoutConsistencyView: View {
                     .init(value: "\(summary.activeDays)", caption: "days trained",
                           accessibility: "\(summary.activeDays) days trained in \(weekCount) weeks"),
                 ])
-                ConsistencyHeatmap(weeks: summary.weeks)
+                ConsistencyHeatmap(weeks: summary.weeks, maxCell: 30)
                 WorkoutConsistencyChart(weeks: summary.weeks).frame(height: 180)
             } footer: {
                 Text("Completed Très Fort workouts by workout date. Weeks run Monday–Sunday. A streak counts weeks in a row with at least one completed workout; the current week keeps it alive until Sunday ends. Activities imported from other apps or logged separately are in the calendar on Today.")
@@ -253,11 +253,11 @@ private struct ConsistencyStats: View {
 /// at least one completed workout; today is outlined and later days are empty.
 private struct ConsistencyHeatmap: View {
     let weeks: [WorkoutConsistency.Week]
+    var maxCell: CGFloat = 22
     @State private var width: CGFloat = 0
 
     private let gap: CGFloat = 3
     private let labelWidth: CGFloat = 14
-    private let maxCell: CGFloat = 22
 
     var body: some View {
         let cell = cellSize
@@ -301,15 +301,12 @@ private struct ConsistencyHeatmap: View {
         return max(6, min(maxCell, (available / columns).rounded(.down)))
     }
 
-    /// The first column and each week containing the 1st of a month, unless
-    /// that would crowd the previous label.
+    /// Each week containing the 1st of a month, plus the first column when the
+    /// first such week is far enough away not to crowd it.
     private var monthLabelIndexes: Set<Int> {
-        var result: Set<Int> = []
-        var last = -10
-        for (index, week) in weeks.enumerated() {
-            let startsMonth = index == 0 || week.days.contains { $0.date.hasSuffix("-01") }
-            if startsMonth && index - last >= 3 { result.insert(index); last = index }
-        }
+        let starts = weeks.indices.filter { index in weeks[index].days.contains { $0.date.hasSuffix("-01") } }
+        var result = Set(starts)
+        if (starts.first ?? weeks.count) >= 3 { result.insert(0) }
         return result
     }
 

@@ -45,9 +45,12 @@ final class ProgressJourneyTests: XCTestCase {
         consistency.tap()
         XCTAssertTrue(app.staticTexts["consistency.total"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.descendants(matching: .any)["consistency.heatmap"].firstMatch.exists)
-        XCTAssertTrue(app.staticTexts["This week so far"].exists)
         app.buttons["26 weeks"].tap()
         capture("Consistency — synthetic completed workouts", app: app)
+        // The by-week list sits below the grid and chart in a lazy List.
+        let thisWeek = app.staticTexts["This week so far"]
+        for _ in 0..<6 where !thisWeek.exists { app.swipeUp() }
+        XCTAssertTrue(thisWeek.exists)
         app.navigationBars.buttons.element(boundBy: 0).tap()
         tap(app.buttons["progress.strength"], in: app)
         XCTAssertTrue(app.navigationBars["Strength"].waitForExistence(timeout: 5))

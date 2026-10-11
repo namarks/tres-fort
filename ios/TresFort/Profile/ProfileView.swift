@@ -60,7 +60,6 @@ struct ProfileView: View {
                         .accessibilityIdentifier("profile.trainingProfile")
                 }
                 }
-                WorkoutReminderSettingsSection()
                 if auth.isReviewAccount {
                     Section("Shared sample account") {
                         Text("Use sample data only. Workouts, history, export, and deletion work in this account. Sign out and use Sign in with Apple for personal connections, AI coaching, and groups.")
@@ -73,6 +72,7 @@ struct ProfileView: View {
                     NavigationLink("Group safety") { GroupSafetyView(model: groupModel) }
                 }
                 }
+                WorkoutReminderSettingsSection()
                 Section("About Très Fort") {
                     PrivacyPolicyLink()
                     Link("Contact support", destination: AppInformation.supportURL)

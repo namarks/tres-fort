@@ -46,4 +46,54 @@ final class WorkoutConsistencyTests: XCTestCase {
         XCTAssertEqual(WorkoutConsistency(sessions: [], today: "2026-09-08").weeks.map(\.completed), Array(repeating: 0, count: 8))
         XCTAssertTrue(WorkoutConsistency(sessions: [], today: "invalid").weeks.isEmpty)
     }
+
+    func testDayGridRunsMondayToSundayWithTodayFutureAndSameDayCounts() {
+        let summary = WorkoutConsistency(sessions: [
+            session("mon", "2026-09-07"), session("a", "2026-09-08"), session("b", "2026-09-08"),
+            session("future", "2026-09-10"), session("last", "2026-09-06")
+        ], today: "2026-09-08", weekCount: 2)
+        let current = summary.weeks[1]
+        XCTAssertEqual(current.days.map(\.date), ["2026-09-07", "2026-09-08", "2026-09-09", "2026-09-10",
+                                                  "2026-09-11", "2026-09-12", "2026-09-13"])
+        XCTAssertEqual(current.days.map(\.completed), [1, 2, 0, 0, 0, 0, 0])
+        XCTAssertEqual(current.days.map(\.isToday), [false, true, false, false, false, false, false])
+        XCTAssertEqual(current.days.map(\.isFuture), [false, false, true, true, true, true, true])
+        XCTAssertEqual(summary.weeks[0].days.last?.date, "2026-09-06")
+        XCTAssertEqual(summary.weeks[0].days.last?.completed, 1)
+        XCTAssertEqual(summary.activeDays, 3)
+        XCTAssertEqual(summary.total, 4)
+    }
+
+    func testStreakKeepsAnUnfinishedCurrentWeekAndLooksBeyondTheWindow() {
+        let history = ["2026-07-22", "2026-07-29", "2026-08-05", "2026-08-12",
+                       "2026-08-26", "2026-09-02", "2026-09-09"].enumerated().map { session("s\($0.offset)", $0.element) }
+        let waiting = WorkoutConsistency(sessions: history, today: "2026-09-16", weekCount: 2)
+        XCTAssertEqual(waiting.currentStreak, 3, "An empty week in progress must not reset the streak")
+        XCTAssertEqual(waiting.longestStreak, 4)
+        let trained = WorkoutConsistency(sessions: history + [session("today", "2026-09-16")],
+                                         today: "2026-09-16", weekCount: 2)
+        XCTAssertEqual(trained.currentStreak, 4)
+        XCTAssertEqual(trained.longestStreak, 4)
+    }
+
+    func testStreakEndsAfterAMissedWeekAndIgnoresUnfinishedRecords() {
+        let gap = WorkoutConsistency(sessions: [session("a", "2026-09-01"), session("b", "2026-09-16")],
+                                     today: "2026-09-16")
+        XCTAssertEqual(gap.currentStreak, 1)
+        let lapsed = WorkoutConsistency(sessions: [
+            session("a", "2026-08-31"), session("skip", "2026-09-08", "skipped"),
+            session("plan", "2026-09-15", "planned"), session("discard", "2026-09-14"),
+            session("discard", "2026-09-14", "discarded", revision: 2)
+        ], today: "2026-09-16")
+        XCTAssertEqual(lapsed.currentStreak, 0)
+        XCTAssertEqual(lapsed.longestStreak, 1)
+        XCTAssertEqual(WorkoutConsistency(sessions: [], today: "2026-09-16").longestStreak, 0)
+    }
+
+    func testScheduledWorkoutsPerWeekCountsAssignedWeekdaysOnly() {
+        XCTAssertEqual(WorkoutConsistency.scheduledPerWeek(
+            PlanSchedule(version: 1, week: ["tue": "a", "thu": "b", "sat": "a", "sun": nil])), 3)
+        XCTAssertNil(WorkoutConsistency.scheduledPerWeek(PlanSchedule(version: 1, week: ["mon": nil])))
+        XCTAssertNil(WorkoutConsistency.scheduledPerWeek(nil))
+    }
 }

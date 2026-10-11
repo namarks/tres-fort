@@ -1,7 +1,8 @@
 import Charts
 import SwiftUI
 
-/// A small overview with separate drill-downs for exercise, weight and habit.
+/// A small overview that leads with workout consistency, then drills down
+/// into strength and optional weight.
 struct TrainingProgressView: View {
     @ObservedObject var sync: SyncModel
     var weight: BodyWeightModel? = nil
@@ -19,26 +20,8 @@ struct TrainingProgressView: View {
                     if sync.isLoading && sync.sessions.isEmpty && sync.sets.isEmpty {
                         ProgressView("Loading training history…")
                     } else if sync.hasVerifiedPlanState || !sync.sessions.isEmpty || !sync.sets.isEmpty {
+                        ConsistencyCard(sync: sync)
                         strength
-                        NavigationLink {
-                            WorkoutConsistencyView(sync: sync)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 14) {
-                                progressHeading("Consistency", icon: "calendar.badge.checkmark")
-                                let summary = WorkoutConsistency(sessions: sync.sessions, today: sync.todayString)
-                                Text("\(summary.total) workouts in 8 weeks")
-                                    .font(.headline).foregroundStyle(Theme.text)
-                                WorkoutConsistencyChart(weeks: summary.weeks)
-                                    .frame(height: 105)
-                                Text("This week so far: \(summary.weeks.last?.completed ?? 0)")
-                                    .font(.caption).foregroundStyle(Theme.accent)
-                                Text("Completed in Très Fort · Monday–Sunday")
-                                    .font(.caption).foregroundStyle(Theme.muted)
-                            }
-                            .progressCard()
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("progress.consistency")
                     } else if sync.loadError == nil {
                         Text("Your training history will appear after syncing.")
                             .foregroundStyle(Theme.muted)
@@ -149,9 +132,46 @@ private struct WeightProgressCard: View {
     }
 }
 
+/// The first thing Progress shows: this week, the running weekly streak and a
+/// day-by-day calendar of completed workouts.
+private struct ConsistencyCard: View {
+    @ObservedObject var sync: SyncModel
+    @Environment(\.horizontalSizeClass) private var sizeClass
+
+    var body: some View {
+        let weekCount = sizeClass == .regular ? 52 : 16
+        let summary = WorkoutConsistency(sessions: sync.sessions, today: sync.todayString, weekCount: weekCount)
+        let thisWeek = summary.weeks.last?.completed ?? 0
+        let scheduled = WorkoutConsistency.scheduledPerWeek(sync.plan?.schedule)
+        let thisWeekValue: String = scheduled.map { "\(thisWeek)/\($0)" } ?? "\(thisWeek)"
+        let thisWeekLabel: String = scheduled.map { "\(thisWeek) of \($0) scheduled workouts this week" }
+            ?? "\(thisWeek) workouts this week"
+        NavigationLink {
+            WorkoutConsistencyView(sync: sync)
+        } label: {
+            VStack(alignment: .leading, spacing: 14) {
+                progressHeading("Consistency", icon: "calendar.badge.checkmark")
+                ConsistencyStats(stats: [
+                    .init(value: "\(summary.currentStreak)", caption: "week streak",
+                          accessibility: "\(summary.currentStreak) week streak"),
+                    .init(value: thisWeekValue, caption: "this week", accessibility: thisWeekLabel),
+                    .init(value: "\(summary.total)", caption: "in \(weekCount) weeks",
+                          accessibility: "\(summary.total) workouts in \(weekCount) weeks"),
+                ])
+                ConsistencyHeatmap(weeks: summary.weeks)
+                Text("Completed in Très Fort · weeks run Monday–Sunday")
+                    .font(.caption).foregroundStyle(Theme.muted)
+            }
+            .progressCard()
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("progress.consistency")
+    }
+}
+
 struct WorkoutConsistencyView: View {
     @ObservedObject var sync: SyncModel
-    @State private var weekCount = 8
+    @State private var weekCount = 16
 
     var body: some View {
         let summary = WorkoutConsistency(sessions: sync.sessions, today: sync.todayString, weekCount: weekCount)
@@ -160,13 +180,22 @@ struct WorkoutConsistencyView: View {
             if let error = sync.loadError { Text(error).foregroundStyle(.orange) }
             Section {
                 Picker("Period", selection: $weekCount) {
-                    ForEach([4, 8, 12], id: \.self) { Text("\($0) weeks").tag($0) }
+                    ForEach([8, 16, 26], id: \.self) { Text("\($0) weeks").tag($0) }
                 }.pickerStyle(.segmented)
                 Text("\(summary.total) completed workouts").font(.title2.bold())
                     .accessibilityIdentifier("consistency.total")
+                ConsistencyStats(stats: [
+                    .init(value: "\(summary.currentStreak)", caption: "week streak",
+                          accessibility: "Current streak: \(summary.currentStreak) weeks"),
+                    .init(value: "\(summary.longestStreak)", caption: "best streak",
+                          accessibility: "Best streak: \(summary.longestStreak) weeks"),
+                    .init(value: "\(summary.activeDays)", caption: "days trained",
+                          accessibility: "\(summary.activeDays) days trained in \(weekCount) weeks"),
+                ])
+                ConsistencyHeatmap(weeks: summary.weeks, maxCell: 30)
                 WorkoutConsistencyChart(weeks: summary.weeks).frame(height: 180)
             } footer: {
-                Text("Completed Très Fort workouts by workout date. Weeks run Monday–Sunday; the highlighted current week is still in progress. Activities imported from other apps or logged separately are in the calendar on Today.")
+                Text("Completed Très Fort workouts by workout date. Weeks run Monday–Sunday. A streak counts weeks in a row with at least one completed workout; the current week keeps it alive until Sunday ends. Activities imported from other apps or logged separately are in the calendar on Today.")
             }
             Section("By week") {
                 ForEach(summary.weeks.reversed()) { week in
@@ -185,6 +214,126 @@ struct WorkoutConsistencyView: View {
         .navigationTitle("Consistency")
         .navigationBarTitleDisplayMode(.inline)
         .refreshable { await sync.load() }
+    }
+}
+
+private struct ConsistencyStats: View {
+    struct Stat: Identifiable {
+        var id: String { caption }
+        let value: String
+        let caption: String
+        let accessibility: String
+    }
+
+    let stats: [Stat]
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 12) { tiles }
+            VStack(alignment: .leading, spacing: 10) { tiles }
+        }
+    }
+
+    private var tiles: some View {
+        ForEach(stats) { stat in
+            VStack(alignment: .leading, spacing: 2) {
+                Text(stat.value).font(Theme.number(24)).foregroundStyle(Theme.text)
+                    .monospacedDigit().lineLimit(1)
+                Text(stat.caption).font(.caption).foregroundStyle(Theme.muted)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(stat.accessibility)
+        }
+    }
+}
+
+/// One column per Monday–Sunday week, one square per day. A filled square has
+/// at least one completed workout; today is outlined and later days are empty.
+private struct ConsistencyHeatmap: View {
+    let weeks: [WorkoutConsistency.Week]
+    var maxCell: CGFloat = 22
+    @State private var width: CGFloat = 0
+
+    private let gap: CGFloat = 3
+    private let labelWidth: CGFloat = 14
+
+    var body: some View {
+        let cell = cellSize
+        let monthLabels = monthLabelIndexes
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: gap) {
+                Color.clear.frame(width: labelWidth, height: 1)
+                ForEach(Array(weeks.enumerated()), id: \.element.id) { index, week in
+                    Text(monthLabels.contains(index) ? monthName(week) : "")
+                        .font(.caption2).foregroundStyle(Theme.muted)
+                        .fixedSize()
+                        .frame(width: cell, alignment: .leading)
+                }
+            }
+            HStack(alignment: .top, spacing: gap) {
+                VStack(spacing: gap) {
+                    ForEach(Array(["M", "", "W", "", "F", "", ""].enumerated()), id: \.offset) { _, label in
+                        Text(label).font(.caption2).foregroundStyle(Theme.muted)
+                            .frame(width: labelWidth, height: cell)
+                    }
+                }
+                ForEach(weeks) { week in
+                    VStack(spacing: gap) {
+                        ForEach(week.days) { day in square(day, size: cell) }
+                    }
+                }
+            }
+        }
+        .dynamicTypeSize(...DynamicTypeSize.xLarge)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilitySummary)
+        .accessibilityIdentifier("consistency.heatmap")
+    }
+
+    private var cellSize: CGFloat {
+        guard !weeks.isEmpty else { return maxCell }
+        let columns = CGFloat(weeks.count)
+        let available = width - labelWidth - gap * columns
+        return max(6, min(maxCell, (available / columns).rounded(.down)))
+    }
+
+    /// Each week containing the 1st of a month, plus the first column when the
+    /// first such week is far enough away not to crowd it.
+    private var monthLabelIndexes: Set<Int> {
+        let starts = weeks.indices.filter { index in weeks[index].days.contains { $0.date.hasSuffix("-01") } }
+        var result = Set(starts)
+        if (starts.first ?? weeks.count) >= 3 { result.insert(0) }
+        return result
+    }
+
+    private func monthName(_ week: WorkoutConsistency.Week) -> String {
+        let date = week.days.first { $0.date.hasSuffix("-01") }?.date ?? week.start
+        guard let parsed = CalendarProjection.date(from: date) else { return "" }
+        return ProgressDateFormat.month.string(from: parsed)
+    }
+
+    @ViewBuilder
+    private func square(_ day: WorkoutConsistency.Day, size: CGFloat) -> some View {
+        let shape = RoundedRectangle(cornerRadius: max(2, size * 0.22))
+        Group {
+            if day.isFuture {
+                shape.stroke(Theme.dim.opacity(0.5), lineWidth: 1)
+            } else {
+                shape.fill(day.completed > 0 ? Theme.accent : Theme.dim.opacity(0.45))
+                    .overlay { if day.isToday { shape.stroke(Theme.text, lineWidth: 1.5) } }
+            }
+        }
+        .frame(width: size, height: size)
+    }
+
+    private var accessibilitySummary: String {
+        let days = weeks.flatMap(\.days).filter { $0.completed > 0 }.count
+        let workouts = weeks.reduce(0) { $0 + $1.completed }
+        return "Workout calendar for the last \(weeks.count) weeks: \(workouts) completed workouts on \(days) days."
     }
 }
 
@@ -219,6 +368,14 @@ private enum ProgressDateFormat {
         formatter.calendar = CalendarProjection.calendar
         formatter.timeZone = CalendarProjection.calendar.timeZone
         formatter.setLocalizedDateFormatFromTemplate("MMM d")
+        return formatter
+    }()
+
+    static let month: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = CalendarProjection.calendar
+        formatter.timeZone = CalendarProjection.calendar.timeZone
+        formatter.setLocalizedDateFormatFromTemplate("MMM")
         return formatter
     }()
 }

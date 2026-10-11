@@ -1,6 +1,6 @@
 # Progress and Apple Health Weight
 
-Slug: apple-health-weight · Status: gated · Updated: 2026-10-04 · Theme: member-experience
+Slug: apple-health-weight · Status: gated · Updated: 2026-10-11 · Theme: member-experience
 
 ## Goal
 
@@ -37,6 +37,17 @@ upload permission.
     screens without requiring an off/on toggle; retry a locked read directly.
   - Keep permission help collapsed until needed, preserve account-scoped
     intent, and reject recovery callbacks after disconnect or sign-out.
+- [x] **P5 — Lead Progress with consistency**
+  - Open Progress on a consistency card instead of the recent-lift list: the
+    current weekly streak, this week's completed workouts against the recurring
+    schedule when one is set, and a Monday–Sunday day grid of completed
+    workouts (16 weeks on iPhone, 52 on iPad). Strength and Weight follow.
+  - A streak counts consecutive weeks with at least one completed native
+    workout; an empty current week keeps it until Sunday ends. The detail view
+    adds the best streak, days trained and the same grid for 8, 16 or 26 weeks.
+  - Keep the existing projection rules: civil dates, current completed records
+    only, no imported activities and no new storage. Verify streaks, day grid,
+    schedule count and the Progress order with model tests and journeys.
 - [ ] **P2 — Verify on an authorized device build**
   - After authorized iOS distribution, enable Read weight in Profile →
     Connections → Apple Health, then open Progress → Weight on an iPhone with readings.
@@ -74,6 +85,11 @@ satisfies only the installed-build precondition; Health permissions, readings
 and Withings delivery on a real device remain unverified.
 
 ## Verification evidence
+
+- P5 came from Nick's 2026-10-11 report that Progress opened on a plain list of
+  exercises with no sign of progress, and that a consistency visual should come
+  first. Its delivering PR carries the model tests, the updated Progress journey
+  and exact-head CI; it is not in an authorized distribution yet.
 
 - P4 was prompted by the owner's 2026-10-04 report that switching Read weight
   off and on seemed to restore readings. The earlier screen used an unlock

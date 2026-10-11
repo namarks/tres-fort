@@ -189,7 +189,7 @@ without adding provider accounts, server collection or new data stores.
 - [Progress and Apple Health weight](apple-health-weight/plan.md) — **gated**;
   the private weight view and Progress tab are merged and included in internal
   TestFlight build 42. Owner verification on a real iPhone with Health readings
-  remains.
+  remains. P5 makes Progress lead with a consistency streak and day grid.
 
 ### Review-driven ordering
 

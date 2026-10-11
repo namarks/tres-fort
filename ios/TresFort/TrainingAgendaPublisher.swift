@@ -299,18 +299,24 @@ final class TrainingAgendaPublisher {
             .throttle(for: .seconds(1), scheduler: RunLoop.main, latest: true)
             .sink { [weak self] _ in Task { @MainActor in self?.refresh() } }
             .store(in: &cancellables)
-        let triggers: [Notification.Name] = [
-            WorkoutReminderSettings.changed, .NSCalendarDayChanged, .NSSystemTimeZoneDidChange,
-        ]
-        for name in triggers {
+        for name in [WorkoutReminderSettings.changed, .NSCalendarDayChanged] {
             notificationCenter.publisher(for: name)
                 .sink { [weak self] _ in Task { @MainActor in self?.refresh() } }
                 .store(in: &cancellables)
         }
+        // The widget timeline holds absolute midnights computed in the zone it
+        // was built in, so a new zone needs a rebuilt timeline even when the
+        // snapshot is unchanged.
+        notificationCenter.publisher(for: .NSSystemTimeZoneDidChange)
+            .sink { [weak self] _ in Task { @MainActor in self?.refresh(forceWidgetReload: true) } }
+            .store(in: &cancellables)
         // Notification permission can change in Settings while the agenda does
-        // not. Reapply on each return so reminders come back once it is granted.
+        // not, and the zone can change while the app is not running. Reapply
+        // reminders and rebuild the timeline on each return.
         notificationCenter.publisher(for: UIApplication.didBecomeActiveNotification)
-            .sink { [weak self] _ in Task { @MainActor in self?.refresh(reapplyReminders: true) } }
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.refresh(reapplyReminders: true, forceWidgetReload: true) }
+            }
             .store(in: &cancellables)
         auth.observeFeatureSessionBoundary { [weak self] in
             self?.retire()
@@ -319,11 +325,12 @@ final class TrainingAgendaPublisher {
         Task { @MainActor [weak self] in self?.refresh() }
     }
 
-    func refresh(reapplyReminders: Bool = false) {
+    func refresh(reapplyReminders: Bool = false, forceWidgetReload: Bool = false) {
         guard !isRetired, let sync, sync.canPublishTrainingAgenda,
               let snapshot = sync.trainingAgendaSnapshot()
         else { return }
-        if TrainingAgendaStore.save(snapshot, to: sharedDefaults) { reloadWidgets() }
+        let changed = TrainingAgendaStore.save(snapshot, to: sharedDefaults)
+        if changed || forceWidgetReload { reloadWidgets() }
         let input = ReminderInput(
             snapshot: snapshot,
             enabled: WorkoutReminderSettings.isEnabled(settings),

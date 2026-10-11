@@ -394,6 +394,28 @@ final class TrainingAgendaTests: XCTestCase {
         XCTAssertFalse(center.pending.isEmpty, "returning to the app picks up permission granted in Settings")
     }
 
+    func testTimeZoneChangeRebuildsTheWidgetTimelineWithAnUnchangedSnapshot() async {
+        let model = model()
+        let notifications = NotificationCenter()
+        var reloads = 0
+        let publisher = TrainingAgendaPublisher(
+            sync: model, auth: retained.compactMap { $0 as? AuthModel }.last!,
+            sharedDefaults: userDefaults(), settings: userDefaults(),
+            reminders: WorkoutReminderCoordinator(center: ReminderCenterStub()),
+            reloadWidgets: { reloads += 1 }, now: { .distantPast },
+            notificationCenter: notifications)
+
+        publisher.refresh()
+        XCTAssertEqual(reloads, 1)
+        publisher.refresh()
+        XCTAssertEqual(reloads, 1, "an unchanged snapshot alone does not reload")
+
+        notifications.post(name: .NSSystemTimeZoneDidChange, object: nil)
+        for _ in 0..<50 where reloads < 2 { await Task.yield() }
+        XCTAssertEqual(reloads, 2, "midnights move with the zone, so the timeline is rebuilt")
+        withExtendedLifetime(publisher) {}
+    }
+
     func testPublisherWritesSnapshotSchedulesRemindersAndClearsAtSignOut() async throws {
         let defaults = persistence()
         let model = model(defaults: defaults)

@@ -6409,6 +6409,23 @@ final class SyncModel: ObservableObject {
         }
     }
 
+    /// The workout a started runner owns on `date`, before or after its first
+    /// set creates a session: the mounted runner's own selection, or a
+    /// resumable checkpoint after relaunch (freestyle included). A runner
+    /// carried past midnight keeps its original date.
+    func startedRunnerWorkout(on date: String) -> Workout? {
+        if running {
+            let owned = persistedRunnerCheckpoint?.date ?? todaySession?.date
+                ?? workoutStart.map { TrainingAgendaCalendar.dateString($0, calendar: TrainingAgendaCalendar.calendar()) }
+            return owned == date ? selectedDay : nil
+        }
+        guard let checkpoint = resumableCheckpoint, checkpoint.date == date else { return nil }
+        if let day = runnerDay(id: checkpoint.selectedDayID) ?? workout(id: checkpoint.selectedDayID) { return day }
+        guard checkpoint.selectedDayID.hasPrefix("freestyle:") else { return nil }
+        return Workout(id: checkpoint.selectedDayID, name: "Freestyle", day_label: nil,
+                       order_index: 0, exercises: checkpoint.freestyleExercises ?? [])
+    }
+
     /// Station observes the workout Today is displaying. A mounted runner may
     /// explicitly override the schedule; otherwise an old selection must not
     /// replace today's resolved workout or turn a rest day into a workout.

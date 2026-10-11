@@ -33,12 +33,9 @@ extension SyncModel {
     private func trainingAgendaDay(for ymd: String, today: String) -> TrainingAgendaDay {
         let resolved = projection(for: ymd, today: today)
         // A started runner can name an explicit workout before its first set
-        // creates a session, including one chosen on a rest day: the mounted
-        // runner's own selection, or a resumable checkpoint after relaunch.
+        // creates a session, including one chosen on a rest day.
         if ymd == today, resolved.kind != .completed, resolved.kind != .skipped,
-           let started = running ? selectedDay : resumableCheckpoint.flatMap({
-               $0.date == today ? workout(id: $0.selectedDayID) : nil
-           }) {
+           let started = startedRunnerWorkout(on: today) {
             return agendaDay(ymd, .inProgress, started)
         }
         switch resolved {
@@ -78,7 +75,8 @@ extension SyncModel {
             .filter { seen.insert($0).inserted }
         return TrainingAgendaDay(
             date: ymd, status: status,
-            workoutName: workout?.name ?? (freestyle ? "Freestyle workout" : nil),
+            workoutName: workout.map { $0.id.hasPrefix("freestyle:") ? "Freestyle workout" : $0.name }
+                ?? (freestyle ? "Freestyle workout" : nil),
             exerciseNames: names)
     }
 }
@@ -357,6 +355,18 @@ final class TrainingAgendaPublisher {
         isRetired = true
         cancellables = []
         lastReminderInput = nil
+        Self.clearPublished(sharedDefaults: sharedDefaults, reminders: reminders, reloadWidgets: reloadWidgets)
+    }
+
+    /// Clears what any earlier process published. A launch that is not signed
+    /// in never mounts a publisher, so it cannot retire one.
+    static func clearPublished(
+        sharedDefaults: UserDefaults? = TrainingAgendaStore.sharedDefaults,
+        reminders: WorkoutReminderCoordinator = .shared,
+        reloadWidgets: () -> Void = {
+            WidgetCenter.shared.reloadTimelines(ofKind: TrainingAgendaStore.widgetKind)
+        }
+    ) {
         if TrainingAgendaStore.save(nil, to: sharedDefaults) { reloadWidgets() }
         reminders.clear()
     }

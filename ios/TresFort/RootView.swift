@@ -85,6 +85,11 @@ struct RootView: View {
             guard model.phase == .signedIn else { return }
             await model.resolveOnboarding()
         }
+        // A launch that is not signed in never mounts MainTabView, so clear
+        // any widget snapshot and reminders an earlier process published.
+        .onChange(of: model.phase, initial: true) { _, phase in
+            if phase != .signedIn { TrainingAgendaPublisher.clearPublished() }
+        }
         // ActivityKit restores records independently of authentication and
         // onboarding. RootView is always mounted, so process-death cleanup also
         // runs for signed-out, expired-credential, and first-run launches.

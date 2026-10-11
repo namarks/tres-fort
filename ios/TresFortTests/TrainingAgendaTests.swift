@@ -189,10 +189,20 @@ final class TrainingAgendaTests: XCTestCase {
     func testMountedRunnerIsInProgressBeforeItsFirstSet() throws {
         let model = model()
         model.selectedDayID = "upper"
+        model.workoutStart = fixedDate
         model.running = true
         let today = try XCTUnwrap(model.trainingAgendaSnapshot(dayCount: 1)).days[0]
         XCTAssertEqual(today.status, .inProgress, "a started workout gets no reminder and no Ready state")
         XCTAssertEqual(today.workoutName, "Upper")
+    }
+
+    func testRunnerCarriedPastMidnightKeepsItsOwnDate() throws {
+        let model = model()
+        model.selectedDayID = "upper"
+        model.workoutStart = fixedDate.addingTimeInterval(-24 * 60 * 60)
+        model.running = true
+        let today = try XCTUnwrap(model.trainingAgendaSnapshot(dayCount: 1)).days[0]
+        XCTAssertEqual(today.status, .workout, "yesterday's runner does not start today's workout")
     }
 
     func testFreestyleSessionIsNamed() throws {
@@ -414,6 +424,27 @@ final class TrainingAgendaTests: XCTestCase {
         for _ in 0..<50 where reloads < 2 { await Task.yield() }
         XCTAssertEqual(reloads, 2, "midnights move with the zone, so the timeline is rebuilt")
         withExtendedLifetime(publisher) {}
+    }
+
+    func testSignedOutLaunchClearsWhatAnEarlierProcessPublished() async throws {
+        let shared = userDefaults()
+        let snapshot = try XCTUnwrap(model().trainingAgendaSnapshot())
+        TrainingAgendaStore.save(snapshot, to: shared)
+        let center = ReminderCenterStub()
+        let coordinator = WorkoutReminderCoordinator(center: center)
+        coordinator.apply(WorkoutReminderPlan.reminders(
+            snapshot: snapshot, now: .distantPast, minutesAfterMidnight: 23 * 60 + 59,
+            calendar: TrainingAgendaCalendar.calendar()), keepDelivered: [])
+        await coordinator.waitForTests()
+        XCTAssertFalse(center.pending.isEmpty)
+
+        var reloads = 0
+        TrainingAgendaPublisher.clearPublished(
+            sharedDefaults: shared, reminders: coordinator, reloadWidgets: { reloads += 1 })
+        await coordinator.waitForTests()
+        XCTAssertNil(TrainingAgendaStore.load(from: shared))
+        XCTAssertTrue(center.pending.isEmpty)
+        XCTAssertEqual(reloads, 1)
     }
 
     func testPublisherWritesSnapshotSchedulesRemindersAndClearsAtSignOut() async throws {

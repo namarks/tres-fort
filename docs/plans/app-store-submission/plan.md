@@ -278,26 +278,23 @@ release-49 Worker; no deployment or migration was made.
 `ea595b5e…` remains UNRESOLVED_ISSUES. No reply, resubmission, metadata change
 or public release occurred.
 
-**Agent follow-through:** Finish the runnable P1/P2 audit against canonical source
-`cd3cf4057320daa474292b86f3ddbbca401d5099`: reconcile privacy/account and group
-controls, public policy/support availability, listing and reviewer instructions,
-and the documented verification exceptions. Record evidence and identify any
-owner-only App Store fields before completing those phases. The App Review
-candidate remains pinned, but the serving backend is now canonical source
-`cd3cf4057320daa474292b86f3ddbbca401d5099`, recorded in [release 49](release-49.md).
-The reviewed build-40 source defaults to the retired REST contract, so its
-workout mutations are known to be incompatible, not merely unverified. Keep
-public release blocked until a compatible candidate replaces it and required
-verification is satisfied. Authenticated session-swap and workout-name compatibility
-verification remains unperformed; public health and unauthenticated responses
-do not establish those behaviors. Build 40 was subsequently validated and uploaded
-with explicit owner approval. Do not mark the outstanding live checks passed or
-waived from that upload approval or Apple's submission acceptance. The owner
-has now submitted build 40; finish P1/P2 and retain the P3(a) evidence or a specific
-verification exception before the public-release decision. Inspect the existing
-submission for Apple review responses; the requested MANUAL setting is now
-verified. Do not resubmit or change the
-selected build from a TestFlight upload.
+**Agent follow-through:** Finish the runnable P1/P2 audit against the selected
+build-53 source `47be49d11e6720826bc53444382c4cc7ec0df8ae`. Reconcile
+privacy/account and group controls, public policy/support availability, listing
+and reviewer instructions, and the documented verification exceptions. Record
+evidence and identify any owner-only App Store fields before completing those
+phases. The serving backend is canonical source
+`cd3cf4057320daa474292b86f3ddbbca401d5099` ([release 49](release-49.md)), and
+its backend source is identical to the build-53 source. Build 40, which used the
+retired REST contract, is no longer selected.
+
+Authenticated session-swap and workout-name compatibility verification remains
+unperformed; public health and unauthenticated responses do not establish those
+behaviors. Do not mark the outstanding live checks passed or waived from upload
+approvals, build selection or Apple's acceptance. Finish P1/P2 and retain the
+P3(a) evidence or a specific verification exception before the public-release
+decision. Inspect the existing submission for Apple review responses. Replying
+to Apple, resubmitting and any further build change remain owner actions.
 
 **Historical production release and preceding beta (2026-09-14 Pacific):** The owner
 requested the latest version. [Build 42's release receipt](release-42.md) records

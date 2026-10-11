@@ -37,9 +37,9 @@ final class StationLinkTransportTests: XCTestCase {
     @discardableResult
     private func answer(_ phone: Device, by ipad: Device) -> Wire {
         let invitation = phone.radio.invitations[phone.radio.invitations.count - 1]
-        let channel = FakeChannel(phonePeer.displayName)
+        let channel = FakeChannel(phone.radio.localPeer.displayName)
         var accepted = false
-        ipad.transport.handleInvitation(from: phonePeer, context: invitation.context) { accept in
+        ipad.transport.handleInvitation(from: phone.radio.localPeer, context: invitation.context) { accept in
             accepted = accept
             return accept ? channel : nil
         }
@@ -47,6 +47,14 @@ final class StationLinkTransportTests: XCTestCase {
         let wire = Wire(phone: phone, phoneChannel: invitation.channel, ipad: ipad, ipadChannel: channel)
         wire.connect()
         return wire
+    }
+
+    /// After losing its connection the phone browses under a new identity:
+    /// it finds the iPad again, then invites it.
+    @discardableResult
+    private func reconnect(_ phone: Device, to ipad: Device) -> Wire {
+        phone.transport.handleFound(ipadPeer, info: ["tag": tag])
+        return answer(phone, by: ipad)
     }
 
     /// An iPhone from before heartbeats: the same handshake, run by hand.
@@ -105,16 +113,19 @@ final class StationLinkTransportTests: XCTestCase {
         XCTAssertEqual(ipad.transport.connection, .searching)
     }
 
-    func testTheIpadTakesAReconnectingPhoneAndRetiresTheOldConnectionOnlyOnceItProvesTheKey() {
+    func testAQuietConnectionGivesWayToTheReconnectingPhoneOnlyOnceItProvesTheKey() {
         let (phone, ipad, first) = pairedDevices()
         // The phone's session ended; the iPad was never told.
         phone.transport.handle(first.phoneChannel, connected: false)
         XCTAssertTrue(first.phoneChannel.closed)
         XCTAssertEqual(phone.transport.connection, .searching)
-        XCTAssertEqual(phone.radio.invitations.count, 2, "The phone invites the iPad it still sees at once")
+        XCTAssertEqual(phone.radios.all.count, 2, "The phone looks again under a new identity")
+        XCTAssertTrue(phone.radios.all[0].stopped)
         XCTAssertEqual(ipad.transport.connection, .connected("iPhone"))
 
-        let second = answer(phone, by: ipad)
+        // The iPad has heard nothing on the old connection since.
+        clock.advance(StationLinkTransport.takeoverLimit)
+        let second = reconnect(phone, to: ipad)
         XCTAssertTrue(first.ipadChannel.closed)
         XCTAssertFalse(second.ipadChannel.closed)
         XCTAssertEqual(phone.transport.connection, .connected("iPad"))
@@ -129,10 +140,19 @@ final class StationLinkTransportTests: XCTestCase {
 
     func testAnImpostorWithThePublicTagNeverDisplacesTheConnection() throws {
         let (phone, ipad, wire) = pairedDevices()
+        let impostorPeer = MCPeerID(displayName: "Impostor")
+        var answers: [Bool] = []
+        ipad.transport.handleInvitation(from: impostorPeer, context: Data(tag.utf8)) { answers.append($0); return nil }
+        XCTAssertEqual(answers, [false], "A connection in use turns newcomers away")
+
+        // Quiet long enough to give way, but only to a newcomer that proves the key.
+        clock.advance(StationLinkTransport.takeoverLimit)
         let impostor = FakeChannel("Impostor")
-        ipad.transport.handleInvitation(from: MCPeerID(displayName: "Impostor"), context: Data(tag.utf8)) {
-            $0 ? impostor : nil
+        ipad.transport.handleInvitation(from: impostorPeer, context: Data(tag.utf8)) {
+            answers.append($0)
+            return $0 ? impostor : nil
         }
+        XCTAssertEqual(answers, [false, true])
         ipad.transport.handle(impostor, connected: true)
         guard case .challenge(let ipadNonce)? = impostor.sent.first.flatMap({ StationLinkMessage.decode($0) }) else {
             return XCTFail("The iPad challenges every newcomer")
@@ -151,6 +171,78 @@ final class StationLinkTransportTests: XCTestCase {
         phone.transport.send(.arm(arm))
         wire.pump()
         XCTAssertEqual(ipad.received, [.arm(arm)])
+    }
+
+    func testASecondPhoneWaitsWhileTheFirstConnectionStaysInUse() {
+        let (phone, ipad, wire) = pairedDevices()
+        let other = Device(.controller, clock: clock)
+        other.transport.start(key: key)
+        other.transport.handleFound(ipadPeer, info: ["tag": tag])
+        let invitation = other.radio.invitations[0]
+        var answers: [Bool] = []
+        for _ in 0..<3 {
+            clock.advance(StationLinkTransport.heartbeatInterval)
+            phone.transport.tick()
+            ipad.transport.tick()
+            wire.pump()
+            ipad.transport.handleInvitation(from: other.radio.localPeer, context: invitation.context) {
+                answers.append($0)
+                return nil
+            }
+        }
+        XCTAssertEqual(answers, [false, false, false], "Heartbeats keep the connection in use")
+        XCTAssertEqual(ipad.connects, 1)
+        XCTAssertEqual(ipad.transport.connection, .connected("iPhone"))
+    }
+
+    func testATakeoverStopsIfTheConnectionInUseIsHeardBeforeTheNewcomerProvesTheKey() {
+        let (phone, ipad, wire) = pairedDevices()
+        // A gap just long enough to let a second phone try...
+        clock.advance(StationLinkTransport.takeoverLimit)
+        let other = Device(.controller, clock: clock)
+        other.transport.start(key: key)
+        other.transport.handleFound(ipadPeer, info: ["tag": tag])
+        let invitation = other.radio.invitations[0]
+        let channel = FakeChannel("Other iPhone")
+        var accepted = false
+        ipad.transport.handleInvitation(from: other.radio.localPeer, context: invitation.context) { accept in
+            accepted = accept
+            return accept ? channel : nil
+        }
+        XCTAssertTrue(accepted)
+
+        // ...but the first phone speaks up before the newcomer proves the key.
+        phone.transport.tick()
+        wire.pump()
+        Wire(phone: other, phoneChannel: invitation.channel, ipad: ipad, ipadChannel: channel).connect()
+        XCTAssertTrue(channel.closed)
+        XCTAssertFalse(wire.ipadChannel.closed)
+        XCTAssertEqual(ipad.connects, 1)
+        XCTAssertEqual(ipad.transport.connection, .connected("iPhone"))
+    }
+
+    func testAnOlderPhoneThatInvitesAgainReplacesTheSessionItAbandonedOnlyByProvingTheKey() throws {
+        let ipad = Device(.station, clock: clock)
+        ipad.transport.start(key: key)
+        let (first, _) = try connectOlderPhone(to: ipad)
+
+        // A newcomer under the same identity that can't prove the key changes nothing.
+        let impostor = FakeChannel(phonePeer.displayName)
+        ipad.transport.handleInvitation(from: phonePeer, context: Data(tag.utf8)) { $0 ? impostor : nil }
+        ipad.transport.handle(impostor, connected: true)
+        ipad.transport.handle(impostor, received: try StationLinkMessage.challenge(StationLink.newNonce()).encoded())
+        ipad.transport.handle(impostor, received: try StationLinkMessage.proof(Data(repeating: 1, count: 32)).encoded())
+        XCTAssertTrue(impostor.closed)
+        XCTAssertFalse(first.closed)
+
+        // Its session ended on the phone; the iPad still lists it. An older
+        // phone invites again under the same identity.
+        let (second, _) = try connectOlderPhone(to: ipad)
+        XCTAssertTrue(first.closed)
+        XCTAssertFalse(second.closed)
+        XCTAssertEqual(ipad.connects, 2)
+        XCTAssertFalse(ipad.states.drop(while: { !$0.isConnected }).contains(where: { !$0.isConnected }),
+                       "The old session served until the new one proved the key, so the display didn't blank")
     }
 
     func testANewerInvitationReplacesAnAttemptThatNeverConnected() {
@@ -201,7 +293,7 @@ final class StationLinkTransportTests: XCTestCase {
         phone.transport.tick()
         XCTAssertEqual(phone.transport.connection, .searching)
         XCTAssertTrue(wire.phoneChannel.closed)
-        XCTAssertEqual(phone.radio.invitations.count, 2, "The phone looks for the iPad again at once")
+        XCTAssertEqual(phone.radios.all.count, 2, "The phone looks for the iPad again at once")
     }
 
     func testAnIphoneFromBeforeHeartbeatsIsNeverDroppedForBeingQuiet() throws {
@@ -246,13 +338,40 @@ final class StationLinkTransportTests: XCTestCase {
         XCTAssertEqual(ipad.received, [.arm(arm)])
     }
 
-    func testAFailedSendDropsTheLinkAndThePhoneInvitesAgain() {
+    func testAFailedSendDropsTheLinkAndThePhoneLooksAgain() {
         let (phone, _, wire) = pairedDevices()
         wire.phoneChannel.refusesSends = true // the session no longer lists the iPad
         phone.transport.send(.display(nil))
         XCTAssertTrue(wire.phoneChannel.closed)
         XCTAssertEqual(phone.transport.connection, .searching)
-        XCTAssertEqual(phone.radio.invitations.count, 2)
+        XCTAssertEqual(phone.radios.all.count, 2)
+        phone.transport.handleFound(ipadPeer, info: ["tag": tag])
+        XCTAssertEqual(phone.radio.invitations.map(\.peer), [ipadPeer])
+    }
+
+    func testAnInvitationToAnIpadThatStoppedAdvertisingIsAbandonedAtOnce() {
+        let phone = Device(.controller, clock: clock)
+        phone.transport.start(key: key)
+        let replaced = MCPeerID(displayName: "iPad before it came back")
+        phone.transport.handleFound(replaced, info: ["tag": tag])
+        phone.transport.handleFound(ipadPeer, info: ["tag": tag])
+        XCTAssertEqual(phone.radio.invitations.map(\.peer), [replaced])
+        phone.transport.handleLost(replaced)
+        XCTAssertTrue(phone.radio.invitations[0].channel.closed)
+        XCTAssertEqual(phone.radio.invitations.map(\.peer), [replaced, ipadPeer], "No pause before the iPad that is there")
+
+        // An attempt whose session has connected no longer needs the advertisement.
+        phone.radio.invitations[1].channel.isOpen = true
+        phone.transport.handleLost(ipadPeer)
+        XCTAssertFalse(phone.radio.invitations[1].channel.closed)
+
+        // One that went away and came back is invited again like any other.
+        phone.transport.handleFound(replaced, info: ["tag": tag])
+        phone.transport.handle(phone.radio.invitations[1].channel, connected: false)
+        clock.advance(StationLinkTransport.retryDelay)
+        phone.transport.tick()
+        XCTAssertEqual(phone.radio.invitations.map(\.peer), [replaced, ipadPeer, replaced])
+        XCTAssertEqual(phone.radio.restarts, 0)
     }
 
     func testAStuckAttemptIsAbandonedAndAnotherIpadIsTriedBeforeItAgain() {
@@ -312,6 +431,28 @@ final class StationLinkTransportTests: XCTestCase {
         XCTAssertEqual(ipad.transport.connection, .searching)
     }
 
+    func testResumeLetsAnAttemptFinishAndFindingAPeerClearsADiscoveryFailure() {
+        let phone = Device(.controller, clock: clock)
+        phone.transport.start(key: key)
+        phone.transport.handleDiscoveryFailure()
+        XCTAssertEqual(phone.transport.connection, .unavailable)
+        phone.transport.handleFound(ipadPeer, info: ["tag": tag])
+        XCTAssertEqual(phone.transport.connection, .searching, "Finding the iPad shows discovery works")
+        XCTAssertEqual(phone.radio.invitations.count, 1)
+
+        // A permission alert briefly interrupted the app mid-attempt.
+        phone.transport.resume()
+        XCTAssertEqual(phone.radios.all.count, 1)
+        XCTAssertFalse(phone.radio.invitations[0].channel.closed)
+
+        let ipad = Device(.station, clock: clock)
+        ipad.transport.start(key: key)
+        ipad.transport.handleDiscoveryFailure()
+        XCTAssertEqual(ipad.transport.connection, .unavailable)
+        ipad.transport.handleInvitation(from: phonePeer, context: Data(tag.utf8)) { $0 ? FakeChannel("iPhone") : nil }
+        XCTAssertEqual(ipad.transport.connection, .searching, "An invitation shows advertising works")
+    }
+
     func testRetryAndReturningToTheAppRestartTheLinkFromAnyTab() {
         let phone = Device(.controller, clock: clock)
         let controller = StationLinkController(transport: phone.transport)
@@ -366,7 +507,8 @@ final class StationLinkTransportTests: XCTestCase {
         XCTAssertTrue(station.trialEnded(count: 5, leftCount: nil, rightCount: nil, partial: false))
         XCTAssertNil(controller.proposal)
 
-        let second = answer(phone, by: ipad)
+        clock.advance(StationLinkTransport.takeoverLimit)
+        let second = reconnect(phone, to: ipad)
         let proposal = try XCTUnwrap(controller.proposal, "The iPad sends the count again on the new connection")
         XCTAssertEqual(proposal.reps, 5)
         XCTAssertTrue(proposal.logsAutomatically)
@@ -374,7 +516,8 @@ final class StationLinkTransportTests: XCTestCase {
 
         // A later reconnect repeats the count; the iPhone has already used it.
         phone.transport.handle(second.phoneChannel, connected: false)
-        answer(phone, by: ipad)
+        clock.advance(StationLinkTransport.takeoverLimit)
+        reconnect(phone, to: ipad)
         XCTAssertNil(controller.proposal)
         XCTAssertEqual(ipad.transport.connection, .connected("iPhone"))
     }
@@ -388,7 +531,8 @@ final class StationLinkTransportTests: XCTestCase {
         XCTAssertNil(controller.arm)
         XCTAssertNotNil(station.arm)
 
-        answer(phone, by: ipad)
+        clock.advance(StationLinkTransport.takeoverLimit)
+        reconnect(phone, to: ipad)
         XCTAssertNil(station.arm, "The iPad learns that the set it still held was withdrawn")
         XCTAssertEqual(ipad.transport.connection, .connected("iPhone"))
         XCTAssertNil(controller.stationState)
@@ -410,7 +554,7 @@ final class StationLinkTransportTests: XCTestCase {
         phone.transport.handle(first.phoneChannel, connected: false)
         XCTAssertNil(controller.progress)
 
-        let second = answer(phone, by: ipad)
+        let second = reconnect(phone, to: ipad)
         XCTAssertEqual(controller.stationState, .counting)
         XCTAssertEqual(controller.progress?.count, 2, "The live count shows again at once")
 
@@ -419,10 +563,25 @@ final class StationLinkTransportTests: XCTestCase {
         XCTAssertTrue(station.trialEnded(count: 5, leftCount: nil, rightCount: nil, partial: false))
         phone.transport.handle(second.phoneChannel, connected: false)
         XCTAssertNil(controller.proposal)
-        answer(phone, by: ipad)
+        reconnect(phone, to: ipad)
         let proposal = try XCTUnwrap(controller.proposal)
         XCTAssertEqual(proposal.reps, 5)
         XCTAssertEqual(station.arm, controller.arm)
+    }
+
+    func testAReconnectRepeatsWhyTheIpadIsNotCounting() throws {
+        try requireCameraCounting()
+        let (controller, station, phone, ipad, first) = linkedRunner()
+        let arm = try XCTUnwrap(station.arm)
+        station.report(.cameraOff, armID: arm.armID)
+        first.pump()
+        XCTAssertEqual(controller.stationState, .cameraOff)
+
+        ipad.transport.handle(first.ipadChannel, connected: false)
+        phone.transport.handle(first.phoneChannel, connected: false)
+        XCTAssertNil(controller.stationState)
+        reconnect(phone, to: ipad)
+        XCTAssertEqual(controller.stationState, .cameraOff, "The re-sent arm prompts no new report, so the iPad repeats it")
     }
 
     func testAHeartbeatIsANoOpForBuildsThatPredateIt() throws {
@@ -468,12 +627,15 @@ private final class TestClock {
 @MainActor
 private final class FakeChannel: StationLinkChannel {
     let peerName: String
-    var isOpen = true
+    var isOpen: Bool
     var refusesSends = false
     private(set) var closed = false
     private(set) var sent: [Data] = []
 
-    init(_ peerName: String) { self.peerName = peerName }
+    init(_ peerName: String, open: Bool = true) {
+        self.peerName = peerName
+        isOpen = open
+    }
 
     func send(_ data: Data) throws {
         guard isOpen, !closed, !refusesSends else { throw ChannelClosed() }
@@ -494,6 +656,8 @@ private final class FakeRadio: StationLinkRadio {
         let channel: FakeChannel
     }
 
+    /// The identity this radio invites under; each start has its own.
+    let localPeer = MCPeerID(displayName: "iPhone")
     private(set) var tag: String?
     private(set) var restarts = 0
     private(set) var stopped = false
@@ -504,7 +668,7 @@ private final class FakeRadio: StationLinkRadio {
     func stopDiscovery() { stopped = true }
 
     func invite(_ peer: MCPeerID, context: Data, timeout: TimeInterval) -> StationLinkChannel {
-        let channel = FakeChannel(peer.displayName)
+        let channel = FakeChannel(peer.displayName, open: false)
         invitations.append(Invitation(peer: peer, context: context, channel: channel))
         return channel
     }
@@ -564,6 +728,8 @@ private final class Wire {
     }
 
     func connect() {
+        phoneChannel.isOpen = true
+        ipadChannel.isOpen = true
         phone.transport.handle(phoneChannel, connected: true)
         ipad.transport.handle(ipadChannel, connected: true)
         pump()

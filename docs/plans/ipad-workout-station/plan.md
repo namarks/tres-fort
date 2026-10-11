@@ -173,8 +173,8 @@ detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Drive the link reliability correction in
-[PR #259](https://github.com/namarks/tres-fort/pull/259) to ready. On
+**Now (@agent):** Drive the link follow-up in
+[PR #260](https://github.com/namarks/tres-fort/pull/260) to ready. On
 2026-10-11 the owner reported that pairing is still finicky and that, once
 paired, the iPhone and iPad do not stay in sync. Reading the build 52 transport
 found likely causes; they are inferred from code, not device logs. An iPad
@@ -185,23 +185,35 @@ as connected while nothing arrived. A sound message the receiver could not
 read dropped the whole connection. The iPhone reconnected after returning to
 the app only when Today was on screen, and the iPad never retried.
 
-The correction gives every attempt its own session. The iPad accepts a
-reconnecting iPhone at once and retires the old connection only after the
-newcomer proves the key, so its display does not blank. A sealed heartbeat on
-quiet connections drops a silent peer within eight seconds; a failed send drops
-it at once; unreadable authenticated content is skipped. The iPhone invites the
-most recently seen iPad, tries others before retrying one that failed, and
-abandons an attempt that has not proved the key within 15 seconds. Both devices
-reconnect when the app returns to the foreground, from any tab. The iPad
-keeps counting the armed set through a lost connection. On a new connection
-it reports where it is with that set, its live count, and a finished count
-the old connection may have lost; the iPhone uses each count once and
-withdraws a set it has already moved past. Build 52 peers stay
+The correction merged in [PR #259](https://github.com/namarks/tres-fort/pull/259)
+gives every attempt its own session. A sealed heartbeat on quiet connections
+drops a silent peer within eight seconds; a failed send drops it at once;
+unreadable authenticated content is skipped. The iPhone invites the most
+recently seen iPad and tries others before retrying one that failed. Both
+devices reconnect when the app returns to the foreground, from any tab. The
+iPad keeps counting the armed set through a lost connection. On a new
+connection it reports where it is with that set, its live count, and a
+finished count the old connection may have lost; the iPhone uses each count
+once and withdraws a set it has already moved past. Build 52 peers stay
 compatible: they read a heartbeat as a disarm of no set and are never dropped
-for being quiet. Fake-session unit tests cover reconnection, impostors,
-silence, older peers, failed sends, stuck attempts, foreground recovery and
-counts or disarms lost with a dropped or replaced connection.
-Physical acceptance needs a build containing it, and the owner's description of
+for being quiet, though a build 52 iPhone does not withdraw a set it moved
+past while disconnected.
+
+The follow-up answers a second review of that change. In #259 any newcomer
+that proved the key replaced the iPad's connection, so a second iPhone could
+take over a connection in use, and two could keep taking it from each other.
+Now a connection heard from within two heartbeats keeps the link. Once a
+newcomer proves the key, it replaces a connection the same iPhone abandoned,
+or one that stayed quiet throughout, so the display does not blank. After losing a connection the
+iPhone looks again under a new identity, so its new session shares nothing
+with one the iPad may still hold. It drops an invitation to an iPad that
+stopped advertising, gives an attempt 20 seconds to prove the key, and lets an
+attempt in progress finish when the app returns from a permission alert. A
+reconnect also repeats why the iPad is not counting. Fake-session unit tests
+cover reconnection, impostors, a second iPhone, silence, older peers, failed
+sends, stuck or abandoned attempts, foreground recovery, and counts, states or
+disarms lost with a dropped or replaced connection.
+Physical acceptance needs a build containing both, and the owner's description of
 what the iPad shows when it falls out of sync is pending.
 
 **QR correction (merged):** [PR #255](https://github.com/namarks/tres-fort/pull/255)

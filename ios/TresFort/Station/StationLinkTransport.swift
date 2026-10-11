@@ -35,9 +35,10 @@ protocol StationLinkRadio: AnyObject {
 ///
 /// Neither side waits for a dead connection to time out. A quiet connection
 /// carries a heartbeat, so a peer that has gone silent is dropped within
-/// `silenceLimit`; a failed send drops it at once; and the iPad accepts a
-/// reconnecting iPhone while still holding the connection that iPhone
-/// abandoned, replacing it only once the newcomer proves the key.
+/// `silenceLimit`; a failed send drops it at once. The iPad keeps a connection
+/// in use against any newcomer. Once a newcomer proves the key, it replaces a
+/// connection the same iPhone abandoned, or one that stayed quiet throughout,
+/// so the old connection serves until then.
 @MainActor
 final class StationLinkTransport: ObservableObject {
     enum Role: String { case station, controller }
@@ -50,8 +51,10 @@ final class StationLinkTransport: ObservableObject {
     static let heartbeatInterval: TimeInterval = 2
     /// Silence after which a peer that sends heartbeats is presumed gone.
     static let silenceLimit: TimeInterval = 8
+    /// Silence, two missed heartbeats, after which a newcomer may take over.
+    static let takeoverLimit: TimeInterval = 4
     /// Time one attempt has to connect and prove the key.
-    static let attemptLimit: TimeInterval = 15
+    static let attemptLimit: TimeInterval = 20
     /// Time the iPad has to accept an invitation.
     static let invitationTimeout: TimeInterval = 10
     /// Pause before the iPhone invites again after an attempt failed.
@@ -141,8 +144,10 @@ final class StationLinkTransport: ObservableObject {
 
     /// The app is back in the foreground. Suspension closes every session,
     /// sometimes without telling this side, so rebuild unless still connected.
+    /// An attempt in progress, as after a permission alert, is left to finish:
+    /// one that suspension broke is abandoned at `attemptLimit`.
     func resume() {
-        guard key != nil, !isHealthy else { return }
+        guard key != nil, !isHealthy, pending == nil else { return }
         restart()
     }
 
@@ -158,7 +163,9 @@ final class StationLinkTransport: ObservableObject {
     // MARK: radio events, always on the main actor
 
     func handleFound(_ peer: MCPeerID, info: [String: String]?) {
-        guard role == .controller, radio != nil, let tag, info?["tag"] == tag else { return }
+        guard role == .controller, radio != nil, let tag else { return }
+        discoveryWorks()
+        guard info?["tag"] == tag else { return }
         nearby.removeAll { $0 == peer }
         nearby.append(peer)
         inviteNext()
@@ -166,6 +173,14 @@ final class StationLinkTransport: ObservableObject {
 
     func handleLost(_ peer: MCPeerID) {
         nearby.removeAll { $0 == peer }
+        // An iPad that stopped advertising, as when it came back under a new
+        // identity, won't answer an invitation that hasn't connected yet.
+        guard let pending, pending.peer == peer, !pending.channel.isOpen else { return }
+        drop(pending)
+        // It went away rather than failed: no pause, and welcome if it returns.
+        tried.remove(peer)
+        nextInvite = .distantPast
+        inviteNext()
     }
 
     /// `accept` answers the invitation exactly once and returns the channel
@@ -176,8 +191,15 @@ final class StationLinkTransport: ObservableObject {
             _ = accept(false)
             return
         }
-        // An iPhone invites again only once it has given up on its earlier
-        // attempt, so the newer invitation replaces an unproven one.
+        discoveryWorks()
+        // Another device, or a takeover too soon to tell, is turned away
+        // while the connection in use keeps the link. The same phone invites
+        // again only once it has given up on its connection.
+        if let active, active.peer != peer, inUse(active) {
+            _ = accept(false)
+            return
+        }
+        // A newer invitation replaces an attempt that hasn't proved the key.
         if let pending { drop(pending) }
         guard let channel = accept(true) else { return }
         pending = PeerLink(channel: channel, peer: peer, at: now())
@@ -225,15 +247,29 @@ final class StationLinkTransport: ObservableObject {
     private func drop(_ link: PeerLink) {
         link.channel.close()
         let failedAttempt = pending === link
+        let lostConnection = active === link
         if failedAttempt { pending = nil }
-        if active === link { active = nil }
+        if lostConnection { active = nil }
         refreshConnection()
         guard role == .controller, radio != nil, active == nil, pending == nil else { return }
+        if lostConnection {
+            // The iPad may hold the old session a while longer: meet it again
+            // under a new identity, so the two sessions share nothing.
+            renewRadio()
+            return
+        }
         if failedAttempt {
             tried.insert(link.peer)
             nextInvite = now().addingTimeInterval(Self.retryDelay)
         }
         if nearby.isEmpty { rediscover() } else { inviteNext() }
+    }
+
+    /// Still in use, so a newcomer is turned away: open, and either heard
+    /// from within `takeoverLimit` or from before heartbeats.
+    private func inUse(_ link: PeerLink) -> Bool {
+        guard link.channel.isOpen else { return false }
+        return !link.peerSendsHeartbeats || now().timeIntervalSince(link.lastReceived) < Self.takeoverLimit
     }
 
     /// The iPhone invites one iPad at a time: the one found most recently
@@ -254,6 +290,26 @@ final class StationLinkTransport: ObservableObject {
         nearby.removeAll()
         tried.removeAll()
         radio?.restartDiscovery()
+    }
+
+    /// Discovery from scratch under a new local identity, keeping the key.
+    private func renewRadio() {
+        guard let tag else { return }
+        radio?.stopDiscovery()
+        nearby.removeAll()
+        tried.removeAll()
+        nextInvite = .distantPast
+        let radio = makeRadio(role, self)
+        self.radio = radio
+        radio.startDiscovery(tag: tag)
+    }
+
+    /// A peer was found or an invitation arrived, so an earlier failure to
+    /// start discovery no longer describes the link.
+    private func discoveryWorks() {
+        guard discoveryFailed else { return }
+        discoveryFailed = false
+        refreshConnection()
     }
 
     private func refreshConnection() {
@@ -343,13 +399,18 @@ final class StationLinkTransport: ObservableObject {
 
     private func authenticate(_ link: PeerLink) {
         guard let key, let ownNonce = link.ownNonce, let peerNonce = link.peerNonce else { return }
+        if let previous = active, previous.peer != link.peer, inUse(previous) {
+            // The connection it was to replace was heard from again meanwhile.
+            drop(link)
+            return
+        }
         let controllerNonce = role == .controller ? ownNonce : peerNonce
         let stationNonce = role == .controller ? peerNonce : ownNonce
         link.sessionKey = StationLink.sessionKey(key: key, controllerNonce: controllerNonce,
                                                  stationNonce: stationNonce)
         link.lastReceived = now()
         pending = nil
-        // The iPhone this replaces has already given up on that connection.
+        // Its phone abandoned the connection this replaces, or it stayed quiet.
         if let previous = active { previous.channel.close() }
         active = link
         connection = .connected(link.channel.peerName)

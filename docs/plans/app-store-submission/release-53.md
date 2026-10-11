@@ -44,11 +44,19 @@ the release source.
 
 ## Backend compatibility
 
-`src/`, `migrations/`, `wrangler.jsonc`, `website/` and npm dependencies are
-unchanged from release-49 source `cd3cf40`. A read-only
-`wrangler deployments status` showed deployment
-`8e68bb87-2898-4155-8112-5c4a4f42c371` still serving that source at 100%
-traffic. No Worker deployment or migration was needed or made.
+`src/`, `migrations/`, `wrangler.jsonc` and npm dependencies are unchanged
+from release-49 source `cd3cf40`. A read-only `wrangler deployments status`
+showed deployment `8e68bb87-2898-4155-8112-5c4a4f42c371` still serving that
+source at 100% traffic. The API and schema build 53 uses are therefore already
+deployed, and no migration is needed.
+
+The policy page is the exception. The Worker's `/privacy` route bundles
+`website/privacy.mjs`, which changed after `cd3cf40` in #247 and #248
+(8 additions, 6 deletions; policy dated October 8). The new text covers native
+iPad, Health weight, Intervals metadata and partner training. The serving Worker,
+like the public website, still serves the older policy. Publishing the current
+policy on both hosts remains an owner action before resubmission, as **Next
+step** already requires. No Worker deployment or migration was made.
 
 ## Signing
 

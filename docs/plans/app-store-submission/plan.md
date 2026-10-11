@@ -270,8 +270,10 @@ submission to the latest app. [Release 53](release-53.md) records the
 SDK-free candidate from main `47be49d11e6720826bc53444382c4cc7ec0df8ae`, the
 App Group signing fix, fresh screenshot sets, and the owner-approved selection
 for version 1.0. [Release 54](release-54.md) records the camera-enabled beta
-from the same source. The backend source is unchanged from the serving
-release-49 Worker; no deployment or migration was made.
+from the same source. API, schema and Worker configuration are unchanged from
+the serving release-49 Worker. The bundled `/privacy` page is older than the
+source policy and needs the owner-authorized policy publication. No deployment
+or migration was made.
 
 **Current Apple readback (2026-10-11):** Version 1.0 selects **build 53**,
 **PREPARE_FOR_SUBMISSION**, with **MANUAL** release. Review submission
@@ -284,8 +286,9 @@ privacy/account and group controls, public policy/support availability, listing
 and reviewer instructions, and the documented verification exceptions. Record
 evidence and identify any owner-only App Store fields before completing those
 phases. The serving backend is canonical source
-`cd3cf4057320daa474292b86f3ddbbca401d5099` ([release 49](release-49.md)), and
-its backend source is identical to the build-53 source. Build 40, which used the
+`cd3cf4057320daa474292b86f3ddbbca401d5099` ([release 49](release-49.md)). Its
+API, schema and configuration match the build-53 source, but its bundled
+`/privacy` page predates the current source policy. Build 40, which used the
 retired REST contract, is no longer selected.
 
 Authenticated session-swap and workout-name compatibility verification remains

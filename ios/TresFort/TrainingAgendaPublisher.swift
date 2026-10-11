@@ -33,10 +33,12 @@ extension SyncModel {
     private func trainingAgendaDay(for ymd: String, today: String) -> TrainingAgendaDay {
         let resolved = projection(for: ymd, today: today)
         // A started runner can name an explicit workout before its first set
-        // creates a session, including one chosen on a rest day.
-        if ymd == today, let checkpoint = resumableCheckpoint, checkpoint.date == today,
-           let started = workout(id: checkpoint.selectedDayID),
-           resolved.kind != .completed, resolved.kind != .skipped {
+        // creates a session, including one chosen on a rest day: the mounted
+        // runner's own selection, or a resumable checkpoint after relaunch.
+        if ymd == today, resolved.kind != .completed, resolved.kind != .skipped,
+           let started = running ? selectedDay : resumableCheckpoint.flatMap({
+               $0.date == today ? workout(id: $0.selectedDayID) : nil
+           }) {
             return agendaDay(ymd, .inProgress, started)
         }
         switch resolved {

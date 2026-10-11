@@ -186,6 +186,15 @@ final class TrainingAgendaTests: XCTestCase {
                        "an in-progress row with no live sets is still the planned workout")
     }
 
+    func testMountedRunnerIsInProgressBeforeItsFirstSet() throws {
+        let model = model()
+        model.selectedDayID = "upper"
+        model.running = true
+        let today = try XCTUnwrap(model.trainingAgendaSnapshot(dayCount: 1)).days[0]
+        XCTAssertEqual(today.status, .inProgress, "a started workout gets no reminder and no Ready state")
+        XCTAssertEqual(today.workoutName, "Upper")
+    }
+
     func testFreestyleSessionIsNamed() throws {
         let probe = model()
         let today = probe.todayString

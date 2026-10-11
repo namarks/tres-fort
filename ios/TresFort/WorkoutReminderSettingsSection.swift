@@ -8,6 +8,7 @@ struct WorkoutReminderSettingsSection: View {
     @AppStorage(WorkoutReminderSettings.minutesKey) private var minutes = WorkoutReminderSettings.defaultMinutes
     @State private var permissionDenied = false
     @State private var requesting = false
+    @Environment(\.scenePhase) private var scenePhase
     private var reminders: WorkoutReminderCoordinator { .shared }
 
     var body: some View {
@@ -34,6 +35,10 @@ struct WorkoutReminderSettingsSection: View {
             Text("A notification on each day your schedule or calendar has a workout. Rest days, skipped days and workouts you've started or finished stay quiet. Add the Très Fort widget to your Home or Lock Screen to see today's workout at a glance.")
         }
         .task { await refreshPermission() }
+        // Permission may change in Settings while this section stays mounted.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await refreshPermission() } }
+        }
     }
 
     private var time: Binding<Date> {

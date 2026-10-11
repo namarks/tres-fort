@@ -72,6 +72,9 @@ struct ProfileView: View {
                     NavigationLink("Group safety") { GroupSafetyView(model: groupModel) }
                 }
                 }
+                if let userID = auth.userID {
+                    WorkoutReminderSettingsSection(userID: userID)
+                }
                 Section("About Très Fort") {
                     PrivacyPolicyLink()
                     Link("Contact support", destination: AppInformation.supportURL)

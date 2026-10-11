@@ -6307,6 +6307,10 @@ final class SyncModel: ObservableObject {
         return projection(for: t, today: t)
     }
 
+    /// The widget snapshot and reminders belong to the feature session that
+    /// rendered them, like any other new user-visible action.
+    var canPublishTrainingAgenda: Bool { canInitiateBoundFeatureAction }
+
     /// SINGLE definition of "is this raw session status a workout?" (i.e.
     /// not skipped / not a non-training terminal state). The ONLY place this
     /// rule is written on the iOS side.
@@ -6403,6 +6407,23 @@ final class SyncModel: ObservableObject {
         case .rest, .none, .unavailable, .light:
             return nil   // unreachable (guarded by isWorkout)
         }
+    }
+
+    /// The workout a started runner owns on `date`, before or after its first
+    /// set creates a session: the mounted runner's own selection, or a
+    /// resumable checkpoint after relaunch (freestyle included). A runner
+    /// carried past midnight keeps its original date.
+    func startedRunnerWorkout(on date: String) -> Workout? {
+        if running {
+            let owned = persistedRunnerCheckpoint?.date ?? todaySession?.date
+                ?? workoutStart.map { TrainingAgendaCalendar.dateString($0, calendar: TrainingAgendaCalendar.calendar()) }
+            return owned == date ? selectedDay : nil
+        }
+        guard let checkpoint = resumableCheckpoint, checkpoint.date == date else { return nil }
+        if let day = runnerDay(id: checkpoint.selectedDayID) ?? workout(id: checkpoint.selectedDayID) { return day }
+        guard checkpoint.selectedDayID.hasPrefix("freestyle:") else { return nil }
+        return Workout(id: checkpoint.selectedDayID, name: "Freestyle", day_label: nil,
+                       order_index: 0, exercises: checkpoint.freestyleExercises ?? [])
     }
 
     /// Station observes the workout Today is displaying. A mounted runner may

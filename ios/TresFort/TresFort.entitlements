@@ -28,6 +28,14 @@
        source of truth. NOTE: we intentionally do NOT add
        com.apple.developer.healthkit.access (clinical health records) — that's a
        different, heavier entitlement we don't need. -->
+  <!-- App Group shared with the widget extension: the app writes the Today
+       widget's display snapshot (Shared/TrainingAgenda.swift) and the widget
+       reads it. Automatic signing registers the group on the next device or
+       archive build. -->
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>group.com.nmarkspdx.tresfort</string>
+  </array>
   <key>com.apple.developer.healthkit</key>
   <true/>
   <key>com.apple.developer.healthkit.background-delivery</key>

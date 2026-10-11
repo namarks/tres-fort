@@ -44,6 +44,18 @@ class AppStorePackagingTests(unittest.TestCase):
         self.assertEqual(len(result), 4)
         return result
 
+    def assert_widget_app_group(self, project):
+        # The Today widget reads the app's snapshot through one App Group, so
+        # both shipping variants must sign the app and the widget with it.
+        entitlements = {item['PRODUCT_BUNDLE_IDENTIFIER']: item.get('CODE_SIGN_ENTITLEMENTS')
+                        for item in self.shipping_settings(project)}
+        self.assertEqual(entitlements, {
+            'com.nmarkspdx.tresfort': 'TresFort/TresFort.entitlements',
+            'com.nmarkspdx.tresfort.widgets': 'TresFortWidgets/TresFortWidgets.entitlements'})
+        for path in entitlements.values():
+            groups = plistlib.loads((self.ios / path).read_bytes())['com.apple.security.application-groups']
+            self.assertEqual(groups, ['group.com.nmarkspdx.tresfort'])
+
     def test_app_store_project_excludes_sdk_graph_model_and_notices_without_downloading(self):
         project = self.generate('project-app-store.yml')
         verify_project(project)
@@ -59,6 +71,7 @@ class AppStorePackagingTests(unittest.TestCase):
         self.assertIn('DEBUG APP_STORE_BUILD', text)
         self.assertNotIn('APP_STORE_IPHONE_ONLY', text)
         self.assertIn('TresFortWidgets.appex in Embed Foundation Extensions', text)
+        self.assert_widget_app_group(project)
         self.assertFalse((self.ios / '.dependencies').exists())
 
     def test_beta_project_retains_sdk_graph_model_notices_and_both_device_families(self):
@@ -85,6 +98,7 @@ class AppStorePackagingTests(unittest.TestCase):
                             for value in descriptions))
         self.assertNotIn('APP_STORE_BUILD', text)
         self.assertNotIn('APP_STORE_IPHONE_ONLY', text)
+        self.assert_widget_app_group(project)
         with self.assertRaisesRegex(ValueError, 'retains Station SDK input'):
             verify_project(project)
 

@@ -394,6 +394,37 @@ final class StationLinkTransportTests: XCTestCase {
         XCTAssertNil(controller.stationState)
     }
 
+    func testTheIpadKeepsCountingThroughALostConnectionAndDeliversTheCountAfter() throws {
+        try requireCameraCounting()
+        let (controller, station, phone, ipad, first) = linkedRunner()
+        station.beginCounting()
+        station.observe(count: 2, leftCount: nil, rightCount: nil, status: .ready, partial: false, at: 1)
+        first.pump()
+        XCTAssertEqual(controller.progress?.count, 2)
+
+        // The iPad is first to notice that the session ended, mid-set.
+        ipad.transport.handle(first.ipadChannel, connected: false)
+        XCTAssertEqual(station.connection, .searching)
+        XCTAssertNotNil(station.arm)
+        XCTAssertTrue(station.isCounting, "The set keeps counting while the iPhone reconnects")
+        phone.transport.handle(first.phoneChannel, connected: false)
+        XCTAssertNil(controller.progress)
+
+        let second = answer(phone, by: ipad)
+        XCTAssertEqual(controller.stationState, .counting)
+        XCTAssertEqual(controller.progress?.count, 2, "The live count shows again at once")
+
+        // Lost again just as the set finishes: the count waits for the next connection.
+        ipad.transport.handle(second.ipadChannel, connected: false)
+        XCTAssertTrue(station.trialEnded(count: 5, leftCount: nil, rightCount: nil, partial: false))
+        phone.transport.handle(second.phoneChannel, connected: false)
+        XCTAssertNil(controller.proposal)
+        answer(phone, by: ipad)
+        let proposal = try XCTUnwrap(controller.proposal)
+        XCTAssertEqual(proposal.reps, 5)
+        XCTAssertEqual(station.arm, controller.arm)
+    }
+
     func testAHeartbeatIsANoOpForBuildsThatPredateIt() throws {
         struct OlderEnvelope: Decodable {
             enum Message: Decodable, Equatable { case disarm(armID: UUID) }

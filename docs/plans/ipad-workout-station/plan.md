@@ -173,7 +173,8 @@ detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Drive the link reliability correction to ready. On
+**Now (@agent):** Drive the link reliability correction in
+[PR #259](https://github.com/namarks/tres-fort/pull/259) to ready. On
 2026-10-11 the owner reported that pairing is still finicky and that, once
 paired, the iPhone and iPad do not stay in sync. Reading the build 52 transport
 found likely causes; they are inferred from code, not device logs. An iPad
@@ -191,14 +192,15 @@ quiet connections drops a silent peer within eight seconds; a failed send drops
 it at once; unreadable authenticated content is skipped. The iPhone invites the
 most recently seen iPad, tries others before retrying one that failed, and
 abandons an attempt that has not proved the key within 15 seconds. Both devices
-reconnect when the app returns to the foreground, from any tab. On a new
-connection the iPad reports where it is with the armed set and repeats a
-finished count the old connection may have lost; the iPhone uses each count
-once and withdraws a set it has already moved past. Build 52 peers stay
+reconnect when the app returns to the foreground, from any tab. The iPad
+keeps counting the armed set through a lost connection. On a new connection
+it reports where it is with that set, its live count, and a finished count
+the old connection may have lost; the iPhone uses each count once and
+withdraws a set it has already moved past. Build 52 peers stay
 compatible: they read a heartbeat as a disarm of no set and are never dropped
 for being quiet. Fake-session unit tests cover reconnection, impostors,
 silence, older peers, failed sends, stuck attempts, foreground recovery and
-counts or disarms lost with a replaced connection.
+counts or disarms lost with a dropped or replaced connection.
 Physical acceptance needs a build containing it, and the owner's description of
 what the iPad shows when it falls out of sync is pending.
 

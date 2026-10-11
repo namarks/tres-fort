@@ -23,8 +23,8 @@ final class StationLinkStation: ObservableObject {
     private let transport: StationLinkTransport
     private var detector = StationSetEndDetector()
     private var lastProgress: StationLinkProgress?
-    /// The count sent for the current arm, sent again on a new connection in
-    /// case the one it replaced lost it. The iPhone acts on each count once.
+    /// The count sent for the current arm, sent again on each new connection
+    /// in case it was lost with the old one. The iPhone acts on each count once.
     private var sentCompletion: StationLinkCompletion?
     private var cancellable: AnyCancellable?
 
@@ -33,7 +33,10 @@ final class StationLinkStation: ObservableObject {
         cancellable = self.transport.$connection.sink { [weak self] value in
             guard let self else { return }
             self.connection = value
-            if !value.isConnected { self.withdraw(); self.display = nil }
+            // Guidance needs a live iPhone. The armed set and its count stay,
+            // so a reconnect delivers a count the lost connection missed; the
+            // iPhone withdraws a set it has moved past meanwhile.
+            if !value.isConnected { self.display = nil }
         }
         self.transport.onMessage = { [weak self] in self?.receive($0) }
         self.transport.onConnect = { [weak self] in self?.announce() }
@@ -95,6 +98,7 @@ final class StationLinkStation: ObservableObject {
             return
         }
         report(isCounting ? .counting : .ready, armID: arm.armID)
+        if isCounting, let lastProgress { transport.send(.progress(lastProgress)) }
         if let sentCompletion, sentCompletion.armID == arm.armID {
             transport.send(.completion(sentCompletion))
         }

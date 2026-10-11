@@ -298,14 +298,18 @@ final class TrainingAgendaPublisher {
             .sink { [weak self] _ in Task { @MainActor in self?.refresh() } }
             .store(in: &cancellables)
         let triggers: [Notification.Name] = [
-            WorkoutReminderSettings.changed, .NSCalendarDayChanged,
-            .NSSystemTimeZoneDidChange, UIApplication.didBecomeActiveNotification,
+            WorkoutReminderSettings.changed, .NSCalendarDayChanged, .NSSystemTimeZoneDidChange,
         ]
         for name in triggers {
             notificationCenter.publisher(for: name)
                 .sink { [weak self] _ in Task { @MainActor in self?.refresh() } }
                 .store(in: &cancellables)
         }
+        // Notification permission can change in Settings while the agenda does
+        // not. Reapply on each return so reminders come back once it is granted.
+        notificationCenter.publisher(for: UIApplication.didBecomeActiveNotification)
+            .sink { [weak self] _ in Task { @MainActor in self?.refresh(reapplyReminders: true) } }
+            .store(in: &cancellables)
         auth.observeFeatureSessionBoundary { [weak self] in
             self?.retire()
             return false
@@ -313,7 +317,7 @@ final class TrainingAgendaPublisher {
         Task { @MainActor [weak self] in self?.refresh() }
     }
 
-    func refresh() {
+    func refresh(reapplyReminders: Bool = false) {
         guard !isRetired, let sync, sync.canPublishTrainingAgenda,
               let snapshot = sync.trainingAgendaSnapshot()
         else { return }
@@ -322,7 +326,7 @@ final class TrainingAgendaPublisher {
             snapshot: snapshot,
             enabled: WorkoutReminderSettings.isEnabled(settings),
             minutes: WorkoutReminderSettings.minutesAfterMidnight(settings))
-        guard input != lastReminderInput else { return }
+        guard reapplyReminders || input != lastReminderInput else { return }
         lastReminderInput = input
         guard input.enabled else {
             reminders.clear()

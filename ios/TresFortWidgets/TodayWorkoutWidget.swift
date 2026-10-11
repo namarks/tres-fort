@@ -70,11 +70,17 @@ struct TodayWorkoutPresentation {
 
     /// For a day without a workout to do: when the next one is.
     var nextLine: String? {
+        // Parse and format with one current-zone calendar: a widget process
+        // can outlive a time-zone change, so nothing here is cached.
+        let calendar = TrainingAgendaCalendar.calendar()
         guard let next = entry.next,
-              let date = TrainingAgendaCalendar.date(from: next.date, calendar: TrainingAgendaCalendar.calendar())
+              let date = TrainingAgendaCalendar.date(from: next.date, calendar: calendar)
         else { return nil }
-        let weekday = Self.weekdayFormatter.string(from: date)
-        return "Next: \(weekday) · \(next.workoutName ?? "Workout")"
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = "EEE"
+        return "Next: \(formatter.string(from: date)) · \(next.workoutName ?? "Workout")"
     }
 
     var inline: String {
@@ -85,14 +91,6 @@ struct TodayWorkoutPresentation {
         case .skipped, .rest, .unavailable, .light: return headline
         }
     }
-
-    private static let weekdayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.calendar = TrainingAgendaCalendar.calendar()
-        formatter.timeZone = .current
-        formatter.dateFormat = "EEE"
-        return formatter
-    }()
 }
 
 struct TodayWorkoutWidgetView: View {

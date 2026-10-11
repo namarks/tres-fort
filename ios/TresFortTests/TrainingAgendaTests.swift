@@ -359,6 +359,32 @@ final class TrainingAgendaTests: XCTestCase {
 
     // MARK: publisher
 
+    func testReturningToTheAppReappliesRemindersAfterPermissionIsGranted() async {
+        let model = model()
+        let settings = userDefaults()
+        settings.set(true, forKey: WorkoutReminderSettings.enabledKey)
+        let center = ReminderCenterStub()
+        center.status = .denied
+        let coordinator = WorkoutReminderCoordinator(center: center)
+        let publisher = TrainingAgendaPublisher(
+            sync: model, auth: retained.compactMap { $0 as? AuthModel }.last!,
+            sharedDefaults: userDefaults(), settings: settings, reminders: coordinator,
+            reloadWidgets: {}, now: { .distantPast }, notificationCenter: NotificationCenter())
+
+        publisher.refresh()
+        await coordinator.waitForTests()
+        XCTAssertTrue(center.pending.isEmpty)
+
+        center.status = .authorized
+        publisher.refresh()
+        await coordinator.waitForTests()
+        XCTAssertTrue(center.pending.isEmpty, "an unchanged agenda alone does not reschedule")
+
+        publisher.refresh(reapplyReminders: true)
+        await coordinator.waitForTests()
+        XCTAssertFalse(center.pending.isEmpty, "returning to the app picks up permission granted in Settings")
+    }
+
     func testPublisherWritesSnapshotSchedulesRemindersAndClearsAtSignOut() async throws {
         let defaults = persistence()
         let model = model(defaults: defaults)

@@ -120,9 +120,11 @@ distribution is not that evidence.
 Changing the build moved the version to PREPARE_FOR_SUBMISSION. The September
 review submission remains UNRESOLVED_ISSUES until you reply and resubmit.
 Review the draft iPhone and iPad screenshot sets captured from that source;
-the receipt lists the visible changes and three cosmetic points. App Store
-Connect still has only the old 6.5-inch iPhone set. The 13-inch iPad set is
-required now that 1.0 runs on iPad. Also review the prepared [policy, privacy
+the receipt lists the visible changes and three cosmetic points. At your request,
+those sets plus a 6.9-inch iPhone set from the same iOS source are uploaded to
+version 1.0 en-US. Every image is COMPLETE ([review package](review-package.md#screenshots)).
+With your approval the old 6.5-inch images were deleted, so the listing
+shows only build-53 screens. Also review the prepared [policy, privacy
 worksheet and rejection reply](review-package.md). Confirm provider
 protections, App Privacy, agreements and support/moderation operation, and
 authorize publication of the identical policy on both hosts. #259 merged before
@@ -139,8 +141,8 @@ fields. Make no App Store Connect, provider or production writes.
 public website still serves the older AI disclosure. Perform the
 designated-account consent/workout/export/deletion checks, native iPad layout
 checks and [manual partner trial](../partner-training/validation.md) with two
-phones/accounts and one iPad on build 53. Screenshot and metadata upload,
-replying to Apple,
+phones/accounts and one iPad on build 53. Further screenshot or metadata
+changes, replying to Apple,
 resubmission and eventual MANUAL public release remain separately authorized
 actions. No provider write or account/training mutation is part of this
 preparation.

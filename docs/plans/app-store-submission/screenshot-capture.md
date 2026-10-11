@@ -9,23 +9,34 @@ iOS 26.2 simulator runtime installed:
 
 ```sh
 bash scripts/capture-app-store-screenshots.sh .artifacts/app-store-iphone iphone
+bash scripts/capture-app-store-screenshots.sh .artifacts/app-store-iphone-large iphone-large
 bash scripts/capture-app-store-screenshots.sh .artifacts/app-store-ipad ipad
 ```
 
 Choose new output directories; the command refuses to overwrite an existing
 set. It selects `project-app-store.yml` (`APP_STORE_BUILD=1`), creates its own
-iPhone 17 Pro or 13-inch iPad Pro (M4) simulator and unsigned build, and runs the
+iPhone 17 Pro, iPhone 17 Pro Max or 13-inch iPad Pro (M4) simulator and unsigned
+build, and runs the
 real-screen asset journeys plus saved-partner-setup recovery. The iPad run also
 opens manual Station in portrait. The workflow exports the named screenshots
 and removes its temporary build and simulator. If any stage fails, it retains
 the build/test results, available attachments and export/validation logs in
 `failed-capture` under the requested output directory.
 
-Both sets contain Today, the workout runner, reusable workouts, History and
+Every set contains Today, the workout runner, reusable workouts, History and
 editable feedback. The iPad set adds manual Station setup. All images must be
-opaque RGB PNGs: iPhone portraits are 1206 × 2622; iPad portraits are
-2064 × 2752, including Station. These are native accepted
-resolutions, not resized screenshots. The default device selector is `iphone`.
+opaque RGB PNGs at native accepted resolutions, not resized screenshots:
+
+| Selector | Simulator | Portrait size | App Store Connect display |
+|---|---|---|---|
+| `iphone` (default) | iPhone 17 Pro | 1206 × 2622 | iPhone with Dynamic Island, medium (`APP_IPHONE_61`) |
+| `iphone-large` | iPhone 17 Pro Max | 1320 × 2868 | iPhone with Dynamic Island, large (`APP_IPHONE_67`) |
+| `ipad` | 13-inch iPad Pro (M4) | 2064 × 2752 | iPad 13-inch (`APP_IPAD_PRO_3GEN_129`) |
+
+Apple's specification page names the medium iPhone display as required. It
+also says the Face ID large display (6.5-inch) is required when no large
+Dynamic Island screenshots are provided, so the `iphone-large` set covers both
+readings.
 
 The manifest records public project selection, device family, per-image
 dimensions and hashes, source commit/tree, checkout changes, locale,

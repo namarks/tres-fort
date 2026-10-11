@@ -92,10 +92,15 @@ The current drafts match selected build 53 (source `47be49d`). They are
 `.artifacts/app-store-iphone-53` and `.artifacts/app-store-ipad-53` on the
 release Mac; [release 53](release-53.md) lists the visible changes and three
 cosmetic points. Progress is not in the sequence, so its streak and day grid
-do not appear. An October 10 App Store Connect readback found only the old
-6.5-inch iPhone set (five images, 1284 × 2778) on version 1.0 and no iPad set.
-The 13-inch iPad set is required because 1.0 runs on iPad. Uploading
-screenshots remains an owner action.
+do not appear. On October 11, at the owner's request, version 1.0 en-US received
+build-53 screenshots for iPhone with Dynamic Island, medium (5 × 1206 × 2622), and
+large (5 × 1320 × 2868, `.artifacts/app-store-iphone-large-53`), and for iPad
+13-inch (6 × 2064 × 2752). Every image is COMPLETE. The large-iPhone capture's
+iOS source manifest is identical to build 53's. With the owner's
+explicit approval, the five old 1284 × 2778 Face ID large (6.5-inch) images,
+which showed the earlier UI, were then deleted. That set is empty; App Store
+Connect scales from the 6.9-inch set. A readback at `2026-10-11T18:54:49Z`
+showed version 1.0 on build 53 with these counts.
 
 ## Reviewer instructions
 

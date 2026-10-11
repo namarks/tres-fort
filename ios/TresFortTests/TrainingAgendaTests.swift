@@ -259,6 +259,22 @@ final class TrainingAgendaTests: XCTestCase {
                        "Your workout is ready in Très Fort.")
     }
 
+    func testDeliveredReminderIsNotScheduledAgainLaterTheSameDay() async {
+        let center = ReminderCenterStub()
+        center.delivered = ["workout-reminder-2033-05-17"]
+        let coordinator = WorkoutReminderCoordinator(center: center)
+        let snapshot = TrainingAgendaSnapshot(days: [day("2033-05-17", .workout), day("2033-05-19", .workout)])
+        let reminders = WorkoutReminderPlan.reminders(snapshot: snapshot, now: .distantPast,
+                                                      minutesAfterMidnight: 23 * 60,
+                                                      calendar: TrainingAgendaCalendar.calendar())
+
+        coordinator.apply(reminders, keepDelivered: ["2033-05-17"])
+        await coordinator.waitForTests()
+        XCTAssertEqual(center.delivered, ["workout-reminder-2033-05-17"])
+        XCTAssertEqual(Set(center.pending.keys), ["workout-reminder-2033-05-19"],
+                       "a later time today does not notify a second time")
+    }
+
     func testCoordinatorReplacesRemindersAndKeepsOnlyTodaysDelivered() async {
         let center = ReminderCenterStub()
         center.pending = ["rest-cue-x": UNNotificationRequest(identifier: "rest-cue-x",

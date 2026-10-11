@@ -209,7 +209,9 @@ final class WorkoutReminderCoordinator {
     init(center: any WorkoutReminderCenter) { self.center = center }
 
     /// Replace every pending reminder with `reminders`. A delivered reminder
-    /// stays in Notification Center only while its date is in `keepDelivered`.
+    /// stays in Notification Center only while its date is in `keepDelivered`,
+    /// and a kept date is never scheduled again, so moving the reminder time
+    /// later the same day cannot notify twice.
     func apply(_ reminders: [WorkoutReminder], keepDelivered: Set<String> = []) {
         generation &+= 1
         let token = generation
@@ -221,14 +223,16 @@ final class WorkoutReminderCoordinator {
             let delivered = await self.center.deliveredIdentifiers()
             guard token == self.generation else { return }
             self.center.removePending(pending.filter(WorkoutReminderPlan.isReminderID))
-            self.center.removeDelivered(delivered.filter {
-                WorkoutReminderPlan.isReminderID($0)
-                    && !keepDelivered.contains(String($0.dropFirst(WorkoutReminderPlan.idPrefix.count)))
-            })
-            guard !reminders.isEmpty else { return }
+            let deliveredDates = delivered.filter(WorkoutReminderPlan.isReminderID)
+                .map { String($0.dropFirst(WorkoutReminderPlan.idPrefix.count)) }
+            self.center.removeDelivered(deliveredDates.filter { !keepDelivered.contains($0) }
+                .map { WorkoutReminderPlan.idPrefix + $0 })
+            let kept = Set(deliveredDates).intersection(keepDelivered)
+            let toAdd = reminders.filter { !kept.contains($0.date) }
+            guard !toAdd.isEmpty else { return }
             let status = await self.center.authorizationStatus()
             guard token == self.generation, [.authorized, .provisional, .ephemeral].contains(status) else { return }
-            for reminder in reminders {
+            for reminder in toAdd {
                 guard token == self.generation else { return }
                 try? await self.center.add(WorkoutReminderCoordinator.request(for: reminder))
             }

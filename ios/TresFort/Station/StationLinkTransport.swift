@@ -36,8 +36,8 @@ protocol StationLinkRadio: AnyObject {
 /// Neither side waits for a dead connection to time out. A quiet connection
 /// carries a heartbeat, so a peer that has gone silent is dropped within
 /// `silenceLimit`; a failed send drops it at once. The iPad keeps a connection
-/// in use against any newcomer, but lets one take over a connection that has
-/// gone quiet or that the same iPhone abandoned, replacing it only once the
+/// in use against any newcomer. One may take over a connection that the same
+/// iPhone abandoned, or one that has gone quiet and stays quiet until the
 /// newcomer proves the key.
 @MainActor
 final class StationLinkTransport: ObservableObject {
@@ -404,13 +404,18 @@ final class StationLinkTransport: ObservableObject {
 
     private func authenticate(_ link: PeerLink) {
         guard let key, let ownNonce = link.ownNonce, let peerNonce = link.peerNonce else { return }
+        if let previous = active, inUse(previous) {
+            // The connection it was to replace was heard from again meanwhile.
+            drop(link)
+            return
+        }
         let controllerNonce = role == .controller ? ownNonce : peerNonce
         let stationNonce = role == .controller ? peerNonce : ownNonce
         link.sessionKey = StationLink.sessionKey(key: key, controllerNonce: controllerNonce,
                                                  stationNonce: stationNonce)
         link.lastReceived = now()
         pending = nil
-        // A connection this replaces had gone quiet or been abandoned.
+        // A connection this replaces has stayed quiet.
         if let previous = active { previous.channel.close() }
         active = link
         connection = .connected(link.channel.peerName)

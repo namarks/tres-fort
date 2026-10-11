@@ -202,9 +202,9 @@ past while disconnected.
 The follow-up answers a second review of that change. In #259 any newcomer
 that proved the key replaced the iPad's connection, so a second iPhone could
 take over a connection in use, and two could keep taking it from each other.
-Now a connection heard from within two heartbeats keeps the link; a newcomer
-replaces one that has gone quiet, or one the same iPhone abandoned, only after
-proving the key, so the display does not blank. After losing a connection the
+Now a connection heard from within two heartbeats keeps the link. A newcomer
+replaces one the same iPhone abandoned, or one that stays quiet until the
+newcomer proves the key, so the display does not blank. After losing a connection the
 iPhone looks again under a new identity, so its new session shares nothing
 with one the iPad may still hold. It drops an invitation to an iPad that
 stopped advertising, gives an attempt 20 seconds to prove the key, and lets an

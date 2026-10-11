@@ -195,6 +195,32 @@ final class StationLinkTransportTests: XCTestCase {
         XCTAssertEqual(ipad.transport.connection, .connected("iPhone"))
     }
 
+    func testATakeoverStopsIfTheConnectionInUseIsHeardBeforeTheNewcomerProvesTheKey() {
+        let (phone, ipad, wire) = pairedDevices()
+        // A gap just long enough to let a second phone try...
+        clock.advance(StationLinkTransport.takeoverLimit)
+        let other = Device(.controller, clock: clock)
+        other.transport.start(key: key)
+        other.transport.handleFound(ipadPeer, info: ["tag": tag])
+        let invitation = other.radio.invitations[0]
+        let channel = FakeChannel("Other iPhone")
+        var accepted = false
+        ipad.transport.handleInvitation(from: other.radio.localPeer, context: invitation.context) { accept in
+            accepted = accept
+            return accept ? channel : nil
+        }
+        XCTAssertTrue(accepted)
+
+        // ...but the first phone speaks up before the newcomer proves the key.
+        phone.transport.tick()
+        wire.pump()
+        Wire(phone: other, phoneChannel: invitation.channel, ipad: ipad, ipadChannel: channel).connect()
+        XCTAssertTrue(channel.closed)
+        XCTAssertFalse(wire.ipadChannel.closed)
+        XCTAssertEqual(ipad.connects, 1)
+        XCTAssertEqual(ipad.transport.connection, .connected("iPhone"))
+    }
+
     func testAnOlderPhoneThatInvitesAgainReplacesTheSessionItAbandoned() throws {
         let ipad = Device(.station, clock: clock)
         ipad.transport.start(key: key)

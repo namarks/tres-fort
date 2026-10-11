@@ -26,6 +26,9 @@ final class StationLinkStation: ObservableObject {
     /// The count sent for the current arm, sent again on each new connection
     /// in case it was lost with the old one. The iPhone acts on each count once.
     private var sentCompletion: StationLinkCompletion?
+    /// The state last reported for the current arm, repeated on a new
+    /// connection, where the iPhone's re-sent arm prompts no fresh report.
+    private var reportedState: StationLinkStationState?
     private var cancellable: AnyCancellable?
 
     init(transport: StationLinkTransport? = nil) {
@@ -97,7 +100,15 @@ final class StationLinkStation: ObservableObject {
             report(.manual, armID: arm.armID)
             return
         }
-        report(isCounting ? .counting : .ready, armID: arm.armID)
+        let state: StationLinkStationState
+        if isCounting {
+            state = .counting
+        } else if let reportedState, reportedState != .counting {
+            state = reportedState // camera off, or stopped with no reps
+        } else {
+            state = .ready // not started yet, or its count is finished
+        }
+        report(state, armID: arm.armID)
         if isCounting, let lastProgress { transport.send(.progress(lastProgress)) }
         if let sentCompletion, sentCompletion.armID == arm.armID {
             transport.send(.completion(sentCompletion))
@@ -122,7 +133,9 @@ final class StationLinkStation: ObservableObject {
 
     /// The armed set can't be counted right now (camera off, recording busy).
     func report(_ state: StationLinkStationState, armID: UUID? = nil) {
-        transport.send(.station(state, armID: armID ?? arm?.armID))
+        let armID = armID ?? arm?.armID
+        if let armID, armID == arm?.armID { reportedState = state }
+        transport.send(.station(state, armID: armID))
     }
 
     /// Feed every processed frame. Returns true when this frame finished the
@@ -183,6 +196,7 @@ final class StationLinkStation: ObservableObject {
         isCounting = false
         lastProgress = nil
         sentCompletion = nil
+        reportedState = nil
         detector.reset()
     }
 }

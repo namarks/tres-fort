@@ -23,6 +23,9 @@ final class StationLinkStation: ObservableObject {
     private let transport: StationLinkTransport
     private var detector = StationSetEndDetector()
     private var lastProgress: StationLinkProgress?
+    /// The count sent for the current arm, sent again on a new connection in
+    /// case the one it replaced lost it. The iPhone acts on each count once.
+    private var sentCompletion: StationLinkCompletion?
     private var cancellable: AnyCancellable?
 
     init(transport: StationLinkTransport? = nil) {
@@ -33,7 +36,7 @@ final class StationLinkStation: ObservableObject {
             if !value.isConnected { self.withdraw(); self.display = nil }
         }
         self.transport.onMessage = { [weak self] in self?.receive($0) }
-        self.transport.onConnect = { [weak self] in self?.report(.ready) }
+        self.transport.onConnect = { [weak self] in self?.announce() }
     }
 
     /// Starts advertising with the account's link key, or records that the
@@ -57,6 +60,9 @@ final class StationLinkStation: ObservableObject {
         transport.stop()
     }
 
+    /// Back in the foreground: reconnect unless the connection survived.
+    func resume() { transport.resume() }
+
     func receive(_ message: StationLinkMessage) {
         switch message {
         case .partner(let packet): onPartnerMessage?(packet)
@@ -77,6 +83,23 @@ final class StationLinkStation: ObservableObject {
         }
     }
 
+    /// A new connection, possibly replacing one that died unnoticed, learns
+    /// where this iPad is with the armed set.
+    private func announce() {
+        guard let arm else {
+            report(.ready)
+            return
+        }
+        if manualArmID == arm.armID {
+            report(.manual, armID: arm.armID)
+            return
+        }
+        report(isCounting ? .counting : .ready, armID: arm.armID)
+        if let sentCompletion, sentCompletion.armID == arm.armID {
+            transport.send(.completion(sentCompletion))
+        }
+    }
+
     /// The arm the iPad may still count: none once taken over by hand.
     var armToCount: StationLinkArm? {
         guard let arm, arm.armID != manualArmID else { return nil }
@@ -88,6 +111,7 @@ final class StationLinkStation: ObservableObject {
         guard let arm = armToCount else { return }
         detector.reset()
         lastProgress = nil
+        sentCompletion = nil
         isCounting = true
         report(.counting, armID: arm.armID)
     }
@@ -142,9 +166,11 @@ final class StationLinkStation: ObservableObject {
     private func complete(count: Int, leftCount: Int?, rightCount: Int?, partial: Bool) {
         guard let arm else { return }
         isCounting = false
-        transport.send(.completion(StationLinkCompletion(
+        let completion = StationLinkCompletion(
             armID: arm.armID, eventID: UUID(), reps: count,
-            leftCount: leftCount, rightCount: rightCount, partial: partial)))
+            leftCount: leftCount, rightCount: rightCount, partial: partial)
+        sentCompletion = completion
+        transport.send(.completion(completion))
     }
 
     private func withdraw() {
@@ -152,6 +178,7 @@ final class StationLinkStation: ObservableObject {
         manualArmID = nil
         isCounting = false
         lastProgress = nil
+        sentCompletion = nil
         detector.reset()
     }
 }

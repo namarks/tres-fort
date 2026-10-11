@@ -87,7 +87,10 @@ struct ManualStationView: View {
             close()
             dismiss()
         }
-        .onChange(of: scenePhase) { _, _ in refreshIdleTimer() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { resumeConnection() }
+            refreshIdleTimer()
+        }
         .onChange(of: partner.isOpen) { _, _ in refreshIdleTimer() }
         .onChange(of: link.isEnabled) { _, _ in refreshIdleTimer() }
         .onReceive(NotificationCenter.default.publisher(for: StationLinkKeyStore.refreshed)) { note in
@@ -181,6 +184,12 @@ struct ManualStationView: View {
             link.enable(key: key)
             if !link.isEnabled { linkRequest = nil }
         }
+    }
+
+    /// Back in the foreground: suspension may have closed the connection,
+    /// and a key that couldn't load before may load now.
+    private func resumeConnection() {
+        if link.needsKey { setConnection(true) } else { link.resume() }
     }
 
     private func refreshIdleTimer() {

@@ -150,6 +150,8 @@ struct MainTabView: View {
             // Drop every shared projection before authentication/network waits,
             // then reload the whole roster and drain queued private writes.
             if new == .active {
+                // Whichever tab is showing, so the iPad link recovers too.
+                models.stationLink.appBecameActive()
                 groupModel.invalidateSharedGroups()
                 Task {
                     guard let initiatingUserID = auth.userID else { return }

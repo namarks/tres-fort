@@ -217,7 +217,11 @@ struct StationView: View {
             camera.stop()
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase != .active else { refreshIdleTimer(); return }
+            guard phase != .active else {
+                resumeConnection()
+                refreshIdleTimer()
+                return
+            }
             cancelCountdown()
             cancelComparison("Tracking stopped when the app became inactive.")
             // The system permission alert temporarily makes this scene inactive.
@@ -430,6 +434,12 @@ struct StationView: View {
             link.enable(key: key)
             if !link.isEnabled { linkRequest = nil }
         }
+    }
+
+    /// Back in the foreground: suspension may have closed the connection,
+    /// and a key that couldn't load before may load now.
+    private func resumeConnection() {
+        if link.needsKey { setConnection(true) } else { link.resume() }
     }
 
     private func cancelComparison(_ reason: String) {

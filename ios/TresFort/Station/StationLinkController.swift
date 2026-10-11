@@ -23,9 +23,18 @@ final class StationLinkController: ObservableObject {
     @Published private(set) var connectionAttempt = 0
 
     /// Retry discovery without discarding an acknowledged set or its Undo.
+    /// A loaded key restarts here, even while Today is off screen; the new
+    /// attempt also asks Today to load the key again.
     func retryConnection() {
-        transport.stop()
+        transport.restart()
         connectionAttempt += 1
+    }
+
+    /// Back in the foreground. Suspension closes local sessions, sometimes
+    /// without telling this side, so reconnect unless still connected, and
+    /// try again for a key that could not load before.
+    func appBecameActive() {
+        if needsKey { connectionAttempt += 1 } else { transport.resume() }
     }
 
     var onPartnerMessage: ((PartnerPacket) -> Void)?
@@ -243,7 +252,12 @@ final class StationLinkController: ObservableObject {
             proposal = next
         case .station(let state, let armID):
             guard StationLink.cameraCountingAvailable else { return }
-            guard armID == nil || armID == arm?.armID else { return }
+            if let armID, armID != arm?.armID {
+                // The iPad still holds a set this iPhone moved past, as when a
+                // replaced connection lost the disarm: withdraw it.
+                transport.send(.disarm(armID: armID))
+                return
+            }
             stationState = state
             // A set taken over by hand stays manual, even across a reconnect.
             if state == .manual, let armID { completedArmID = armID }

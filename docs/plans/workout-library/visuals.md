@@ -78,5 +78,5 @@ Attribution: the drawings are © Bryl Lim, partly adapted from Everkinetic, unde
 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). The app crops
 them and re-encodes them losslessly apart from rounding opacity to 32 levels.
 Those adapted files remain under CC BY-SA 4.0. The technique sheet shows the
-credit and license link wherever a drawing appears.
+credit with source and license links wherever a drawing appears.
 

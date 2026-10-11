@@ -342,7 +342,8 @@ No second editor, no per-session template copies, no weeks table.
       photos. Drawn exercises no longer bundle duplicate photos, leaving three
       photo pairs; unmapped exercises keep the existing photo or placeholder.
     - The technique sheet credits Bryl Lim and Everkinetic, notes the crop and
-      links CC BY-SA 4.0 whenever it shows a drawing. Thumbnails stay decorative.
+      links the Workout Guide source and CC BY-SA 4.0 whenever it shows a
+      drawing. Thumbnails stay decorative.
     - Loader unit tests cover drawing precedence without a slug or network,
       single-frame holds, thumbnail lookups and credit state, plus bundled-asset
       presence. No Worker, schema or R2 change. App Store candidate build 50

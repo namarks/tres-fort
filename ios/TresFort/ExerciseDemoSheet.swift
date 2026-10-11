@@ -147,15 +147,15 @@ struct ExerciseDemoSheet: View {
     }
 
     /// Workout Guide drawings are CC BY-SA 4.0: credit the artist and the
-    /// Everkinetic source, say they were cropped, and link the license.
+    /// Everkinetic source, say they were cropped, and link both the source
+    /// material and the license (Section 3(a)(1)).
     private var drawingCredit: some View {
-        Link(destination: AppInformation.drawingLicenseURL) {
-            Text("Drawing by Bryl Lim (Workout Guide), after Everkinetic, cropped. CC BY-SA 4.0")
-                .font(Theme.mono(10))
-                .foregroundStyle(Theme.muted)
-                .multilineTextAlignment(.leading)
-        }
-        .accessibilityIdentifier("exerciseDemo.drawingCredit")
+        Text("Drawing by Bryl Lim ([Workout Guide](https://github.com/bryllim/workout-guide)), after Everkinetic, cropped. [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)")
+            .font(Theme.mono(10))
+            .foregroundStyle(Theme.muted)
+            .tint(Theme.accent)
+            .multilineTextAlignment(.leading)
+            .accessibilityIdentifier("exerciseDemo.drawingCredit")
     }
 
     private var badgesRow: some View {

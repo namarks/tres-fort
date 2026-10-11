@@ -7,7 +7,6 @@ enum AppInformation {
     static let codexMCPGuideURL = URL(string: "https://learn.chatgpt.com/docs/extend/mcp")!
     static let codexRemoteGuideURL = URL(string: "https://learn.chatgpt.com/docs/remote-connections")!
     static let anthropicPrivacyURL = URL(string: "https://www.anthropic.com/legal/privacy")!
-    static let drawingLicenseURL = URL(string: "https://creativecommons.org/licenses/by-sa/4.0/")!
 }
 
 struct PrivacyPolicyLink: View {

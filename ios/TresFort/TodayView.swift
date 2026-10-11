@@ -260,26 +260,14 @@ struct TodayView: View {
                             .accessibilityIdentifier("today.openSavedStarter")
                     }
                     // An unfinished partner lane remains reachable after relaunch.
-                    if (StationLink.isAvailable || partner.isOpen) && UIDevice.current.userInterfaceIdiom == .phone {
-                        Button(partner.isOpen ? "Partner workout setup" : "Train together") { showPartner = true }
+                    // Starting a new one lives in the "+" menu with the other
+                    // occasional ways to train.
+                    if partner.isOpen && UIDevice.current.userInterfaceIdiom == .phone {
+                        Button("Partner workout setup") { showPartner = true }
                             .frame(minHeight: 44).accessibilityIdentifier("today.partner")
                     }
                     if partner.isActive { PartnerPhoneRunner(model: partner, sync: sync) }
                     else { content.disabled(sync.partnerReserved) }
-                    if !sync.partnerReserved && sync.canStartFreestyle {
-                        Button { showFreestyle = true } label: {
-                            Label(sync.isFreestyle ? "Continue freestyle" : "Start freestyle", systemImage: "figure.strengthtraining.traditional")
-                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        }.padding(.horizontal, 20).accessibilityIdentifier("today.startFreestyle")
-                    }
-                    if let onLogActivity, !sync.partnerReserved, !sync.running, !sync.finished {
-                        Button(action: onLogActivity) {
-                            Label("Log an activity", systemImage: "figure.walk")
-                                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                        }
-                        .accessibilityIdentifier("today.logActivity")
-                        .padding(.horizontal, 20).padding(.bottom, 8)
-                    }
                 }
                 // The full rest screen is modal. Without explicitly removing
                 // the runner from hit testing and the accessibility tree,
@@ -302,6 +290,9 @@ struct TodayView: View {
                 })
             }
             .toolbar {
+                if hasMoreWaysToTrain {
+                    ToolbarItem(placement: .topBarTrailing) { moreWaysToTrain }
+                }
                 if UIDevice.current.userInterfaceIdiom == .phone && !auth.isReviewAccount {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button { showStationConnection = true } label: {
@@ -483,6 +474,48 @@ struct TodayView: View {
                 enabled: stationLinkAccount != nil && sync.running && !partner.isOpen,
                 paused: (!workoutFocused && !sync.finished) || scenePhase != .active)
         }
+    }
+
+    private var canOfferFreestyle: Bool { !sync.partnerReserved && sync.canStartFreestyle }
+    private var canOfferLogActivity: Bool {
+        onLogActivity != nil && !sync.partnerReserved && !sync.running && !sync.finished
+    }
+    private var canOfferTrainTogether: Bool {
+        StationLink.isAvailable && !partner.isOpen && !sync.running
+            && UIDevice.current.userInterfaceIdiom == .phone
+    }
+    private var hasMoreWaysToTrain: Bool {
+        canOfferFreestyle || canOfferLogActivity || canOfferTrainTogether
+    }
+
+    /// Occasional ways to train, kept off the main screen so today's workout,
+    /// the library and the week stay in front.
+    private var moreWaysToTrain: some View {
+        Menu {
+            if canOfferFreestyle {
+                Button { showFreestyle = true } label: {
+                    Label(sync.isFreestyle ? "Continue freestyle" : "Start freestyle",
+                          systemImage: "figure.strengthtraining.traditional")
+                }
+                .accessibilityIdentifier("today.startFreestyle")
+            }
+            if canOfferLogActivity, let onLogActivity {
+                Button(action: onLogActivity) {
+                    Label("Log an activity", systemImage: "figure.walk")
+                }
+                .accessibilityIdentifier("today.logActivity")
+            }
+            if canOfferTrainTogether {
+                Button { showPartner = true } label: {
+                    Label("Train together", systemImage: "person.2")
+                }
+                .accessibilityIdentifier("today.trainTogether")
+            }
+        } label: {
+            Image(systemName: "plus")
+        }
+        .accessibilityLabel("More ways to train")
+        .accessibilityIdentifier("today.moreWaysToTrain")
     }
 
     /// Queue only after the setup sheet has dismissed. The member-entry route

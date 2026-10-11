@@ -1,22 +1,44 @@
 import SwiftUI
 
-/// Today's look ahead: this Monday–Sunday week in the calendar's own day
-/// cells, the next few days that carry a workout or planned ride, and the
-/// route to the full calendar. Tapping a day opens the same date sheet the
-/// calendar uses, so assigning or replacing a workout works from here too.
+/// Today's look ahead: Monday–Sunday weeks in the calendar's own day cells,
+/// opening on the current week and paging sideways into the next few, then
+/// the next few days that carry a workout or planned ride, and the route to
+/// the full calendar. Tapping a day opens the same date sheet the calendar
+/// uses, so assigning or replacing a workout works from here too.
 struct TodayWeekSection: View {
     @ObservedObject var sync: SyncModel
     let onOpenCalendar: () -> Void
     @State private var selectedDate: IdentifiedString?
+    /// The page on screen; 0 is the week containing today.
+    @State private var visibleWeek: Int? = 0
+
+    /// This week plus the next seven. Further out belongs to the calendar.
+    static let weekCount = 8
 
     var body: some View {
-        let days = Self.week(containing: sync.todayString)
+        let weeks = Self.weeks(startingWith: sync.todayString, count: Self.weekCount)
         let upcoming = sync.upcomingDays()
+        let page = min(visibleWeek ?? 0, max(weeks.count - 1, 0))
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("THIS WEEK")
+                Text(weeks.isEmpty ? "THIS WEEK" : Self.title(forWeek: page, days: weeks[page]))
                     .font(Theme.mono(11, .bold)).tracking(2)
                     .foregroundStyle(Theme.muted)
+                    .accessibilityIdentifier("today.weekTitle")
+                if page > 0 {
+                    Button {
+                        withAnimation { visibleWeek = 0 }
+                    } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(Theme.accent)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Back to this week")
+                    .accessibilityIdentifier("today.thisWeek")
+                }
                 Spacer()
                 Button(action: onOpenCalendar) {
                     HStack(spacing: 4) {
@@ -31,22 +53,19 @@ struct TodayWeekSection: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("today.calendar")
             }
-            HStack(spacing: 6) {
-                ForEach(days, id: \.self) { day in
-                    VStack(spacing: 4) {
-                        Text(Self.weekdayFormatter.string(from: day).uppercased())
-                            .font(Theme.mono(10, .bold)).tracking(1)
-                            .foregroundStyle(Theme.dim)
-                            .accessibilityHidden(true)
-                        CalendarDayCell(sync: sync, date: day,
-                                        identifier: "today.week.\(CalendarProjection.dateString(day))") { ymd in
-                            selectedDate = IdentifiedString(id: ymd)
-                        }
-                        .frame(height: 56)
+            ScrollView(.horizontal) {
+                LazyHStack(spacing: 0) {
+                    ForEach(weeks.indices, id: \.self) { index in
+                        weekRow(weeks[index])
+                            .containerRelativeFrame(.horizontal)
+                            .id(index)
                     }
-                    .frame(maxWidth: .infinity)
                 }
+                .scrollTargetLayout()
             }
+            .scrollTargetBehavior(.paging)
+            .scrollPosition(id: $visibleWeek)
+            .scrollIndicators(.hidden)
             if !upcoming.isEmpty {
                 Text("COMING UP")
                     .font(Theme.mono(11, .bold)).tracking(2)
@@ -77,6 +96,25 @@ struct TodayWeekSection: View {
         }
     }
 
+    private func weekRow(_ days: [Date]) -> some View {
+        HStack(spacing: 6) {
+            ForEach(days, id: \.self) { day in
+                VStack(spacing: 4) {
+                    Text(Self.weekdayFormatter.string(from: day).uppercased())
+                        .font(Theme.mono(10, .bold)).tracking(1)
+                        .foregroundStyle(Theme.dim)
+                        .accessibilityHidden(true)
+                    CalendarDayCell(sync: sync, date: day,
+                                    identifier: "today.week.\(CalendarProjection.dateString(day))") { ymd in
+                        selectedDate = IdentifiedString(id: ymd)
+                    }
+                    .frame(height: 56)
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
     /// Monday through Sunday of the civil week containing `today`, on the
     /// same calendar the projection and the month grid use.
     static func week(containing today: String) -> [Date] {
@@ -86,6 +124,47 @@ struct TodayWeekSection: View {
         guard let monday = cal.date(byAdding: .day, value: -daysSinceMonday, to: date) else { return [] }
         return (0..<7).compactMap { cal.date(byAdding: .day, value: $0, to: monday) }
     }
+
+    /// `count` consecutive Monday–Sunday weeks, the first containing `today`.
+    static func weeks(startingWith today: String, count: Int) -> [[Date]] {
+        let first = week(containing: today)
+        guard first.count == 7, count > 0 else { return [] }
+        let cal = CalendarProjection.calendar
+        return (0..<count).compactMap { offset in
+            let days = first.compactMap { cal.date(byAdding: .day, value: offset * 7, to: $0) }
+            return days.count == 7 ? days : nil
+        }
+    }
+
+    /// "THIS WEEK", "NEXT WEEK", then the dates the page covers.
+    static func title(forWeek index: Int, days: [Date]) -> String {
+        switch index {
+        case 0: return "THIS WEEK"
+        case 1: return "NEXT WEEK"
+        default:
+            guard let first = days.first, let last = days.last else { return "" }
+            let cal = CalendarProjection.calendar
+            let sameMonth = cal.component(.month, from: first) == cal.component(.month, from: last)
+            let end = sameMonth ? dayFormatter.string(from: last) : monthDayFormatter.string(from: last)
+            return "\(monthDayFormatter.string(from: first)) – \(end)".uppercased()
+        }
+    }
+
+    private static let monthDayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = CalendarProjection.calendar
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "MMM d"
+        return f
+    }()
+
+    private static let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = CalendarProjection.calendar
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "d"
+        return f
+    }()
 
     private static let weekdayFormatter: DateFormatter = {
         let f = DateFormatter()

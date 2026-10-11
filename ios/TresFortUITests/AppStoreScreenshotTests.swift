@@ -25,8 +25,10 @@ final class AppStoreScreenshotTests: XCTestCase {
         XCTAssertFalse(app.staticTexts["fixture.scenario"].exists)
         if UIDevice.current.userInterfaceIdiom == .phone {
             XCTAssertTrue(app.tabBars.buttons["Today"].exists)
-            XCTAssertTrue(app.buttons["today.partner"].exists,
-                          "The public candidate includes manual partner training")
+            XCTAssertTrue(app.buttons["today.moreWaysToTrain"].exists,
+                          "Freestyle, activity logging and partner training stay one tap away")
+            XCTAssertFalse(app.buttons["today.partner"].exists,
+                           "Train together is not a persistent row without a saved partner lane")
         } else {
             XCTAssertTrue(app.buttons["today.station"].exists)
         }
@@ -77,7 +79,12 @@ final class AppStoreScreenshotTests: XCTestCase {
         let released = XCTNSPredicateExpectation(
             predicate: NSPredicate(format: "exists == true AND enabled == true"), object: start)
         XCTAssertEqual(XCTWaiter.wait(for: [released], timeout: 5), .completed)
-        XCTAssertEqual(recovery.label, "Train together")
+        let rowGone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: recovery)
+        XCTAssertEqual(XCTWaiter.wait(for: [rowGone], timeout: 5), .completed,
+                       "A closed lane leaves no partner row on Today")
+        // The public candidate includes manual partner training from the menu.
+        app.buttons["today.moreWaysToTrain"].tap()
+        XCTAssertTrue(app.buttons["today.trainTogether"].waitForExistence(timeout: 5))
     }
 
     func testCaptureManualStationOnIPad() throws {

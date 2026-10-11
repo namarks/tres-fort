@@ -88,6 +88,15 @@ Use the [screenshot capture workflow](screenshot-capture.md) to produce and
 validate the five-image iPhone and six-image iPad draft sets from the selected source. The iPad set adds manual Station setup. Its fictional-data
 fixture uses actual screens and preserves source and successful-test evidence.
 
+The current drafts match selected build 53 (source `47be49d`). They are
+`.artifacts/app-store-iphone-53` and `.artifacts/app-store-ipad-53` on the
+release Mac; [release 53](release-53.md) lists the visible changes and three
+cosmetic points. Progress is not in the sequence, so its streak and day grid
+do not appear. An October 10 App Store Connect readback found only the old
+6.5-inch iPhone set (five images, 1284 × 2778) on version 1.0 and no iPad set.
+The 13-inch iPad set is required because 1.0 runs on iPad. Uploading
+screenshots remains an owner action.
+
 ## Reviewer instructions
 
 The app requires Sign in with Apple to synchronize a member's training.

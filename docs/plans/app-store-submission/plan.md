@@ -1,6 +1,6 @@
 # First App Store Submission
 
-Slug: app-store-submission · Status: active · Updated: 2026-10-10 · Theme: release
+Slug: app-store-submission · Status: active · Updated: 2026-10-11 · Theme: release
 
 ## Goal
 
@@ -10,11 +10,11 @@ candidate, compatible production backend, documented verification and owner
 exceptions, accurate privacy disclosures, listing and reviewer access. The owner
 requested expedited shipment on 2026-09-10. Complete the prepared App Store
 package and submission requirements while retaining the existing submission.
-The October 7 live Apple readback retains MANUAL release and selects build 40,
-now REJECTED. Build 40 is known to use retired workout
-routes/fields and is incompatible with the serving canonical Worker. Public
-release remains blocked on a compatible candidate; the manual setting prevents
-automatic publication. Preparation
+Build 40, rejected and incompatible with the serving canonical Worker, was
+replaced on version 1.0 by the compatible candidate build 53 on October 11, with
+owner approval. MANUAL release is retained, and the manual setting prevents
+automatic publication. Public release still requires the remaining
+verification, policy publication and separate owner authority. Preparation
 and TestFlight availability do not mean public release.
 Owner decision, 2026-10-08: version 1.0 includes **iPhone and native iPad**,
 including manual partner training through iPad Station. This supersedes the
@@ -81,11 +81,15 @@ distribution is not that evidence.
       SDK exclusion and embedded privacy metadata,
       match final screenshots, and verify Apple processing. P3(a) physical and
       authenticated checks remain unperformed.
-    - Uploaded public candidate: [build 50](release-50.md), with families
-      [1,2], no Station SDK/model, privacy manifest embedded, Apple VALID /
-      APP_STORE_ELIGIBLE, and screenshots captured from the same source. It is
-      not yet selected for 1.0, and the owner's screenshot comparison remains open.
-    - Separate internal trial: [build 52](release-52.md) adds easier device
+    - Selected public candidate: [build 53](release-53.md) from main `47be49d`,
+      with families [1,2], no Station SDK/model, app and widget privacy
+      manifests, and Apple VALID / APP_STORE_ELIGIBLE. On 2026-10-11 the owner
+      approved selecting it for version 1.0, replacing build 40. Screenshots
+      were captured from the same source; the owner's comparison and upload
+      remain open. It supersedes the [build 50](release-50.md) candidate.
+    - Separate internal trial: [build 54](release-54.md) is the camera-enabled
+      beta from the same source as build 53, for internal Testers only.
+      [Build 52](release-52.md) added easier device
       setup and remembered reconnection to the iPad workout display, retaining
       the experimental camera SDK. It is VALID / IN_BETA_TESTING for internal
       Testers; it does not replace the SDK-free public candidate or establish
@@ -107,22 +111,26 @@ distribution is not that evidence.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P4 | gated_by | external:app-store-owner-fields | MANUAL is verified; build 40 remains incompatible. A compatible App Review candidate, agreements/privacy and separate public-release authority are still required. |
+| P4 | gated_by | external:app-store-owner-fields | MANUAL is verified, and compatible candidate build 53 is selected. Agreements/privacy, the App Review reply and resubmission, and separate public-release authority are still required. |
 
 ## Next step
 
-**Now (@owner):** The public iPhone/iPad candidate is uploaded:
-[1.0 (50)](release-50.md) from main `b3f10cc` (PR #248) is VALID and
-App Store eligible, with draft iPhone and iPad screenshot sets captured from
-that source. Review those screenshots (the receipt lists three cosmetic points)
-and the prepared [policy, privacy worksheet and rejection
-reply](review-package.md). Confirm provider protections, App Privacy, agreements
-and support/moderation operation, and authorize publication of the identical
-policy on both hosts. The PR #248 final head passed all CI but has no completed
-exact-head Codex review (usage limits); the receipt records the gap.
+**Now (@owner):** Version 1.0 now selects the public iPhone/iPad candidate
+[1.0 (53)](release-53.md) from main `47be49d`, VALID and App Store eligible.
+Changing the build moved the version to PREPARE_FOR_SUBMISSION. The September
+review submission remains UNRESOLVED_ISSUES until you reply and resubmit.
+Review the draft iPhone and iPad screenshot sets captured from that source;
+the receipt lists the visible changes and three cosmetic points. App Store
+Connect still has only the old 6.5-inch iPhone set. The 13-inch iPad set is
+required now that 1.0 runs on iPad. Also review the prepared [policy, privacy
+worksheet and rejection reply](review-package.md). Confirm provider
+protections, App Privacy, agreements and support/moderation operation, and
+authorize publication of the identical policy on both hosts. #259 merged before
+its own iOS checks completed; later green main runs cover it, and the receipt
+records the gap.
 
-**In parallel (@agent):** Finish the runnable P1/P2 audit against the build-50
-source `b3f10cc`. Reconcile the listing copy and reviewer instructions with the
+**In parallel (@agent):** Finish the runnable P1/P2 audit against the build-53
+source `47be49d`. Reconcile the listing copy and reviewer instructions with the
 captured screens, account export/deletion and group controls, and public
 policy/support availability. Record evidence and list any owner-only App Store
 fields. Make no App Store Connect, provider or production writes.
@@ -131,8 +139,8 @@ fields. Make no App Store Connect, provider or production writes.
 public website still serves the older AI disclosure. Perform the
 designated-account consent/workout/export/deletion checks, native iPad layout
 checks and [manual partner trial](../partner-training/validation.md) with two
-phones/accounts and one iPad on build 50. Candidate selection, screenshot and
-metadata upload, replying to Apple,
+phones/accounts and one iPad on build 53. Screenshot and metadata upload,
+replying to Apple,
 resubmission and eventual MANUAL public release remain separately authorized
 actions. No provider write or account/training mutation is part of this
 preparation.
@@ -257,10 +265,18 @@ both draft screenshot sets, and the `APP_STORE_BUILD=1` archive with families
 Worker deployment or migration was needed; the serving release-49 backend
 source is identical.
 
-**Current Apple readback (2026-10-09):** Version 1.0 still selects build 40,
-**REJECTED**, with **MANUAL** release. Build 50 is VALID / IN_BETA_TESTING in
-internal Testers, not submitted for external beta. The App Review candidate
-was not replaced or resubmitted; no public release occurred.
+**Builds 53 and 54 (2026-10-11):** The owner asked to move the builds and the
+submission to the latest app. [Release 53](release-53.md) records the
+SDK-free candidate from main `47be49d11e6720826bc53444382c4cc7ec0df8ae`, the
+App Group signing fix, fresh screenshot sets, and the owner-approved selection
+for version 1.0. [Release 54](release-54.md) records the camera-enabled beta
+from the same source. The backend source is unchanged from the serving
+release-49 Worker; no deployment or migration was made.
+
+**Current Apple readback (2026-10-11):** Version 1.0 selects **build 53**,
+**PREPARE_FOR_SUBMISSION**, with **MANUAL** release. Review submission
+`ea595b5e…` remains UNRESOLVED_ISSUES. No reply, resubmission, metadata change
+or public release occurred.
 
 **Agent follow-through:** Finish the runnable P1/P2 audit against canonical source
 `cd3cf4057320daa474292b86f3ddbbca401d5099`: reconcile privacy/account and group

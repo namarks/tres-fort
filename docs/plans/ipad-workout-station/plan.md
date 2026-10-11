@@ -1,6 +1,6 @@
 # iPad Workout Station
 
-Slug: ipad-workout-station · Status: active · Updated: 2026-10-10 · Theme: gym-floor
+Slug: ipad-workout-station · Status: active · Updated: 2026-10-11 · Theme: gym-floor
 
 ## Goal
 
@@ -173,20 +173,45 @@ detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Verify and review the QR readability correction in
-[PR #255](https://github.com/namarks/tres-fort/pull/255). The owner reports that
-the regular iPhone Camera shows no link for the iPad code, with iPhone build
-**1.0 (52)** confirmed by the owner. Apple's CoreImage and Vision readers both
-decode the saved synthetic iPad screenshot, so this does not yet isolate the
-physical failure. The shipped rendering has only 3.45 white modules around the
+**Now (@agent):** Drive the link reliability correction in
+[PR #259](https://github.com/namarks/tres-fort/pull/259) to ready. On
+2026-10-11 the owner reported that pairing is still finicky and that, once
+paired, the iPhone and iPad do not stay in sync. Reading the build 52 transport
+found likely causes; they are inferred from code, not device logs. An iPad
+that had accepted an invitation, or still listed a departed iPhone, refused
+every new invitation for up to 20 seconds or until the old session timed out.
+Neither side noticed a connection that died silently, so both kept showing it
+as connected while nothing arrived. A sound message the receiver could not
+read dropped the whole connection. The iPhone reconnected after returning to
+the app only when Today was on screen, and the iPad never retried.
+
+The correction gives every attempt its own session. The iPad accepts a
+reconnecting iPhone at once and retires the old connection only after the
+newcomer proves the key, so its display does not blank. A sealed heartbeat on
+quiet connections drops a silent peer within eight seconds; a failed send drops
+it at once; unreadable authenticated content is skipped. The iPhone invites the
+most recently seen iPad, tries others before retrying one that failed, and
+abandons an attempt that has not proved the key within 15 seconds. Both devices
+reconnect when the app returns to the foreground, from any tab. The iPad
+keeps counting the armed set through a lost connection. On a new connection
+it reports where it is with that set, its live count, and a finished count
+the old connection may have lost; the iPhone uses each count once and
+withdraws a set it has already moved past. Build 52 peers stay
+compatible: they read a heartbeat as a disarm of no set and are never dropped
+for being quiet. Fake-session unit tests cover reconnection, impostors,
+silence, older peers, failed sends, stuck attempts, foreground recovery and
+counts or disarms lost with a dropped or replaced connection.
+Physical acceptance needs a build containing it, and the owner's description of
+what the iPad shows when it falls out of sync is pending.
+
+**QR correction (merged):** [PR #255](https://github.com/namarks/tres-fort/pull/255)
+answers the owner's report that the regular iPhone Camera shows no link for the
+build 52 iPad code. The shipped rendering had only 3.45 white modules around the
 symbol; the [QR standard requires at least four](https://www.qrcode.com/en/howto/code.html).
-The correction embeds a white margin in the bitmap, enlarges the code at whole
-module sizes, exposes a prominent manual setup route, and adds bitmap-margin
-and actual-screen decoding checks. Focused camera-enabled iPad verification
-passes four unit checks and two native journeys, including decoding the actual
-displayed code at normal and largest text sizes. Physical Camera acceptance
-still needs a repeat trial; the larger diagnostic code's owner result is pending. This
-correction is not in build 52 and needs the normal review, CI and release gates.
+It embeds a white margin, enlarges the code at whole module sizes, exposes a
+prominent manual setup route and checks decoding of the displayed code. It is
+not in build 52; physical Camera acceptance needs a repeat trial with a later
+build, and the larger diagnostic code's owner result is pending.
 
 **Available build:** [PR #253](https://github.com/namarks/tres-fort/pull/253)
 is merged as `d5958f1`; [TestFlight 1.0 (52)](../app-store-submission/release-52.md)
@@ -230,7 +255,8 @@ use the same account and allow Local Network access. In iPad Station, tap
 tap "iPad display" at the top of Today and confirm "Connect iPad". Fetch the
 link key online once. Check that opening the phone app and iPad Station
 reconnects after this first opt-in, including before and after a workout.
-Repeat the QR route when a build containing its correction is available.
+Repeat the QR route and the connection loss/recovery checks when a build
+containing both corrections is available.
 In "Camera & options", choose "Enable camera" to try supported counted sets
 while keeping the iPhone workout open. Also check
 standalone iPad manual logging/timers, across-room readability and linked

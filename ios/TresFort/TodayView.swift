@@ -455,11 +455,6 @@ struct TodayView: View {
             guard !Task.isCancelled, stationLinkAccount == account else { return }
             if let key { stationLink.start(key: key) } else { stationLink.keyUnavailable() }
         }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active, stationLinkAccount != nil, !stationLink.isConnected {
-                stationLink.retryConnection()
-            }
-        }
         .onChange(of: sync.running && workoutFocused && scenePhase == .active, initial: true) { _, active in
             stationLink.setWorkoutActive(active)
         }

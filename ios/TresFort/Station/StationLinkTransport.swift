@@ -1,6 +1,29 @@
 import Foundation
 import MultipeerConnectivity
-import UIKit
+
+/// One local session dedicated to a single remote peer. The transport keeps
+/// its authenticated connection and a newer attempt in separate channels, so
+/// retiring one never disconnects the other.
+@MainActor
+protocol StationLinkChannel: AnyObject {
+    var peerName: String { get }
+    /// The session still lists its peer as connected.
+    var isOpen: Bool { get }
+    func send(_ data: Data) throws
+    func close()
+}
+
+/// Discovery for one role: the iPad advertises and accepts invitations, the
+/// iPhone browses and invites. Callbacks reach the transport on the main actor.
+@MainActor
+protocol StationLinkRadio: AnyObject {
+    func startDiscovery(tag: String)
+    /// A browser reports each peer once, so looking again needs a restart.
+    func restartDiscovery()
+    func stopDiscovery()
+    /// Invites a discovered peer into a new channel (iPhone only).
+    func invite(_ peer: MCPeerID, context: Data, timeout: TimeInterval) -> StationLinkChannel
+}
 
 /// Encrypted local peer-to-peer link between one iPhone and one iPad of the
 /// same account. No internet is needed once both hold the account's link key.
@@ -9,318 +32,386 @@ import UIKit
 /// it sends is delivered and nothing is sent to it. After that, every message
 /// is sealed with a key bound to this connection's nonces, so a relay that
 /// passed the challenge along still cannot forge, replay or reflect one.
+///
+/// Neither side waits for a dead connection to time out. A quiet connection
+/// carries a heartbeat, so a peer that has gone silent is dropped within
+/// `silenceLimit`; a failed send drops it at once; and the iPad accepts a
+/// reconnecting iPhone while still holding the connection that iPhone
+/// abandoned, replacing it only once the newcomer proves the key.
 @MainActor
-final class StationLinkTransport: NSObject, ObservableObject {
+final class StationLinkTransport: ObservableObject {
     enum Role: String { case station, controller }
     enum Connection: Equatable {
         case off, searching, unavailable, connected(String)
         var isConnected: Bool { if case .connected = self { return true }; return false }
     }
 
+    /// Seconds between heartbeats on an otherwise quiet connection.
+    static let heartbeatInterval: TimeInterval = 2
+    /// Silence after which a peer that sends heartbeats is presumed gone.
+    static let silenceLimit: TimeInterval = 8
+    /// Time one attempt has to connect and prove the key.
+    static let attemptLimit: TimeInterval = 15
+    /// Time the iPad has to accept an invitation.
+    static let invitationTimeout: TimeInterval = 10
+    /// Pause before the iPhone invites again after an attempt failed.
+    static let retryDelay: TimeInterval = 2
+
     @Published private(set) var connection: Connection = .off
     var onMessage: ((StationLinkMessage) -> Void)?
     var onConnect: (() -> Void)?
 
     private let role: Role
+    private let makeRadio: @MainActor (Role, StationLinkTransport) -> StationLinkRadio
+    private let now: () -> Date
+    private let ticksAutomatically: Bool
+    private var radio: StationLinkRadio?
     private var key: Data?
     private var tag: String?
-    private var session: MCSession?
-    private var advertiser: MCNearbyServiceAdvertiser?
-    private var browser: MCNearbyServiceBrowser?
-    /// Peers invited (phone) or accepted (iPad) and not yet gone: one at a
-    /// time, since only one candidate is authenticated.
-    private var invited: Set<MCPeerID> = []
-    // Authentication of the one connected peer.
-    private var candidate: MCPeerID?
-    private var ownNonce: Data?
-    private var peerNonce: Data?
-    private var sentProof = false
-    private var peerVerified = false
-    private var trustedPeer: MCPeerID?
-    private var sessionKey: Data?
-    private var sentCounter: UInt64 = 0
-    private var receivedCounter: UInt64 = 0
+    private var discoveryFailed = false
+    /// The authenticated connection.
+    private var active: PeerLink?
+    /// The one connection still proving the key. A newer invitation replaces it.
+    private var pending: PeerLink?
+    /// iPhone only: matching iPads the browser reports, the latest found last.
+    private var nearby: [MCPeerID] = []
+    /// iPhone only: iPads whose attempt failed since discovery last restarted.
+    private var tried: Set<MCPeerID> = []
+    private var nextInvite = Date.distantPast
+    private var ticker: Task<Void, Never>?
 
-    init(role: Role) {
+    /// Tests inject the radio and clock and call `tick()` themselves.
+    init(role: Role,
+         radio makeRadio: (@MainActor (Role, StationLinkTransport) -> StationLinkRadio)? = nil,
+         now: @escaping () -> Date = Date.init,
+         ticksAutomatically: Bool = true) {
         self.role = role
-        super.init()
+        self.makeRadio = makeRadio ?? { StationLinkMultipeerRadio(role: $0, transport: $1) }
+        self.now = now
+        self.ticksAutomatically = ticksAutomatically
     }
 
     private var peerRole: Role { role == .station ? .controller : .station }
 
+    /// Connected, the session still lists the peer, and a peer that sends
+    /// heartbeats has been heard from recently.
+    var isHealthy: Bool {
+        guard let active, active.channel.isOpen else { return false }
+        return !active.peerSendsHeartbeats || now().timeIntervalSince(active.lastReceived) < Self.silenceLimit
+    }
+
     func start(key: Data) {
         let tag = StationLink.discoveryTag(key: key)
-        if session != nil, tag == self.tag { return }
+        if radio != nil, tag == self.tag { return }
         stop()
         self.key = key
         self.tag = tag
-        let peer = MCPeerID(displayName: UIDevice.current.name)
-        let session = MCSession(peer: peer, securityIdentity: nil, encryptionPreference: .required)
-        session.delegate = self
-        self.session = session
-        switch role {
-        case .station:
-            let advertiser = MCNearbyServiceAdvertiser(
-                peer: peer, discoveryInfo: ["tag": tag, "v": String(StationLink.protocolVersion)],
-                serviceType: StationLink.serviceType)
-            advertiser.delegate = self
-            advertiser.startAdvertisingPeer()
-            self.advertiser = advertiser
-        case .controller:
-            let browser = MCNearbyServiceBrowser(peer: peer, serviceType: StationLink.serviceType)
-            browser.delegate = self
-            browser.startBrowsingForPeers()
-            self.browser = browser
-        }
+        let radio = makeRadio(role, self)
+        self.radio = radio
         connection = .searching
+        radio.startDiscovery(tag: tag)
+        if ticksAutomatically { startTicker() }
     }
 
     func stop() {
-        advertiser?.stopAdvertisingPeer()
-        advertiser?.delegate = nil
-        browser?.stopBrowsingForPeers()
-        browser?.delegate = nil
-        session?.disconnect()
-        session?.delegate = nil
-        advertiser = nil
-        browser = nil
-        session = nil
+        ticker?.cancel()
+        ticker = nil
+        radio?.stopDiscovery()
+        radio = nil
+        pending?.channel.close()
+        pending = nil
+        active?.channel.close()
+        active = nil
+        nearby.removeAll()
+        tried.removeAll()
+        nextInvite = .distantPast
         key = nil
         tag = nil
-        invited.removeAll()
-        resetAuthentication()
+        discoveryFailed = false
         connection = .off
+    }
+
+    /// Discovery from scratch with the same key: a fresh local identity and
+    /// no session left over from an attempt that may be wedged.
+    func restart() {
+        guard let key else { return }
+        stop()
+        start(key: key)
+    }
+
+    /// The app is back in the foreground. Suspension closes every session,
+    /// sometimes without telling this side, so rebuild unless still connected.
+    func resume() {
+        guard key != nil, !isHealthy else { return }
+        restart()
     }
 
     /// Sends only to the authenticated peer, sealed for this connection.
     func send(_ message: StationLinkMessage) {
-        guard let session, let trustedPeer, let sessionKey,
-              session.connectedPeers.contains(trustedPeer) else { return }
-        sentCounter += 1
+        guard let link = active, let sessionKey = link.sessionKey else { return }
+        link.sentCounter += 1
         guard let data = StationLink.seal(message, sessionKey: sessionKey, senderRole: role.rawValue,
-                                          counter: sentCounter) else { return }
-        try? session.send(data, toPeers: [trustedPeer], with: .reliable)
+                                          counter: link.sentCounter) else { return }
+        transmit(data, on: link)
     }
 
-    /// Handshake messages only; they carry nothing the other side acts on.
-    private func transmit(_ message: StationLinkMessage, to peer: MCPeerID) {
-        guard let session, session.connectedPeers.contains(peer),
-              let data = try? message.encoded() else { return }
-        try? session.send(data, toPeers: [peer], with: .reliable)
+    // MARK: radio events, always on the main actor
+
+    func handleFound(_ peer: MCPeerID, info: [String: String]?) {
+        guard role == .controller, radio != nil, let tag, info?["tag"] == tag else { return }
+        nearby.removeAll { $0 == peer }
+        nearby.append(peer)
+        inviteNext()
     }
 
-    private func resetAuthentication() {
-        candidate = nil
-        ownNonce = nil
-        peerNonce = nil
-        sentProof = false
-        peerVerified = false
-        trustedPeer = nil
-        sessionKey = nil
-        sentCounter = 0
-        receivedCounter = 0
+    func handleLost(_ peer: MCPeerID) {
+        nearby.removeAll { $0 == peer }
     }
 
-    private func reject(_ source: MCSession) {
-        resetAuthentication()
-        source.disconnect()
-        connection = .searching
-        restartBrowsing()
-    }
-
-    private func restartBrowsing() {
-        // A browser does not report a still-visible peer again on its own.
-        browser?.stopBrowsingForPeers()
-        browser?.startBrowsingForPeers()
-    }
-
-    // MARK: main-actor handlers for delegate callbacks
-
-    private func handle(state: MCSessionState, peer: MCPeerID, from source: MCSession) {
-        guard source === session else { return }
-        switch state {
-        case .connected:
-            if let other = candidate ?? trustedPeer, other != peer {
-                source.cancelConnectPeer(peer) // a second peer is never authenticated
-                return
-            }
-            adopt(peer, in: source)
-        case .notConnected:
-            invited.remove(peer)
-            guard peer == candidate || source.connectedPeers.isEmpty else { return }
-            resetAuthentication()
-            connection = .searching
-            restartBrowsing()
-        case .connecting:
-            break
-        @unknown default:
-            break
-        }
-    }
-
-    /// The first connected peer becomes the one candidate to authenticate.
-    private func adopt(_ peer: MCPeerID, in source: MCSession) {
-        guard candidate == nil, trustedPeer == nil else { return }
-        candidate = peer
-        sendChallenge(to: peer)
-        // An unproven peer must not hold the link open.
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 10_000_000_000)
-            guard let self, self.session === source, self.candidate == peer,
-                  self.trustedPeer == nil else { return }
-            self.reject(source)
-        }
-    }
-
-    private func sendChallenge(to peer: MCPeerID) {
-        guard ownNonce == nil else { return }
-        let nonce = StationLink.newNonce()
-        ownNonce = nonce
-        transmit(.challenge(nonce), to: peer)
-    }
-
-    private func handle(data: Data, from peer: MCPeerID, source: MCSession) {
-        guard source === session, let key else { return }
-        if peer == trustedPeer {
-            guard let sessionKey,
-                  let opened = StationLink.open(data, sessionKey: sessionKey, senderRole: peerRole.rawValue,
-                                                after: receivedCounter) else {
-                reject(source) // forged, replayed or reflected
-                return
-            }
-            receivedCounter = opened.counter
-            switch opened.message {
-            case .challenge, .proof: return
-            default: onMessage?(opened.message)
-            }
+    /// `accept` answers the invitation exactly once and returns the channel
+    /// that joined it.
+    func handleInvitation(from peer: MCPeerID, context: Data?, accept: (Bool) -> StationLinkChannel?) {
+        // The tag only filters; the challenge decides trust after connecting.
+        guard role == .station, radio != nil, let tag, context == Data(tag.utf8) else {
+            _ = accept(false)
             return
         }
-        guard let message = StationLinkMessage.decode(data) else { return }
-        // Data can be delivered before this side's connected callback runs.
-        if candidate == nil, source.connectedPeers.contains(peer) { adopt(peer, in: source) }
-        guard peer == candidate else { return }
+        // An iPhone invites again only once it has given up on its earlier
+        // attempt, so the newer invitation replaces an unproven one.
+        if let pending { drop(pending) }
+        guard let channel = accept(true) else { return }
+        pending = PeerLink(channel: channel, peer: peer, at: now())
+    }
+
+    func handleDiscoveryFailure() {
+        discoveryFailed = true
+        refreshConnection()
+    }
+
+    func handle(_ channel: StationLinkChannel, connected: Bool) {
+        guard let link = link(for: channel) else { return }
+        guard connected else { drop(link); return }
+        if link === pending { advanceHandshake(link) }
+    }
+
+    func handle(_ channel: StationLinkChannel, received data: Data) {
+        guard let link = link(for: channel) else { return }
+        if link.sessionKey == nil { receiveHandshake(data, on: link) } else { receiveSealed(data, on: link) }
+    }
+
+    /// Runs every second while started: abandons a wedged attempt, drops a
+    /// silent peer, keeps a quiet connection alive and retries discovery.
+    func tick() {
+        let time = now()
+        if let pending, time.timeIntervalSince(pending.started) >= Self.attemptLimit { drop(pending) }
+        if let active {
+            if active.peerSendsHeartbeats, time.timeIntervalSince(active.lastReceived) >= Self.silenceLimit {
+                drop(active)
+            } else if time.timeIntervalSince(active.lastSent) >= Self.heartbeatInterval {
+                sendHeartbeat(on: active)
+            }
+        }
+        inviteNext()
+    }
+
+    // MARK: connections
+
+    private func link(for channel: StationLinkChannel) -> PeerLink? {
+        if let active, active.channel === channel { return active }
+        if let pending, pending.channel === channel { return pending }
+        return nil
+    }
+
+    private func drop(_ link: PeerLink) {
+        link.channel.close()
+        let failedAttempt = pending === link
+        if failedAttempt { pending = nil }
+        if active === link { active = nil }
+        refreshConnection()
+        guard role == .controller, radio != nil, active == nil, pending == nil else { return }
+        if failedAttempt {
+            tried.insert(link.peer)
+            nextInvite = now().addingTimeInterval(Self.retryDelay)
+        }
+        if nearby.isEmpty { rediscover() } else { inviteNext() }
+    }
+
+    /// The iPhone invites one iPad at a time: the one found most recently
+    /// that hasn't failed since discovery restarted, so a stale advertisement
+    /// can't hold up the iPad that is really there.
+    private func inviteNext() {
+        guard role == .controller, let radio, let tag, active == nil, pending == nil,
+              now() >= nextInvite else { return }
+        guard let peer = nearby.last(where: { !tried.contains($0) }) else {
+            if !tried.isEmpty { rediscover() } // every iPad in view failed: look again
+            return
+        }
+        let channel = radio.invite(peer, context: Data(tag.utf8), timeout: Self.invitationTimeout)
+        pending = PeerLink(channel: channel, peer: peer, at: now())
+    }
+
+    private func rediscover() {
+        nearby.removeAll()
+        tried.removeAll()
+        radio?.restartDiscovery()
+    }
+
+    private func refreshConnection() {
+        let next: Connection
+        if let active { next = .connected(active.channel.peerName) }
+        else if radio == nil { next = .off }
+        else if discoveryFailed { next = .unavailable }
+        else { next = .searching }
+        if next != connection { connection = next }
+    }
+
+    private func startTicker() {
+        ticker?.cancel()
+        ticker = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                guard !Task.isCancelled, let self else { return }
+                self.tick()
+            }
+        }
+    }
+
+    /// A send fails only when the peer is gone: search again rather than
+    /// keep reporting a connection that delivers nothing.
+    private func transmit(_ data: Data, on link: PeerLink) {
+        do {
+            try link.channel.send(data)
+            link.lastSent = now()
+        } catch {
+            drop(link)
+        }
+    }
+
+    // MARK: authentication
+
+    /// Handshake messages only; they carry nothing the other side acts on.
+    private func transmitHandshake(_ message: StationLinkMessage, on link: PeerLink) -> Bool {
+        guard let data = try? message.encoded() else { return false }
+        do {
+            try link.channel.send(data)
+            return true
+        } catch {
+            // Before the session connects, its connected callback tries again.
+            if link.channel.isOpen { drop(link) }
+            return false
+        }
+    }
+
+    /// Sends what this side still owes: its challenge, then its proof once
+    /// the peer's challenge has arrived. Data can be delivered before this
+    /// side's connected callback runs, so either event may call this.
+    private func advanceHandshake(_ link: PeerLink) {
+        guard let key, link === pending else { return }
+        if link.ownNonce == nil {
+            let nonce = StationLink.newNonce()
+            guard transmitHandshake(.challenge(nonce), on: link) else { return }
+            link.ownNonce = nonce
+        }
+        if !link.sentProof, let ownNonce = link.ownNonce, let peerNonce = link.peerNonce {
+            let proof = StationLink.proof(key: key, responderRole: role.rawValue,
+                                          challengerNonce: peerNonce, responderNonce: ownNonce)
+            guard transmitHandshake(.proof(proof), on: link) else { return }
+            link.sentProof = true
+        }
+        if link.sentProof, link.peerVerified { authenticate(link) }
+    }
+
+    private func receiveHandshake(_ data: Data, on link: PeerLink) {
+        guard let key, link === pending, let message = StationLinkMessage.decode(data) else { return }
         switch message {
         case .challenge(let nonce):
-            guard peerNonce == nil, nonce.count == 32 else { reject(source); return }
-            peerNonce = nonce
-            sendChallenge(to: peer)
-            guard let ownNonce else { return }
-            transmit(.proof(StationLink.proof(key: key, responderRole: role.rawValue,
-                                              challengerNonce: nonce, responderNonce: ownNonce)), to: peer)
-            sentProof = true
+            guard link.peerNonce == nil, nonce.count == 32 else { drop(link); return }
+            link.peerNonce = nonce
         case .proof(let proof):
-            guard let ownNonce, let peerNonce,
+            guard !link.peerVerified, let ownNonce = link.ownNonce, let peerNonce = link.peerNonce,
                   StationLink.verify(proof, key: key, responderRole: peerRole.rawValue,
                                      challengerNonce: ownNonce, responderNonce: peerNonce) else {
-                reject(source)
+                drop(link)
                 return
             }
-            peerVerified = true
+            link.peerVerified = true
         default:
             return // nothing else is accepted before authentication
         }
-        if sentProof, peerVerified, let ownNonce, let peerNonce {
-            let controllerNonce = role == .controller ? ownNonce : peerNonce
-            let stationNonce = role == .controller ? peerNonce : ownNonce
-            sessionKey = StationLink.sessionKey(key: key, controllerNonce: controllerNonce,
-                                                stationNonce: stationNonce)
-            trustedPeer = peer
-            connection = .connected(peer.displayName)
-            onConnect?()
-        }
+        advanceHandshake(link)
     }
 
-    private func handleFound(peer: MCPeerID, info: [String: String]?, from source: MCNearbyServiceBrowser) {
-        guard source === browser, let session, let tag, info?["tag"] == tag,
-              invited.isEmpty, candidate == nil, trustedPeer == nil,
-              session.connectedPeers.isEmpty else { return }
-        invited.insert(peer)
-        source.invitePeer(peer, to: session, withContext: Data(tag.utf8), timeout: 15)
-        expireInvitation(peer)
+    private func authenticate(_ link: PeerLink) {
+        guard let key, let ownNonce = link.ownNonce, let peerNonce = link.peerNonce else { return }
+        let controllerNonce = role == .controller ? ownNonce : peerNonce
+        let stationNonce = role == .controller ? peerNonce : ownNonce
+        link.sessionKey = StationLink.sessionKey(key: key, controllerNonce: controllerNonce,
+                                                 stationNonce: stationNonce)
+        link.lastReceived = now()
+        pending = nil
+        // The iPhone this replaces has already given up on that connection.
+        if let previous = active { previous.channel.close() }
+        active = link
+        connection = .connected(link.channel.peerName)
+        onConnect?()
+        // Tells the peer at once that this side sends heartbeats.
+        if active === link { sendHeartbeat(on: link) }
     }
 
-    /// An invitation that never became a connection must not block the next.
-    private func expireInvitation(_ peer: MCPeerID) {
-        let session = self.session
-        Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 20_000_000_000)
-            guard let self, self.session === session, self.invited.contains(peer),
-                  self.candidate != peer, self.trustedPeer != peer else { return }
-            self.invited.remove(peer)
-            self.restartBrowsing()
-        }
-    }
-
-    private func handleInvitation(from peer: MCPeerID, context: Data?,
-                                  from source: MCNearbyServiceAdvertiser,
-                                  reply: @escaping (Bool, MCSession?) -> Void) {
-        // The tag only filters; the challenge decides trust after connecting.
-        guard source === advertiser, let session, let tag, context == Data(tag.utf8),
-              invited.isEmpty, candidate == nil, trustedPeer == nil,
-              session.connectedPeers.isEmpty else {
-            reply(false, nil)
+    private func receiveSealed(_ data: Data, on link: PeerLink) {
+        guard let sessionKey = link.sessionKey,
+              let frame = StationLink.openFrame(data, sessionKey: sessionKey, senderRole: peerRole.rawValue,
+                                                after: link.receivedCounter) else {
+            drop(link) // forged, replayed or reflected
             return
         }
-        invited.insert(peer)
-        reply(true, session)
-        expireInvitation(peer)
+        link.receivedCounter = frame.counter
+        link.lastReceived = now()
+        switch StationLinkMessage.inbound(frame.body) {
+        case .heartbeat:
+            link.peerSendsHeartbeats = true
+        case .message(.challenge), .message(.proof):
+            return
+        case .message(let message):
+            onMessage?(message)
+        case .unreadable:
+            return // from a newer version; the connection itself is sound
+        }
+    }
+
+    private func sendHeartbeat(on link: PeerLink) {
+        guard let sessionKey = link.sessionKey else { return }
+        link.sentCounter += 1
+        guard let data = StationLink.sealHeartbeat(sessionKey: sessionKey, senderRole: role.rawValue,
+                                                   counter: link.sentCounter) else { return }
+        transmit(data, on: link)
     }
 }
 
-extension StationLinkTransport {
-    /// Delegate callbacks hop to the main queue in arrival order: the sealed
-    /// counter must see messages in the order the peer sent them.
-    nonisolated private func onMain(_ work: @escaping @MainActor (StationLinkTransport) -> Void) {
-        DispatchQueue.main.async { MainActor.assumeIsolated { work(self) } }
-    }
-}
+/// One connection, from invitation through authentication.
+@MainActor
+private final class PeerLink {
+    let channel: StationLinkChannel
+    let peer: MCPeerID
+    let started: Date
+    var ownNonce: Data?
+    var peerNonce: Data?
+    var sentProof = false
+    var peerVerified = false
+    var sessionKey: Data?
+    var sentCounter: UInt64 = 0
+    var receivedCounter: UInt64 = 0
+    var lastReceived: Date
+    var lastSent: Date
+    /// Learned from its first heartbeat; peers from before heartbeats are
+    /// never dropped for being quiet.
+    var peerSendsHeartbeats = false
 
-extension StationLinkTransport: MCSessionDelegate {
-    nonisolated func session(_ session: MCSession, peer peerID: MCPeerID, didChange state: MCSessionState) {
-        onMain { $0.handle(state: state, peer: peerID, from: session) }
-    }
-
-    nonisolated func session(_ session: MCSession, didReceive data: Data, fromPeer peerID: MCPeerID) {
-        onMain { $0.handle(data: data, from: peerID, source: session) }
-    }
-
-    nonisolated func session(_ session: MCSession, didReceive stream: InputStream,
-                             withName streamName: String, fromPeer peerID: MCPeerID) {
-        stream.close()
-    }
-
-    nonisolated func session(_ session: MCSession, didStartReceivingResourceWithName resourceName: String,
-                             fromPeer peerID: MCPeerID, with progress: Progress) {
-        progress.cancel()
-    }
-
-    nonisolated func session(_ session: MCSession, didFinishReceivingResourceWithName resourceName: String,
-                             fromPeer peerID: MCPeerID, at localURL: URL?, withError error: Error?) {}
-}
-
-extension StationLinkTransport: MCNearbyServiceBrowserDelegate {
-    nonisolated func browser(_ browser: MCNearbyServiceBrowser, foundPeer peerID: MCPeerID,
-                             withDiscoveryInfo info: [String: String]?) {
-        onMain { $0.handleFound(peer: peerID, info: info, from: browser) }
-    }
-
-    nonisolated func browser(_ browser: MCNearbyServiceBrowser, lostPeer peerID: MCPeerID) {
-        onMain { _ = $0.invited.remove(peerID) }
-    }
-
-    nonisolated func browser(_ browser: MCNearbyServiceBrowser, didNotStartBrowsingForPeers error: Error) {
-        onMain { if browser === $0.browser { $0.connection = .unavailable } }
-    }
-}
-
-extension StationLinkTransport: MCNearbyServiceAdvertiserDelegate {
-    nonisolated func advertiser(_ advertiser: MCNearbyServiceAdvertiser,
-                                didReceiveInvitationFromPeer peerID: MCPeerID, withContext context: Data?,
-                                invitationHandler: @escaping (Bool, MCSession?) -> Void) {
-        onMain { $0.handleInvitation(from: peerID, context: context, from: advertiser, reply: invitationHandler) }
-    }
-
-    nonisolated func advertiser(_ advertiser: MCNearbyServiceAdvertiser, didNotStartAdvertisingPeer error: Error) {
-        onMain { if advertiser === $0.advertiser { $0.connection = .unavailable } }
+    init(channel: StationLinkChannel, peer: MCPeerID, at time: Date) {
+        self.channel = channel
+        self.peer = peer
+        started = time
+        lastReceived = time
+        lastSent = time
     }
 }

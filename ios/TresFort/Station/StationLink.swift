@@ -94,8 +94,23 @@ enum StationLink {
     /// neither read, forge, reflect nor replay a message.
     static func seal(_ message: StationLinkMessage, sessionKey: Data, senderRole: String,
                      counter: UInt64) -> Data? {
-        guard let body = try? message.encoded(),
-              let nonce = try? ChaChaPoly.Nonce(data: sealNonce(senderRole, counter)),
+        guard let body = try? message.encoded() else { return nil }
+        return seal(body: body, sessionKey: sessionKey, senderRole: senderRole, counter: counter)
+    }
+
+    /// The arm a heartbeat names. No set is ever armed with it.
+    static let heartbeatArmID = UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+
+    /// Proof of life on a quiet connection. A peer from before heartbeats
+    /// reads one as the disarm of a set that was never armed, and ignores it.
+    static func sealHeartbeat(sessionKey: Data, senderRole: String, counter: UInt64) -> Data? {
+        guard let body = try? JSONEncoder().encode(StationLinkEnvelope(
+            version: protocolVersion, message: .disarm(armID: heartbeatArmID), heartbeat: true)) else { return nil }
+        return seal(body: body, sessionKey: sessionKey, senderRole: senderRole, counter: counter)
+    }
+
+    static func seal(body: Data, sessionKey: Data, senderRole: String, counter: UInt64) -> Data? {
+        guard let nonce = try? ChaChaPoly.Nonce(data: sealNonce(senderRole, counter)),
               let box = try? ChaChaPoly.seal(body, using: SymmetricKey(data: sessionKey), nonce: nonce,
                                              authenticating: sealedContext(senderRole, counter)) else { return nil }
         return try? JSONEncoder().encode(StationLinkSealedFrame(counter: counter, sealed: box.combined))
@@ -105,14 +120,24 @@ enum StationLink {
     /// sender and its counter is newer than the last one accepted.
     static func open(_ data: Data, sessionKey: Data, senderRole: String,
                      after lastCounter: UInt64) -> (message: StationLinkMessage, counter: UInt64)? {
+        guard let frame = openFrame(data, sessionKey: sessionKey, senderRole: senderRole, after: lastCounter),
+              let message = StationLinkMessage.decode(frame.body) else { return nil }
+        return (message, frame.counter)
+    }
+
+    /// Authenticates a sealed frame without reading its content, so a sound
+    /// frame from a newer version is told apart from a forged one.
+    static func openFrame(_ data: Data, sessionKey: Data, senderRole: String,
+                          after lastCounter: UInt64) -> (body: Data, counter: UInt64)? {
         guard let frame = try? JSONDecoder().decode(StationLinkSealedFrame.self, from: data),
               frame.counter > lastCounter,
               let box = try? ChaChaPoly.SealedBox(combined: frame.sealed),
               box.nonce.withUnsafeBytes({ Data($0) }) == sealNonce(senderRole, frame.counter),
               let body = try? ChaChaPoly.open(box, using: SymmetricKey(data: sessionKey),
-                                              authenticating: sealedContext(senderRole, frame.counter)),
-              let message = StationLinkMessage.decode(body) else { return nil }
-        return (message, frame.counter)
+                                              authenticating: sealedContext(senderRole, frame.counter)) else {
+            return nil
+        }
+        return (body, frame.counter)
     }
 
     private static func counterBytes(_ counter: UInt64) -> Data {
@@ -222,6 +247,26 @@ enum StationLinkMessage: Codable, Equatable {
               envelope.version == StationLink.protocolVersion else { return nil }
         return envelope.displayUpdate == true ? .display(envelope.display) : envelope.message
     }
+
+    /// Reads an authenticated message. Content this version can't read is
+    /// skipped rather than treated as an attack: it came from the key holder.
+    static func inbound(_ data: Data) -> StationLinkInbound {
+        guard data.count <= 1_048_576 else { return .unreadable }
+        if let header = try? JSONDecoder().decode(StationLinkEnvelopeHeader.self, from: data),
+           header.version == StationLink.protocolVersion, header.heartbeat == true {
+            return .heartbeat
+        }
+        guard let message = decode(data) else { return .unreadable }
+        return .message(message)
+    }
+}
+
+enum StationLinkInbound: Equatable {
+    case message(StationLinkMessage)
+    /// Proof of life only; never delivered.
+    case heartbeat
+    /// Sound, but from a newer version.
+    case unreadable
 }
 
 private struct StationLinkEnvelope: Codable {
@@ -229,6 +274,13 @@ private struct StationLinkEnvelope: Codable {
     let message: StationLinkMessage
     var displayUpdate: Bool? = nil
     var display: WorkoutDisplayState? = nil
+    /// Older peers ignore this field and read the message: a no-op disarm.
+    var heartbeat: Bool? = nil
+}
+
+private struct StationLinkEnvelopeHeader: Decodable {
+    let version: Int
+    let heartbeat: Bool?
 }
 
 /// The set the iPhone runner would like counted right now, or nil when the

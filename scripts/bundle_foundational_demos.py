@@ -8,9 +8,10 @@ that users do every session, so the demos work fully offline + render with
 zero latency on the most common rows.
 
 Frames are emitted as @2x .png inside per-frame .imageset directories
-(`Demos/{slug}__{0|1}.imageset/`). 256px on the long edge, which is a
-1024-byte-class PNG when transparent flat free-exercise-db illustrations
-compress well — keeps the catalog growth ~3-5 MB across 30 lifts × 2 frames.
+(`Demos/{slug}__{0|1}.imageset/`), 256px on the long edge. These are
+free-exercise-db photographs. Exercises with a reviewed line drawing in
+`scripts/exercise_drawings.json` are skipped: the app shows the drawing
+instead (see bundle_exercise_drawings.py), so their photos stay remote.
 
 ONE-TIME setup (not in CI):
     git clone --depth 1 https://github.com/yuhonas/free-exercise-db /tmp/fxdb
@@ -96,8 +97,12 @@ def main() -> int:
         print(f"asset catalog dir not found: {out_root}", file=sys.stderr)
         return 1
 
+    drawn = set(json.loads(
+        Path("scripts/exercise_drawings.json").read_text())["exercises"])
     bundled = missing = 0
     for ex_id, slug in FOUNDATIONAL.items():
+        if ex_id in drawn:
+            continue
         for frame in ("0", "1"):
             src = src_dir / slug / f"{frame}.jpg"
             if not src.exists():

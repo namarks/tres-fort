@@ -136,7 +136,8 @@ AI coaching.
   Focus runner. P0.5(c) adds static preview thumbnails with compact-phone and
   accessibility verification; PR #244 is merged and the owner-authorized
   [build-49 release](app-store-submission/release-49.md) records its matching
-  Worker and internal beta. The visual-source comparison recommends future replacements.
+  Worker and internal beta. P0.5(d) replaces the photos with reviewed Workout Guide
+  line drawings for 169 exercises, for a client build after 50.
   Authenticated live workout verification remains
   separately gated; repository completion cannot establish that acceptance.
 - [Workouts and multi-session days](workouts-and-multi-session/plan.md) —

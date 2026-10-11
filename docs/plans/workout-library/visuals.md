@@ -1,7 +1,8 @@
 # Exercise visual options
 
 Inspected October 6, 2026. This is a source comparison supporting the workout
-library plan, not a purchase, license acceptance, or asset replacement receipt.
+library plan, not a purchase or license acceptance. The final section records the
+October 11 adoption.
 
 ## Current assets
 
@@ -54,3 +55,28 @@ Keep previews static even with motion enabled. Their role is recognition; the
 name, prescription, group membership and accessible information action remain
 the primary content. A larger media/provider replacement does not change a
 member's saved workout or require a second exercise catalog.
+
+## October 11 trial and decision
+
+The owner asked why the app still showed photos, then chose a trial of the
+first-ranked option. A side-by-side page compared squat, Romanian deadlift,
+bench press, face pull, one-arm dumbbell row and plank at the 64 × 52 point
+thumbnail and in the technique sheet. Every first frame read clearly once the
+empty canvas margin was trimmed. Several later frames needed swapping: the
+Romanian deadlift lowers the bar to the floor, the bench drawing can read as an
+incline at small size, and the plank's later frames let the knees drop. The
+owner approved the drawings, and P0.5(d) implements them.
+
+The full review then checked every candidate frame for 172 name or alias
+matches. 169 ship with chosen frames; the Romanian deadlift, skater squat
+(drawn as a lateral lunge) and toe-touch crunch (drawn standing) keep their
+photos. Matches whose equipment differs from the catalog, such as the barbell
+curl against a dumbbell drawing, were left unmapped. The mapping and source
+commit live in `scripts/exercise_drawings.json`.
+
+Attribution: the drawings are © Bryl Lim, partly adapted from Everkinetic, under
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). The app crops
+them and re-encodes them losslessly apart from rounding opacity to 32 levels.
+Those adapted files remain under CC BY-SA 4.0. The technique sheet shows the
+credit with source and license links wherever a drawing appears.
+

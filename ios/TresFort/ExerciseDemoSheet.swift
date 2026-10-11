@@ -10,7 +10,8 @@ import SwiftUI
 ///   - exercise name + primary/secondary muscle map
 ///   - laterality + load-mode badges (so "per side / each hand" semantics
 ///     are explicit without forcing the user to a separate doc)
-///   - 2-frame auto-cycling animation (~1.4s/frame, tap to pause)
+///   - 2-frame auto-cycling animation (~1.4s/frame, tap to pause), with
+///     license credit under bundled line drawings
 ///   - cue card fallback when the catalog row has no demo_slug or both
 ///     loader calls miss
 struct ExerciseDemoSheet: View {
@@ -46,6 +47,10 @@ struct ExerciseDemoSheet: View {
                     .background(Theme.surface)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                     .onTapGesture { isPaused.toggle() }
+
+                if loader.showsDrawing && !loader.isLoading {
+                    drawingCredit
+                }
 
                 badgesRow
                 muscleSection
@@ -139,6 +144,18 @@ struct ExerciseDemoSheet: View {
                 .font(Theme.mono(12))
                 .foregroundStyle(Theme.muted)
         }
+    }
+
+    /// Workout Guide drawings are CC BY-SA 4.0: credit the artist and the
+    /// Everkinetic source, say they were cropped, and link both the source
+    /// material and the license (Section 3(a)(1)).
+    private var drawingCredit: some View {
+        Text("Drawing by Bryl Lim ([Workout Guide](https://github.com/bryllim/workout-guide)), after Everkinetic, cropped. [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)")
+            .font(Theme.mono(10))
+            .foregroundStyle(Theme.muted)
+            .tint(Theme.accent)
+            .multilineTextAlignment(.leading)
+            .accessibilityIdentifier("exerciseDemo.drawingCredit")
     }
 
     private var badgesRow: some View {

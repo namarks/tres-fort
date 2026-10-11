@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: gated · Updated: 2026-10-07 · Theme: gym-floor
+Slug: workout-library · Status: gated · Updated: 2026-10-11 · Theme: gym-floor
 
 ## Goal
 
@@ -327,6 +327,27 @@ No second editor, no per-session template copies, no weeks table.
       exact-head review and CI. The owner authorized the matching backend and
       internal TestFlight release on October 7; [build 49's receipt](../app-store-submission/release-49.md)
       records its upload and Apple availability separately.
+  - [x] **(d) Drawn exercise illustrations**
+    - On October 11 the owner reviewed a six-movement [trial](visuals.md#october-11-trial-and-decision)
+      and chose Workout Guide's line drawings over the free-exercise-db photos.
+    - `scripts/exercise_drawings.json` maps 169 of 280 catalog exercises to a
+      pinned Workout Guide commit after a frame-by-frame review. Name matches
+      with different equipment or variations stay unmapped, and three matches
+      were rejected: Romanian deadlift, skater squat and toe-touch crunch. Each
+      entry names the shipped frames; holds and some single-pose movements ship
+      one static frame.
+    - `scripts/bundle_exercise_drawings.py` crops each exercise's frames to one
+      shared box and bundles them (about 5 MB). The loader prefers a drawing by
+      exercise ID, offline and without a demo slug, before bundled or remote
+      photos. Drawn exercises no longer bundle duplicate photos, leaving three
+      photo pairs; unmapped exercises keep the existing photo or placeholder.
+    - The technique sheet credits Bryl Lim and Everkinetic, notes the crop and
+      links the Workout Guide source and CC BY-SA 4.0 whenever it shows a
+      drawing. Thumbnails stay decorative.
+    - Loader unit tests cover drawing precedence without a slug or network,
+      single-frame holds, thumbnail lookups and credit state, plus bundled-asset
+      presence. No Worker, schema or R2 change. App Store candidate build 50
+      keeps photos; drawings need a later client build.
 
 - [x] **P0.6 — Focus the gym workflow**
   - The October 3 design audit and owner approval activate this implementation.
@@ -527,8 +548,8 @@ Freestyle sessions and save-as-workout will supply more logged evidence to the
 matching build-49 client and Worker. All planned repository slices are
 implemented and the preview-thumbnails PR is merged. The live-verification
 gate remains open and prevents closing this plan.
-The [visual comparison](visuals.md) records replacement recommendations only,
-following the owner's choice to finish previews with the existing images.
+P0.5(d) replaces photos with reviewed line drawings for 169 exercises in a
+later client build; build 50 still shows photos.
 
 **Release evidence:** The owner authorized the latest backend and internal
 TestFlight on October 7. [Build 49's receipt](../app-store-submission/release-49.md)
@@ -653,7 +674,8 @@ in the separate workouts-and-multi-session workstream.
   activated P0.5(a), then P0.5(b), ahead of P1, and authorized their combined
   internal TestFlight distribution with the recent UI fixes. The October 6 request
   activated P0.5(c); the owner chose to retain existing images and receive separate
-  replacement recommendations. Client distribution, production deployment and
+  replacement recommendations. On October 11 the owner approved Workout Guide
+  drawings after a side-by-side trial, activating P0.5(d). Client distribution, production deployment and
   App Review/public-release authority remain separate decisions. The evidence
   note distinguishes observed competitor behavior from untested coaching quality.
 

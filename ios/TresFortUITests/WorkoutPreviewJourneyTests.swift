@@ -20,7 +20,7 @@ final class WorkoutPreviewJourneyTests: XCTestCase {
                 "target_sets": 3, "target_reps": 8, "rest_seconds": 60, "target_weight": 45,
                 "group_id": "preview-group-\(index / 3)", "group_rest_seconds": 90,
                 "group_transition_seconds": 15, "cues": "Keep the movement controlled."]
-            if index % 3 == 0 { slot["exercise_demo_slug"] = "Barbell_Squat" }
+            if index % 3 == 0 { slot["exercise_demo_slug"] = "Romanian_Deadlift" }
             if index % 3 == 2 { slot["exercise_demo_slug"] = "unavailable-art" }
             return slot
         }

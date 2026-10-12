@@ -105,10 +105,11 @@ final class StationLinkStation: ObservableObject {
         transport.resume()
     }
 
-    /// Sends a control for the step shown. Returns false, sending nothing,
-    /// while the iPhone can't take one or the last one is unanswered.
+    /// Sends a control for the step shown, nil when none is. Returns false,
+    /// sending nothing, while the iPhone can't take one or the last one is
+    /// unanswered.
     @discardableResult
-    func send(_ action: StationLinkCommand.Action, for step: WorkoutDisplayState.Step? = nil) -> Bool {
+    func send(_ action: StationLinkCommand.Action, for step: WorkoutDisplayState.Step?) -> Bool {
         guard acceptsCommands, pendingCommand == nil else { return false }
         let command = StationLinkCommand(action, step: step)
         pendingCommand = command

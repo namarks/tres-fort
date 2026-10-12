@@ -156,21 +156,48 @@ final class StationLinkCommandTests: XCTestCase {
         let sync = runner([squat, row])
         _ = await StationLinkCommandRunner.apply(StationLinkCommand(.logSet, step: try shown(sync)), to: sync)
         XCTAssertNotNil(sync.restEndDate)
-        let endRest = StationLinkCommand(.endRest)
+        await settle()
+        let endRest = StationLinkCommand(.endRest, step: try shown(sync))
         let ended = await StationLinkCommandRunner.apply(endRest, to: sync)
         XCTAssertEqual(ended, .accepted(endRest))
         XCTAssertNil(sync.restEndDate)
-        let endAgain = await StationLinkCommandRunner.apply(StationLinkCommand(.endRest), to: sync)
+        let endAgain = await StationLinkCommandRunner.apply(StationLinkCommand(.endRest, step: try shown(sync)), to: sync)
         XCTAssertTrue(endAgain.accepted, "A rest that already ended stays ended")
 
-        let choose = StationLinkCommand(.select(slotID: row.id))
+        let choose = StationLinkCommand(.select(slotID: row.id), step: try shown(sync))
         let chosen = await StationLinkCommandRunner.apply(choose, to: sync)
         XCTAssertEqual(chosen, .accepted(choose))
         XCTAssertEqual(sync.currentExercise?.id, row.id)
         XCTAssertFalse(sync.isSkipped(squat), "Moving ahead never skips the exercise left")
-        let missing = await StationLinkCommandRunner.apply(StationLinkCommand(.select(slotID: "removed")), to: sync)
+        let missing = await StationLinkCommandRunner.apply(
+            StationLinkCommand(.select(slotID: "removed"), step: try shown(sync)), to: sync)
         XCTAssertEqual(missing.message, "That exercise is no longer in this workout.")
         XCTAssertEqual(sync.currentExercise?.id, row.id)
+    }
+
+    func testARestEndOrChoiceTheIphoneOvertookChangesNothing() async throws {
+        let squat = slot("squat"), row = slot("row", order: 1)
+        let sync = runner([squat, row])
+        _ = await StationLinkCommandRunner.apply(StationLinkCommand(.logSet, step: try shown(sync)), to: sync)
+        await settle()
+        let resting = try shown(sync)
+        // Before the iPad's taps arrive, the member ends that rest on the
+        // iPhone and logs the next set, which starts another rest.
+        sync.skipRest()
+        let exercise = try XCTUnwrap(sync.currentExercise)
+        await sync.logCurrentSet(expected: exercise, expectedSetNumber: 2)
+        await settle()
+        XCTAssertNotNil(sync.restEndDate)
+        XCTAssertEqual(try shown(sync).setNumber, 3)
+
+        let endRest = StationLinkCommand(.endRest, step: resting)
+        let ended = await StationLinkCommandRunner.apply(endRest, to: sync)
+        XCTAssertEqual(ended, .refused(endRest, StationLinkCommandReceipt.movedOn))
+        XCTAssertNotNil(sync.restEndDate, "The newer rest keeps running")
+        let choose = StationLinkCommand(.select(slotID: row.id), step: resting)
+        let chosen = await StationLinkCommandRunner.apply(choose, to: sync)
+        XCTAssertEqual(chosen, .refused(choose, StationLinkCommandReceipt.movedOn))
+        XCTAssertEqual(sync.currentExercise?.id, squat.id, "The workout stays where the iPhone moved it")
     }
 
     func testEditedValuesKeepAnUnchangedLoadExactAndConvertAChangedOne() async throws {
@@ -246,7 +273,7 @@ final class StationLinkCommandTests: XCTestCase {
 
         let early = await StationLinkCommandRunner.apply(StationLinkCommand(.stopTimer, step: step), to: sync)
         XCTAssertEqual(early.message, "Let the timer run a few seconds before stopping it.")
-        let elsewhere = await StationLinkCommandRunner.apply(StationLinkCommand(.select(slotID: row.id)), to: sync)
+        let elsewhere = await StationLinkCommandRunner.apply(StationLinkCommand(.select(slotID: row.id), step: step), to: sync)
         XCTAssertEqual(elsewhere.message, "Stop the timer before choosing another exercise.")
         let edit = await StationLinkCommandRunner.apply(StationLinkCommand(.setValues(
             SetCorrectionValues(weight: 0, reps: 20, rpe: nil, durationSeconds: 20), unit: .lb), step: step), to: sync)

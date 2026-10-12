@@ -668,7 +668,7 @@ final class StationLinkTransportTests: XCTestCase {
         }
         controller.publishDisplay(controlled(set: 1, phase: .rest))
         wire.pump()
-        XCTAssertTrue(station.send(.endRest))
+        XCTAssertTrue(station.send(.endRest, for: station.display?.current))
         let unanswered = try XCTUnwrap(station.pendingCommand)
         station.commandTimedOut(unanswered.id)
         XCTAssertNil(station.pendingCommand)
@@ -688,7 +688,7 @@ final class StationLinkTransportTests: XCTestCase {
         let (controller, station, phone, ipad, first) = linkedRunner()
         controller.publishDisplay(controlled(set: 1))
         first.pump()
-        XCTAssertTrue(station.send(.endRest))
+        XCTAssertTrue(station.send(.endRest, for: station.display?.current))
 
         // The session drops before the iPhone answers.
         ipad.transport.handle(first.ipadChannel, connected: false)
@@ -696,7 +696,7 @@ final class StationLinkTransportTests: XCTestCase {
         XCTAssertTrue(station.displayIsStale)
         XCTAssertNil(station.pendingCommand, "No answer can arrive on another connection")
         XCTAssertFalse(station.acceptsCommands)
-        XCTAssertFalse(station.send(.endRest))
+        XCTAssertFalse(station.send(.endRest, for: station.display?.current))
         phone.transport.handle(first.phoneChannel, connected: false)
 
         // The member logs a set on the iPhone meanwhile.
@@ -716,7 +716,7 @@ final class StationLinkTransportTests: XCTestCase {
         XCTAssertEqual(station.display, older, "An older iPhone's workout still shows")
         XCTAssertFalse(station.acceptsCommands)
         let sent = wire.ipadChannel.sent.count
-        XCTAssertFalse(station.send(.endRest))
+        XCTAssertFalse(station.send(.endRest, for: station.display?.current))
         XCTAssertNil(station.pendingCommand)
         XCTAssertEqual(wire.ipadChannel.sent.count, sent, "Nothing goes out that an older build can't read")
     }

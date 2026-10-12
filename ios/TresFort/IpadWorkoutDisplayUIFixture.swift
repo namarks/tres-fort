@@ -80,7 +80,8 @@ private final class SyntheticLinkedPhone {
     init(station: StationLinkStation) { self.station = station }
 
     func apply(_ command: StationLinkCommand) {
-        guard command.step == nil || command.step == step(index) else {
+        // As on an iPhone, a control applies only to the step it shows.
+        guard command.step == shownStep else {
             return answer(.refused(command, StationLinkCommandReceipt.movedOn))
         }
         switch command.action {
@@ -113,8 +114,12 @@ private final class SyntheticLinkedPhone {
         answer(.accepted(command))
     }
 
+    private var shownStep: WorkoutDisplayState.Step? {
+        phase == .exerciseComplete ? nil : step(index)
+    }
+
     func publish() {
-        let current = phase == .exerciseComplete ? nil : step(index)
+        let current = shownStep
         let following = slots.indices.first { $0 != index && slots[$0].done < slots[$0].sets }
         let next = phase == .rest ? current : following.map { step($0) }
         var state = WorkoutDisplayState(phase: phase, workoutName: "Synthetic phone workout",

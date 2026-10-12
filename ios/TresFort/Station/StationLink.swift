@@ -237,9 +237,11 @@ struct StationLinkCommand: Codable, Equatable {
 
     let id: UUID
     let action: Action
-    /// The step the iPad showed when tapped. A set command applies only while
-    /// the iPhone still shows exactly this step, so a late or repeated tap
-    /// never acts on another set or on values the member didn't see.
+    /// The step the iPad showed when tapped, nil when it showed none (an
+    /// exercise complete, or final review). A command applies only while the
+    /// iPhone still shows exactly this step, so a late or repeated tap never
+    /// acts on another set, on values the member didn't see, or on a rest or
+    /// choice made since on the iPhone.
     let step: WorkoutDisplayState.Step?
 
     init(_ action: Action, step: WorkoutDisplayState.Step? = nil, id: UUID = UUID()) {
@@ -248,12 +250,18 @@ struct StationLinkCommand: Codable, Equatable {
         self.step = step
     }
 
-    /// Commands that act on the shown set, as opposed to rest or navigation.
+    /// Commands that act on the shown set, as opposed to rest or navigation,
+    /// and so need a shown step.
     var actsOnShownSet: Bool {
         switch action {
         case .logSet, .startTimer, .stopTimer, .setValues: return true
         case .endRest, .select: return false
         }
+    }
+
+    var choosesExercise: Bool {
+        if case .select = action { return true }
+        return false
     }
 }
 

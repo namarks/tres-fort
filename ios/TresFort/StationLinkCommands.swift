@@ -15,6 +15,13 @@ enum StationLinkCommandRunner {
         guard !sync.hasPendingTerminalIntentForCurrentWorkout, !sync.isTerminalMutationInFlight else {
             return .refused(command, "Your iPhone is saving the workout. Wait, then try again.")
         }
+        // Values, rests and choices changed on the iPhone reach its published
+        // display a moment later. Act only while the runner still shows
+        // exactly the step the iPad showed.
+        guard WorkoutDisplayState.project(sync: sync, displayUnit: command.step?.weightUnit).current
+                == command.step else {
+            return .refused(command, StationLinkCommandReceipt.movedOn)
+        }
         switch command.action {
         case .endRest:
             if sync.restEndDate != nil { sync.skipRest() }
@@ -41,12 +48,6 @@ enum StationLinkCommandRunner {
         }
         guard !sync.isSetEntryBlocked(exercise) else {
             return .refused(command, "Check the workout on your iPhone before continuing.")
-        }
-        // Values changed on the iPhone reach its published display a moment
-        // later. Act only while the runner still holds exactly the values
-        // the iPad showed.
-        guard WorkoutDisplayState.project(sync: sync, displayUnit: step.weightUnit).current == step else {
-            return .refused(command, StationLinkCommandReceipt.movedOn)
         }
         switch command.action {
         case .logSet:

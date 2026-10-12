@@ -210,6 +210,15 @@ final class StationLinkTests: XCTestCase {
         return state
     }
 
+    /// A published workout showing no set, as between exercises.
+    private func showingNoSet(_ phase: WorkoutDisplayState.Phase) -> WorkoutDisplayState {
+        var state = WorkoutDisplayState(phase: phase, workoutName: "Strength", current: nil,
+            next: nil, restEndDate: nil, timedEndDate: nil, timedStartDate: nil,
+            workoutStartDate: nil, message: nil, isFreestyle: false)
+        state.acceptsCommands = true
+        return state
+    }
+
     private func settle() async {
         for _ in 0..<10 { await Task.yield() }
     }
@@ -248,6 +257,7 @@ final class StationLinkTests: XCTestCase {
             XCTAssertEqual(StationLink.open(sealed, sessionKey: key, senderRole: "station", after: 0)?.message, message)
         }
         XCTAssertEqual(commands.map(\.actsOnShownSet), [true, false, true, true, true, false])
+        XCTAssertEqual(commands.map(\.choosesExercise), [false, false, false, false, false, true])
     }
 
     func testOlderDisplayReadersIgnoreTheOutlineAndControlFlag() throws {
@@ -291,18 +301,22 @@ final class StationLinkTests: XCTestCase {
         await settle()
         XCTAssertEqual(applied, [log])
 
-        controller.publishDisplay(controlled(set: 2))
+        let second = controlled(set: 2)
+        controller.publishDisplay(second)
         controller.receive(.command(StationLinkCommand(.logSet, step: first.current)))
         controller.receive(.command(StationLinkCommand(.logSet)))
-        let choose = StationLinkCommand(.select(slotID: "slot-2"))
+        // A rest end or exercise choice tapped on an older step is late too.
+        controller.receive(.command(StationLinkCommand(.endRest, step: first.current)))
+        controller.receive(.command(StationLinkCommand(.select(slotID: "slot-2"), step: first.current)))
+        let choose = StationLinkCommand(.select(slotID: "slot-2"), step: second.current)
         controller.receive(.command(choose))
         await settle()
-        XCTAssertEqual(applied, [log, choose], "A control for a set no longer shown never reaches the runner")
+        XCTAssertEqual(applied, [log, choose], "A control for a step no longer shown never reaches the runner")
 
         var older = controlled(set: 2)
         older.acceptsCommands = nil
         controller.publishDisplay(older)
-        controller.receive(.command(StationLinkCommand(.endRest)))
+        controller.receive(.command(StationLinkCommand(.endRest, step: older.current)))
         await settle()
         controller.publishDisplay(nil)
         controller.receive(.command(StationLinkCommand(.endRest)))
@@ -310,11 +324,31 @@ final class StationLinkTests: XCTestCase {
         XCTAssertEqual(applied, [log, choose], "Only a published workout that takes controls applies them")
     }
 
+    func testAnExerciseChoiceAppliesOnlyWhileTheIphoneStillOffersOne() async {
+        let controller = StationLinkController()
+        var applied: [StationLinkCommand] = []
+        controller.onCommand = { command in
+            applied.append(command)
+            return .accepted(command)
+        }
+        controller.publishDisplay(showingNoSet(.exerciseComplete))
+        let choose = StationLinkCommand(.select(slotID: "slot-2"))
+        controller.receive(.command(choose))
+        await settle()
+        XCTAssertEqual(applied, [choose])
+
+        // The member leaves the workout on the iPhone before the next choice arrives.
+        controller.publishDisplay(showingNoSet(.paused))
+        controller.receive(.command(StationLinkCommand(.select(slotID: "slot-1"))))
+        await settle()
+        XCTAssertEqual(applied, [choose], "An iPhone that offers no choice moves nowhere")
+    }
+
     func testIpadSendsOneControlAtATimeAndOnlyToAnIphoneThatTakesThem() {
         let station = StationLinkStation()
         station.receive(.display(controlled(set: 1)))
         XCTAssertFalse(station.acceptsCommands, "Not without a connection")
-        XCTAssertFalse(station.send(.endRest))
+        XCTAssertFalse(station.send(.endRest, for: station.display?.current))
         XCTAssertNil(station.pendingCommand)
         // An unrelated answer changes nothing.
         station.receive(.commandReceipt(.accepted(StationLinkCommand(.endRest))))

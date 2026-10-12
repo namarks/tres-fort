@@ -70,8 +70,8 @@ struct LinkedWorkoutDisplayView<Controls: View>: View {
             WorkoutDisplayView(state: state, isPhoneControlled: true, controlsHere: remote,
                                trackingCount: trackingCount, trackingStatus: trackingStatus,
                                showsOutline: showsOutline, banner: banner,
-                               onSelectOutline: remote ? selectExercise : nil,
-                               outlineEnabled: ready && Self.choosesExercises(in: state.phase)) {
+                               onSelectOutline: remote ? { _ = link.send(.select(slotID: $0), for: state.current) } : nil,
+                               outlineEnabled: ready && state.phase.offersExerciseChoice) {
                 LinkedWorkoutControls(state: state, remote: remote, ready: ready,
                                       showsOutline: $showsOutline,
                                       edit: { editing = LinkedSetDraft(step: $0) },
@@ -129,10 +129,6 @@ struct LinkedWorkoutDisplayView<Controls: View>: View {
         }
     }
 
-    private func selectExercise(_ slotID: String) {
-        link.send(.select(slotID: slotID))
-    }
-
     private var banner: WorkoutDisplayBanner? {
         if link.displayIsStale {
             return WorkoutDisplayBanner(
@@ -144,14 +140,6 @@ struct LinkedWorkoutDisplayView<Controls: View>: View {
                                         identifier: "ipadWorkout.notice")
         }
         return nil
-    }
-
-    /// The phases where the iPhone's own outline moves the workout.
-    static func choosesExercises(in phase: WorkoutDisplayState.Phase) -> Bool {
-        switch phase {
-        case .ready, .rest, .exerciseComplete, .review: return true
-        case .active, .paused, .finished, .blocked: return false
-        }
     }
 }
 
@@ -208,7 +196,7 @@ private struct LinkedWorkoutControls<Extra: View>: View {
         // A reserved row keeps the logging action in place as rest starts and
         // ends, so a second tap on End rest never becomes a set submission.
         if state.phase == .rest {
-            Button { send(.endRest, nil) } label: {
+            Button { send(.endRest, state.current) } label: {
                 Text("END REST").font(Theme.mono(16, .bold))
                     .frame(maxWidth: .infinity, minHeight: 44)
                     .background(Theme.accent).foregroundStyle(Theme.bg)

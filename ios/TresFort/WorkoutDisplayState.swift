@@ -8,6 +8,14 @@ extension WeightUnit: Codable {}
 struct WorkoutDisplayState: Codable, Equatable {
     enum Phase: String, Codable {
         case ready, active, rest, paused, exerciseComplete, review, finished, blocked
+
+        /// The phases where the iPhone's own outline moves the workout.
+        var offersExerciseChoice: Bool {
+            switch self {
+            case .ready, .rest, .exerciseComplete, .review: return true
+            case .active, .paused, .finished, .blocked: return false
+            }
+        }
     }
 
     struct Step: Codable, Equatable {

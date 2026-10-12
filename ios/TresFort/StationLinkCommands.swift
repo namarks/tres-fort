@@ -55,10 +55,11 @@ enum StationLinkCommandRunner {
             guard exercise.isTimed, !sync.timedActive else {
                 return .refused(command, StationLinkCommandReceipt.movedOn)
             }
-            // A start can wait on the previous timer's tone; the display
-            // shows the timer once it runs.
-            sync.startTimedSet(expected: exercise, expectedSetNumber: step.setNumber)
-            return .accepted(command)
+            // A start can first wait on the previous timer's cue. Answer once
+            // the timer runs, or say that it didn't start.
+            await sync.startTimedSet(expected: exercise, expectedSetNumber: step.setNumber)?.value
+            return sync.timedActive ? .accepted(command)
+                : .refused(command, "Your iPhone couldn’t start the timer. Check your iPhone.")
         case .stopTimer:
             guard exercise.isTimed, sync.timedActive else {
                 return .refused(command, StationLinkCommandReceipt.movedOn)

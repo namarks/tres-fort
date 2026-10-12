@@ -13,6 +13,25 @@ private final class CommandClock {
     var now = Date(timeIntervalSince1970: 2_000_000_000)
 }
 
+/// Holds the previous hold's completion cue until the test resolves it.
+@MainActor
+private final class CueLatch {
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        guard !isOpen else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func release() {
+        isOpen = true
+        let resumed = waiters
+        waiters.removeAll()
+        resumed.forEach { $0.resume() }
+    }
+}
+
 /// A gym without signal: every set waits in the iPhone's queue.
 @MainActor
 private final class OfflineSetWrites: SetWriteAPI {
@@ -71,8 +90,11 @@ final class StationLinkCommandTests: XCTestCase {
             group_transition_seconds: nil)
     }
 
-    /// The iPhone's runner for today's workout, offline.
-    private func runner(_ slots: [TemplateExercise], start: Bool = true) -> SyncModel {
+    /// The iPhone's runner for today's workout, offline. Completion tones
+    /// never play; `cueFinisher` resolves one that a finished hold left.
+    private func runner(_ slots: [TemplateExercise], start: Bool = true,
+                        cueFinisher: @escaping @MainActor (Int, () -> Bool) async -> Bool = { _, _ in true })
+        -> SyncModel {
         let suite = "StationLinkCommandTests.\(UUID().uuidString)"
         let defaults = LocalPersistence(suiteName: suite)!
         addTeardownBlock { [preferences = defaults.preferences, directory = defaults.trainingStore.directory] in
@@ -87,7 +109,8 @@ final class StationLinkCommandTests: XCTestCase {
         let sync = SyncModel(auth: auth, setWriteAPI: OfflineSetWrites(), defaults: defaults,
                              now: { clock.now },
                              restActivityUpdater: { _, _ in }, restActivityEnder: {},
-                             timedCuePlayer: { _, _ in false }, restNotificationCanceller: {})
+                             timedCuePlayer: { _, _ in false }, timedCueFinisher: cueFinisher,
+                             restNotificationCanceller: {})
         let workout = Workout(id: "day", name: "Strength", day_label: "A", order_index: 0, exercises: slots)
         sync.replaceState(with: StateResponse(
             plan: PlanTree(id: "plan", name: "Plan", version: 1, workouts: [workout], meta: nil),
@@ -206,6 +229,38 @@ final class StationLinkCommandTests: XCTestCase {
         XCTAssertEqual(stopped, .accepted(stop))
         XCTAssertFalse(sync.timedActive)
         XCTAssertEqual(sync.setOutbox.pending.map(\.body.duration_s), [10], "The hold logs as long as it ran")
+    }
+
+    func testAStartWaitingOnThePreviousHoldsToneIsAnsweredOnceItsTimerRuns() async throws {
+        let tone = CueLatch()
+        let plank = slot("plank", timed: true)
+        let sync = runner([plank, slot("row", order: 1)], cueFinisher: { _, _ in
+            await tone.wait()
+            return true
+        })
+        let first = StationLinkCommand(.startTimer, step: try shown(sync))
+        let started = await StationLinkCommandRunner.apply(first, to: sync)
+        XCTAssertEqual(started, .accepted(first))
+        // The hold runs out while its completion tone can't play, so the
+        // next start first resolves that cue, as a tap on the iPhone does.
+        clock.now = clock.now.addingTimeInterval(31)
+        await sync.finishTimedSetIfDue()
+        XCTAssertFalse(sync.timedActive)
+        XCTAssertEqual(sync.setOutbox.pending.map(\.body.duration_s), [30])
+        await sync.drainSetOutbox()
+        for _ in 0..<100 where sync.isSetEntryBlocked(plank) { await Task.yield() }
+        XCTAssertFalse(sync.isSetEntryBlocked(plank))
+
+        let next = try shown(sync)
+        XCTAssertEqual(next.setNumber, 2)
+        let second = StationLinkCommand(.startTimer, step: next)
+        let answer = Task { await StationLinkCommandRunner.apply(second, to: sync) }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(sync.timedActive, "The start waits for the previous hold's tone")
+        tone.release()
+        let resolved = await answer.value
+        XCTAssertEqual(resolved, .accepted(second), "The answer comes once the timer runs")
+        XCTAssertTrue(sync.timedActive)
     }
 
     func testAnIphoneWithoutARunningWorkoutTakesNoControls() async {

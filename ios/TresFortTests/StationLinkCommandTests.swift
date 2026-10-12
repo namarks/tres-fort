@@ -186,21 +186,52 @@ final class StationLinkCommandTests: XCTestCase {
         XCTAssertEqual(sync.weight, 20, "An unchanged load stays exactly 20 kg, not a round trip through pounds")
         XCTAssertEqual(sync.reps, 9)
         XCTAssertEqual(sync.rpe, 8)
+        let outdated = await StationLinkCommandRunner.apply(StationLinkCommand(.logSet, step: step), to: sync)
+        XCTAssertEqual(outdated.message, StationLinkCommandReceipt.movedOn, "The iPad showed the old values")
 
+        let edited = try shown(sync, in: .lb)
+        XCTAssertEqual(edited.reps, 9)
         let heavier = StationLinkCommand(.setValues(SetCorrectionValues(weight: 50, reps: 9, rpe: nil,
-                                                                        durationSeconds: nil), unit: .lb), step: step)
+                                                                        durationSeconds: nil), unit: .lb), step: edited)
         let changed = await StationLinkCommandRunner.apply(heavier, to: sync)
         XCTAssertEqual(changed, .accepted(heavier))
         XCTAssertEqual(sync.weight, WeightUnit.lb.convert(50, to: .kg), accuracy: 0.000_001)
         XCTAssertNil(sync.rpe)
 
-        let log = StationLinkCommand(.logSet, step: step)
+        let log = StationLinkCommand(.logSet, step: try shown(sync, in: .lb))
         let logged = await StationLinkCommandRunner.apply(log, to: sync)
         XCTAssertEqual(logged, .accepted(log))
         let body = try XCTUnwrap(sync.setOutbox.pending.first?.body)
         XCTAssertEqual(body.weight, WeightUnit.lb.convert(50, to: .kg), accuracy: 0.000_001)
         XCTAssertEqual(body.weight_unit, "kg", "The set is logged in the slot's unit")
         XCTAssertEqual(body.reps, 9)
+    }
+
+    func testValuesChangedOnTheIphoneBeforeTheIpadsControlArrivesAreKept() async throws {
+        let squat = slot("squat")
+        let sync = runner([squat])
+        let shownOnIpad = try shown(sync)
+        // The member changes the set on the iPhone before its display reaches the iPad.
+        sync.setReps(8)
+        sync.setWeight(25)
+
+        let log = StationLinkCommand(.logSet, step: shownOnIpad)
+        let logged = await StationLinkCommandRunner.apply(log, to: sync)
+        XCTAssertEqual(logged, .refused(log, StationLinkCommandReceipt.movedOn))
+        XCTAssertTrue(sync.setOutbox.pending.isEmpty, "Nothing logs with values the iPad didn't show")
+        let edit = StationLinkCommand(.setValues(SetCorrectionValues(weight: 20, reps: 5, rpe: nil,
+                                                                     durationSeconds: nil), unit: .lb), step: shownOnIpad)
+        let edited = await StationLinkCommandRunner.apply(edit, to: sync)
+        XCTAssertEqual(edited, .refused(edit, StationLinkCommandReceipt.movedOn))
+        XCTAssertEqual(sync.reps, 8, "The iPhone's newer values stay")
+        XCTAssertEqual(sync.weight, 25)
+
+        // Once the iPad shows the new values, its controls act again.
+        let current = StationLinkCommand(.logSet, step: try shown(sync))
+        let accepted = await StationLinkCommandRunner.apply(current, to: sync)
+        XCTAssertEqual(accepted, .accepted(current))
+        XCTAssertEqual(sync.setOutbox.pending.map(\.body.reps), [8])
+        XCTAssertEqual(sync.setOutbox.pending.map(\.body.weight), [25])
     }
 
     func testATimedSetStartsFromTheIpadAndStopsOnlyOnceItHasRun() async throws {

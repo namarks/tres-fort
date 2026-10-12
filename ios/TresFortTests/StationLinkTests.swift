@@ -223,7 +223,13 @@ final class StationLinkTests: XCTestCase {
             let message: Message
         }
         let key = Data(repeating: 9, count: 32)
-        let shown = step(set: 2)
+        // A load converted to the iPhone's display unit must come back
+        // exactly, or the iPhone wouldn't recognise the step it showed.
+        let shown = WorkoutDisplayState.Step(slotID: "slot-1", exerciseName: "Back Squat",
+            weight: WeightUnit.kg.convert(61.5, to: .lb), weightUnit: .lb, reps: 8, durationSeconds: nil,
+            setNumber: 2, totalSets: 3, exerciseNumber: 1, totalExercises: 2, isWarmup: false,
+            isBodyweight: false, isUnilateral: false, isPerHand: false, groupTitle: nil,
+            roundNumber: nil, totalRounds: nil, rpe: 8.5)
         let commands = [
             StationLinkCommand(.logSet, step: shown), StationLinkCommand(.endRest),
             StationLinkCommand(.startTimer, step: shown), StationLinkCommand(.stopTimer, step: shown),

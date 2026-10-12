@@ -197,9 +197,9 @@ final class StationLinkController: ObservableObject {
                 answer(.refused(command, StationLinkCommandReceipt.openWorkout))
                 continue
             }
-            // A control acts only on the step this iPhone last showed, a set
+            // A control acts only on what this iPhone last showed, a set
             // control only on a set, and a choice only where one is offered.
-            if command.step != display?.current || command.actsOnShownSet && command.step == nil
+            if !command.matches(display) || command.actsOnShownSet && command.step == nil
                 || command.choosesExercise && display?.phase.offersExerciseChoice != true {
                 answer(.refused(command, StationLinkCommandReceipt.movedOn))
                 continue

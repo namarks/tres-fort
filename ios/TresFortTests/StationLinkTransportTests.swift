@@ -707,6 +707,24 @@ final class StationLinkTransportTests: XCTestCase {
         XCTAssertTrue(station.acceptsCommands)
     }
 
+    func testAConnectionThatReplacesAnUnreportedLossDropsItsUnansweredControl() throws {
+        let (controller, station, phone, ipad, first) = linkedRunner()
+        controller.publishDisplay(controlled(set: 1))
+        first.pump()
+        XCTAssertTrue(station.send(.endRest, for: station.display?.current))
+        // The iPhone loses the session before the control reaches it, and the
+        // iPad hears of no loss before the iPhone connects again.
+        phone.transport.handle(first.phoneChannel, connected: false)
+        controller.publishDisplay(controlled(set: 2))
+        clock.advance(StationLinkTransport.takeoverLimit)
+        reconnect(phone, to: ipad)
+        XCTAssertEqual(ipad.transport.connection, .connected("iPhone"))
+        XCTAssertNil(station.pendingCommand, "No answer can arrive on the new connection")
+        XCTAssertEqual(station.display, controlled(set: 2), "The new connection brings the current workout")
+        XCTAssertFalse(station.displayIsStale)
+        XCTAssertTrue(station.acceptsCommands)
+    }
+
     func testAnIpadSendsNoControlsToAnIphoneThatDoesNotTakeThem() {
         let (controller, station, _, _, wire) = linkedRunner()
         var older = controlled(set: 1)

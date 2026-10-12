@@ -118,10 +118,10 @@ detections into durable workout actions.
     link: current prescription, set/round, next step, rest/timed deadline,
     paused state, final review and the workout outline. The iPhone remains the
     only writer. A linked iPad's controls (log a set, end rest, start or stop
-    a hold, edit the next set, choose an exercise) are requests for the step it
-    shows; the iPhone applies each once through its own guarded runner action
-    while it still shows that step, or refuses it with a reason. Starting and
-    finishing stay on the iPhone.
+    a hold, edit the next set, choose an exercise) are requests for the step,
+    or between sets the exercise, that it shows; the iPhone applies each once
+    through its own guarded runner action while it still shows that, or
+    refuses it with a reason. Starting and finishing stay on the iPhone.
   - Clear guidance when the iPhone withdraws it or a drop outlasts two
     minutes; through a shorter drop keep the last display, marked as
     reconnecting, with its controls off. Keep an active foreground display
@@ -197,16 +197,18 @@ iPad removed the workout on any lost connection.
 
 The follow-up lets a linked iPad move the iPhone's workout: log a set, end
 rest, start and stop a hold, edit the next set and choose an exercise from the
-outline. Each control names the step the iPad showed, and the iPhone acts on
-it only while it still shows that step: once, through the same guarded runner
-action as its own button. Otherwise it refuses with a reason the iPad shows;
-the iPad waits for that answer before sending another.
+outline. Each control names what the iPad showed (the step, or between sets
+the exercise), and the iPhone acts on it only while it still shows that: once,
+through the same guarded runner action as its own button. Otherwise it refuses
+with a reason the iPad shows; the iPad waits for that answer before sending
+another.
 The iPhone remains the only writer. The display shows the workout outline
 beside the set, with a switch back to Up next, and the time of day with the
 workout's running time. The iPhone now publishes from every tab, pauses the
 display only when the app leaves the foreground, and stays awake while a
-workout runs with the iPad connected. Through a drop the iPad keeps the last
-workout for up to two minutes, marked as reconnecting, with its controls off.
+workout runs with the iPad connected. Through a drop, including one only a
+new connection reveals, the iPad keeps the last workout for up to two minutes,
+marked as reconnecting, with its controls off.
 Builds 53 and 54 keep working with it: they show the workout without the
 outline or controls and are never sent a control. Unit tests cover the controls
 over the fake link, on the iPhone runner and in the outline projection; iPad

@@ -132,6 +132,15 @@ final class StationLinkCommandTests: XCTestCase {
         for _ in 0..<10 { await Task.yield() }
     }
 
+    /// Logs every remaining set of the current exercise on the iPhone.
+    private func finishCurrentExercise(_ sync: SyncModel) async throws {
+        let exercise = try XCTUnwrap(sync.currentExercise)
+        for set in sync.currentPhysicalSetNumber...exercise.target_sets {
+            await sync.logCurrentSet(expected: exercise, expectedSetNumber: set)
+            await settle()
+        }
+    }
+
     func testLogsOnlyTheSetTheIpadShowedAndOnlyOnce() async throws {
         let sync = runner([slot("squat"), slot("row", order: 1)])
         XCTAssertTrue(sync.running)
@@ -198,6 +207,35 @@ final class StationLinkCommandTests: XCTestCase {
         let chosen = await StationLinkCommandRunner.apply(choose, to: sync)
         XCTAssertEqual(chosen, .refused(choose, StationLinkCommandReceipt.movedOn))
         XCTAssertEqual(sync.currentExercise?.id, squat.id, "The workout stays where the iPhone moved it")
+    }
+
+    func testAChoiceBetweenSetsIsRefusedOnceTheIphoneOpenedAnotherExercise() async throws {
+        let squat = slot("squat"), row = slot("row", order: 1), press = slot("press", order: 2)
+        let sync = runner([squat, row, press])
+        try await finishCurrentExercise(sync)
+        try await finishCurrentExercise(sync)
+        XCTAssertEqual(sync.currentExercise?.id, press.id)
+        // The iPad shows the finished squat, which the member reopened.
+        sync.jump(to: 0)
+        let shownOnIpad = WorkoutDisplayState.project(sync: sync)
+        XCTAssertEqual(shownOnIpad.phase, .exerciseComplete)
+        XCTAssertNil(shownOnIpad.current, "Between sets no step shows")
+        XCTAssertEqual(shownOnIpad.currentSlotID, squat.id)
+        // Before the iPad's choice arrives, the member opens the finished row on the iPhone.
+        sync.jump(to: 1)
+
+        let late = StationLinkCommand(.select(slotID: press.id), phase: shownOnIpad.phase,
+                                      currentSlotID: shownOnIpad.currentSlotID)
+        let refused = await StationLinkCommandRunner.apply(late, to: sync)
+        XCTAssertEqual(refused, .refused(late, StationLinkCommandReceipt.movedOn))
+        XCTAssertEqual(sync.currentExercise?.id, row.id, "The iPhone's newer choice stays")
+
+        let shownNow = WorkoutDisplayState.project(sync: sync)
+        let choose = StationLinkCommand(.select(slotID: press.id), phase: shownNow.phase,
+                                        currentSlotID: shownNow.currentSlotID)
+        let chosen = await StationLinkCommandRunner.apply(choose, to: sync)
+        XCTAssertEqual(chosen, .accepted(choose))
+        XCTAssertEqual(sync.currentExercise?.id, press.id)
     }
 
     func testEditedValuesKeepAnUnchangedLoadExactAndConvertAChangedOne() async throws {

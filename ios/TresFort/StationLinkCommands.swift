@@ -17,9 +17,8 @@ enum StationLinkCommandRunner {
         }
         // Values, rests and choices changed on the iPhone reach its published
         // display a moment later. Act only while the runner still shows
-        // exactly the step the iPad showed.
-        guard WorkoutDisplayState.project(sync: sync, displayUnit: command.step?.weightUnit).current
-                == command.step else {
+        // exactly what the iPad showed.
+        guard command.matches(WorkoutDisplayState.project(sync: sync, displayUnit: command.step?.weightUnit)) else {
             return .refused(command, StationLinkCommandReceipt.movedOn)
         }
         switch command.action {

@@ -238,16 +238,30 @@ struct StationLinkCommand: Codable, Equatable {
     let id: UUID
     let action: Action
     /// The step the iPad showed when tapped, nil when it showed none (an
-    /// exercise complete, or final review). A command applies only while the
-    /// iPhone still shows exactly this step, so a late or repeated tap never
-    /// acts on another set, on values the member didn't see, or on a rest or
-    /// choice made since on the iPhone.
+    /// exercise complete, or final review).
     let step: WorkoutDisplayState.Step?
+    /// The phase and exercise the iPad showed, which tell one place between
+    /// sets from another.
+    let phase: WorkoutDisplayState.Phase?
+    let currentSlotID: String?
 
-    init(_ action: Action, step: WorkoutDisplayState.Step? = nil, id: UUID = UUID()) {
+    init(_ action: Action, step: WorkoutDisplayState.Step? = nil, phase: WorkoutDisplayState.Phase? = nil,
+         currentSlotID: String? = nil, id: UUID = UUID()) {
         self.id = id
         self.action = action
         self.step = step
+        self.phase = phase
+        self.currentSlotID = currentSlotID
+    }
+
+    /// A command applies only while the iPhone still shows what the iPad
+    /// showed: the same step or, between sets, the same phase and exercise.
+    /// A late or repeated tap so never acts on another set, on values the
+    /// member didn't see, or on a rest or choice made since on the iPhone.
+    func matches(_ display: WorkoutDisplayState?) -> Bool {
+        guard let display else { return false }
+        if let step { return step == display.current }
+        return display.current == nil && phase == display.phase && currentSlotID == display.currentSlotID
     }
 
     /// Commands that act on the shown set, as opposed to rest or navigation,

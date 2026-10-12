@@ -75,6 +75,9 @@ struct WorkoutDisplayState: Codable, Equatable {
     /// leaves this out, and its iPad only displays the workout.
     var acceptsCommands: Bool? = nil
 
+    /// The exercise the workout is on, between sets too.
+    var currentSlotID: String? { current?.slotID ?? outline?.first(where: \.isCurrent)?.slotID }
+
     @MainActor
     static func project(sync: SyncModel, paused: Bool = false, displayUnit: WeightUnit? = nil) -> Self {
         let name = sync.selectedDay?.title ?? (sync.isFreestyle ? "Freestyle" : "Workout")

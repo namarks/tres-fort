@@ -210,11 +210,16 @@ final class StationLinkTests: XCTestCase {
         return state
     }
 
-    /// A published workout showing no set, as between exercises.
-    private func showingNoSet(_ phase: WorkoutDisplayState.Phase) -> WorkoutDisplayState {
+    /// A published workout between sets, on `slotID`, which shows no step.
+    private func between(_ phase: WorkoutDisplayState.Phase, on slotID: String) -> WorkoutDisplayState {
         var state = WorkoutDisplayState(phase: phase, workoutName: "Strength", current: nil,
             next: nil, restEndDate: nil, timedEndDate: nil, timedStartDate: nil,
             workoutStartDate: nil, message: nil, isFreestyle: false)
+        state.outline = ["slot-1", "slot-2", "slot-3"].map { id in
+            WorkoutDisplayState.OutlineEntry(slotID: id, exerciseName: "Exercise \(id)", setsDone: 3,
+                totalSets: 3, isCurrent: id == slotID, isSkipped: false, isWarmup: false,
+                groupTitle: nil, prescription: "3 × 5")
+        }
         state.acceptsCommands = true
         return state
     }
@@ -244,7 +249,7 @@ final class StationLinkTests: XCTestCase {
             StationLinkCommand(.startTimer, step: shown), StationLinkCommand(.stopTimer, step: shown),
             StationLinkCommand(.setValues(SetCorrectionValues(weight: 61.5, reps: 8, rpe: 8.5, durationSeconds: nil),
                                           unit: .kg), step: shown),
-            StationLinkCommand(.select(slotID: "slot-2")),
+            StationLinkCommand(.select(slotID: "slot-2"), phase: .exerciseComplete, currentSlotID: "slot-1"),
         ]
         var messages = commands.map(StationLinkMessage.command)
         messages.append(.commandReceipt(.accepted(commands[0])))
@@ -324,24 +329,32 @@ final class StationLinkTests: XCTestCase {
         XCTAssertEqual(applied, [log, choose], "Only a published workout that takes controls applies them")
     }
 
-    func testAnExerciseChoiceAppliesOnlyWhileTheIphoneStillOffersOne() async {
+    func testAChoiceBetweenSetsAppliesOnlyWhereTheIphoneStillIsAndOffersOne() async {
         let controller = StationLinkController()
         var applied: [StationLinkCommand] = []
         controller.onCommand = { command in
             applied.append(command)
             return .accepted(command)
         }
-        controller.publishDisplay(showingNoSet(.exerciseComplete))
-        let choose = StationLinkCommand(.select(slotID: "slot-2"))
+        let shown = between(.exerciseComplete, on: "slot-1")
+        controller.publishDisplay(shown)
+        let choose = StationLinkCommand(.select(slotID: "slot-3"), phase: shown.phase, currentSlotID: shown.currentSlotID)
         controller.receive(.command(choose))
         await settle()
         XCTAssertEqual(applied, [choose])
 
-        // The member leaves the workout on the iPhone before the next choice arrives.
-        controller.publishDisplay(showingNoSet(.paused))
-        controller.receive(.command(StationLinkCommand(.select(slotID: "slot-1"))))
+        // On the iPhone the member opens another finished exercise, then
+        // leaves the workout, before the iPad's next choices arrive.
+        controller.publishDisplay(between(.exerciseComplete, on: "slot-2"))
+        controller.receive(.command(StationLinkCommand(.select(slotID: "slot-3"), phase: shown.phase,
+                                                       currentSlotID: shown.currentSlotID)))
         await settle()
-        XCTAssertEqual(applied, [choose], "An iPhone that offers no choice moves nowhere")
+        let paused = between(.paused, on: "slot-2")
+        controller.publishDisplay(paused)
+        controller.receive(.command(StationLinkCommand(.select(slotID: "slot-3"), phase: paused.phase,
+                                                       currentSlotID: paused.currentSlotID)))
+        await settle()
+        XCTAssertEqual(applied, [choose], "A choice applies only where the iPhone still is, and still offers one")
     }
 
     func testIpadSendsOneControlAtATimeAndOnlyToAnIphoneThatTakesThem() {

@@ -70,7 +70,12 @@ final class StationLinkStation: ObservableObject {
             if !value.isConnected { self.connectionLost() }
         }
         self.transport.onMessage = { [weak self] in self?.receive($0) }
-        self.transport.onConnect = { [weak self] in self?.announce() }
+        self.transport.onConnect = { [weak self] in
+            // A connection can replace one whose loss was never reported.
+            // Treat it as that loss: the display waits for this iPhone's own.
+            self?.connectionLost()
+            self?.announce()
+        }
     }
 
     /// Starts advertising with the account's link key, or records that the
@@ -105,13 +110,14 @@ final class StationLinkStation: ObservableObject {
         transport.resume()
     }
 
-    /// Sends a control for the step shown, nil when none is. Returns false,
-    /// sending nothing, while the iPhone can't take one or the last one is
-    /// unanswered.
+    /// Sends a control for the step shown, nil when none is, in the phase
+    /// and exercise shown now. Returns false, sending nothing, while the
+    /// iPhone can't take one or the last one is unanswered.
     @discardableResult
     func send(_ action: StationLinkCommand.Action, for step: WorkoutDisplayState.Step?) -> Bool {
         guard acceptsCommands, pendingCommand == nil else { return false }
-        let command = StationLinkCommand(action, step: step)
+        let command = StationLinkCommand(action, step: step, phase: display?.phase,
+                                         currentSlotID: display?.currentSlotID)
         pendingCommand = command
         commandNotice = nil
         commandTimer?.cancel()

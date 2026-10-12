@@ -170,6 +170,7 @@ struct WorkoutDisplayView<Controls: View>: View {
             }
             Text(date, format: .dateTime.hour().minute())
                 .accessibilityLabel("Time")
+                .accessibilityValue(Text(date, format: .dateTime.hour().minute()))
                 .accessibilityIdentifier("ipadWorkout.clock")
         }
         .font(Theme.mono(20, .bold).monospacedDigit())

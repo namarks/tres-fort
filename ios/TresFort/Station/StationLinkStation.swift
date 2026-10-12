@@ -1,9 +1,10 @@
 import Combine
 import Foundation
 
-/// iPad side of the link. It turns an armed set from the iPhone into one live
-/// counting trial and reports a finished count back. It holds no workout
-/// writer: the iPhone decides whether the count becomes a logged set.
+/// iPad side of the link. It shows the iPhone's workout, sends the controls
+/// the member taps there, turns an armed set into one live counting trial and
+/// reports a finished count back. It holds no workout writer: the iPhone
+/// decides whether a control or a count changes the workout.
 @MainActor
 final class StationLinkStation: ObservableObject {
     @Published private(set) var connection: StationLinkTransport.Connection = .off
@@ -16,6 +17,27 @@ final class StationLinkStation: ObservableObject {
     /// No link key yet: the iPad must reach the server once to set up.
     @Published private(set) var needsKey = false
     @Published private(set) var display: WorkoutDisplayState?
+    /// The display outlived its connection. It stays up through a short drop
+    /// so the workout doesn't vanish mid-set, with its controls off until
+    /// the iPhone sends a fresh one.
+    @Published private(set) var displayIsStale = false
+    /// A control sent to the iPhone and not yet answered. Controls wait for
+    /// it, so one tap is never applied twice.
+    @Published private(set) var pendingCommand: StationLinkCommand?
+    /// Why the last control didn't take effect, shown for a few seconds.
+    @Published private(set) var commandNotice: String?
+
+    /// Seconds a control waits for the iPhone's answer.
+    static let commandTimeout: TimeInterval = 5
+    /// Seconds a lost connection's display stays up while reconnecting.
+    static let staleDisplayLimit: TimeInterval = 120
+    static let noticeDuration: TimeInterval = 6
+
+    /// The connected iPhone applies controls tapped on this iPad. An iPhone
+    /// from before controls never says so, and gets none.
+    var acceptsCommands: Bool {
+        connection.isConnected && !displayIsStale && display?.acceptsCommands == true
+    }
 
     var onPartnerMessage: ((PartnerPacket) -> Void)?
     func sendPartner(_ packet: PartnerPacket) { transport.send(.partner(packet)) }
@@ -30,16 +52,22 @@ final class StationLinkStation: ObservableObject {
     /// connection, where the iPhone's re-sent arm prompts no fresh report.
     private var reportedState: StationLinkStationState?
     private var cancellable: AnyCancellable?
+    private var commandTimer: Task<Void, Never>?
+    private var staleTimer: Task<Void, Never>?
+    private var staleSince: Date?
+    private var noticeTimer: Task<Void, Never>?
+    private let now: () -> Date
 
-    init(transport: StationLinkTransport? = nil) {
+    init(transport: StationLinkTransport? = nil, now: @escaping () -> Date = Date.init) {
         self.transport = transport ?? StationLinkTransport(role: .station)
+        self.now = now
         cancellable = self.transport.$connection.sink { [weak self] value in
             guard let self else { return }
             self.connection = value
-            // Guidance needs a live iPhone. The armed set and its count stay,
-            // so a reconnect delivers a count the lost connection missed; the
-            // iPhone withdraws a set it has moved past meanwhile.
-            if !value.isConnected { self.display = nil }
+            // The armed set and its count stay, so a reconnect delivers a
+            // count the lost connection missed; the iPhone withdraws a set it
+            // has moved past meanwhile.
+            if !value.isConnected { self.connectionLost() }
         }
         self.transport.onMessage = { [weak self] in self?.receive($0) }
         self.transport.onConnect = { [weak self] in self?.announce() }
@@ -59,20 +87,142 @@ final class StationLinkStation: ObservableObject {
     }
 
     func stop() {
-        display = nil
+        clearDisplay()
+        commandNotice = nil
+        noticeTimer?.cancel()
         withdraw()
         isEnabled = false
         needsKey = false
         transport.stop()
     }
 
-    /// Back in the foreground: reconnect unless the connection survived.
-    func resume() { transport.resume() }
+    /// Back in the foreground: reconnect unless the connection survived. A
+    /// display from a drop that outlasted its grace while suspended goes now.
+    func resume() {
+        if let staleSince, now().timeIntervalSince(staleSince) >= Self.staleDisplayLimit {
+            expireStaleDisplay()
+        }
+        transport.resume()
+    }
+
+    /// Sends a control for the step shown. Returns false, sending nothing,
+    /// while the iPhone can't take one or the last one is unanswered.
+    @discardableResult
+    func send(_ action: StationLinkCommand.Action, for step: WorkoutDisplayState.Step? = nil) -> Bool {
+        guard acceptsCommands, pendingCommand == nil else { return false }
+        let command = StationLinkCommand(action, step: step)
+        pendingCommand = command
+        commandNotice = nil
+        commandTimer?.cancel()
+        commandTimer = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.commandTimeout * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.commandTimedOut(command.id)
+        }
+        deliver(command)
+        return true
+    }
+
+    private func deliver(_ command: StationLinkCommand) {
+        #if DEBUG && targetEnvironment(simulator)
+        if let uiFixturePhone { return uiFixturePhone(command) }
+        #endif
+        transport.send(.command(command))
+    }
+
+    #if DEBUG && targetEnvironment(simulator)
+    private var uiFixturePhone: ((StationLinkCommand) -> Void)?
+
+    /// UI journeys only: a synthetic iPhone answers controls in place of the
+    /// transport, which stays off.
+    func installUIFixturePhone(_ phone: @escaping (StationLinkCommand) -> Void) {
+        uiFixturePhone = phone
+        connection = .connected("Synthetic iPhone")
+    }
+
+    /// UI journeys only: the synthetic iPhone's connection drops.
+    func dropUIFixturePhone() {
+        uiFixturePhone = nil
+        connection = .searching
+        connectionLost()
+    }
+    #endif
+
+    /// No answer came: free the controls and say so.
+    func commandTimedOut(_ id: UUID) {
+        guard pendingCommand?.id == id else { return }
+        finishCommand()
+        notify("Your iPhone didn’t answer. Keep Très Fort open on your iPhone and try again.")
+    }
+
+    /// The drop outlasted the grace period: show the connection screen.
+    func expireStaleDisplay() {
+        guard displayIsStale else { return }
+        clearDisplay()
+    }
+
+    private func connectionLost() {
+        // An answer can't arrive on another connection; the iPhone's fresh
+        // display shows whether the control took effect.
+        finishCommand()
+        guard display != nil, !displayIsStale else { return }
+        displayIsStale = true
+        staleSince = now()
+        staleTimer?.cancel()
+        staleTimer = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.staleDisplayLimit * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.expireStaleDisplay()
+        }
+    }
+
+    private func clearDisplay() {
+        finishCommand()
+        endStaleness()
+        display = nil
+    }
+
+    private func endStaleness() {
+        staleTimer?.cancel()
+        staleTimer = nil
+        staleSince = nil
+        displayIsStale = false
+    }
+
+    private func finishCommand() {
+        commandTimer?.cancel()
+        commandTimer = nil
+        pendingCommand = nil
+    }
+
+    private func notify(_ message: String) {
+        commandNotice = message
+        noticeTimer?.cancel()
+        noticeTimer = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.noticeDuration * 1_000_000_000))
+            guard !Task.isCancelled, self?.commandNotice == message else { return }
+            self?.commandNotice = nil
+        }
+    }
 
     func receive(_ message: StationLinkMessage) {
         switch message {
         case .partner(let packet): onPartnerMessage?(packet)
-        case .display(let state): display = state
+        case .display(let state):
+            guard let state else {
+                // The iPhone closed or changed workouts: nothing here applies.
+                clearDisplay()
+                commandNotice = nil
+                return
+            }
+            endStaleness()
+            display = state
+        case .commandReceipt(let receipt):
+            guard receipt.id == pendingCommand?.id else { return }
+            finishCommand()
+            if !receipt.accepted {
+                notify(receipt.message ?? "Your iPhone didn’t apply that. Check your iPhone.")
+            }
         case .arm(let next):
             guard StationLink.cameraCountingAvailable else {
                 report(.manual, armID: next.armID)
@@ -84,8 +234,8 @@ final class StationLinkStation: ObservableObject {
         case .disarm(let armID):
             guard arm?.armID == armID else { return }
             withdraw()
-        case .progress, .completion, .station, .challenge, .proof:
-            break // only the iPad reports counts; the transport authenticates
+        case .progress, .completion, .station, .command, .challenge, .proof:
+            break // only the iPad reports counts and sends controls; the transport authenticates
         }
     }
 

@@ -478,10 +478,11 @@ final class StationLinkTransportTests: XCTestCase {
     }
 
     /// A runner on the iPhone and a counting Station on the iPad, connected.
-    private func linkedRunner() -> (controller: StationLinkController, station: StationLinkStation,
-                                    phone: Device, ipad: Device, wire: Wire) {
+    private func linkedRunner(receiptDelay: TimeInterval = 0.3) -> (
+        controller: StationLinkController, station: StationLinkStation, phone: Device, ipad: Device, wire: Wire
+    ) {
         let phone = Device(.controller, clock: clock), ipad = Device(.station, clock: clock)
-        let controller = StationLinkController(transport: phone.transport)
+        let controller = StationLinkController(transport: phone.transport, receiptDelay: receiptDelay)
         let station = StationLinkStation(transport: ipad.transport)
         controller.start(key: key)
         station.enable(key: key)
@@ -582,6 +583,142 @@ final class StationLinkTransportTests: XCTestCase {
         XCTAssertNil(controller.stationState)
         reconnect(phone, to: ipad)
         XCTAssertEqual(controller.stationState, .cameraOff, "The re-sent arm prompts no new report, so the iPad repeats it")
+    }
+
+    // MARK: controls from the iPad
+
+    /// What an iPhone that takes the iPad's controls publishes for a set.
+    private func controlled(set: Int, phase: WorkoutDisplayState.Phase = .ready) -> WorkoutDisplayState {
+        let step = WorkoutDisplayState.Step(slotID: "slot-1", exerciseName: "Back Squat", weight: 100,
+            weightUnit: .lb, reps: 5, durationSeconds: nil, setNumber: set, totalSets: 3,
+            exerciseNumber: 1, totalExercises: 2, isWarmup: false, isBodyweight: false,
+            isUnilateral: false, isPerHand: false, groupTitle: nil, roundNumber: nil, totalRounds: nil)
+        var state = WorkoutDisplayState(phase: phase, workoutName: "Strength", current: step, next: nil,
+            restEndDate: nil, timedEndDate: nil, timedStartDate: nil, workoutStartDate: nil,
+            message: nil, isFreestyle: false)
+        state.acceptsCommands = true
+        return state
+    }
+
+    /// Lets the iPhone apply the controls it received, carrying what each side sends.
+    private func settle(_ wire: Wire) async {
+        for _ in 0..<10 {
+            await Task.yield()
+            wire.pump()
+        }
+    }
+
+    func testAnIpadControlWaitsForItsAnswerWhichFollowsTheDisplayShowingTheResult() async throws {
+        let (controller, station, _, _, wire) = linkedRunner(receiptDelay: 60)
+        var applied: [StationLinkCommand.Action] = []
+        controller.onCommand = { command in
+            applied.append(command.action)
+            return .accepted(command)
+        }
+        controller.publishDisplay(controlled(set: 1))
+        wire.pump()
+        XCTAssertTrue(station.acceptsCommands)
+        let shown = try XCTUnwrap(station.display?.current)
+        XCTAssertTrue(station.send(.logSet, for: shown))
+        XCTAssertFalse(station.send(.logSet, for: shown), "A second tap waits for the first answer")
+        await settle(wire)
+        XCTAssertEqual(applied, [.logSet])
+        XCTAssertNotNil(station.pendingCommand, "The answer waits for the display showing the logged set")
+
+        var shownWhenAnswered: WorkoutDisplayState.Step?
+        let watch = station.$pendingCommand.dropFirst().sink { pending in
+            if pending == nil { shownWhenAnswered = station.display?.current }
+        }
+        defer { watch.cancel() }
+        controller.publishDisplay(controlled(set: 2, phase: .rest))
+        wire.pump()
+        XCTAssertNil(station.pendingCommand)
+        XCTAssertEqual(shownWhenAnswered?.setNumber, 2, "The iPad never offers the logged set again")
+        XCTAssertNil(station.commandNotice)
+        XCTAssertTrue(station.acceptsCommands)
+    }
+
+    func testAControlForASetTheIphoneMovedPastIsRefusedWithAReason() async throws {
+        let (controller, station, _, _, wire) = linkedRunner()
+        var applied: [StationLinkCommand.Action] = []
+        controller.onCommand = { command in
+            applied.append(command.action)
+            return .accepted(command)
+        }
+        controller.publishDisplay(controlled(set: 1))
+        wire.pump()
+        let shown = try XCTUnwrap(station.display?.current)
+        // The member logs set 1 on the iPhone just as Log set is tapped on the iPad.
+        controller.publishDisplay(controlled(set: 2))
+        XCTAssertTrue(station.send(.logSet, for: shown))
+        await settle(wire)
+        XCTAssertTrue(applied.isEmpty, "The iPhone never applies a control to a set it no longer shows")
+        XCTAssertNil(station.pendingCommand)
+        XCTAssertEqual(station.commandNotice, StationLinkCommandReceipt.movedOn)
+        XCTAssertEqual(station.display?.current?.setNumber, 2)
+        XCTAssertTrue(station.acceptsCommands, "The next control can follow at once")
+    }
+
+    func testAnUnansweredControlTimesOutAndALateAnswerChangesNothing() async throws {
+        let (controller, station, _, _, wire) = linkedRunner()
+        var applied = 0
+        controller.onCommand = { command in
+            applied += 1
+            return .accepted(command)
+        }
+        controller.publishDisplay(controlled(set: 1, phase: .rest))
+        wire.pump()
+        XCTAssertTrue(station.send(.endRest))
+        let unanswered = try XCTUnwrap(station.pendingCommand)
+        station.commandTimedOut(unanswered.id)
+        XCTAssertNil(station.pendingCommand)
+        let notice = try XCTUnwrap(station.commandNotice)
+        XCTAssertTrue(station.acceptsCommands, "The member can try again")
+
+        await settle(wire)
+        controller.publishDisplay(controlled(set: 1)) // the rest ended
+        wire.pump()
+        XCTAssertEqual(applied, 1)
+        XCTAssertEqual(station.display?.phase, .ready)
+        XCTAssertNil(station.pendingCommand)
+        XCTAssertEqual(station.commandNotice, notice, "An answer to a control the iPad gave up on changes nothing")
+    }
+
+    func testAShortDropKeepsTheWorkoutOnTheIpadWithItsControlsOffUntilTheIphoneIsBack() throws {
+        let (controller, station, phone, ipad, first) = linkedRunner()
+        controller.publishDisplay(controlled(set: 1))
+        first.pump()
+        XCTAssertTrue(station.send(.endRest))
+
+        // The session drops before the iPhone answers.
+        ipad.transport.handle(first.ipadChannel, connected: false)
+        XCTAssertEqual(station.display, controlled(set: 1), "The workout stays on screen")
+        XCTAssertTrue(station.displayIsStale)
+        XCTAssertNil(station.pendingCommand, "No answer can arrive on another connection")
+        XCTAssertFalse(station.acceptsCommands)
+        XCTAssertFalse(station.send(.endRest))
+        phone.transport.handle(first.phoneChannel, connected: false)
+
+        // The member logs a set on the iPhone meanwhile.
+        controller.publishDisplay(controlled(set: 2))
+        reconnect(phone, to: ipad)
+        XCTAssertFalse(station.displayIsStale)
+        XCTAssertEqual(station.display, controlled(set: 2), "The new connection brings the current workout")
+        XCTAssertTrue(station.acceptsCommands)
+    }
+
+    func testAnIpadSendsNoControlsToAnIphoneThatDoesNotTakeThem() {
+        let (controller, station, _, _, wire) = linkedRunner()
+        var older = controlled(set: 1)
+        older.acceptsCommands = nil
+        controller.publishDisplay(older)
+        wire.pump()
+        XCTAssertEqual(station.display, older, "An older iPhone's workout still shows")
+        XCTAssertFalse(station.acceptsCommands)
+        let sent = wire.ipadChannel.sent.count
+        XCTAssertFalse(station.send(.endRest))
+        XCTAssertNil(station.pendingCommand)
+        XCTAssertEqual(wire.ipadChannel.sent.count, sent, "Nothing goes out that an older build can't read")
     }
 
     func testAHeartbeatIsANoOpForBuildsThatPredateIt() throws {

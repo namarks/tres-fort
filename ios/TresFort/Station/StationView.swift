@@ -323,8 +323,10 @@ struct StationView: View {
     }
 
     private var linkedTrackingStatus: String? {
-        guard camera.state == .running else { return "Camera off · Log sets on your iPhone" }
-        guard link.isCounting else { return "Your iPhone controls logging and progression" }
+        // An iPhone that takes this iPad's controls needs no pointer to itself.
+        let controlsHere = link.display?.acceptsCommands == true
+        guard camera.state == .running else { return controlsHere ? nil : "Camera off · Log sets on your iPhone" }
+        guard link.isCounting else { return controlsHere ? nil : "Your iPhone controls logging and progression" }
         return comparison.hasIncompleteCoverage ? "Tracking interrupted · Review the count on your iPhone"
             : comparison.status.message
     }

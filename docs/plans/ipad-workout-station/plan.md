@@ -1,6 +1,6 @@
 # iPad Workout Station
 
-Slug: ipad-workout-station · Status: active · Updated: 2026-10-11 · Theme: gym-floor
+Slug: ipad-workout-station · Status: active · Updated: 2026-10-12 · Theme: gym-floor
 
 ## Goal
 
@@ -116,9 +116,16 @@ detections into durable workout actions.
     guarded set, timer, edit, correction and outline actions.
   - Carry a camera-independent workout projection over the authenticated solo
     link: current prescription, set/round, next step, rest/timed deadline,
-    paused state and final review. The iPhone remains the linked writer.
-  - Clear stale guidance on link withdrawal/disconnection and keep an active
-    foreground display awake without requiring camera access.
+    paused state, final review and the workout outline. The iPhone remains the
+    only writer. A linked iPad's controls (log a set, end rest, start or stop
+    a hold, edit the next set, choose an exercise) are requests for the step,
+    or between sets the exercise, that it shows; the iPhone applies each once
+    through its own guarded runner action while it still shows that, or
+    refuses it with a reason. Starting and finishing stay on the iPhone.
+  - Clear guidance when the iPhone withdraws it or a drop outlasts two
+    minutes; through a shorter drop keep the last display, marked as
+    reconnecting, with its controls off. Keep an active foreground display
+    awake without requiring camera access.
   - Verify iPad portrait/landscape and accessibility layouts, local
     logging/edit/rest progression, linked unsupported movements and connection
     loss, plus unchanged iPhone behavior and public-build camera exclusion.
@@ -152,6 +159,9 @@ detections into durable workout actions.
     visible phone setup, iPad QR, remembered same-account connection and
     reconnect/workout-boundary protection. Exact-head cloud review is clean,
     all 15 CI jobs passed, and Apple confirms internal Testers availability.
+    The owner's 2026-10-12 request for iPad controls, an outline and a clock
+    is in [PR #265](https://github.com/namarks/tres-fort/pull/265); see
+    [Next step](#next-step).
 - [ ] **P3 — Enable measured automatic progression**
   - Establish explicit acceptance thresholds for premature completion, exact
     counts and required corrections; validate them before enabling auto-log.
@@ -173,8 +183,39 @@ detections into durable workout actions.
 
 ## Next step
 
-**Now (@agent):** Drive the link follow-up in
-[PR #260](https://github.com/namarks/tres-fort/pull/260) to ready. On
+**Now (@agent):** Drive the iPad controls follow-up in
+[PR #265](https://github.com/namarks/tres-fort/pull/265) to ready. On
+2026-10-12, after builds 53 and 54 shipped the link fixes below, the owner
+reported that the connection is still flaky and not intuitive: the iPad could
+not move the workout forward, and it offered no workout outline or clock.
+Reading the code found further likely causes, inferred rather than taken from
+device logs. The iPhone published the iPad's display only while Today was on
+screen, so switching tabs withdrew the workout from the iPad. A minimized
+workout showed as paused, and the iPhone stayed awake only while the workout
+was in focus, so auto-lock could close the connection during a rest. The
+iPad removed the workout on any lost connection.
+
+The follow-up lets a linked iPad move the iPhone's workout: log a set, end
+rest, start and stop a hold, edit the next set and choose an exercise from the
+outline. Each control names what the iPad showed (the step, or between sets
+the exercise), and the iPhone acts on it only while it still shows that: once,
+through the same guarded runner action as its own button. Otherwise it refuses
+with a reason the iPad shows; the iPad waits for that answer before sending
+another.
+The iPhone remains the only writer. The display shows the workout outline
+beside the set, with a switch back to Up next, and the time of day with the
+workout's running time. The iPhone now publishes from every tab, pauses the
+display only when the app leaves the foreground, and stays awake while a
+workout runs with the iPad connected. Through a drop, including one only a
+new connection reveals, the iPad keeps the last workout for up to two minutes,
+marked as reconnecting, with its controls off.
+Builds 53 and 54 keep working with it: they show the workout without the
+outline or controls and are never sent a control. Unit tests cover the controls
+over the fake link, on the iPhone runner and in the outline projection; iPad
+journeys cover the controls, outline, clock and reconnecting with a synthetic
+iPhone. Physical acceptance needs a build containing it.
+
+**Link fixes (merged, in builds 53 and 54):** On
 2026-10-11 the owner reported that pairing is still finicky and that, once
 paired, the iPhone and iPad do not stay in sync. Reading the build 52 transport
 found likely causes; they are inferred from code, not device logs. An iPad
@@ -199,7 +240,8 @@ compatible: they read a heartbeat as a disarm of no set and are never dropped
 for being quiet, though a build 52 iPhone does not withdraw a set it moved
 past while disconnected.
 
-The follow-up answers a second review of that change. In #259 any newcomer
+The follow-up in [PR #260](https://github.com/namarks/tres-fort/pull/260)
+answers a second review of that change. In #259 any newcomer
 that proved the key replaced the iPad's connection, so a second iPhone could
 take over a connection in use, and two could keep taking it from each other.
 Now a connection heard from within two heartbeats keeps the link. Once a
@@ -213,8 +255,8 @@ reconnect also repeats why the iPad is not counting. Fake-session unit tests
 cover reconnection, impostors, a second iPhone, silence, older peers, failed
 sends, stuck or abandoned attempts, foreground recovery, and counts, states or
 disarms lost with a dropped or replaced connection.
-Physical acceptance needs a build containing both, and the owner's description of
-what the iPad shows when it falls out of sync is pending.
+Both shipped in builds 53 and 54; physical acceptance of the link remains
+open.
 
 **QR correction (merged):** [PR #255](https://github.com/namarks/tres-fort/pull/255)
 answers the owner's report that the regular iPhone Camera shows no link for the
@@ -268,7 +310,9 @@ tap "iPad display" at the top of Today and confirm "Connect iPad". Fetch the
 link key online once. Check that opening the phone app and iPad Station
 reconnects after this first opt-in, including before and after a workout.
 Repeat the QR route and the connection loss/recovery checks when a build
-containing both corrections is available.
+containing both corrections is available. With a build containing PR #265,
+also move through a workout from the iPad's controls and outline, switch tabs
+and lock the iPhone mid-rest, and note any time the iPad shows Reconnecting.
 In "Camera & options", choose "Enable camera" to try supported counted sets
 while keeping the iPhone workout open. Also check
 standalone iPad manual logging/timers, across-room readability and linked

@@ -2,9 +2,10 @@ import CryptoKit
 import Foundation
 
 /// The iPhone runner is the only workout controller. A linked iPad Station is a
-/// display and sensor: it shows the runner independently of camera eligibility,
-/// counts the set the iPhone arms and reports a finished count. The
-/// iPad never receives a SyncModel, outbox or API client; only the iPhone logs.
+/// display, sensor and remote: it shows the runner independently of camera
+/// eligibility, counts the set the iPhone arms, reports a finished count and
+/// sends the controls the member taps. The iPad never receives a SyncModel,
+/// outbox or API client; only the iPhone logs.
 enum StationLink {
     /// Bonjour service type (at most 15 characters). Info.plist lists the
     /// matching `_tresfort-stn._tcp` / `_udp` entries for local network access.
@@ -19,6 +20,8 @@ enum StationLink {
     /// only, so a shared phone never browses for another member's iPad.
     static let enabledAccountDefaultsKey = "stationLinkEnabledAccount"
     static let stationEnabledAccountDefaultsKey = "stationDisplayEnabledAccount"
+    /// Whether a linked iPad shows the workout outline beside the set.
+    static let outlineShownDefaultsKey = "ipadWorkoutOutlineShown"
 
     /// A navigation shortcut only. It carries no account, pairing secret or
     /// permission; the phone still asks its signed-in member to connect.
@@ -216,6 +219,85 @@ enum StationLinkStationState: String, Codable, Equatable {
     case ready, cameraOff, counting, stopped, manual
 }
 
+/// A control the member tapped on a linked iPad. The iPhone stays the only
+/// writer: it applies a command through the runner's own guarded action, for
+/// the step the iPad showed, at most once.
+struct StationLinkCommand: Codable, Equatable {
+    enum Action: Codable, Equatable {
+        /// Log the shown set with the values shown.
+        case logSet
+        case endRest
+        case startTimer
+        case stopTimer
+        /// The values the shown set will log, with the weight in `unit`.
+        case setValues(SetCorrectionValues, unit: WeightUnit)
+        /// Move the workout to another exercise.
+        case select(slotID: String)
+    }
+
+    let id: UUID
+    let action: Action
+    /// The step the iPad showed when tapped, nil when it showed none (an
+    /// exercise complete, or final review).
+    let step: WorkoutDisplayState.Step?
+    /// The phase and exercise the iPad showed, which tell one place between
+    /// sets from another.
+    let phase: WorkoutDisplayState.Phase?
+    let currentSlotID: String?
+
+    init(_ action: Action, step: WorkoutDisplayState.Step? = nil, phase: WorkoutDisplayState.Phase? = nil,
+         currentSlotID: String? = nil, id: UUID = UUID()) {
+        self.id = id
+        self.action = action
+        self.step = step
+        self.phase = phase
+        self.currentSlotID = currentSlotID
+    }
+
+    /// A command applies only while the iPhone still shows what the iPad
+    /// showed: the same step or, between sets, the same phase and exercise.
+    /// A late or repeated tap so never acts on another set, on values the
+    /// member didn't see, or on a rest or choice made since on the iPhone.
+    func matches(_ display: WorkoutDisplayState?) -> Bool {
+        guard let display else { return false }
+        if let step { return step == display.current }
+        return display.current == nil && phase == display.phase && currentSlotID == display.currentSlotID
+    }
+
+    /// Commands that act on the shown set, as opposed to rest or navigation,
+    /// and so need a shown step.
+    var actsOnShownSet: Bool {
+        switch action {
+        case .logSet, .startTimer, .stopTimer, .setValues: return true
+        case .endRest, .select: return false
+        }
+    }
+
+    var choosesExercise: Bool {
+        if case .select = action { return true }
+        return false
+    }
+}
+
+/// The iPhone's answer to a command: applied, or why not.
+struct StationLinkCommandReceipt: Codable, Equatable {
+    let id: UUID
+    let accepted: Bool
+    let message: String?
+
+    static func accepted(_ command: StationLinkCommand) -> Self {
+        Self(id: command.id, accepted: true, message: nil)
+    }
+
+    static func refused(_ command: StationLinkCommand, _ message: String) -> Self {
+        Self(id: command.id, accepted: false, message: message)
+    }
+
+    // Reasons shared by the iPhone's checks.
+    static let openWorkout = "Open the workout on your iPhone, then try again."
+    static let movedOn = "Your iPhone has moved on. Check the set shown now."
+}
+
 enum StationLinkMessage: Codable, Equatable {
     case partner(PartnerPacket)
     /// Read-only runner guidance, independent of camera arming. Nil withdraws
@@ -226,6 +308,11 @@ enum StationLinkMessage: Codable, Equatable {
     case progress(StationLinkProgress)
     case completion(StationLinkCompletion)
     case station(StationLinkStationState, armID: UUID?)
+    /// Sent only to an iPhone whose display accepts commands: an iPhone from
+    /// before commands can't read one, and the oldest drop the link over it.
+    case command(StationLinkCommand)
+    /// Sent only in answer to a command, so only to an iPad that sends them.
+    case commandReceipt(StationLinkCommandReceipt)
     /// Link authentication, handled by the transport and never delivered.
     case challenge(Data)
     case proof(Data)

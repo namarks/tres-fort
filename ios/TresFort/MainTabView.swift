@@ -48,6 +48,11 @@ private final class MainTabModels: ObservableObject {
         // Today widget and opt-in workout reminders follow this account's
         // published projection and are cleared at its feature boundary.
         self.agenda = TrainingAgendaPublisher(sync: sync, auth: auth, now: now)
+        // A linked iPad's controls reach this account's runner only.
+        stationLink.onCommand = { [weak sync] command in
+            guard let sync else { return .refused(command, StationLinkCommandReceipt.openWorkout) }
+            return await StationLinkCommandRunner.apply(command, to: sync)
+        }
         // The tab shell reads runner lifecycle state as well as owning its
         // models. Forward changes so first-start, minimize and completion
         // update its chrome immediately, without an unrelated tab interaction.
@@ -66,6 +71,8 @@ struct MainTabView: View {
     @State private var showActivitySheet = false
     @State private var selectedTab: Tab = .today
     @State private var isWorkoutFocused = true
+    @State private var partnerOpen = false
+    @AppStorage(StationLink.enabledAccountDefaultsKey) private var stationLinkEnabledAccount = ""
 
     private var sync: SyncModel { models.sync }
     private var groupModel: GroupModel { models.group }
@@ -87,7 +94,8 @@ struct MainTabView: View {
                       onLogActivity: { showActivitySheet = true },
                       isWorkoutFocused: isWorkoutFocused,
                       onMinimizeWorkout: { isWorkoutFocused = false },
-                      onResumeWorkout: resumeWorkout)
+                      onResumeWorkout: resumeWorkout,
+                      onPartnerOpenChange: { partnerOpen = $0 })
                 .tabItem {
                     Label("Today", systemImage: "figure.strengthtraining.traditional")
                 }
@@ -132,6 +140,21 @@ struct MainTabView: View {
         .onChange(of: sync.running) { _, running in
             if running { isWorkoutFocused = true }
         }
+        // A linked iPad follows and controls the workout whichever tab or
+        // screen the iPhone shows; it pauses only when the iPhone app leaves
+        // the foreground, which also closes the local connection.
+        .background {
+            StationWorkoutDisplayPublisher(sync: sync, link: models.stationLink,
+                enabled: StationLink.phoneAccount(storedAccount: stationLinkEnabledAccount, auth: auth) != nil
+                    && sync.running && !partnerOpen,
+                paused: scenePhase == .background)
+        }
+        // While a linked iPad shows the workout, keep this iPhone awake so the
+        // connection survives a quiet set or rest.
+        .onChange(of: sync.running && scenePhase == .active, initial: true) { _, active in
+            models.stationLink.setWorkoutActive(active)
+        }
+        .onDisappear { models.stationLink.setWorkoutActive(false) }
         .task {
             guard let initiatingUserID = auth.userID else { return }
             await auth.checkAppleCredentialState()

@@ -256,6 +256,26 @@ final class WorkoutDisplayStateTests: XCTestCase {
         XCTAssertNil(stale.current)
     }
 
+    func testOutlineListsEveryExerciseInOrderWithProgressAndLoadsInTheDisplayUnit() throws {
+        let a = exercise("a", sets: 2), b = exercise("b", group: "g"), c = exercise("c", group: "g")
+        let d = exercise("d", sets: 1)
+        let sync = model([a, b, c, d])
+        sync.sets = [logged(a, index: 1)]
+        sync.skipped = [d.id]
+        let outline = try XCTUnwrap(WorkoutDisplayState.project(sync: sync, displayUnit: .lb).outline)
+        XCTAssertEqual(outline.map(\.slotID), ["a", "b", "c", "d"])
+        XCTAssertEqual(outline.map(\.setsDone), [1, 0, 0, 0])
+        XCTAssertEqual(outline.map(\.totalSets), [2, 3, 3, 1])
+        XCTAssertEqual(outline.map(\.isCurrent), [true, false, false, false])
+        XCTAssertEqual(outline.map(\.isSkipped), [false, false, false, true])
+        XCTAssertEqual(outline.map(\.groupTitle), [nil, "Superset A", "Superset A", nil])
+        XCTAssertEqual(outline[0].prescription, "2×6 · 44.092 lb")
+        XCTAssertEqual(WorkoutDisplayState.project(sync: sync).outline?[0].prescription, "2×6 · 20 kg",
+                       "Without a display preference, loads keep the slot's unit")
+        retainedAuth.last?.requireReauthentication()
+        XCTAssertNil(WorkoutDisplayState.project(sync: sync).outline, "A replaced runner shows no outline")
+    }
+
     func testFreestyleKeepsOpenSetCountAndDoesNotInventAFinalSet() {
         let ex = exercise("a", modality: "bw")
         let sync = model([ex])

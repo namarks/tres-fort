@@ -192,6 +192,8 @@ struct TodayView: View {
     var isWorkoutFocused = true
     var onMinimizeWorkout: (() -> Void)? = nil
     var onResumeWorkout: (() -> Void)? = nil
+    /// A partner workout owns the link while it is open.
+    var onPartnerOpenChange: ((Bool) -> Void)? = nil
     @State private var isLocallyMinimized = false
     private var workoutFocused: Bool { sync.running && !sync.finished && isWorkoutFocused && !isLocallyMinimized }
 
@@ -225,12 +227,7 @@ struct TodayView: View {
     @State private var showPartner = false
     @AppStorage(StationLink.enabledAccountDefaultsKey) private var stationLinkEnabledAccount = ""
     private var stationLinkAccount: String? {
-        // Pair before starting a workout. Discovery remains an account-scoped
-        // opt-in, and pairing never starts or resumes a workout by itself.
-        guard StationLink.isEnabled(storedAccount: stationLinkEnabledAccount, accountID: auth.userID),
-              !auth.isReviewAccount,
-              UIDevice.current.userInterfaceIdiom == .phone else { return nil }
-        return auth.userID
+        StationLink.phoneAccount(storedAccount: stationLinkEnabledAccount, auth: auth)
     }
     private var stationLinkRequestID: String {
         "\(stationLinkAccount ?? ""):\(stationLink.connectionAttempt)"
@@ -446,10 +443,8 @@ struct TodayView: View {
             guard !Task.isCancelled, stationLinkAccount == account else { return }
             if let key { stationLink.start(key: key) } else { stationLink.keyUnavailable() }
         }
-        .onChange(of: sync.running && workoutFocused && scenePhase == .active, initial: true) { _, active in
-            stationLink.setWorkoutActive(active)
-        }
-        .onDisappear { stationLink.setWorkoutActive(false) }
+        // The tab shell publishes the workout to a linked iPad on every tab.
+        .onChange(of: partner.isOpen, initial: true) { _, open in onPartnerOpenChange?(open) }
         // A rotated key restarts the running link so both devices meet again.
         .onReceive(NotificationCenter.default.publisher(for: StationLinkKeyStore.refreshed)) { note in
             guard let account = stationLinkAccount, note.userInfo?["accountID"] as? String == account else { return }
@@ -469,11 +464,6 @@ struct TodayView: View {
         // Only the open runner logs counts, so a minimized workout is not armed;
         // resuming arms the current set again.
         .onChange(of: workoutFocused) { _, focused in if !focused { stationLink.pause() } }
-        .background {
-            StationWorkoutDisplayPublisher(sync: sync, link: stationLink,
-                enabled: stationLinkAccount != nil && sync.running && !partner.isOpen,
-                paused: (!workoutFocused && !sync.finished) || scenePhase != .active)
-        }
     }
 
     private var canOfferFreestyle: Bool { !sync.partnerReserved && sync.canStartFreestyle }

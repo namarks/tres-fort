@@ -158,9 +158,10 @@ final class StationLinkTests: XCTestCase {
         XCTAssertNil(controller.displayToResend)
     }
 
-    func testDisplaySurvivesCameraDisarmButClearsOnWithdrawalAndLostConnection() {
+    func testDisplaySurvivesCameraDisarmAndShortDropsButClearsOnWithdrawal() {
         let transport = StationLinkTransport(role: .station)
-        let station = StationLinkStation(transport: transport)
+        var now = Date(timeIntervalSince1970: 2_000_000_000)
+        let station = StationLinkStation(transport: transport, now: { now })
         station.receive(.display(display(.rest)))
         XCTAssertEqual(station.display, display(.rest))
         let arm = StationLinkArm(armID: UUID(), slotID: "s", setNumber: 1, exercise: .squat,
@@ -172,13 +173,199 @@ final class StationLinkTests: XCTestCase {
         XCTAssertNil(station.display)
         station.receive(.display(display()))
         transport.stop() // publishes the same unavailable-connection path used by a peer disconnect
-        XCTAssertNil(station.display)
+        XCTAssertEqual(station.display, display(), "A drop keeps the workout on screen while reconnecting")
+        XCTAssertTrue(station.displayIsStale)
+        XCTAssertFalse(station.acceptsCommands)
+        station.receive(.display(display(.rest)))
+        XCTAssertFalse(station.displayIsStale, "The iPhone's next display is current again")
+        transport.stop()
+        station.expireStaleDisplay()
+        XCTAssertNil(station.display, "A drop that outlasts the grace period leaves the connection screen")
+        station.receive(.display(display()))
+        transport.stop()
+        now = now.addingTimeInterval(StationLinkStation.staleDisplayLimit)
+        station.resume()
+        XCTAssertNil(station.display, "A drop that outlasted the grace while suspended is gone on return")
         station.receive(.display(display()))
         station.enable(key: nil)
         XCTAssertNil(station.display, "An invalidated account key cannot retain active instructions")
         station.receive(.display(display()))
         station.stop()
         XCTAssertNil(station.display)
+    }
+
+    private func step(set: Int, slot: String = "slot-1") -> WorkoutDisplayState.Step {
+        WorkoutDisplayState.Step(slotID: slot, exerciseName: "Back Squat", weight: 100, weightUnit: .lb,
+            reps: 5, durationSeconds: nil, setNumber: set, totalSets: 3, exerciseNumber: 1,
+            totalExercises: 2, isWarmup: false, isBodyweight: false, isUnilateral: false,
+            isPerHand: false, groupTitle: nil, roundNumber: nil, totalRounds: nil)
+    }
+
+    /// What an iPhone that takes the iPad's controls publishes.
+    private func controlled(set: Int) -> WorkoutDisplayState {
+        var state = WorkoutDisplayState(phase: .ready, workoutName: "Strength", current: step(set: set),
+            next: nil, restEndDate: nil, timedEndDate: nil, timedStartDate: nil,
+            workoutStartDate: nil, message: nil, isFreestyle: false)
+        state.acceptsCommands = true
+        return state
+    }
+
+    /// A published workout between sets, on `slotID`, which shows no step.
+    private func between(_ phase: WorkoutDisplayState.Phase, on slotID: String) -> WorkoutDisplayState {
+        var state = WorkoutDisplayState(phase: phase, workoutName: "Strength", current: nil,
+            next: nil, restEndDate: nil, timedEndDate: nil, timedStartDate: nil,
+            workoutStartDate: nil, message: nil, isFreestyle: false)
+        state.outline = ["slot-1", "slot-2", "slot-3"].map { id in
+            WorkoutDisplayState.OutlineEntry(slotID: id, exerciseName: "Exercise \(id)", setsDone: 3,
+                totalSets: 3, isCurrent: id == slotID, isSkipped: false, isWarmup: false,
+                groupTitle: nil, prescription: "3 × 5")
+        }
+        state.acceptsCommands = true
+        return state
+    }
+
+    private func settle() async {
+        for _ in 0..<10 { await Task.yield() }
+    }
+
+    func testControlsRoundTripSealedAndOlderBuildsCannotReadThem() throws {
+        // Older builds decode only the messages they know, so a control or an
+        // answer must reach only a peer that announced it reads them.
+        struct OlderEnvelope: Decodable {
+            enum Message: Decodable { case station(StationLinkStationState, armID: UUID?), disarm(armID: UUID) }
+            let version: Int
+            let message: Message
+        }
+        let key = Data(repeating: 9, count: 32)
+        // A load converted to the iPhone's display unit must come back
+        // exactly, or the iPhone wouldn't recognise the step it showed.
+        let shown = WorkoutDisplayState.Step(slotID: "slot-1", exerciseName: "Back Squat",
+            weight: WeightUnit.kg.convert(61.5, to: .lb), weightUnit: .lb, reps: 8, durationSeconds: nil,
+            setNumber: 2, totalSets: 3, exerciseNumber: 1, totalExercises: 2, isWarmup: false,
+            isBodyweight: false, isUnilateral: false, isPerHand: false, groupTitle: nil,
+            roundNumber: nil, totalRounds: nil, rpe: 8.5)
+        let commands = [
+            StationLinkCommand(.logSet, step: shown), StationLinkCommand(.endRest),
+            StationLinkCommand(.startTimer, step: shown), StationLinkCommand(.stopTimer, step: shown),
+            StationLinkCommand(.setValues(SetCorrectionValues(weight: 61.5, reps: 8, rpe: 8.5, durationSeconds: nil),
+                                          unit: .kg), step: shown),
+            StationLinkCommand(.select(slotID: "slot-2"), phase: .exerciseComplete, currentSlotID: "slot-1"),
+        ]
+        var messages = commands.map(StationLinkMessage.command)
+        messages.append(.commandReceipt(.accepted(commands[0])))
+        messages.append(.commandReceipt(.refused(commands[1], StationLinkCommandReceipt.movedOn)))
+        for message in messages {
+            let encoded = try message.encoded()
+            XCTAssertEqual(StationLinkMessage.decode(encoded), message)
+            XCTAssertThrowsError(try JSONDecoder().decode(OlderEnvelope.self, from: encoded))
+            let sealed = try XCTUnwrap(StationLink.seal(message, sessionKey: key, senderRole: "station", counter: 1))
+            XCTAssertEqual(StationLink.open(sealed, sessionKey: key, senderRole: "station", after: 0)?.message, message)
+        }
+        XCTAssertEqual(commands.map(\.actsOnShownSet), [true, false, true, true, true, false])
+        XCTAssertEqual(commands.map(\.choosesExercise), [false, false, false, false, false, true])
+    }
+
+    func testOlderDisplayReadersIgnoreTheOutlineAndControlFlag() throws {
+        // The display fields an older iPad reads, as its decoder declares them.
+        struct OlderDisplay: Decodable, Equatable {
+            let phase: String
+            let workoutName: String
+            let isFreestyle: Bool
+        }
+        struct OlderEnvelope: Decodable {
+            let version: Int
+            let displayUpdate: Bool?
+            let display: OlderDisplay?
+        }
+        var state = controlled(set: 1)
+        state.outline = [WorkoutDisplayState.OutlineEntry(slotID: "slot-1", exerciseName: "Back Squat",
+            setsDone: 0, totalSets: 3, isCurrent: true, isSkipped: false, isWarmup: false,
+            groupTitle: nil, prescription: "3 × 5 · 100 lb")]
+        let older = try JSONDecoder().decode(OlderEnvelope.self, from: try StationLinkMessage.display(state).encoded())
+        XCTAssertEqual(older.displayUpdate, true)
+        XCTAssertEqual(older.display, OlderDisplay(phase: "ready", workoutName: "Strength", isFreestyle: false))
+        var legacy = state
+        legacy.outline = nil
+        legacy.acceptsCommands = nil
+        let current = try XCTUnwrap(StationLinkMessage.decode(try StationLinkMessage.display(legacy).encoded()))
+        XCTAssertEqual(current, .display(legacy), "An older iPhone's display decodes with no outline or controls")
+    }
+
+    func testPhoneAppliesEachIpadControlOnceAndOnlyForTheSetItShowed() async {
+        let controller = StationLinkController()
+        var applied: [StationLinkCommand] = []
+        controller.onCommand = { command in
+            applied.append(command)
+            return .accepted(command)
+        }
+        let first = controlled(set: 1)
+        controller.publishDisplay(first)
+        let log = StationLinkCommand(.logSet, step: first.current)
+        controller.receive(.command(log))
+        controller.receive(.command(log)) // repeated, as over a replaced connection
+        await settle()
+        XCTAssertEqual(applied, [log])
+
+        let second = controlled(set: 2)
+        controller.publishDisplay(second)
+        controller.receive(.command(StationLinkCommand(.logSet, step: first.current)))
+        controller.receive(.command(StationLinkCommand(.logSet)))
+        // A rest end or exercise choice tapped on an older step is late too.
+        controller.receive(.command(StationLinkCommand(.endRest, step: first.current)))
+        controller.receive(.command(StationLinkCommand(.select(slotID: "slot-2"), step: first.current)))
+        let choose = StationLinkCommand(.select(slotID: "slot-2"), step: second.current)
+        controller.receive(.command(choose))
+        await settle()
+        XCTAssertEqual(applied, [log, choose], "A control for a step no longer shown never reaches the runner")
+
+        var older = controlled(set: 2)
+        older.acceptsCommands = nil
+        controller.publishDisplay(older)
+        controller.receive(.command(StationLinkCommand(.endRest, step: older.current)))
+        await settle()
+        controller.publishDisplay(nil)
+        controller.receive(.command(StationLinkCommand(.endRest)))
+        await settle()
+        XCTAssertEqual(applied, [log, choose], "Only a published workout that takes controls applies them")
+    }
+
+    func testAChoiceBetweenSetsAppliesOnlyWhereTheIphoneStillIsAndOffersOne() async {
+        let controller = StationLinkController()
+        var applied: [StationLinkCommand] = []
+        controller.onCommand = { command in
+            applied.append(command)
+            return .accepted(command)
+        }
+        let shown = between(.exerciseComplete, on: "slot-1")
+        controller.publishDisplay(shown)
+        let choose = StationLinkCommand(.select(slotID: "slot-3"), phase: shown.phase, currentSlotID: shown.currentSlotID)
+        controller.receive(.command(choose))
+        await settle()
+        XCTAssertEqual(applied, [choose])
+
+        // On the iPhone the member opens another finished exercise, then
+        // leaves the workout, before the iPad's next choices arrive.
+        controller.publishDisplay(between(.exerciseComplete, on: "slot-2"))
+        controller.receive(.command(StationLinkCommand(.select(slotID: "slot-3"), phase: shown.phase,
+                                                       currentSlotID: shown.currentSlotID)))
+        await settle()
+        let paused = between(.paused, on: "slot-2")
+        controller.publishDisplay(paused)
+        controller.receive(.command(StationLinkCommand(.select(slotID: "slot-3"), phase: paused.phase,
+                                                       currentSlotID: paused.currentSlotID)))
+        await settle()
+        XCTAssertEqual(applied, [choose], "A choice applies only where the iPhone still is, and still offers one")
+    }
+
+    func testIpadSendsOneControlAtATimeAndOnlyToAnIphoneThatTakesThem() {
+        let station = StationLinkStation()
+        station.receive(.display(controlled(set: 1)))
+        XCTAssertFalse(station.acceptsCommands, "Not without a connection")
+        XCTAssertFalse(station.send(.endRest, for: station.display?.current))
+        XCTAssertNil(station.pendingCommand)
+        // An unrelated answer changes nothing.
+        station.receive(.commandReceipt(.accepted(StationLinkCommand(.endRest))))
+        XCTAssertNil(station.commandNotice)
     }
 
     func testDiscoveryTagIsAFilterDerivedFromTheKey() {

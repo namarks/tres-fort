@@ -3,10 +3,19 @@ import Foundation
 extension WeightUnit: Codable {}
 
 /// A read-only projection of the runner, shared by the local iPad and its
-/// authenticated phone-controlled display. It carries no logging authority.
+/// authenticated phone-linked display. It carries no logging authority: a
+/// linked iPad's controls are requests the iPhone applies or refuses.
 struct WorkoutDisplayState: Codable, Equatable {
     enum Phase: String, Codable {
         case ready, active, rest, paused, exerciseComplete, review, finished, blocked
+
+        /// The phases where the iPhone's own outline moves the workout.
+        var offersExerciseChoice: Bool {
+            switch self {
+            case .ready, .rest, .exerciseComplete, .review: return true
+            case .active, .paused, .finished, .blocked: return false
+            }
+        }
     }
 
     struct Step: Codable, Equatable {
@@ -32,6 +41,21 @@ struct WorkoutDisplayState: Codable, Equatable {
         var rpe: Double? = nil
     }
 
+    /// One exercise in the workout outline, in the runner's order.
+    struct OutlineEntry: Codable, Equatable {
+        let slotID: String
+        let exerciseName: String
+        let setsDone: Int
+        /// Nil in freestyle, which prescribes no count.
+        let totalSets: Int?
+        let isCurrent: Bool
+        let isSkipped: Bool
+        let isWarmup: Bool
+        let groupTitle: String?
+        /// The saved prescription, with loads in the display unit.
+        let prescription: String
+    }
+
     let phase: Phase
     let workoutName: String
     let current: Step?
@@ -44,17 +68,29 @@ struct WorkoutDisplayState: Codable, Equatable {
     let workoutStartDate: Date?
     let message: String?
     let isFreestyle: Bool
+    /// Every exercise in the workout. Optional so display packets from before
+    /// the outline still decode; an older iPhone sends none.
+    var outline: [OutlineEntry]? = nil
+    /// The iPhone applies controls tapped on its linked iPad. An older iPhone
+    /// leaves this out, and its iPad only displays the workout.
+    var acceptsCommands: Bool? = nil
+
+    /// The exercise the workout is on, between sets too.
+    var currentSlotID: String? { current?.slotID ?? outline?.first(where: \.isCurrent)?.slotID }
 
     @MainActor
     static func project(sync: SyncModel, paused: Bool = false, displayUnit: WeightUnit? = nil) -> Self {
         let name = sync.selectedDay?.title ?? (sync.isFreestyle ? "Freestyle" : "Workout")
+        // A replaced model (below) shows no workout at all.
+        let outline = sync.terminalActionTarget == nil ? nil : outlineEntries(sync: sync, displayUnit: displayUnit)
         func state(_ phase: Phase, current: Step? = nil, next: Step? = nil,
                    message: String? = nil) -> Self {
             Self(phase: phase, workoutName: name, current: current, next: next,
                  restEndDate: phase == .rest ? sync.restEndDate : nil,
                  timedEndDate: phase == .active ? sync.timedEndDate : nil,
                  timedStartDate: phase == .active ? sync.timedStartDate : nil,
-                 workoutStartDate: sync.workoutStart, message: message, isFreestyle: sync.isFreestyle)
+                 workoutStartDate: sync.workoutStart, message: message, isFreestyle: sync.isFreestyle,
+                 outline: outline)
         }
 
         // This public token is present only for the model's current account
@@ -98,6 +134,20 @@ struct WorkoutDisplayState: Codable, Equatable {
         }
         if sync.restEndDate != nil { return state(.rest, current: current, next: current) }
         return state(.ready, current: current, next: nextStep(after: exercise, sync: sync, displayUnit: displayUnit))
+    }
+
+    @MainActor
+    private static func outlineEntries(sync: SyncModel, displayUnit: WeightUnit?) -> [OutlineEntry] {
+        let groups = ExerciseGroupBlock.blocks(sync.exercises).filter(\.isGroup)
+        return sync.exercises.map { exercise in
+            OutlineEntry(slotID: exercise.id, exerciseName: exercise.exercise_name,
+                setsDone: sync.runnerSetsDone(exercise),
+                totalSets: sync.isFreestyle ? nil : exercise.target_sets,
+                isCurrent: exercise.id == sync.currentExercise?.id,
+                isSkipped: sync.isSkipped(exercise), isWarmup: exercise.isWarmup,
+                groupTitle: groups.first { $0.members.contains { $0.id == exercise.id } }?.title,
+                prescription: exercise.prescriptionLabel(in: displayUnit ?? exercise.targetWeightUnit))
+        }
     }
 
     @MainActor

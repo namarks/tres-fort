@@ -3,8 +3,9 @@ import Foundation
 import UIKit
 
 /// iPhone side of the iPad Station link. It mirrors which set is armed, shows
-/// the iPad's live count and holds a finished count as a proposal. Logging
-/// itself stays in the runner view, through SyncModel's ordinary set path.
+/// the iPad's live count, holds a finished count as a proposal and hands the
+/// controls tapped on the iPad to the runner. Logging itself stays with the
+/// runner, through SyncModel's ordinary guarded actions.
 @MainActor
 final class StationLinkController: ObservableObject {
     @Published private(set) var connection: StationLinkTransport.Connection = .off
@@ -40,16 +41,30 @@ final class StationLinkController: ObservableObject {
     var onPartnerMessage: ((PartnerPacket) -> Void)?
     func sendPartner(_ packet: PartnerPacket) { transport.send(.partner(packet)) }
 
+    /// Applies a control tapped on the iPad to the runner. Commands arrive
+    /// only while a published display accepts them, and run one at a time
+    /// in the order the iPad sent them.
+    var onCommand: ((StationLinkCommand) async -> StationLinkCommandReceipt)?
+
     private let transport: StationLinkTransport
+    /// Seconds an applied command's answer waits for the display showing its
+    /// result, so the iPad never offers the old step again after the answer.
+    private let receiptDelay: TimeInterval
+    private var seenCommands: Set<UUID> = []
+    private var commandQueue: [StationLinkCommand] = []
+    private var isApplyingCommands = false
+    private var heldReceipts: [StationLinkCommandReceipt] = []
     private var seenEvents: Set<UUID> = []
     private var completedArmID: UUID?
     private var cancellable: AnyCancellable?
     private let idleTimer: StationIdleTimerOverride
     private var workoutActive = false
 
-    init(transport: StationLinkTransport? = nil, idleTimer: StationIdleTimerOverride? = nil) {
+    init(transport: StationLinkTransport? = nil, idleTimer: StationIdleTimerOverride? = nil,
+         receiptDelay: TimeInterval = 0.3) {
         self.transport = transport ?? StationLinkTransport(role: .controller)
         self.idleTimer = idleTimer ?? StationIdleTimerOverride()
+        self.receiptDelay = receiptDelay
         cancellable = self.transport.$connection.sink { [weak self] value in
             self?.connectionChanged(value)
         }
@@ -109,6 +124,7 @@ final class StationLinkController: ObservableObject {
         guard display != state else { return }
         display = state
         transport.send(.display(state))
+        releaseReceipts()
     }
 
     func resendCurrentState() {
@@ -158,6 +174,61 @@ final class StationLinkController: ObservableObject {
         pendingUndo = nil
         seenEvents.removeAll()
         completedArmID = nil
+        // Queued controls belonged to the old workout; IDs stay spent.
+        commandQueue.removeAll()
+    }
+
+    /// Queues a control from the iPad. Each command is applied at most once:
+    /// one repeated by a reconnect is ignored.
+    private func receive(_ command: StationLinkCommand) {
+        guard seenCommands.insert(command.id).inserted else { return }
+        commandQueue.append(command)
+        guard !isApplyingCommands else { return }
+        isApplyingCommands = true
+        Task { @MainActor [weak self] in await self?.applyCommands() }
+    }
+
+    private func applyCommands() async {
+        while !commandQueue.isEmpty {
+            let command = commandQueue.removeFirst()
+            // Only a live, published workout takes controls; a withdrawn
+            // display means the runner closed or changed hands meanwhile.
+            guard display?.acceptsCommands == true, let onCommand else {
+                answer(.refused(command, StationLinkCommandReceipt.openWorkout))
+                continue
+            }
+            // A control acts only on what this iPhone last showed, a set
+            // control only on a set, and a choice only where one is offered.
+            if !command.matches(display) || command.actsOnShownSet && command.step == nil
+                || command.choosesExercise && display?.phase.offersExerciseChoice != true {
+                answer(.refused(command, StationLinkCommandReceipt.movedOn))
+                continue
+            }
+            answer(await onCommand(command))
+        }
+        isApplyingCommands = false
+    }
+
+    private func answer(_ receipt: StationLinkCommandReceipt) {
+        guard receipt.accepted else {
+            transport.send(.commandReceipt(receipt))
+            return
+        }
+        // The runner changed, so the display showing it is about to be
+        // published; the answer follows it, or goes alone if nothing changed.
+        heldReceipts.append(receipt)
+        let delay = receiptDelay
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            self?.releaseReceipts()
+        }
+    }
+
+    private func releaseReceipts() {
+        guard !heldReceipts.isEmpty else { return }
+        let receipts = heldReceipts
+        heldReceipts.removeAll()
+        for receipt in receipts { transport.send(.commandReceipt(receipt)) }
     }
 
     /// Arms the iPad for the runner's current set, or disarms it with nil.
@@ -261,7 +332,9 @@ final class StationLinkController: ObservableObject {
             stationState = state
             // A set taken over by hand stays manual, even across a reconnect.
             if state == .manual, let armID { completedArmID = armID }
-        case .display, .arm, .disarm, .challenge, .proof:
+        case .command(let command):
+            receive(command)
+        case .display, .arm, .disarm, .commandReceipt, .challenge, .proof:
             break // only the iPhone arms sets; the transport authenticates
         }
     }

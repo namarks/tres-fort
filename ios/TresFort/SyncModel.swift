@@ -4777,11 +4777,15 @@ final class SyncModel: ObservableObject {
 
     // MARK: timed exercises (plank, holds)
 
+    /// Starts the current timed set. A start that must first resolve the
+    /// previous timer's cue runs later: the returned task finishes once it
+    /// has started the set or given up. Nil when nothing waits.
+    @discardableResult
     func startTimedSet(
         expected renderedExercise: TemplateExercise,
         expectedSetNumber: Int,
         at start: Date? = nil
-    ) {
+    ) -> Task<Void, Never>? {
         guard canInitiateBoundFeatureAction,
               currentJWT != nil,
               running,
@@ -4795,12 +4799,12 @@ final class SyncModel: ObservableObject {
               !isTerminalMutationInFlight,
               !hasPendingTerminalIntentForCurrentWorkout,
               !isSetEntryBlocked(ex)
-        else { return }
+        else { return nil }
         if let pendingCue = pendingTimedCueGeneration {
             // Resolve the previous timer's notification before scheduling a
             // replacement in that same OS slot. A quick new START can precede
             // MainTabView's asynchronous foreground recovery.
-            Task { [weak self] in
+            return Task { [weak self] in
                 guard let self else { return }
                 await self.finishPendingTimedCue()
                 if self.pendingTimedCueGeneration != nil {
@@ -4815,10 +4819,9 @@ final class SyncModel: ObservableObject {
                     else { return }
                     self.pendingTimedCueGeneration = nil
                 }
-                self.startTimedSet(expected: renderedExercise,
-                    expectedSetNumber: expectedSetNumber, at: start)
+                await self.startTimedSet(expected: renderedExercise,
+                    expectedSetNumber: expectedSetNumber, at: start)?.value
             }
-            return
         }
         if restEndDate != nil { skipRest() }
         skipped.remove(ex.id)
@@ -4846,7 +4849,7 @@ final class SyncModel: ObservableObject {
             isWarmup: ex.isWarmup,
             startedAt: startedAt,
             endDate: endDate)
-        guard persistRunnerCheckpoint() else { return }
+        guard persistRunnerCheckpoint() else { return nil }
         RestLiveActivity.start(exercise: ex.exercise_name, endDate: endDate,
                                upNext: "\(holdDurationSeconds)s", timerKind: "set", controlID: timedControlID)
         pendingTimedCueGeneration = nil
@@ -4854,6 +4857,7 @@ final class SyncModel: ObservableObject {
         RestCue.prepareTimedCues()
         timedCueGeneration = RestCue.scheduleTimedNotification(at: endDate)
         scheduleTimedSetCompletion()
+        return nil
     }
 
     /// Own completion in the model so navigation cannot cancel the set. iOS

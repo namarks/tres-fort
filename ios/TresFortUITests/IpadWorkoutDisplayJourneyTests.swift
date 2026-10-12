@@ -263,6 +263,96 @@ final class IpadWorkoutDisplayJourneyTests: XCTestCase {
         XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))
     }
 
+    func testLinkedControlsMoveTheIphoneWorkoutBesideItsOutlineAndClock() {
+        let app = launch(linked: "controls")
+        let phase = app.staticTexts["ipadWorkout.phase"]
+        expectLabel("READY FOR YOUR SET", on: phase)
+        XCTAssertEqual(app.staticTexts["runner.exerciseTitle"].label, "CABLE FACE PULL")
+        XCTAssertEqual(element("ipadWorkout.target", in: app).label, "22.5 kg × 12 reps · RPE 8")
+        XCTAssertEqual(app.staticTexts["ipadWorkout.position"].label, "SET 1 OF 3")
+        assertVisible(element("ipadWorkout.clock", in: app), in: app)
+        assertVisible(element("ipadWorkout.workoutTime", in: app), in: app)
+        let outline = element("ipadWorkout.outline", in: app)
+        XCTAssertTrue(outline.exists)
+        XCTAssertTrue(app.frame.contains(outline.frame), "The outline sits beside the set")
+        XCTAssertFalse(element("ipadWorkout.next", in: app).exists, "The outline takes the place of Up next")
+        capture("ipad-display-linked-controls")
+
+        // Log the set here; the iPhone logs it and starts the rest.
+        let log = app.buttons["runner.logSet"]
+        assertVisible(log, in: app)
+        XCTAssertEqual(log.label, "LOG SET 1")
+        log.tap()
+        let endRest = app.buttons["rest.done"]
+        XCTAssertTrue(endRest.waitForExistence(timeout: 5))
+        expectLabel("REST", on: phase)
+        XCTAssertEqual(app.staticTexts["ipadWorkout.position"].label, "SET 2 OF 3")
+        XCTAssertFalse(log.isEnabled, "End rest before logging the next set")
+        endRest.tap()
+        expectLabel("READY FOR YOUR SET", on: phase)
+        XCTAssertEqual(log.label, "LOG SET 2")
+
+        app.buttons["runner.editValues"].tap()
+        let editor = app.navigationBars["Next set"]
+        XCTAssertTrue(editor.waitForExistence(timeout: 5))
+        replace(app.textFields["Reps"], with: "10")
+        editor.buttons["Save"].tap()
+        expectLabel("22.5 kg × 10 reps · RPE 8", on: element("ipadWorkout.target", in: app))
+
+        // Choosing an exercise in the outline moves the iPhone there without skipping.
+        let goblet = app.buttons["ipadWorkout.outline.synthetic-control-goblet"]
+        assertVisible(goblet, in: app)
+        goblet.tap()
+        expectLabel("GOBLET SQUAT", on: app.staticTexts["runner.exerciseTitle"])
+        XCTAssertEqual(app.staticTexts["ipadWorkout.position"].label, "SET 1 OF 3")
+        let facePull = app.buttons["ipadWorkout.outline.synthetic-control-face-pull"]
+        XCTAssertTrue((facePull.value as? String)?.contains("1 of 3 sets") == true)
+
+        let plank = app.buttons["ipadWorkout.outline.synthetic-control-plank"]
+        assertVisible(plank, in: app)
+        plank.tap()
+        expectLabel("PLANK", on: app.staticTexts["runner.exerciseTitle"])
+        let start = app.buttons["runner.startSet"]
+        XCTAssertEqual(start.label, "START SET 1")
+        start.tap()
+        let stop = app.buttons["runner.stopTimedSet"]
+        XCTAssertTrue(stop.waitForExistence(timeout: 5))
+        XCTAssertFalse(facePull.isEnabled, "A running hold stays until it is stopped")
+        stop.tap()
+        XCTAssertTrue(endRest.waitForExistence(timeout: 5))
+        expectLabel("REST", on: phase)
+
+        let toggle = app.buttons["ipadWorkout.outlineToggle"]
+        XCTAssertEqual(toggle.label, "Hide outline")
+        toggle.tap()
+        XCTAssertTrue(element("ipadWorkout.next", in: app).waitForExistence(timeout: 5))
+        XCTAssertFalse(outline.exists)
+        toggle.tap()
+        XCTAssertTrue(outline.waitForExistence(timeout: 5))
+
+        orient(.portrait, in: app)
+        assertVisible(element("ipadWorkout.clock", in: app), in: app)
+        assertVisible(app.staticTexts["runner.exerciseTitle"], in: app)
+        assertVisible(app.buttons["ipadWorkout.outline.synthetic-control-plank"], in: app)
+        assertVisible(endRest, in: app)
+        capture("ipad-display-linked-controls-portrait")
+    }
+
+    func testReconnectingKeepsTheLinkedWorkoutOnScreenWithItsControlsOff() {
+        let app = launch(linked: "reconnecting")
+        assertVisible(element("ipadWorkout.reconnecting", in: app), in: app)
+        XCTAssertEqual(app.staticTexts["runner.exerciseTitle"].label, "CABLE FACE PULL")
+        XCTAssertEqual(app.staticTexts["ipadWorkout.position"].label, "SET 1 OF 3")
+        let log = app.buttons["runner.logSet"]
+        XCTAssertTrue(log.exists, "Controls keep their place while the iPhone reconnects")
+        XCTAssertFalse(log.isEnabled)
+        XCTAssertFalse(app.buttons["runner.editValues"].isEnabled)
+        XCTAssertFalse(app.buttons["ipadWorkout.outline.synthetic-control-goblet"].isEnabled)
+        capture("ipad-display-linked-reconnecting")
+        app.buttons["station.done"].tap()
+        XCTAssertTrue(app.buttons["today.startWorkout"].waitForExistence(timeout: 5))
+    }
+
     private func replace(_ field: XCUIElement, with text: String) {
         XCTAssertTrue(field.waitForExistence(timeout: 5))
         let old = field.value as? String ?? ""

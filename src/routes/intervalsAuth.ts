@@ -26,10 +26,13 @@ import {
 
 export const intervalsAuthRoutes = new Hono<HonoEnv>();
 
-/** Read scopes we request. WRITE on CALENDAR so we can export lifting load as
- *  WeightTraining events; READ on ACTIVITY for completed-ride awareness.
- *  (CALENDAR:WRITE implies READ, covering planned-event ingestion.) */
-const SCOPES = 'ACTIVITY:READ,CALENDAR:WRITE';
+/** Scopes we request. WRITE on ACTIVITY so log_activity can create (and
+ *  delete) the endurance sessions it routes to intervals.icu; WRITE on
+ *  CALENDAR from the old WeightTraining event export. Each WRITE implies READ,
+ *  covering completed-activity and planned-event ingestion. Grants made
+ *  before ACTIVITY:WRITE was requested stay read-only until the member
+ *  reconnects; log_activity reports that as intervals_write_forbidden. */
+const SCOPES = 'ACTIVITY:WRITE,CALENDAR:WRITE';
 
 /** Where intervals.icu sends the browser back. MUST exactly match a redirect
  *  URI registered on the app's Manage App page (/oauth/client/<n>) AND be

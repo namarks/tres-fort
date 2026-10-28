@@ -42,7 +42,8 @@ A Streamable-HTTP MCP server at `/mcp` exposing the same service layer:
 - **Read:** `get_coach_brief`, `get_current_plan`, `get_today_workout`, `get_current_session`,
   `get_session_log`, `get_history`, `get_volume_trend`, `list_exercises`,
   `get_upcoming_rides`, `get_recent_activities`, `get_group_feed`
-- **Write:** `log_set`, `correct_set`, `delete_set`, `log_activity`, `log_workout_complete`,
+- **Write:** `log_set`, `correct_set`, `delete_set`, `log_activity` (endurance types go to
+  intervals.icu, the rest to the local log), `delete_activity`, `log_workout_complete`,
   `discard_workout` (explicit session ID and expected attempt; soft-deletes its sets),
   `add_note`, `update_plan` (transactional, `expected_version` → structured
   `{conflict, current_version}` result on mismatch), `update_exercise`,

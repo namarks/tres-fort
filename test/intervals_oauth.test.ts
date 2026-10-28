@@ -157,7 +157,7 @@ describe('POST /auth/intervals/start', () => {
     expect(`${u.origin}${u.pathname}`).toBe('https://intervals.icu/oauth/authorize');
     expect(u.searchParams.get('client_id')).toBe('431');
     expect(u.searchParams.get('redirect_uri')).toBe(`${BASE}/auth/intervals/callback`);
-    expect(u.searchParams.get('scope')).toBe('ACTIVITY:READ,CALENDAR:WRITE');
+    expect(u.searchParams.get('scope')).toBe('ACTIVITY:WRITE,CALENDAR:WRITE');
     expect(u.searchParams.get('response_type')).toBe('code');
     const state = u.searchParams.get('state')!;
     expect(state.length).toBeGreaterThan(20);

@@ -3,6 +3,7 @@ import {
   type IntervalsConnectionStatus, type IntervalsUserCreds, type ActivityDedupeWindow,
 } from './services/intervalsSync';
 import { createOAuthGrantService } from './services/oauthGrants';
+import { createIntervalsActivityWriteService } from './services/intervalsActivityWrite';
 import { isPartnerWorkoutInput, isPartnerStartInput, partnerRequestJSON, partnerSlotKeys,
   type PartnerWorkoutInput, type PartnerStartInput, type PartnerSlot } from './partnerTraining';
 import { validWorkoutTags, normalizeWorkoutTags, validArchivedAt } from './workoutMetadata';
@@ -6169,6 +6170,10 @@ export interface ActivityInput {
   type: string;
   title?: string | null;
   duration_minutes?: number | null;
+  /** Precise duration (migration 0057); duration_minutes stays the rounded view. */
+  duration_s?: number | null;
+  avg_hr?: number | null;
+  calories?: number | null;
   notes?: string | null;
   logged_at?: number;
 }
@@ -6189,8 +6194,9 @@ export async function logActivity(
   await db
     .prepare(
       `INSERT INTO activities
-         (id,user_id,date,type,title,duration_minutes,notes,logged_at,source,deleted_at,updated_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL,?10)
+         (id,user_id,date,type,title,duration_minutes,notes,logged_at,source,deleted_at,updated_at,
+          duration_s,avg_hr,calories)
+       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,NULL,?10,?11,?12,?13)
        ON CONFLICT(id) DO NOTHING`,
     )
     .bind(
@@ -6204,6 +6210,9 @@ export async function logActivity(
       loggedAt,
       source,
       updatedAt,
+      input.duration_s ?? null,
+      input.avg_hr ?? null,
+      input.calories ?? null,
     )
     .run();
   // Re-select so retries return the *original* persisted row (preserving the
@@ -8843,10 +8852,14 @@ export interface HealthKitActivityInput {
   raw: string | null;
 }
 export type { SyncStatus, SyncResult, SyncDeps, ActivitySyncDeps, IntervalsImportResult, IntervalsConnectionStatus, IntervalsUserCreds, ActivityDedupeWindow } from './services/intervalsSync';
-export const { syncExternalEvents, getUpcomingRides, reconcileIntervalsConnection, syncExternalActivities, getRecentActivities } = createIntervalsSyncService({
+export const { syncExternalEvents, getUpcomingRides, reconcileIntervalsConnection, syncExternalActivities, getRecentActivities, resolveIntervalsCredential } = createIntervalsSyncService({
   getUserIntervalsCreds, findOwnerRow, userHasTouchedIntervalsCreds,
   seedOwnerIntervalsCredsFromEnv, ensureOwnerUser, getIntervalsConnectionStatus,
   getUserTimezone, todayInTz, dedupeHealthKitAgainstIntervals,
+});
+export type { EnduranceActivityInput, EnduranceLogResult, IntervalsDeleteResult } from './services/intervalsActivityWrite';
+export const { logEnduranceActivity, deleteIntervalsActivityByExternalId } = createIntervalsActivityWriteService({
+  resolveIntervalsCredential, syncExternalActivities,
 });
 
 /** HealthKit encodes the device-local wall clock as UTC-like epoch ms. */

@@ -463,3 +463,174 @@ export function isOwnExportMarker(raw: { external_id?: unknown }): boolean {
   const ext = typeof raw.external_id === 'string' ? raw.external_id : '';
   return ext.startsWith('liftcoach:session:');
 }
+
+// ---- WRITE path: manual completed activities ---------------------------
+//
+// log_activity routes endurance sessions here instead of the local
+// activities table so they count toward intervals.icu training load. The
+// created activity returns through the normal completed-activity sync.
+// Same discipline as the readers: injectable fetcher, dormant when
+// unconfigured, discriminated result, never throws.
+
+/** Body of POST /api/v1/athlete/{id}/activities/manual. Field names are the
+ *  intervals.icu Activity schema's. */
+export interface ManualActivityInput {
+  name: string;
+  type: string;
+  /** Civil "YYYY-MM-DDTHH:MM:SS" in the athlete's timezone, no zone suffix. */
+  start_date_local: string;
+  moving_time: number;
+  elapsed_time: number;
+  distance?: number;
+  average_heartrate?: number;
+  calories?: number;
+  trainer: boolean;
+  description?: string;
+  external_id: string;
+}
+
+/** The fields of a provider activity that create, dedupe and delete need. */
+export interface IntervalsActivityRef {
+  id: string;
+  type: string | null;
+  name: string | null;
+  start_date_local: string | null;
+  moving_time: number | null;
+  elapsed_time: number | null;
+  distance: number | null;
+  external_id: string | null;
+}
+
+export type IntervalsWriteResult<T> =
+  | { ok: true; value: T }
+  | {
+      ok: false;
+      reason: 'disabled' | 'http' | 'timeout' | 'parse';
+      status?: number;
+      /** Provider error text, truncated, when the body carried one. */
+      message?: string;
+    };
+
+export interface WriteDeps {
+  fetcher?: Fetcher;
+  timeoutMs?: number;
+  accessToken?: string | null;
+}
+
+function activityRef(raw: Record<string, unknown>): IntervalsActivityRef | null {
+  const id = providerId(raw.id);
+  if (id === null) return null;
+  return {
+    id,
+    type: str(raw.type),
+    name: str(raw.name),
+    start_date_local: str(raw.start_date_local),
+    moving_time: num(raw.moving_time),
+    elapsed_time: num(raw.elapsed_time),
+    distance: num(raw.distance),
+    external_id: str(raw.external_id),
+  };
+}
+
+async function intervalsRequest(
+  url: string,
+  method: 'GET' | 'POST' | 'DELETE',
+  authHeader: string,
+  body: unknown,
+  deps: WriteDeps,
+): Promise<IntervalsWriteResult<unknown>> {
+  const fetcher = deps.fetcher ?? (globalThis.fetch as unknown as Fetcher);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 10_000);
+  let res: Awaited<ReturnType<Fetcher>>;
+  try {
+    res = await fetcher(url, {
+      method,
+      headers: {
+        Authorization: authHeader,
+        Accept: 'application/json',
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: controller.signal,
+    });
+  } catch {
+    return { ok: false, reason: 'timeout' };
+  } finally {
+    clearTimeout(timer);
+  }
+  let parsed: unknown = null;
+  let parseFailed = false;
+  try {
+    parsed = await res.json();
+  } catch {
+    parseFailed = true;
+  }
+  if (!res.ok) {
+    const message =
+      isRecord(parsed) && typeof parsed.error === 'string'
+        ? parsed.error.slice(0, 200)
+        : isRecord(parsed) && typeof parsed.message === 'string'
+          ? parsed.message.slice(0, 200)
+          : undefined;
+    return { ok: false, reason: 'http', status: res.status, ...(message ? { message } : {}) };
+  }
+  // A DELETE may answer with an empty body; only reads and creates need JSON.
+  if (parseFailed && method !== 'DELETE') return { ok: false, reason: 'parse' };
+  return { ok: true, value: parsed };
+}
+
+/** POST one manual activity; returns the created provider activity. */
+export async function createManualActivity(
+  apiKey: string | null | undefined,
+  athleteId: string | null | undefined,
+  input: ManualActivityInput,
+  deps: WriteDeps = {},
+): Promise<IntervalsWriteResult<IntervalsActivityRef>> {
+  const authHeader = intervalsAuthHeader(apiKey, deps.accessToken);
+  if (!authHeader || !athleteId) return { ok: false, reason: 'disabled' };
+  const url =
+    `https://intervals.icu/api/v1/athlete/${encodeURIComponent(athleteId)}` +
+    '/activities/manual';
+  const r = await intervalsRequest(url, 'POST', authHeader, input, deps);
+  if (!r.ok) return r;
+  const ref = isRecord(r.value) ? activityRef(r.value) : null;
+  return ref ? { ok: true, value: ref } : { ok: false, reason: 'parse' };
+}
+
+/** GET the athlete's completed activities in [oldest, newest] (civil dates). */
+export async function listActivityRefs(
+  apiKey: string | null | undefined,
+  athleteId: string | null | undefined,
+  oldest: string,
+  newest: string,
+  deps: WriteDeps = {},
+): Promise<IntervalsWriteResult<IntervalsActivityRef[]>> {
+  const authHeader = intervalsAuthHeader(apiKey, deps.accessToken);
+  if (!authHeader || !athleteId) return { ok: false, reason: 'disabled' };
+  const url =
+    `https://intervals.icu/api/v1/athlete/${encodeURIComponent(athleteId)}` +
+    `/activities?oldest=${oldest}&newest=${newest}`;
+  const r = await intervalsRequest(url, 'GET', authHeader, undefined, deps);
+  if (!r.ok) return r;
+  if (!Array.isArray(r.value)) return { ok: false, reason: 'parse' };
+  const refs: IntervalsActivityRef[] = [];
+  for (const item of r.value) {
+    const ref = isRecord(item) ? activityRef(item) : null;
+    if (ref) refs.push(ref);
+  }
+  return { ok: true, value: refs };
+}
+
+/** DELETE /api/v1/activity/{id}. */
+export async function deleteIntervalsActivity(
+  apiKey: string | null | undefined,
+  activityId: string,
+  deps: WriteDeps = {},
+): Promise<IntervalsWriteResult<null>> {
+  const authHeader = intervalsAuthHeader(apiKey, deps.accessToken);
+  if (!authHeader) return { ok: false, reason: 'disabled' };
+  const url = `https://intervals.icu/api/v1/activity/${encodeURIComponent(activityId)}`;
+  const r = await intervalsRequest(url, 'DELETE', authHeader, undefined, deps);
+  return r.ok ? { ok: true, value: null } : r;
+}

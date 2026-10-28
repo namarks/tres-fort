@@ -151,6 +151,7 @@ describe('mcp tools list', () => {
         'update_workout',
         'delete_exercise',
         'log_activity',
+        'delete_activity',
         'get_group_feed',
         'set_race',
         'set_periodization',
@@ -160,7 +161,7 @@ describe('mcp tools list', () => {
         'set_stress_model',
       ]),
     );
-    expect(names).toHaveLength(42);
+    expect(names).toHaveLength(43);
     for (const t of body.result.tools) expect(t.inputSchema.type).toBe('object');
     const correction = body.result.tools.find((t: any) => t.name === 'correct_set');
     expect(correction.inputSchema.required).toEqual(['set_id']);

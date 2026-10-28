@@ -437,6 +437,33 @@ export function createIntervalsSyncService({
     return owner?.id === userId && !(await userHasTouchedIntervalsCreds(db, userId));
   }
 
+  /**
+   * The credential a direct provider WRITE (log_activity's endurance route)
+   * should use for one user. Same selection as the explicit-user sync path,
+   * including persisting the untouched owner's legacy env identity first. No
+   * attempt is claimed: a write never touches the reconciled caches, and an
+   * auth rejection on a write must not disconnect a credential that still
+   * reads (an OAuth grant may lack ACTIVITY:WRITE), so callers only report it.
+   */
+  async function resolveIntervalsCredential(
+    db: D1Database,
+    env: Env,
+    userId: string,
+  ): Promise<{ apiKey: string | null; accessToken: string | null; athleteId: string } | null> {
+    let creds = await getUserIntervalsCreds(db, userId);
+    if (await canUseOwnerIntervalsEnvFallback(db, userId, env.OWNER_APPLE_SUB, creds)) {
+      await seedOwnerIntervalsCredsFromEnv(
+        db,
+        env.INTERVALS_ICU_API_KEY,
+        env.INTERVALS_ICU_ATHLETE_ID,
+        env.OWNER_APPLE_SUB,
+      );
+      creds = await getUserIntervalsCreds(db, userId);
+    }
+    if (!creds.athlete_id || (!creds.api_key && !creds.access_token)) return null;
+    return { apiKey: creds.api_key, accessToken: creds.access_token, athleteId: creds.athlete_id };
+  }
+
   // ── intervals.icu auth-failure recovery ──────────────────────────────────
   // A 401/403 from intervals.icu means the credential is DEAD (expired or
   // revoked), not a transient outage — so it must NOT be swallowed as the
@@ -1601,5 +1628,5 @@ export function createIntervalsSyncService({
       .all<ExternalActivityRow>();
     return r.results.map(withActivityAttribution);
   }
- return { syncExternalEvents, getUpcomingRides, reconcileIntervalsConnection, syncExternalActivities, getRecentActivities };
+ return { syncExternalEvents, getUpcomingRides, reconcileIntervalsConnection, syncExternalActivities, getRecentActivities, resolveIntervalsCredential };
 }

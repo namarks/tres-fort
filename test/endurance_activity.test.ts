@@ -21,6 +21,7 @@ const ORIGIN = 'https://intervals.icu';
 const ATHLETE = 'i12345';
 const DATE = '2026-10-27';
 const BACKFILL_ID = '3f0c1d2e-4b5a-4c6d-8e7f-9a0b1c2d3e4f';
+const BACKFILL_EXT = `tresfort:activity:${BACKFILL_ID}`;
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -200,7 +201,7 @@ describe('MCP log_activity endurance route', () => {
       ok: true,
       destination: 'intervals.icu',
       deduplicated: false,
-      external_id: BACKFILL_ID,
+      activity_id: BACKFILL_ID,
       derived: ['distance_from_pace'],
       refresh: { status: 'ok' },
     });
@@ -215,7 +216,7 @@ describe('MCP log_activity endurance route', () => {
       average_heartrate: 151,
       calories: 347,
       description: 'Easy effort',
-      external_id: BACKFILL_ID,
+      external_id: BACKFILL_EXT,
     });
     expect(sent.distance / 1609.344).toBeCloseTo(3.01, 2);
     fetchMock.assertNoPendingInterceptors();
@@ -250,7 +251,7 @@ describe('MCP log_activity endurance route', () => {
       elapsed_time: 4500,
       distance: 32500,
       trainer: false,
-      external_id: res.external_id,
+      external_id: `tresfort:activity:${res.activity_id}`,
     });
   });
 
@@ -262,7 +263,8 @@ describe('MCP log_activity endurance route', () => {
     ]);
     // No POST interceptor: a create would fail closed under disableNetConnect.
     const res = await call('log_activity', { type: 'treadmill', date: DATE, duration_s: 1447, start_time: '18:00' });
-    expect(res).toMatchObject({ ok: true, deduplicated: true, intervals_activity: { id: 'i701' } });
+    // A watch import is reported, but it is not ours to delete.
+    expect(res).toMatchObject({ ok: true, deduplicated: true, activity_id: null, intervals_activity: { id: 'i701' } });
     expect(res.message).toMatch(/^Already on intervals.icu/);
     fetchMock.assertNoPendingInterceptors();
     // Audited, but no coach note for a no-op.
@@ -273,10 +275,10 @@ describe('MCP log_activity endurance route', () => {
   it('returns the activity already created with the same activity_id', async () => {
     await ownerId();
     fetchMock.get(ORIGIN).intercept({ method: 'GET', path: dayLookup(DATE) }).reply(200, [
-      { id: 'i702', type: 'Run', start_date_local: `${DATE}T07:30:00`, moving_time: 3000, external_id: BACKFILL_ID },
+      { id: 'i702', type: 'Run', start_date_local: `${DATE}T07:30:00`, moving_time: 3000, external_id: BACKFILL_EXT },
     ]);
     const res = await call('log_activity', { type: 'run', date: DATE, duration_s: 1447, activity_id: BACKFILL_ID });
-    expect(res).toMatchObject({ ok: true, deduplicated: true, external_id: BACKFILL_ID, intervals_activity: { id: 'i702' } });
+    expect(res).toMatchObject({ ok: true, deduplicated: true, activity_id: BACKFILL_ID, intervals_activity: { id: 'i702' } });
   });
 
   it('does not treat a different sport or a longer session as a duplicate', async () => {
@@ -348,7 +350,7 @@ describe('MCP log_activity endurance route', () => {
     const id = crypto.randomUUID();
     await env.DB.prepare('INSERT INTO users (id,apple_sub,created_at) VALUES (?1,?1,?2)').bind(id, Date.now()).run();
     const res = await logEnduranceActivity(env.DB, env, id, {
-      external_id: crypto.randomUUID(),
+      activity_id: crypto.randomUUID(),
       date: DATE,
       start_time: '07:00',
       mapping: intervalsTypeFor(enduranceAlias('run')!),
@@ -410,37 +412,55 @@ describe('MCP delete_activity', () => {
     const provider = fetchMock.get(ORIGIN);
     provider.intercept({ method: 'GET', path: dayLookup(DATE) }).reply(200, [
       { id: 'i800', type: 'Run', start_date_local: `${DATE}T07:30:00`, external_id: 'someone-else' },
-      { id: 'i801', type: 'Run', start_date_local: `${DATE}T07:30:00`, external_id: BACKFILL_ID },
+      { id: 'i801', type: 'Run', start_date_local: `${DATE}T07:30:00`, external_id: BACKFILL_EXT },
     ]);
     provider.intercept({ method: 'DELETE', path: '/api/v1/activity/i801' }).reply(200, {});
     provider.intercept({ method: 'GET', path: refreshWindow }).reply(200, []);
     const res = await call('delete_activity', { id: BACKFILL_ID, date: DATE });
     expect(res).toMatchObject({
-      ok: true, destination: 'intervals.icu', external_id: BACKFILL_ID, intervals_activity_id: 'i801',
+      ok: true, destination: 'intervals.icu', activity_id: BACKFILL_ID, intervals_activity_id: 'i801',
     });
     fetchMock.assertNoPendingInterceptors();
   });
 
-  it('uses the synced cache to find the provider id', async () => {
+  it('uses the synced cache to find the provider id and refreshes a window containing its date', async () => {
     const userId = await ownerId();
+    // Older than the default 90-day sync window.
+    const old = new Date(Date.now() - 200 * 86_400_000).toISOString().slice(0, 10);
     await env.DB.prepare(
       `INSERT INTO external_activities (id,user_id,source,external_id,date,kind,raw,synced_at)
        VALUES (?1,?2,'intervals','i802',?3,'run',?4,1)`,
-    ).bind(`intervals:${userId}:i802`, userId, DATE, JSON.stringify({ id: 'i802', external_id: BACKFILL_ID })).run();
+    ).bind(`intervals:${userId}:i802`, userId, old, JSON.stringify({ id: 'i802', external_id: BACKFILL_EXT })).run();
     const provider = fetchMock.get(ORIGIN);
     provider.intercept({ method: 'DELETE', path: '/api/v1/activity/i802' }).reply(204, '');
-    provider.intercept({ method: 'GET', path: refreshWindow }).reply(200, []);
-    const res = await call('delete_activity', { id: BACKFILL_ID });
-    expect(res).toMatchObject({ ok: true, intervals_activity_id: 'i802', refresh: { status: 'ok' } });
+    let oldest: string | null = null;
+    provider
+      .intercept({ method: 'GET', path: refreshWindow })
+      .reply(200, (opts) => {
+        oldest = new URL(String(opts.path), ORIGIN).searchParams.get('oldest');
+        return [];
+      });
+    // The prefixed external_id is accepted as well as the bare id.
+    const res = await call('delete_activity', { id: BACKFILL_EXT });
+    expect(res).toMatchObject({ ok: true, activity_id: BACKFILL_ID, intervals_activity_id: 'i802', refresh: { status: 'ok' } });
     fetchMock.assertNoPendingInterceptors();
+    expect(oldest! <= old).toBe(true);
+    const row = await env.DB.prepare('SELECT deleted_at FROM external_activities WHERE id=?1')
+      .bind(`intervals:${userId}:i802`).first<any>();
+    expect(row.deleted_at).not.toBeNull();
   });
 
-  it('never deletes a provider activity without a matching external_id', async () => {
-    await ownerId();
+  it.each(['i803', 'garmin-2'])('never deletes a provider activity Tres Fort did not create (id %s)', async (id) => {
+    const userId = await ownerId();
+    // Even an exact external_id match in the cache is not enough without the marker.
+    await env.DB.prepare(
+      `INSERT INTO external_activities (id,user_id,source,external_id,date,kind,raw,synced_at)
+       VALUES (?1,?2,'intervals','i803',?3,'run',?4,1)`,
+    ).bind(`intervals:${userId}:i803`, userId, DATE, JSON.stringify({ id: 'i803', external_id: 'garmin-2' })).run();
     fetchMock.get(ORIGIN).intercept({ method: 'GET', path: dayLookup(DATE) }).reply(200, [
       { id: 'i803', type: 'Run', start_date_local: `${DATE}T07:30:00`, external_id: 'garmin-2' },
     ]);
-    const res = await call('delete_activity', { id: 'i803', date: DATE });
+    const res = await call('delete_activity', { id, date: DATE });
     expect(res).toMatchObject({ error: 'not_found' });
   });
 });

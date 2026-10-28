@@ -954,7 +954,9 @@ const TOOLS: Record<string, Tool> = {
       '("HH:MM" 24h in the user\'s timezone, default now); date (YYYY-MM-DD, default the user\'s today). ' +
       'Duplicates are not created: an existing intervals.icu activity with the same activity_id, or on the same date ' +
       'with the same sport and a duration within one minute, is returned instead (deduplicated=true). Pass the same ' +
-      'activity_id when retrying an uncertain result. Use delete_activity with the returned id or external_id to undo.',
+      'activity_id when retrying an uncertain result. To undo, call delete_activity with the returned activity_id ' +
+      '(endurance) or activity.id (local). A deduplicated match that Tres Fort did not create has activity_id null ' +
+      'and cannot be deleted through this server.',
     inputSchema: obj(
       {
         type: {
@@ -1008,7 +1010,7 @@ const TOOLS: Record<string, Tool> = {
         }
         const mapping = intervalsTypeFor(alias, m.indoor);
         const result = await logEnduranceActivity(env.DB, env, userId, {
-          external_id: id,
+          activity_id: id,
           date,
           start_time: m.start_time ?? clockInTz(await getUserTimezone(env.DB, userId)),
           mapping,
@@ -1082,14 +1084,15 @@ const TOOLS: Record<string, Tool> = {
   },
   delete_activity: {
     description:
-      'Delete an activity logged with log_activity. Pass the `id` it returned for a local activity ' +
-      '(pilates, yoga, ...), which is soft-deleted, or the `external_id` it returned for an endurance ' +
+      'Delete an activity logged with log_activity. Pass `activity.id` it returned for a local activity ' +
+      '(pilates, yoga, ...), which is soft-deleted, or `activity_id` it returned for an endurance ' +
       'activity, which deletes that activity on intervals.icu and refreshes the sync. Only intervals.icu ' +
-      'activities Tres Fort created (matched by external_id) can be deleted; watch-synced activities cannot. ' +
+      'activities Tres Fort created (external_id "tresfort:activity:<id>") can be deleted; watch-synced or ' +
+      'hand-entered intervals.icu activities cannot. ' +
       '`date` (YYYY-MM-DD) optionally narrows the intervals.icu lookup.',
     inputSchema: obj(
       {
-        id: { type: 'string', description: 'local activity id, or the external_id of a Tres Fort-created intervals.icu activity' },
+        id: { type: 'string', description: 'local activity id, or the activity_id of a Tres Fort-created intervals.icu activity' },
         date: { type: 'string', description: 'YYYY-MM-DD the endurance activity happened (optional)' },
       },
       ['id'],
@@ -1113,7 +1116,7 @@ const TOOLS: Record<string, Tool> = {
       r?.ok
         ? r.destination === 'local'
           ? `Deleted activity ${a.id}.`
-          : `Deleted intervals.icu activity ${r.intervals_activity_id} (external_id ${a.id}).`
+          : `Deleted intervals.icu activity ${r.intervals_activity_id} (activity_id ${r.activity_id}).`
         : null,
   },
   log_workout_complete: {

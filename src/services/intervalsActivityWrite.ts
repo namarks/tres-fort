@@ -17,9 +17,23 @@ import {
 import type { Env } from '../types';
 import type { ActivitySyncDeps, SyncResult } from './intervalsSync';
 
+/** Prefix that marks a provider activity as created by Tres Fort. Only an
+ *  external_id carrying it is ever deleted, so a watch import whose own
+ *  external_id happens to be passed to delete_activity is never touched. */
+export const TRES_FORT_ACTIVITY_PREFIX = 'tresfort:activity:';
+
+/** Provider external_id for a Tres Fort activity UUID (idempotent). */
+export function tresFortExternalId(id: string): string {
+  return id.startsWith(TRES_FORT_ACTIVITY_PREFIX) ? id : `${TRES_FORT_ACTIVITY_PREFIX}${id}`;
+}
+
+function isTresFortCreated(externalId: string | null): externalId is string {
+  return externalId !== null && externalId.startsWith(TRES_FORT_ACTIVITY_PREFIX);
+}
+
 export interface EnduranceActivityInput {
-  /** Tres Fort UUID sent as the provider external_id (dedupe key). */
-  external_id: string;
+  /** Tres Fort activity UUID; sent prefixed as the provider external_id. */
+  activity_id: string;
   date: string;
   /** "HH:MM" in the member's timezone. */
   start_time: string;
@@ -53,7 +67,9 @@ export type EnduranceLogResult =
       ok: true;
       destination: 'intervals.icu';
       deduplicated: boolean;
-      external_id: string;
+      /** The Tres Fort id delete_activity accepts; null when the matching
+       *  activity was not created by Tres Fort (a watch import, say). */
+      activity_id: string | null;
       intervals_activity: IntervalsActivityRef;
       refresh: RefreshSummary | null;
     }
@@ -63,7 +79,7 @@ export type IntervalsDeleteResult =
   | {
       ok: true;
       destination: 'intervals.icu';
-      external_id: string;
+      activity_id: string;
       intervals_activity_id: string;
       refresh: RefreshSummary;
     }
@@ -127,7 +143,8 @@ function findDuplicate(
   refs: IntervalsActivityRef[],
   input: EnduranceActivityInput,
 ): IntervalsActivityRef | null {
-  const byId = refs.find((r) => r.external_id === input.external_id);
+  const externalId = tresFortExternalId(input.activity_id);
+  const byId = refs.find((r) => r.external_id === externalId);
   if (byId) return byId;
   return (
     refs.find((r) => {
@@ -144,16 +161,26 @@ export function createIntervalsActivityWriteService({
   resolveIntervalsCredential,
   syncExternalActivities,
 }: IntervalsActivityWriteDependencies) {
-  /** Best-effort cache refresh so the change shows up immediately. */
+  /**
+   * Best-effort cache refresh so the change shows up immediately. The window
+   * always contains `date`, so a backfilled or deleted activity older than
+   * the default 90 days still reaches (or leaves) the cache.
+   */
   async function refresh(
     db: D1Database,
     env: Env,
     userId: string,
+    date: string,
     deps: WriteServiceDeps,
   ): Promise<RefreshSummary> {
+    const utcToday = new Date().toISOString().slice(0, 10);
+    const today = date > utcToday ? date : utcToday;
+    const span = Math.ceil((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${date}T00:00:00Z`)) / 86_400_000);
     try {
       const r = await syncExternalActivities(db, env, {
         userId,
+        today,
+        pastDays: Math.max(90, Number.isFinite(span) ? span : 0),
         ...(deps.fetcher ? { fetcher: deps.fetcher } : {}),
       });
       return { status: r.status, synced: r.synced };
@@ -188,7 +215,9 @@ export function createIntervalsActivityWriteService({
         ok: true,
         destination: 'intervals.icu',
         deduplicated: true,
-        external_id: duplicate.external_id ?? input.external_id,
+        activity_id: isTresFortCreated(duplicate.external_id)
+          ? duplicate.external_id.slice(TRES_FORT_ACTIVITY_PREFIX.length)
+          : null,
         intervals_activity: duplicate,
         refresh: null,
       };
@@ -208,7 +237,7 @@ export function createIntervalsActivityWriteService({
         ...(input.calories !== null ? { calories: input.calories } : {}),
         trainer: input.mapping.trainer,
         ...(input.notes ? { description: input.notes } : {}),
-        external_id: input.external_id,
+        external_id: tresFortExternalId(input.activity_id),
       },
       request,
     );
@@ -217,63 +246,66 @@ export function createIntervalsActivityWriteService({
       ok: true,
       destination: 'intervals.icu',
       deduplicated: false,
-      external_id: input.external_id,
+      activity_id: input.activity_id,
       intervals_activity: created.value,
-      refresh: await refresh(db, env, userId, deps),
+      refresh: await refresh(db, env, userId, input.date, deps),
     };
   }
 
   /**
-   * Delete the intervals.icu activity Tres Fort created with this external
-   * id. Only an exact external_id match is eligible, so watch-synced or
+   * Delete the intervals.icu activity Tres Fort created for this activity id
+   * (the bare UUID or its prefixed external_id). Only an activity whose
+   * external_id carries the Tres Fort prefix is eligible, so watch-synced or
    * hand-entered provider activities can never be deleted here. Looks in the
-   * synced cache first, then asks the provider over `searchFrom..searchTo`.
+   * synced cache first, then asks the provider (on `date`, or the last 90
+   * days). The refresh window then contains the deleted activity's date.
    */
   async function deleteIntervalsActivityByExternalId(
     db: D1Database,
     env: Env,
     userId: string,
-    externalId: string,
+    activityId: string,
     window: { today: string; date?: string },
     deps: WriteServiceDeps = {},
   ): Promise<IntervalsDeleteResult> {
     const cred = await resolveIntervalsCredential(db, env, userId);
     if (!cred) return NOT_CONNECTED;
     const request = { fetcher: deps.fetcher, accessToken: cred.accessToken };
+    const externalId = tresFortExternalId(activityId);
 
-    const cached = await db
+    let target: { id: string; date: string } | null = await db
       .prepare(
-        `SELECT external_id FROM external_activities
+        `SELECT external_id AS id, date FROM external_activities
           WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
             AND json_extract(raw, '$.external_id') = ?2
           LIMIT 1`,
       )
       .bind(userId, externalId)
-      .first<{ external_id: string }>();
-    let providerId = cached?.external_id ?? null;
-    if (providerId === null) {
+      .first<{ id: string; date: string }>();
+    if (target === null) {
       const from = window.date ?? addDays(window.today, -90);
       const to = window.date ?? addDays(window.today, 1);
       const listed = await listActivityRefs(cred.apiKey, cred.athleteId, from, to, request);
       if (!listed.ok) return providerError(listed, 'look up the activity');
-      providerId = listed.value.find((r) => r.external_id === externalId)?.id ?? null;
+      const ref = listed.value.find((r) => r.external_id === externalId);
+      if (ref) target = { id: ref.id, date: ref.start_date_local?.slice(0, 10) ?? window.date ?? window.today };
     }
-    if (providerId === null) {
+    if (target === null) {
       return {
         error: 'not_found',
         message:
-          `No local activity or Tres Fort-created intervals.icu activity has id ${externalId}. ` +
-          'Check get_recent_activities or the activity log for the right id.',
+          `No local activity or Tres Fort-created intervals.icu activity has id ${activityId}. ` +
+          'Activities synced from a watch or entered in intervals.icu cannot be deleted here.',
       };
     }
-    const deleted = await deleteIntervalsActivity(cred.apiKey, providerId, request);
+    const deleted = await deleteIntervalsActivity(cred.apiKey, target.id, request);
     if (!deleted.ok) return providerError(deleted, 'delete the activity');
     return {
       ok: true,
       destination: 'intervals.icu',
-      external_id: externalId,
-      intervals_activity_id: providerId,
-      refresh: await refresh(db, env, userId, deps),
+      activity_id: externalId.slice(TRES_FORT_ACTIVITY_PREFIX.length),
+      intervals_activity_id: target.id,
+      refresh: await refresh(db, env, userId, target.date, deps),
     };
   }
 

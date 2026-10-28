@@ -238,12 +238,20 @@ bearers and Apple/app sessions keep their separate lifecycles. See the
 **MCP transport** (`src/mcp/server.ts`): stateless JSON-RPC 2.0 over
 Streamable HTTP, single `application/json` responses (no server-initiated
 streams). Natural-language exercise arguments are run through an alias
-resolver (`resolveExercise`) before hitting the catalog. Current tools:
+resolver (`resolveExercise`) before hitting the catalog.
+`log_activity` routes endurance types (run, ride, swim, walk and aliases such
+as treadmill or spin; `src/enduranceActivity.ts`) to a manual activity on the
+member's intervals.icu account (`src/services/intervalsActivityWrite.ts`),
+never the local `activities` table, and refreshes the activity sync. Provider
+failure is an error, never a local fallback, and a write 401/403 never
+disconnects the read credential. Other types stay local (migration `0057`
+adds `duration_s`, `avg_hr`, `calories`). `delete_activity` deletes only
+intervals.icu activities whose `external_id` Tres Fort set. Current tools:
 `get_coach_brief`, `get_current_plan`, `get_plan_history`, `compare_plan_versions`, `restore_plan`,
 `get_today_workout`, `get_current_session`,
 `get_session_log`, `get_history`, `get_volume_trend`, `list_exercises`,
 `get_upcoming_rides`, `get_recent_activities`, `get_group_feed`, `log_set`,
-`correct_set`, `delete_set`, `log_activity`, `log_workout_complete`,
+`correct_set`, `delete_set`, `log_activity`, `delete_activity`, `log_workout_complete`,
 `discard_workout`, `add_note`,
 `update_plan`, `update_exercise`, `swap_exercise`, `add_exercise`, `add_workout`,
 `update_workout`, `delete_workout`, `delete_exercise`, `adjust_today`, `set_schedule`,

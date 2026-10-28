@@ -60,8 +60,12 @@ import {
   isGroupMember,
   listPlanHistory,
   listGroupsForUser,
+  deleteIntervalsActivityByExternalId,
+  getUserTimezone,
   logActivity,
+  logEnduranceActivity,
   logSet,
+  softDeleteActivity,
   slotWeightUnit,
   logWorkoutComplete,
   nextWorkoutOrderIndex,
@@ -90,6 +94,13 @@ import {
   writeNote,
 } from '../db';
 import { parsePlanMeta, TRIP_TYPES } from '../types';
+import {
+  clockInTz,
+  enduranceAlias,
+  intervalsTypeFor,
+  METERS_PER,
+  parseActivityMetrics,
+} from '../enduranceActivity';
 import { logUnexpectedError, publicToolErrorCode } from '../errors';
 import type {
   PeriodizationPhase,
@@ -123,6 +134,18 @@ const DEFAULT_PROTOCOL = '2025-06-18';
 const SUPPORTED_PROTOCOLS = new Set(['2025-06-18', '2025-03-26', '2024-11-05']);
 
 type Json = Record<string, unknown>;
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** "24:07" or "1:02:03" from whole seconds. */
+function formatDuration(totalS: number): string {
+  const s = Math.round(totalS);
+  const h = Math.floor(s / 3600);
+  const mm = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, '0');
+  return h > 0 ? `${h}:${String(mm).padStart(2, '0')}:${ss}` : `${mm}:${ss}`;
+}
 
 interface RpcRequest {
   jsonrpc: '2.0';
@@ -916,59 +939,185 @@ const TOOLS: Record<string, Tool> = {
   },
   log_activity: {
     description:
-      'Log a non-strength activity — pilates, yoga, jump rope, walks, ' +
-      'cardio, "anything else" — to the generic activities log. This is ' +
-      'the bucket for movement OUTSIDE strength sessions (use log_set for ' +
-      'lifts) and OUTSIDE intervals.icu cycling/running (which syncs ' +
-      'automatically). `type` is free-form lower-case (e.g. "pilates", ' +
-      '"yoga", "walk", "cardio", "other"). `date` defaults to the user\'s ' +
-      'civil "today" in their device timezone if omitted. The activity ' +
-      'id is generated server-side. Check recent activities before retrying ' +
-      'an uncertain result to avoid recording the same activity twice.',
+      'Log a completed activity outside strength sessions (use log_set for lifts). Where it goes depends on `type`:\n' +
+      '- ENDURANCE (run, ride, swim, walk and aliases: jog, treadmill, trail run, bike, cycling, spin, ' +
+      'indoor ride, pool swim, treadmill walk, ...) is created on the user\'s linked intervals.icu account as a ' +
+      'manual activity, so it counts toward training load. "treadmill" is a Run with trainer=true; an indoor ride ' +
+      'is a VirtualRide. It is NOT stored in the local log; it comes back through the intervals.icu sync and ' +
+      'appears in get_recent_activities. A duration (duration_s, duration_minutes, or distance + pace) is required. ' +
+      'If intervals.icu is not connected or the call fails, an error is returned and nothing is saved anywhere.\n' +
+      '- EVERYTHING ELSE (pilates, yoga, jump rope, mobility, "other", ...) goes to the local activities log. ' +
+      'Distance and pace are ignored there.\n' +
+      'Fields: duration_s (seconds, takes precedence over duration_minutes); distance + distance_unit (mi|km|m); ' +
+      'pace + pace_unit (min/mi|min/km, pace as "M:SS") which derives distance when it is missing, or duration when ' +
+      'that is missing; avg_hr (bpm); calories (kcal); indoor (bool, overrides the type\'s default); start_time ' +
+      '("HH:MM" 24h in the user\'s timezone, default now); date (YYYY-MM-DD, default the user\'s today). ' +
+      'Duplicates are not created: an existing intervals.icu activity with the same activity_id, or on the same date ' +
+      'with the same sport and a duration within one minute, is returned instead (deduplicated=true). Pass the same ' +
+      'activity_id when retrying an uncertain result. To undo, call delete_activity with the returned activity_id ' +
+      '(endurance) or activity.id (local). A deduplicated match that Tres Fort did not create has activity_id null ' +
+      'and cannot be deleted through this server.',
     inputSchema: obj(
       {
-        type: { type: 'string', description: 'lower-case freeform: pilates|cardio|yoga|walk|other|...' },
-        title: { type: 'string', description: 'e.g. "Reformer class at Studio MDR"' },
+        type: {
+          type: 'string',
+          description: 'free-form: run|treadmill|jog|ride|spin|swim|walk|... (intervals.icu) or pilates|yoga|jump rope|other|... (local)',
+        },
+        title: { type: 'string', description: 'e.g. "Reformer class at Studio MDR" or "Easy treadmill run"' },
+        duration_s: { type: 'number', exclusiveMinimum: 0, description: 'seconds; takes precedence over duration_minutes' },
         duration_minutes: { type: 'integer', minimum: 0 },
+        distance: { type: 'number', exclusiveMinimum: 0 },
+        distance_unit: { type: 'string', enum: ['mi', 'km', 'm'] },
+        pace: { type: 'string', description: 'average pace "M:SS", e.g. "8:00"' },
+        pace_unit: { type: 'string', enum: ['min/mi', 'min/km'] },
+        avg_hr: { type: 'integer', minimum: 20, maximum: 250, description: 'average heart rate, bpm' },
+        calories: { type: 'number', minimum: 0, description: 'kcal' },
+        indoor: { type: 'boolean', description: 'treadmill / trainer / indoor session' },
+        start_time: { type: 'string', description: 'HH:MM (24h) in the user\'s timezone; default now' },
         date: { type: 'string', description: 'YYYY-MM-DD (default today in user tz)' },
-        notes: { type: 'string' },
+        notes: { type: 'string', description: 'free text; becomes the intervals.icu description for endurance' },
+        activity_id: { type: 'string', description: 'optional UUID idempotency key; reuse it when retrying' },
       },
       ['type'],
     ),
     write: true,
     appendOnly: true,
     handler: async (a, env, userId) => {
-      const today = await todayForUser(env.DB, userId);
-      const date = typeof a.date === 'string' && a.date.length > 0 ? a.date : today;
-      const type = String(a.type).toLowerCase().trim();
+      const type = typeof a.type === 'string' ? a.type.toLowerCase().trim() : '';
       if (!type) return { error: 'invalid_type' };
+      const invalid = invalidFields(a, {}, {
+        date: (v) => typeof v === 'string' && ISO_DATE.test(v),
+        title: (v) => v === null || typeof v === 'string',
+        notes: (v) => v === null || typeof v === 'string',
+        activity_id: (v) => typeof v === 'string' && UUID.test(v),
+      });
+      const parsed = parseActivityMetrics(a);
+      if ('invalid' in parsed) invalid.push(...parsed.invalid);
+      if (invalid.length > 0 || 'invalid' in parsed) return { error: 'invalid_fields', fields: invalid };
+      const m = parsed.metrics;
+      const date = typeof a.date === 'string' ? a.date : await todayForUser(env.DB, userId);
+      const id = typeof a.activity_id === 'string' ? a.activity_id.toLowerCase() : crypto.randomUUID();
+      const title = typeof a.title === 'string' && a.title.trim() ? a.title.trim() : null;
+      const notes = typeof a.notes === 'string' && a.notes.trim() ? a.notes : null;
+
+      const alias = enduranceAlias(type);
+      if (alias) {
+        if (m.duration_s === null) {
+          return {
+            error: 'duration_required',
+            message: 'Endurance activities need a duration: duration_s, duration_minutes, or distance with pace.',
+          };
+        }
+        const mapping = intervalsTypeFor(alias, m.indoor);
+        const result = await logEnduranceActivity(env.DB, env, userId, {
+          activity_id: id,
+          date,
+          start_time: m.start_time ?? clockInTz(await getUserTimezone(env.DB, userId)),
+          mapping,
+          name: title ?? mapping.label,
+          duration_s: m.duration_s,
+          distance_m: m.distance_m,
+          avg_hr: m.avg_hr,
+          calories: m.calories,
+          notes,
+        });
+        if (!('ok' in result)) return result;
+        const unit = a.distance_unit === 'km' || a.pace_unit === 'min/km' ? 'km' : 'mi';
+        const act = result.intervals_activity;
+        const dist = act.distance ?? m.distance_m;
+        const what =
+          `${formatDuration(act.moving_time ?? m.duration_s)} ${act.name ?? mapping.label}` +
+          (dist ? ` (${(dist / METERS_PER[unit]).toFixed(2)} ${unit})` : '') +
+          ` on ${act.start_date_local?.slice(0, 10) ?? date}`;
+        return {
+          ...result,
+          ...(m.derived.length ? { derived: m.derived } : {}),
+          message: result.deduplicated
+            ? `Already on intervals.icu, not logged again: ${what}`
+            : `Logged ${what} to intervals.icu`,
+        };
+      }
+
       const row = await logActivity(
         env.DB,
         userId,
         {
-          id: crypto.randomUUID(),
+          id,
           date,
           type,
-          title: typeof a.title === 'string' ? a.title : null,
+          title,
           duration_minutes:
-            typeof a.duration_minutes === 'number' ? a.duration_minutes : null,
-          notes: typeof a.notes === 'string' ? a.notes : null,
+            typeof a.duration_minutes === 'number' && !hasField(a, 'duration_s')
+              ? a.duration_minutes
+              : m.duration_s !== null
+                ? Math.round(m.duration_s / 60)
+                : null,
+          // Only a supplied duration_s is precise; minutes stay in duration_minutes.
+          duration_s: typeof a.duration_s === 'number' ? m.duration_s : null,
+          avg_hr: m.avg_hr,
+          calories: m.calories,
+          notes,
           logged_at: Date.now(),
         },
         'mcp',
       );
-      const dur = row.duration_minutes != null ? `${row.duration_minutes}min ` : '';
+      const ignored = ['distance', 'distance_unit', 'pace', 'pace_unit', 'indoor', 'start_time'].filter(
+        (k) => hasField(a, k),
+      );
+      const dur = row.duration_s != null
+        ? `${formatDuration(row.duration_s)} `
+        : row.duration_minutes != null ? `${row.duration_minutes}min ` : '';
       const msg = `Logged ${dur}${row.type} on ${row.date}${row.title ? ` — ${row.title}` : ''}`;
-      return { ok: true, message: msg, activity: row };
+      return {
+        ok: true,
+        destination: 'local',
+        message: msg,
+        activity: row,
+        ...(ignored.length ? { ignored_fields: ignored } : {}),
+      };
     },
     // Audited like every write tool (dispatch loop calls writeAudit). The
-    // `note` hook persists a Claude-authored note row, matching the pattern
+    // `note` hook persists a coach-authored note row, matching the pattern
     // used by delete_set / adjust_today so the activity has a visible
     // coaching trail.
-    note: (_a, r) =>
-      r?.error || !r?.activity
-        ? null
-        : `Logged activity: ${r.message}.`,
+    note: (_a, r) => (r?.ok && !r.deduplicated ? `Logged activity: ${r.message}.` : null),
+  },
+  delete_activity: {
+    description:
+      'Delete an activity logged with log_activity. Pass `activity.id` it returned for a local activity ' +
+      '(pilates, yoga, ...), which is soft-deleted, or `activity_id` it returned for an endurance ' +
+      'activity, which deletes that activity on intervals.icu and refreshes the sync. Only intervals.icu ' +
+      'activities Tres Fort created (external_id "tresfort:activity:<id>") can be deleted; watch-synced or ' +
+      'hand-entered intervals.icu activities cannot. ' +
+      '`date` (YYYY-MM-DD) optionally narrows the intervals.icu lookup.',
+    inputSchema: obj(
+      {
+        id: { type: 'string', description: 'local activity id, or the activity_id of a Tres Fort-created intervals.icu activity' },
+        date: { type: 'string', description: 'YYYY-MM-DD the endurance activity happened (optional)' },
+      },
+      ['id'],
+    ),
+    write: true,
+    handler: async (a, env, userId) => {
+      const invalid = invalidFields(a, { id: isNonEmptyString }, {
+        date: (v) => typeof v === 'string' && ISO_DATE.test(v),
+      });
+      if (invalid.length > 0) return { error: 'invalid_fields', fields: invalid };
+      const id = (a.id as string).trim();
+      if (await softDeleteActivity(env.DB, userId, id)) {
+        return { ok: true, destination: 'local', id };
+      }
+      return deleteIntervalsActivityByExternalId(env.DB, env, userId, id, {
+        today: await todayForUser(env.DB, userId),
+        ...(typeof a.date === 'string' ? { date: a.date } : {}),
+      });
+    },
+    note: (a, r) =>
+      r?.ok
+        ? r.destination === 'local'
+          ? `Deleted activity ${a.id}.`
+          : `Deleted intervals.icu activity ${r.intervals_activity_id} (activity_id ${r.activity_id}).`
+        : null,
   },
   log_workout_complete: {
     description: 'Mark a session complete, optionally with perceived fatigue (1-10) and notes.',

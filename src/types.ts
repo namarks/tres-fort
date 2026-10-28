@@ -382,6 +382,9 @@ export interface ActivityRow {
   type: string;            // lower-case freeform: pilates|cardio|yoga|walk|other|...
   title: string | null;
   duration_minutes: number | null;
+  duration_s: number | null;   // precise duration (migration 0057), else null
+  avg_hr: number | null;       // average heart rate, bpm (migration 0057)
+  calories: number | null;     // kcal (migration 0057)
   notes: string | null;
   logged_at: number;       // client-authored event time, epoch ms
   updated_at: number;      // server-owned mutable delta-sync cursor

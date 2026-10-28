@@ -81,6 +81,7 @@ export type IntervalsDeleteResult =
       destination: 'intervals.icu';
       activity_id: string;
       intervals_activity_id: string;
+      already_deleted?: true;
       refresh: RefreshSummary;
     }
   | EnduranceWriteError;
@@ -301,12 +302,16 @@ export function createIntervalsActivityWriteService({
       };
     }
     const deleted = await deleteIntervalsActivity(cred.apiKey, target.id, request);
-    if (!deleted.ok) return providerError(deleted, 'delete the activity');
+    // A 404 means an earlier delete already removed it (say its refresh
+    // failed): still reconcile, or an old cached row would stay live.
+    const alreadyGone = !deleted.ok && deleted.reason === 'http' && deleted.status === 404;
+    if (!deleted.ok && !alreadyGone) return providerError(deleted, 'delete the activity');
     return {
       ok: true,
       destination: 'intervals.icu',
       activity_id: externalId.slice(TRES_FORT_ACTIVITY_PREFIX.length),
       intervals_activity_id: target.id,
+      ...(alreadyGone ? { already_deleted: true } : {}),
       refresh: await refresh(db, env, userId, target.date, deps),
     };
   }

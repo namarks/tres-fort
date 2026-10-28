@@ -463,6 +463,24 @@ describe('MCP delete_activity', () => {
     expect(row.deleted_at).not.toBeNull();
   });
 
+  it('reconciles the cache when a repeated delete finds the activity already gone', async () => {
+    const userId = await ownerId();
+    const old = new Date(Date.now() - 200 * 86_400_000).toISOString().slice(0, 10);
+    await env.DB.prepare(
+      `INSERT INTO external_activities (id,user_id,source,external_id,date,kind,raw,synced_at)
+       VALUES (?1,?2,'intervals','i804',?3,'run',?4,1)`,
+    ).bind(`intervals:${userId}:i804`, userId, old, JSON.stringify({ id: 'i804', external_id: BACKFILL_EXT })).run();
+    const provider = fetchMock.get(ORIGIN);
+    provider.intercept({ method: 'DELETE', path: '/api/v1/activity/i804' }).reply(404, { error: 'Not found' });
+    provider.intercept({ method: 'GET', path: refreshWindow }).reply(200, []);
+    const res = await call('delete_activity', { id: BACKFILL_ID });
+    expect(res).toMatchObject({ ok: true, already_deleted: true, intervals_activity_id: 'i804', refresh: { status: 'ok' } });
+    fetchMock.assertNoPendingInterceptors();
+    const row = await env.DB.prepare('SELECT deleted_at FROM external_activities WHERE id=?1')
+      .bind(`intervals:${userId}:i804`).first<any>();
+    expect(row.deleted_at).not.toBeNull();
+  });
+
   it.each(['i803', 'garmin-2'])('never deletes a provider activity Tres Fort did not create (id %s)', async (id) => {
     const userId = await ownerId();
     // Even an exact external_id match in the cache is not enough without the marker.

@@ -261,10 +261,13 @@ describe('MCP log_activity endurance route', () => {
       { id: 'i700', type: 'Ride', start_date_local: `${DATE}T06:00:00`, moving_time: 1440 },
       { id: 'i701', type: 'VirtualRun', start_date_local: `${DATE}T18:00:00`, moving_time: 1480, external_id: 'garmin-1' },
     ]);
+    fetchMock.get(ORIGIN).intercept({ method: 'GET', path: refreshWindow }).reply(200, []);
     // No POST interceptor: a create would fail closed under disableNetConnect.
     const res = await call('log_activity', { type: 'treadmill', date: DATE, duration_s: 1447, start_time: '18:00' });
     // A watch import is reported, but it is not ours to delete.
-    expect(res).toMatchObject({ ok: true, deduplicated: true, activity_id: null, intervals_activity: { id: 'i701' } });
+    expect(res).toMatchObject({
+      ok: true, deduplicated: true, activity_id: null, intervals_activity: { id: 'i701' }, refresh: { status: 'ok' },
+    });
     expect(res.message).toMatch(/^Already on intervals.icu/);
     fetchMock.assertNoPendingInterceptors();
     // Audited, but no coach note for a no-op.
@@ -277,8 +280,18 @@ describe('MCP log_activity endurance route', () => {
     fetchMock.get(ORIGIN).intercept({ method: 'GET', path: dayLookup(DATE) }).reply(200, [
       { id: 'i702', type: 'Run', start_date_local: `${DATE}T07:30:00`, moving_time: 3000, external_id: BACKFILL_EXT },
     ]);
+    // The retry still reconciles the cache around the matched activity's date.
+    let oldest: string | null = null;
+    fetchMock.get(ORIGIN).intercept({ method: 'GET', path: refreshWindow }).reply(200, (opts) => {
+      oldest = new URL(String(opts.path), ORIGIN).searchParams.get('oldest');
+      return [];
+    });
     const res = await call('log_activity', { type: 'run', date: DATE, duration_s: 1447, activity_id: BACKFILL_ID });
-    expect(res).toMatchObject({ ok: true, deduplicated: true, activity_id: BACKFILL_ID, intervals_activity: { id: 'i702' } });
+    expect(res).toMatchObject({
+      ok: true, deduplicated: true, activity_id: BACKFILL_ID, intervals_activity: { id: 'i702' }, refresh: { status: 'ok' },
+    });
+    expect(oldest! <= DATE).toBe(true);
+    fetchMock.assertNoPendingInterceptors();
   });
 
   it('does not treat a different sport or a longer session as a duplicate', async () => {

@@ -71,7 +71,7 @@ export type EnduranceLogResult =
        *  activity was not created by Tres Fort (a watch import, say). */
       activity_id: string | null;
       intervals_activity: IntervalsActivityRef;
-      refresh: RefreshSummary | null;
+      refresh: RefreshSummary;
     }
   | EnduranceWriteError;
 
@@ -219,7 +219,9 @@ export function createIntervalsActivityWriteService({
           ? duplicate.external_id.slice(TRES_FORT_ACTIVITY_PREFIX.length)
           : null,
         intervals_activity: duplicate,
-        refresh: null,
+        // A retry after a create whose refresh failed must still reach the
+        // cache, and the default sync window may not cover an old date.
+        refresh: await refresh(db, env, userId, duplicate.start_date_local?.slice(0, 10) ?? input.date, deps),
       };
     }
 

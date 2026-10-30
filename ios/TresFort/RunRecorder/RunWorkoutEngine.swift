@@ -112,15 +112,25 @@ final class HealthRunWorkoutEngine: NSObject, RunWorkoutEngine {
                 session.stopActivity(with: date)
             }
         }
-        try await builder.endCollection(at: date)
-        let totals = Self.metrics(from: builder)
-        let workout = try await builder.finishWorkout()
-        if let workout, let routeBuilder {
-            _ = try? await routeBuilder.finishRoute(with: workout, metadata: nil)
+        // Whether or not Health saves the workout, the session ends here: the
+        // recorder keeps the run and moves on either way.
+        defer {
+            session.end()
+            clear()
         }
-        session.end()
-        clear()
-        return totals
+        do {
+            try await builder.endCollection(at: date)
+            let totals = Self.metrics(from: builder)
+            let workout = try await builder.finishWorkout()
+            if let workout, let routeBuilder {
+                _ = try? await routeBuilder.finishRoute(with: workout, metadata: nil)
+            }
+            return totals
+        } catch {
+            builder.discardWorkout()
+            routeBuilder?.discard()
+            throw error
+        }
     }
 
     func discard() {

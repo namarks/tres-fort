@@ -283,4 +283,70 @@ final class GroupSafetyTests: XCTestCase {
         await retry.value
     }
 
+    func testOpeningTheTabKeepsShownGroupsUntilTheFreshListPrunesThem() async throws {
+        for revalidate in [true, false] {
+            let suite = "GroupSafetyTests.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(LocalPersistence(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let auth = AuthModel(tokenStore: TokenStore(), defaults: defaults)
+            auth.userID = "user-a"
+            let payload = try JSONSerialization.data(withJSONObject: ["sub": "user-a", "exp": 4_000_000_000])
+            auth.jwt = "header." + payload.base64EncodedString().replacingOccurrences(of: "=", with: "") + ".signature"
+            var listRead: CheckedContinuation<[GroupSummary], Error>?
+            let model = GroupModel(auth: auth, defaults: defaults, groupLister: { _ in
+                try await withCheckedThrowingContinuation { listRead = $0 }
+            }, profileLoader: { _ in throw URLError(.notConnectedToInternet) })
+            model.groups = [.init(id: "group", name: "Crew", created_by: "user-b", created_at: 1,
+                members: [.init(group_id: "group", user_id: "user-b", display_name: "Member",
+                                joined_at: 1, effective_display_name: "Member")])]
+            model.selectedGroupID = "group"
+            model.phase = .ready
+            model.feed["group"] = [.unknown(.init(id: "activity", user_id: "user-b", user_display_name: "Member",
+                is_me: false, date: "2026-09-10", occurred_at: 1))]
+            model.stats["group"] = []
+            model.activitySeries["group"] = []
+
+            let loading = Task { await model.load(revalidate: revalidate) }
+            for _ in 0..<100 where listRead == nil { await Task.yield() }
+            let continuation = try XCTUnwrap(listRead)
+            if revalidate {
+                XCTAssertEqual(model.phase, .ready, "Opening the tab keeps the group on screen")
+                XCTAssertEqual(model.feed["group"]?.count, 1)
+                XCTAssertEqual(model.groups.count, 1)
+            } else {
+                XCTAssertEqual(model.phase, .loading, "A full reload still starts from nothing")
+                XCTAssertTrue(model.feed.isEmpty)
+                XCTAssertTrue(model.groups.isEmpty)
+            }
+            // The server no longer lists the group (left, removed or restricted).
+            continuation.resume(returning: [])
+            await loading.value
+            XCTAssertTrue(model.groups.isEmpty)
+            XCTAssertTrue(model.feed.isEmpty)
+            XCTAssertTrue(model.stats.isEmpty)
+            XCTAssertTrue(model.activitySeries.isEmpty)
+            XCTAssertEqual(model.phase, .none)
+        }
+    }
+
+    func testCancelledTabLoadDoesNotShowTheErrorScreen() async throws {
+        let suite = "GroupSafetyTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(LocalPersistence(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let auth = AuthModel(tokenStore: TokenStore(), defaults: defaults)
+        auth.userID = "user-a"
+        let payload = try JSONSerialization.data(withJSONObject: ["sub": "user-a", "exp": 4_000_000_000])
+        auth.jwt = "header." + payload.base64EncodedString().replacingOccurrences(of: "=", with: "") + ".signature"
+        let model = GroupModel(auth: auth, defaults: defaults, groupLister: { _ in
+            throw URLError(.cancelled)
+        })
+        model.groups = [.init(id: "group", name: "Crew", created_by: "user-a", created_at: 1, members: [])]
+        model.selectedGroupID = "group"
+        model.phase = .ready
+        model.feed["group"] = []
+        await model.load(revalidate: true)
+        XCTAssertEqual(model.phase, .ready)
+        XCTAssertEqual(model.feed["group"]?.isEmpty, true)
+    }
+
 }

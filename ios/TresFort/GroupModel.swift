@@ -260,29 +260,43 @@ final class GroupModel: ObservableObject {
     /// Pull the groups list + drain the outbox. Sets `phase` to
     /// `.none` / `.ready` / `.error` accordingly. Called on tab `.task`
     /// and on scene-foreground transitions.
-    func load() async {
+    ///
+    /// `revalidate` is for opening the Group tab within one foreground
+    /// session: when groups are already showing, keep them on screen and
+    /// replace them as fresh responses arrive instead of dropping them
+    /// first. Foreground reloads, safety changes and Retry still drop every
+    /// shared projection before fetching. Groups missing from the fresh list
+    /// are pruned, and older in-flight responses are still fenced.
+    func load(revalidate: Bool = false) async {
         guard let jwt = currentJWT else { phase = .loading; return }
-        invalidateSharedGroups()
+        let keepVisible = revalidate && phase == .ready && !groups.isEmpty
+        if keepVisible {
+            identityCacheGeneration += 1
+        } else {
+            invalidateSharedGroups()
+            phase = .loading
+        }
         let generation = identityCacheGeneration
-        phase = .loading
         do {
             let list = try await listGroups(jwt: jwt)
             guard isCurrentAccount,
                   generation == identityCacheGeneration else { return }
             groups = list
+            pruneSharedProjections(keeping: Set(list.map(\.id)))
             ensureSelection()
             phase = list.isEmpty ? .none : .ready
             lastError = nil
             // Refresh the visible group's feed/stats so the tab is hot.
             if let id = selectedGroupID {
-                await refreshGroup(groupID: id, refreshRoster: false)
+                await refreshGroup(groupID: id, refreshRoster: false, keepVisible: keepVisible)
             }
             // Drain any pending activity POSTs that survived a relaunch.
             await drainOutbox()
             // Account/setup snapshot for the Profile tab.
             await refreshMe()
         } catch {
-            guard isCurrentAccount, generation == identityCacheGeneration else { return }
+            guard isCurrentAccount, generation == identityCacheGeneration,
+                  !Self.isCancellation(error) else { return }
             if case let APIError.http(code, _) = error,
                code == 401,
                !isCurrentBearer(jwt) {
@@ -298,8 +312,10 @@ final class GroupModel: ObservableObject {
     }
 
     /// Revalidate the roster, feed and stats for one group. Used by
-    /// pull-to-refresh and after a `logActivity` succeeds.
-    func refreshGroup(groupID: String, refreshRoster: Bool = true) async {
+    /// pull-to-refresh and after a `logActivity` succeeds. `keepVisible`
+    /// (tab-open revalidation only) leaves the current projections on screen
+    /// until their replacements arrive.
+    func refreshGroup(groupID: String, refreshRoster: Bool = true, keepVisible: Bool = false) async {
         // A removed detail view can still start its queued task while a full
         // roster reload is in flight. It must not supersede that reload.
         guard groups.contains(where: { $0.id == groupID }), let jwt = currentJWT else { return }
@@ -307,11 +323,13 @@ final class GroupModel: ObservableObject {
         defer { groupRefreshesInFlight[groupID, default: 1] -= 1 }
         identityCacheGeneration += 1
         let generation = identityCacheGeneration
-        feed[groupID] = nil
-        stats[groupID] = nil
-        activitySeries[groupID] = nil
+        if !keepVisible {
+            feed[groupID] = nil
+            stats[groupID] = nil
+            activitySeries[groupID] = nil
+        }
         if refreshRoster {
-            if let index = groups.firstIndex(where: { $0.id == groupID }) {
+            if !keepVisible, let index = groups.firstIndex(where: { $0.id == groupID }) {
                 let group = groups[index]
                 groups[index] = GroupSummary(id: group.id, name: "Private group", created_by: "",
                                              created_at: group.created_at, members: [])
@@ -345,8 +363,16 @@ final class GroupModel: ObservableObject {
         await refreshGroup(groupID: groupID)
     }
 
+    /// Leaving the Group tab cancels its `.task`, and with it any request in
+    /// flight. That isn't a load failure: the next visit reloads, so don't
+    /// replace the screen with an error.
+    private static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
+
     private func handleGroupRefreshFailure(_ error: Error, jwt: String, generation: Int) {
-        guard isCurrentAccount, generation == identityCacheGeneration else { return }
+        guard isCurrentAccount, generation == identityCacheGeneration,
+              !Self.isCancellation(error) else { return }
         handle(error, jwt: jwt)
         phase = .error(error.localizedDescription)
     }
@@ -780,6 +806,17 @@ final class GroupModel: ObservableObject {
     }
 
     // MARK: - Group safety
+
+    /// Drop cached projections for groups the server no longer lists.
+    private func pruneSharedProjections(keeping ids: Set<String>) {
+        for id in Set(feed.keys).union(stats.keys).union(activitySeries.keys) where !ids.contains(id) {
+            feed[id] = nil
+            stats[id] = nil
+            activitySeries[id] = nil
+            feedNextSince[id] = nil
+            feedNextSinceID[id] = nil
+        }
+    }
 
     /// Drop every shared projection and fence earlier requests. Private history
     /// and the activity outbox are separate and remain intact.

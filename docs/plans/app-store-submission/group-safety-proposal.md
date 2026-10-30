@@ -77,7 +77,10 @@ Account deletion cascades through blocks and restrictions. Exports include the
 caller's own blocks and restriction, not the identities of incoming blockers.
 
 iOS drops shared projections and rejects older in-flight responses when safety
-settings change, on foreground reload and on group refresh. Existing selections
+settings change, on foreground reload and on group refresh. Opening the Group
+tab within one foreground session is the exception: it keeps the projections
+already on screen until fresh responses replace them, pruning groups the fresh
+list omits and still rejecting older in-flight responses. Existing selections
 show unavailable content once removed. No promise covers previously viewed,
 exported or copied content. Production needs the additive migration before the
 new Worker, then the compatible app. A Worker rollback that lacks these controls

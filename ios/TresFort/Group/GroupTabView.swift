@@ -75,7 +75,9 @@ struct GroupTabView: View {
                 }
             }
             .task {
-                await groupModel.load()
+                // Opening the tab keeps what's showing and refreshes it in
+                // place; foreground reloads still start from nothing.
+                await groupModel.load(revalidate: true)
             }
         }
     }

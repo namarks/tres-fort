@@ -5,3 +5,4 @@ TresFortUITests/AppStoreScreenshotTests
 TresFortTests/StationMediaPipeDetectorTests
 TresFortTests/PublicStationTests
 TresFortUITests/StationConnectionJourneyTests
+TresFortTests/RunRecorderPackagingTests

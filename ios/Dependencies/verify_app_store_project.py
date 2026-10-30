@@ -14,6 +14,8 @@ def verify_project(path):
         raise ValueError('App Store project retains deprecated APP_STORE_IPHONE_ONLY')
     if 'APP_STORE_BUILD' not in contents:
         raise ValueError('App Store project is missing APP_STORE_BUILD')
+    if 'Remove run recorder location keys' not in contents:
+        raise ValueError('App Store project must remove the run recorder location keys')
     families = re.findall(r'TARGETED_DEVICE_FAMILY = ([^;]+);', contents)
     # XcodeGen also writes device families on test targets. The packaging test
     # resolves app/widget configuration references; this prebuild guard rejects

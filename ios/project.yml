@@ -49,6 +49,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.nmarkspdx.tresfort
         INFOPLIST_FILE: TresFort/Info.plist
         CAMERA_USAGE_DESCRIPTION: "Scan an iPad invitation code to join a workout. Track exercise movements on this device. Record test saves an optional silent clip locally for comparison; share or delete it from Saved tests."
+        HEALTH_UPDATE_USAGE_DESCRIPTION: "Très Fort saves runs you record in the app to Apple Health as workouts with their route."
         CODE_SIGN_ENTITLEMENTS: TresFort/TresFort.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
         ENABLE_PREVIEWS: YES

@@ -47,7 +47,7 @@ if name == 'xcrun':
 elif name == 'xcodegen' and args[0] == 'generate':
     project = pathlib.Path(args[args.index('--spec') + 1]).parent / 'TresFort.xcodeproj'
     project.mkdir()
-    contents = 'APP_STORE_BUILD\\n' + 'TARGETED_DEVICE_FAMILY = "1,2";\\n' * 4
+    contents = 'APP_STORE_BUILD\\nRemove run recorder location keys\\n' + 'TARGETED_DEVICE_FAMILY = "1,2";\\n' * 4
     (project / 'project.pbxproj').write_text(os.environ.get('MOCK_PROJECT_CONTENTS', contents))
 elif name == 'xcodebuild' and args[0] in ['build-for-testing', 'test-without-building']:
     result = pathlib.Path(args[args.index('-resultBundlePath') + 1])

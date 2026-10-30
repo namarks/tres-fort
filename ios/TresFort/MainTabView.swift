@@ -10,6 +10,7 @@ private final class MainTabModels: ObservableObject {
     let sync: SyncModel
     let group: GroupModel
     let health: HealthKitSyncModel
+    let runs: RunRecorderModel
     let connectivity: SetConnectivityMonitor
     let stationLink = StationLinkController()
     let agenda: TrainingAgendaPublisher
@@ -38,12 +39,27 @@ private final class MainTabModels: ObservableObject {
         health.onActivitiesPersisted = {
             [weak auth] in auth?.noteActivityPersisted(for: accountID)
         }
+        // Recorded runs upload to intervals.icu with this account's bearer;
+        // the server refreshes its activity cache, so the calendar refreshes.
+        let runs = RunRecorderModel(
+            accountID: accountID,
+            jwt: { [weak auth] in
+                guard let auth, auth.userID == accountID else { return nil }
+                return auth.featureJWT
+            },
+            onUnauthorized: { [weak auth] in
+                guard let auth, auth.userID == accountID else { return }
+                auth.requireReauthentication()
+            },
+            onUploaded: { [weak auth] in auth?.noteActivityPersisted(for: accountID) },
+            now: now)
         setConnectivity.onSatisfiedTransition = { [weak sync] in
             Task { await sync?.recoverWorkoutWrites() }
         }
         self.sync = sync
         self.group = groupModel
         self.health = health
+        self.runs = runs
         self.connectivity = setConnectivity
         // Today widget and opt-in workout reminders follow this account's
         // published projection and are cleared at its feature boundary.
@@ -69,6 +85,7 @@ struct MainTabView: View {
 
     @State private var showHealthSettings = false
     @State private var showActivitySheet = false
+    @State private var showRunRecorder = false
     @State private var selectedTab: Tab = .today
     @State private var isWorkoutFocused = true
     @State private var partnerOpen = false
@@ -92,6 +109,7 @@ struct MainTabView: View {
                       auth: auth,
                       stationLink: models.stationLink,
                       onLogActivity: { showActivitySheet = true },
+                      onRecordRun: RunRecorderModel.isSupported ? { showRunRecorder = true } : nil,
                       isWorkoutFocused: isWorkoutFocused,
                       onMinimizeWorkout: { isWorkoutFocused = false },
                       onResumeWorkout: resumeWorkout,
@@ -171,6 +189,9 @@ struct MainTabView: View {
             // foreground sync is the source of truth (background delivery is
             // best-effort); this is the reliable per-launch pass.
             health.start()
+            // Reattach a run whose workout survived the app stopping, or
+            // finish and upload one that didn't.
+            if await models.runs.recover() { showRunRecorder = true }
         }
         .onChange(of: scenePhase) { _, new in
             // A block or restriction may have changed while backgrounded.
@@ -194,6 +215,8 @@ struct MainTabView: View {
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     // Pull any workouts recorded while we were backgrounded.
                     await health.sync()
+                    guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
+                    await models.runs.uploadPending()
                 }
             }
         }
@@ -218,6 +241,9 @@ struct MainTabView: View {
             ManualActivitySheet { pending in
                 await groupModel.logActivity(pending)
             }
+        }
+        .fullScreenCover(isPresented: $showRunRecorder) {
+            RunRecorderView(model: models.runs) { showRunRecorder = false }
         }
         // The Today widget and workout reminders open Today; navigation only.
         .onReceive(NotificationCenter.default.publisher(for: TrainingAgendaLink.openToday)) { _ in

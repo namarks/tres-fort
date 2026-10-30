@@ -75,6 +75,22 @@ final class WorkoutDisplayStateTests: XCTestCase {
         XCTAssertEqual(sync.weight, 24, "Display preference never edits the runner draft")
     }
 
+    func testWorkoutStopwatchHidesOnceAWorkoutHasBeenOpenTooLong() {
+        let sync = model([exercise("a")])
+        sync.workoutStart = nil
+        XCTAssertNil(WorkoutDisplayState.project(sync: sync).workoutSeconds(at: Date()),
+                     "No stopwatch before the workout starts")
+        let start = Date(timeIntervalSince1970: 1_000_000)
+        sync.workoutStart = start
+        let state = WorkoutDisplayState.project(sync: sync)
+        let limit = TimeInterval(WorkoutDisplayState.longestShownWorkoutSeconds)
+        XCTAssertEqual(state.workoutSeconds(at: start.addingTimeInterval(1_457)), 1_457)
+        XCTAssertEqual(state.workoutSeconds(at: start.addingTimeInterval(-5)), 0, "A skewed clock never runs backward")
+        XCTAssertEqual(state.workoutSeconds(at: start.addingTimeInterval(limit - 1)), Int(limit) - 1)
+        XCTAssertNil(state.workoutSeconds(at: start.addingTimeInterval(limit)))
+        XCTAssertNil(state.workoutSeconds(at: start.addingTimeInterval(52 * 24 * 60 * 60)))
+    }
+
     func testLastSetPreviewsNextUnskippedExerciseAndFinalSetHasNoNext() {
         let a = exercise("a", sets: 1), b = exercise("b"), c = exercise("c", sets: 1)
         let sync = model([a, b, c])

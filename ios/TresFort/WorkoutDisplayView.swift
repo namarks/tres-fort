@@ -157,11 +157,10 @@ struct WorkoutDisplayView<Controls: View>: View {
         }
     }
 
-    /// The time of day and, once the workout has started, its running time.
+    /// The time of day and, while the workout is plausibly running, its time.
     private func clocks(at date: Date) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 16) {
-            if let start = state.workoutStartDate {
-                let seconds = max(0, Int(date.timeIntervalSince(start)))
+            if let seconds = state.workoutSeconds(at: date) {
                 Label(Self.duration(seconds), systemImage: "stopwatch")
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("Workout time")

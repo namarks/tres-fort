@@ -75,8 +75,31 @@ struct WorkoutDisplayState: Codable, Equatable {
     /// leaves this out, and its iPad only displays the workout.
     var acceptsCommands: Bool? = nil
 
+    /// A workout left open this long says nothing useful about its running time.
+    static let longestShownWorkoutSeconds = 12 * 60 * 60
+
+    /// The workout stopwatch at `date`. It is hidden once the workout has been
+    /// open too long, so a forgotten workout doesn't show days of hours.
+    func workoutSeconds(at date: Date) -> Int? {
+        guard let workoutStartDate else { return nil }
+        let seconds = max(0, Int(date.timeIntervalSince(workoutStartDate)))
+        return seconds < Self.longestShownWorkoutSeconds ? seconds : nil
+    }
+
     /// The exercise the workout is on, between sets too.
     var currentSlotID: String? { current?.slotID ?? outline?.first(where: \.isCurrent)?.slotID }
+
+    /// The display compares this start with the real clock. The store-asset
+    /// fixture freezes the model on its fictional date, so it supplies a
+    /// plausible running time instead. Release builds use the model's start.
+    private static func displayedWorkoutStart(_ start: Date?) -> Date? {
+        #if DEBUG && targetEnvironment(simulator)
+        if UIFixtureScenario.selected == .appStore, start != nil {
+            return Date().addingTimeInterval(-1_457)
+        }
+        #endif
+        return start
+    }
 
     @MainActor
     static func project(sync: SyncModel, paused: Bool = false, displayUnit: WeightUnit? = nil) -> Self {
@@ -89,7 +112,7 @@ struct WorkoutDisplayState: Codable, Equatable {
                  restEndDate: phase == .rest ? sync.restEndDate : nil,
                  timedEndDate: phase == .active ? sync.timedEndDate : nil,
                  timedStartDate: phase == .active ? sync.timedStartDate : nil,
-                 workoutStartDate: sync.workoutStart, message: message, isFreestyle: sync.isFreestyle,
+                 workoutStartDate: displayedWorkoutStart(sync.workoutStart), message: message, isFreestyle: sync.isFreestyle,
                  outline: outline)
         }
 

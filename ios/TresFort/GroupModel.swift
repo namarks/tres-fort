@@ -257,8 +257,8 @@ final class GroupModel: ObservableObject {
     // MARK: - Load / refresh
 
     /// Reconcile both group content and the mounted Profile safety screen.
-    func reloadGroupState() async {
-        await load()
+    func reloadGroupState(revalidate: Bool = false) async {
+        await load(revalidate: revalidate)
         try? await refreshGroupSafety()
     }
 
@@ -266,12 +266,12 @@ final class GroupModel: ObservableObject {
     /// `.none` / `.ready` / `.error` accordingly. Called on tab `.task`
     /// and on scene-foreground transitions.
     ///
-    /// `revalidate` is for opening the Group tab within one foreground
-    /// session: when groups are already showing, keep them on screen and
+    /// `revalidate` is for opening the Group tab and returning to the
+    /// foreground: when groups are already showing, keep them on screen and
     /// replace them as fresh responses arrive instead of dropping them
-    /// first. Foreground reloads, safety changes and Retry still drop every
-    /// shared projection before fetching. Groups missing from the fresh list
-    /// are pruned, and older in-flight responses are still fenced.
+    /// first. Safety changes, display-name changes and Retry still drop
+    /// every shared projection before fetching. Groups missing from the
+    /// fresh list are pruned, and older in-flight responses are still fenced.
     func load(revalidate: Bool = false) async {
         guard let jwt = currentJWT else { phase = .loading; return }
         let keepVisible = revalidate && phase == .ready && !groups.isEmpty

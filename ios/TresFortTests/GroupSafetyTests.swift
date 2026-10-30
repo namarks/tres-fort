@@ -56,7 +56,7 @@ final class GroupSafetyTests: XCTestCase {
         XCTAssertEqual(model.phase, .none)
     }
 
-    func testForegroundInvalidationClearsSecondaryGroupsBeforeNetworkAndRejectsEarlierRead() async throws {
+    func testSafetyInvalidationClearsSecondaryGroupsBeforeNetworkAndRejectsEarlierRead() async throws {
         let suite = "GroupSafetyTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(LocalPersistence(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -88,13 +88,13 @@ final class GroupSafetyTests: XCTestCase {
                 avatar_initials: "HM", is_me: false, workout_count: 1, streak_days: 1, last_active: 1)]
             model.activitySeries[group.id] = [.init(user_id: "user-b", days: [])]
         }
-        // MainTabView invokes this synchronously before awaiting Apple or network.
+        // Safety changes invoke this synchronously before awaiting the network.
         model.invalidateSharedGroups()
         XCTAssertTrue(model.groups.isEmpty)
         XCTAssertTrue(model.feed.isEmpty)
         XCTAssertTrue(model.stats.isEmpty)
         XCTAssertTrue(model.activitySeries.isEmpty)
-        await model.load() // Foreground fetch is unavailable; stale data stays hidden.
+        await model.load() // The reload is unavailable; stale data stays hidden.
         continuation.resume(returning: cached)
         await reading.value
         XCTAssertTrue(model.groups.isEmpty)

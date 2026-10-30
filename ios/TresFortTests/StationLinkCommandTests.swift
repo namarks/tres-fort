@@ -127,9 +127,15 @@ final class StationLinkCommandTests: XCTestCase {
         try XCTUnwrap(WorkoutDisplayState.project(sync: sync, displayUnit: unit).current)
     }
 
-    /// Lets the queued set's background delivery attempt run.
-    private func settle() async {
-        for _ in 0..<10 { await Task.yield() }
+    /// Waits until the queued set's background task releases its slot, so the
+    /// next set can be logged. A loaded simulator can take many turns to run
+    /// that task, so this checks the slot rather than counting yields.
+    private func settle(_ sync: SyncModel) async {
+        let deadline = Date().addingTimeInterval(10)
+        while !sync.setSlotsInFlight.isEmpty, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 1_000_000)
+        }
+        XCTAssertTrue(sync.setSlotsInFlight.isEmpty, "The queued set never released its slot")
     }
 
     /// Logs every remaining set of the current exercise on the iPhone.
@@ -137,7 +143,7 @@ final class StationLinkCommandTests: XCTestCase {
         let exercise = try XCTUnwrap(sync.currentExercise)
         for set in sync.currentPhysicalSetNumber...exercise.target_sets {
             await sync.logCurrentSet(expected: exercise, expectedSetNumber: set)
-            await settle()
+            await settle(sync)
         }
     }
 
@@ -151,7 +157,7 @@ final class StationLinkCommandTests: XCTestCase {
         XCTAssertEqual(logged, .accepted(log))
         XCTAssertEqual(sync.setOutbox.pending.map(\.body.set_index), [1])
         XCTAssertNotNil(sync.restEndDate, "Rest starts as after a tap on the iPhone")
-        await settle()
+        await settle(sync)
 
         let again = StationLinkCommand(.logSet, step: first)
         let repeated = await StationLinkCommandRunner.apply(again, to: sync)
@@ -165,7 +171,7 @@ final class StationLinkCommandTests: XCTestCase {
         let sync = runner([squat, row])
         _ = await StationLinkCommandRunner.apply(StationLinkCommand(.logSet, step: try shown(sync)), to: sync)
         XCTAssertNotNil(sync.restEndDate)
-        await settle()
+        await settle(sync)
         let endRest = StationLinkCommand(.endRest, step: try shown(sync))
         let ended = await StationLinkCommandRunner.apply(endRest, to: sync)
         XCTAssertEqual(ended, .accepted(endRest))
@@ -188,14 +194,14 @@ final class StationLinkCommandTests: XCTestCase {
         let squat = slot("squat"), row = slot("row", order: 1)
         let sync = runner([squat, row])
         _ = await StationLinkCommandRunner.apply(StationLinkCommand(.logSet, step: try shown(sync)), to: sync)
-        await settle()
+        await settle(sync)
         let resting = try shown(sync)
         // Before the iPad's taps arrive, the member ends that rest on the
         // iPhone and logs the next set, which starts another rest.
         sync.skipRest()
         let exercise = try XCTUnwrap(sync.currentExercise)
         await sync.logCurrentSet(expected: exercise, expectedSetNumber: 2)
-        await settle()
+        await settle(sync)
         XCTAssertNotNil(sync.restEndDate)
         XCTAssertEqual(try shown(sync).setNumber, 3)
 

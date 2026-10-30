@@ -27,9 +27,21 @@ final class IntervalsConnectionJourneyTests: XCTestCase {
         return app
     }
 
+    /// A tap that lands while the connection screen is still settling can
+    /// leave the key field without keyboard focus. Retry the tap until it
+    /// has focus, then type.
+    private func type(_ text: String, into field: XCUIElement, in app: XCUIApplication) {
+        let focused = NSPredicate(format: "hasKeyboardFocus == true")
+        for _ in 0..<3 {
+            tap(field, in: app)
+            let wait = XCTNSPredicateExpectation(predicate: focused, object: field)
+            if XCTWaiter.wait(for: [wait], timeout: 2) == .completed { break }
+        }
+        field.typeText(text)
+    }
+
     private func connect(_ app: XCUIApplication) {
-        let key = app.secureTextFields["intervals.apiKey"]
-        tap(key, in: app); key.typeText("synthetic-test-key")
+        type("synthetic-test-key", into: app.secureTextFields["intervals.apiKey"], in: app)
         // The form's scroll dismisses the keyboard without relying on a
         // particular device's Return key label.
         app.swipeUp()

@@ -28,16 +28,19 @@ within the agreed tolerance of a Garmin watch on the same run.
     never disconnects the read credential, the same as `log_activity`.
 - [ ] **P1 — Record a run on iPhone**
   - [x] **(a) Keep and upload recorded runs on the device**
-    - `RecordedRun` holds the route, heart-rate samples, the workout
+    - `RecordedRun` holds the route, heart-rate samples, pauses, the workout
       builder's distance and moving time, and the device-local civil date.
-    - `RecordedRunGPX` encodes it as GPX 1.1 with heart rate in the Garmin
-      TrackPointExtension, attached only within 5 seconds of a point.
+    - `RecordedRunTCX` encodes it as TCX, not GPX, so the upload keeps the
+      builder's totals: the lap carries moving time and distance, and each
+      track point a cumulative distance scaled to that total. Each pause
+      starts a new track and paused distance never counts. Heart rate is
+      attached only within 5 seconds of a point.
     - `RunRecordingStore` keeps one file per run in an account-scoped,
       backup-excluded directory until the server acknowledges the upload.
       Files use `completeUntilFirstUserAuthentication` so checkpoints still
       save with the phone locked mid-run. Account deletion removes them.
     - `RunRecordingUploader` sends finished runs to P0's endpoint as
-      multipart GPX, removes each only after a 200/201, keeps failures for
+      multipart TCX, removes each only after a 200/201, keeps failures for
       the next attempt and stops on a rejected bearer.
   - [ ] **(b) Record with a workout session**
     - Requires iOS 26 or later, which supports `HKWorkoutSession`,
@@ -103,7 +106,8 @@ deploy needs separate authority, and its live upload check is part of P3.
   failure, a member without a connection, form validation and the 10 MB
   limit, all against mocked intervals.icu responses.
 - P1(a): `ios/TresFortTests/RunRecordingTests.swift` covers civil dates,
-  GPX track points, elevation, heart-rate matching and escaping, the
+  TCX builder totals, scaled point distances, GPS fallback, pause tracks,
+  elevation and heart-rate matching, the
   multipart body, per-account storage, checkpoint replacement, damaged
   files, account deletion, and upload acknowledgement, failure and 401.
 

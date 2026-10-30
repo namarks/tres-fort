@@ -14,7 +14,7 @@ protocol RecordingUploadAPI {
 }
 
 extension APIClient: RecordingUploadAPI {
-    /// Multipart upload of one finished run as GPX. Retrying the same run is
+    /// Multipart upload of one finished run as TCX. Retrying the same run is
     /// safe: the server dedupes on its id.
     func uploadRecording(_ run: RecordedRun, jwt: String) async throws -> RecordingUploadResult {
         let boundary = "TresFort-\(UUID().uuidString)"
@@ -23,11 +23,11 @@ extension APIClient: RecordingUploadAPI {
         req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
         req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
-        req.httpBody = Self.recordingMultipartBody(run, gpx: RecordedRunGPX.encode(run), boundary: boundary)
+        req.httpBody = Self.recordingMultipartBody(run, tcx: RecordedRunTCX.encode(run), boundary: boundary)
         return try await send(req)
     }
 
-    static func recordingMultipartBody(_ run: RecordedRun, gpx: Data, boundary: String) -> Data {
+    static func recordingMultipartBody(_ run: RecordedRun, tcx: Data, boundary: String) -> Data {
         var body = Data()
         func field(_ name: String, _ value: String) {
             body.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n".utf8))
@@ -40,9 +40,9 @@ extension APIClient: RecordingUploadAPI {
             field("name", name)
         }
         body.append(Data(
-            ("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(run.uploadID).gpx\"\r\n"
-             + "Content-Type: application/gpx+xml\r\n\r\n").utf8))
-        body.append(gpx)
+            ("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(run.uploadID).tcx\"\r\n"
+             + "Content-Type: application/vnd.garmin.tcx+xml\r\n\r\n").utf8))
+        body.append(tcx)
         body.append(Data("\r\n--\(boundary)--\r\n".utf8))
         return body
     }

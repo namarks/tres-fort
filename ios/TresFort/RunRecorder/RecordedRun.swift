@@ -3,7 +3,7 @@ import Foundation
 /// One run recorded in the app (docs/plans/run-recorder). The recorder fills
 /// it while the run is in progress and the store keeps it on the device until
 /// `POST /api/activities/recordings` acknowledges the upload. The GPS route
-/// never goes to Tres Fort's database; intervals.icu receives it as a GPX file.
+/// never goes to Tres Fort's database; intervals.icu receives it as a TCX file.
 struct RecordedRun: Codable, Equatable, Identifiable {
     static let currentSchemaVersion = 1
 
@@ -21,6 +21,12 @@ struct RecordedRun: Codable, Equatable, Identifiable {
         var beatsPerMinute: Double
     }
 
+    /// A pause the member started; `end` stays nil until they resume.
+    struct Pause: Codable, Equatable {
+        var start: Date
+        var end: Date?
+    }
+
     var schemaVersion: Int = RecordedRun.currentSchemaVersion
     /// Client UUID: the upload's idempotency key and intervals.icu external_id.
     var id: UUID
@@ -35,6 +41,7 @@ struct RecordedRun: Codable, Equatable, Identifiable {
     var distanceMeters: Double
     var points: [RoutePoint]
     var heartRates: [HeartRateSample]
+    var pauses: [Pause]
 
     /// The server compares UUIDs case-insensitively; send one stable spelling.
     var uploadID: String { id.uuidString.lowercased() }
@@ -51,6 +58,7 @@ struct RecordedRun: Codable, Equatable, Identifiable {
         self.distanceMeters = 0
         self.points = []
         self.heartRates = []
+        self.pauses = []
     }
 
     static func civilDate(_ date: Date, timeZone: TimeZone) -> String {

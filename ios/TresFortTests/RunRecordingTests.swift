@@ -56,52 +56,93 @@ final class RunRecordingTests: XCTestCase {
             RecordedRun(startedAt: start, timeZone: TimeZone(identifier: "America/Los_Angeles")!).date, "2026-10-26")
     }
 
-    func testGPXCarriesTheTrackTimesElevationAndNearbyHeartRate() throws {
-        var recorded = makeRun(name: "Tom & Jerry's <run>")
+    func testTCXCarriesTheBuilderTotalsTrackTimesElevationAndNearbyHeartRate() throws {
+        var recorded = makeRun()
+        recorded.movingSeconds = 19.5
         // A sample 9s from the last point is outside the match window.
         recorded.heartRates.append(.init(timestamp: recorded.startedAt.addingTimeInterval(29), beatsPerMinute: 160))
-        let gpx = try XCTUnwrap(String(data: RecordedRunGPX.encode(recorded), encoding: .utf8))
+        let tcx = try XCTUnwrap(String(data: RecordedRunTCX.encode(recorded), encoding: .utf8))
 
-        XCTAssertTrue(gpx.hasPrefix("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<gpx version=\"1.1\""))
-        XCTAssertTrue(gpx.contains("<name>Tom &amp; Jerry&apos;s &lt;run&gt;</name>"))
-        XCTAssertEqual(gpx.components(separatedBy: "<trkpt ").count - 1, 3)
-        XCTAssertTrue(gpx.contains(
-            "<trkpt lat=\"45.5231000\" lon=\"-122.6765000\"><ele>15.2</ele><time>2026-10-26T07:33:20Z</time>"
-            + "<extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>140</gpxtpx:hr>"))
-        // No altitude: no <ele>. HR 151.6 rounds to 152.
-        XCTAssertTrue(gpx.contains(
-            "<trkpt lat=\"45.5232000\" lon=\"-122.6766000\"><time>2026-10-26T07:33:30Z</time>"
-            + "<extensions><gpxtpx:TrackPointExtension><gpxtpx:hr>152</gpxtpx:hr>"))
-        // The third point's nearest sample (151.6 at 11s) is 9s away; 160 at 29s is also 9s away.
-        XCTAssertTrue(gpx.contains("<ele>16.0</ele><time>2026-10-26T07:33:40Z</time></trkpt>"))
-        XCTAssertTrue(gpx.hasSuffix("</trkseg>\n  </trk>\n</gpx>\n"))
+        XCTAssertTrue(tcx.hasPrefix("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<TrainingCenterDatabase"))
+        XCTAssertTrue(tcx.contains("<Activity Sport=\"Running\">\n      <Id>2026-10-26T07:33:20Z</Id>"))
+        // The lap carries the builder's moving time and distance, not GPS's 27.2 m.
+        XCTAssertTrue(tcx.contains(
+            "<TotalTimeSeconds>19.5</TotalTimeSeconds>\n        <DistanceMeters>28.0</DistanceMeters>"))
+        XCTAssertEqual(tcx.components(separatedBy: "<Track>").count - 1, 1)
+        XCTAssertEqual(tcx.components(separatedBy: "<Trackpoint>").count - 1, 3)
+        XCTAssertTrue(tcx.contains(
+            "<Trackpoint><Time>2026-10-26T07:33:20Z</Time><Position><LatitudeDegrees>45.5231000</LatitudeDegrees>"
+            + "<LongitudeDegrees>-122.6765000</LongitudeDegrees></Position><AltitudeMeters>15.2</AltitudeMeters>"
+            + "<DistanceMeters>0.0</DistanceMeters><HeartRateBpm><Value>140</Value></HeartRateBpm></Trackpoint>"))
+        // No altitude: no <AltitudeMeters>. Point distance is scaled to the
+        // builder total. HR 151.6 rounds to 152.
+        XCTAssertTrue(tcx.contains(
+            "<LongitudeDegrees>-122.6766000</LongitudeDegrees></Position>"
+            + "<DistanceMeters>14.0</DistanceMeters><HeartRateBpm><Value>152</Value></HeartRateBpm></Trackpoint>"))
+        // The third point's nearest samples (151.6 at 11s, 160 at 29s) are both 9s away.
+        XCTAssertTrue(tcx.contains(
+            "<AltitudeMeters>16.0</AltitudeMeters><DistanceMeters>28.0</DistanceMeters></Trackpoint>"))
+        XCTAssertTrue(tcx.hasSuffix("</Lap>\n    </Activity>\n  </Activities>\n</TrainingCenterDatabase>\n"))
     }
 
-    func testGPXWithoutHeartRateHasNoExtensions() throws {
+    func testTCXFallsBackToGPSDistanceWithoutABuilderTotal() throws {
         var recorded = makeRun()
+        recorded.distanceMeters = 0
         recorded.heartRates = []
-        let gpx = try XCTUnwrap(String(data: RecordedRunGPX.encode(recorded), encoding: .utf8))
-        XCTAssertFalse(gpx.contains("<extensions>"))
+        let tcx = try XCTUnwrap(String(data: RecordedRunTCX.encode(recorded), encoding: .utf8))
+        XCTAssertTrue(tcx.contains("</TotalTimeSeconds>\n        <DistanceMeters>27.2</DistanceMeters>"))
+        XCTAssertTrue(tcx.contains("<DistanceMeters>13.6</DistanceMeters></Trackpoint>"))
+        XCTAssertFalse(tcx.contains("<HeartRateBpm>"))
     }
 
-    func testMultipartBodyCarriesTheFieldsAndGPXFile() throws {
+    func testTCXStartsANewTrackAfterAPauseAndSkipsPausedDistance() throws {
+        var recorded = makeRun()
+        let start = recorded.startedAt
+        recorded.distanceMeters = 20
+        recorded.heartRates = []
+        recorded.pauses = [.init(start: start.addingTimeInterval(12), end: start.addingTimeInterval(18))]
+        let tcx = try XCTUnwrap(String(data: RecordedRunTCX.encode(recorded), encoding: .utf8))
+        XCTAssertEqual(RecordedRunTCX.segments(recorded).map(\.count), [2, 1])
+        XCTAssertEqual(tcx.components(separatedBy: "<Track>").count - 1, 2)
+        // Only the first segment's 13.6 m counts, scaled to the builder's 20 m.
+        XCTAssertTrue(tcx.contains(
+            "<DistanceMeters>20.0</DistanceMeters></Trackpoint>\n        </Track>\n        <Track>\n"))
+        XCTAssertTrue(tcx.contains("<AltitudeMeters>16.0</AltitudeMeters><DistanceMeters>20.0</DistanceMeters>"))
+
+        // Points inside a pause, or after one that never ended, are dropped.
+        recorded.pauses = [
+            .init(start: start.addingTimeInterval(5), end: start.addingTimeInterval(15)),
+            .init(start: start.addingTimeInterval(15), end: nil),
+        ]
+        XCTAssertEqual(RecordedRunTCX.segments(recorded).map(\.count), [1])
+    }
+
+    func testTCXWithoutPointsIsStillOneLap() throws {
+        var recorded = makeRun()
+        recorded.points = []
+        let tcx = try XCTUnwrap(String(data: RecordedRunTCX.encode(recorded), encoding: .utf8))
+        XCTAssertTrue(tcx.contains("<DistanceMeters>28.0</DistanceMeters>"))
+        XCTAssertFalse(tcx.contains("<Track>"))
+    }
+
+    func testMultipartBodyCarriesTheFieldsAndTCXFile() throws {
         let recorded = makeRun(name: "  Morning Run ")
-        let gpx = Data("<gpx/>".utf8)
+        let tcx = Data("<TrainingCenterDatabase/>".utf8)
         let body = try XCTUnwrap(String(
-            data: APIClient.recordingMultipartBody(recorded, gpx: gpx, boundary: "B"), encoding: .utf8))
+            data: APIClient.recordingMultipartBody(recorded, tcx: tcx, boundary: "B"), encoding: .utf8))
         let id = recorded.id.uuidString.lowercased()
         XCTAssertEqual(body, [
             "--B\r\nContent-Disposition: form-data; name=\"id\"\r\n\r\n\(id)\r\n",
             "--B\r\nContent-Disposition: form-data; name=\"date\"\r\n\r\n2026-10-26\r\n",
             "--B\r\nContent-Disposition: form-data; name=\"name\"\r\n\r\nMorning Run\r\n",
-            "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(id).gpx\"\r\n",
-            "Content-Type: application/gpx+xml\r\n\r\n<gpx/>\r\n--B--\r\n",
+            "--B\r\nContent-Disposition: form-data; name=\"file\"; filename=\"\(id).tcx\"\r\n",
+            "Content-Type: application/vnd.garmin.tcx+xml\r\n\r\n<TrainingCenterDatabase/>\r\n--B--\r\n",
         ].joined())
     }
 
     func testMultipartBodyOmitsABlankName() throws {
         let body = try XCTUnwrap(String(
-            data: APIClient.recordingMultipartBody(makeRun(name: "  "), gpx: Data(), boundary: "B"), encoding: .utf8))
+            data: APIClient.recordingMultipartBody(makeRun(name: "  "), tcx: Data(), boundary: "B"), encoding: .utf8))
         XCTAssertFalse(body.contains("name=\"name\""))
     }
 

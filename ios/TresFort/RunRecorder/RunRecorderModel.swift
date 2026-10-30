@@ -41,6 +41,9 @@ final class RunRecorderModel: ObservableObject {
     /// Health not saving the workout.
     @Published private(set) var note: String?
     @Published private(set) var latestHeartRate: RecordedRun.HeartRateSample?
+    /// Horizontal accuracy of the latest GPS fix, in meters, while the
+    /// recorder is open or recording.
+    @Published private(set) var gpsAccuracy: CLLocationAccuracy?
     /// Per-device choices, kept between runs.
     @Published var unit: RunDistanceUnit {
         didSet {
@@ -65,6 +68,8 @@ final class RunRecorderModel: ObservableObject {
     /// Seconds between Live Activity updates for distance and pace; the
     /// clock runs on its own, and pause and resume update at once.
     static let liveActivityInterval: TimeInterval = 5
+    /// A fix this precise means GPS has locked on and the run can start.
+    static let gpsReadyAccuracy: CLLocationAccuracy = 20
 
     private let accountID: String?
     private let baseURL: URL?
@@ -82,6 +87,8 @@ final class RunRecorderModel: ObservableObject {
     private var cachedStore: RunRecordingStore?
     private var engine: RunWorkoutEngine?
     private var location: RunLocationSource?
+    /// GPS started when the recorder opened, handed to the run on start.
+    private var warmLocation: RunLocationSource?
     private var lastCheckpoint: Date?
     private var builderMoving: Double = 0
     private var isUploading = false
@@ -133,6 +140,32 @@ final class RunRecorderModel: ObservableObject {
 
     var isRecording: Bool { phase == .running || phase == .paused || phase == .ending }
 
+    var gpsReady: Bool { (gpsAccuracy ?? .infinity) <= Self.gpsReadyAccuracy }
+
+    // MARK: - GPS before the start
+
+    /// Asks for location when the recorder opens and starts GPS, so the first
+    /// fix (often 10 to 30 seconds outdoors) arrives before the run starts.
+    /// A refusal is left for Start to explain.
+    func warmUpGPS() async {
+        guard phase == .idle || isFailed, warmLocation == nil, location == nil else { return }
+        let source = makeLocation()
+        guard await source.requestAccess() == .granted,
+              phase == .idle || isFailed, warmLocation == nil, location == nil else { return }
+        source.onLocations = { [weak self] in self?.handle($0) }
+        source.warmUp()
+        warmLocation = source
+    }
+
+    /// The recorder closed without starting a run.
+    func coolDownGPS() {
+        guard let warmLocation, location == nil, phase != .starting else { return }
+        warmLocation.stop()
+        warmLocation.onLocations = nil
+        self.warmLocation = nil
+        gpsAccuracy = nil
+    }
+
     // MARK: - Storage
 
     private func store(creating: Bool) -> RunRecordingStore? {
@@ -177,7 +210,7 @@ final class RunRecorderModel: ObservableObject {
         guard store(creating: true) != nil else {
             return fail("Très Fort couldn’t save a run on this iPhone. Check its storage and try again.")
         }
-        let location = makeLocation()
+        let location = warmLocation ?? makeLocation()
         switch await location.requestAccess() {
         case .granted: break
         case .denied:
@@ -298,6 +331,7 @@ final class RunRecorderModel: ObservableObject {
     private func bind(engine: RunWorkoutEngine, location: RunLocationSource) {
         self.engine = engine
         self.location = location
+        warmLocation = nil
         engine.onMetrics = { [weak self] in self?.apply($0) }
         engine.onFailure = { [weak self] in self?.engineFailed($0) }
         location.onLocations = { [weak self] in self?.handle($0) }
@@ -314,6 +348,7 @@ final class RunRecorderModel: ObservableObject {
         location = nil
         lastCheckpoint = nil
         lastActivityUpdate = nil
+        gpsAccuracy = nil
         splits = nil
         RunRecorderControl.handler = nil
     }
@@ -351,6 +386,9 @@ final class RunRecorderModel: ObservableObject {
     }
 
     func handle(_ locations: [CLLocation]) {
+        if let last = locations.last {
+            gpsAccuracy = last.horizontalAccuracy >= 0 ? last.horizontalAccuracy : nil
+        }
         guard phase == .running, var run else { return }
         var accepted: [CLLocation] = []
         for location in locations {
@@ -441,7 +479,7 @@ final class RunRecorderModel: ObservableObject {
         phase = .recovering
         if let engine = makeEngine(),
            let state = await engine.recover(route: unfinished.points.map(Self.location(from:))) {
-            let location = makeLocation()
+            let location = warmLocation ?? makeLocation()
             bind(engine: engine, location: location)
             var run = unfinished
             if state == .running { run.closePause(at: now()) }

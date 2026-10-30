@@ -12,6 +12,10 @@ enum RunLocationAccess: Equatable {
 protocol RunLocationSource: AnyObject {
     var onLocations: (([CLLocation]) -> Void)? { get set }
     func requestAccess() async -> RunLocationAccess
+    /// Foreground fixes while the recorder is open, so GPS has locked on
+    /// before the run starts.
+    func warmUp()
+    /// Recording: keeps going with the phone locked.
     func start()
     func stop()
 }
@@ -62,8 +66,12 @@ final class CoreLocationRunSource: NSObject, RunLocationSource, CLLocationManage
         }
     }
 
+    func warmUp() {
+        manager.startUpdatingLocation()
+    }
+
     func start() {
-        if Self.hasBackgroundLocationMode {
+        if Self.hasBackgroundLocationMode, backgroundSession == nil {
             manager.allowsBackgroundLocationUpdates = true
             manager.showsBackgroundLocationIndicator = true
             backgroundSession = CLBackgroundActivitySession()

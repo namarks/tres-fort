@@ -194,13 +194,12 @@ struct MainTabView: View {
             if await models.runs.recover() { showRunRecorder = true }
         }
         .onChange(of: scenePhase) { _, new in
-            // A block or restriction may have changed while backgrounded.
-            // Drop every shared projection before authentication/network waits,
-            // then reload the whole roster and drain queued private writes.
+            // Group data may have changed while backgrounded. Keep showing the
+            // cached groups through the authentication waits, then revalidate
+            // the whole roster in place and drain queued private writes.
             if new == .active {
                 // Whichever tab is showing, so the iPad link recovers too.
                 models.stationLink.appBecameActive()
-                groupModel.invalidateSharedGroups()
                 Task {
                     guard let initiatingUserID = auth.userID else { return }
                     await auth.checkAppleCredentialState()
@@ -211,7 +210,7 @@ struct MainTabView: View {
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     await sync.recoverWorkoutWrites()
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
-                    await groupModel.reloadGroupState()
+                    await groupModel.reloadGroupState(revalidate: true)
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     // Pull any workouts recorded while we were backgrounded.
                     await health.sync()

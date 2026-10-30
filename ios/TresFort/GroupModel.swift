@@ -49,6 +49,11 @@ final class GroupModel: ObservableObject {
     @Published var feedNextSinceID: [String: String?] = [:]
     @Published var isRefreshingFeed: [String: Bool] = [:]
     @Published var isRefreshingStats: [String: Bool] = [:]
+    /// `refreshGroup` calls in flight per group. `load()` publishes `.ready`
+    /// and then refreshes the selected group, so the detail view appears
+    /// mid-refresh; this lets its `.task` see that instead of starting a
+    /// second, superseding refresh.
+    private var groupRefreshesInFlight: [String: Int] = [:]
 
     // MARK: Intervals.icu connection
 
@@ -102,6 +107,11 @@ final class GroupModel: ObservableObject {
     /// profile-name update. Without this, an older in-flight feed or stats
     /// response could restore the previous effective display name.
     private var identityCacheGeneration = 0
+    /// Fences group-list responses. Advanced by each `load()`, every
+    /// invalidation and every local membership or nickname change, but not
+    /// by per-group refreshes: switching groups while the tab-open list
+    /// request is pending must not discard the fresh membership list.
+    private var groupListGeneration = 0
 
     /// Fired after a manual activity is persisted, drained from the
     /// outbox, or deleted. The owner (MainTabView) sets this to refresh
@@ -247,37 +257,56 @@ final class GroupModel: ObservableObject {
     // MARK: - Load / refresh
 
     /// Reconcile both group content and the mounted Profile safety screen.
-    func reloadGroupState() async {
-        await load()
+    func reloadGroupState(revalidate: Bool = false) async {
+        await load(revalidate: revalidate)
         try? await refreshGroupSafety()
     }
 
     /// Pull the groups list + drain the outbox. Sets `phase` to
     /// `.none` / `.ready` / `.error` accordingly. Called on tab `.task`
     /// and on scene-foreground transitions.
-    func load() async {
+    ///
+    /// `revalidate` is for opening the Group tab and returning to the
+    /// foreground: when groups are already showing, keep them on screen and
+    /// replace them as fresh responses arrive instead of dropping them
+    /// first. Safety changes, display-name changes and Retry still drop
+    /// every shared projection before fetching. Groups missing from the
+    /// fresh list are pruned, and older in-flight responses are still fenced.
+    func load(revalidate: Bool = false) async {
         guard let jwt = currentJWT else { phase = .loading; return }
-        invalidateSharedGroups()
-        let generation = identityCacheGeneration
-        phase = .loading
+        let keepVisible = revalidate && phase == .ready && !groups.isEmpty
+        if keepVisible {
+            identityCacheGeneration += 1
+        } else {
+            invalidateSharedGroups()
+            phase = .loading
+        }
+        groupListGeneration += 1
+        let generation = groupListGeneration
         do {
             let list = try await listGroups(jwt: jwt)
             guard isCurrentAccount,
-                  generation == identityCacheGeneration else { return }
+                  generation == groupListGeneration else { return }
+            // Group requests started against the previous membership (such
+            // as a switch while this list was pending) must not repopulate
+            // pruned groups or replace the reconciled screen with an error.
+            identityCacheGeneration += 1
             groups = list
+            pruneSharedProjections(keeping: Set(list.map(\.id)))
             ensureSelection()
             phase = list.isEmpty ? .none : .ready
             lastError = nil
             // Refresh the visible group's feed/stats so the tab is hot.
             if let id = selectedGroupID {
-                await refreshGroup(groupID: id, refreshRoster: false)
+                await refreshGroup(groupID: id, refreshRoster: false, keepVisible: keepVisible)
             }
             // Drain any pending activity POSTs that survived a relaunch.
             await drainOutbox()
             // Account/setup snapshot for the Profile tab.
             await refreshMe()
         } catch {
-            guard isCurrentAccount, generation == identityCacheGeneration else { return }
+            guard isCurrentAccount, generation == groupListGeneration,
+                  !Self.isCancellation(error) else { return }
             if case let APIError.http(code, _) = error,
                code == 401,
                !isCurrentBearer(jwt) {
@@ -293,18 +322,24 @@ final class GroupModel: ObservableObject {
     }
 
     /// Revalidate the roster, feed and stats for one group. Used by
-    /// pull-to-refresh and after a `logActivity` succeeds.
-    func refreshGroup(groupID: String, refreshRoster: Bool = true) async {
+    /// pull-to-refresh and after a `logActivity` succeeds. `keepVisible`
+    /// (tab-open revalidation only) leaves the current projections on screen
+    /// until their replacements arrive.
+    func refreshGroup(groupID: String, refreshRoster: Bool = true, keepVisible: Bool = false) async {
         // A removed detail view can still start its queued task while a full
         // roster reload is in flight. It must not supersede that reload.
         guard groups.contains(where: { $0.id == groupID }), let jwt = currentJWT else { return }
+        groupRefreshesInFlight[groupID, default: 0] += 1
+        defer { groupRefreshesInFlight[groupID, default: 1] -= 1 }
         identityCacheGeneration += 1
         let generation = identityCacheGeneration
-        feed[groupID] = nil
-        stats[groupID] = nil
-        activitySeries[groupID] = nil
+        if !keepVisible {
+            feed[groupID] = nil
+            stats[groupID] = nil
+            activitySeries[groupID] = nil
+        }
         if refreshRoster {
-            if let index = groups.firstIndex(where: { $0.id == groupID }) {
+            if !keepVisible, let index = groups.firstIndex(where: { $0.id == groupID }) {
                 let group = groups[index]
                 groups[index] = GroupSummary(id: group.id, name: "Private group", created_by: "",
                                              created_at: group.created_at, members: [])
@@ -327,8 +362,27 @@ final class GroupModel: ObservableObject {
         _ = await (feedTask, statsTask, seriesTask)
     }
 
+    /// Refresh a group the detail view is showing only when nothing has
+    /// loaded or is loading it. Opening the Group tab already refreshes the
+    /// selected group from `load()`; a second refresh would clear the feed
+    /// and roster again and discard the first one's responses.
+    func refreshGroupIfNeeded(groupID: String) async {
+        guard groupRefreshesInFlight[groupID, default: 0] == 0 else { return }
+        guard feed[groupID] == nil || stats[groupID] == nil || activitySeries[groupID] == nil
+        else { return }
+        await refreshGroup(groupID: groupID)
+    }
+
+    /// Leaving the Group tab cancels its `.task`, and with it any request in
+    /// flight. That isn't a load failure: the next visit reloads, so don't
+    /// replace the screen with an error.
+    private static func isCancellation(_ error: Error) -> Bool {
+        error is CancellationError || (error as? URLError)?.code == .cancelled
+    }
+
     private func handleGroupRefreshFailure(_ error: Error, jwt: String, generation: Int) {
-        guard isCurrentAccount, generation == identityCacheGeneration else { return }
+        guard isCurrentAccount, generation == identityCacheGeneration,
+              !Self.isCancellation(error) else { return }
         handle(error, jwt: jwt)
         phase = .error(error.localizedDescription)
     }
@@ -437,7 +491,9 @@ final class GroupModel: ObservableObject {
             return g
         }
         // Append + select rather than re-pulling — saves a roundtrip and
-        // the server already gave us the hydrated shape.
+        // the server already gave us the hydrated shape. A list request
+        // still pending predates the new group, so fence it.
+        groupListGeneration += 1
         if !groups.contains(where: { $0.id == g.id }) { groups.append(g) }
         selectedGroupID = g.id
         phase = .ready
@@ -466,6 +522,8 @@ final class GroupModel: ObservableObject {
             }
             return res.group
         }
+        // A list request still pending predates the join, so fence it.
+        groupListGeneration += 1
         if !groups.contains(where: { $0.id == res.group.id }) {
             groups.append(res.group)
         } else {
@@ -514,6 +572,8 @@ final class GroupModel: ObservableObject {
         guard let jwt = currentJWT else { return }
         try await api.leaveGroup(id: id, jwt: jwt)
         guard isCurrentBearer(jwt) else { return }
+        // A list request still pending predates leaving, so fence it.
+        groupListGeneration += 1
         groups.removeAll { $0.id == id }
         feed[id] = nil
         stats[id] = nil
@@ -540,6 +600,8 @@ final class GroupModel: ObservableObject {
             await load()
             return groups.first(where: { $0.id == groupID }) ?? updated
         }
+        // A list request still pending carries the old nickname.
+        groupListGeneration += 1
         if let idx = groups.firstIndex(where: { $0.id == groupID }) {
             groups[idx] = updated
         }
@@ -763,10 +825,22 @@ final class GroupModel: ObservableObject {
 
     // MARK: - Group safety
 
+    /// Drop cached projections for groups the server no longer lists.
+    private func pruneSharedProjections(keeping ids: Set<String>) {
+        for id in Set(feed.keys).union(stats.keys).union(activitySeries.keys) where !ids.contains(id) {
+            feed[id] = nil
+            stats[id] = nil
+            activitySeries[id] = nil
+            feedNextSince[id] = nil
+            feedNextSinceID[id] = nil
+        }
+    }
+
     /// Drop every shared projection and fence earlier requests. Private history
     /// and the activity outbox are separate and remain intact.
     func invalidateSharedGroups() {
         identityCacheGeneration += 1
+        groupListGeneration += 1
         groupSafety = nil
         groups.removeAll()
         feed.removeAll()

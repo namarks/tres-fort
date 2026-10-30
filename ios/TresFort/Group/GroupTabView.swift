@@ -75,7 +75,9 @@ struct GroupTabView: View {
                 }
             }
             .task {
-                await groupModel.load()
+                // Opening the tab keeps what's showing and refreshes it in
+                // place; safety and name changes still start from nothing.
+                await groupModel.load(revalidate: true)
             }
         }
     }
@@ -141,10 +143,10 @@ struct GroupTabView: View {
                     auth: auth,
                     showGroupSettings: $showGroupSettings)
             } else {
-                // Defensive: phase says ready but selection is missing.
-                // Should be unreachable (ensureSelection runs on load) but
-                // we'd rather render the empty state than a blank screen.
-                emptyState
+                // Ready with no selection only happens while groups are being
+                // reloaded: a safety or name change drops the cached list
+                // before `load()` runs. Show loading, not the "no group" CTAs.
+                ProgressView().tint(Theme.accent)
             }
         }
     }

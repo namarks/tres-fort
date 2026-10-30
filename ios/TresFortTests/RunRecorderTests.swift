@@ -449,6 +449,19 @@ final class RunRecorderTests: XCTestCase {
         XCTAssertNil(location.onLocations)
     }
 
+    func testDiscardingARunCanWarmGPSUpAgain() async throws {
+        let model = makeModel()
+        await model.warmUpGPS()
+        await model.start()
+        model.discard()
+        XCTAssertFalse(location.running)
+        XCTAssertNil(model.gpsAccuracy)
+        await model.warmUpGPS()
+        XCTAssertTrue(location.warm, "Back on the start screen, GPS is found again for the next run")
+        location.onLocations?([fix(0, seconds: 0, accuracy: 6)])
+        XCTAssertTrue(model.gpsReady)
+    }
+
     func testRefusedLocationLeavesWarmUpToStartToExplain() async throws {
         location.access = .denied
         let model = makeModel()

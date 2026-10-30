@@ -29,7 +29,10 @@ struct RunRecorderView: View {
             .padding(.bottom, 16)
         }
         .preferredColorScheme(.dark)
-        .task { await model.warmUpGPS() }
+        // On opening, and whenever a discarded run returns to the start screen.
+        .task(id: model.phase) {
+            if model.phase == .idle || isFailed { await model.warmUpGPS() }
+        }
         .onDisappear { model.coolDownGPS() }
         .interactiveDismissDisabled(model.isRecording || model.phase == .starting || model.phase == .recovering)
         .confirmationDialog("End this run?", isPresented: $confirmEnd, titleVisibility: .visible) {

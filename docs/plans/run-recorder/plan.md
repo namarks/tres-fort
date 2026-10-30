@@ -27,23 +27,37 @@ within the agreed tolerance of a Garmin watch on the same run.
   - Provider failure is an error with no local fallback. A write 401/403
     never disconnects the read credential, the same as `log_activity`.
 - [ ] **P1 — Record a run on iPhone**
-  - Requires iOS 26 or later, which supports `HKWorkoutSession`,
-    `HKLiveWorkoutBuilder` and `HKWorkoutRouteBuilder` on iPhone. On older
-    iOS the entry point stays hidden. The app's iOS 17 minimum doesn't change.
-  - Start, pause, resume and end an outdoor run. Show elapsed time, distance,
-    current and average pace, and a route map. Distance comes from the
-    workout builder (Apple's own fusion), never from summing raw GPS points.
-  - Ask for When In Use location access and permission to write workouts and
-    routes to Apple Health. Both are new permissions, and the Health update
-    string must stop saying the app never writes.
-  - Save the finished run to Apple Health as an `HKWorkout` with its route.
-    The existing Apple Health sync then pushes the summary, and intervals.icu
-    wins the 2-minute duplicate match once the uploaded run arrives.
-  - Checkpoint the run on the device as it records. A crash or relaunch
-    resumes or finishes it without losing samples, and the upload waits in an
-    account-scoped outbox until the server acknowledges it.
-  - Encode the run (route, timestamps, distance, and heart rate when Health
-    has it) into the P0 upload format.
+  - [x] **(a) Keep and upload recorded runs on the device**
+    - `RecordedRun` holds the route, heart-rate samples, the workout
+      builder's distance and moving time, and the device-local civil date.
+    - `RecordedRunGPX` encodes it as GPX 1.1 with heart rate in the Garmin
+      TrackPointExtension, attached only within 5 seconds of a point.
+    - `RunRecordingStore` keeps one file per run in an account-scoped,
+      backup-excluded directory until the server acknowledges the upload.
+      Files use `completeUntilFirstUserAuthentication` so checkpoints still
+      save with the phone locked mid-run. Account deletion removes them.
+    - `RunRecordingUploader` sends finished runs to P0's endpoint as
+      multipart GPX, removes each only after a 200/201, keeps failures for
+      the next attempt and stops on a rejected bearer.
+  - [ ] **(b) Record with a workout session**
+    - Requires iOS 26 or later, which supports `HKWorkoutSession`,
+      `HKLiveWorkoutBuilder` and `HKWorkoutRouteBuilder` on iPhone. On older
+      iOS the entry point stays hidden. The app's iOS 17 minimum doesn't
+      change. Keep it out of the App Store build until P3 passes.
+    - Start, pause, resume and end an outdoor run. Show elapsed time,
+      distance, current and average pace, and a route map. Distance comes
+      from the workout builder (Apple's own fusion), never from summing raw
+      GPS points.
+    - Ask for When In Use location access and permission to write workouts
+      and routes to Apple Health. Both are new permissions, and the Health
+      update string must stop saying the app never writes.
+    - Save the finished run to Apple Health as an `HKWorkout` with its
+      route. The existing Apple Health sync then pushes the summary, and
+      intervals.icu wins the 2-minute duplicate match once the uploaded run
+      arrives.
+    - Checkpoint the run into (a)'s store as it records. A crash or relaunch
+      resumes or finishes it without losing samples, and finished runs
+      upload on finish, launch and foreground.
 - [ ] **P2 — Run from the Lock Screen**
   - Show a Live Activity with time, distance and pace, plus pause and end
     controls, from the existing widget extension.
@@ -75,8 +89,8 @@ mirrors P1's session.
 
 ## Next step
 
-**Now (@agent):** Build P1, the iOS 26 recorder that saves the run to Apple
-Health and queues its upload to P0's endpoint, behind simulator tests.
+**Now (@agent):** Build P1(b), the iOS 26 workout-session recorder and its
+screen, writing into P1(a)'s store and uploader, behind simulator tests.
 
 P0 is delivered in the repository by the PR that checked it. Its Worker
 deploy needs separate authority, and its live upload check is part of P3.
@@ -88,6 +102,10 @@ deploy needs separate authority, and its live upload check is part of P3.
   write rejection with the read credential kept, provider 5xx/4xx and lookup
   failure, a member without a connection, form validation and the 10 MB
   limit, all against mocked intervals.icu responses.
+- P1(a): `ios/TresFortTests/RunRecordingTests.swift` covers civil dates,
+  GPX track points, elevation, heart-rate matching and escaping, the
+  multipart body, per-account storage, checkpoint replacement, damaged
+  files, account deletion, and upload acknowledgement, failure and 401.
 
 ## Notes / open questions
 

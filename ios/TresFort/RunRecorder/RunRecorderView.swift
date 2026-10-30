@@ -18,7 +18,10 @@ struct RunRecorderView: View {
                 header
                 map
                 stats
-                if model.phase == .idle || isFailed { preferences }
+                if model.phase == .idle || isFailed {
+                    gpsStatus
+                    preferences
+                }
                 Spacer(minLength: 0)
                 controls
             }
@@ -26,6 +29,11 @@ struct RunRecorderView: View {
             .padding(.bottom, 16)
         }
         .preferredColorScheme(.dark)
+        // On opening, and whenever a discarded run returns to the start screen.
+        .task(id: model.phase) {
+            if model.phase == .idle || isFailed { await model.warmUpGPS() }
+        }
+        .onDisappear { model.coolDownGPS() }
         .interactiveDismissDisabled(model.isRecording || model.phase == .starting || model.phase == .recovering)
         .confirmationDialog("End this run?", isPresented: $confirmEnd, titleVisibility: .visible) {
             Button("Save run") { Task { await model.end() } }
@@ -81,6 +89,17 @@ struct RunRecorderView: View {
     private var isFailed: Bool {
         if case .failed = model.phase { return true }
         return false
+    }
+
+    /// Whether GPS has locked on. A run can start either way; until the first
+    /// good fix its route stays empty.
+    private var gpsStatus: some View {
+        Label(model.gpsReady ? "GPS ready" : "Finding GPS…",
+              systemImage: model.gpsReady ? "location.fill" : "location")
+            .font(.callout)
+            .foregroundStyle(model.gpsReady ? Theme.accent : Theme.muted)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("runRecorder.gps")
     }
 
     /// Units and spoken splits, chosen before the run starts. Splits can be

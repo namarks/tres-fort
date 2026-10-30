@@ -163,6 +163,12 @@ the scene delegate is left to P3's force-quit check.
 
 ## Notes / open questions
 
+- First P3 feedback (build 57, 2026-10-30): finding the runner took too long
+  because GPS and the location prompt only started on Start. The recorder now
+  asks for location and starts foreground GPS when it opens, shows "Finding
+  GPS…" or "GPS ready" (a fix within 20 m), and hands that GPS to the run;
+  closing the screen without a run stops it.
+
 - Nick chose on 2026-10-30 to bypass Strava for runs he records on his
   iPhone. Strava's API terms stop Strava-sourced activities from reaching Tres
   Fort through intervals.icu, and its social features aren't worth keeping to

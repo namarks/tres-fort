@@ -47,10 +47,15 @@ private final class FakeLocationSource: RunLocationSource {
     var onLocations: (([CLLocation]) -> Void)?
     var access: RunLocationAccess = .granted
     private(set) var running = false
+    private(set) var warm = false
 
     func requestAccess() async -> RunLocationAccess { access }
+    func warmUp() { warm = true }
     func start() { running = true }
-    func stop() { running = false }
+    func stop() {
+        running = false
+        warm = false
+    }
 }
 
 @MainActor
@@ -96,6 +101,7 @@ final class RunRecorderTests: XCTestCase {
     private var defaults: UserDefaults!
     private var defaultsSuite: String!
     private var unauthorized = 0
+    private var locationsMade = 0
     private var uploads = 0
 
     override func setUp() async throws {
@@ -122,7 +128,10 @@ final class RunRecorderTests: XCTestCase {
             onUnauthorized: { [unowned self] in self.unauthorized += 1 },
             onUploaded: { [unowned self] in self.uploads += 1 },
             makeEngine: { [unowned self] in self.engine },
-            makeLocation: { [unowned self] in self.location },
+            makeLocation: { [unowned self] in
+                self.locationsMade += 1
+                return self.location
+            },
             now: { [unowned self] in self.clock },
             defaults: defaults,
             liveActivity: liveActivity,
@@ -405,6 +414,60 @@ final class RunRecorderTests: XCTestCase {
         let reopened = makeModel()
         XCTAssertEqual(reopened.unit, .kilometers)
         XCTAssertTrue(reopened.announcesSplits)
+    }
+
+    func testGPSWarmsUpWhenTheRecorderOpensAndCarriesIntoTheRun() async throws {
+        let model = makeModel()
+        await model.warmUpGPS()
+        XCTAssertTrue(location.warm)
+        XCTAssertFalse(model.gpsReady)
+        location.onLocations?([fix(0, seconds: -20, accuracy: 35)])
+        XCTAssertEqual(model.gpsAccuracy, 35)
+        XCTAssertFalse(model.gpsReady)
+        location.onLocations?([fix(0, seconds: -10, accuracy: 8)])
+        XCTAssertTrue(model.gpsReady)
+        XCTAssertNil(model.run, "Fixes before the start record nothing")
+
+        await model.start()
+        XCTAssertEqual(model.phase, .running)
+        XCTAssertEqual(locationsMade, 1, "The run keeps the GPS that was already on")
+        XCTAssertTrue(location.running)
+        location.onLocations?([fix(0, seconds: 1), fix(1, seconds: 11)])
+        XCTAssertEqual(model.run?.points.count, 2)
+        // Closing the screen mid-run doesn't stop the run's GPS.
+        model.coolDownGPS()
+        XCTAssertTrue(location.running)
+    }
+
+    func testClosingTheRecorderStopsAWarmGPS() async throws {
+        let model = makeModel()
+        await model.warmUpGPS()
+        location.onLocations?([fix(0, seconds: 0, accuracy: 8)])
+        model.coolDownGPS()
+        XCTAssertFalse(location.warm)
+        XCTAssertNil(model.gpsAccuracy)
+        XCTAssertNil(location.onLocations)
+    }
+
+    func testDiscardingARunCanWarmGPSUpAgain() async throws {
+        let model = makeModel()
+        await model.warmUpGPS()
+        await model.start()
+        model.discard()
+        XCTAssertFalse(location.running)
+        XCTAssertNil(model.gpsAccuracy)
+        await model.warmUpGPS()
+        XCTAssertTrue(location.warm, "Back on the start screen, GPS is found again for the next run")
+        location.onLocations?([fix(0, seconds: 0, accuracy: 6)])
+        XCTAssertTrue(model.gpsReady)
+    }
+
+    func testRefusedLocationLeavesWarmUpToStartToExplain() async throws {
+        location.access = .denied
+        let model = makeModel()
+        await model.warmUpGPS()
+        XCTAssertFalse(location.warm)
+        XCTAssertEqual(model.phase, .idle)
     }
 
     func testDeniedOrApproximateLocationFailsBeforeHealth() async throws {

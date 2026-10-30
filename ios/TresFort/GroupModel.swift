@@ -107,10 +107,10 @@ final class GroupModel: ObservableObject {
     /// profile-name update. Without this, an older in-flight feed or stats
     /// response could restore the previous effective display name.
     private var identityCacheGeneration = 0
-    /// Fences group-list responses. Advanced by each `load()` and every
-    /// invalidation, but not by per-group refreshes: switching groups while
-    /// the tab-open list request is pending must not discard the fresh
-    /// membership list.
+    /// Fences group-list responses. Advanced by each `load()`, every
+    /// invalidation and every local membership or nickname change, but not
+    /// by per-group refreshes: switching groups while the tab-open list
+    /// request is pending must not discard the fresh membership list.
     private var groupListGeneration = 0
 
     /// Fired after a manual activity is persisted, drained from the
@@ -287,6 +287,10 @@ final class GroupModel: ObservableObject {
             let list = try await listGroups(jwt: jwt)
             guard isCurrentAccount,
                   generation == groupListGeneration else { return }
+            // Group requests started against the previous membership (such
+            // as a switch while this list was pending) must not repopulate
+            // pruned groups or replace the reconciled screen with an error.
+            identityCacheGeneration += 1
             groups = list
             pruneSharedProjections(keeping: Set(list.map(\.id)))
             ensureSelection()
@@ -487,7 +491,9 @@ final class GroupModel: ObservableObject {
             return g
         }
         // Append + select rather than re-pulling — saves a roundtrip and
-        // the server already gave us the hydrated shape.
+        // the server already gave us the hydrated shape. A list request
+        // still pending predates the new group, so fence it.
+        groupListGeneration += 1
         if !groups.contains(where: { $0.id == g.id }) { groups.append(g) }
         selectedGroupID = g.id
         phase = .ready
@@ -516,6 +522,8 @@ final class GroupModel: ObservableObject {
             }
             return res.group
         }
+        // A list request still pending predates the join, so fence it.
+        groupListGeneration += 1
         if !groups.contains(where: { $0.id == res.group.id }) {
             groups.append(res.group)
         } else {
@@ -564,6 +572,8 @@ final class GroupModel: ObservableObject {
         guard let jwt = currentJWT else { return }
         try await api.leaveGroup(id: id, jwt: jwt)
         guard isCurrentBearer(jwt) else { return }
+        // A list request still pending predates leaving, so fence it.
+        groupListGeneration += 1
         groups.removeAll { $0.id == id }
         feed[id] = nil
         stats[id] = nil
@@ -590,6 +600,8 @@ final class GroupModel: ObservableObject {
             await load()
             return groups.first(where: { $0.id == groupID }) ?? updated
         }
+        // A list request still pending carries the old nickname.
+        groupListGeneration += 1
         if let idx = groups.firstIndex(where: { $0.id == groupID }) {
             groups[idx] = updated
         }

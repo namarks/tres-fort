@@ -362,6 +362,45 @@ final class GroupSafetyTests: XCTestCase {
         XCTAssertEqual(model.phase, .none)
     }
 
+    func testGroupRequestStartedBeforeTheFreshListCannotOverrideIt() async throws {
+        let suite = "GroupSafetyTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(LocalPersistence(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let auth = AuthModel(tokenStore: TokenStore(), defaults: defaults)
+        auth.userID = "user-a"
+        let payload = try JSONSerialization.data(withJSONObject: ["sub": "user-a", "exp": 4_000_000_000])
+        auth.jwt = "header." + payload.base64EncodedString().replacingOccurrences(of: "=", with: "") + ".signature"
+        var listRead: CheckedContinuation<[GroupSummary], Error>?
+        var rosterRead: CheckedContinuation<GroupSummary, Error>?
+        let model = GroupModel(auth: auth, defaults: defaults, groupLister: { _ in
+            try await withCheckedThrowingContinuation { listRead = $0 }
+        }, groupLoader: { _, _ in
+            try await withCheckedThrowingContinuation { rosterRead = $0 }
+        }, profileLoader: { _ in throw URLError(.notConnectedToInternet) })
+        model.groups = ["a", "b"].map {
+            .init(id: $0, name: "Crew \($0)", created_by: "user-a", created_at: 1, members: [])
+        }
+        model.selectedGroupID = "a"
+        model.phase = .ready
+        model.feed["a"] = []
+
+        let loading = Task { await model.load(revalidate: true) }
+        for _ in 0..<100 where listRead == nil { await Task.yield() }
+        let list = try XCTUnwrap(listRead)
+        // Switch groups; its roster request is still out when the list lands.
+        let switching = Task { await model.refreshGroup(groupID: "b") }
+        for _ in 0..<100 where rosterRead == nil { await Task.yield() }
+        let roster = try XCTUnwrap(rosterRead)
+        list.resume(returning: [])   // memberships were removed
+        await loading.value
+        XCTAssertEqual(model.phase, .none)
+        roster.resume(throwing: APIError.http(403, "not_a_member"))
+        await switching.value
+        XCTAssertEqual(model.phase, .none, "A request from the old membership can't show an error")
+        XCTAssertTrue(model.groups.isEmpty)
+        XCTAssertTrue(model.feed.isEmpty)
+    }
+
     func testCancelledTabLoadDoesNotShowTheErrorScreen() async throws {
         let suite = "GroupSafetyTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(LocalPersistence(suiteName: suite))
